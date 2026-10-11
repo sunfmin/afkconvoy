@@ -154,6 +154,7 @@ pub(crate) fn write_brief(
         base_branch: &fleet.config.base_branch,
         gate_command: &crate::own_command("gate --train"),
         land_command: &crate::own_command(&format!("land --issue {number}")),
+        wake_command: &crate::own_command("wake"),
     };
     let prompt = worker_prompt(&fields, variant).map_err(|e| anyhow!(e))?;
     worktree.write_brief(&prompt)

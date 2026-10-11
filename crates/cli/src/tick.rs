@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass};
+use afkconvoy_core::wake::turn;
 use anyhow::Result;
 use serde_json::{Value, json};
 
@@ -11,10 +12,12 @@ use crate::board::show;
 use crate::claims::{Me, beat};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::git::Repo;
 use crate::judge::judge;
 use crate::settle::settle;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
+use crate::wake::Listener;
 use crate::watch::watch;
 
 /// One step that failed, and why.
@@ -204,13 +207,15 @@ fn start_line(took: &Value) -> Option<String> {
     if parts.is_empty() { None } else { Some(parts.join(" · ")) }
 }
 
-/// `afkconvoy run`: tick after tick, sleeping in between. Stopping it is just
-/// exiting: no claim is released on the way out, and the next start on this
-/// host takes them back (docs/adr/0003).
+/// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
+/// `afkconvoy wake` ends early. Stopping it is just exiting: no claim is
+/// released on the way out, and the next start on this host takes them back
+/// (docs/adr/0003).
 pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64) -> Result<Value> {
     let mut streak = 0;
     let mut count = 0;
     let mut started = false;
+    let wakes = Listener::open(&Repo::here()?);
     loop {
         count += 1;
         me.now = clock();
@@ -227,9 +232,11 @@ pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64)
             }
         }
         // A tick that could not even rebuild is a line, not the end of the loop.
-        let (line, sleep) = match Fleet::open(me.now)
-            .and_then(|mut fleet| tick(&mut fleet, me, agent))
-        {
+        let ticked = turn(
+            || wakes.forget(),
+            || Fleet::open(me.now).and_then(|mut fleet| tick(&mut fleet, me, agent)),
+        );
+        let (line, sleep) = match ticked {
             Ok(ticked) => {
                 let pass = &ticked.pass;
                 streak = empty_streak(streak, pass.did_work(), pass.held, pass.frontier_remaining);
@@ -241,6 +248,6 @@ pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64)
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
-        std::thread::sleep(pacing.second * sleep as u32);
+        wakes.rest(pacing.second * sleep as u32);
     }
 }

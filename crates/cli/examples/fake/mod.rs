@@ -24,6 +24,10 @@ impl State {
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("state file"))
             .expect("state file is JSON");
         let argv: Vec<String> = std::env::args().skip(1).collect();
+        // `slow_ms`: how long every call takes, for a test that needs time to pass.
+        if let Some(ms) = doc["slow_ms"].as_u64() {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         let mut state = State { path, _lock: lock, doc, argv };
         let call = Value::from(state.argv.clone());
         state.list("calls").push(call);
