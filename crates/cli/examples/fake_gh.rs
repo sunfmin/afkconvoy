@@ -166,6 +166,41 @@ fn api(st: &mut State) -> ! {
                 "pull_request": issue["pull_request"].as_bool().unwrap_or(false)});
             st.finish(&row.to_string(), 0, "")
         }
+        ["issues", number, "labels"] if method == "POST" => {
+            let added: Vec<String> = st
+                .argv
+                .iter()
+                .filter_map(|a| a.strip_prefix("labels[]="))
+                .map(str::to_string)
+                .collect();
+            let number: u64 = number.parse().unwrap();
+            let rows = st.doc["issues"].as_array_mut().unwrap();
+            let Some(issue) = rows.iter_mut().find(|issue| issue["number"] == number) else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n")
+            };
+            let labels = issue["labels"].as_array_mut().unwrap();
+            for label in added {
+                if !labels.iter().any(|l| l == label.as_str()) {
+                    labels.push(json!(label));
+                }
+            }
+            st.finish("", 0, "")
+        }
+        ["issues", number, "labels", label] if method == "DELETE" => {
+            let label = label.replace("%20", " ");
+            let number: u64 = number.parse().unwrap();
+            let rows = st.doc["issues"].as_array_mut().unwrap();
+            let Some(issue) = rows.iter_mut().find(|issue| issue["number"] == number) else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n")
+            };
+            let labels = issue["labels"].as_array_mut().unwrap();
+            // as GitHub: taking off a label the issue does not carry is an error
+            if !labels.iter().any(|l| l == label.as_str()) {
+                st.finish("", 1, "gh: Label does not exist (HTTP 404)\n")
+            }
+            labels.retain(|l| l != label.as_str());
+            st.finish("", 0, "")
+        }
         ["issues", number, "comments"] if method == "POST" => {
             let body = body.expect("a comment has a body");
             let id = next_comment_id(st);
