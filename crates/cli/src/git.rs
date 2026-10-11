@@ -125,6 +125,17 @@ impl Repo {
         Ok(listed.split_whitespace().next().map(str::to_string))
     }
 
+    /// Every branch the remote has, by its short name. An error when the
+    /// remote cannot be read.
+    pub fn remote_heads(&self) -> Result<Vec<String>> {
+        let listed = self.git(&["ls-remote", "--heads", REMOTE])?;
+        let names = listed.lines().filter_map(|row| row.split_once('\t'));
+        Ok(names
+            .filter_map(|(_, name)| name.strip_prefix("refs/heads/"))
+            .map(str::to_string)
+            .collect())
+    }
+
     /// Every ref the remote has that matches `pattern` (one ref's name, or
     /// `<namespace>/*`), each with the subject of the commit it points at. An
     /// error when the remote cannot be read.

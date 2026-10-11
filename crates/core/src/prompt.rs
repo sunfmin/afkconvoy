@@ -1,6 +1,7 @@
 //! The worker prompt: a template, filled by code. No worker is ever started on
 //! a prompt with a placeholder left in it.
 
+use crate::recovery::Variant;
 use crate::verdict;
 
 /// What a worker prompt is filled with: the issue, and the branch and path
@@ -18,8 +19,27 @@ pub struct WorkerFields<'a> {
     pub land_command: &'a str,
 }
 
+const OPENING_FRESH: &str = "You are an afkconvoy worker. You own exactly ONE GitHub issue and work in an isolated git worktree.";
+
+const OPENING_CONTINUE: &str = "\
+You are an afkconvoy worker **continuing** an issue a previous worker started but did not finish.
+You own exactly ONE GitHub issue and work in its worktree, on its branch, which already carries that
+earlier progress.";
+
+const STEP1_FRESH: &str = "\
+1. **Read the ground truth first.** `gh issue view {n} --comments`, then this repo's `GLOSSARY.md`,
+   the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary.";
+
+const STEP1_CONTINUE: &str = "\
+1. **Inspect the existing progress first.** See what the previous worker left: `git status`,
+   `git diff origin/{base_branch}...HEAD`, `git log origin/{base_branch}..HEAD`, and any notes. It is
+   partial work toward the same acceptance criteria — do not discard it, but verify it against them.
+   **Then read the ground truth:** `gh issue view {n} --comments`, then this repo's `GLOSSARY.md`,
+   the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary. Continue from
+   the first step that is not yet done.";
+
 const WORKER: &str = "\
-You are an afkconvoy worker. You own exactly ONE GitHub issue and work in an isolated git worktree.
+<opening>
 Nobody reads this terminal: never wait for an answer.
 
 **Your issue:** #{n} — {title}
@@ -36,8 +56,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 
 ## Steps
 
-1. **Read the ground truth first.** `gh issue view {n} --comments`, then this repo's `GLOSSARY.md`,
-   the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary.
+<step1>
 2. **Implement** the issue's acceptance criteria, matching the surrounding code's conventions.
 3. **Gate.** Commit everything, then run this in your worktree:
    ```bash
@@ -162,11 +181,17 @@ pub fn train_pointer(brief: &str) -> String {
 }
 
 /// The prompt a worker starting on a fresh worktree is given.
-pub fn worker_prompt(fields: &WorkerFields) -> Result<String, String> {
+pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, String> {
     let number = fields.number.to_string();
     let marker = verdict::marker_format();
+    // The variant's blocks first, so the one fill reads their placeholders too.
+    let (opening, step1) = match variant {
+        Variant::Fresh => (OPENING_FRESH, STEP1_FRESH),
+        Variant::Continue => (OPENING_CONTINUE, STEP1_CONTINUE),
+    };
+    let template = WORKER.replace("<opening>", opening).replace("<step1>", step1);
     fill(
-        WORKER,
+        &template,
         &[
             ("n", &number),
             ("title", fields.title),
@@ -252,7 +277,11 @@ mod tests {
 
     #[test]
     fn the_prompt_names_what_orca_returned() {
-        let prompt = worker_prompt(&fields()).unwrap();
+        let prompt = worker_prompt(&fields(), Variant::Fresh).unwrap();
+        assert!(prompt.starts_with("You are an afkconvoy worker. You own exactly ONE"));
+        assert!(
+            prompt.contains("\n1. **Read the ground truth first.** `gh issue view 7 --comments`")
+        );
         assert!(
             prompt.contains("**Your issue:** #7 — Add {branch} support"),
             "a value is not re-read"
@@ -264,6 +293,21 @@ mod tests {
         assert!(prompt.contains("gh pr create --base develop --head tester/issue-7-add"));
         assert!(prompt.contains("Closes #7"));
         assert!(prompt.contains(&verdict::marker_format()));
+    }
+
+    #[test]
+    fn a_continuing_worker_is_told_to_inspect_what_is_there_first() {
+        let prompt = worker_prompt(&fields(), Variant::Continue).unwrap();
+        assert!(prompt.starts_with("You are an afkconvoy worker **continuing** an issue"));
+        assert!(prompt.contains("\n1. **Inspect the existing progress first.**"));
+        assert!(prompt.contains("`git log origin/develop..HEAD`"));
+        assert!(prompt.contains("partial work toward the same acceptance criteria"));
+        assert!(prompt.contains("gh issue view 7 --comments"));
+        assert!(!prompt.contains("<opening>") && !prompt.contains("<step1>"));
+        // everything after the first step is the fresh prompt's
+        let fresh = worker_prompt(&fields(), Variant::Fresh).unwrap();
+        let rest = |prompt: &str| prompt[prompt.find("2. **Implement**").unwrap()..].to_string();
+        assert_eq!(rest(&prompt), rest(&fresh));
     }
 
     #[test]
@@ -286,7 +330,7 @@ mod tests {
     #[test]
     fn a_prompt_with_an_unfilled_placeholder_is_refused() {
         let blank = WorkerFields { branch: "", ..fields() };
-        assert!(worker_prompt(&blank).unwrap_err().contains("{branch}"));
+        assert!(worker_prompt(&blank, Variant::Fresh).unwrap_err().contains("{branch}"));
         assert!(fill("a {nope} b", &[("n", "1")]).unwrap_err().contains("{nope}"));
     }
 

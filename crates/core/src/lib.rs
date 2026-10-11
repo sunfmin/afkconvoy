@@ -10,6 +10,7 @@ pub mod lease;
 pub mod plan;
 pub mod prompt;
 pub mod record;
+pub mod recovery;
 #[cfg(flux)]
 mod rejected;
 pub mod settle;

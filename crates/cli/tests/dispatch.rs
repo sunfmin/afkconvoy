@@ -87,6 +87,9 @@ fn the_steps_run_in_order() {
     assert_eq!(
         calls,
         [
+            // what survived is read first, under the claim
+            "repo list",
+            "worktree list",
             "repo list",
             "worktree create",
             "terminal close",
@@ -129,7 +132,8 @@ fn the_worktree_is_cut_from_what_the_remote_has() {
     let started = dispatch(&world, "7").ok();
     let worktree = Path::new(started["worktree"].as_str().unwrap());
     assert_eq!(git(worktree, &["rev-parse", "HEAD"]), landed);
-    let create = &world.orca_calls()[1];
+    let calls = world.orca_calls();
+    let create = calls.iter().find(|call| call[..2] == ["worktree", "create"]).unwrap();
     let at = create.iter().position(|arg| arg == "--base-branch").unwrap();
     assert_eq!(create[at + 1], landed, "handed over as a sha, not a branch name");
 }

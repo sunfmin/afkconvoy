@@ -62,9 +62,17 @@ pub fn worktree_name(number: u64, title: &str) -> String {
 pub enum DispatchStep {
     /// Take the claim. Losing it ends the dispatch: nothing after it runs.
     Claim,
-    /// Have orca cut the worktree and branch at the remote base branch's tip.
-    Cut,
-    /// Record on the issue the branch orca cut.
+    /// Read what survived an earlier worker, which picks the tier the worker
+    /// is started from (`recovery::select_recovery`).
+    Survey,
+    /// Throw the previous attempt away: close its PRs, delete the issue's own
+    /// branches on the remote, remove its worktree.
+    Discard,
+    /// Put the worker's worktree in place: the one still on this host, or one
+    /// orca cuts — at the tip of the branch a continuation recreates, else at
+    /// the remote base branch's tip.
+    Place,
+    /// Record on the issue the branch the worker is on.
     RecordBranch,
     /// Write the worker prompt where the worker will read it.
     Brief,
@@ -77,12 +85,21 @@ pub enum DispatchStep {
 }
 
 /// The steps of one dispatch as they are decided, and how far they have got.
-#[refined_by(claimed: bool, cut: bool, briefed: bool, started: bool, ready: bool)]
+/// `by_hand`: a fresh start somebody asked for — the one dispatch that may
+/// discard. `chosen`: where the worker starts from is settled.
+#[refined_by(by_hand: bool, claimed: bool, chosen: bool, placed: bool, briefed: bool,
+    started: bool, ready: bool)]
 struct DispatchOrder {
+    // What `survey` and `discard` are stated on: nothing reads it back.
+    #[allow(dead_code)]
+    #[field(bool[by_hand])]
+    by_hand: bool,
     #[field(bool[claimed])]
     claimed: bool,
-    #[field(bool[cut])]
-    cut: bool,
+    #[field(bool[chosen])]
+    chosen: bool,
+    #[field(bool[placed])]
+    placed: bool,
     #[field(bool[briefed])]
     briefed: bool,
     #[field(bool[started])]
@@ -93,11 +110,14 @@ struct DispatchOrder {
 }
 
 impl DispatchOrder {
-    #[spec(fn(held: bool) -> DispatchOrder[held, false, false, false, false])]
-    fn new(held: bool) -> DispatchOrder {
+    #[spec(fn(held: bool, by_hand: bool)
+        -> DispatchOrder[by_hand, held, false, false, false, false, false])]
+    fn new(held: bool, by_hand: bool) -> DispatchOrder {
         DispatchOrder {
+            by_hand,
             claimed: held,
-            cut: false,
+            chosen: false,
+            placed: false,
             briefed: false,
             started: false,
             ready: false,
@@ -105,59 +125,89 @@ impl DispatchOrder {
         }
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.cut, o.briefed, o.started, o.ready])]
+    #[spec(fn(self: &mut Self[@o])
+        ensures self: Self[o.by_hand, true, o.chosen, o.placed, o.briefed, o.started, o.ready])]
     fn claim(&mut self) {
         self.steps.push(DispatchStep::Claim);
         self.claimed = true;
     }
 
-    /// Nothing is cut for an issue the fleet does not hold.
-    #[spec(fn(self: &mut Self[@o]) requires o.claimed
-        ensures self: Self[o.claimed, true, o.briefed, o.started, o.ready])]
-    fn cut(&mut self) {
-        self.steps.push(DispatchStep::Cut);
+    /// What survived is read under the claim: a claim lost costs no read, and
+    /// nobody else is changing what is found.
+    #[spec(fn(self: &mut Self[@o]) requires o.claimed && !o.by_hand
+        ensures self: Self[o.by_hand, o.claimed, true, o.placed, o.briefed, o.started, o.ready])]
+    fn survey(&mut self) {
+        self.steps.push(DispatchStep::Survey);
+        self.chosen = true;
+    }
+
+    /// An attempt is discarded only by hand, only under the claim, and before
+    /// anything is put in place for the new one: a continuation tears nothing
+    /// down.
+    #[spec(fn(self: &mut Self[@o]) requires o.by_hand && o.claimed && !o.placed
+        ensures self: Self[o.by_hand, o.claimed, true, o.placed, o.briefed, o.started, o.ready])]
+    fn discard(&mut self) {
+        self.steps.push(DispatchStep::Discard);
+        self.chosen = true;
+    }
+
+    /// No worktree for an issue the fleet does not hold, or before it is
+    /// known what the worker starts from.
+    #[spec(fn(self: &mut Self[@o]) requires o.claimed && o.chosen
+        ensures self: Self[o.by_hand, o.claimed, o.chosen, true, o.briefed, o.started, o.ready])]
+    fn place(&mut self) {
+        self.steps.push(DispatchStep::Place);
         self.steps.push(DispatchStep::RecordBranch);
-        self.cut = true;
+        self.placed = true;
     }
 
     /// The brief names the worktree: it is written once there is one.
-    #[spec(fn(self: &mut Self[@o]) requires o.cut
-        ensures self: Self[o.claimed, o.cut, true, o.started, o.ready])]
+    #[spec(fn(self: &mut Self[@o]) requires o.placed
+        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, true, o.started, o.ready])]
     fn brief(&mut self) {
         self.steps.push(DispatchStep::Brief);
         self.briefed = true;
     }
 
     /// A worker is started only on a claim held, in a worktree, with its brief waiting.
-    #[spec(fn(self: &mut Self[@o]) requires o.claimed && o.cut && o.briefed
-        ensures self: Self[o.claimed, o.cut, o.briefed, true, o.ready])]
+    #[spec(fn(self: &mut Self[@o]) requires o.claimed && o.placed && o.briefed
+        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, o.briefed, true, o.ready])]
     fn start(&mut self) {
         self.steps.push(DispatchStep::Start);
         self.started = true;
     }
 
     #[spec(fn(self: &mut Self[@o]) requires o.started
-        ensures self: Self[o.claimed, o.cut, o.briefed, o.started, true])]
+        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, o.briefed, o.started, true])]
     fn await_ready(&mut self) {
         self.steps.push(DispatchStep::AwaitReady);
         self.ready = true;
     }
 
     /// A prompt typed at an agent that is not ready is lost.
-    #[spec(fn(self: &mut Self[@o]) requires o.ready)]
+    #[spec(fn(self: &mut Self[@o]) requires o.ready
+        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, o.briefed, o.started,
+            o.ready])]
     fn deliver(&mut self) {
         self.steps.push(DispatchStep::Deliver);
     }
 }
 
-/// The steps that start a fresh worker on an issue, in order. `held`: the
-/// claim is already this instance's, so it is not pushed again.
-pub fn dispatch_steps(held: bool) -> Vec<DispatchStep> {
-    let mut order = DispatchOrder::new(held);
+/// The steps that start a worker on an issue, in order. `held`: the claim is
+/// already this instance's, so it is not pushed again. `by_hand`: a fresh
+/// start somebody asked for, which discards the previous attempt instead of
+/// continuing from what survived.
+pub fn dispatch_steps(held: bool, by_hand: bool) -> Vec<DispatchStep> {
+    let mut order = DispatchOrder::new(held, by_hand);
     if !order.claimed {
         order.claim();
     }
-    order.cut();
+    if by_hand {
+        order.discard();
+    } else {
+        order.survey();
+    }
+    order.place();
     order.brief();
     order.start();
     order.await_ready();
@@ -248,26 +298,65 @@ mod rejected {
 
     /// A worker started on an issue nobody claimed.
     #[should_fail]
-    fn a_worker_started_without_a_claim() {
-        let mut order = DispatchOrder::new(false);
-        order.cut();
+    fn what_survived_read_without_a_claim() {
+        let mut order = DispatchOrder::new(false, false);
+        order.survey();
+    }
+
+    /// A worktree put in place before it is known what the worker starts from.
+    #[should_fail]
+    fn a_worktree_placed_before_the_start_is_chosen() {
+        let mut order = DispatchOrder::new(true, false);
+        order.place();
     }
 
     /// A prompt handed to an agent that was never waited for.
     #[should_fail]
     fn a_prompt_delivered_before_the_agent_is_ready() {
-        let mut order = DispatchOrder::new(true);
-        order.cut();
+        let mut order = DispatchOrder::new(true, false);
+        order.survey();
+        order.place();
         order.brief();
         order.start();
         order.deliver();
     }
 
+    /// A continuation that tears the attempt down.
+    #[should_fail]
+    fn an_attempt_discarded_by_a_continuation() {
+        let mut order = DispatchOrder::new(true, false);
+        order.discard();
+    }
+
+    /// An attempt discarded for an issue the fleet does not hold.
+    #[should_fail]
+    fn an_attempt_discarded_without_the_claim() {
+        let mut order = DispatchOrder::new(false, true);
+        order.discard();
+    }
+
+    /// The worktree just placed for the new attempt, discarded with the old one.
+    #[should_fail]
+    fn a_discard_after_the_new_worktree_is_placed() {
+        let mut order = DispatchOrder::new(true, true);
+        order.discard();
+        order.place();
+        order.discard();
+    }
+
+    /// A start by hand that goes on to continue from what it was told to discard.
+    #[should_fail]
+    fn a_start_by_hand_that_continues() {
+        let mut order = DispatchOrder::new(true, true);
+        order.survey();
+    }
+
     /// A worker started with no brief to read.
     #[should_fail]
     fn a_worker_started_before_its_brief() {
-        let mut order = DispatchOrder::new(true);
-        order.cut();
+        let mut order = DispatchOrder::new(true, false);
+        order.survey();
+        order.place();
         order.start();
     }
 }
@@ -279,10 +368,17 @@ mod tests {
     #[test]
     fn a_dispatch_runs_in_one_order() {
         use DispatchStep::*;
-        let rest = [Cut, RecordBranch, Brief, Start, AwaitReady, Deliver];
-        assert_eq!(dispatch_steps(true), rest);
-        assert_eq!(dispatch_steps(false)[0], Claim);
-        assert_eq!(dispatch_steps(false)[1..], rest);
+        let rest = [Place, RecordBranch, Brief, Start, AwaitReady, Deliver];
+        assert_eq!(dispatch_steps(true, false)[0], Survey);
+        assert_eq!(dispatch_steps(true, false)[1..], rest);
+        assert_eq!(dispatch_steps(false, false)[..2], [Claim, Survey]);
+        // continuation tears nothing down
+        assert!(!dispatch_steps(true, false).contains(&Discard));
+        assert!(!dispatch_steps(false, false).contains(&Discard));
+        // by hand: the attempt is discarded, and nothing of it is read to continue
+        assert_eq!(dispatch_steps(true, true)[0], Discard);
+        assert_eq!(dispatch_steps(true, true)[1..], rest);
+        assert_eq!(dispatch_steps(false, true)[..2], [Claim, Discard]);
     }
 
     #[test]
