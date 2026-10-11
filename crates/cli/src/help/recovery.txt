@@ -1,0 +1,32 @@
+WHEN TO RUN IT
+
+  Before `dispatch` on an issue that was worked before: it shows what `dispatch` would
+  continue from, and so what `--start fresh` would throw away.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo, on the host the worker ran on — a worktree
+  counts only where it is.
+
+WHAT IT READS AND WRITES
+
+  It reads the issue's comments and the open PRs on GitHub, the issue's branches on the
+  remote, and its worktree through orca. It changes nothing.
+
+WHAT IT ANSWERS
+
+  {"issue", "base", "worktree", "branch", "tier", "action", "prompt", "reason"}
+
+    worktree   {present, path, commits_ahead, dirty} — what is on this host
+    branch     {name, candidates, commits_ahead} — the issue's own branches on the
+               remote, and the one a worktree would be recreated at
+    tier, action, prompt, reason
+               what `dispatch` would do, as `dispatch` answers it
+
+  Errors: the config, GitHub or the remote cannot be read; the remote has no base
+  branch.
+
+WHAT TRIPS YOU UP
+
+  - It takes no `--instance` and looks at no claim: it answers for an issue nobody
+    holds, and for one another instance holds.

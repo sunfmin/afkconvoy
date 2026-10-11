@@ -1,0 +1,34 @@
+WHEN TO RUN IT
+
+  To hand a claim to a human by hand. A tick does this on its own for every failure: a
+  `needs-human` verdict, a worker silent past its nudge, a blocker that cannot be parked
+  on. Do it yourself when you can see a claim will not finish and the fleet has not
+  given it up yet.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  On GitHub it comments `--reason` on the issue, swaps the config's `ready_label` for its
+  `escalate_label`, and writes the status board's last word. On the remote it releases
+  the claim. The PR and the branch are kept, and so is the worktree, unless its branch
+  holds no work.
+
+WHAT IT ANSWERS
+
+  {"issue", "action": "escalated", "released": true, "worktree"} — worktree is "removed"
+  or "kept".
+  {"issue", "released": true, "detail"} — no claim is held on the issue: nothing was done.
+
+  Errors: the claim is another instance's ("is not this fleet's claim").
+
+WHAT TRIPS YOU UP
+
+  - `--instance` is required, and must be the instance that holds the claim.
+  - It escalates only a claim. On an issue nobody holds it answers `released` with a
+    `detail`, and has neither commented nor relabelled.
+  - Cut short, run it again with the same reason: it goes on from the step it stopped at,
+    and still posts one comment.
+  - It stops no worker: one still at work goes on, on an issue the fleet gave up.

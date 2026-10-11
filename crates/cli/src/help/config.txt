@@ -1,0 +1,29 @@
+WHEN TO RUN IT
+
+  First, before `plan` and `run`: it shows what the fleet goes by in this repo, or why the
+  config cannot be read. Run it again after editing the config.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  It reads one file — docs/agents/afkconvoy.md of the checkout it is run in, or `--file`
+  — and of that file only the first ```yaml block. It writes nothing, and reads neither
+  GitHub nor the remote.
+
+WHAT IT ANSWERS
+
+  {"base_branch", "gate_command", "ready_label", "epic_labels", "concurrency",
+   "escalate_label"} — every key, the defaults filled in.
+
+  Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
+  `gate_command` is missing; a key is unknown or of the wrong type — the error names the
+  key. Without `--file`, outside a git checkout: "is not in a git checkout".
+
+WHAT TRIPS YOU UP
+
+  - It reads the file as it is in this checkout, committed or not. A worker reads the
+    one in its own worktree, which is cut from the base branch: a change is in force only
+    once it is on the base branch.

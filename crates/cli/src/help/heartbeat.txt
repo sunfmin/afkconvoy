@@ -1,0 +1,29 @@
+WHEN TO RUN IT
+
+  Hardly ever: every tick refreshes its instance's heartbeat. Run it to keep the claims
+  of an instance live while nothing ticks for it — claims made by hand, or a fleet
+  stopped for a while whose claims no other host should take.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  It reads the instance's heartbeat on the remote and, when it is due — never written,
+  or older than a third of the lease — writes it anew. Nothing on GitHub changes.
+
+WHAT IT ANSWERS
+
+  {"refreshed": true, "ts", "ref"}
+  {"refreshed": false, "reason": "not due", "ts", "ref"} — ts is the heartbeat that
+  stands, in epoch seconds.
+
+  Errors: the remote cannot be read, or refuses the push.
+
+WHAT TRIPS YOU UP
+
+  - `--instance` is required.
+  - It keeps a dead fleet's claims alive: while they are beaten for, no other host takes
+    them as stale, and nobody works them.
+  - One beat lasts one lease. Kept up by hand, it has to be run again before that.

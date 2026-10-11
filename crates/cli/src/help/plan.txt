@@ -1,0 +1,47 @@
+WHEN TO RUN IT
+
+  Before `run`, to see what the fleet would start on; and beside a running fleet, to see
+  where every claim stands and why an issue is not on the frontier.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  It makes the startup probe, then the rebuild: the open issues and PRs on GitHub, the
+  claims and heartbeats on the remote, and the landing train. It changes nothing on
+  GitHub. On the remote it pushes its startup probe and deletes it again, together with
+  what the probe sweeps: a probe an earlier start left behind, and recorded gate runs
+  too old for a landing to believe.
+
+WHAT IT ANSWERS
+
+  {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
+   "now"}
+
+    frontier       the issues a tick would dispatch, lowest number first: {number, title}
+    excluded       every other open issue, with why: {number, reason}
+    mine           the claims of `--instance`: {number, title, status, pr}. status is
+                   no_pr, joining, joined, landed or closed
+    peer_live      other instances' claims within the lease — never touched
+    stale          other instances' claims past the lease, on open issues — a tick
+                   takes them
+    stale_closed   the same on closed issues — a tick deletes them
+                   (each of the three: {number, instance, sha})
+    free_slots     how many more claims the instance may take
+    now            the time the plan was made at, in epoch seconds
+
+  The probe's warnings go to stderr. Errors: the repo fails the startup probe (the
+  remote has no base branch, its protection refuses the fleet's push, or the remote
+  takes none of the fleet's refs); the config cannot be read; GitHub or the remote
+  cannot be read.
+
+WHAT TRIPS YOU UP
+
+  - Without `--instance` nobody's claims are its own: `mine` is empty, a running
+    fleet's claims show under `peer_live`, and `free_slots` is the whole concurrency.
+    To see a running fleet as it sees itself, pass its instance id — `takeover --list`
+    shows every id the remote remembers.
+  - "Changes nothing" is about fleet state. It still pushes to the remote, and deletes
+    there: it needs push access, and it is not a read-only command.

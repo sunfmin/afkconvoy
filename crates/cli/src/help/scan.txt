@@ -1,0 +1,33 @@
+WHEN TO RUN IT
+
+  To see exactly what the remote holds: which instance claims which issue, and when
+  each instance last beat. `plan` and `takeover --list` say what that means; this is the
+  refs themselves, for repairing them.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  It reads the fleet's refs on the remote. It changes nothing, and does not read GitHub
+  or the config.
+
+WHAT IT ANSWERS
+
+  {"claims", "heartbeats"}
+
+    claims      one per claimed issue, lowest number first: {number, instance, host,
+                ts, sha}. ts is when it was stamped, in epoch seconds; sha is what a take
+                or a release of it is leased to
+    heartbeats  {<instance id>: <epoch seconds>}
+
+  Errors: the remote cannot be read; "is not in a git checkout".
+
+WHAT TRIPS YOU UP
+
+  - It looks where this repo's last startup probe found the remote keeps the fleet's
+    refs. In a clone no `plan`, `tick` or `run` was ever run in, it looks under
+    refs/convoy/ — and finds nothing on a remote that keeps them as convoy-* branches.
+  - It does not say whether a claim is live: compare its instance's heartbeat with the
+    lease, or read `takeover --list`.

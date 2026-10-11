@@ -1,0 +1,30 @@
+WHEN TO RUN IT
+
+  To send a worker its nudge by hand. A tick does this on its own, once, for a worker
+  that stopped with no PR and no verdict and stayed quiet for the grace period. Do it
+  yourself when a tick is not running and such a worker sits idle.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo, on the host the worker runs on.
+
+WHAT IT READS AND WRITES
+
+  It asks orca for the worker's state and reads the issue's comments for a verdict. It
+  types one line at the worker's terminal and records the nudge in the worktree. Nothing
+  on GitHub or the remote changes.
+
+WHAT IT ANSWERS
+
+  {"issue", "action": "nudged", "terminal"}
+
+  Errors, each with nothing sent: "has no stopped worker" — the instance holds no claim
+  on the issue, or its worker is at work or gone; "is not nudged" — it was nudged
+  already, showed a sign of life within the grace period, or declared a verdict; the
+  claim is another instance's; the worktree has no live terminal.
+
+WHAT TRIPS YOU UP
+
+  - `--instance` is required, and must be the instance that holds the claim.
+  - It is refused wherever a tick would not nudge: it cannot be used to hurry a worker.
+  - One nudge per worker. A worker silent again after it is escalated by the next tick.

@@ -1,0 +1,48 @@
+WHEN TO RUN IT
+
+  When the work is committed and before the PR joins the landing train, with `--train`;
+  and again after every further commit. A worker's prompt names the exact command.
+
+WHO RUNS IT
+
+  A worker, in its own worktree. The operator runs it only to find out why a worker's
+  gate is red.
+
+WHAT IT READS AND WRITES
+
+  It runs the config's `gate_command` in this worktree, its log streaming to stderr.
+  With `--train` it first merges in what the PR will land behind — the landing train's
+  tip, or the base branch when nothing is on the train — a merge, never a rebase.
+  On the remote it writes only the recorded gate run: put on record for a green run of
+  a committed tree, taken off record for a red one. It pushes no branch and changes
+  nothing on GitHub.
+
+WHAT IT ANSWERS
+
+  {"status", "recorded", "detail", …}
+
+    status       green, red or conflict
+    recorded     true only when the run is on record as a pass of the commit's tree
+    detail       what to do next, in words
+    exit_code, timed_out, command, head
+                 the run: the gate command, its exit code, and the commit it ran on.
+                 A run killed at `--gate-timeout` is red, with exit_code 124
+    merged       with `--train`: the commit that was merged in
+    uncommitted  on a green run of a tree that was not the commit: the paths, 20 at most
+    not_recorded on a green run whose record the remote refused: why
+    files        on conflict: the conflicted files. No gate ran, and the merge is left
+                 in progress here
+
+  Errors: the config cannot be read; with `--train`, tracked files have uncommitted
+  changes ("has uncommitted changes to tracked files"), or the remote has no base
+  branch.
+
+WHAT TRIPS YOU UP
+
+  - A red gate is an answer, not an error: the exit is 0. Read `status` and `recorded`.
+  - Green is not enough. An untracked or modified file — the gate's own artifacts
+    included, unless `.gitignore` covers them — makes the run green with `recorded`
+    false: it proves nothing about a commit.
+  - A recorded run is of one tree. Any further commit needs another run.
+  - A conflict is resolved by committing the merge, then running this again. A resolved
+    merge left uncommitted is refused.

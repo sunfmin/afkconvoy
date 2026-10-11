@@ -1,0 +1,31 @@
+WHEN TO RUN IT
+
+  Once, as a worker's last command: after its PR is on the landing train, or its verdict
+  is posted on the issue. A worker's prompt names the exact command.
+
+WHO RUNS IT
+
+  A worker, in its own worktree — any worktree or checkout of the repo on the fleet's
+  host reaches the same `run`.
+
+WHAT IT READS AND WRITES
+
+  It sends one empty signal to the `run` of this host for this repo, over a socket in
+  the repo's git directory. It carries nothing and writes nothing: the tick it starts
+  reads the outcome from GitHub itself.
+
+WHAT IT ANSWERS
+
+  {"woke": true} — the signal was sent.
+  {"woke": false, "detail"} — it was not: no `run` is listening for this repo on this
+  host, or the reason given.
+
+  Errors: only "is not in a git checkout". Failing to wake anybody is not an error.
+
+WHAT TRIPS YOU UP
+
+  - It reports nothing. A worker's outcome is its PR on the train or its verdict
+    comment: without one of them on GitHub, a wake only makes the fleet look sooner at a
+    worker that stopped with nothing.
+  - `woke: false` needs no retry: the fleet finds the outcome at its next tick anyway.
+  - It reaches a `run` only, on this host only. A fleet driven by `tick` hears nothing.
