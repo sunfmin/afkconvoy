@@ -1,0 +1,17 @@
+[package]
+name = "afkconvoy"
+description = "A fleet of AFK coding agents that works a GitHub backlog"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+afkconvoy-core = { path = "../core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
