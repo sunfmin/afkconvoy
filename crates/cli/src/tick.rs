@@ -7,10 +7,11 @@ use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::claims::{Me, beat, release};
+use crate::claims::{Me, beat};
 use crate::dispatch::{Agent, dispatch};
 use crate::fleet::Fleet;
-use crate::orca::{Source, Worktree};
+use crate::settle::settle;
+use crate::tend::tend_train;
 
 /// One step that failed, and why.
 struct Failure {
@@ -45,13 +46,10 @@ pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
 fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Result<Outcome> {
     match step {
         TickStep::Settle { issue } => {
-            // The worktree first: a settling that failed leaves the claim held.
-            if let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? {
-                worktree.remove()?;
-            }
-            release(&fleet.repo, &mut fleet.scan, &me.instance, issue)?;
+            settle(fleet, me, issue)?;
             Ok(Outcome::Done)
         }
+        TickStep::TendTrain => tend_train(fleet, agent),
         TickStep::Dispatch { issue } => {
             let started = dispatch(fleet, me, agent, issue)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
@@ -66,6 +64,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
 fn words(step: TickStep) -> (&'static str, Option<u64>) {
     match step {
         TickStep::Settle { issue } => ("settle", Some(issue)),
+        TickStep::TendTrain => ("tend_train", None),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
         TickStep::Heartbeat => ("heartbeat", None),
     }
@@ -81,6 +80,7 @@ impl Ticked {
                 let (word, issue) = words(*step);
                 let outcome = match outcome {
                     Outcome::Done => "done",
+                    Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Failed => "failed",
                 };
@@ -114,6 +114,10 @@ impl Ticked {
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
+        }
+        let tended = (TickStep::TendTrain, Outcome::Done);
+        if self.pass.did.contains(&tended) {
+            parts.push("tended the train".to_string());
         }
         if parts.is_empty() {
             parts.push("nothing to do".to_string());

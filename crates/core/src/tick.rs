@@ -12,8 +12,12 @@ use crate::plan::{Status, WorkingSet};
 /// One thing a pass does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickStep {
-    /// Settle a claim of mine whose issue is closed: clean up, release it last.
+    /// Settle a claim of mine whose work has landed — its issue is closed, or
+    /// the landing was cut short of closing it: clean up, release it last.
     Settle { issue: u64 },
+    /// Keep a train worker on the landing train while a PR of mine is on it.
+    /// The train worker holds no claim and takes no slot.
+    TendTrain,
     /// Start a worker on a frontier issue, into a free slot.
     Dispatch { issue: u64 },
     /// Refresh my heartbeat, if it is due.
@@ -25,6 +29,8 @@ pub enum TickStep {
 pub enum Outcome {
     /// It did what it names.
     Done,
+    /// There was nothing for it to do.
+    Nothing,
     /// A peer holds the issue: nothing was started, and no slot was taken.
     Lost,
     /// It failed. Whatever claim it was about is still held.
@@ -92,7 +98,7 @@ impl Pass {
 }
 
 /// Runs one pass over `set` under a bound of `concurrency` claims: settle the
-/// claims of closed issues, dispatch frontier issues into the free slots,
+/// claims whose work landed, tend the landing train, dispatch frontier issues into the free slots,
 /// lowest number first, then refresh the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
 /// the rest of the pass goes on.
@@ -107,6 +113,10 @@ where
 {
     let mut did = Vec::new();
     let held = settle_closed(set, held, &mut did, &mut carry_out);
+    if set.mine.iter().any(|mine| mine.status == Status::Joined) {
+        let step = TickStep::TendTrain;
+        did.push((step, carry_out(step)));
+    }
     let held = fill_slots(set, concurrency, held, &mut did, &mut carry_out);
     if held > 0 {
         let step = TickStep::Heartbeat;
@@ -116,7 +126,7 @@ where
     Pass { did, held, frontier_remaining: set.frontier.len().saturating_sub(tried) }
 }
 
-/// Settles every claim of mine whose issue is closed → the claims still held.
+/// Settles every claim of mine whose work has landed → the claims still held.
 #[spec(fn(set: &WorkingSet, held: usize, did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
     -> usize{after: after <= held})]
 fn settle_closed<F>(
@@ -130,7 +140,7 @@ where
 {
     let mut slots = Slots::new(0, held);
     for mine in &set.mine {
-        if mine.status != Status::Closed {
+        if mine.status != Status::Closed && mine.status != Status::Landed {
             continue;
         }
         let step = TickStep::Settle { issue: mine.number };

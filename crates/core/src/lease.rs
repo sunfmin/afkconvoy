@@ -56,6 +56,21 @@ pub fn a_beat_not_due_outlives_the_wait(stamp: u64, now: u64, later: u64) {
 #[spec(fn(bool[true]))]
 pub fn proved(_: bool) {}
 
+/// How old a stamp another clock wrote is, in seconds; `None` when it is no
+/// evidence of anything: further ahead of `now` than `SKEW`. A stamp ahead by
+/// no more than that is ordinary skew between two hosts and reads as "just
+/// now", never as a negative age.
+#[spec(fn(stamp: u64, now: u64) -> Option<u64{age: age <= now}>)]
+pub fn stamp_age(stamp: u64, now: u64) -> Option<u64> {
+    if stamp <= now {
+        Some(now - stamp)
+    } else if stamp - now <= SKEW {
+        Some(0)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

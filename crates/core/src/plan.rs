@@ -88,6 +88,9 @@ pub enum Status {
     Joining,
     /// Its open PR is on the landing train, at the head the PR has now.
     Joined,
+    /// The landing train put its work on the base branch, and the landing was
+    /// cut short before the issue was closed: to be closed, then settled.
+    Landed,
     /// The issue is closed: the claim is to be settled and released.
     Closed,
 }
@@ -139,6 +142,8 @@ pub struct Observed<'a> {
     pub closed: &'a [u64],
     /// The issues whose open PR is on the landing train at its current head.
     pub joined: &'a [u64],
+    /// My open issues the landing train landed under my claim.
+    pub landed: &'a [u64],
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -189,11 +194,16 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         let closed = seen.closed.contains(&claim.number);
         if me.is_some_and(|me| claim.is_held_by(me)) {
             let pr = closing_pr(seen.prs, claim.number).map(|pr| pr.number);
-            let status = match (closed, pr) {
-                (true, _) => Status::Closed,
-                (false, Some(_)) if seen.joined.contains(&claim.number) => Status::Joined,
-                (false, Some(_)) => Status::Joining,
-                (false, None) => Status::NoPr,
+            let status = if closed {
+                Status::Closed
+            } else if seen.landed.contains(&claim.number) {
+                Status::Landed
+            } else if pr.is_none() {
+                Status::NoPr
+            } else if seen.joined.contains(&claim.number) {
+                Status::Joined
+            } else {
+                Status::Joining
             };
             let issue = issues.iter().find(|issue| issue.number == claim.number);
             let title = issue.map(|issue| issue.title.clone());
@@ -305,6 +315,7 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             joined: &[],
+            landed: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -336,6 +347,7 @@ mod tests {
             claim(6, "me"),
             claim(7, "me"),
             claim(8, "me"),
+            claim(9, "me"),
         ];
         let seen = Observed {
             issues: &issues,
@@ -349,6 +361,7 @@ mod tests {
             ],
             closed: &[4, 6],
             joined: &[8],
+            landed: &[9],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -359,6 +372,7 @@ mod tests {
                 (6, Status::Closed, None),
                 (7, Status::Joining, Some(70)),
                 (8, Status::Joined, Some(80)),
+                (9, Status::Landed, None),
             ]
         );
         assert_eq!(set.mine[0].title.as_deref(), Some("issue 1"));
@@ -370,7 +384,7 @@ mod tests {
             set.stale_closed.iter().map(|c| (c.number, c.sha.as_str())).collect::<Vec<_>>(),
             [(4, "c4")]
         );
-        assert_eq!(set.free_slots, 1);
+        assert_eq!(set.free_slots, 0);
     }
 
     #[test]
@@ -382,6 +396,7 @@ mod tests {
             heartbeats: &[("peer".into(), 5000)],
             closed: &[],
             joined: &[],
+            landed: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -402,8 +417,15 @@ mod tests {
         let config = config(2);
         let build =
             |issues: &[Issue], prs: &[PullRequest], claims: &[Claim], beats: &[(String, u64)]| {
-                let seen =
-                    Observed { issues, prs, claims, heartbeats: beats, closed: &[9], joined: &[] };
+                let seen = Observed {
+                    issues,
+                    prs,
+                    claims,
+                    heartbeats: beats,
+                    closed: &[9],
+                    joined: &[],
+                    landed: &[],
+                };
                 assemble(&seen, Some(&me()), 1000, &config)
             };
         let first = build(&issues, &prs, &claims, &beats);

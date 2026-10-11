@@ -1,0 +1,209 @@
+//! Settling a claim whose work has landed: what only the tick can do for it,
+//! and in which order.
+
+use flux_rs::attrs::*;
+
+use crate::plan::PullRequest;
+use crate::train::Joined;
+
+/// One step of settling a landed claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettleStep {
+    /// Close the issue a landing put on the base branch and was cut short of
+    /// closing.
+    CloseIssue,
+    /// Close the PR the train landed that GitHub still shows open.
+    ClosePr,
+    /// Remove the worker's worktree.
+    RemoveWorktree,
+    /// Fast-forward the fleet's own checkout to what landed.
+    FollowBase,
+    /// Delete the claim.
+    Release,
+}
+
+/// The steps of one settling as they are decided.
+#[refined_by(closed: bool, removed: bool)]
+struct SettleOrder {
+    #[field(bool[closed])]
+    closed: bool,
+    #[field(bool[removed])]
+    removed: bool,
+    steps: Vec<SettleStep>,
+}
+
+impl SettleOrder {
+    #[spec(fn(closed: bool) -> SettleOrder[closed, false])]
+    fn new(closed: bool) -> SettleOrder {
+        SettleOrder { closed, removed: false, steps: Vec::new() }
+    }
+
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.removed])]
+    fn close_issue(&mut self) {
+        self.steps.push(SettleStep::CloseIssue);
+        self.closed = true;
+    }
+
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.removed])]
+    fn close_pr(&mut self) {
+        self.steps.push(SettleStep::ClosePr);
+    }
+
+    /// An open issue's worktree is never touched: it may hold work.
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, true])]
+    fn remove_worktree(&mut self) {
+        self.steps.push(SettleStep::RemoveWorktree);
+        self.removed = true;
+    }
+
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[o.closed, o.removed])]
+    fn follow_base(&mut self) {
+        self.steps.push(SettleStep::FollowBase);
+    }
+
+    /// The claim goes last: a settling that failed on the way still holds it,
+    /// and the next tick settles it again.
+    #[spec(fn(self: &mut Self[@o]) requires o.closed && o.removed)]
+    fn release(&mut self) {
+        self.steps.push(SettleStep::Release);
+    }
+}
+
+/// The steps that settle a claim whose issue's work is on the base branch.
+/// `closed`: the issue is closed already — it is not when the landing was cut
+/// short after its push.
+pub fn settle_steps(closed: bool) -> Vec<SettleStep> {
+    let mut order = SettleOrder::new(closed);
+    if !order.closed {
+        order.close_issue();
+    }
+    order.close_pr();
+    order.remove_worktree();
+    order.follow_base();
+    order.release();
+    order.steps
+}
+
+/// Was the landing made at `landed_at` made under the claim taken at
+/// `claimed_at`? A PR landed long ago closes the issue too — one since
+/// reopened and claimed again: only a landing no earlier than the claim is
+/// this claim's. Both times are the fleet's own clock.
+#[spec(fn(landed_at: u64, claimed_at: u64) -> bool[landed_at >= claimed_at])]
+pub fn landed_under(landed_at: u64, claimed_at: u64) -> bool {
+    landed_at >= claimed_at
+}
+
+/// Is `join` — the newest joining on the base branch that closes a claimed,
+/// still open issue — a landing cut short after its push, to be finished from
+/// the base branch itself? Not when it was made before the claim, and not when
+/// the issue's open PR is another PR or has another head than the one that
+/// landed: its worker pushed more since, and joins again with it.
+pub fn cut_landing(
+    join: &Joined,
+    landed_at: u64,
+    claimed_at: Option<u64>,
+    open_pr: Option<&PullRequest>,
+) -> bool {
+    let under = match claimed_at {
+        Some(claimed_at) => landed_under(landed_at, claimed_at),
+        None => false,
+    };
+    let same = match open_pr {
+        Some(pr) => pr.number == join.pr && pr.head_sha == join.head,
+        None => true,
+    };
+    under && same
+}
+
+/// The comment a landed PR is closed with when GitHub did not mark it merged.
+pub fn landed_comment(commit: &str, base_branch: &str) -> String {
+    format!("Landed on `{base_branch}` by the landing train as {commit}.")
+}
+
+/// How the fleet's own checkout follows the base branch to `tip`. Only ever a
+/// fast-forward, which both moves refuse to be anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follow {
+    /// The local branch is at the tip.
+    UpToDate,
+    /// The branch is checked out: merge the tip, fast-forward only.
+    Merge,
+    /// It is not: move its ref by a fetch.
+    Fetch,
+}
+
+pub fn follow(local: &str, tip: &str, checked_out: bool) -> Follow {
+    if local == tip {
+        Follow::UpToDate
+    } else if checked_out {
+        Follow::Merge
+    } else {
+        Follow::Fetch
+    }
+}
+
+#[cfg(flux)]
+#[allow(dead_code)]
+mod rejected {
+    use super::*;
+
+    /// A claim deleted with its worktree still there: a crash right after
+    /// leaves a worktree no claim leads back to.
+    #[should_fail]
+    fn a_claim_released_before_its_worktree_is_removed() {
+        let mut order = SettleOrder::new(true);
+        order.release();
+    }
+
+    /// The worktree of an open issue removed: it may hold work.
+    #[should_fail]
+    fn an_open_issues_worktree_removed() {
+        let mut order = SettleOrder::new(false);
+        order.remove_worktree();
+    }
+
+    /// A landing older than the claim taken for the claim's own.
+    #[should_fail]
+    #[spec(fn(landed_at: u64, claimed_at: u64{claimed_at > landed_at}) -> bool[true])]
+    fn a_landing_older_than_the_claim(landed_at: u64, claimed_at: u64) -> bool {
+        landed_under(landed_at, claimed_at)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_claim_is_deleted_last() {
+        use SettleStep::*;
+        assert_eq!(settle_steps(true), [ClosePr, RemoveWorktree, FollowBase, Release]);
+        assert_eq!(settle_steps(false), [CloseIssue, ClosePr, RemoveWorktree, FollowBase, Release]);
+    }
+
+    #[test]
+    fn a_cut_landing_is_this_claims_and_of_the_head_that_landed() {
+        let join = Joined { issue: 7, pr: 70, commit: "m".into(), head: "h".into() };
+        let pr = |number: u64, head: &str| PullRequest {
+            number,
+            title: String::new(),
+            head_branch: "b".into(),
+            head_sha: head.into(),
+            closes: vec![7],
+        };
+        assert!(cut_landing(&join, 500, Some(500), None), "GitHub shows the PR merged");
+        assert!(cut_landing(&join, 500, Some(100), Some(&pr(70, "h"))));
+        assert!(!cut_landing(&join, 99, Some(100), None), "landed before the claim was taken");
+        assert!(!cut_landing(&join, 500, None, None), "a claim that names nobody");
+        assert!(!cut_landing(&join, 500, Some(100), Some(&pr(70, "newer"))));
+        assert!(!cut_landing(&join, 500, Some(100), Some(&pr(71, "h"))));
+        assert!(landed_comment("abc", "main").contains("`main`"));
+    }
+
+    #[test]
+    fn the_checkout_follows_by_fast_forward_only() {
+        assert_eq!(follow("a", "a", true), Follow::UpToDate);
+        assert_eq!(follow("a", "b", true), Follow::Merge);
+        assert_eq!(follow("a", "b", false), Follow::Fetch);
+    }
+}

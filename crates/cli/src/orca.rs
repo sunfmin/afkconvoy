@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use afkconvoy_core::prompt::brief_pointer;
-use afkconvoy_core::worker::short_branch;
+use afkconvoy_core::train::is_train_worktree;
+use afkconvoy_core::worker::{AgentReport, WorkerState, lead, short_branch, worker_state};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
@@ -14,6 +15,10 @@ use crate::git::Repo;
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
+/// The train's tip its worker was last told about, beside the brief.
+const TOLD_FILE: &str = "convoy-train-told";
+/// More worktrees than one machine runs workers in.
+const PS_LIMIT: &str = "1000";
 
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
@@ -140,6 +145,87 @@ impl Worktree {
         }))
     }
 
+    /// The landing train's worktree on this machine: linked to no issue, it is
+    /// known by the name its directory was created under.
+    pub fn of_train(source: &Source) -> Result<Option<Worktree>> {
+        let listed = orca(&["worktree", "list"])?;
+        let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+        let mut hits: Vec<&Value> = rows
+            .iter()
+            .filter(|row| {
+                let path = Path::new(row["path"].as_str().unwrap_or(""));
+                let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+                is_train_worktree(name)
+                    && path.is_dir()
+                    && row["repoId"].as_str() == Some(source.id.as_str())
+                    && row["isMainWorktree"] != true
+                    && row["isArchived"] != true
+            })
+            .collect();
+        hits.sort_by_key(|row| row["lastActivityAt"].as_u64().unwrap_or(0));
+        Ok(hits.last().and_then(|row| {
+            Some(Worktree {
+                path: PathBuf::from(row["path"].as_str()?),
+                branch: short_branch(row["branch"].as_str().unwrap_or("")).to_string(),
+            })
+        }))
+    }
+
+    /// What the worker here is doing, as its runtime reported it to orca. A
+    /// page of `ps` that was cut short is an error: an orca that cannot say is
+    /// never "no worker there".
+    pub fn state(&self, now: u64) -> Result<WorkerState> {
+        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+        if ps["truncated"] == true {
+            bail!("orca worktree ps was cut short at {PS_LIMIT} rows");
+        }
+        let rows = ps["worktrees"].as_array().cloned().unwrap_or_default();
+        let row = rows.iter().find(|row| {
+            row["path"].as_str().is_some_and(|path| same_dir(Path::new(path), &self.path))
+        });
+        let Some(row) = row else { return Ok(WorkerState::Gone) };
+        // orca's clocks are epoch milliseconds
+        let seconds = |stamp: &Value| stamp.as_u64().map(|ms| ms / 1000);
+        let agents: Vec<AgentReport> = row["agents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|agent| agent["state"].is_string() && agent["parentPaneKey"].is_null())
+            .map(|agent| AgentReport {
+                working: agent["state"] == "working",
+                since: seconds(&agent["stateStartedAt"]),
+            })
+            .collect();
+        let terminals = row["liveTerminalCount"].as_u64().unwrap_or(0);
+        Ok(worker_state(terminals, seconds(&row["lastOutputAt"]), lead(&agents), now))
+    }
+
+    /// The terminal a worker here would be in: the one that wrote last.
+    pub fn terminal(&self) -> Result<Option<String>> {
+        let listed = orca(&["terminal", "list", "--worktree", &self.selector()])?;
+        let rows = listed["terminals"].as_array().cloned().unwrap_or_default();
+        let last = rows.iter().max_by_key(|row| row["lastOutputAt"].as_u64().unwrap_or(0));
+        Ok(last.and_then(|row| row["handle"].as_str()).map(str::to_string))
+    }
+
+    /// A note about the worker here, kept in the worktree's own git dir: this
+    /// machine's, like the worker itself, and gone when the worktree is.
+    fn note(&self, name: &str) -> Result<PathBuf> {
+        let git_dir = Repo { dir: self.path.clone() }.git(&["rev-parse", "--absolute-git-dir"])?;
+        Ok(Path::new(&git_dir).join(name))
+    }
+
+    /// The train's tip the worker here was last told about, when one was.
+    pub fn told(&self) -> Result<Option<String>> {
+        let told = std::fs::read_to_string(self.note(TOLD_FILE)?).ok();
+        Ok(told.map(|tip| tip.trim().to_string()).filter(|tip| !tip.is_empty()))
+    }
+
+    pub fn record_told(&self, tip: &str) -> Result<()> {
+        let file = self.note(TOLD_FILE)?;
+        std::fs::write(&file, tip).with_context(|| format!("cannot write {}", file.display()))
+    }
+
     /// Has orca remove the worktree, its terminals with it.
     pub fn remove(&self) -> Result<()> {
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
@@ -152,8 +238,7 @@ impl Worktree {
 
     /// Writes the worker's instructions where its brief pointer says → the file.
     pub fn write_brief(&self, prompt: &str) -> Result<PathBuf> {
-        let git_dir = Repo { dir: self.path.clone() }.git(&["rev-parse", "--absolute-git-dir"])?;
-        let brief = Path::new(&git_dir).join(BRIEF_FILE);
+        let brief = self.note(BRIEF_FILE)?;
         std::fs::write(&brief, prompt)
             .with_context(|| format!("cannot write the worker's brief {}", brief.display()))?;
         Ok(brief)
