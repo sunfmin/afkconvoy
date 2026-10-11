@@ -3,26 +3,29 @@
 
 use std::time::UNIX_EPOCH;
 
+use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::stopped::{
     NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
-    stalled_reason,
+    stalled_reason, standing_verdict,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
 use afkconvoy_core::transition::{
     CloseStep, EscalateStep, Escalation, Released, escalation_begun, escalation_comment, relabelled,
 };
-use afkconvoy_core::verdict::latest_verdict;
+use afkconvoy_core::verdict::{Verdict, latest_verdict};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::claims::{Me, delete};
+use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
+use crate::park::{park_claim, standings};
 
 /// A worktree's git progress against the base branch's tip on the remote —
 /// never the local branch of that name, against which a worktree freshly cut
@@ -50,17 +53,20 @@ pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
 
 /// My claim on `issue`: `None` when the issue has none — already gone counts
 /// as released. Every transition that ends a claim refuses another's.
-fn mine(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Claim>> {
+pub(crate) fn mine(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Claim>> {
     Ok(releasable(fleet.scan.claim_of(issue), &me.instance)?.cloned())
 }
 
-fn nothing_held(issue: u64) -> Value {
+pub(crate) fn nothing_held(issue: u64) -> Value {
     json!({"issue": issue, "released": true, "detail": "no claim is held on it: nothing was done"})
 }
 
 /// The worktree of `issue` on this machine, and the proof that its branch
 /// holds no work when it does not.
-fn worktree_and_work(fleet: &Fleet, issue: u64) -> Result<(Option<Worktree>, Option<Workless>)> {
+pub(crate) fn worktree_and_work(
+    fleet: &Fleet,
+    issue: u64,
+) -> Result<(Option<Worktree>, Option<Workless>)> {
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
     let workless = match &worktree {
         Some(worktree) => Workless::of(&progress(worktree, &fleet.base_tip()?)?),
@@ -169,7 +175,9 @@ struct Stopped {
     claim: Claim,
     worktree: Worktree,
     progress: Progress,
-    /// The URL of the comment its latest verdict is in.
+    /// The verdict that stands for the worker here.
+    verdict: Option<Verdict>,
+    /// The URL of the comment that verdict is in.
     said: Option<String>,
     route: Route,
 }
@@ -189,9 +197,12 @@ fn stopped(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Stopped>> {
     let progress = progress(&worktree, &fleet.base_tip()?)?;
     let comments = fleet.gh.comments(issue)?;
     let verdict = latest_verdict(comments.iter().map(|c| c.body.as_str()));
+    let said =
+        verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
+    let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
+    let said = said.filter(|_| verdict.is_some());
     let route = route(state, &progress, verdict.as_ref(), worktree.nudged()?, fleet.now);
-    let said = verdict.and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
-    Ok(Some(Stopped { claim, worktree, progress, said, route }))
+    Ok(Some(Stopped { claim, worktree, progress, verdict, said, route }))
 }
 
 /// Types the nudge line at the worker in `worktree` and records it there.
@@ -242,13 +253,35 @@ pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     Ok(json!({"issue": issue, "action": "nudged", "terminal": terminal}))
 }
 
+/// Starts a worker again in `worktree`, under the brief already there: the
+/// blockers its `blocked` verdict named are all closed. `said` is that
+/// verdict's comment, recorded as answered so the new worker is not judged by
+/// it.
+fn start_again(worktree: &Worktree, agent: &Agent, said: Option<&str>) -> Result<()> {
+    let brief = worktree.brief()?;
+    if !brief.is_file() {
+        bail!("{} holds no brief to start a worker under", worktree.path.display());
+    }
+    let terminal = worktree.start(&agent.command)?;
+    worktree.await_ready(&terminal, agent.ready_timeout)?;
+    worktree.deliver(&terminal, &brief)?;
+    // Last: a start that failed is made again by the next tick.
+    if let Some(said) = said {
+        worktree.record_answered(said)?;
+    }
+    Ok(())
+}
+
 /// The tick's look at one PR-less claim of mine: a worker that stopped is
 /// routed (`stopped::route`) → `Done` when that ended the claim.
-pub fn judge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
-    let Some(Stopped { claim, worktree, progress, said, route }) = stopped(fleet, me, issue)?
+pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Outcome> {
+    let Some(Stopped { claim, worktree, progress, verdict, said, route }) =
+        stopped(fleet, me, issue)?
     else {
         return Ok(Outcome::Nothing);
     };
+    let workless = Workless::of(&progress);
+    let said = said.as_deref();
     let reason = match route {
         Route::Leave => return Ok(Outcome::Nothing),
         Route::Nudge(unnudged) => {
@@ -259,10 +292,25 @@ pub fn judge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
             close_claim(fleet, &claim, Some(&worktree), &workless)?;
             return Ok(Outcome::Done);
         }
-        Route::Escalate(why) => why.reason(said.as_deref().unwrap_or("(its comment)")),
+        Route::Blocked => {
+            let named = verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
+            match blocked_route(&standings(fleet, issue, &named)?) {
+                Blocked::Park(parkable) => {
+                    park_claim(fleet, &claim, &parkable, Some(&worktree), workless.as_ref())?;
+                    return Ok(Outcome::Done);
+                }
+                Blocked::Redispatch => {
+                    start_again(&worktree, agent, said)?;
+                    return Ok(Outcome::Continued);
+                }
+                Blocked::Escalate(reason) => {
+                    format!("{reason}: {}", said.unwrap_or("(its comment)"))
+                }
+            }
+        }
+        Route::Escalate(why) => why.reason(said.unwrap_or("(its comment)")),
         Route::Stalled(silent) => where_it_stopped(&worktree, &silent),
     };
-    let workless = Workless::of(&progress);
     escalate_claim(fleet, &claim, &reason, Some(&worktree), workless.as_ref())?;
     Ok(Outcome::Done)
 }

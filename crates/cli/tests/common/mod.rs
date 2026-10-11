@@ -227,6 +227,24 @@ impl World {
         serde_json::from_value(issue["labels"].clone()).unwrap()
     }
 
+    /// The issues GitHub records `number` as blocked by.
+    pub fn edges(&self, number: u64) -> Vec<u64> {
+        let edges = self.gh()["edges"][number.to_string()].clone();
+        if edges.is_null() { vec![] } else { serde_json::from_value(edges).unwrap() }
+    }
+
+    /// Closes an issue, for GitHub's `reason`.
+    pub fn close(&self, number: u64, reason: &str) {
+        self.with_gh(|gh| {
+            for issue in gh["issues"].as_array_mut().unwrap() {
+                if issue["number"] == number {
+                    issue["state"] = json!("closed");
+                    issue["state_reason"] = json!(reason);
+                }
+            }
+        });
+    }
+
     /// Whether an issue is `open` or `closed`.
     pub fn state(&self, number: u64) -> String {
         let gh = self.gh();

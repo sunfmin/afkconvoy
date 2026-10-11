@@ -128,6 +128,9 @@ pub enum Route {
     /// The issue needed no change: close it.
     Close(Workless),
     Escalate(Why),
+    /// It declared `blocked`: where the issues it named stand decides
+    /// (`blocked::blocked_route`).
+    Blocked,
     /// It stopped and declared nothing: tell it, once, to carry on.
     Nudge(Unnudged),
     /// It stayed silent past its nudge, or cannot be nudged here: escalate,
@@ -295,6 +298,21 @@ fn least(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
+/// The verdict that still stands: a `blocked` one the fleet answered — every
+/// blocker closed, a worker started on the issue again — is not the verdict of
+/// the worker now in the worktree. `said` is the comment the verdict is in,
+/// `answered` the one last answered here.
+pub fn standing_verdict(
+    verdict: Option<Verdict>,
+    said: Option<&str>,
+    answered: Option<&str>,
+) -> Option<Verdict> {
+    if said.is_some() && said == answered {
+        return None;
+    }
+    verdict
+}
+
 /// Routes one PR-less claim from its worker's state, its worktree's progress,
 /// the latest verdict on its issue and the nudge this host recorded. Nothing
 /// is retried: a failure escalates (docs/adr/0005).
@@ -329,7 +347,7 @@ pub fn route(
             None => Route::Escalate(Why::Refuted),
         },
         Some(Phase::NeedsHuman) => Route::Escalate(Why::NeedsHuman),
-        Some(Phase::Blocked) => Route::Leave,
+        Some(Phase::Blocked) => Route::Blocked,
         None => Route::Escalate(Why::UnknownPhase),
     }
 }
@@ -461,6 +479,23 @@ mod tests {
             Route::Escalate(Why::UnknownPhase)
         );
         assert!(Why::NeedsHuman.reason("https://x/1").contains("https://x/1"));
+    }
+
+    #[test]
+    fn a_blocked_verdict_is_routed_by_its_blockers_unless_already_answered() {
+        let blocked = said(Some(Phase::Blocked));
+        assert_eq!(
+            route(STOPPED, &progress(1, false), Some(&blocked), Nudged::Never, NOW),
+            Route::Blocked
+        );
+        let at = Some("https://x/1");
+        assert_eq!(standing_verdict(Some(blocked.clone()), at, None), Some(blocked.clone()));
+        assert_eq!(
+            standing_verdict(Some(blocked.clone()), at, Some("https://x/0")),
+            Some(blocked.clone())
+        );
+        assert_eq!(standing_verdict(Some(blocked), at, at), None);
+        assert_eq!(standing_verdict(None, None, None), None);
     }
 
     #[test]

@@ -51,7 +51,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
             Ok(Outcome::Done)
         }
         TickStep::TendTrain => tend_train(fleet, agent),
-        TickStep::Judge { issue } => judge(fleet, me, issue),
+        TickStep::Judge { issue } => judge(fleet, me, agent, issue),
         TickStep::Dispatch { issue } => {
             let started = dispatch(fleet, me, agent, issue)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
@@ -84,6 +84,7 @@ impl Ticked {
                 let outcome = match outcome {
                     Outcome::Done => "done",
                     Outcome::Nudged => "nudged",
+                    Outcome::Continued => "continued",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Failed => "failed",
@@ -121,15 +122,17 @@ impl Ticked {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
         }
-        let nudged: Vec<String> = self
-            .pass
-            .did
-            .iter()
-            .filter(|(_, outcome)| *outcome == Outcome::Nudged)
-            .filter_map(|(step, _)| words(*step).1.map(|issue| format!("#{issue}")))
-            .collect();
-        if !nudged.is_empty() {
-            parts.push(format!("nudged {}", nudged.join(", ")));
+        for (verb, kept) in [("nudged", Outcome::Nudged), ("continued", Outcome::Continued)] {
+            let issues: Vec<String> = self
+                .pass
+                .did
+                .iter()
+                .filter(|(_, outcome)| *outcome == kept)
+                .filter_map(|(step, _)| words(*step).1.map(|issue| format!("#{issue}")))
+                .collect();
+            if !issues.is_empty() {
+                parts.push(format!("{verb} {}", issues.join(", ")));
+            }
         }
         let tended = (TickStep::TendTrain, Outcome::Done);
         if self.pass.did.contains(&tended) {

@@ -16,6 +16,8 @@ pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].
     pull_request: (.pull_request != null)}";
 /// What is read of each comment on an issue or a PR.
 pub const COMMENTS_JQ: &str = ".[] | {id, body, url: .html_url}";
+/// What is read of each issue another is blocked by.
+pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
 pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences";
 
 pub struct GitHub {
@@ -32,6 +34,13 @@ pub struct IssueRead {
     pub state_reason: Option<String>,
     pub labels: Vec<String>,
     pub pull_request: bool,
+}
+
+/// One issue another is recorded as blocked by — a native dependency edge.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlockedBy {
+    pub number: u64,
+    pub state: String,
 }
 
 /// One comment on an issue or a pull request.
@@ -162,6 +171,32 @@ impl GitHub {
     /// Closes one PR without merging it, with a comment saying why.
     pub fn close_pr(&self, number: u64, comment: &str) -> Result<()> {
         self.gh(&["pr", "close", &number.to_string(), "--comment", comment])?;
+        Ok(())
+    }
+
+    /// The issues GitHub records `number` as blocked by, open or closed.
+    pub fn blocked_by(&self, number: u64) -> Result<Vec<BlockedBy>> {
+        let endpoint = format!(
+            "repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by?per_page=100"
+        );
+        let out = self.gh(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ])?;
+        out.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).context("gh api blocked_by: unexpected answer"))
+            .collect()
+    }
+
+    /// The open issues among those `number` is blocked by.
+    pub fn open_blockers(&self, number: u64) -> Result<Vec<u64>> {
+        let open = self.blocked_by(number)?.into_iter().filter(|edge| edge.state == "open");
+        Ok(open.map(|edge| edge.number).collect())
+    }
+
+    /// Records `number` as blocked by the issue whose database id is `blocker_id`.
+    pub fn add_blocker(&self, number: u64, blocker_id: u64) -> Result<()> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by");
+        let field = format!("issue_id={blocker_id}");
+        self.gh(&["api", "--method", "POST", &endpoint, "-F", &field, "--silent"])?;
         Ok(())
     }
 

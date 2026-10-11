@@ -8,6 +8,7 @@
 
 use flux_rs::attrs::*;
 
+use crate::blocked::Parkable;
 use crate::config::Config;
 use crate::record;
 use crate::stopped::Workless;
@@ -161,10 +162,82 @@ where
     Ok(released)
 }
 
+/// One step of parking a claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkStep {
+    /// Record the issue as blocked by `blocker` — a native dependency edge;
+    /// one already there is left as it is.
+    Edge {
+        blocker: u64,
+    },
+    Release,
+    RemoveWorktree,
+}
+
+/// A park under way: whether an edge holds the issue off the frontier yet.
+#[refined_by(edged: bool)]
+struct Parking {
+    #[field(bool[edged])]
+    edged: bool,
+}
+
+impl Parking {
+    #[spec(fn() -> Parking[false])]
+    fn begin() -> Parking {
+        Parking { edged: false }
+    }
+
+    #[spec(fn(self: &mut Self, blocker: u64) -> ParkStep ensures self: Self[true])]
+    fn edge(&mut self, blocker: u64) -> ParkStep {
+        self.edged = true;
+        ParkStep::Edge { blocker }
+    }
+
+    /// The claim goes only once an edge is written: released first, the issue
+    /// is on the frontier — ready, unclaimed, unblocked — for whoever plans next.
+    #[spec(fn(&Self[true], issue: u64) -> Released)]
+    fn release(&self, issue: u64) -> Released {
+        Released { issue }
+    }
+}
+
+/// Parks the claim on `issue`: an edge to every open blocker its worker named
+/// → release the claim → remove the worktree, when its branch holds no work.
+/// `ready_label` is not touched: the edges hold the issue back, and it returns
+/// to the frontier by itself once the last blocker closes.
+pub fn park<E, F>(
+    issue: u64,
+    parkable: &Parkable,
+    workless: Option<&Workless>,
+    mut carry_out: F,
+) -> Result<Released, E>
+where
+    F: FnMut(ParkStep) -> Result<(), E>,
+{
+    let mut parking = Parking::begin();
+    carry_out(parking.edge(parkable.first()))?;
+    for blocker in parkable.rest() {
+        carry_out(parking.edge(*blocker))?;
+    }
+    carry_out(ParkStep::Release)?;
+    let released = parking.release(issue);
+    // A worktree with work in it is what a later continuation starts from.
+    if workless.is_some() {
+        carry_out(ParkStep::RemoveWorktree)?;
+    }
+    Ok(released)
+}
+
 #[cfg(flux)]
 #[allow(dead_code)]
 mod rejected {
     use super::*;
+
+    /// A parked claim released before any edge holds its issue back.
+    #[should_fail]
+    fn parked_with_no_edge(issue: u64) -> Released {
+        Parking::begin().release(issue)
+    }
 
     /// A claim released with nothing said on the issue.
     #[should_fail]
@@ -197,6 +270,7 @@ mod rejected {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocked::{Blocked, Standing, blocked_route};
     use crate::config::Settings;
     use crate::stopped::Progress;
 
@@ -293,5 +367,32 @@ mod tests {
         let cut =
             close(7, &proof, |step| if step == CloseStep::Release { Err("no") } else { Ok(()) });
         assert_eq!(cut, Err("no"));
+    }
+
+    #[test]
+    fn park_writes_every_edge_before_it_releases() {
+        let waiting = [(41, Standing::Waiting), (42, Standing::Closed), (43, Standing::Waiting)];
+        let Blocked::Park(parkable) = blocked_route(&waiting) else { panic!() };
+        let run = |workless: Option<&Workless>, fail_at: Option<ParkStep>| {
+            let mut steps = vec![];
+            let done = park(7, &parkable, workless, |step| {
+                steps.push(step);
+                if Some(step) == fail_at { Err("cut") } else { Ok(()) }
+            });
+            (done.map(|released| released.issue), steps)
+        };
+        let edges = [ParkStep::Edge { blocker: 41 }, ParkStep::Edge { blocker: 43 }];
+        // a branch with work on it keeps its worktree
+        let (done, steps) = run(None, None);
+        assert_eq!(done, Ok(7));
+        assert_eq!(steps, [edges[0], edges[1], ParkStep::Release]);
+        let empty =
+            Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
+        let workless = Workless::of(&empty).unwrap();
+        let (_, steps) = run(Some(&workless), None);
+        assert_eq!(steps, [edges[0], edges[1], ParkStep::Release, ParkStep::RemoveWorktree]);
+        // an edge that failed: the claim is still held
+        let (done, steps) = run(None, Some(edges[1]));
+        assert_eq!((done, steps), (Err("cut"), edges.to_vec()));
     }
 }

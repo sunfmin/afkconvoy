@@ -55,15 +55,35 @@ pub fn closing_pr(prs: &[PullRequest], number: u64) -> Option<&PullRequest> {
     latest
 }
 
-/// Why an issue's labels keep a fleet from dispatching it; `None` when they
-/// allow it. The one home of the label rules: the frontier reads it, and so
-/// does the standing of a blocker, so the two cannot disagree.
-pub fn label_bar(labels: &[String], config: &Config) -> Option<String> {
-    if !labels.contains(&config.ready_label) {
-        return Some(format!("no {} label", config.ready_label));
+/// Why an issue's labels keep a fleet from dispatching it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelBar {
+    /// It carries this epic label: it is never dispatched, whoever claims it.
+    Epic(String),
+    /// It lacks this, the ready label.
+    NotReady(String),
+}
+
+impl LabelBar {
+    pub fn reason(&self) -> String {
+        match self {
+            LabelBar::Epic(label) => format!("epic label ({label})"),
+            LabelBar::NotReady(ready) => format!("no {ready} label"),
+        }
     }
-    let epic = labels.iter().find(|label| config.epic_labels.contains(label))?;
-    Some(format!("epic label ({epic})"))
+}
+
+/// What in an issue's labels keeps a fleet from dispatching it; `None` when
+/// they allow it. The one home of the label rules: the frontier reads it, and
+/// so does the standing of a blocker, so the two cannot disagree.
+pub fn label_bar(labels: &[String], config: &Config) -> Option<LabelBar> {
+    if let Some(epic) = labels.iter().find(|label| config.epic_labels.contains(label)) {
+        return Some(LabelBar::Epic(epic.clone()));
+    }
+    if !labels.contains(&config.ready_label) {
+        return Some(LabelBar::NotReady(config.ready_label.clone()));
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -177,7 +197,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     for issue in &issues {
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
         let reason = if let Some(bar) = label_bar(&issue.labels, config) {
-            bar
+            bar.reason()
         } else if claimed {
             "already claimed".to_string()
         } else if closing_pr(seen.prs, issue.number).is_some() {
