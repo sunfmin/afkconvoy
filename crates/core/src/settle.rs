@@ -18,52 +18,64 @@ pub enum SettleStep {
     RemoveWorktree,
     /// Fast-forward the fleet's own checkout to what landed.
     FollowBase,
+    /// Write the status board: merged, or closed with nothing landed.
+    Board,
     /// Delete the claim.
     Release,
 }
 
 /// The steps of one settling as they are decided.
-#[refined_by(closed: bool, removed: bool)]
+#[refined_by(closed: bool, removed: bool, boarded: bool)]
 struct SettleOrder {
     #[field(bool[closed])]
     closed: bool,
     #[field(bool[removed])]
     removed: bool,
+    #[field(bool[boarded])]
+    boarded: bool,
     steps: Vec<SettleStep>,
 }
 
 impl SettleOrder {
-    #[spec(fn(closed: bool) -> SettleOrder[closed, false])]
+    #[spec(fn(closed: bool) -> SettleOrder[closed, false, false])]
     fn new(closed: bool) -> SettleOrder {
-        SettleOrder { closed, removed: false, steps: Vec::new() }
+        SettleOrder { closed, removed: false, boarded: false, steps: Vec::new() }
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.removed])]
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.removed, o.boarded])]
     fn close_issue(&mut self) {
         self.steps.push(SettleStep::CloseIssue);
         self.closed = true;
     }
 
-    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.removed])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.removed, o.boarded])]
     fn close_pr(&mut self) {
         self.steps.push(SettleStep::ClosePr);
     }
 
     /// An open issue's worktree is never touched: it may hold work.
-    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, true])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, true, o.boarded])]
     fn remove_worktree(&mut self) {
         self.steps.push(SettleStep::RemoveWorktree);
         self.removed = true;
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[o.closed, o.removed])]
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[o.closed, o.removed, o.boarded])]
     fn follow_base(&mut self) {
         self.steps.push(SettleStep::FollowBase);
     }
 
+    /// The board's last word, once the issue is closed: it never says merged
+    /// over an issue still open.
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.removed, true])]
+    fn board(&mut self) {
+        self.steps.push(SettleStep::Board);
+        self.boarded = true;
+    }
+
     /// The claim goes last: a settling that failed on the way still holds it,
     /// and the next tick settles it again.
-    #[spec(fn(self: &mut Self[@o]) requires o.closed && o.removed)]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed && o.removed && o.boarded)]
     fn release(&mut self) {
         self.steps.push(SettleStep::Release);
     }
@@ -80,6 +92,7 @@ pub fn settle_steps(closed: bool) -> Vec<SettleStep> {
     order.close_pr();
     order.remove_worktree();
     order.follow_base();
+    order.board();
     order.release();
     order.steps
 }
@@ -155,6 +168,21 @@ mod rejected {
         order.release();
     }
 
+    /// A claim deleted while its status board still says it is on the train.
+    #[should_fail]
+    fn a_claim_released_before_the_board_says_merged() {
+        let mut order = SettleOrder::new(true);
+        order.remove_worktree();
+        order.release();
+    }
+
+    /// The board saying merged over an issue still open.
+    #[should_fail]
+    fn a_board_that_says_merged_over_an_open_issue() {
+        let mut order = SettleOrder::new(false);
+        order.board();
+    }
+
     /// The worktree of an open issue removed: it may hold work.
     #[should_fail]
     fn an_open_issues_worktree_removed() {
@@ -177,8 +205,11 @@ mod tests {
     #[test]
     fn the_claim_is_deleted_last() {
         use SettleStep::*;
-        assert_eq!(settle_steps(true), [ClosePr, RemoveWorktree, FollowBase, Release]);
-        assert_eq!(settle_steps(false), [CloseIssue, ClosePr, RemoveWorktree, FollowBase, Release]);
+        assert_eq!(settle_steps(true), [ClosePr, RemoveWorktree, FollowBase, Board, Release]);
+        assert_eq!(
+            settle_steps(false),
+            [CloseIssue, ClosePr, RemoveWorktree, FollowBase, Board, Release]
+        );
     }
 
     #[test]

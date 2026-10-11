@@ -1,7 +1,8 @@
-//! The transitions that end a claim other than a landing: `escalate` and
-//! `close`. Each runs in one order, releases the claim as its last write to
-//! the remote, and hands back a `Released` only that release produces — so
-//! one cannot end half way and be taken for done.
+//! The transitions that end a claim other than a landing: `escalate`, `close`
+//! and `park`. Each runs in one order, writes the status board's last word,
+//! releases the claim as its last write to the remote, and hands back a
+//! `Released` only that release produces — so one cannot end half way and be
+//! taken for done.
 //!
 //! The order is decided here; the effect layer hands in the one function that
 //! carries a step out.
@@ -22,6 +23,32 @@ pub struct Released {
 impl Released {
     pub fn issue(&self) -> u64 {
         self.issue
+    }
+}
+
+/// A claim's status board as its claim ends: whether it says how.
+#[refined_by(written: bool)]
+struct LastWord {
+    #[field(bool[written])]
+    written: bool,
+}
+
+impl LastWord {
+    #[spec(fn() -> LastWord[false])]
+    fn unwritten() -> LastWord {
+        LastWord { written: false }
+    }
+
+    #[spec(fn(self: &mut Self[false]) ensures self: Self[true])]
+    fn write(&mut self) {
+        self.written = true;
+    }
+
+    /// The one way to a `Released`: released sooner, the claim is nobody's,
+    /// and the board keeps saying the issue is being worked.
+    #[spec(fn(&Self[true], issue: u64) -> Released)]
+    fn release(&self, issue: u64) -> Released {
+        Released { issue }
     }
 }
 
@@ -68,9 +95,9 @@ impl Escalation {
     }
 
     /// The claim last: until it goes, the escalation is this fleet's to finish.
-    #[spec(fn(Self{e: e.commented && e.relabelled}, issue: u64) -> Released)]
-    fn release(self, issue: u64) -> Released {
-        Released { issue }
+    #[spec(fn(Self{e: e.commented && e.relabelled}, word: &LastWord[true], issue: u64) -> Released)]
+    fn release(self, word: &LastWord, issue: u64) -> Released {
+        word.release(issue)
     }
 }
 
@@ -81,6 +108,8 @@ pub enum EscalateStep {
     Comment,
     /// Swap `ready_label` for `escalate_label`.
     Relabel,
+    /// Write the status board: escalated.
+    Board,
     /// Delete the claim.
     Release,
     /// Remove the worktree: only one whose branch holds no work.
@@ -109,8 +138,11 @@ where
         carry_out(EscalateStep::Relabel)?;
         begun.relabel();
     }
+    let mut word = LastWord::unwritten();
+    carry_out(EscalateStep::Board)?;
+    word.write();
     carry_out(EscalateStep::Release)?;
-    let released = begun.release(issue);
+    let released = begun.release(&word, issue);
     if workless.is_some() {
         carry_out(EscalateStep::RemoveWorktree)?;
     }
@@ -144,6 +176,8 @@ pub fn relabelled(labels: &[String], config: &Config) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseStep {
     CloseIssue,
+    /// Write the status board: closed with nothing landed.
+    Board,
     Release,
     RemoveWorktree,
 }
@@ -156,8 +190,11 @@ where
 {
     // Closed first: a claim released on an open issue puts it back on the frontier.
     carry_out(CloseStep::CloseIssue)?;
+    let mut word = LastWord::unwritten();
+    carry_out(CloseStep::Board)?;
+    word.write();
     carry_out(CloseStep::Release)?;
-    let released = Released { issue };
+    let released = word.release(issue);
     carry_out(CloseStep::RemoveWorktree)?;
     Ok(released)
 }
@@ -170,6 +207,8 @@ pub enum ParkStep {
     Edge {
         blocker: u64,
     },
+    /// Write the status board: parked.
+    Board,
     Release,
     RemoveWorktree,
 }
@@ -195,9 +234,9 @@ impl Parking {
 
     /// The claim goes only once an edge is written: released first, the issue
     /// is on the frontier — ready, unclaimed, unblocked — for whoever plans next.
-    #[spec(fn(&Self[true], issue: u64) -> Released)]
-    fn release(&self, issue: u64) -> Released {
-        Released { issue }
+    #[spec(fn(&Self[true], word: &LastWord[true], issue: u64) -> Released)]
+    fn release(&self, word: &LastWord, issue: u64) -> Released {
+        word.release(issue)
     }
 }
 
@@ -219,8 +258,11 @@ where
     for blocker in parkable.rest() {
         carry_out(parking.edge(*blocker))?;
     }
+    let mut word = LastWord::unwritten();
+    carry_out(ParkStep::Board)?;
+    word.write();
     carry_out(ParkStep::Release)?;
-    let released = parking.release(issue);
+    let released = parking.release(&word, issue);
     // A worktree with work in it is what a later continuation starts from.
     if workless.is_some() {
         carry_out(ParkStep::RemoveWorktree)?;
@@ -233,16 +275,28 @@ where
 mod rejected {
     use super::*;
 
+    fn said() -> LastWord {
+        let mut word = LastWord::unwritten();
+        word.write();
+        word
+    }
+
+    /// A claim released while its status board still says it is being worked.
+    #[should_fail]
+    fn released_before_the_board_says_how_it_ended(issue: u64) -> Released {
+        LastWord::unwritten().release(issue)
+    }
+
     /// A parked claim released before any edge holds its issue back.
     #[should_fail]
     fn parked_with_no_edge(issue: u64) -> Released {
-        Parking::begin().release(issue)
+        Parking::begin().release(&said(), issue)
     }
 
     /// A claim released with nothing said on the issue.
     #[should_fail]
     fn released_before_the_reason_is_commented(issue: u64) -> Released {
-        Escalation::read(false, true).release(issue)
+        Escalation::read(false, true).release(&said(), issue)
     }
 
     /// A claim released with the issue still labelled ready: back on the frontier.
@@ -250,13 +304,13 @@ mod rejected {
     fn released_before_the_relabel(issue: u64) -> Released {
         let mut begun = Escalation::read(false, false);
         begun.comment();
-        begun.release(issue)
+        begun.release(&said(), issue)
     }
 
     /// Whatever GitHub showed, taken for an escalation that is complete.
     #[should_fail]
     fn released_on_whatever_was_read(issue: u64, commented: bool, relabelled: bool) -> Released {
-        Escalation::read(commented, relabelled).release(issue)
+        Escalation::read(commented, relabelled).release(&said(), issue)
     }
 
     /// An issue relabelled with no reason on it.
@@ -298,20 +352,20 @@ mod tests {
         use EscalateStep::*;
         assert_eq!(
             steps(Escalation::read(false, false), false, None),
-            (vec![Comment, Relabel, Release], true)
+            (vec![Comment, Relabel, Board, Release], true)
         );
         assert_eq!(
             steps(Escalation::read(true, false), false, None),
-            (vec![Relabel, Release], true)
+            (vec![Relabel, Board, Release], true)
         );
         assert_eq!(
             steps(Escalation::read(true, true), true, None),
-            (vec![Release, RemoveWorktree], true)
+            (vec![Board, Release, RemoveWorktree], true)
         );
         // a relabel seen with no comment of this claim's: the reason is still owed
         assert_eq!(
             steps(Escalation::read(false, true), false, None),
-            (vec![Comment, Release], true)
+            (vec![Comment, Board, Release], true)
         );
     }
 
@@ -324,7 +378,7 @@ mod tests {
         );
         assert_eq!(
             steps(Escalation::read(false, false), true, Some(Release)),
-            (vec![Comment, Relabel], false)
+            (vec![Comment, Relabel, Board], false)
         );
     }
 
@@ -363,7 +417,16 @@ mod tests {
             Ok(())
         });
         assert_eq!(released.unwrap().issue(), 7);
-        assert_eq!(did, [CloseStep::CloseIssue, CloseStep::Release, CloseStep::RemoveWorktree]);
+        assert_eq!(
+            did,
+            [
+                CloseStep::CloseIssue,
+                CloseStep::Board,
+                CloseStep::Release,
+                CloseStep::RemoveWorktree
+            ],
+            "the board's last word, then the claim"
+        );
         let cut =
             close(7, &proof, |step| if step == CloseStep::Release { Err("no") } else { Ok(()) });
         assert_eq!(cut, Err("no"));
@@ -385,12 +448,15 @@ mod tests {
         // a branch with work on it keeps its worktree
         let (done, steps) = run(None, None);
         assert_eq!(done, Ok(7));
-        assert_eq!(steps, [edges[0], edges[1], ParkStep::Release]);
+        assert_eq!(steps, [edges[0], edges[1], ParkStep::Board, ParkStep::Release]);
         let empty =
             Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
         let workless = Workless::of(&empty).unwrap();
         let (_, steps) = run(Some(&workless), None);
-        assert_eq!(steps, [edges[0], edges[1], ParkStep::Release, ParkStep::RemoveWorktree]);
+        assert_eq!(
+            steps,
+            [edges[0], edges[1], ParkStep::Board, ParkStep::Release, ParkStep::RemoveWorktree]
+        );
         // an edge that failed: the claim is still held
         let (done, steps) = run(None, Some(edges[1]));
         assert_eq!((done, steps), (Err("cut"), edges.to_vec()));

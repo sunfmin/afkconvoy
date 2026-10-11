@@ -1,6 +1,7 @@
 //! Settling a claim whose work has landed, and finding the landings that were
 //! cut short of closing their issue.
 
+use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
@@ -9,6 +10,7 @@ use afkconvoy_core::settle::{
 use afkconvoy_core::train::Joined;
 use anyhow::{Result, bail};
 
+use crate::board::last_word;
 use crate::claims::{Me, release};
 use crate::fleet::Fleet;
 use crate::git::{REMOTE, Repo};
@@ -113,6 +115,17 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
             // Soft: a checkout that cannot follow never fails the release it rides on.
             SettleStep::FollowBase => {
                 let _ = follow_base(fleet);
+            }
+            SettleStep::Board => {
+                // The base branch itself says whether the work landed.
+                let landed = landing_of(&fleet.repo, &base_tip, issue)?;
+                let (stage, pr) = match landed {
+                    Some((join, _)) => (Stage::Merged, Some(join.pr)),
+                    None => (Stage::Closed, None),
+                };
+                if let Some(claim) = fleet.scan.claim_of(issue) {
+                    last_word(fleet, claim, stage, pr, &[])?;
+                }
             }
             SettleStep::Release => {
                 release(&fleet.repo, &mut fleet.scan, &me.instance, issue)?;

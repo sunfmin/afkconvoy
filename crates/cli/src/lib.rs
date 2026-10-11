@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 pub mod abandon;
+pub mod board;
 pub mod claims;
 pub mod config;
 pub mod dispatch;

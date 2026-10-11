@@ -19,6 +19,7 @@ fn did(ticked: &Value) -> Vec<String> {
     let steps = ticked["did"].as_array().unwrap();
     steps
         .iter()
+        .filter(|step| step["do"] != "board")
         .filter(|step| {
             !((step["do"] == "judge" || step["do"] == "watch") && step["outcome"] != "done")
         })

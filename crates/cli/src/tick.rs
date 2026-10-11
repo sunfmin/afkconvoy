@@ -7,6 +7,7 @@ use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass
 use anyhow::Result;
 use serde_json::{Value, json};
 
+use crate::board::show;
 use crate::claims::{Me, beat};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
@@ -61,6 +62,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
             let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
+        TickStep::Board { issue, stage, pr } => show(fleet, me, issue, stage, pr),
         TickStep::Heartbeat => {
             beat(&fleet.repo, &mut fleet.scan, me)?;
             Ok(Outcome::Done)
@@ -77,6 +79,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
+        TickStep::Board { issue, .. } => ("board", Some(issue)),
         TickStep::Heartbeat => ("heartbeat", None),
     }
 }

@@ -3,6 +3,7 @@
 
 pub mod abandon;
 pub mod blocked;
+pub mod board;
 pub mod claims;
 pub mod closing;
 pub mod config;

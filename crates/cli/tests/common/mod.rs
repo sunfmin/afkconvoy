@@ -286,8 +286,18 @@ impl World {
         calls
     }
 
-    /// The bodies of the comments on an issue or a PR, oldest first.
+    /// The bodies of the comments on an issue or a PR, oldest first — all but
+    /// its status board, which is `board`'s.
     pub fn comments(&self, number: u64) -> Vec<String> {
+        self.every_comment(number).into_iter().filter(|body| !is_board(body)).collect()
+    }
+
+    /// The status boards an issue carries: one, once it was ever claimed.
+    pub fn boards(&self, number: u64) -> Vec<String> {
+        self.every_comment(number).into_iter().filter(|body| is_board(body)).collect()
+    }
+
+    fn every_comment(&self, number: u64) -> Vec<String> {
         let rows =
             self.gh()["comments"][number.to_string()].as_array().cloned().unwrap_or_default();
         rows.iter().map(|c| c["body"].as_str().unwrap().to_string()).collect()
@@ -335,6 +345,10 @@ impl World {
     pub fn remote(&self, args: &[&str]) -> String {
         git(&self.bare, args)
     }
+}
+
+fn is_board(body: &str) -> bool {
+    body.starts_with("<!--convoy:status-->")
 }
 
 /// An identity for the commits a test makes, and no config of the machine's.
