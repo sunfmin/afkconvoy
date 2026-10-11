@@ -117,6 +117,35 @@ impl Worktree {
         Ok(Worktree { path, branch })
     }
 
+    /// The worktree orca links to issue `number` on this machine: the most
+    /// recently active, when a stale leftover sits beside a live one.
+    pub fn of_issue(source: &Source, number: u64) -> Result<Option<Worktree>> {
+        let listed = orca(&["worktree", "list"])?;
+        let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+        let mut hits: Vec<&Value> = rows
+            .iter()
+            .filter(|row| {
+                row["linkedIssue"].as_u64() == Some(number)
+                    && row["repoId"].as_str() == Some(source.id.as_str())
+                    && row["isMainWorktree"] != true
+                    && row["isArchived"] != true
+            })
+            .collect();
+        hits.sort_by_key(|row| row["lastActivityAt"].as_u64().unwrap_or(0));
+        Ok(hits.last().and_then(|row| {
+            Some(Worktree {
+                path: PathBuf::from(row["path"].as_str()?),
+                branch: short_branch(row["branch"].as_str().unwrap_or("")).to_string(),
+            })
+        }))
+    }
+
+    /// Has orca remove the worktree, its terminals with it.
+    pub fn remove(&self) -> Result<()> {
+        orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
+        Ok(())
+    }
+
     fn selector(&self) -> String {
         format!("path:{}", self.path.display())
     }

@@ -10,5 +10,6 @@ pub mod prompt;
 pub mod record;
 #[cfg(flux)]
 mod rejected;
+pub mod tick;
 pub mod verdict;
 pub mod worker;

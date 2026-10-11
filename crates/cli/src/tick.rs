@@ -1,0 +1,166 @@
+//! The tick's effect half: carries out the steps the core's pass hands it, and
+//! the loop that runs one tick after another.
+
+use std::time::Duration;
+
+use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass};
+use anyhow::Result;
+use serde_json::{Value, json};
+
+use crate::claims::{Me, beat, release};
+use crate::dispatch::{Agent, dispatch};
+use crate::fleet::Fleet;
+use crate::orca::{Source, Worktree};
+
+/// One step that failed, and why.
+struct Failure {
+    step: TickStep,
+    error: String,
+}
+
+/// What one tick came to.
+pub struct Ticked {
+    pub pass: Pass,
+    failures: Vec<Failure>,
+    concurrency: usize,
+}
+
+/// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
+/// for the workers it started, and leaves nothing on this host a later tick
+/// needs: the next one rebuilds from GitHub and the remote.
+pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
+    let set = fleet.rebuild(Some(&me.instance))?;
+    let concurrency = fleet.config.concurrency();
+    let mut failures = vec![];
+    let pass = run_pass(&set, concurrency, set.mine.len(), |step| {
+        // Whatever a step raised, the rest of the tick is still owed.
+        carry_out(fleet, me, agent, step).unwrap_or_else(|error| {
+            failures.push(Failure { step, error: format!("{error:#}") });
+            Outcome::Failed
+        })
+    });
+    Ok(Ticked { pass, failures, concurrency })
+}
+
+fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Result<Outcome> {
+    match step {
+        TickStep::Settle { issue } => {
+            // The worktree first: a settling that failed leaves the claim held.
+            if let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? {
+                worktree.remove()?;
+            }
+            release(&fleet.repo, &mut fleet.scan, &me.instance, issue)?;
+            Ok(Outcome::Done)
+        }
+        TickStep::Dispatch { issue } => {
+            let started = dispatch(fleet, me, agent, issue)?;
+            Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
+        }
+        TickStep::Heartbeat => {
+            beat(&fleet.repo, &mut fleet.scan, me)?;
+            Ok(Outcome::Done)
+        }
+    }
+}
+
+fn words(step: TickStep) -> (&'static str, Option<u64>) {
+    match step {
+        TickStep::Settle { issue } => ("settle", Some(issue)),
+        TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
+        TickStep::Heartbeat => ("heartbeat", None),
+    }
+}
+
+impl Ticked {
+    pub fn json(&self) -> Value {
+        let did: Vec<Value> = self
+            .pass
+            .did
+            .iter()
+            .map(|(step, outcome)| {
+                let (word, issue) = words(*step);
+                let outcome = match outcome {
+                    Outcome::Done => "done",
+                    Outcome::Lost => "lost",
+                    Outcome::Failed => "failed",
+                };
+                json!({"do": word, "issue": issue, "outcome": outcome})
+            })
+            .collect();
+        let errors: Vec<Value> = self
+            .failures
+            .iter()
+            .map(|failure| {
+                let (word, issue) = words(failure.step);
+                json!({"do": word, "issue": issue, "error": failure.error})
+            })
+            .collect();
+        json!({"did": did, "errors": errors, "held": self.pass.held,
+            "frontier_remaining": self.pass.frontier_remaining})
+    }
+
+    /// One line for whoever watches the loop: what the tick did, and where the
+    /// fleet stands.
+    pub fn line(&self) -> String {
+        let mut parts: Vec<String> = vec![];
+        for (verb, wanted) in [("settled", "settle"), ("dispatched", "dispatch")] {
+            let issues: Vec<String> = self
+                .pass
+                .did
+                .iter()
+                .filter(|(step, outcome)| words(*step).0 == wanted && *outcome == Outcome::Done)
+                .filter_map(|(step, _)| words(*step).1.map(|issue| format!("#{issue}")))
+                .collect();
+            if !issues.is_empty() {
+                parts.push(format!("{verb} {}", issues.join(", ")));
+            }
+        }
+        if parts.is_empty() {
+            parts.push("nothing to do".to_string());
+        }
+        parts.push(format!("holding {}/{}", self.pass.held, self.concurrency));
+        parts.push(format!("frontier {}", self.pass.frontier_remaining));
+        for failure in &self.failures {
+            let (word, issue) = words(failure.step);
+            let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
+            parts.push(format!("FAILED {word}{issue}: {}", failure.error));
+        }
+        parts.join(" · ")
+    }
+}
+
+/// How `run` paces itself; the knobs exist for the tests.
+pub struct Pacing {
+    /// Stop after this many ticks [default: never].
+    pub ticks: Option<u64>,
+    /// How long one second of sleep really takes.
+    pub second: Duration,
+}
+
+/// `afkconvoy run`: tick after tick, sleeping in between. Stopping it is just
+/// exiting: no claim is released on the way out, and the next start on this
+/// host takes them back (docs/adr/0003).
+pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64) -> Result<Value> {
+    let mut streak = 0;
+    let mut count = 0;
+    loop {
+        count += 1;
+        me.now = clock();
+        // A tick that could not even rebuild is a line, not the end of the loop.
+        let (line, sleep) = match Fleet::open(me.now)
+            .and_then(|mut fleet| tick(&mut fleet, me, agent))
+        {
+            Ok(ticked) => {
+                let pass = &ticked.pass;
+                streak = empty_streak(streak, pass.did_work(), pass.held, pass.frontier_remaining);
+                (ticked.line(), pace(pass.did_work(), pass.held, streak))
+            }
+            Err(error) => (format!("FAILED: {error:#}"), pace(true, 0, 0)),
+        };
+        println!("tick {count}: {line} · next in {sleep}s");
+        if pacing.ticks.is_some_and(|ticks| count >= ticks) {
+            return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
+        }
+        std::thread::sleep(pacing.second * sleep as u32);
+    }
+}

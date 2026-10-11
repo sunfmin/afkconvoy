@@ -113,6 +113,40 @@ impl World {
         Answer { json, code: out.status.code().unwrap() }
     }
 
+    /// Runs a command that prints lines before its answer → (the lines, the answer).
+    pub fn afk_lines(&self, args: &[&str]) -> (Vec<String>, Value) {
+        let out =
+            self.command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone).args(args).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut lines: Vec<String> = stdout.lines().map(str::to_string).collect();
+        let last = lines.pop().unwrap_or_default();
+        let answer = serde_json::from_str(&last).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+        assert!(out.status.success(), "{stdout}");
+        (lines, answer)
+    }
+
+    /// Marks an issue closed on the stand-in GitHub.
+    pub fn close_issue(&self, number: u64) {
+        self.with_gh(|gh| {
+            for issue in gh["issues"].as_array_mut().unwrap() {
+                if issue["number"] == number {
+                    issue["state"] = json!("closed");
+                }
+            }
+        });
+    }
+
+    /// The issues claimed on the remote, with the instance holding each.
+    pub fn claims(&self) -> Vec<(u64, String)> {
+        let scan = self.afk(&["scan"]).ok();
+        let rows = scan["claims"].as_array().unwrap();
+        rows.iter()
+            .map(|c| {
+                (c["number"].as_u64().unwrap(), c["instance"].as_str().unwrap_or("").to_string())
+            })
+            .collect()
+    }
+
     pub fn gh(&self) -> Value {
         read(&self.gh_file)
     }
