@@ -8,6 +8,7 @@ use flux_rs::attrs::*;
 use crate::claims::NAMESPACE;
 use crate::plan::PullRequest;
 use crate::record::fleet_number;
+use crate::worker::WorkerState;
 
 /// The train's two refs on the remote, for the base branch it lands on.
 pub struct TrainRefs {
@@ -253,6 +254,55 @@ pub fn finished<'a>(joins: &'a [Joined], open: &[PullRequest]) -> Vec<&'a Joined
     done
 }
 
+/// The name the train's worktree is created under — one per repo on a
+/// machine, kept across runs with what its gate runs built — and so, with a
+/// `-<k>` when the name was taken, the name of its directory.
+pub const TRAIN_WORKTREE: &str = "convoy-train";
+
+/// Is a worktree directory of this name the train's? The train's worktree is
+/// linked to no issue, so it is known by the name it was created under.
+pub fn is_train_worktree(directory: &str) -> bool {
+    match directory.strip_prefix(TRAIN_WORKTREE) {
+        Some("") => true,
+        Some(rest) => match rest.strip_prefix('-') {
+            Some(k) => !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()),
+            None => false,
+        },
+        None => false,
+    }
+}
+
+/// What the tick does about the train worker while a PR of its fleet is on
+/// the train.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tend {
+    /// The worker is at work — or it stopped on the very tip it was last told
+    /// about: its silence is not this decision's.
+    Leave,
+    /// No worker is there: start one in the train's worktree.
+    Start,
+    /// The worker stopped, and the train holds something it was not told
+    /// about: tell it.
+    Tell,
+}
+
+/// `told`: the train's tip the worker in the worktree was last told about;
+/// `None` when nobody was told anything there — whatever terminal is in it is
+/// no train worker.
+pub fn tend(worker: WorkerState, told: Option<&str>, tip: &str) -> Tend {
+    match (worker, told) {
+        (WorkerState::Busy, _) => Tend::Leave,
+        (WorkerState::Gone, _) | (_, None) => Tend::Start,
+        (WorkerState::Idle { .. }, Some(told)) => {
+            if told == tip {
+                Tend::Leave
+            } else {
+                Tend::Tell
+            }
+        }
+    }
+}
+
 /// How often a join is made again on a train that moved under it before the
 /// command gives up and is run again.
 pub const PUSH_TRIES: u32 = 8;
@@ -387,6 +437,26 @@ mod tests {
         assert!(!keeps_its_commits(true, false, true));
         assert!(!keeps_its_commits(true, true, false));
         assert_eq!(TrainOutcome::TargetMoved.word(), "target_moved");
+    }
+
+    #[test]
+    fn the_train_worker_is_started_told_or_left() {
+        let idle = WorkerState::Idle { quiet: Some(9) };
+        assert_eq!(tend(WorkerState::Gone, Some("t1"), "t1"), Tend::Start);
+        assert_eq!(tend(idle, None, "t1"), Tend::Start, "a bare shell is no train worker");
+        assert_eq!(tend(WorkerState::Busy, Some("t0"), "t1"), Tend::Leave);
+        assert_eq!(tend(idle, Some("t0"), "t1"), Tend::Tell);
+        assert_eq!(tend(idle, Some("t1"), "t1"), Tend::Leave);
+    }
+
+    #[test]
+    fn the_trains_worktree_is_known_by_its_name() {
+        for name in ["convoy-train", "convoy-train-2", "convoy-train-13"] {
+            assert!(is_train_worktree(name), "{name}");
+        }
+        for name in ["convoy-trainer", "convoy-train-", "convoy-train-x", "issue-7-convoy-train"] {
+            assert!(!is_train_worktree(name), "{name}");
+        }
     }
 
     #[test]

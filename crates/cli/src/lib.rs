@@ -20,6 +20,8 @@ pub mod gh;
 pub mod git;
 pub mod landing;
 pub mod orca;
+pub mod settle;
+pub mod tend;
 pub mod tick;
 pub mod train;
 

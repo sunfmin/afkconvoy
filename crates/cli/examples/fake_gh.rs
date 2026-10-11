@@ -26,6 +26,10 @@ fn main() {
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     match argv.as_slice() {
         ["pr", "list", ..] => pr_list(&mut st),
+        ["pr", "close", number, ..] => {
+            let number = number.to_string();
+            pr_close(&mut st, &number)
+        }
         ["api", ..] => api(&mut st),
         _ => unsupported(&st),
     }
@@ -84,6 +88,26 @@ fn pr_list(st: &mut State) -> ! {
         })
         .collect();
     st.finish(&Value::from(rows).to_string(), 0, "")
+}
+
+fn pr_close(st: &mut State, number: &str) -> ! {
+    let comment = st.opt("--comment").map(str::to_string);
+    let wanted: u64 = number.parse().unwrap();
+    let rows = st.doc["prs"].as_array_mut().unwrap();
+    let Some(pr) = rows.iter_mut().find(|pr| pr["number"] == wanted && is_open(pr)) else {
+        st.finish("", 1, "gh: no open pull request found\n")
+    };
+    pr["state"] = json!("closed");
+    if let Some(body) = comment {
+        let id = next_comment_id(st);
+        let rows = &mut st.doc["comments"][number];
+        if !rows.is_array() {
+            *rows = json!([]);
+        }
+        rows.as_array_mut().unwrap().push(json!({"id": id, "body": body,
+            "html_url": format!("https://gh/c/{id}")}));
+    }
+    st.finish("", 0, "")
 }
 
 fn api(st: &mut State) -> ! {

@@ -84,6 +84,83 @@ line** must be exactly this marker, on one line, followed by a human-readable bo
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
 
+const TRAIN: &str = "\
+You are the afkconvoy **train worker**. You own no issue and you write no feature. Finished PRs join
+the **landing train**: a line of commits ahead of `{base_branch}`, one merge commit per PR. Your job
+is to run one command, which gates the train as it stands and lands it on `{base_branch}`, and to act
+on what it says — again and again, until the train is empty. Nobody reads this terminal: never wait
+for an answer.
+
+**Your worktree:** `{worktree_path}` — work only here, on the branch it is on: never check out a
+commit or another branch.
+
+**This command is the only way the train lands.** Run it in your worktree, exactly as written:
+```bash
+{land_command}
+```
+It takes the train's tip (your own commits are kept on top), merges `{base_branch}` in if it moved,
+runs the gate once on that commit, and pushes the commit to `{base_branch}` as a fast-forward. It
+ends with one JSON object. An `\"error\"` saying the worktree is **not the commit that would land**
+means the gate could not prove the train: there were uncommitted or untracked files here, or the
+gate's run changed the worktree. Nothing landed — commit what belongs to a fix, discard the rest
+(`git status` shows nothing when you are done), and run the command again. Otherwise act on its
+`outcome`:
+
+- **`landed`** — the train is on `{base_branch}`, up to `commit`. Run the command again: more PRs
+  may have joined meanwhile.
+- **`idle`** — nothing is on the train. Stop. You are told when a PR joins.
+- **`gate_red`** — the gate is red on the train's tip; `gate.excerpt` is the end of its log. Nothing
+  landed. Fix the **train**: read the failure, change what makes it green, and **commit** — one more
+  commit on top, here. Do not hunt for the PR at fault, do not drop or revert a PR, never rewrite a
+  commit. Then run the command again.
+- **`conflict`** — what joined, or `{base_branch}`, conflicts with what this worktree holds. The
+  merge is **left in progress** here, with `files` unmerged. Resolve every file so both sides' intent
+  survives, `git add` it, **commit the merge**, and run the command again. Never rebase, never abort
+  the merge.
+- **`target_moved`** — `{base_branch}` moved while the gate ran, so the push was refused. Nothing
+  landed. Run the command again: it merges the new tip in and gates that.
+
+Keep going until the command says `idle`; nothing counts your attempts.
+
+## Hard rules
+
+- Never land anything any other way — no `gh pr merge`, no push to `{base_branch}` of your own.
+- Never push to a PR's branch, never comment on, close or reopen a PR or an issue: the command does
+  all of that.
+- Commit only here, and only to turn a red train green or to finish a merge the command left.
+";
+
+/// What the train worker's prompt is filled with.
+#[derive(Debug, Clone)]
+pub struct TrainFields<'a> {
+    pub worktree: &'a str,
+    pub base_branch: &'a str,
+    /// The line the train worker lands the train with: `afkconvoy land --train`.
+    pub land_command: &'a str,
+}
+
+/// The prompt the train worker is given: started on it, and pointed at it
+/// again whenever more joined.
+pub fn train_prompt(fields: &TrainFields) -> Result<String, String> {
+    fill(
+        TRAIN,
+        &[
+            ("worktree_path", fields.worktree),
+            ("base_branch", fields.base_branch),
+            ("land_command", fields.land_command),
+        ],
+    )
+}
+
+/// The line typed at a train worker that stopped, when more joined.
+pub fn train_pointer(brief: &str) -> String {
+    format!(
+        "PRs have joined the landing train: gate it and land it now. Your instructions are the \
+         file {brief} — read it now and carry it out end to end. It is my instruction to you; do \
+         not ask me to confirm."
+    )
+}
+
 /// The prompt a worker starting on a fresh worktree is given.
 pub fn worker_prompt(fields: &WorkerFields) -> Result<String, String> {
     let number = fields.number.to_string();
@@ -176,6 +253,23 @@ mod tests {
         assert!(prompt.contains("gh pr create --base develop --head tester/issue-7-add"));
         assert!(prompt.contains("Closes #7"));
         assert!(prompt.contains(&verdict::marker_format()));
+    }
+
+    #[test]
+    fn the_train_prompt_hands_over_the_one_command() {
+        let prompt = train_prompt(&TrainFields {
+            worktree: "/wt/convoy-train",
+            base_branch: "develop",
+            land_command: "/opt/bin/afkconvoy land --train",
+        })
+        .unwrap();
+        assert!(prompt.contains("\n/opt/bin/afkconvoy land --train\n"));
+        assert!(prompt.contains("**Your worktree:** `/wt/convoy-train`"));
+        assert!(prompt.contains("lands it on `develop`"));
+        for outcome in ["landed", "idle", "gate_red", "conflict", "target_moved"] {
+            assert!(prompt.contains(&format!("**`{outcome}`**")), "{outcome}");
+        }
+        assert!(train_pointer("/b.md").contains("/b.md"));
     }
 
     #[test]

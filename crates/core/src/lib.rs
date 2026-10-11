@@ -11,6 +11,7 @@ pub mod prompt;
 pub mod record;
 #[cfg(flux)]
 mod rejected;
+pub mod settle;
 pub mod tick;
 pub mod train;
 pub mod verdict;

@@ -44,18 +44,24 @@ impl Train {
         if self.tip == self.base {
             return Ok(vec![]);
         }
-        let range = format!("{}..{}", self.base, self.tip);
-        let log =
-            repo.git_raw(&["log", "--reverse", "--merges", "--format=%H%x09%P%x09%B%x00", &range])?;
-        let commits: Vec<Logged> = log
-            .split('\0')
-            .filter_map(|entry| {
-                let mut parts = entry.trim_matches('\n').splitn(3, '\t');
-                Some(Logged { sha: parts.next()?, parents: parts.next()?, message: parts.next()? })
-            })
-            .collect();
-        Ok(read_joins(&commits))
+        joins_in(repo, &[&format!("{}..{}", self.base, self.tip)])
     }
+}
+
+/// The joinings among the commits `revs` selects, oldest first. Whatever
+/// narrows the walk (`--grep`) never decides what a commit is.
+pub fn joins_in(repo: &Repo, revs: &[&str]) -> Result<Vec<Joined>> {
+    let mut args = vec!["log", "--reverse", "--merges", "--format=%H%x09%P%x09%B%x00"];
+    args.extend(revs);
+    let log = repo.git_raw(&args)?;
+    let commits: Vec<Logged> = log
+        .split('\0')
+        .filter_map(|entry| {
+            let mut parts = entry.trim_matches('\n').splitn(3, '\t');
+            Some(Logged { sha: parts.next()?, parents: parts.next()?, message: parts.next()? })
+        })
+        .collect();
+    Ok(read_joins(&commits))
 }
 
 /// The files a merge in progress in a worktree has left conflicted.

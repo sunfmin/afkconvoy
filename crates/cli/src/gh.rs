@@ -158,4 +158,10 @@ impl GitHub {
         self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"])?;
         Ok(())
     }
+
+    /// Closes one PR without merging it, with a comment saying why.
+    pub fn close_pr(&self, number: u64, comment: &str) -> Result<()> {
+        self.gh(&["pr", "close", &number.to_string(), "--comment", comment])?;
+        Ok(())
+    }
 }
