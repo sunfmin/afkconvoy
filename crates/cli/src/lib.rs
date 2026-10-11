@@ -129,6 +129,13 @@ enum Command {
         #[arg(long)]
         reason: String,
     },
+    /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
+    Nudge {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
+    },
     /// List every claim and heartbeat on the remote
     Scan,
     /// Claim one issue for a fleet instance
@@ -277,6 +284,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Escalate { issue, who, reason } => {
             judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue, &reason)
         }
+        Command::Nudge { issue, who } => judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
             let repo = Repo::here()?;

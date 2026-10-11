@@ -83,6 +83,7 @@ impl Ticked {
                 let (word, issue) = words(*step);
                 let outcome = match outcome {
                     Outcome::Done => "done",
+                    Outcome::Nudged => "nudged",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Failed => "failed",
@@ -119,6 +120,16 @@ impl Ticked {
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
+        }
+        let nudged: Vec<String> = self
+            .pass
+            .did
+            .iter()
+            .filter(|(_, outcome)| *outcome == Outcome::Nudged)
+            .filter_map(|(step, _)| words(*step).1.map(|issue| format!("#{issue}")))
+            .collect();
+        if !nudged.is_empty() {
+            parts.push(format!("nudged {}", nudged.join(", ")));
         }
         let tended = (TickStep::TendTrain, Outcome::Done);
         if self.pass.did.contains(&tended) {

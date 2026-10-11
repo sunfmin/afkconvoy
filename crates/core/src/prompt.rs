@@ -189,6 +189,17 @@ pub fn brief_pointer(brief: &str) -> String {
     )
 }
 
+/// The one line typed at a worker that stopped with no PR and no verdict.
+/// Short on purpose: a long text arrives as a paste the worker asks to have
+/// confirmed, which is the stall this is sent to break.
+pub fn nudge_line(brief: &str) -> String {
+    format!(
+        "You stopped without an outcome. Nobody is watching this terminal, so do not wait for a \
+         confirmation or an answer: continue your task brief ({brief}) to the end, and finish \
+         with the outcome it asks for — a PR, or a convoy:verdict marker comment."
+    )
+}
+
 /// Fills every `{name}` of `template` in one pass, so a value is never itself
 /// read for placeholders: a title naming `{branch}` reaches the worker as it
 /// was given. A placeholder no field answers to, or a field with nothing in

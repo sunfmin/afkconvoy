@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use afkconvoy_core::prompt::brief_pointer;
+use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::train::is_train_worktree;
 use afkconvoy_core::worker::{AgentReport, WorkerState, lead, short_branch, worker_state};
 use anyhow::{Context, Result, anyhow, bail};
@@ -17,6 +18,8 @@ use crate::git::Repo;
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 /// The train's tip its worker was last told about, beside the brief.
 const TOLD_FILE: &str = "convoy-train-told";
+/// When the worker here was nudged (epoch seconds), beside the brief.
+const NUDGE_FILE: &str = "convoy-nudged";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
 
@@ -226,6 +229,30 @@ impl Worktree {
         std::fs::write(&file, tip).with_context(|| format!("cannot write {}", file.display()))
     }
 
+    /// Whether the worker here was nudged, and when.
+    pub fn nudged(&self) -> Result<Nudged> {
+        let at = std::fs::read_to_string(self.note(NUDGE_FILE)?).ok();
+        Ok(match at.and_then(|at| at.trim().parse().ok()) {
+            Some(at) => Nudged::At(at),
+            None => Nudged::Never,
+        })
+    }
+
+    pub fn record_nudge(&self, at: u64) -> Result<()> {
+        let file = self.note(NUDGE_FILE)?;
+        std::fs::write(&file, at.to_string())
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The last `lines` lines of what `terminal` shows.
+    pub fn screen(&self, terminal: &str, lines: usize) -> Result<Vec<String>> {
+        let limit = lines.to_string();
+        let read =
+            orca(&["terminal", "read", "--terminal", terminal, "--screen", "--limit", &limit])?;
+        let tail = read["terminal"]["tail"].as_array().cloned().unwrap_or_default();
+        Ok(tail.iter().filter_map(|line| line.as_str().map(str::to_string)).collect())
+    }
+
     /// Has orca remove the worktree, its terminals with it.
     pub fn remove(&self) -> Result<()> {
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
@@ -236,9 +263,14 @@ impl Worktree {
         format!("path:{}", self.path.display())
     }
 
+    /// Where the instructions of the worker here are kept.
+    pub fn brief(&self) -> Result<PathBuf> {
+        self.note(BRIEF_FILE)
+    }
+
     /// Writes the worker's instructions where its brief pointer says → the file.
     pub fn write_brief(&self, prompt: &str) -> Result<PathBuf> {
-        let brief = self.note(BRIEF_FILE)?;
+        let brief = self.brief()?;
         std::fs::write(&brief, prompt)
             .with_context(|| format!("cannot write the worker's brief {}", brief.display()))?;
         Ok(brief)
@@ -248,8 +280,13 @@ impl Worktree {
     /// verbatim → its terminal's handle. Whatever terminal was here first is
     /// closed, so the worker's is the only one in the worktree: two agents in
     /// one worktree would fight, and orca opens a bare shell in every worktree
-    /// it cuts.
+    /// it cuts. A new worker was never nudged, whatever the one before it was.
     pub fn start(&self, command: &str) -> Result<String> {
+        let nudge = self.note(NUDGE_FILE)?;
+        if nudge.exists() {
+            std::fs::remove_file(&nudge)
+                .with_context(|| format!("cannot remove {}", nudge.display()))?;
+        }
         // One with no terminal is as wanted.
         let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
         let made =

@@ -4,7 +4,11 @@
 use std::time::UNIX_EPOCH;
 
 use afkconvoy_core::claims::{Claim, releasable};
-use afkconvoy_core::stopped::{Progress, Route, Workless, route};
+use afkconvoy_core::prompt::nudge_line;
+use afkconvoy_core::stopped::{
+    NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
+    stalled_reason,
+};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
 use afkconvoy_core::transition::{
@@ -160,36 +164,107 @@ fn close_claim(
     })
 }
 
-/// The tick's look at one PR-less claim of mine. A busy worker is left with no
-/// GitHub read; for one that stopped, its worktree's progress and its latest
-/// verdict are gathered and routed (`stopped::route`) → `Done` when that ended
-/// the claim.
-pub fn judge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
-    let Some(claim) = mine(fleet, me, issue)? else { return Ok(Outcome::Nothing) };
+/// A stopped worker of mine with no PR, and what was gathered to route it.
+struct Stopped {
+    claim: Claim,
+    worktree: Worktree,
+    progress: Progress,
+    /// The URL of the comment its latest verdict is in.
+    said: Option<String>,
+    route: Route,
+}
+
+/// Asks after the worker of my claim on `issue`. `None` when there is nothing
+/// to route: no claim, no worktree on this host, or a worker that has not
+/// stopped — which costs no GitHub read.
+fn stopped(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Stopped>> {
+    let Some(claim) = mine(fleet, me, issue)? else { return Ok(None) };
     let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? else {
-        return Ok(Outcome::Nothing);
+        return Ok(None);
     };
     let state = worktree.state(fleet.now)?;
     if !matches!(state, WorkerState::Idle { .. }) {
-        return Ok(Outcome::Nothing);
+        return Ok(None);
     }
     let progress = progress(&worktree, &fleet.base_tip()?)?;
     let comments = fleet.gh.comments(issue)?;
     let verdict = latest_verdict(comments.iter().map(|c| c.body.as_str()));
-    match route(state, &progress, verdict.as_ref(), fleet.now) {
-        Route::Leave => Ok(Outcome::Nothing),
+    let route = route(state, &progress, verdict.as_ref(), worktree.nudged()?, fleet.now);
+    let said = verdict.and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
+    Ok(Some(Stopped { claim, worktree, progress, said, route }))
+}
+
+/// Types the nudge line at the worker in `worktree` and records it there.
+fn nudge_worker(worktree: &Worktree, unnudged: Unnudged, now: u64) -> Result<String> {
+    let Some(terminal) = worktree.terminal()? else {
+        bail!("no live terminal in {} to take the nudge", worktree.path.display());
+    };
+    let brief = worktree.brief()?.display().to_string();
+    afkconvoy_core::stopped::nudge(unnudged, |step| match step {
+        NudgeStep::Tell => worktree.tell(&terminal, &nudge_line(&brief)),
+        NudgeStep::Record => worktree.record_nudge(now),
+    })?;
+    Ok(terminal)
+}
+
+/// Why a silent worker's claim is escalated, with the end of its screen. The
+/// read is soft: an escalation never waits on a terminal.
+fn where_it_stopped(worktree: &Worktree, silent: &Silent) -> String {
+    let screen = worktree.terminal().and_then(|terminal| match terminal {
+        Some(terminal) => worktree.screen(&terminal, screen_request(silent)),
+        None => Ok(vec![]),
+    });
+    stalled_reason(silent, &Tail::of(&screen.unwrap_or_default()))
+}
+
+/// `afkconvoy nudge`: tell the worker of one of my claims, stopped with no PR
+/// and no verdict, to carry on. Refused for any worker the tick would not
+/// nudge — at work, heard from within grace, one that declared a verdict, or
+/// one already nudged.
+pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
+    let Some(found) = stopped(fleet, me, issue)? else {
+        bail!(
+            "issue #{issue} has no stopped worker of {} on this host to nudge; nothing was sent",
+            me.instance
+        );
+    };
+    let Route::Nudge(unnudged) = found.route else {
+        bail!(
+            "the worker on issue #{issue} is not nudged: {}; nothing was sent",
+            match found.route {
+                Route::Stalled(_) => "it was already nudged, and a second silence escalates",
+                Route::Leave => "it showed a sign of life within the grace period",
+                _ => "it declared a verdict",
+            }
+        );
+    };
+    let terminal = nudge_worker(&found.worktree, unnudged, fleet.now)?;
+    Ok(json!({"issue": issue, "action": "nudged", "terminal": terminal}))
+}
+
+/// The tick's look at one PR-less claim of mine: a worker that stopped is
+/// routed (`stopped::route`) → `Done` when that ended the claim.
+pub fn judge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
+    let Some(Stopped { claim, worktree, progress, said, route }) = stopped(fleet, me, issue)?
+    else {
+        return Ok(Outcome::Nothing);
+    };
+    let reason = match route {
+        Route::Leave => return Ok(Outcome::Nothing),
+        Route::Nudge(unnudged) => {
+            nudge_worker(&worktree, unnudged, fleet.now)?;
+            return Ok(Outcome::Nudged);
+        }
         Route::Close(workless) => {
             close_claim(fleet, &claim, Some(&worktree), &workless)?;
-            Ok(Outcome::Done)
+            return Ok(Outcome::Done);
         }
-        Route::Escalate(why) => {
-            let said = verdict.and_then(|verdict| comments.get(verdict.comment));
-            let reason = why.reason(said.map_or("(its comment)", |comment| comment.url.as_str()));
-            let workless = Workless::of(&progress);
-            escalate_claim(fleet, &claim, &reason, Some(&worktree), workless.as_ref())?;
-            Ok(Outcome::Done)
-        }
-    }
+        Route::Escalate(why) => why.reason(said.as_deref().unwrap_or("(its comment)")),
+        Route::Stalled(silent) => where_it_stopped(&worktree, &silent),
+    };
+    let workless = Workless::of(&progress);
+    escalate_claim(fleet, &claim, &reason, Some(&worktree), workless.as_ref())?;
+    Ok(Outcome::Done)
 }
 
 /// A label as one path segment of a GitHub API URL.
