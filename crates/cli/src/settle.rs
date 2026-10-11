@@ -15,6 +15,7 @@ use crate::claims::{Me, release};
 use crate::fleet::Fleet;
 use crate::git::{REMOTE, Repo};
 use crate::orca::{Source, Worktree};
+use crate::recovery::own_heads;
 use crate::train::joins_in;
 
 /// The joining on the base branch that landed `issue` — the newest merge
@@ -105,6 +106,25 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
                 {
                     let comment = landed_comment(&join.commit, &fleet.config.base_branch);
                     fleet.gh.close_pr(pr.number, &comment)?;
+                }
+            }
+            // Only what is on the base branch, and only as it was read: a
+            // branch its worker pushed to since holds work nothing landed.
+            SettleStep::DropBranches => {
+                let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
+                for branch in own_heads(fleet, issue, worktree.as_ref())? {
+                    let head = format!("refs/heads/{branch}");
+                    let Some(tip) = fleet.repo.fetched(&head)? else { continue };
+                    if fleet.repo.try_git(&["merge-base", "--is-ancestor", &tip, &base_tip])?.ok {
+                        let lease = format!("--force-with-lease={head}:{tip}");
+                        fleet.repo.git(&[
+                            "push",
+                            "--quiet",
+                            &lease,
+                            REMOTE,
+                            &format!(":{head}"),
+                        ])?;
+                    }
                 }
             }
             SettleStep::RemoveWorktree => {

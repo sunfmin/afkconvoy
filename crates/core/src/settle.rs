@@ -14,6 +14,9 @@ pub enum SettleStep {
     CloseIssue,
     /// Close the PR the train landed that GitHub still shows open.
     ClosePr,
+    /// Delete the issue's own branches on the remote that are on the base
+    /// branch: the landing deletes them only once GitHub shows the PR merged.
+    DropBranches,
     /// Remove the worker's worktree.
     RemoveWorktree,
     /// Fast-forward the fleet's own checkout to what landed.
@@ -25,10 +28,12 @@ pub enum SettleStep {
 }
 
 /// The steps of one settling as they are decided.
-#[refined_by(closed: bool, removed: bool, boarded: bool)]
+#[refined_by(closed: bool, dropped: bool, removed: bool, boarded: bool)]
 struct SettleOrder {
     #[field(bool[closed])]
     closed: bool,
+    #[field(bool[dropped])]
+    dropped: bool,
     #[field(bool[removed])]
     removed: bool,
     #[field(bool[boarded])]
@@ -37,37 +42,45 @@ struct SettleOrder {
 }
 
 impl SettleOrder {
-    #[spec(fn(closed: bool) -> SettleOrder[closed, false, false])]
+    #[spec(fn(closed: bool) -> SettleOrder[closed, false, false, false])]
     fn new(closed: bool) -> SettleOrder {
-        SettleOrder { closed, removed: false, boarded: false, steps: Vec::new() }
+        SettleOrder { closed, dropped: false, removed: false, boarded: false, steps: Vec::new() }
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.removed, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.dropped, o.removed, o.boarded])]
     fn close_issue(&mut self) {
         self.steps.push(SettleStep::CloseIssue);
         self.closed = true;
     }
 
-    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.removed, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.dropped, o.removed, o.boarded])]
     fn close_pr(&mut self) {
         self.steps.push(SettleStep::ClosePr);
     }
 
+    /// Before the worktree goes: its branch is one of the issue's own only
+    /// while orca still links the two.
+    #[spec(fn(self: &mut Self[@o]) requires o.closed && !o.removed ensures self: Self[o.closed, true, o.removed, o.boarded])]
+    fn drop_branches(&mut self) {
+        self.steps.push(SettleStep::DropBranches);
+        self.dropped = true;
+    }
+
     /// An open issue's worktree is never touched: it may hold work.
-    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, true, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed && o.dropped ensures self: Self[o.closed, o.dropped, true, o.boarded])]
     fn remove_worktree(&mut self) {
         self.steps.push(SettleStep::RemoveWorktree);
         self.removed = true;
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[o.closed, o.removed, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[o.closed, o.dropped, o.removed, o.boarded])]
     fn follow_base(&mut self) {
         self.steps.push(SettleStep::FollowBase);
     }
 
     /// The board's last word, once the issue is closed: it never says merged
     /// over an issue still open.
-    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.removed, true])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.dropped, o.removed, true])]
     fn board(&mut self) {
         self.steps.push(SettleStep::Board);
         self.boarded = true;
@@ -90,6 +103,7 @@ pub fn settle_steps(closed: bool) -> Vec<SettleStep> {
         order.close_issue();
     }
     order.close_pr();
+    order.drop_branches();
     order.remove_worktree();
     order.follow_base();
     order.board();
@@ -172,8 +186,24 @@ mod rejected {
     #[should_fail]
     fn a_claim_released_before_the_board_says_merged() {
         let mut order = SettleOrder::new(true);
+        order.drop_branches();
         order.remove_worktree();
         order.release();
+    }
+
+    /// The worktree removed with the issue's branches still on the remote:
+    /// the branch it was on is then no longer known for the issue's own.
+    #[should_fail]
+    fn a_worktree_removed_before_its_branch_is_dropped() {
+        let mut order = SettleOrder::new(true);
+        order.remove_worktree();
+    }
+
+    /// The branch of an open issue deleted: it may hold work.
+    #[should_fail]
+    fn an_open_issues_branches_dropped() {
+        let mut order = SettleOrder::new(false);
+        order.drop_branches();
     }
 
     /// The board saying merged over an issue still open.
@@ -205,10 +235,13 @@ mod tests {
     #[test]
     fn the_claim_is_deleted_last() {
         use SettleStep::*;
-        assert_eq!(settle_steps(true), [ClosePr, RemoveWorktree, FollowBase, Board, Release]);
+        assert_eq!(
+            settle_steps(true),
+            [ClosePr, DropBranches, RemoveWorktree, FollowBase, Board, Release]
+        );
         assert_eq!(
             settle_steps(false),
-            [CloseIssue, ClosePr, RemoveWorktree, FollowBase, Board, Release]
+            [CloseIssue, ClosePr, DropBranches, RemoveWorktree, FollowBase, Board, Release]
         );
     }
 
