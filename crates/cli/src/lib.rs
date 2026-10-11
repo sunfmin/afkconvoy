@@ -24,6 +24,7 @@ pub mod orca;
 pub mod park;
 pub mod recovery;
 pub mod settle;
+pub mod takeover;
 pub mod tend;
 pub mod tick;
 pub mod train;
@@ -152,6 +153,23 @@ enum Command {
         issue: u64,
         #[command(flatten)]
         who: Who,
+    },
+    /// Take another fleet instance's claims without waiting for the lease
+    Takeover {
+        /// Show every instance the remote remembers, and take nothing
+        #[arg(long, conflicts_with_all = ["from", "yes"])]
+        list: bool,
+        /// The instance whose claims to take
+        #[arg(long)]
+        from: Option<String>,
+        /// Take from an instance whose heartbeat is still fresh
+        #[arg(long)]
+        yes: bool,
+        /// The fleet instance to take them as
+        #[arg(long, value_parser = InstanceId::parse)]
+        instance: Option<InstanceId>,
+        #[arg(long)]
+        host: Option<String>,
     },
     /// List every claim and heartbeat on the remote
     Scan,
@@ -304,6 +322,19 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Park { issue, who } => park::park(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Nudge { issue, who } => judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue),
+        Command::Takeover { list, from, yes, instance, host } => {
+            let mut fleet = Fleet::open(now)?;
+            let me =
+                instance.map(|instance| Me { instance, host: host.unwrap_or_else(this_host), now });
+            match (list, from, me) {
+                (true, _, me) => Ok(takeover::list(&fleet, me.as_ref())),
+                (false, Some(from), Some(me)) => takeover::takeover(&mut fleet, &me, &from, yes),
+                (false, Some(_), None) => {
+                    anyhow::bail!("takeover --from needs --instance: the fleet to take them as")
+                }
+                (false, None, _) => anyhow::bail!("takeover takes --list, or --from <instance id>"),
+            }
+        }
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
             let repo = Repo::here()?;
