@@ -1,0 +1,32 @@
+WHEN TO RUN IT
+
+  To replace a silent worker by hand. A tick does this on its own, once, for a claim
+  whose PR is open and not on the landing train, and whose worker stopped, was nudged,
+  and stayed silent. Do it yourself when a plan keeps showing such a claim under `mine`
+  as `joining`.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo, on the host the worker runs on.
+
+WHAT IT READS AND WRITES
+
+  It records the restart in the fleet's comment on the PR, then starts a new worker in
+  the same worktree, briefed only to join the landing train. The PR, the branch and the
+  worktree are untouched.
+
+WHAT IT ANSWERS
+
+  {"issue", "pr", "action": "restarted", "restarted", "terminal", "prompt"} — restarted
+  is the time, in epoch seconds; prompt is the brief the new worker got.
+
+  Errors, each with nothing changed: "has no stopped worker" — the instance holds no
+  claim on the issue, its worker is at work or gone, or the issue has no open PR; "is
+  not restarted" — the PR's join already had its restart, the worker was not nudged yet,
+  or it showed a sign of life within the grace period; the claim is another instance's.
+
+WHAT TRIPS YOU UP
+
+  - `--instance` is required, and must be the instance that holds the claim.
+  - One restart per PR. A worker silent again after it is escalated by the next tick.
+  - It is not `dispatch`: for a claim with no PR, continue it with `dispatch`.

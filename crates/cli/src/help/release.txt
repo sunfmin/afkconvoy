@@ -1,0 +1,29 @@
+WHEN TO RUN IT
+
+  Hardly ever: `close`, `escalate` and `park` release the claim they end, and a landed
+  PR's claim is released by the tick. Run it to drop a claim made with `claim`, or one
+  left behind by something that went wrong.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  It deletes the issue's claim on the remote, only while it is still the claim that was
+  read. It does not read or change GitHub, and touches no worker and no worktree.
+
+WHAT IT ANSWERS
+
+  {"released": true, "issue", "ref"} — also when the issue had no claim: already gone
+  counts as released.
+
+  Errors: the claim is another instance's ("is not this fleet's claim"); it "moved since
+  it was read" — somebody took it meanwhile, and it was left alone; the delete failed.
+
+WHAT TRIPS YOU UP
+
+  - `--instance` is required, and must be the instance that holds the claim. To end
+    another instance's claim, take it first: `takeover`.
+  - It only unlocks. The issue keeps its labels, its worker keeps working, and — still
+    open and ready — the issue is back on the frontier: a fleet dispatches it again.

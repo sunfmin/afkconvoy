@@ -42,7 +42,8 @@ use git::Repo;
 use tick::Pacing;
 
 /// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
-/// reads to learn the tool.
+/// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
+/// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
 #[derive(Parser)]
 #[command(name = "afkconvoy", version, about, long_about = include_str!("help.txt"))]
 struct Cli {
@@ -56,18 +57,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Print the repo's config as JSON, defaults filled
+    #[command(after_long_help = include_str!("help/config.txt"))]
     Config {
         /// The config file [default: docs/agents/afkconvoy.md of this checkout]
         #[arg(long)]
         file: Option<PathBuf>,
     },
     /// Show what a tick would act on, and change nothing
+    #[command(after_long_help = include_str!("help/plan.txt"))]
     Plan {
         /// The fleet instance whose claims are its own [default: nobody's]
         #[arg(long, value_parser = InstanceId::parse)]
         instance: Option<InstanceId>,
     },
     /// Run the fleet: tick after tick, until stopped
+    #[command(after_long_help = include_str!("help/run.txt"))]
     Run {
         /// The fleet instance to run as [default: a new one, named for this host]
         #[arg(long, value_parser = InstanceId::parse)]
@@ -84,6 +88,7 @@ enum Command {
         second_ms: u64,
     },
     /// Run one reconciliation pass and exit
+    #[command(after_long_help = include_str!("help/tick.txt"))]
     Tick {
         #[command(flatten)]
         who: Who,
@@ -91,6 +96,7 @@ enum Command {
         agent: AgentArgs,
     },
     /// Run the gate in this worktree and put a green run on record (a worker's command)
+    #[command(after_long_help = include_str!("help/gate.txt"))]
     Gate {
         /// Seconds the gate command is given before it is killed, and red
         #[arg(long, default_value_t = 3600)]
@@ -100,6 +106,7 @@ enum Command {
         train: bool,
     },
     /// Put this worktree's PR on the landing train (a worker's command), or land the train
+    #[command(after_long_help = include_str!("help/land.txt"))]
     Land {
         /// The issue the PR closes
         #[arg(long, required_unless_present = "train", conflicts_with = "train")]
@@ -115,6 +122,7 @@ enum Command {
         merged_timeout: u64,
     },
     /// Start a fresh worker on one issue
+    #[command(after_long_help = include_str!("help/dispatch.txt"))]
     Dispatch {
         #[arg(long)]
         issue: u64,
@@ -127,11 +135,13 @@ enum Command {
         start: dispatch::StartFrom,
     },
     /// Show what `dispatch` would continue an issue from, without acting
+    #[command(after_long_help = include_str!("help/recovery.txt"))]
     Recovery {
         #[arg(long)]
         issue: u64,
     },
     /// Close one of my claims whose issue needed no change
+    #[command(after_long_help = include_str!("help/close.txt"))]
     Close {
         #[arg(long)]
         issue: u64,
@@ -139,6 +149,7 @@ enum Command {
         who: Who,
     },
     /// Hand one of my claims to a human
+    #[command(after_long_help = include_str!("help/escalate.txt"))]
     Escalate {
         #[arg(long)]
         issue: u64,
@@ -149,6 +160,7 @@ enum Command {
         reason: String,
     },
     /// Leave one of my claims waiting on the issues its worker declared it blocked by
+    #[command(after_long_help = include_str!("help/park.txt"))]
     Park {
         #[arg(long)]
         issue: u64,
@@ -156,6 +168,7 @@ enum Command {
         who: Who,
     },
     /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
+    #[command(after_long_help = include_str!("help/nudge.txt"))]
     Nudge {
         #[arg(long)]
         issue: u64,
@@ -163,6 +176,7 @@ enum Command {
         who: Who,
     },
     /// Replace the silent worker of one of my claims whose PR is joining the train, once
+    #[command(after_long_help = include_str!("help/restart.txt"))]
     Restart {
         #[arg(long)]
         issue: u64,
@@ -172,11 +186,13 @@ enum Command {
         agent: AgentArgs,
     },
     /// Give up the landing train, its worker silent past a nudge, with nothing landed
+    #[command(after_long_help = include_str!("help/abandon.txt"))]
     Abandon {
         #[command(flatten)]
         who: Who,
     },
     /// Take another fleet instance's claims without waiting for the lease
+    #[command(after_long_help = include_str!("help/takeover.txt"))]
     Takeover {
         /// Show every instance the remote remembers, and take nothing
         #[arg(long, conflicts_with_all = ["from", "yes"])]
@@ -194,10 +210,13 @@ enum Command {
         host: Option<String>,
     },
     /// End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
+    #[command(after_long_help = include_str!("help/wake.txt"))]
     Wake,
     /// List every claim and heartbeat on the remote
+    #[command(after_long_help = include_str!("help/scan.txt"))]
     Scan,
     /// Claim one issue for a fleet instance
+    #[command(after_long_help = include_str!("help/claim.txt"))]
     Claim {
         #[arg(long)]
         issue: u64,
@@ -205,6 +224,7 @@ enum Command {
         who: Who,
     },
     /// Release a fleet instance's own claim on one issue
+    #[command(after_long_help = include_str!("help/release.txt"))]
     Release {
         #[arg(long)]
         issue: u64,
@@ -212,6 +232,7 @@ enum Command {
         who: Who,
     },
     /// Refresh a fleet instance's heartbeat, if it is due
+    #[command(after_long_help = include_str!("help/heartbeat.txt"))]
     Heartbeat {
         #[command(flatten)]
         who: Who,

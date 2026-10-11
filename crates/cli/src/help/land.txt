@@ -1,0 +1,61 @@
+WHEN TO RUN IT
+
+  `land --issue <n>`: once the PR is open and its gate run is green and on record, to
+  join the PR to the landing train. A worker's prompt names the exact command.
+  `land --train`: when the train's worker is told a PR joined, and again after each
+  answer that says so, until the answer is `idle`.
+
+WHO RUNS IT
+
+  `--issue`: the worker that wrote the PR, in its own worktree.
+  `--train`: the train worker, in the train's worktree — never anybody else, anywhere
+  else.
+
+WHAT IT READS AND WRITES
+
+  `--issue` reads the open PRs and the train. It pushes this branch when it is ahead of
+  the remote's, then pushes one merge commit — the PR's head joined onto the train's
+  tip — as the train's new tip. No gate runs, and nothing on GitHub changes. A PR that
+  conflicts with the train gets the train's tip merged into this worktree, left in
+  progress.
+
+  `--train` puts this worktree on the train's tip, merges the base branch in when it
+  moved, pushes that as the train's tip, and gates it — by the run on record for that
+  tree, else by a run made now. Green: it pushes the commit to the base branch as a
+  fast-forward, closes the issue of every PR that landed, and deletes those PRs'
+  branches once GitHub shows them merged. Red: it comments the failure on every PR on
+  the train, and lands nothing.
+
+WHAT IT ANSWERS
+
+  `--issue`: {"issue", "pr", "outcome", "detail", …}
+
+    joined    the PR is on the train — stop. With "head", "commit" (the join commit) and
+              "again": true when it was there already
+    merged    the base branch already holds the PR's head — stop. With "head"
+    conflict  with "files" and "worktree": resolve every file, commit the merge, run the
+              gate again, then this again
+
+  `--train`: {"train", "base", "outcome", "detail", …}
+
+    idle          nothing is on the train
+    conflict      with "files" and "worktree": resolve, commit the merge, run it again
+    gate_red      with "commit", "prs" and "gate" {status, exit_code, timed_out, command,
+                  excerpt}: fix the train with one more commit here, run it again
+    target_moved  the base branch moved while the gate ran; nothing landed — run it again
+    landed        with "commit", "prs", "gate" {status, source, command, at}, "landed"
+                  [{issue, pr, commit}], "unmerged" (PRs GitHub still shows open) and
+                  "more": true when the train grew meanwhile
+
+  Errors: no open PR closes the issue; tracked files have uncommitted changes; the
+  remote has no such branch; the train moved under the command too many times ("run this
+  again"); for `--train`, untracked files in the worktree ("is not the commit that would
+  land").
+
+WHAT TRIPS YOU UP
+
+  - `--train` moves the branch checked out here onto the train's tip, with a hard reset.
+    Run in a checkout of your own it takes that checkout's branch with it.
+  - Joined is not landed. `--issue` ends at `joined`; the train worker gates and lands.
+  - `--issue` runs no gate. It joins whatever is committed: run `gate --train` first.
+  - `--gate-timeout` and `--merged-timeout` are read by `--train` only.

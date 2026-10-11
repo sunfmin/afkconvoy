@@ -1,0 +1,41 @@
+WHEN TO RUN IT
+
+  For exactly one reconciliation pass that exits: to step a fleet by hand and read what
+  each pass did, or where a long-lived process cannot be kept. `run` is this in a loop.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  What one tick of `run` does: the startup probe, the rebuild, then every transition the
+  working set calls for — on the remote, on GitHub and in orca. It does not wait for the
+  workers it starts, and keeps nothing on this host a later tick needs.
+
+WHAT IT ANSWERS
+
+  {"did", "errors", "held", "frontier_remaining"}
+
+    did                 each step taken: {do, issue, outcome}. do is settle, tend_train,
+                        judge, watch, unlock, reclaim, dispatch, board or heartbeat;
+                        outcome is done, nudged, continued, restarted, abandoned,
+                        nothing, lost or failed
+    errors              each step that failed: {do, issue, error}
+    held                the claims the instance holds after the pass
+    frontier_remaining  the frontier issues it left undispatched
+
+  Errors: the repo fails the startup probe; the config, GitHub or the remote cannot be
+  read; the worker launch command resolves to nothing; `--instance` is not an instance
+  id ([a-z0-9][a-z0-9-]{0,39}).
+
+WHAT TRIPS YOU UP
+
+  - `--instance` is required: `run` mints an id, a tick has to be given one. Give every
+    tick of one fleet the same id — a new id holds no claims, and sees the old id's as
+    another instance's.
+  - A step that failed is not a failed command: the exit is 0 and the failure is in
+    `errors`. Read `errors`, not the exit code.
+  - It does not take the claims stamped with this host: only `run` does that, at its
+    start. A tick takes another instance's claims only once they are stale.
+  - Do not tick as an instance whose `run` is alive: both would act on the same claims.
