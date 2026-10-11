@@ -15,6 +15,7 @@ pub mod claims;
 pub mod config;
 pub mod dispatch;
 pub mod fleet;
+pub mod gate;
 pub mod gh;
 pub mod git;
 pub mod orca;
@@ -73,6 +74,12 @@ enum Command {
         #[command(flatten)]
         agent: AgentArgs,
     },
+    /// Run the gate in this worktree and put a green run on record (a worker's command)
+    Gate {
+        /// Seconds the gate command is given before it is killed, and red
+        #[arg(long, default_value_t = 3600)]
+        gate_timeout: u64,
+    },
     /// Start a fresh worker on one issue
     Dispatch {
         #[arg(long)]
@@ -130,6 +137,16 @@ impl Who {
     fn me(self, now: u64) -> Me {
         Me { instance: self.instance, host: self.host.unwrap_or_else(this_host), now }
     }
+}
+
+/// The command line that runs this very binary with `arguments`, for a prompt:
+/// a worker's shell need not have it on its PATH.
+pub fn own_command(arguments: &str) -> String {
+    let exe = std::env::current_exe().ok().and_then(|path| path.to_str().map(str::to_string));
+    let exe = exe.unwrap_or_else(|| "afkconvoy".to_string());
+    let plain = exe.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+".contains(&b));
+    let exe = if plain { exe } else { format!("'{}'", exe.replace('\'', "'\\''")) };
+    format!("{exe} {arguments}")
 }
 
 fn this_host() -> String {
@@ -192,6 +209,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Tick { who, agent } => {
             Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent.agent())?.json())
+        }
+        Command::Gate { gate_timeout } => {
+            let repo = Repo::here()?;
+            let config = config::load(&repo.dir.join(config::FILE))?;
+            gate::gate(&repo, &config, now, Duration::from_secs(gate_timeout))
         }
         Command::Dispatch { issue, who, agent } => {
             dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)

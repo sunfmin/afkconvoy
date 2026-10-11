@@ -64,7 +64,7 @@ fn dispatch_starts_a_worker_on_a_fresh_worktree() {
     assert!(prompt.contains("**Your issue:** #7 — Add the `plan` command"));
     assert!(prompt.contains("**Your branch:** `tester/issue-7-add-the-plan-command`"));
     assert!(prompt.contains(&format!("**Your worktree:** `{}`", worktree.display())));
-    assert!(prompt.contains("./gate.sh"));
+    assert!(prompt.contains(&format!("{} gate\n", env!("CARGO_BIN_EXE_afkconvoy"))));
     assert!(!prompt.contains("{n}") && !prompt.contains("{branch}"));
     assert_eq!(git(worktree, &["status", "--porcelain"]), "", "the brief is not in the worktree");
 

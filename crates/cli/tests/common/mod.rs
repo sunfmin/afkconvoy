@@ -31,6 +31,7 @@ pub struct World {
 pub struct Answer {
     pub json: Value,
     pub code: i32,
+    pub stderr: String,
 }
 
 impl Answer {
@@ -110,7 +111,18 @@ impl World {
                 String::from_utf8_lossy(&out.stderr)
             )
         });
-        Answer { json, code: out.status.code().unwrap() }
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        Answer { json, code: out.status.code().unwrap(), stderr }
+    }
+
+    /// Sets the repo's gate command: committed on the base branch and pushed,
+    /// as a repo's config is.
+    pub fn set_gate(&self, command: &str) {
+        let config =
+            format!("```yaml\nbase_branch: main\ngate_command: {command:?}\nconcurrency: 2\n```\n");
+        std::fs::write(self.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
+        git(&self.clone, &["commit", "-q", "-am", "set the gate"]);
+        git(&self.clone, &["push", "-q", "origin", BASE]);
     }
 
     /// Runs a command that prints lines before its answer → (the lines, the answer).

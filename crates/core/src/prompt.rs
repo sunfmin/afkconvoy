@@ -12,6 +12,7 @@ pub struct WorkerFields<'a> {
     pub branch: &'a str,
     pub worktree: &'a str,
     pub base_branch: &'a str,
+    /// The line the worker runs the gate with: `afkconvoy gate`.
     pub gate_command: &'a str,
 }
 
@@ -36,10 +37,13 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 1. **Read the ground truth first.** `gh issue view {n} --comments`, then this repo's `GLOSSARY.md`,
    the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary.
 2. **Implement** the issue's acceptance criteria, matching the surrounding code's conventions.
-3. **Gate.** Commit everything, then run this in your worktree and fix the code until it passes:
+3. **Gate.** Commit everything, then run this in your worktree:
    ```bash
    {gate_command}
    ```
+   It runs the repo's gate and ends with one JSON object. Fix the code, commit, and run it again
+   until it says `\"status\": \"green\"` and `\"recorded\": true` — its `detail` says what is missing.
+   Any further commit needs another run.
 4. **Open a PR** against `{base_branch}` whose body contains the line `Closes #{n}`:
    ```bash
    git push origin HEAD && gh pr create --base {base_branch} --head {branch} --title \"<title>\" --body \"<what changed>
@@ -141,7 +145,7 @@ mod tests {
             branch: "tester/issue-7-add",
             worktree: "/wt/issue-7",
             base_branch: "develop",
-            gate_command: "make test VAR=${x}",
+            gate_command: "/opt/bin/afkconvoy gate",
         }
     }
 
@@ -154,7 +158,7 @@ mod tests {
         );
         assert!(prompt.contains("**Your branch:** `tester/issue-7-add`"));
         assert!(prompt.contains("**Your worktree:** `/wt/issue-7`"));
-        assert!(prompt.contains("make test VAR=${x}"));
+        assert!(prompt.contains("   /opt/bin/afkconvoy gate\n"));
         assert!(prompt.contains("gh pr create --base develop --head tester/issue-7-add"));
         assert!(prompt.contains("Closes #7"));
         assert!(prompt.contains(&verdict::marker_format()));

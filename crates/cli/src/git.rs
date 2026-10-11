@@ -49,6 +49,21 @@ impl Repo {
         run(&self.dir, args, &[])
     }
 
+    /// One git call that must succeed → its stdout as it came: for output whose
+    /// leading spaces mean something.
+    pub fn git_raw(&self, args: &[&str]) -> Result<String> {
+        let out = Command::new("git")
+            .current_dir(&self.dir)
+            .args(args)
+            .env("LC_ALL", "C")
+            .output()
+            .context("git could not run")?;
+        if !out.status.success() {
+            bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
     /// One git call that must succeed → its stdout, trimmed.
     pub fn git(&self, args: &[&str]) -> Result<String> {
         let ran = self.try_git(args)?;
@@ -63,7 +78,13 @@ impl Repo {
     /// is written under the fleet's identity, whoever's machine this is.
     pub fn record_commit(&self, record: &str) -> Result<String> {
         let tree = self.git(&["hash-object", "-t", "tree", "/dev/null"])?;
-        let ran = run(&self.dir, &["commit-tree", &tree, "-m", record], &RECORD_IDENTITY)?;
+        self.record_commit_of(&tree, record)
+    }
+
+    /// A parentless commit of `tree` whose subject is `record`: a record that
+    /// is about a tree, and keeps it.
+    pub fn record_commit_of(&self, tree: &str, record: &str) -> Result<String> {
+        let ran = run(&self.dir, &["commit-tree", tree, "-m", record], &RECORD_IDENTITY)?;
         if !ran.ok {
             bail!("git commit-tree failed: {}", ran.stderr.trim());
         }
