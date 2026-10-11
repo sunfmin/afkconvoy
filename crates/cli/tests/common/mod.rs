@@ -122,6 +122,29 @@ impl World {
         std::fs::write(&self.orca_file, state.to_string()).unwrap();
     }
 
+    /// Has the remote log every ref pushed to it, in order, and reject the
+    /// pushes of a ref whose name contains `reject` (when given).
+    pub fn watch_pushes(&self, reject: Option<&str>) {
+        let hook = self.bare.join("hooks/pre-receive");
+        let log = self.root.join("pushes.log");
+        let reject = reject.unwrap_or("\x01never");
+        let script = format!(
+            "#!/bin/sh\nwhile read old new ref; do\n  echo \"$ref\" >> '{}'\n  \
+             case \"$ref\" in *{reject}*) echo 'rejected by the test' >&2; exit 1;; esac\ndone\n",
+            log.display()
+        );
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// The refs pushed to the remote since `watch_pushes`, in order.
+    pub fn pushes(&self) -> Vec<String> {
+        let log = std::fs::read_to_string(self.root.join("pushes.log")).unwrap_or_default();
+        log.lines().map(str::to_string).collect()
+    }
+
     /// git against the remote itself.
     pub fn remote(&self, args: &[&str]) -> String {
         git(&self.bare, args)

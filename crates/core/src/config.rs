@@ -60,7 +60,6 @@ impl std::error::Error for ConfigError {}
 impl Config {
     /// The config `settings` asks for, defaults filled — or the first key that
     /// is missing or cannot be run on.
-    #[trusted]
     pub fn new(settings: Settings) -> Result<Config, ConfigError> {
         let base_branch = required("base_branch", settings.base_branch)?;
         let gate_command = required("gate_command", settings.gate_command)?;
@@ -114,7 +113,6 @@ fn checked(
     })
 }
 
-#[trusted]
 fn required(key: &'static str, value: Option<String>) -> Result<String, ConfigError> {
     match value {
         Some(text) if !text.trim().is_empty() => Ok(text),
@@ -122,7 +120,6 @@ fn required(key: &'static str, value: Option<String>) -> Result<String, ConfigEr
     }
 }
 
-#[trusted]
 fn label(key: &'static str, value: Option<String>, default: &str) -> Result<String, ConfigError> {
     match value {
         None => Ok(default.to_string()),

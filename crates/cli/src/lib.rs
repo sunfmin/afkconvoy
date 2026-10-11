@@ -4,15 +4,26 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use afkconvoy_core::claims::InstanceId;
 
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
+pub mod claims;
 pub mod config;
+pub mod git;
+
+use claims::{Me, Scan, Take};
+use git::Repo;
 
 #[derive(Parser)]
 #[command(name = "afkconvoy", version, about)]
 struct Cli {
+    /// The time to act at, in epoch seconds [default: the clock's]
+    #[arg(long, global = true, hide = true)]
+    now: Option<u64>,
     #[command(subcommand)]
     command: Command,
 }
@@ -25,6 +36,44 @@ enum Command {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// List every claim and heartbeat on the remote
+    Scan,
+    /// Claim one issue for a fleet instance
+    Claim {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
+    },
+    /// Release a fleet instance's own claim on one issue
+    Release {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
+    },
+    /// Refresh a fleet instance's heartbeat, if it is due
+    Heartbeat {
+        #[command(flatten)]
+        who: Who,
+    },
+}
+
+/// The fleet instance a command acts as.
+#[derive(clap::Args)]
+struct Who {
+    #[arg(long, value_parser = InstanceId::parse)]
+    instance: InstanceId,
+    /// The host the instance runs on [default: this machine's name]
+    #[arg(long)]
+    host: Option<String>,
+}
+
+impl Who {
+    fn me(self, now: u64) -> Me {
+        let host = self.host.unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into());
+        Me { instance: self.instance, host, now }
+    }
 }
 
 /// Runs one command line. Prints exactly one JSON object on stdout: the
@@ -36,7 +85,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(e) if !e.use_stderr() => e.exit(),
         Err(e) => return fail(2, e.render().to_string().trim()),
     };
-    match run(cli.command) {
+    let now = cli.now.unwrap_or_else(clock);
+    match run(cli.command, now) {
         Ok(answer) => {
             println!("{answer}");
             ExitCode::SUCCESS
@@ -50,7 +100,11 @@ fn fail(code: u8, message: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
-fn run(command: Command) -> anyhow::Result<Value> {
+fn clock() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+fn run(command: Command, now: u64) -> anyhow::Result<Value> {
     match command {
         Command::Config { file } => {
             let file = match file {
@@ -58,6 +112,19 @@ fn run(command: Command) -> anyhow::Result<Value> {
                 None => config::default_file()?,
             };
             Ok(serde_json::to_value(config::load(&file)?)?)
+        }
+        Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
+        Command::Claim { issue, who } => {
+            let repo = Repo::here()?;
+            claims::take(&repo, &mut Scan::read(&repo)?, &who.me(now), issue, Take::Fresh)
+        }
+        Command::Release { issue, who } => {
+            let repo = Repo::here()?;
+            claims::release(&repo, &mut Scan::read(&repo)?, &who.instance, issue)
+        }
+        Command::Heartbeat { who } => {
+            let repo = Repo::here()?;
+            claims::beat(&repo, &mut Scan::read(&repo)?, &who.me(now))
         }
     }
 }

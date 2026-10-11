@@ -9,6 +9,7 @@ dependencies = [
  "afkconvoy-core",
  "anyhow",
  "clap",
+ "gethostname",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -183,6 +184,16 @@ version = "0.1.0"
 source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
 dependencies = [
  "flux-attrs",
+]
+
+[[package]]
+name = "gethostname"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
+dependencies = [
+ "rustix",
+ "windows-link",
 ]
 
 [[package]]

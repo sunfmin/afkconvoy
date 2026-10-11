@@ -1,24 +1,18 @@
 //! Reads a repo's config out of its markdown file.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use afkconvoy_core::config::{Config, Settings};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
+
+use crate::git::Repo;
 
 /// Where a repo keeps its config, relative to the checkout's top.
 pub const FILE: &str = "docs/agents/afkconvoy.md";
 
 /// The config file of the checkout the command was run in.
 pub fn default_file() -> Result<PathBuf> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .context("git could not run")?;
-    if !out.status.success() {
-        bail!("not in a git checkout: pass --file");
-    }
-    Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join(FILE))
+    Ok(Repo::here()?.dir.join(FILE))
 }
 
 pub fn load(file: &Path) -> Result<Config> {
