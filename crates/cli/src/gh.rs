@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use afkconvoy_core::layout::{Guard, Protection};
 use afkconvoy_core::plan::{Issue, PullRequest};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -70,6 +71,64 @@ impl GitHub {
             bail!("gh {what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// The protection of one branch, as far as it can be read. A branch with
+    /// none is a read that succeeded; only a read GitHub refused, or one
+    /// nobody can parse, is unreadable.
+    pub fn protection(&self, branch: &str) -> Guard {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/branches/{branch}/protection");
+        let out = match Command::new("gh").current_dir(&self.dir).args(["api", &endpoint]).output()
+        {
+            Ok(out) => out,
+            Err(error) => return Guard::Unreadable(format!("gh could not run: {error}")),
+        };
+        let (stdout, stderr) =
+            (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        if !out.status.success() {
+            let said = format!("{stderr}{stdout}");
+            return if said.contains("Branch not protected") {
+                Guard::Unprotected
+            } else {
+                Guard::Unreadable(stderr.trim().to_string())
+            };
+        }
+        #[derive(Deserialize)]
+        struct Check {
+            context: String,
+        }
+        #[derive(Deserialize, Default)]
+        struct Checks {
+            #[serde(default)]
+            contexts: Vec<String>,
+            #[serde(default)]
+            checks: Vec<Check>,
+        }
+        #[derive(Deserialize)]
+        struct Switch {
+            enabled: bool,
+        }
+        #[derive(Deserialize)]
+        struct Rules {
+            required_status_checks: Option<Checks>,
+            required_pull_request_reviews: Option<serde_json::Value>,
+            restrictions: Option<serde_json::Value>,
+            lock_branch: Option<Switch>,
+        }
+        let Ok(rules) = serde_json::from_str::<Rules>(&stdout) else {
+            return Guard::Unreadable("GitHub's answer could not be parsed".to_string());
+        };
+        let checks = rules.required_status_checks.unwrap_or_default();
+        let mut required = checks.contexts;
+        required.extend(checks.checks.into_iter().map(|check| check.context));
+        required.sort();
+        required.dedup();
+        Guard::Protected(Protection::new(
+            required,
+            rules.required_pull_request_reviews.is_some(),
+            rules.restrictions.is_some(),
+            rules.lock_branch.is_some_and(|lock| lock.enabled),
+        ))
     }
 
     /// Every open issue — all of them, page after page.

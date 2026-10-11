@@ -6,7 +6,7 @@
 
 use flux_rs::attrs::*;
 
-use crate::claims::NAMESPACE;
+use crate::layout::{GATE_KIND, Layout};
 use crate::lease::SKEW;
 use crate::record;
 
@@ -79,8 +79,8 @@ impl GateCommand {
 /// The remote ref a recorded run of `command` on `tree` lives at. The name is
 /// the key, so asking "was this tested green?" is asking for one ref, and two
 /// runs never contend.
-pub fn record_ref(tree: &Tree, command: &GateCommand) -> String {
-    format!("{NAMESPACE}/gate/{}-{:016x}", tree.name, command.key)
+pub fn record_ref(layout: Layout, tree: &Tree, command: &GateCommand) -> String {
+    layout.under(&format!("{GATE_KIND}{}-{:016x}", tree.name, command.key))
 }
 
 /// One run of the gate command, as the code that ran it saw it.
@@ -126,7 +126,7 @@ impl GreenRun {
     /// not stamped from the future — whose day would never run out.
     #[spec(fn(&GreenRun[@g], now: u64) -> bool[fresh(g.at, now)])]
     pub fn stands(&self, now: u64) -> bool {
-        if self.at <= now { now - self.at <= RECORD_TTL } else { self.at - now <= SKEW }
+        believed(self.at, now)
     }
 
     /// The record that carries this run, for the commit pushed to `record_ref`.
@@ -148,6 +148,22 @@ impl GreenRun {
         }
         let at = fields.number("at")?;
         Some(GreenRun { tree: tree.key, command: command.key, at })
+    }
+}
+
+/// Whether a run finished at `at` is believed at `now`.
+#[spec(fn(at: u64, now: u64) -> bool[fresh(at, now)])]
+pub fn believed(at: u64, now: u64) -> bool {
+    if at <= now { now - at <= RECORD_TTL } else { at - now <= SKEW }
+}
+
+/// Whether the record a gate ref's commit carries is swept at `now`: one no
+/// landing would believe any more, or one nobody can read. Whatever tree and
+/// command it is of.
+pub fn outlived(subject: &str, now: u64) -> bool {
+    match record::read(GATE, subject).and_then(|fields| fields.number("at")) {
+        Some(at) => !believed(at, now),
+        None => true,
     }
 }
 
@@ -283,6 +299,13 @@ mod rejected {
         Proven::by(tested, command, run, now)
     }
 
+    /// A record an hour old swept as one past its day.
+    #[should_fail]
+    #[spec(fn(at: u64, now: u64) requires at <= now && now - at <= 3600)]
+    fn a_record_an_hour_old_swept(at: u64, now: u64) {
+        crate::lease::proved(!believed(at, now));
+    }
+
     /// A proof read at one time used as one that holds at another.
     #[should_fail]
     #[spec(fn(tree: &Tree, command: &GateCommand, run: &GreenRun, then: u64, now: u64)
@@ -407,11 +430,22 @@ mod tests {
     }
 
     #[test]
+    fn a_record_is_swept_once_no_landing_would_believe_it() {
+        let subject = written(100_000).write(&tree(), &command());
+        assert!(!outlived(&subject, 100_000));
+        assert!(!outlived(&subject, 100_000 + RECORD_TTL), "a day old is still believed");
+        assert!(outlived(&subject, 100_001 + RECORD_TTL));
+        assert!(outlived(&subject, 99_999 - SKEW), "stamped from the future");
+        assert!(outlived("initial commit", 100_000), "nobody can read it");
+        assert!(outlived("convoy:gate tree=x command=y", 100_000));
+    }
+
+    #[test]
     fn the_ref_is_named_for_the_tree_and_the_command() {
-        let name = record_ref(&tree(), &command());
+        let name = record_ref(Layout::Hidden, &tree(), &command());
         assert!(name.starts_with("refs/convoy/gate/4b825dc642cb6eb9a060e54bf8d69288fbee4904-"));
         assert_eq!(name.len(), "refs/convoy/gate/".len() + 40 + 1 + 16);
-        assert_ne!(name, record_ref(&tree(), &GateCommand::new("make check")));
+        assert_ne!(name, record_ref(Layout::Hidden, &tree(), &GateCommand::new("make check")));
         assert_eq!(key("make test"), key("make test"));
     }
 }

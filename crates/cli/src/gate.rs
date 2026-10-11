@@ -7,9 +7,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use afkconvoy_core::claims::NAMESPACE;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{GateCommand, GreenRun, Ran, Recording, Tree, after_run, record_ref};
+use afkconvoy_core::layout::GATE_KIND;
 use afkconvoy_core::train::{last_green, train_refs, under_repair};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
@@ -134,7 +134,7 @@ pub fn run_and_record(
         clean_before: before.is_empty(),
         clean_after: after.is_empty(),
     };
-    let refname = record_ref(&tree, command);
+    let refname = record_ref(repo.layout(), &tree, command);
     let strays = if before.is_empty() { after } else { before };
     let mut run = GateRun { ran, head, strays, green: None, not_recorded: None, excerpt };
     match after_run(&tree, command, ran, now) {
@@ -166,7 +166,7 @@ pub fn recorded(
     command: &GateCommand,
     now: u64,
 ) -> Result<Option<GreenRun>> {
-    let found = repo.remote_records(&record_ref(tree, command))?.pop();
+    let found = repo.remote_records(&record_ref(repo.layout(), tree, command))?.pop();
     let run = found.and_then(|record| GreenRun::recorded(&record.subject, tree, command));
     Ok(run.filter(|run| run.stands(now)))
 }
@@ -233,7 +233,7 @@ fn lands_behind(
     if !ahead {
         return Ok((train.base, "the base branch"));
     }
-    let red = repo.fetched(&train_refs(&config.base_branch).red)?;
+    let red = repo.fetched(&train_refs(repo.layout(), &config.base_branch).red)?;
     let marked = match &red {
         Some(red) => Some((repo.within(red, &train.base)?, repo.within(red, &train.tip)?)),
         None => None,
@@ -241,14 +241,15 @@ fn lands_behind(
     let Some(red) = red.filter(|_| under_repair(ahead, marked)) else {
         return Ok((train.tip, "the landing train"));
     };
-    let on_record = repo.git(&["ls-remote", REMOTE, &format!("{NAMESPACE}/gate/*")])?;
+    let layout = repo.layout();
+    let on_record = repo.git(&["ls-remote", REMOTE, &layout.every(GATE_KIND)])?;
     let range = format!("{}..{red}^", train.base);
     let listed = repo.git(&["log", "--first-parent", "--format=%H %T", &range])?;
     let below: Vec<(&str, bool)> = listed
         .lines()
         .filter_map(|row| row.split_once(' '))
         .map(|(commit, tree)| {
-            let name = record_ref(&Tree::named(tree), command);
+            let name = record_ref(layout, &Tree::named(tree), command);
             (commit, on_record.lines().any(|row| row.ends_with(&format!("\t{name}"))))
         })
         .collect();

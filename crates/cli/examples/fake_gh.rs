@@ -3,7 +3,7 @@
 //!
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?,
 //! blocked_by?, id?}], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
-//! linked?: [issue…]}], `bare`, `base`, `calls`, and `fail`: substrings of a
+//! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail.
 
 mod fake;
@@ -168,6 +168,25 @@ fn api(st: &mut State) -> ! {
                 issue["state"] = json!(state);
             }
             st.finish("", 0, "")
+        }
+        ["branches", branch @ .., "protection"] => {
+            // `protection`: {branch: the rules GitHub would answer with}, or a
+            // string — the words of a read GitHub refuses.
+            match &st.doc["protection"][branch.join("/")] {
+                Value::Null => st.finish(
+                    "{\"message\":\"Branch not protected\"}",
+                    1,
+                    "gh: Branch not protected (HTTP 404)\n",
+                ),
+                Value::String(refusal) => {
+                    let refusal = format!("gh: {refusal}\n");
+                    st.finish("", 1, &refusal)
+                }
+                rules => {
+                    let rules = rules.to_string();
+                    st.finish(&rules, 0, "")
+                }
+            }
         }
         ["issues", number] => {
             assert_eq!(jq, Some(ISSUE_JQ), "fake gh: unsupported jq");

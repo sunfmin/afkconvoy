@@ -28,7 +28,7 @@ impl Train {
         let base = repo
             .fetched(&format!("refs/heads/{branch}"))?
             .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
-        let line = repo.fetched(&train_refs(branch).line)?;
+        let line = repo.fetched(&train_refs(repo.layout(), branch).line)?;
         let on_base = match &line {
             Some(tip) => repo.within(tip, &base)?,
             None => false,
@@ -170,7 +170,7 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
              merged, stop)"
         );
     };
-    let line = train_refs(&config.base_branch).line;
+    let line = train_refs(repo.layout(), &config.base_branch).line;
     let mut answer = json!({"issue": issue, "pr": pr.number});
     let mut stop = |outcome: &str, more: Value| {
         answer["outcome"] = json!(outcome);

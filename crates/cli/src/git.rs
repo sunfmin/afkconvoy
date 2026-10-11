@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use afkconvoy_core::layout::Layout;
 use anyhow::{Context, Result, bail};
 
 /// The remote every ref and branch is pushed to and fetched from.
@@ -42,6 +43,30 @@ impl Repo {
         let common = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
         let common = PathBuf::from(common);
         Ok(common.parent().map(Path::to_path_buf).unwrap_or(common))
+    }
+
+    /// Where the last start found the remote keeps the fleet's refs
+    /// (`probe::startup`): a note in the repo's git dir, shared by every
+    /// worktree, so a worker's command names the refs the fleet does. A repo
+    /// no start has probed uses the first layout.
+    pub fn layout(&self) -> Layout {
+        let noted = self.layout_note().and_then(|note| Ok(std::fs::read_to_string(note)?));
+        noted.ok().and_then(|name| Layout::named(name.trim())).unwrap_or(Layout::ALL[0])
+    }
+
+    /// Notes the layout a start settled on.
+    pub fn note_layout(&self, layout: Layout) -> Result<()> {
+        if self.layout() != layout {
+            let note = self.layout_note()?;
+            std::fs::write(&note, format!("{}\n", layout.name()))
+                .with_context(|| format!("cannot write {}", note.display()))?;
+        }
+        Ok(())
+    }
+
+    fn layout_note(&self) -> Result<PathBuf> {
+        let common = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        Ok(PathBuf::from(common).join("convoy-layout"))
     }
 
     /// One git call whose failure the caller reads.

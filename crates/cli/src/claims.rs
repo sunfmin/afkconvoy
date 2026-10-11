@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use afkconvoy_core::claims::{
-    Claim, ClaimStep, InstanceId, NAMESPACE, Owner, claim_ref, claim_steps, heartbeat_ref,
-    read_heartbeat, releasable, write_heartbeat,
+    CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, Owner, claim_ref, claim_steps,
+    heartbeat_ref, read_heartbeat, releasable, write_heartbeat,
 };
 use afkconvoy_core::record::fleet_number;
 use anyhow::{Result, bail};
@@ -34,14 +34,15 @@ impl Scan {
     /// unreadable must not look like one holding none.
     pub fn read(repo: &Repo) -> Result<Scan> {
         let mut scan = Scan::default();
-        for record in repo.remote_records(&format!("{NAMESPACE}/*"))? {
-            let Some(kept) = record.name.strip_prefix(NAMESPACE) else { continue };
-            if let Some(name) = kept.strip_prefix("/claim/") {
+        let layout = repo.layout();
+        for record in repo.remote_records(&layout.every(""))? {
+            let Some(kept) = layout.kept(&record.name) else { continue };
+            if let Some(name) = kept.strip_prefix(CLAIM_KIND) {
                 if let Some(number) = fleet_number(name) {
                     let owner = Owner::read(&record.subject);
                     scan.claims.push(Claim { number, owner, sha: record.sha });
                 }
-            } else if let Some(instance) = kept.strip_prefix("/heartbeat/")
+            } else if let Some(instance) = kept.strip_prefix(HEARTBEAT_KIND)
                 && let Some(ts) = read_heartbeat(&record.subject)
             {
                 scan.heartbeats.insert(instance.to_string(), ts);
@@ -83,7 +84,7 @@ pub fn claim_json(claim: &Claim) -> Value {
 /// Refreshes my heartbeat ref, whatever its age.
 fn push_heartbeat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<()> {
     let sha = repo.record_commit(&write_heartbeat(&me.instance, me.now))?;
-    let refname = heartbeat_ref(&me.instance);
+    let refname = heartbeat_ref(repo.layout(), &me.instance);
     repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
     scan.heartbeats.insert(me.instance.to_string(), me.now);
     Ok(())
@@ -91,7 +92,7 @@ fn push_heartbeat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<()> {
 
 /// `afkconvoy heartbeat`: refresh my heartbeat if it is due.
 pub fn beat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<Value> {
-    let refname = heartbeat_ref(&me.instance);
+    let refname = heartbeat_ref(repo.layout(), &me.instance);
     let last = scan.heartbeats.get(me.instance.as_str()).copied();
     if !afkconvoy_core::lease::heartbeat_due(last, me.now) {
         return Ok(json!({"refreshed": false, "reason": "not due", "ts": last, "ref": refname}));
@@ -112,7 +113,7 @@ pub enum Take<'a> {
 /// it was won. A lost race is an answer (`won: false`); a push that failed for
 /// any other reason is an error.
 pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Result<Value> {
-    let refname = claim_ref(number);
+    let refname = claim_ref(repo.layout(), number);
     let owner = Owner { instance: me.instance.to_string(), host: me.host.clone(), ts: me.now };
     let sha = repo.record_commit(&owner.write())?;
     let last_beat = scan.heartbeats.get(me.instance.as_str()).copied();
@@ -161,7 +162,7 @@ pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Re
 /// claim somebody took meanwhile is never deleted from under them. Already
 /// gone counts as released.
 pub fn delete(repo: &Repo, scan: &mut Scan, number: u64, expected: &str) -> Result<Value> {
-    let refname = claim_ref(number);
+    let refname = claim_ref(repo.layout(), number);
     let lease = format!("--force-with-lease={refname}:{expected}");
     let pushed = repo.try_git(&["push", "--quiet", REMOTE, &lease, &format!(":{refname}")])?;
     let now_at = if pushed.ok { None } else { repo.remote_sha(&refname)? };
@@ -187,6 +188,8 @@ pub fn release(repo: &Repo, scan: &mut Scan, me: &InstanceId, number: u64) -> Re
             let sha = claim.sha.clone();
             delete(repo, scan, number, &sha)
         }
-        None => Ok(json!({"released": true, "issue": number, "ref": claim_ref(number)})),
+        None => {
+            Ok(json!({"released": true, "issue": number, "ref": claim_ref(repo.layout(), number)}))
+        }
     }
 }
