@@ -57,7 +57,7 @@ fn pr_list(st: &State) -> ! {
                 .as_array()
                 .map(|numbers| numbers.iter().map(|n| json!({"number": n})).collect())
                 .unwrap_or_default();
-            json!({"number": pr["number"], "headRefName": pr["headRefName"], "headRefOid": head,
+            json!({"number": pr["number"], "title": pr["title"], "headRefName": pr["headRefName"], "headRefOid": head,
                 "body": pr["body"], "closingIssuesReferences": linked})
         })
         .collect();

@@ -12,8 +12,10 @@ pub struct WorkerFields<'a> {
     pub branch: &'a str,
     pub worktree: &'a str,
     pub base_branch: &'a str,
-    /// The line the worker runs the gate with: `afkconvoy gate`.
+    /// The line the worker runs the gate with: `afkconvoy gate --train`.
     pub gate_command: &'a str,
+    /// The line the worker joins the landing train with: `afkconvoy land --issue <n>`.
+    pub land_command: &'a str,
 }
 
 const WORKER: &str = "\
@@ -41,9 +43,11 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
    ```bash
    {gate_command}
    ```
-   It runs the repo's gate and ends with one JSON object. Fix the code, commit, and run it again
-   until it says `\"status\": \"green\"` and `\"recorded\": true` — its `detail` says what is missing.
-   Any further commit needs another run.
+   It first merges in what your PR will land behind (the landing train, or `{base_branch}`), then
+   runs the repo's gate, and ends with one JSON object. On `\"status\": \"conflict\"` nothing ran:
+   resolve every file it lists, `git add` it, commit the merge, and run it again. Otherwise fix the
+   code, commit, and run it again until it says `\"status\": \"green\"` and `\"recorded\": true` —
+   its `detail` says what is missing. Any further commit needs another run. Never rebase.
 4. **Open a PR** against `{base_branch}` whose body contains the line `Closes #{n}`:
    ```bash
    git push origin HEAD && gh pr create --base {base_branch} --head {branch} --title \"<title>\" --body \"<what changed>
@@ -51,6 +55,13 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
    Closes #{n}\"
    ```
    Do not merge it.
+5. **Join the landing train.** Run this in your worktree:
+   ```bash
+   {land_command}
+   ```
+   It ends with one JSON object. `\"outcome\": \"joined\"` (or `\"merged\"`): you are done — stop. On
+   `\"conflict\"` the train was merged into your branch and left in progress: resolve every file it
+   lists, `git add` it, commit the merge, go back to step 3, and run this again.
 
 ## If you will not open a PR
 
@@ -69,7 +80,7 @@ line** must be exactly this marker, on one line, followed by a human-readable bo
 
 ## Hard rules
 
-- End with a PR or that comment — never just stop.
+- End with your PR on the landing train, or with that comment — never just stop.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
 
@@ -86,6 +97,7 @@ pub fn worker_prompt(fields: &WorkerFields) -> Result<String, String> {
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
             ("gate_command", fields.gate_command),
+            ("land_command", fields.land_command),
             ("verdict_marker", &marker),
         ],
     )
@@ -145,7 +157,8 @@ mod tests {
             branch: "tester/issue-7-add",
             worktree: "/wt/issue-7",
             base_branch: "develop",
-            gate_command: "/opt/bin/afkconvoy gate",
+            gate_command: "/opt/bin/afkconvoy gate --train",
+            land_command: "/opt/bin/afkconvoy land --issue 7",
         }
     }
 
@@ -158,7 +171,8 @@ mod tests {
         );
         assert!(prompt.contains("**Your branch:** `tester/issue-7-add`"));
         assert!(prompt.contains("**Your worktree:** `/wt/issue-7`"));
-        assert!(prompt.contains("   /opt/bin/afkconvoy gate\n"));
+        assert!(prompt.contains("   /opt/bin/afkconvoy gate --train\n"));
+        assert!(prompt.contains("   /opt/bin/afkconvoy land --issue 7\n"));
         assert!(prompt.contains("gh pr create --base develop --head tester/issue-7-add"));
         assert!(prompt.contains("Closes #7"));
         assert!(prompt.contains(&verdict::marker_format()));

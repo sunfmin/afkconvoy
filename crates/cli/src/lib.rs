@@ -20,6 +20,7 @@ pub mod gh;
 pub mod git;
 pub mod orca;
 pub mod tick;
+pub mod train;
 
 use claims::{Me, Scan, Take};
 use dispatch::Agent;
@@ -79,6 +80,15 @@ enum Command {
         /// Seconds the gate command is given before it is killed, and red
         #[arg(long, default_value_t = 3600)]
         gate_timeout: u64,
+        /// First merge in what the PR lands behind: the landing train, or the base branch
+        #[arg(long)]
+        train: bool,
+    },
+    /// Put this worktree's PR on the landing train (a worker's command)
+    Land {
+        /// The issue the PR closes
+        #[arg(long)]
+        issue: u64,
     },
     /// Start a fresh worker on one issue
     Dispatch {
@@ -210,10 +220,16 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Tick { who, agent } => {
             Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent.agent())?.json())
         }
-        Command::Gate { gate_timeout } => {
+        Command::Gate { gate_timeout, train } => {
             let repo = Repo::here()?;
             let config = config::load(&repo.dir.join(config::FILE))?;
-            gate::gate(&repo, &config, now, Duration::from_secs(gate_timeout))
+            gate::gate(&repo, &config, train, now, Duration::from_secs(gate_timeout))
+        }
+        Command::Land { issue } => {
+            let repo = Repo::here()?;
+            let config = config::load(&repo.dir.join(config::FILE))?;
+            let gh = gh::GitHub { dir: repo.dir.clone() };
+            train::land(&repo, &config, &gh, issue, now)
         }
         Command::Dispatch { issue, who, agent } => {
             dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)

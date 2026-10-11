@@ -24,6 +24,7 @@ pub struct Issue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequest {
     pub number: u64,
+    pub title: String,
     pub head_branch: String,
     pub head_sha: String,
     /// The issues it closes (`PullRequest::closing`).
@@ -31,6 +32,11 @@ pub struct PullRequest {
 }
 
 impl PullRequest {
+    /// This PR as it is once its branch is at `head`.
+    pub fn at_head(&self, head: &str) -> PullRequest {
+        PullRequest { head_sha: head.to_string(), ..self.clone() }
+    }
+
     /// The issues a PR closes, from the ones GitHub linked and its body.
     pub fn closing(body: &str, linked: &[u64]) -> Vec<u64> {
         issues_closed_by(body, linked)
@@ -80,6 +86,8 @@ pub enum Status {
     NoPr,
     /// An open PR closes it, and that PR is not on the landing train yet.
     Joining,
+    /// Its open PR is on the landing train, at the head the PR has now.
+    Joined,
     /// The issue is closed: the claim is to be settled and released.
     Closed,
 }
@@ -129,6 +137,8 @@ pub struct Observed<'a> {
     pub heartbeats: &'a [(String, u64)],
     /// The claimed issues that are closed (`issues` holds only open ones).
     pub closed: &'a [u64],
+    /// The issues whose open PR is on the landing train at its current head.
+    pub joined: &'a [u64],
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -181,6 +191,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             let pr = closing_pr(seen.prs, claim.number).map(|pr| pr.number);
             let status = match (closed, pr) {
                 (true, _) => Status::Closed,
+                (false, Some(_)) if seen.joined.contains(&claim.number) => Status::Joined,
                 (false, Some(_)) => Status::Joining,
                 (false, None) => Status::NoPr,
             };
@@ -256,6 +267,7 @@ mod tests {
     fn pr(number: u64, closes: u64) -> PullRequest {
         PullRequest {
             number,
+            title: format!("pr {number}"),
             head_branch: format!("b{number}"),
             head_sha: format!("sha{number}"),
             closes: vec![closes],
@@ -292,6 +304,7 @@ mod tests {
             claims: &[claim(4, "peer")],
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
+            joined: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -322,10 +335,11 @@ mod tests {
             nobody,
             claim(6, "me"),
             claim(7, "me"),
+            claim(8, "me"),
         ];
         let seen = Observed {
             issues: &issues,
-            prs: &[pr(70, 7)],
+            prs: &[pr(70, 7), pr(80, 8)],
             claims: &claims,
             // my own heartbeat has expired: my claims stay mine
             heartbeats: &[
@@ -334,12 +348,18 @@ mod tests {
                 ("me".into(), 1),
             ],
             closed: &[4, 6],
+            joined: &[8],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
         assert_eq!(
             mine,
-            [(1, Status::NoPr, None), (6, Status::Closed, None), (7, Status::Joining, Some(70))]
+            [
+                (1, Status::NoPr, None),
+                (6, Status::Closed, None),
+                (7, Status::Joining, Some(70)),
+                (8, Status::Joined, Some(80)),
+            ]
         );
         assert_eq!(set.mine[0].title.as_deref(), Some("issue 1"));
         assert_eq!(set.mine[1].title, None);
@@ -350,7 +370,7 @@ mod tests {
             set.stale_closed.iter().map(|c| (c.number, c.sha.as_str())).collect::<Vec<_>>(),
             [(4, "c4")]
         );
-        assert_eq!(set.free_slots, 2);
+        assert_eq!(set.free_slots, 1);
     }
 
     #[test]
@@ -361,6 +381,7 @@ mod tests {
             claims: &[claim(1, "peer")],
             heartbeats: &[("peer".into(), 5000)],
             closed: &[],
+            joined: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -381,7 +402,8 @@ mod tests {
         let config = config(2);
         let build =
             |issues: &[Issue], prs: &[PullRequest], claims: &[Claim], beats: &[(String, u64)]| {
-                let seen = Observed { issues, prs, claims, heartbeats: beats, closed: &[9] };
+                let seen =
+                    Observed { issues, prs, claims, heartbeats: beats, closed: &[9], joined: &[] };
                 assemble(&seen, Some(&me()), 1000, &config)
             };
         let first = build(&issues, &prs, &claims, &beats);

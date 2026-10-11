@@ -16,7 +16,7 @@ pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].
     pull_request: (.pull_request != null)}";
 /// What is read of each comment on an issue or a PR.
 pub const COMMENTS_JQ: &str = ".[] | {id, body, url: .html_url}";
-pub const PR_FIELDS: &str = "number,headRefName,headRefOid,body,closingIssuesReferences";
+pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences";
 
 pub struct GitHub {
     pub dir: PathBuf,
@@ -94,6 +94,7 @@ impl GitHub {
         #[serde(rename_all = "camelCase")]
         struct Row {
             number: u64,
+            title: Option<String>,
             head_ref_name: String,
             head_ref_oid: String,
             body: Option<String>,
@@ -117,6 +118,7 @@ impl GitHub {
                     .collect();
                 PullRequest {
                     number: row.number,
+                    title: row.title.unwrap_or_default(),
                     head_branch: row.head_ref_name,
                     head_sha: row.head_ref_oid,
                     closes: PullRequest::closing(row.body.as_deref().unwrap_or(""), &linked),
