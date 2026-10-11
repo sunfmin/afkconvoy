@@ -169,6 +169,36 @@ fn a_failure_of_orca_is_an_error_with_the_claim_still_held() {
 }
 
 #[test]
+fn a_worker_asking_whether_its_folder_is_trusted_is_answered_yes_then_briefed() {
+    let world = ready_world();
+    world.with_orca(|orca| orca["trust_prompt"] = json!(true));
+    dispatch(&world, "7").ok();
+    let orca = world.orca();
+    let terminal = orca["terminals"].as_array().unwrap().iter().find(|t| t["open"] == true);
+    let terminal = terminal.expect("the worker's terminal");
+    assert_eq!(terminal["trusted"], true);
+    // the brief went to the agent, not to the question
+    let sent = terminal["sent"].as_array().unwrap();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
+}
+
+#[test]
+fn a_worker_that_asks_again_once_answered_is_an_error_and_is_told_nothing() {
+    let world = ready_world();
+    world.with_orca(|orca| {
+        orca["trust_prompt"] = json!(true);
+        orca["trust_sticks"] = json!(true);
+    });
+    let error = dispatch(&world, "7").error();
+    assert!(error.contains("still asks whether to trust the folder"), "{error}");
+    let orca = world.orca();
+    let terminal = orca["terminals"].as_array().unwrap().iter().find(|t| t["open"] == true);
+    let terminal = terminal.expect("the worker's terminal");
+    assert_eq!(terminal["sent"], json!([]));
+}
+
+#[test]
 fn an_orca_that_does_not_know_the_repo_is_an_error() {
     let world = ready_world();
     world.with_orca(|orca| orca["repos"] = json!([]));
