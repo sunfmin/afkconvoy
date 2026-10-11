@@ -15,6 +15,7 @@ pub mod recovery;
 mod rejected;
 pub mod settle;
 pub mod stopped;
+pub mod takeover;
 pub mod tick;
 pub mod train;
 pub mod transition;

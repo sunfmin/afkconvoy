@@ -21,6 +21,10 @@ pub enum TickStep {
     /// Ask after the worker of a claim of mine with no PR, and settle what it
     /// declared when it stopped.
     Judge { issue: u64 },
+    /// Delete a stale claim on a closed issue: a lock on nothing.
+    Unlock { issue: u64 },
+    /// Take a stale claim into a free slot, and continue it.
+    Reclaim { issue: u64 },
     /// Start a worker on a frontier issue, into a free slot.
     Dispatch { issue: u64 },
     /// Refresh my heartbeat, if it is due.
@@ -39,7 +43,8 @@ pub enum Outcome {
     Continued,
     /// There was nothing for it to do.
     Nothing,
-    /// A peer holds the issue: nothing was started, and no slot was taken.
+    /// A peer holds the issue — it won the race, or its heartbeat came back:
+    /// nothing was started, and no slot was taken.
     Lost,
     /// It failed. Whatever claim it was about is still held.
     Failed,
@@ -108,8 +113,9 @@ impl Pass {
 
 /// Runs one pass over `set` under a bound of `concurrency` claims: settle the
 /// claims whose work landed, tend the landing train, judge the workers that
-/// stopped without a PR, dispatch frontier issues into the free slots,
-/// lowest number first, then refresh the heartbeat. `carry_out` performs one
+/// stopped without a PR, delete the stale locks on closed issues, take stale
+/// claims and then frontier issues into the free slots, lowest number first,
+/// then refresh the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
 /// the rest of the pass goes on.
 ///
@@ -128,7 +134,11 @@ where
         did.push((step, carry_out(step)));
     }
     let held = end_claims(set, Sweep::Stopped, held, &mut did, &mut carry_out);
-    let held = fill_slots(set, concurrency, held, &mut did, &mut carry_out);
+    for lock in &set.stale_closed {
+        let step = TickStep::Unlock { issue: lock.number };
+        did.push((step, carry_out(step)));
+    }
+    let held = fill_slots(&takes(set), concurrency, held, &mut did, &mut carry_out);
     if held > 0 {
         let step = TickStep::Heartbeat;
         did.push((step, carry_out(step)));
@@ -184,12 +194,29 @@ where
     slots.held()
 }
 
-/// Dispatches frontier issues while a slot is free → the claims held.
-#[spec(fn(set: &WorkingSet, concurrency: usize, held: usize, did: &mut Vec<(TickStep, Outcome)>,
+/// What a pass may take a claim for, in the order it does: the stale claims
+/// ahead of the frontier — work somebody began — each lowest number first.
+fn takes(set: &WorkingSet) -> Vec<TickStep> {
+    let mut stale: Vec<u64> = set.stale.iter().map(|claim| claim.number).collect();
+    stale.sort();
+    let mut steps: Vec<TickStep> = Vec::new();
+    for issue in stale {
+        steps.push(TickStep::Reclaim { issue });
+    }
+    for issue in &set.frontier {
+        steps.push(TickStep::Dispatch { issue: issue.number });
+    }
+    steps
+}
+
+/// Carries out `takes` while a slot is free → the claims held. A fleet over
+/// its bound — after a takeover — takes nothing; what is past the free slots
+/// is left as it is.
+#[spec(fn(takes: &[TickStep], concurrency: usize, held: usize, did: &mut Vec<(TickStep, Outcome)>,
         carry_out: &mut F)
     -> usize{after: held <= after && (after <= concurrency || after == held)})]
 fn fill_slots<F>(
-    set: &WorkingSet,
+    takes: &[TickStep],
     concurrency: usize,
     held: usize,
     did: &mut Vec<(TickStep, Outcome)>,
@@ -199,16 +226,15 @@ where
     F: FnMut(TickStep) -> Outcome,
 {
     let mut slots = Slots::new(concurrency, held);
-    for issue in &set.frontier {
+    for step in takes {
         // What stays true on every turn, which Flux does not find alone.
         qualifier!(now: int, limit: int, before: int; now <= limit || now == before);
         qualifier!(before: int, now: int; before <= now);
         if !slots.has_free() {
             break;
         }
-        let step = TickStep::Dispatch { issue: issue.number };
-        let outcome = carry_out(step);
-        did.push((step, outcome));
+        let outcome = carry_out(*step);
+        did.push((*step, outcome));
         // A start that failed after its claim was won still holds the claim.
         if outcome != Outcome::Lost {
             slots.take();
@@ -305,6 +331,56 @@ mod tests {
 
     use Outcome::*;
     use TickStep::*;
+
+    fn peers(numbers: &[u64]) -> Vec<crate::plan::PeerClaim> {
+        let claim = |&number| crate::plan::PeerClaim { number, instance: None, sha: String::new() };
+        numbers.iter().map(claim).collect()
+    }
+
+    #[test]
+    fn stale_claims_are_taken_ahead_of_the_frontier_into_the_free_slots() {
+        let mut set = set(&[2, 4], &[(1, Status::NoPr)]);
+        set.stale = peers(&[9, 3, 6]);
+        set.stale_closed = peers(&[8]);
+        let pass = run_pass(&set, 3, 1, left_at_work);
+        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        assert_eq!(
+            steps,
+            [
+                Judge { issue: 1 },
+                Unlock { issue: 8 },
+                Reclaim { issue: 3 },
+                Reclaim { issue: 6 },
+                Heartbeat
+            ],
+            "lowest first; #9 past the free slots is left stale, and so is the frontier"
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (3, 2));
+    }
+
+    #[test]
+    fn a_stale_claim_a_peer_took_first_costs_no_slot() {
+        let mut set = set(&[2], &[]);
+        set.stale = peers(&[3, 6]);
+        let pass = run_pass(&set, 1, 0, |step| match step {
+            Reclaim { issue: 3 } => Lost,
+            _ => Done,
+        });
+        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        assert_eq!(steps, [Reclaim { issue: 3 }, Reclaim { issue: 6 }, Heartbeat]);
+        assert_eq!(pass.held, 1);
+    }
+
+    #[test]
+    fn a_fleet_over_its_bound_takes_nothing_until_it_is_back_under() {
+        let mut set = set(&[2], &[(1, Status::NoPr), (5, Status::NoPr), (7, Status::Closed)]);
+        set.stale = peers(&[3]);
+        // three held under a bound of one — a takeover: only the settle frees anything
+        let pass = run_pass(&set, 1, 3, left_at_work);
+        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        assert_eq!(steps, [Settle { issue: 7 }, Judge { issue: 1 }, Judge { issue: 5 }, Heartbeat]);
+        assert_eq!(pass.held, 2);
+    }
 
     /// Carries every step out, and finds every worker asked after at work.
     fn left_at_work(step: TickStep) -> Outcome {

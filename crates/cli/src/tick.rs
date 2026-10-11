@@ -12,6 +12,7 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::judge::judge;
 use crate::settle::settle;
+use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
 
 /// One step that failed, and why.
@@ -52,6 +53,8 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
         }
         TickStep::TendTrain => tend_train(fleet, agent),
         TickStep::Judge { issue } => judge(fleet, me, agent, issue),
+        TickStep::Unlock { issue } => unlock(fleet, me, issue),
+        TickStep::Reclaim { issue } => reclaim(fleet, me, agent, issue),
         TickStep::Dispatch { issue } => {
             let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
@@ -68,6 +71,8 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::TendTrain => ("tend_train", None),
         TickStep::Judge { issue } => ("judge", Some(issue)),
+        TickStep::Unlock { issue } => ("unlock", Some(issue)),
+        TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
         TickStep::Heartbeat => ("heartbeat", None),
     }
@@ -108,9 +113,13 @@ impl Ticked {
     /// fleet stands.
     pub fn line(&self) -> String {
         let mut parts: Vec<String> = vec![];
-        for (verb, wanted) in
-            [("settled", "settle"), ("ended", "judge"), ("dispatched", "dispatch")]
-        {
+        for (verb, wanted) in [
+            ("settled", "settle"),
+            ("ended", "judge"),
+            ("unlocked", "unlock"),
+            ("reclaimed", "reclaim"),
+            ("dispatched", "dispatch"),
+        ] {
             let issues: Vec<String> = self
                 .pass
                 .did
@@ -160,15 +169,45 @@ pub struct Pacing {
     pub second: Duration,
 }
 
+/// What a start says it took, when it took or lost anything.
+fn start_line(took: &Value) -> Option<String> {
+    let issues = |key: &str| -> Vec<String> {
+        let numbers = took[key].as_array().into_iter().flatten();
+        numbers.filter_map(|n| n.as_u64()).map(|n| format!("#{n}")).collect()
+    };
+    let (taken, lost) = (issues("taken"), issues("lost"));
+    let mut parts = vec![];
+    if !taken.is_empty() {
+        parts.push(format!("took {} stamped with this host", taken.join(", ")));
+    }
+    if !lost.is_empty() {
+        parts.push(format!("lost {} to a peer", lost.join(", ")));
+    }
+    if parts.is_empty() { None } else { Some(parts.join(" · ")) }
+}
+
 /// `afkconvoy run`: tick after tick, sleeping in between. Stopping it is just
 /// exiting: no claim is released on the way out, and the next start on this
 /// host takes them back (docs/adr/0003).
 pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64) -> Result<Value> {
     let mut streak = 0;
     let mut count = 0;
+    let mut started = false;
     loop {
         count += 1;
         me.now = clock();
+        // Once: a start takes every claim stamped with this host (docs/adr/0003).
+        if !started {
+            match Fleet::open(me.now).and_then(|mut fleet| at_start(&mut fleet, me)) {
+                Ok(took) => {
+                    started = true;
+                    if let Some(line) = start_line(&took) {
+                        println!("start: {line}");
+                    }
+                }
+                Err(error) => println!("start: FAILED to take this host's claims: {error:#}"),
+            }
+        }
         // A tick that could not even rebuild is a line, not the end of the loop.
         let (line, sleep) = match Fleet::open(me.now)
             .and_then(|mut fleet| tick(&mut fleet, me, agent))
