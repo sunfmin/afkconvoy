@@ -17,6 +17,8 @@ pub struct WorkerFields<'a> {
     pub gate_command: &'a str,
     /// The line the worker joins the landing train with: `afkconvoy land --issue <n>`.
     pub land_command: &'a str,
+    /// The line the worker wakes the fleet with: `afkconvoy wake`.
+    pub wake_command: &'a str,
 }
 
 const OPENING_FRESH: &str = "You are an afkconvoy worker. You own exactly ONE GitHub issue and work in an isolated git worktree.";
@@ -56,9 +58,20 @@ const JOIN_STEP: &str = "\
    ```bash
    {land_command}
    ```
-   It ends with one JSON object. `\"outcome\": \"joined\"` (or `\"merged\"`): you are done — stop. On
-   `\"conflict\"` the train was merged into your branch and left in progress: resolve every file it
-   lists, `git add` it, commit the merge, go back to step <g>, and run this again.";
+   It ends with one JSON object. `\"outcome\": \"joined\"` (or `\"merged\"`): you are done — wake the
+   fleet (below) and stop. On `\"conflict\"` the train was merged into your branch and left in
+   progress: resolve every file it lists, `git add` it, commit the merge,
+   go back to step <g>, and run this again.";
+
+/// The wake, as every worker with an outcome of its own is told it.
+const WAKE: &str = "\
+## Wake the fleet
+
+Once your outcome is on GitHub<outcomes>, run this once, exactly as written, and then stop. If it
+fails, ignore it:
+```bash
+{wake_command}
+```";
 
 const JOINER: &str = "\
 You are an afkconvoy worker taking over an issue whose work is finished: PR #{pr} is open for it, and
@@ -76,6 +89,8 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
    it, and commit the merge. Commit whatever else belongs to the PR, then `git push origin HEAD`.
 <gate_step>
 <join_step>
+
+<wake>
 
 ## Hard rules
 
@@ -116,8 +131,9 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 
 ## If you will not open a PR
 
-Post a comment on the issue instead (`gh issue comment {n} --body \"...\"`) and stop. Its **first
-line** must be exactly this marker, on one line, followed by a human-readable body:
+Post a comment on the issue instead (`gh issue comment {n} --body \"...\"`), wake the fleet (below)
+and stop. Its **first line** must be exactly this marker, on one line, followed by a human-readable
+body:
 ```
 {verdict_marker}
 ```
@@ -128,6 +144,8 @@ line** must be exactly this marker, on one line, followed by a human-readable bo
 - **`needs-human`** — after a genuine effort you cannot complete the work or make the gate pass, or
   the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
   so that a human can act on it in one reply.
+
+<wake>
 
 ## Hard rules
 
@@ -240,7 +258,9 @@ pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, 
     let (template, pr) = match variant {
         Variant::Fresh => (briefed(OPENING_FRESH, STEP1_FRESH), String::new()),
         Variant::Continue => (briefed(OPENING_CONTINUE, STEP1_CONTINUE), String::new()),
-        Variant::Join { pr } => (steps(JOINER, "2", "3"), pr.to_string()),
+        Variant::Join { pr } => {
+            (steps(JOINER, "2", "3", " — your PR is on the landing train"), pr.to_string())
+        }
     };
     fill(
         &template,
@@ -252,6 +272,7 @@ pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, 
             ("base_branch", fields.base_branch),
             ("gate_command", fields.gate_command),
             ("land_command", fields.land_command),
+            ("wake_command", fields.wake_command),
             ("verdict_marker", &marker),
             ("pr", &pr),
         ],
@@ -260,15 +281,18 @@ pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, 
 
 /// The worker prompt with a variant's opening and first step in it.
 fn briefed(opening: &str, step1: &str) -> String {
-    steps(&WORKER.replace("<opening>", opening).replace("<step1>", step1), "3", "5")
+    let outcomes = " — your PR is on the landing train, or your comment is posted";
+    steps(&WORKER.replace("<opening>", opening).replace("<step1>", step1), "3", "5", outcomes)
 }
 
-/// `template` with the gate and join steps in it, numbered `gate` and `join`.
-fn steps(template: &str, gate: &str, join: &str) -> String {
+/// `template` with the gate and join steps in it, numbered `gate` and `join`,
+/// and the wake, said for the `outcomes` a worker on it can end with.
+fn steps(template: &str, gate: &str, join: &str, outcomes: &str) -> String {
     let numbered = |step: &str| step.replace("<g>", gate).replace("<j>", join);
     template
         .replace("<gate_step>", &numbered(GATE_STEP))
         .replace("<join_step>", &numbered(JOIN_STEP))
+        .replace("<wake>", &WAKE.replace("<outcomes>", outcomes))
 }
 
 /// The line typed at a worker to hand it its brief. The prompt itself, sent as
@@ -338,6 +362,7 @@ mod tests {
             base_branch: "develop",
             gate_command: "/opt/bin/afkconvoy gate --train",
             land_command: "/opt/bin/afkconvoy land --issue 7",
+            wake_command: "/opt/bin/afkconvoy wake",
         }
     }
 
@@ -393,6 +418,27 @@ mod tests {
         assert!(whole.contains("\n3. **Gate.**") && whole.contains("\n5. **Join the landing"));
         assert!(whole.contains("go back to step 3, and run this again"));
         assert!(!whole.contains("<g>") && !whole.contains("_step>"));
+    }
+
+    #[test]
+    fn every_worker_with_an_outcome_is_told_to_wake_the_fleet() {
+        let line = "run this once, exactly as written, and then stop. If it\nfails, ignore it:\n\
+                    ```bash\n/opt/bin/afkconvoy wake\n```";
+        for variant in [Variant::Fresh, Variant::Continue] {
+            let prompt = worker_prompt(&fields(), variant).unwrap();
+            assert!(prompt.contains(line), "{prompt}");
+            assert!(prompt.contains("your PR is on the landing train, or your comment is posted"));
+            assert!(prompt.contains("you are done — wake the\n   fleet (below) and stop"));
+            assert!(prompt.contains("wake the fleet (below)\nand stop. Its **first line**"));
+            assert_eq!(prompt.matches("afkconvoy wake").count(), 1, "said in one place");
+            assert!(!prompt.contains("<wake>") && !prompt.contains("<outcomes>"));
+        }
+        let joiner = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
+        assert!(joiner.contains(line), "{joiner}");
+        assert!(
+            joiner.contains("Once your outcome is on GitHub — your PR is on the landing train,")
+        );
+        assert!(!joiner.contains("comment is posted") && !joiner.contains("<wake>"));
     }
 
     #[test]

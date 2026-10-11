@@ -25,4 +25,5 @@ pub mod tick;
 pub mod train;
 pub mod transition;
 pub mod verdict;
+pub mod wake;
 pub mod worker;

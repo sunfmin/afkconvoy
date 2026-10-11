@@ -32,6 +32,7 @@ pub mod takeover;
 pub mod tend;
 pub mod tick;
 pub mod train;
+pub mod wake;
 pub mod watch;
 
 use claims::{Me, Scan, Take};
@@ -190,6 +191,8 @@ enum Command {
         #[arg(long)]
         host: Option<String>,
     },
+    /// End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
+    Wake,
     /// List every claim and heartbeat on the remote
     Scan,
     /// Claim one issue for a fleet instance
@@ -365,6 +368,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 (false, None, _) => anyhow::bail!("takeover takes --list, or --from <instance id>"),
             }
         }
+        Command::Wake => wake::wake(&Repo::here()?),
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
             let repo = Repo::here()?;
