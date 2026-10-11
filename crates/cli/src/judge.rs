@@ -88,7 +88,7 @@ pub fn escalate(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<
         "worktree": if workless.is_some() { "removed" } else { "kept" }}))
 }
 
-fn escalate_claim(
+pub(crate) fn escalate_claim(
     fleet: &mut Fleet,
     claim: &Claim,
     reason: &str,
@@ -216,7 +216,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
 }
 
 /// Types the nudge line at the worker in `worktree` and records it there.
-fn nudge_worker(worktree: &Worktree, unnudged: Unnudged, now: u64) -> Result<String> {
+pub(crate) fn nudge_worker(worktree: &Worktree, unnudged: Unnudged, now: u64) -> Result<String> {
     let Some(terminal) = worktree.terminal()? else {
         bail!("no live terminal in {} to take the nudge", worktree.path.display());
     };
@@ -228,14 +228,14 @@ fn nudge_worker(worktree: &Worktree, unnudged: Unnudged, now: u64) -> Result<Str
     Ok(terminal)
 }
 
-/// Why a silent worker's claim is escalated, with the end of its screen. The
-/// read is soft: an escalation never waits on a terminal.
-fn where_it_stopped(worktree: &Worktree, silent: &Silent) -> String {
+/// The end of a silent worker's screen, for the reason its claim is escalated
+/// with. The read is soft: an escalation never waits on a terminal.
+pub(crate) fn where_it_stopped(worktree: &Worktree, silent: &Silent) -> Tail {
     let screen = worktree.terminal().and_then(|terminal| match terminal {
         Some(terminal) => worktree.screen(&terminal, screen_request(silent)),
         None => Ok(vec![]),
     });
-    stalled_reason(silent, &Tail::of(&screen.unwrap_or_default()))
+    Tail::of(&screen.unwrap_or_default())
 }
 
 /// `afkconvoy nudge`: tell the worker of one of my claims, stopped with no PR
@@ -315,7 +315,7 @@ pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
             }
         }
         Route::Escalate(why) => why.reason(said.unwrap_or("(its comment)")),
-        Route::Stalled(silent) => where_it_stopped(&worktree, &silent),
+        Route::Stalled(silent) => stalled_reason(&silent, &where_it_stopped(&worktree, &silent)),
     };
     escalate_claim(fleet, &claim, &reason, Some(&worktree), workless.as_ref())?;
     Ok(Outcome::Done)

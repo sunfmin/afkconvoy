@@ -28,6 +28,7 @@ pub mod takeover;
 pub mod tend;
 pub mod tick;
 pub mod train;
+pub mod watch;
 
 use claims::{Me, Scan, Take};
 use dispatch::Agent;
@@ -153,6 +154,15 @@ enum Command {
         issue: u64,
         #[command(flatten)]
         who: Who,
+    },
+    /// Replace the silent worker of one of my claims whose PR is joining the train, once
+    Restart {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
+        #[command(flatten)]
+        agent: AgentArgs,
     },
     /// Take another fleet instance's claims without waiting for the lease
     Takeover {
@@ -322,6 +332,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Park { issue, who } => park::park(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Nudge { issue, who } => judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue),
+        Command::Restart { issue, who, agent } => {
+            watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)
+        }
         Command::Takeover { list, from, yes, instance, host } => {
             let mut fleet = Fleet::open(now)?;
             let me =

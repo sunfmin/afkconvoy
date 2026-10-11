@@ -21,6 +21,9 @@ pub enum TickStep {
     /// Ask after the worker of a claim of mine with no PR, and settle what it
     /// declared when it stopped.
     Judge { issue: u64 },
+    /// Ask after the worker of a claim of mine whose PR is open and not on the
+    /// train yet.
+    Watch { issue: u64 },
     /// Delete a stale claim on a closed issue: a lock on nothing.
     Unlock { issue: u64 },
     /// Take a stale claim into a free slot, and continue it.
@@ -34,13 +37,16 @@ pub enum TickStep {
 /// How a step ended, as the pass reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// It did what it names. For `Settle` and `Judge` that ends the claim:
-    /// its slot is free.
+    /// It did what it names. For `Settle`, `Judge` and `Watch` that ends the
+    /// claim: its slot is free.
     Done,
-    /// `Judge` told a silent worker to carry on: its claim is still held.
+    /// A silent worker was told to carry on: its claim is still held.
     Nudged,
-    /// `Judge` started a worker on the claim again: it is still held.
+    /// A worker was started on the claim again: it is still held.
     Continued,
+    /// `Watch` replaced a silent joining worker, the once that is allowed: the
+    /// claim is still held.
+    Restarted,
     /// There was nothing for it to do.
     Nothing,
     /// A peer holds the issue — it won the race, or its heartbeat came back:
@@ -106,14 +112,17 @@ impl Pass {
     pub fn did_work(&self) -> bool {
         self.did.iter().any(|(step, outcome)| {
             !matches!(step, TickStep::Heartbeat)
-                && matches!(outcome, Outcome::Done | Outcome::Nudged | Outcome::Continued)
+                && matches!(
+                    outcome,
+                    Outcome::Done | Outcome::Nudged | Outcome::Continued | Outcome::Restarted
+                )
         })
     }
 }
 
 /// Runs one pass over `set` under a bound of `concurrency` claims: settle the
-/// claims whose work landed, tend the landing train, judge the workers that
-/// stopped without a PR, delete the stale locks on closed issues, take stale
+/// claims whose work landed, tend the landing train, ask after the workers
+/// not on the train yet, delete the stale locks on closed issues, take stale
 /// claims and then frontier issues into the free slots, lowest number first,
 /// then refresh the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
@@ -152,7 +161,8 @@ where
 enum Sweep {
     /// Those whose work has landed: settled.
     Landed,
-    /// Those with no PR: their workers asked after.
+    /// Those not on the train yet — no PR, or one still joining: their
+    /// workers asked after.
     Stopped,
 }
 
@@ -161,6 +171,7 @@ fn ending_step(sweep: Sweep, issue: u64, status: Status) -> Option<TickStep> {
     match (sweep, status) {
         (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
         (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue }),
+        (Sweep::Stopped, Status::Joining) => Some(TickStep::Watch { issue }),
         _ => None,
     }
 }
@@ -384,7 +395,7 @@ mod tests {
 
     /// Carries every step out, and finds every worker asked after at work.
     fn left_at_work(step: TickStep) -> Outcome {
-        if matches!(step, Judge { .. } | TendTrain) { Nothing } else { Done }
+        if matches!(step, Judge { .. } | Watch { .. } | TendTrain) { Nothing } else { Done }
     }
 
     #[test]
@@ -444,17 +455,42 @@ mod tests {
     #[test]
     fn a_stopped_claim_that_ends_frees_its_slot_and_the_train_takes_none() {
         let set = set(&[5, 6], &[(1, Status::NoPr), (2, Status::Joined), (3, Status::Joining)]);
-        // #1's worker declared a verdict that ends its claim
-        let pass = run_pass(&set, 3, 3, |_| Done);
+        // #1's worker declared a verdict that ends its claim; #3's is at work on its join
+        let ended = |step| if matches!(step, Watch { .. }) { Nothing } else { Done };
+        let pass = run_pass(&set, 3, 3, ended);
         let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
-        assert_eq!(steps, [TendTrain, Judge { issue: 1 }, Dispatch { issue: 5 }, Heartbeat]);
+        assert_eq!(
+            steps,
+            [TendTrain, Judge { issue: 1 }, Watch { issue: 3 }, Dispatch { issue: 5 }, Heartbeat]
+        );
         assert_eq!(pass.held, 3);
         let left = run_pass(&set, 3, 3, left_at_work);
         assert_eq!(
             left.did,
-            [(TendTrain, Nothing), (Judge { issue: 1 }, Nothing), (Heartbeat, Done)]
+            [
+                (TendTrain, Nothing),
+                (Judge { issue: 1 }, Nothing),
+                (Watch { issue: 3 }, Nothing),
+                (Heartbeat, Done)
+            ]
         );
         assert!(!left.did_work());
+    }
+
+    #[test]
+    fn a_joining_claim_is_watched_and_only_its_escalation_frees_the_slot() {
+        let set = set(&[5], &[(3, Status::Joining)]);
+        for kept in [Nudged, Restarted, Continued] {
+            let pass = run_pass(&set, 1, 1, |step| match step {
+                Watch { .. } => kept,
+                _ => Done,
+            });
+            assert_eq!(pass.did, [(Watch { issue: 3 }, kept), (Heartbeat, Done)]);
+            assert!(pass.did_work() && pass.held == 1);
+        }
+        let pass = run_pass(&set, 1, 1, |_| Done);
+        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        assert_eq!(steps, [Watch { issue: 3 }, Dispatch { issue: 5 }, Heartbeat]);
     }
 
     #[test]

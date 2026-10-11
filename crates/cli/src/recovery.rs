@@ -1,6 +1,7 @@
 //! What survived a worker that died: the worktree on this host, and the
 //! issue's own branches on the remote.
 
+use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::recovery::{Pushed, Recovery, furthest_ahead, own_branches, select_recovery};
 use afkconvoy_core::stopped::Progress;
 use afkconvoy_core::worker::recorded_branches;
@@ -56,7 +57,9 @@ pub fn survey(fleet: &Fleet, number: u64) -> Result<Survey> {
         candidates.push(Pushed { name, commits_ahead });
     }
     let pushed = furthest_ahead(&candidates).cloned();
-    let plan = select_recovery(progress.as_ref(), pushed.as_ref());
+    // The issue's open PR, when it has one: what survived is then only joined.
+    let joining = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
+    let plan = select_recovery(progress.as_ref(), pushed.as_ref(), joining);
     Ok(Survey { worktree, progress, candidates, pushed, plan })
 }
 

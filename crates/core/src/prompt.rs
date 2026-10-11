@@ -38,6 +38,52 @@ const STEP1_CONTINUE: &str = "\
    the relevant `docs/adr/*`, and `docs/agents/*`. Use the glossary's exact vocabulary. Continue from
    the first step that is not yet done.";
 
+/// The gate and the join, as every worker that has them is told them. `<g>` and
+/// `<j>` are the numbers the two steps carry in the prompt they are put in.
+const GATE_STEP: &str = "\
+<g>. **Gate.** Commit everything, then run this in your worktree:
+   ```bash
+   {gate_command}
+   ```
+   It first merges in what your PR will land behind (the landing train, or `{base_branch}`), then
+   runs the repo's gate, and ends with one JSON object. On `\"status\": \"conflict\"` nothing ran:
+   resolve every file it lists, `git add` it, commit the merge, and run it again. Otherwise fix the
+   code, commit, and run it again until it says `\"status\": \"green\"` and `\"recorded\": true` —
+   its `detail` says what is missing. Any further commit needs another run. Never rebase.";
+
+const JOIN_STEP: &str = "\
+<j>. **Join the landing train.** Run this in your worktree:
+   ```bash
+   {land_command}
+   ```
+   It ends with one JSON object. `\"outcome\": \"joined\"` (or `\"merged\"`): you are done — stop. On
+   `\"conflict\"` the train was merged into your branch and left in progress: resolve every file it
+   lists, `git add` it, commit the merge, go back to step <g>, and run this again.";
+
+const JOINER: &str = "\
+You are an afkconvoy worker taking over an issue whose work is finished: PR #{pr} is open for it, and
+is not on the landing train yet. Your ONLY job is to get that PR on the train. Write no feature and
+open no other PR. Nobody reads this terminal: never wait for an answer.
+
+**Your issue:** #{n} — {title}
+**Your PR:** #{pr}, from the branch `{branch}` (already checked out; the base is `{base_branch}`).
+**Your worktree:** `{worktree_path}` — work only here.
+
+## Steps
+
+1. **See where the worker before you stopped.** Run `git status`. A merge left in progress is a
+   conflict it was resolving: resolve every unmerged file so both sides' intent survives, `git add`
+   it, and commit the merge. Commit whatever else belongs to the PR, then `git push origin HEAD`.
+<gate_step>
+<join_step>
+
+## Hard rules
+
+- End with your PR on the landing train — never just stop.
+- Never close the PR, never open another, never rebase.
+- Never edit files outside your worktree, and never push to `{base_branch}`.
+";
+
 const WORKER: &str = "\
 <opening>
 Nobody reads this terminal: never wait for an answer.
@@ -58,15 +104,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
 
 <step1>
 2. **Implement** the issue's acceptance criteria, matching the surrounding code's conventions.
-3. **Gate.** Commit everything, then run this in your worktree:
-   ```bash
-   {gate_command}
-   ```
-   It first merges in what your PR will land behind (the landing train, or `{base_branch}`), then
-   runs the repo's gate, and ends with one JSON object. On `\"status\": \"conflict\"` nothing ran:
-   resolve every file it lists, `git add` it, commit the merge, and run it again. Otherwise fix the
-   code, commit, and run it again until it says `\"status\": \"green\"` and `\"recorded\": true` —
-   its `detail` says what is missing. Any further commit needs another run. Never rebase.
+<gate_step>
 4. **Open a PR** against `{base_branch}` whose body contains the line `Closes #{n}`:
    ```bash
    git push origin HEAD && gh pr create --base {base_branch} --head {branch} --title \"<title>\" --body \"<what changed>
@@ -74,13 +112,7 @@ git add -A && git commit -m \"<what this step did>\" && git push origin HEAD
    Closes #{n}\"
    ```
    Do not merge it.
-5. **Join the landing train.** Run this in your worktree:
-   ```bash
-   {land_command}
-   ```
-   It ends with one JSON object. `\"outcome\": \"joined\"` (or `\"merged\"`): you are done — stop. On
-   `\"conflict\"` the train was merged into your branch and left in progress: resolve every file it
-   lists, `git add` it, commit the merge, go back to step 3, and run this again.
+<join_step>
 
 ## If you will not open a PR
 
@@ -180,16 +212,17 @@ pub fn train_pointer(brief: &str) -> String {
     )
 }
 
-/// The prompt a worker starting on a fresh worktree is given.
+/// The prompt a worker is started on: the whole issue, or — its PR already
+/// open — only the join.
 pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, String> {
     let number = fields.number.to_string();
     let marker = verdict::marker_format();
     // The variant's blocks first, so the one fill reads their placeholders too.
-    let (opening, step1) = match variant {
-        Variant::Fresh => (OPENING_FRESH, STEP1_FRESH),
-        Variant::Continue => (OPENING_CONTINUE, STEP1_CONTINUE),
+    let (template, pr) = match variant {
+        Variant::Fresh => (briefed(OPENING_FRESH, STEP1_FRESH), String::new()),
+        Variant::Continue => (briefed(OPENING_CONTINUE, STEP1_CONTINUE), String::new()),
+        Variant::Join { pr } => (steps(JOINER, "2", "3"), pr.to_string()),
     };
-    let template = WORKER.replace("<opening>", opening).replace("<step1>", step1);
     fill(
         &template,
         &[
@@ -201,8 +234,22 @@ pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, 
             ("gate_command", fields.gate_command),
             ("land_command", fields.land_command),
             ("verdict_marker", &marker),
+            ("pr", &pr),
         ],
     )
+}
+
+/// The worker prompt with a variant's opening and first step in it.
+fn briefed(opening: &str, step1: &str) -> String {
+    steps(&WORKER.replace("<opening>", opening).replace("<step1>", step1), "3", "5")
+}
+
+/// `template` with the gate and join steps in it, numbered `gate` and `join`.
+fn steps(template: &str, gate: &str, join: &str) -> String {
+    let numbered = |step: &str| step.replace("<g>", gate).replace("<j>", join);
+    template
+        .replace("<gate_step>", &numbered(GATE_STEP))
+        .replace("<join_step>", &numbered(JOIN_STEP))
 }
 
 /// The line typed at a worker to hand it its brief. The prompt itself, sent as
@@ -308,6 +355,25 @@ mod tests {
         let fresh = worker_prompt(&fields(), Variant::Fresh).unwrap();
         let rest = |prompt: &str| prompt[prompt.find("2. **Implement**").unwrap()..].to_string();
         assert_eq!(rest(&prompt), rest(&fresh));
+    }
+
+    #[test]
+    fn a_joining_worker_is_briefed_only_to_join_the_train() {
+        let prompt = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
+        assert!(prompt.contains("PR #70 is open for it"));
+        assert!(prompt.contains("**Your PR:** #70, from the branch `tester/issue-7-add`"));
+        assert!(prompt.contains("\n2. **Gate.**") && prompt.contains("\n3. **Join the landing"));
+        assert!(prompt.contains("   /opt/bin/afkconvoy gate --train\n"));
+        assert!(prompt.contains("   /opt/bin/afkconvoy land --issue 7\n"));
+        assert!(prompt.contains("go back to step 2, and run this again"));
+        for absent in ["**Implement**", "gh pr create", "convoy:verdict", "<g>", "<j>", "_step>"] {
+            assert!(!prompt.contains(absent), "{absent}");
+        }
+        // the same two steps the whole brief gives, under its own numbers
+        let whole = worker_prompt(&fields(), Variant::Fresh).unwrap();
+        assert!(whole.contains("\n3. **Gate.**") && whole.contains("\n5. **Join the landing"));
+        assert!(whole.contains("go back to step 3, and run this again"));
+        assert!(!whole.contains("<g>") && !whole.contains("_step>"));
     }
 
     #[test]
