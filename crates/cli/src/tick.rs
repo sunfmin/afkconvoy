@@ -52,7 +52,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
             settle(fleet, me, issue)?;
             Ok(Outcome::Done)
         }
-        TickStep::TendTrain => tend_train(fleet, agent),
+        TickStep::TendTrain => tend_train(fleet, me, agent),
         TickStep::Judge { issue } => judge(fleet, me, agent, issue),
         TickStep::Watch { issue } => watch(fleet, me, agent, issue),
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
@@ -94,6 +94,7 @@ impl Ticked {
                     Outcome::Nudged => "nudged",
                     Outcome::Continued => "continued",
                     Outcome::Restarted => "restarted",
+                    Outcome::Abandoned => "abandoned",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Failed => "failed",
@@ -152,9 +153,14 @@ impl Ticked {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
         }
-        let tended = (TickStep::TendTrain, Outcome::Done);
-        if self.pass.did.contains(&tended) {
-            parts.push("tended the train".to_string());
+        for (outcome, said) in [
+            (Outcome::Done, "tended the train"),
+            (Outcome::Nudged, "nudged the train worker"),
+            (Outcome::Abandoned, "abandoned the train"),
+        ] {
+            if self.pass.did.contains(&(TickStep::TendTrain, outcome)) {
+                parts.push(said.to_string());
+            }
         }
         if parts.is_empty() {
             parts.push("nothing to do".to_string());

@@ -161,6 +161,21 @@ impl GitHub {
         Ok(())
     }
 
+    /// Replaces the body of one comment, on an issue or a PR.
+    pub fn edit_comment(&self, id: u64, body: &str) -> Result<()> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{id}");
+        self.gh(&[
+            "api",
+            "--method",
+            "PATCH",
+            &endpoint,
+            "-f",
+            &format!("body={body}"),
+            "--silent",
+        ])?;
+        Ok(())
+    }
+
     /// Closes one issue as completed.
     pub fn close_issue(&self, number: u64) -> Result<()> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}");

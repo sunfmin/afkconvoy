@@ -11,6 +11,7 @@ use afkconvoy_core::claims::InstanceId;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
+pub mod abandon;
 pub mod claims;
 pub mod config;
 pub mod dispatch;
@@ -163,6 +164,11 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+    },
+    /// Give up the landing train, its worker silent past a nudge, with nothing landed
+    Abandon {
+        #[command(flatten)]
+        who: Who,
     },
     /// Take another fleet instance's claims without waiting for the lease
     Takeover {
@@ -335,6 +341,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Restart { issue, who, agent } => {
             watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)
         }
+        Command::Abandon { who } => abandon::abandon_by_hand(&mut Fleet::open(now)?, &who.me(now)),
         Command::Takeover { list, from, yes, instance, host } => {
             let mut fleet = Fleet::open(now)?;
             let me =

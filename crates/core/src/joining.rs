@@ -11,25 +11,51 @@ use crate::worker::WorkerState;
 /// The kind of record a PR carries of its join.
 pub const JOIN: &str = "convoy:join";
 
-/// The comment that records on a PR that the worker joining it was restarted.
-pub fn join_comment(restarted: u64) -> String {
-    format!(
-        "{}\nafkconvoy: the worker joining this PR to the landing train went silent, and was \
-         replaced by a new one in the same worktree. This is done once per PR.",
-        record::marker(JOIN, &[("restarted", &restarted.to_string())])
-    )
+/// What a PR's one marker comment records of its join.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JoinRecord {
+    /// When the worker joining it was restarted.
+    pub restarted: Option<u64>,
+    /// When it was taken off an abandoned train.
+    pub abandoned: Option<u64>,
+    /// Which of the PR's comments carries the record, when one does: the one
+    /// a new fact is written into.
+    pub comment: Option<usize>,
 }
 
-/// When the worker joining a PR was restarted, from the PR's comments' bodies:
-/// the first record of it, whichever host wrote it.
-pub fn restarted_at<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<u64> {
-    for body in bodies {
-        let at = record::read_marker(JOIN, body).and_then(|fields| fields.number("restarted"));
-        if at.is_some() {
-            return at;
-        }
+/// The comment that carries a PR's join record.
+pub fn join_comment(record: &JoinRecord) -> String {
+    let stamp = |at: Option<u64>| at.map(|at| at.to_string()).unwrap_or_default();
+    let (restarted, abandoned) = (stamp(record.restarted), stamp(record.abandoned));
+    let mut body = record::marker(JOIN, &[("restarted", &restarted), ("abandoned", &abandoned)]);
+    if record.restarted.is_some() {
+        body.push_str(
+            "\nafkconvoy: the worker joining this PR to the landing train went silent, and was \
+             replaced by a new one in the same worktree. This is done once per PR.",
+        );
     }
-    None
+    if record.abandoned.is_some() {
+        body.push_str(
+            "\nafkconvoy: the landing train this PR was on was given up with nothing landed — \
+             its worker stayed silent — and the PR joins the next one. A second time, the issue \
+             is handed to a human instead.",
+        );
+    }
+    body
+}
+
+/// A PR's join record, from its comments' bodies, oldest first. The first
+/// comment with the marker is the record's; a fact a later one states — two
+/// hosts wrote at once — counts all the same.
+pub fn read_join<'a>(bodies: impl IntoIterator<Item = &'a str>) -> JoinRecord {
+    let mut record = JoinRecord::default();
+    for (at, body) in bodies.into_iter().enumerate() {
+        let Some(fields) = record::read_marker(JOIN, body) else { continue };
+        record.comment = record.comment.or(Some(at));
+        record.restarted = record.restarted.or(fields.number("restarted"));
+        record.abandoned = record.abandoned.or(fields.number("abandoned"));
+    }
+    record
 }
 
 /// The proof that a PR's join never had its restart, used up by the one
@@ -232,12 +258,26 @@ mod tests {
     }
 
     #[test]
-    fn the_restart_is_read_back_from_the_pr_whoever_wrote_it() {
-        let said = join_comment(1234);
+    fn a_join_record_is_one_comment_read_back_whoever_wrote_it() {
+        let restarted = JoinRecord { restarted: Some(1234), ..JoinRecord::default() };
+        let said = join_comment(&restarted);
         assert!(said.starts_with("<!--convoy:join restarted=1234-->\n"), "{said}");
-        assert_eq!(restarted_at(["looks good", said.as_str()]), Some(1234));
-        assert_eq!(restarted_at([said.as_str(), join_comment(9999).as_str()]), Some(1234));
-        assert_eq!(restarted_at(["<!--convoy:join restarted=soon-->", "convoy:join"]), None);
+        assert_eq!(
+            read_join(["looks good", said.as_str()]),
+            JoinRecord { comment: Some(1), ..restarted.clone() }
+        );
+        let both = JoinRecord { abandoned: Some(2000), ..restarted };
+        let said = join_comment(&both);
+        assert!(said.starts_with("<!--convoy:join restarted=1234 abandoned=2000-->\n"), "{said}");
+        assert!(said.contains("replaced by a new one") && said.contains("joins the next one"));
+        assert_eq!(read_join([said.as_str()]), JoinRecord { comment: Some(0), ..both });
+        // two hosts wrote at once: the first comment is the record's, every fact counts
+        let other = join_comment(&JoinRecord { abandoned: Some(9), ..JoinRecord::default() });
+        let other = other.as_str();
+        let read = read_join([join_comment(&JoinRecord::default()).as_str(), other]);
+        assert_eq!(read, JoinRecord { restarted: None, abandoned: Some(9), comment: Some(0) });
+        assert_eq!(read_join(["<!--convoy:join restarted=soon-->"]).restarted, None);
+        assert_eq!(read_join(["convoy:join restarted=1"]), JoinRecord::default());
     }
 
     #[test]

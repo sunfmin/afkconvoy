@@ -144,6 +144,17 @@ fn api(st: &mut State) -> ! {
                 .collect();
             st.finish(&rows.join("\n"), 0, "")
         }
+        ["issues", "comments", id] if method == "PATCH" => {
+            let body = body.expect("an edit has a body");
+            let id: u64 = id.parse().unwrap();
+            let every = st.doc["comments"].as_object_mut().unwrap().values_mut();
+            let mut rows = every.flat_map(|rows| rows.as_array_mut().unwrap().iter_mut());
+            let Some(comment) = rows.find(|comment| comment["id"] == id) else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n")
+            };
+            comment["body"] = json!(body);
+            st.finish("", 0, "")
+        }
         ["issues", number] if method == "PATCH" => {
             let state = st.argv.iter().find_map(|a| a.strip_prefix("state=")).map(str::to_string);
             let number: u64 = number.parse().unwrap();
