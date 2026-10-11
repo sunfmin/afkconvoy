@@ -188,6 +188,21 @@ impl World {
         });
     }
 
+    /// A worker's worktree for `issue`, cut from the base branch, with one
+    /// commit pushed and PR #`issue`0 open for it.
+    pub fn worker(&self, issue: u64, file: &str, text: &str) -> PathBuf {
+        let dir = self.root.join(format!("wt-{issue}"));
+        let branch = format!("issue-{issue}");
+        git(&self.clone, &["fetch", "-q", "origin"]);
+        let at = dir.to_str().unwrap();
+        git(&self.clone, &["worktree", "add", "-q", "-b", &branch, at, "origin/main"]);
+        commit(&dir, file, text);
+        git(&dir, &["push", "-q", "origin", "HEAD"]);
+        self.issue(issue, &["ready-for-agent"]);
+        self.pr(issue * 10, issue, &branch);
+        dir
+    }
+
     /// Every `gh` call made since the last look, as argv lists.
     pub fn gh_calls(&self) -> Vec<Vec<String>> {
         let calls = serde_json::from_value(self.gh()["calls"].clone()).unwrap();
@@ -281,6 +296,14 @@ const GIT_ENV: [(&str, &str); 6] = [
     ("GIT_CONFIG_GLOBAL", "/dev/null"),
     ("GIT_CONFIG_NOSYSTEM", "1"),
 ];
+
+/// Commits one file in a checkout → the commit.
+pub fn commit(dir: &Path, file: &str, text: &str) -> String {
+    std::fs::write(dir.join(file), text).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-q", "-m", file]);
+    git(dir, &["rev-parse", "HEAD"])
+}
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.
 pub fn git(cwd: &Path, args: &[&str]) -> String {

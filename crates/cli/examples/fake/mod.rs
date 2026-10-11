@@ -81,3 +81,8 @@ pub fn git(args: &[&str]) -> String {
     let out = Command::new("git").args(args).output().expect("git runs");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
+
+/// Whether a git command succeeded.
+pub fn ok(args: &[&str]) -> bool {
+    Command::new("git").args(args).output().expect("git runs").status.success()
+}

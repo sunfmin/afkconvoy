@@ -18,6 +18,7 @@ pub mod fleet;
 pub mod gate;
 pub mod gh;
 pub mod git;
+pub mod landing;
 pub mod orca;
 pub mod tick;
 pub mod train;
@@ -84,11 +85,20 @@ enum Command {
         #[arg(long)]
         train: bool,
     },
-    /// Put this worktree's PR on the landing train (a worker's command)
+    /// Put this worktree's PR on the landing train (a worker's command), or land the train
     Land {
         /// The issue the PR closes
+        #[arg(long, required_unless_present = "train", conflicts_with = "train")]
+        issue: Option<u64>,
+        /// Gate the landing train and land it on the base branch (the train worker's command)
         #[arg(long)]
-        issue: u64,
+        train: bool,
+        /// Seconds the gate command is given before it is killed, and red
+        #[arg(long, default_value_t = 3600)]
+        gate_timeout: u64,
+        /// Seconds GitHub is given to show a landed PR as merged
+        #[arg(long, default_value_t = 60)]
+        merged_timeout: u64,
     },
     /// Start a fresh worker on one issue
     Dispatch {
@@ -225,11 +235,20 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let config = config::load(&repo.dir.join(config::FILE))?;
             gate::gate(&repo, &config, train, now, Duration::from_secs(gate_timeout))
         }
-        Command::Land { issue } => {
+        Command::Land { issue, gate_timeout, merged_timeout, .. } => {
             let repo = Repo::here()?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
-            train::land(&repo, &config, &gh, issue, now)
+            match issue {
+                Some(issue) => train::land(&repo, &config, &gh, issue, now),
+                None => {
+                    let limits = landing::Limits {
+                        gate: Duration::from_secs(gate_timeout),
+                        merged: Duration::from_secs(merged_timeout),
+                    };
+                    landing::land_train(&repo, &config, &gh, now, &limits)
+                }
+            }
         }
         Command::Dispatch { issue, who, agent } => {
             dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)

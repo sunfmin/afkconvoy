@@ -158,6 +158,72 @@ defs! {
     }
 }
 
+/// Leave to land a tree on the base branch: a green run of the configured
+/// command on that very tree, believed at `now`. `Proven::by` is the only way
+/// to one, so a push to the base branch that asks for one cannot be made on a
+/// run of another tree, of another command, or on one gone stale.
+#[derive(Debug)]
+#[refined_by(tree: int, command: int, at: int, now: int)]
+#[invariant(fresh(at, now))]
+// The keys and the time are what the invariant is stated on: nothing reads them back.
+#[allow(dead_code)]
+pub struct Proven {
+    name: String,
+    #[field(u64[tree])]
+    tree: u64,
+    #[field(u64[command])]
+    command: u64,
+    #[field(u64[at])]
+    at: u64,
+    #[field(u64[now])]
+    now: u64,
+}
+
+impl Proven {
+    /// `run` as the proof that `tree` passes `command` at `now`; `None` when it
+    /// is not that.
+    #[spec(fn(tree: &Tree[@t], command: &GateCommand[@c], run: &GreenRun, now: u64)
+        -> Option<Proven{p: p.tree == t && p.command == c && p.now == now}>)]
+    pub fn by(tree: &Tree, command: &GateCommand, run: &GreenRun, now: u64) -> Option<Proven> {
+        if run.tree == tree.key && run.command == command.key && run.stands(now) {
+            Some(Proven {
+                name: tree.name.clone(),
+                tree: run.tree,
+                command: run.command,
+                at: run.at,
+                now,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// The tree it is the proof of, by name: what a commit must hold to be
+    /// pushed on it.
+    pub fn tree(&self) -> &str {
+        &self.name
+    }
+
+    /// When the run that proves it finished.
+    #[spec(fn(&Proven[@p]) -> u64[p.at])]
+    pub fn at(&self) -> u64 {
+        self.at
+    }
+}
+
+/// The comment a red gate run leaves on each PR it was a run of: the command,
+/// how it ended, and the end of its log.
+pub fn red_comment(command: &GateCommand, ran: Ran, excerpt: &[String]) -> String {
+    let ended =
+        if ran.timed_out { "timed out".to_string() } else { format!("exited {}", ran.exit_code) };
+    let log = if excerpt.is_empty() { "(no output)".to_string() } else { excerpt.join("\n") };
+    format!(
+        "The gate is red on the landing train with this PR on it: `{}` {ended}. Nothing landed; \
+         the train's worker is fixing the train.\n\n```\n{log}\n```\n",
+        command.text
+    )
+}
+
 /// What a run of the gate does to its tree's record on the remote.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Recording {
@@ -194,6 +260,43 @@ pub fn after_run(tree: &Tree, command: &GateCommand, ran: Ran, now: u64) -> Reco
 #[allow(dead_code)]
 mod rejected {
     use super::*;
+
+    /// A tree landed on a run nobody asked about: it may be a week old.
+    #[should_fail]
+    #[spec(fn(run: &GreenRun, now: u64) -> Proven)]
+    fn a_run_landed_on_without_asking_whether_it_stands(run: &GreenRun, now: u64) -> Proven {
+        Proven { name: String::new(), tree: run.tree, command: run.command, at: run.at, now }
+    }
+
+    /// A green run of one tree offered as the proof of the tree that lands.
+    #[should_fail]
+    #[spec(fn(tested: &Tree, landing: &Tree[@l], command: &GateCommand, run: &GreenRun, now: u64)
+        -> Option<Proven{p: p.tree == l}>)]
+    fn a_run_of_one_tree_proving_another(
+        tested: &Tree,
+        landing: &Tree,
+        command: &GateCommand,
+        run: &GreenRun,
+        now: u64,
+    ) -> Option<Proven> {
+        let _ = landing;
+        Proven::by(tested, command, run, now)
+    }
+
+    /// A proof read at one time used as one that holds at another.
+    #[should_fail]
+    #[spec(fn(tree: &Tree, command: &GateCommand, run: &GreenRun, then: u64, now: u64)
+        -> Option<Proven{p: p.now == now}>)]
+    fn a_proof_of_an_earlier_time(
+        tree: &Tree,
+        command: &GateCommand,
+        run: &GreenRun,
+        then: u64,
+        now: u64,
+    ) -> Option<Proven> {
+        let _ = now;
+        Proven::by(tree, command, run, then)
+    }
 
     /// A record of one tree offered as a run of another.
     #[should_fail]
@@ -239,6 +342,18 @@ mod tests {
             Recording::Write(run) => run,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_tree_is_proven_only_by_a_standing_run_of_it() {
+        let (tree, command, run) = (tree(), command(), written(1000));
+        let proven = Proven::by(&tree, &command, &run, 1000 + RECORD_TTL).expect("a day old");
+        assert_eq!((proven.tree(), proven.at()), (tree.name(), 1000));
+        assert!(Proven::by(&tree, &command, &run, 1001 + RECORD_TTL).is_none(), "gone stale");
+        assert!(Proven::by(&Tree::named("other"), &command, &run, 1000).is_none());
+        assert!(Proven::by(&tree, &GateCommand::new("true"), &run, 1000).is_none());
+        let comment = red_comment(&command, ran(2), &["a".into(), "b".into()]);
+        assert!(comment.contains("`make test` exited 2") && comment.contains("```\na\nb\n```"));
     }
 
     #[test]

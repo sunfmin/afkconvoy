@@ -174,6 +174,85 @@ pub fn join_steps(pushed: bool) -> Vec<JoinStep> {
     order.steps
 }
 
+/// How a run of the train worker's `land --train` ended. Only `Landed` put
+/// anything on the base branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrainOutcome {
+    /// The train is on the base branch, up to the commit gated.
+    Landed,
+    /// Nothing is on the train.
+    Idle,
+    /// The gate is red on the train's tip.
+    GateRed,
+    /// The train's tip, or the base branch, conflicts with what the train's
+    /// worktree holds.
+    Conflict,
+    /// The base branch moved while the gate ran: the push was refused.
+    TargetMoved,
+}
+
+impl TrainOutcome {
+    pub fn word(self) -> &'static str {
+        match self {
+            TrainOutcome::Landed => "landed",
+            TrainOutcome::Idle => "idle",
+            TrainOutcome::GateRed => "gate_red",
+            TrainOutcome::Conflict => "conflict",
+            TrainOutcome::TargetMoved => "target_moved",
+        }
+    }
+}
+
+/// Does the train's worktree keep the commits it has — the train's tip merged
+/// into them — or start over on that tip? It keeps them only when they are
+/// work on THIS train: a fix made here while another PR joined. `ahead`: the
+/// train holds something the base branch lacks. `own`: the worktree has
+/// commits the train's tip lacks. `on_this_train`: those commits were made on
+/// top of this train, not of one that has landed or was abandoned.
+#[spec(fn(ahead: bool, own: bool, on_this_train: bool) -> bool[ahead && own && on_this_train])]
+pub fn keeps_its_commits(ahead: bool, own: bool, on_this_train: bool) -> bool {
+    ahead && own && on_this_train
+}
+
+/// Is the train being repaired? — the commit its worker last gated red is on
+/// the line and not yet on the base branch. `red`: (the base branch holds
+/// that commit, the line holds it), when one is on record.
+#[spec(fn(ahead: bool, red: Option<(bool, bool)>) -> bool{v: v => ahead})]
+pub fn under_repair(ahead: bool, red: Option<(bool, bool)>) -> bool {
+    match red {
+        Some((on_base, on_line)) => ahead && !on_base && on_line,
+        None => false,
+    }
+}
+
+/// What a worker's branch takes in before its own gate run while the train is
+/// under repair: the newest commit of the line below the red one with a green
+/// run on record — `below`, newest first, each with whether it has one — else
+/// the base branch. A worker's gate must not be red for a reason that is not
+/// its own.
+pub fn last_green<'a>(below: &[(&'a str, bool)], base: &'a str) -> &'a str {
+    for (commit, recorded) in below {
+        if *recorded {
+            return commit;
+        }
+    }
+    base
+}
+
+/// The joinings a landing finished, of those its commit put on the base
+/// branch: all but a PR still open on another head than the one that joined —
+/// its worker pushed more since, and joins again with it.
+pub fn finished<'a>(joins: &'a [Joined], open: &[PullRequest]) -> Vec<&'a Joined> {
+    let mut done = vec![];
+    for join in joins {
+        let moved = open.iter().any(|pr| pr.number == join.pr && pr.head_sha != join.head);
+        if !moved {
+            done.push(join);
+        }
+    }
+    done
+}
+
 /// How often a join is made again on a train that moved under it before the
 /// command gives up and is run again.
 pub const PUSH_TRIES: u32 = 8;
@@ -188,6 +267,20 @@ mod rejected {
     fn a_head_joined_before_it_is_pushed() {
         let mut order = JoinOrder::new(false);
         order.merge();
+    }
+
+    /// A worktree's commits kept on a train they were never made on.
+    #[should_fail]
+    #[spec(fn(own: bool) -> bool[true])]
+    fn commits_of_a_landed_train_kept(own: bool) -> bool {
+        keeps_its_commits(true, own, false)
+    }
+
+    /// A repair assumed of a train that holds nothing.
+    #[should_fail]
+    #[spec(fn(red: Option<(bool, bool)>) -> bool[true])]
+    fn a_repair_of_no_train(red: Option<(bool, bool)>) -> bool {
+        under_repair(false, red)
     }
 
     /// A tip pushed with nothing merged onto it.
@@ -260,6 +353,40 @@ mod tests {
         assert_eq!(joins_onto(None, "base"), "base");
         assert_eq!(joins_onto(Some(Line { tip: "t", on_base: true }), "base"), "base");
         assert_eq!(joins_onto(Some(Line { tip: "t", on_base: false }), "base"), "t");
+    }
+
+    #[test]
+    fn a_worker_under_a_red_train_gates_on_its_last_green_commit() {
+        assert!(under_repair(true, Some((false, true))));
+        assert!(!under_repair(true, Some((true, true))), "the red commit landed: it was fixed");
+        assert!(!under_repair(true, Some((false, false))), "red on a train that is gone");
+        assert!(!under_repair(true, None));
+        assert_eq!(last_green(&[("c3", false), ("c2", true), ("c1", true)], "base"), "c2");
+        assert_eq!(last_green(&[("c3", false)], "base"), "base");
+        assert_eq!(last_green(&[], "base"), "base");
+    }
+
+    #[test]
+    fn a_pr_that_moved_on_is_not_finished_by_the_landing() {
+        let join = |pr: u64, head: &str| Joined {
+            issue: pr - 20,
+            pr,
+            commit: format!("m{pr}"),
+            head: head.into(),
+        };
+        let joins = [join(31, "h31"), join(32, "h32"), join(33, "h33")];
+        // #31 is still open at the head that joined, #32 was pushed to since, #33 is merged
+        let done = finished(&joins, &[pr(31, "h31"), pr(32, "newer")]);
+        assert_eq!(done.iter().map(|j| j.pr).collect::<Vec<_>>(), [31, 33]);
+    }
+
+    #[test]
+    fn the_trains_worktree_keeps_only_work_on_this_train() {
+        assert!(keeps_its_commits(true, true, true));
+        assert!(!keeps_its_commits(false, true, true));
+        assert!(!keeps_its_commits(true, false, true));
+        assert!(!keeps_its_commits(true, true, false));
+        assert_eq!(TrainOutcome::TargetMoved.word(), "target_moved");
     }
 
     #[test]

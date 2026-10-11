@@ -66,7 +66,7 @@ pub fn unmerged(repo: &Repo) -> Result<Vec<String>> {
 
 /// Refuses a worktree whose tracked files differ from its commit: what would
 /// join the train is not what the worker has there.
-fn require_committed(repo: &Repo) -> Result<()> {
+pub fn require_committed(repo: &Repo) -> Result<()> {
     let dirty = repo.git_raw(&["status", "--porcelain", "--untracked-files=no"])?;
     if !dirty.trim().is_empty() {
         bail!(

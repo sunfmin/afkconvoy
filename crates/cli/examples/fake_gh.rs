@@ -25,7 +25,7 @@ fn main() {
     }
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     match argv.as_slice() {
-        ["pr", "list", ..] => pr_list(&st),
+        ["pr", "list", ..] => pr_list(&mut st),
         ["api", ..] => api(&mut st),
         _ => unsupported(&st),
     }
@@ -39,9 +39,31 @@ fn is_open(row: &Value) -> bool {
     row["state"].as_str().unwrap_or("open") == "open"
 }
 
-fn pr_list(st: &State) -> ! {
+/// GitHub marks a PR merged by itself once its head is on the base branch —
+/// except the PRs listed under `slow_merge`, which it has not got round to.
+fn notice_merges(st: &mut State) {
+    let bare = st.doc["bare"].as_str().unwrap().to_string();
+    let base = format!("refs/heads/{}", st.doc["base"].as_str().unwrap());
+    let slow = st.doc["slow_merge"].as_array().cloned().unwrap_or_default();
+    for pr in st.doc["prs"].as_array_mut().unwrap() {
+        if !is_open(pr) || slow.contains(&pr["number"]) {
+            continue;
+        }
+        let branch = format!("refs/heads/{}", pr["headRefName"].as_str().unwrap());
+        let head = fake::git(&["--git-dir", &bare, "rev-parse", "-q", "--verify", &branch]);
+        let landed = !head.is_empty()
+            && fake::ok(&["--git-dir", &bare, "merge-base", "--is-ancestor", &head, &base]);
+        if landed {
+            pr["state"] = json!("merged");
+            pr["headRefOid"] = json!(head);
+        }
+    }
+}
+
+fn pr_list(st: &mut State) -> ! {
     assert_eq!(st.opt("--state"), Some("open"), "{:?}", st.argv);
     assert_eq!(st.opt("--json"), Some(PR_FIELDS), "{:?}", st.argv);
+    notice_merges(st);
     let bare = st.doc["bare"].as_str().unwrap();
     let rows: Vec<Value> = st.doc["prs"]
         .as_array()
@@ -93,6 +115,20 @@ fn api(st: &mut State) -> ! {
                 })
                 .collect();
             st.finish(&rows.join("\n"), 0, "")
+        }
+        ["issues", number] if method == "PATCH" => {
+            let state = st.argv.iter().find_map(|a| a.strip_prefix("state=")).map(str::to_string);
+            let number: u64 = number.parse().unwrap();
+            let rows = st.doc["issues"].as_array_mut().unwrap();
+            let Some(issue) = rows.iter_mut().find(|issue| issue["number"] == number) else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n")
+            };
+            if let Some(state) = state {
+                issue["state_reason"] =
+                    if state == "closed" { json!("completed") } else { Value::Null };
+                issue["state"] = json!(state);
+            }
+            st.finish("", 0, "")
         }
         ["issues", number] => {
             assert_eq!(jq, Some(ISSUE_JQ), "fake gh: unsupported jq");
