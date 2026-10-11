@@ -164,4 +164,20 @@ impl GitHub {
         self.gh(&["pr", "close", &number.to_string(), "--comment", comment])?;
         Ok(())
     }
+
+    /// Puts one label on an issue; GitHub creates a label the repo lacks.
+    pub fn add_label(&self, number: u64, label: &str) -> Result<()> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/labels");
+        let field = format!("labels[]={label}");
+        self.gh(&["api", "--method", "POST", &endpoint, "-f", &field, "--silent"])?;
+        Ok(())
+    }
+
+    /// Takes one label off an issue that carries it.
+    pub fn remove_label(&self, number: u64, label: &str) -> Result<()> {
+        let label = crate::judge::label_segment(label);
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/labels/{label}");
+        self.gh(&["api", "--method", "DELETE", &endpoint, "--silent"])?;
+        Ok(())
+    }
 }

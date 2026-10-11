@@ -203,6 +203,38 @@ impl World {
         dir
     }
 
+    /// Posts a comment on an issue or a PR, as a worker would → its URL.
+    pub fn comment(&self, number: u64, body: &str) -> String {
+        let mut url = String::new();
+        self.with_gh(|gh| {
+            let every = gh["comments"].as_object().unwrap().values();
+            let id = 2000 + every.map(|rows| rows.as_array().unwrap().len()).sum::<usize>();
+            url = format!("https://gh/c/{id}");
+            let rows = &mut gh["comments"][number.to_string()];
+            if !rows.is_array() {
+                *rows = json!([]);
+            }
+            rows.as_array_mut().unwrap().push(json!({"id": id, "body": body, "html_url": url}));
+        });
+        url
+    }
+
+    /// The labels an issue carries.
+    pub fn labels(&self, number: u64) -> Vec<String> {
+        let gh = self.gh();
+        let rows = gh["issues"].as_array().unwrap();
+        let issue = rows.iter().find(|row| row["number"] == number).unwrap();
+        serde_json::from_value(issue["labels"].clone()).unwrap()
+    }
+
+    /// Whether an issue is `open` or `closed`.
+    pub fn state(&self, number: u64) -> String {
+        let gh = self.gh();
+        let rows = gh["issues"].as_array().unwrap();
+        let issue = rows.iter().find(|row| row["number"] == number).unwrap();
+        issue["state"].as_str().unwrap().to_string()
+    }
+
     /// Every `gh` call made since the last look, as argv lists.
     pub fn gh_calls(&self) -> Vec<Vec<String>> {
         let calls = serde_json::from_value(self.gh()["calls"].clone()).unwrap();

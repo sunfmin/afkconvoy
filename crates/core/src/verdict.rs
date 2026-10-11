@@ -1,6 +1,8 @@
 //! A verdict: what a worker that opens no PR declares, as a marker comment on
 //! its issue.
 
+use crate::record;
+
 /// The kind of record a verdict comment carries.
 pub const VERDICT: &str = "convoy:verdict";
 
@@ -31,6 +33,29 @@ impl Phase {
     }
 }
 
+/// What a worker declared on its issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    /// `None` when the marker names no phase the fleet knows: the worker
+    /// writes it by hand, and a marker is a verdict whatever it says.
+    pub phase: Option<Phase>,
+    /// The issues a `blocked` verdict says it waits on.
+    pub blocked_by: Vec<u64>,
+    /// Which of the comments read carries it.
+    pub comment: usize,
+}
+
+/// The worker's verdict on an issue, from the bodies of its comments, oldest
+/// first: the latest marker wins.
+pub fn latest_verdict<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<Verdict> {
+    let (comment, fields) = record::latest_marker(VERDICT, bodies)?;
+    let phase = match fields.get("phase") {
+        Some(word) => Phase::read(word),
+        None => None,
+    };
+    Some(Verdict { phase, blocked_by: fields.numbers("blocked_by"), comment })
+}
+
 /// The marker as it is shown to a worker that must write one by hand.
 pub fn marker_format() -> String {
     let words: Vec<&str> = Phase::ALL.iter().map(|phase| phase.word()).collect();
@@ -51,5 +76,24 @@ mod tests {
             marker_format(),
             "<!--convoy:verdict phase=<already-satisfied|blocked|needs-human> [blocked_by=<n,…>]-->"
         );
+    }
+
+    #[test]
+    fn the_latest_verdict_wins_and_an_unknown_phase_is_still_a_verdict() {
+        let bodies = [
+            "<!--convoy:verdict phase=blocked blocked_by=41, #42-->\nwaiting on the schema",
+            "just a comment",
+            "<!--convoy:verdict phase=needs-human-->\nI cannot make the gate pass",
+        ];
+        let verdict = latest_verdict(bodies).unwrap();
+        assert_eq!((verdict.phase, verdict.comment), (Some(Phase::NeedsHuman), 2));
+        let first = latest_verdict(bodies[..2].iter().copied()).unwrap();
+        assert_eq!(
+            (first.phase, first.blocked_by, first.comment),
+            (Some(Phase::Blocked), vec![41, 42], 0)
+        );
+        assert_eq!(latest_verdict(["<!--convoy:verdict phase=giving-up-->"]).unwrap().phase, None);
+        assert_eq!(latest_verdict(["<!--convoy:verdict-->"]).unwrap().phase, None);
+        assert_eq!(latest_verdict(["nothing declared"]), None);
     }
 }

@@ -17,6 +17,8 @@ fn did(ticked: &Value) -> Vec<String> {
     let steps = ticked["did"].as_array().unwrap();
     steps
         .iter()
+        // a worker asked after and left at work is not what these tests are about
+        .filter(|step| !(step["do"] == "judge" && step["outcome"] == "nothing"))
         .map(|step| {
             let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
             format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())

@@ -18,6 +18,7 @@ pub mod fleet;
 pub mod gate;
 pub mod gh;
 pub mod git;
+pub mod judge;
 pub mod landing;
 pub mod orca;
 pub mod settle;
@@ -110,6 +111,23 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+    },
+    /// Close one of my claims whose issue needed no change
+    Close {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
+    },
+    /// Hand one of my claims to a human
+    Escalate {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
+        /// Why: what a human needs to act on it in one reply
+        #[arg(long)]
+        reason: String,
     },
     /// List every claim and heartbeat on the remote
     Scan,
@@ -254,6 +272,10 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Dispatch { issue, who, agent } => {
             dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)
+        }
+        Command::Close { issue, who } => judge::close(&mut Fleet::open(now)?, &who.me(now), issue),
+        Command::Escalate { issue, who, reason } => {
+            judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue, &reason)
         }
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {

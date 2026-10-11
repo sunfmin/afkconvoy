@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::claims::{Me, beat};
 use crate::dispatch::{Agent, dispatch};
 use crate::fleet::Fleet;
+use crate::judge::judge;
 use crate::settle::settle;
 use crate::tend::tend_train;
 
@@ -50,6 +51,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
             Ok(Outcome::Done)
         }
         TickStep::TendTrain => tend_train(fleet, agent),
+        TickStep::Judge { issue } => judge(fleet, me, issue),
         TickStep::Dispatch { issue } => {
             let started = dispatch(fleet, me, agent, issue)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
@@ -65,6 +67,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
     match step {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::TendTrain => ("tend_train", None),
+        TickStep::Judge { issue } => ("judge", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
         TickStep::Heartbeat => ("heartbeat", None),
     }
@@ -103,7 +106,9 @@ impl Ticked {
     /// fleet stands.
     pub fn line(&self) -> String {
         let mut parts: Vec<String> = vec![];
-        for (verb, wanted) in [("settled", "settle"), ("dispatched", "dispatch")] {
+        for (verb, wanted) in
+            [("settled", "settle"), ("ended", "judge"), ("dispatched", "dispatch")]
+        {
             let issues: Vec<String> = self
                 .pass
                 .did

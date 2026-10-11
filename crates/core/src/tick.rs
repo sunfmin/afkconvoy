@@ -18,6 +18,9 @@ pub enum TickStep {
     /// Keep a train worker on the landing train while a PR of mine is on it.
     /// The train worker holds no claim and takes no slot.
     TendTrain,
+    /// Ask after the worker of a claim of mine with no PR, and settle what it
+    /// declared when it stopped.
+    Judge { issue: u64 },
     /// Start a worker on a frontier issue, into a free slot.
     Dispatch { issue: u64 },
     /// Refresh my heartbeat, if it is due.
@@ -27,7 +30,8 @@ pub enum TickStep {
 /// How a step ended, as the pass reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// It did what it names.
+    /// It did what it names. For `Settle` and `Judge` that ends the claim:
+    /// its slot is free.
     Done,
     /// There was nothing for it to do.
     Nothing,
@@ -98,7 +102,8 @@ impl Pass {
 }
 
 /// Runs one pass over `set` under a bound of `concurrency` claims: settle the
-/// claims whose work landed, tend the landing train, dispatch frontier issues into the free slots,
+/// claims whose work landed, tend the landing train, judge the workers that
+/// stopped without a PR, dispatch frontier issues into the free slots,
 /// lowest number first, then refresh the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
 /// the rest of the pass goes on.
@@ -112,11 +117,12 @@ where
     F: FnMut(TickStep) -> Outcome,
 {
     let mut did = Vec::new();
-    let held = settle_closed(set, held, &mut did, &mut carry_out);
+    let held = end_claims(set, Sweep::Landed, held, &mut did, &mut carry_out);
     if set.mine.iter().any(|mine| mine.status == Status::Joined) {
         let step = TickStep::TendTrain;
         did.push((step, carry_out(step)));
     }
+    let held = end_claims(set, Sweep::Stopped, held, &mut did, &mut carry_out);
     let held = fill_slots(set, concurrency, held, &mut did, &mut carry_out);
     if held > 0 {
         let step = TickStep::Heartbeat;
@@ -126,11 +132,32 @@ where
     Pass { did, held, frontier_remaining: set.frontier.len().saturating_sub(tried) }
 }
 
-/// Settles every claim of mine whose work has landed → the claims still held.
-#[spec(fn(set: &WorkingSet, held: usize, did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
+/// Which of my claims one sweep of a pass looks at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sweep {
+    /// Those whose work has landed: settled.
+    Landed,
+    /// Those with no PR: their workers asked after.
+    Stopped,
+}
+
+/// The step `sweep` takes for a claim of mine in `status`, when it takes one.
+fn ending_step(sweep: Sweep, issue: u64, status: Status) -> Option<TickStep> {
+    match (sweep, status) {
+        (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
+        (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue }),
+        _ => None,
+    }
+}
+
+/// Carries out the step that may end each claim of mine `sweep` looks at →
+/// the claims still held.
+#[spec(fn(set: &WorkingSet, sweep: Sweep, held: usize, did: &mut Vec<(TickStep, Outcome)>,
+        carry_out: &mut F)
     -> usize{after: after <= held})]
-fn settle_closed<F>(
+fn end_claims<F>(
     set: &WorkingSet,
+    sweep: Sweep,
     held: usize,
     did: &mut Vec<(TickStep, Outcome)>,
     carry_out: &mut F,
@@ -140,10 +167,9 @@ where
 {
     let mut slots = Slots::new(0, held);
     for mine in &set.mine {
-        if mine.status != Status::Closed && mine.status != Status::Landed {
+        let Some(step) = ending_step(sweep, mine.number, mine.status) else {
             continue;
-        }
-        let step = TickStep::Settle { issue: mine.number };
+        };
         let outcome = carry_out(step);
         did.push((step, outcome));
         if outcome == Outcome::Done && slots.held() > 0 {
@@ -275,14 +301,25 @@ mod tests {
     use Outcome::*;
     use TickStep::*;
 
+    /// Carries every step out, and finds every worker asked after at work.
+    fn left_at_work(step: TickStep) -> Outcome {
+        if matches!(step, Judge { .. } | TendTrain) { Nothing } else { Done }
+    }
+
     #[test]
     fn a_pass_settles_then_dispatches_then_beats() {
         let set = set(&[5, 6, 7], &[(1, Status::NoPr), (2, Status::Closed)]);
-        let pass = run_pass(&set, 3, 2, |_| Done);
+        let pass = run_pass(&set, 3, 2, left_at_work);
         let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
         assert_eq!(
             steps,
-            [Settle { issue: 2 }, Dispatch { issue: 5 }, Dispatch { issue: 6 }, Heartbeat]
+            [
+                Settle { issue: 2 },
+                Judge { issue: 1 },
+                Dispatch { issue: 5 },
+                Dispatch { issue: 6 },
+                Heartbeat
+            ]
         );
         assert_eq!((pass.held, pass.frontier_remaining), (3, 1));
         assert!(pass.did_work());
@@ -291,8 +328,9 @@ mod tests {
     #[test]
     fn a_claim_is_taken_only_into_a_free_slot() {
         let over = set(&[5, 6], &[(1, Status::NoPr), (2, Status::NoPr), (3, Status::NoPr)]);
-        let pass = run_pass(&over, 2, 3, |_| Done);
-        assert_eq!(pass.did, [(Heartbeat, Done)]);
+        let pass = run_pass(&over, 2, 3, left_at_work);
+        let dispatched = pass.did.iter().any(|(step, _)| matches!(step, Dispatch { .. }));
+        assert!(!dispatched, "{:?}", pass.did);
         assert_eq!((pass.held, pass.frontier_remaining), (3, 2));
         assert!(!pass.did_work());
     }
@@ -320,6 +358,22 @@ mod tests {
             [Dispatch { issue: 5 }, Dispatch { issue: 6 }, Dispatch { issue: 7 }, Heartbeat]
         );
         assert_eq!((pass.held, pass.frontier_remaining), (2, 1));
+    }
+
+    #[test]
+    fn a_stopped_claim_that_ends_frees_its_slot_and_the_train_takes_none() {
+        let set = set(&[5, 6], &[(1, Status::NoPr), (2, Status::Joined), (3, Status::Joining)]);
+        // #1's worker declared a verdict that ends its claim
+        let pass = run_pass(&set, 3, 3, |_| Done);
+        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        assert_eq!(steps, [TendTrain, Judge { issue: 1 }, Dispatch { issue: 5 }, Heartbeat]);
+        assert_eq!(pass.held, 3);
+        let left = run_pass(&set, 3, 3, left_at_work);
+        assert_eq!(
+            left.did,
+            [(TendTrain, Nothing), (Judge { issue: 1 }, Nothing), (Heartbeat, Done)]
+        );
+        assert!(!left.did_work());
     }
 
     #[test]
