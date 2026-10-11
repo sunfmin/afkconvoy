@@ -7,5 +7,9 @@ The effect layer runs `git`, `gh` and `orca` as subprocesses, as afk-fleet does,
 ## Consequences
 
 - Flux needs a nightly toolchain; it runs in the gate, and the released binary is built on stable.
-- Whether Flux can express the transition-order rules is unproven. It is to be tried on one rule before the design depends on it.
+- Flux can express the transition-order rules. A prototype (branch `prototype/flux-transitions`, Flux rev `b2f3e31`) proved an escalation's order — including one resumed from wherever it was cut — and the gate-evidence rule, and refused eleven misuses.
+- The steps a transition has taken are indices on a runtime value, not type parameters: an interrupted transition is finished by a later tick that reads how far it got, which a typestate cannot follow.
+- Flux proves what a call requires, not that a call is made. That a transition runs to its release is held by ordinary Rust: the transition returns a value only the release produces.
+- The proof starts at what the effect layer reports. That a read returns what GitHub holds is not proved.
+- A loop needs its invariant written as a qualifier, and a function whose result an invariant mentions must return a named value, not a formula.
 - The Homebrew formula depends on `git` and `gh`; orca is the user's to install.
