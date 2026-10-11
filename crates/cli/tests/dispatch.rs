@@ -1,0 +1,198 @@
+mod common;
+
+use std::path::Path;
+
+use common::{BASE, World, git};
+use serde_json::{Value, json};
+
+const COMMAND: &str = "ckimi --flag 'quoted arg'";
+
+fn dispatch(world: &World, issue: &str) -> common::Answer {
+    world.afk(&[
+        "dispatch",
+        "--issue",
+        issue,
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        "1000",
+        "--worker-command",
+        COMMAND,
+    ])
+}
+
+fn ready_world() -> World {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.with_gh(|gh| gh["issues"][0]["title"] = json!("Add the `plan` command"));
+    world
+}
+
+#[test]
+fn dispatch_starts_a_worker_on_a_fresh_worktree() {
+    let world = ready_world();
+    let started = dispatch(&world, "7").ok();
+    assert_eq!(started["started"], true);
+    assert_eq!(started["claim"], "won");
+    assert_eq!(started["branch"], "tester/issue-7-add-the-plan-command");
+    let worktree = Path::new(started["worktree"].as_str().unwrap());
+    assert!(worktree.is_dir());
+
+    // the claim is alpha's
+    let scan = world.afk(&["scan"]).ok();
+    assert_eq!(scan["claims"][0]["instance"], "alpha");
+
+    // one terminal in the worktree, started with the command verbatim
+    let orca = world.orca();
+    let open: Vec<&Value> =
+        orca["terminals"].as_array().unwrap().iter().filter(|t| t["open"] == true).collect();
+    assert_eq!(open.len(), 1, "the bare shell orca opened is closed");
+    assert_eq!(open[0]["command"], COMMAND);
+    assert_eq!(open[0]["handle"], started["terminal"]);
+
+    // the prompt went to a brief file; the terminal got a one-line pointer, submitted
+    let sent = open[0]["sent"].as_array().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["enter"], true);
+    let pointer = sent[0]["text"].as_str().unwrap();
+    let brief = Path::new(git(worktree, &["rev-parse", "--absolute-git-dir"]).as_str())
+        .join("convoy-worker-prompt.md");
+    assert!(pointer.contains(brief.to_str().unwrap()), "{pointer}");
+    let prompt = std::fs::read_to_string(&brief).unwrap();
+    assert!(prompt.contains("**Your issue:** #7 — Add the `plan` command"));
+    assert!(prompt.contains("**Your branch:** `tester/issue-7-add-the-plan-command`"));
+    assert!(prompt.contains(&format!("**Your worktree:** `{}`", worktree.display())));
+    assert!(prompt.contains("./gate.sh"));
+    assert!(!prompt.contains("{n}") && !prompt.contains("{branch}"));
+    assert_eq!(git(worktree, &["status", "--porcelain"]), "", "the brief is not in the worktree");
+
+    // the branch orca cut is recorded on the issue
+    assert_eq!(world.comments(7).len(), 1);
+    assert!(
+        world.comments(7)[0]
+            .starts_with("<!--convoy:branch name=tester/issue-7-add-the-plan-command-->")
+    );
+}
+
+#[test]
+fn the_steps_run_in_order() {
+    let world = ready_world();
+    world.watch_pushes(None);
+    dispatch(&world, "7").ok();
+    assert_eq!(world.pushes(), ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]);
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    assert_eq!(
+        calls,
+        [
+            "repo list",
+            "worktree create",
+            "terminal close",
+            "terminal create",
+            "terminal wait",
+            "terminal send"
+        ]
+    );
+}
+
+#[test]
+fn a_lost_claim_race_starts_nothing() {
+    let world = ready_world();
+    world.afk(&["claim", "--issue", "7", "--instance", "beta", "--now", "1000"]).ok();
+    let lost = dispatch(&world, "7").ok();
+    assert_eq!(lost["started"], false);
+    assert_eq!(lost["claim"], "lost");
+    assert_eq!(lost["owner"]["instance"], "beta");
+    assert_eq!(world.orca_calls(), [] as [Vec<String>; 0]);
+    assert_eq!(world.comments(7), [] as [String; 0]);
+}
+
+#[test]
+fn a_claim_already_held_is_not_pushed_again() {
+    let world = ready_world();
+    world.afk(&["claim", "--issue", "7", "--instance", "alpha", "--now", "1000"]).ok();
+    world.watch_pushes(None);
+    let started = dispatch(&world, "7").ok();
+    assert_eq!(started["claim"], "held");
+    assert_eq!(world.pushes(), [] as [String; 0]);
+}
+
+#[test]
+fn the_worktree_is_cut_from_what_the_remote_has() {
+    let world = ready_world();
+    // the fleet's local base branch is behind the remote
+    let landed = world.land_elsewhere("b.txt");
+    assert_ne!(git(&world.clone, &["rev-parse", BASE]), landed);
+
+    let started = dispatch(&world, "7").ok();
+    let worktree = Path::new(started["worktree"].as_str().unwrap());
+    assert_eq!(git(worktree, &["rev-parse", "HEAD"]), landed);
+    let create = &world.orca_calls()[1];
+    let at = create.iter().position(|arg| arg == "--base-branch").unwrap();
+    assert_eq!(create[at + 1], landed, "handed over as a sha, not a branch name");
+}
+
+#[test]
+fn a_worktree_orca_cut_behind_the_tip_is_brought_up_to_it() {
+    let world = ready_world();
+    let behind = git(&world.clone, &["rev-parse", "HEAD"]);
+    let landed = world.land_elsewhere("b.txt");
+    world.with_orca(|orca| orca["stale_base"] = json!(behind));
+    let started = dispatch(&world, "7").ok();
+    let worktree = Path::new(started["worktree"].as_str().unwrap());
+    assert_eq!(git(worktree, &["rev-parse", "HEAD"]), landed);
+}
+
+#[test]
+fn a_failure_of_orca_is_an_error_with_the_claim_still_held() {
+    for knob in ["create_fails", "never_ready", "send_refused", "down"] {
+        let world = ready_world();
+        world.with_orca(|orca| {
+            orca[knob] = if knob == "create_fails" { json!([7]) } else { json!(true) }
+        });
+        let error = dispatch(&world, "7").error();
+        assert!(
+            error.contains("orca")
+                || error.contains("not ready")
+                || error.contains("did not accept"),
+            "{knob}: {error}"
+        );
+        let scan = world.afk(&["scan"]).ok();
+        assert_eq!(scan["claims"][0]["instance"], "alpha", "{knob}");
+    }
+}
+
+#[test]
+fn an_orca_that_does_not_know_the_repo_is_an_error() {
+    let world = ready_world();
+    world.with_orca(|orca| orca["repos"] = json!([]));
+    assert!(dispatch(&world, "7").error().contains("orca knows no repo"));
+}
+
+#[test]
+fn a_closed_issue_is_never_claimed() {
+    let world = ready_world();
+    world.with_gh(|gh| gh["issues"][0]["state"] = json!("closed"));
+    assert!(dispatch(&world, "7").error().contains("closed"));
+    assert_eq!(world.afk(&["scan"]).ok()["claims"], json!([]));
+}
+
+#[test]
+fn a_base_branch_the_remote_lacks_is_an_error() {
+    let world = ready_world();
+    let config = world.clone.join("docs/agents/afkconvoy.md");
+    std::fs::write(config, "```yaml\nbase_branch: release\ngate_command: make\n```\n").unwrap();
+    assert!(dispatch(&world, "7").error().contains("the remote has no branch \"release\""));
+}
+
+#[test]
+fn the_branch_is_recorded_once_however_often_it_is_asked() {
+    let world = ready_world();
+    world.with_gh(|gh| {
+        gh["comments"]["7"] = json!([{"id": 1, "html_url": "u",
+            "body": "<!--convoy:branch name=tester/issue-7-add-the-plan-command-->\nearlier"}]);
+    });
+    dispatch(&world, "7").ok();
+    assert_eq!(world.comments(7).len(), 1);
+}

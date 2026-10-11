@@ -2,20 +2,20 @@
 //! as one JSON file (`CONVOY_FAKE_GH`), the code in the bare repo it names.
 //!
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?,
-//! blocked_by?, id?}], `prs` [{number, headRefName, headRefOid, body, state,
+//! blocked_by?, id?}], `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail.
 
 mod fake;
 
-use afkconvoy::gh::{ISSUE_JQ, ISSUES_JQ, PR_FIELDS};
+use afkconvoy::gh::{COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, PR_FIELDS};
 use fake::State;
 use serde_json::{Value, json};
 
 const REPO: &str = "repos/{owner}/{repo}/";
 
 fn main() {
-    let st = State::open("CONVOY_FAKE_GH");
+    let mut st = State::open("CONVOY_FAKE_GH");
     let line = st.argv.join(" ");
     let injected = st.doc["fail"]
         .as_array()
@@ -26,7 +26,7 @@ fn main() {
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     match argv.as_slice() {
         ["pr", "list", ..] => pr_list(&st),
-        ["api", ..] => api(&st),
+        ["api", ..] => api(&mut st),
         _ => unsupported(&st),
     }
 }
@@ -64,13 +64,18 @@ fn pr_list(st: &State) -> ! {
     st.finish(&Value::from(rows).to_string(), 0, "")
 }
 
-fn api(st: &State) -> ! {
-    let Some(endpoint) = st.argv.iter().find_map(|a| a.strip_prefix(REPO)) else {
+fn api(st: &mut State) -> ! {
+    let Some(endpoint) = st.argv.iter().find_map(|a| a.strip_prefix(REPO)).map(str::to_string)
+    else {
         st.finish("", 1, "gh: Not Found (HTTP 404)\n")
     };
+    let endpoint = endpoint.as_str();
+    let method = st.opt("--method").unwrap_or("GET").to_string();
+    let body = st.argv.iter().find_map(|a| a.strip_prefix("body=")).map(str::to_string);
     let (path, query) = endpoint.split_once('?').unwrap_or((endpoint, ""));
     let parts: Vec<&str> = path.split('/').collect();
-    let jq = st.opt("--jq");
+    let jq = st.opt("--jq").map(str::to_string);
+    let jq = jq.as_deref();
     match parts.as_slice() {
         ["issues"] => {
             assert!(query.contains("state=open") && st.has("--paginate"), "{:?}", st.argv);
@@ -101,8 +106,36 @@ fn api(st: &State) -> ! {
                 "pull_request": issue["pull_request"].as_bool().unwrap_or(false)});
             st.finish(&row.to_string(), 0, "")
         }
+        ["issues", number, "comments"] if method == "POST" => {
+            let body = body.expect("a comment has a body");
+            let id = next_comment_id(st);
+            let url = format!("https://gh/c/{id}");
+            let rows = &mut st.doc["comments"][*number];
+            if !rows.is_array() {
+                *rows = json!([]);
+            }
+            rows.as_array_mut().unwrap().push(json!({"id": id, "body": body, "html_url": url}));
+            st.finish(&json!({"id": id, "html_url": url}).to_string(), 0, "")
+        }
+        ["issues", number, "comments"] => {
+            assert_eq!(jq, Some(COMMENTS_JQ), "fake gh: unsupported jq");
+            let rows = st.doc["comments"][*number].as_array().cloned().unwrap_or_default();
+            let lines: Vec<String> = rows
+                .iter()
+                .map(|c| {
+                    json!({"id": c["id"], "body": c["body"], "url": c["html_url"]}).to_string()
+                })
+                .collect();
+            st.finish(&lines.join("\n"), 0, "")
+        }
         _ => unsupported(st),
     }
+}
+
+fn next_comment_id(st: &State) -> u64 {
+    let every = st.doc["comments"].as_object().into_iter().flat_map(|all| all.values());
+    let ids = every.flat_map(|rows| rows.as_array().into_iter().flatten());
+    1 + ids.filter_map(|c| c["id"].as_u64()).max().unwrap_or(1000)
 }
 
 fn issue<'a>(st: &'a State, number: &str) -> Option<&'a Value> {

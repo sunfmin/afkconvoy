@@ -77,7 +77,8 @@ impl World {
         };
         world.write_gh(&json!({"bare": world.bare, "base": BASE, "issues": [], "prs": [],
             "comments": {}, "labels": ["ready-for-agent"], "calls": []}));
-        world.write_orca(&json!({"calls": []}));
+        world.write_orca(&json!({"repos": [{"id": "repo-1", "path": world.clone}],
+            "root": world.root.join("wt"), "worktrees": [], "terminals": [], "calls": []}));
         world
     }
 
@@ -154,6 +155,42 @@ impl World {
 
     pub fn orca(&self) -> Value {
         read(&self.orca_file)
+    }
+
+    /// Changes the stand-in orca's state in place.
+    pub fn with_orca(&self, change: impl FnOnce(&mut Value)) {
+        let mut state = self.orca();
+        change(&mut state);
+        self.write_orca(&state);
+    }
+
+    /// Every `orca` call made since the last look, without the trailing `--json`.
+    pub fn orca_calls(&self) -> Vec<Vec<String>> {
+        let mut calls: Vec<Vec<String>> =
+            serde_json::from_value(self.orca()["calls"].clone()).unwrap();
+        for call in &mut calls {
+            call.pop();
+        }
+        self.with_orca(|orca| orca["calls"] = json!([]));
+        calls
+    }
+
+    /// The bodies of the comments on an issue or a PR, oldest first.
+    pub fn comments(&self, number: u64) -> Vec<String> {
+        let rows =
+            self.gh()["comments"][number.to_string()].as_array().cloned().unwrap_or_default();
+        rows.iter().map(|c| c["body"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// Commits a file on the base branch straight on the remote: someone else landed work.
+    pub fn land_elsewhere(&self, file: &str) -> String {
+        let other = self.root.join(format!("other-{file}"));
+        git(&self.root, &["clone", "-q", self.bare.to_str().unwrap(), other.to_str().unwrap()]);
+        std::fs::write(other.join(file), "landed elsewhere\n").unwrap();
+        git(&other, &["add", "."]);
+        git(&other, &["commit", "-q", "-m", file]);
+        git(&other, &["push", "-q", "origin", BASE]);
+        git(&other, &["rev-parse", "HEAD"])
     }
 
     pub fn write_orca(&self, state: &Value) {
