@@ -5,7 +5,7 @@
 
 use flux_rs::attrs::*;
 
-use crate::claims::NAMESPACE;
+use crate::layout::Layout;
 use crate::plan::PullRequest;
 use crate::record::fleet_number;
 use crate::worker::WorkerState;
@@ -18,10 +18,10 @@ pub struct TrainRefs {
     pub red: String,
 }
 
-pub fn train_refs(base_branch: &str) -> TrainRefs {
+pub fn train_refs(layout: Layout, base_branch: &str) -> TrainRefs {
     TrainRefs {
-        line: format!("{NAMESPACE}/train/line/{base_branch}"),
-        red: format!("{NAMESPACE}/train/red/{base_branch}"),
+        line: layout.under(&format!("train/line/{base_branch}")),
+        red: layout.under(&format!("train/red/{base_branch}")),
     }
 }
 
@@ -463,8 +463,10 @@ mod tests {
 
     #[test]
     fn a_trains_refs_are_named_for_its_base_branch() {
-        let refs = train_refs("release/1.x");
+        let refs = train_refs(Layout::Hidden, "release/1.x");
         assert_eq!(refs.line, "refs/convoy/train/line/release/1.x");
         assert_eq!(refs.red, "refs/convoy/train/red/release/1.x");
+        let refs = train_refs(Layout::Branches, "main");
+        assert_eq!(refs.line, "refs/heads/convoy-train/line/main");
     }
 }

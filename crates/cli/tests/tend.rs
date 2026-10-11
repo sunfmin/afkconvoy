@@ -195,7 +195,8 @@ fn a_landed_claim_is_settled_and_the_checkout_follows() {
     tick(&world, "1090");
     let (train, worktree) = (train_worktree(&world), worktree_of(&world, 7));
     // the train worker lands the train
-    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
+    let landed =
+        world.afk_in(&train, &["--now", "1170", "land", "--train", "--merged-timeout", "5"]).ok();
     assert_eq!(landed["outcome"], "landed", "{landed}");
     let tip = world.remote(&["rev-parse", "refs/heads/main"]);
     assert_ne!(git(&world.clone, &["rev-parse", "main"]), tip);

@@ -79,7 +79,7 @@ pub fn land_train(
     limits: &Limits,
 ) -> Result<Value> {
     let branch = &config.base_branch;
-    let refs = train_refs(branch);
+    let refs = train_refs(repo.layout(), branch);
     let command = GateCommand::new(&config.gate_command);
     let mut answer = json!({"train": refs.line, "base": branch});
     let stop = |answer: &Value, outcome: TrainOutcome, more: Value| {

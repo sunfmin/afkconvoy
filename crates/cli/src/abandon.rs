@@ -130,7 +130,7 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
 /// was read — a PR that joined meanwhile is a train its worker is told about,
 /// not one to give up — then the record of its last red run.
 fn drop_train(fleet: &Fleet, train: &Train) -> Result<()> {
-    let refs = train_refs(&fleet.config.base_branch);
+    let refs = train_refs(fleet.repo.layout(), &fleet.config.base_branch);
     let lease = format!("--force-with-lease={}:{}", refs.line, train.tip);
     let dropped =
         fleet.repo.try_git(&["push", "--quiet", REMOTE, &lease, &format!(":{}", refs.line)])?;

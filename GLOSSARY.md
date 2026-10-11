@@ -15,8 +15,16 @@ One reconciliation pass: rebuild the working set from fleet state, then perform 
 _Avoid_: cycle, poll, batch
 
 **Plan**:
-A tick stopped after its rebuild, which reports what an acting tick would do and writes nothing.
+A tick stopped after its rebuild, which reports what an acting tick would do and leaves nothing written: its startup probe is the only thing it pushes, and it deletes that.
 _Avoid_: dry run, preview
+
+**Startup probe**:
+What `run`, `tick` and `plan` ask of a repo before anything else: that the base branch exists and no rule of its protection refuses a push, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A repo the fleet cannot work is refused here, not at its first landing.
+_Avoid_: bootstrap, preflight, health check
+
+**Ref layout**:
+One of the two ways every ref the fleet writes is named: hidden refs (`refs/convoy/*`), or — only where the remote rejects those — ordinary branches (`convoy-*`), on which push-triggered CI fires.
+_Avoid_: namespace, fallback mode
 
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.

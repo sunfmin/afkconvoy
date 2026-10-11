@@ -24,6 +24,7 @@ pub mod judge;
 pub mod landing;
 pub mod orca;
 pub mod park;
+pub mod probe;
 pub mod recovery;
 pub mod settle;
 pub mod takeover;
@@ -296,6 +297,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             Ok(serde_json::to_value(config::load(&file)?)?)
         }
         Command::Plan { instance } => {
+            probe::announce(&probe::startup(now)?);
             Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?)?)
         }
         Command::Run { instance, host, agent, ticks, second_ms } => {
@@ -304,9 +306,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
             let pacing = Pacing { ticks, second: Duration::from_millis(second_ms) };
+            probe::announce(&probe::startup(now)?);
             tick::run(&mut me, &agent.agent(), &pacing, || fixed_now.unwrap_or_else(clock))
         }
         Command::Tick { who, agent } => {
+            probe::announce(&probe::startup(now)?);
             Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent.agent())?.json())
         }
         Command::Gate { gate_timeout, train } => {

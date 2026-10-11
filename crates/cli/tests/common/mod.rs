@@ -253,9 +253,12 @@ impl World {
         issue["state"].as_str().unwrap().to_string()
     }
 
-    /// Every `gh` call made since the last look, as argv lists.
+    /// Every `gh` call made since the last look, as argv lists — all but the
+    /// read of the base branch's protection every start makes.
     pub fn gh_calls(&self) -> Vec<Vec<String>> {
-        let calls = serde_json::from_value(self.gh()["calls"].clone()).unwrap();
+        let mut calls: Vec<Vec<String>> =
+            serde_json::from_value(self.gh()["calls"].clone()).unwrap();
+        calls.retain(|call| !call.iter().any(|arg| arg.ends_with("/protection")));
         self.with_gh(|gh| gh["calls"] = json!([]));
         calls
     }
@@ -335,10 +338,41 @@ impl World {
         std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// The refs pushed to the remote since `watch_pushes`, in order.
+    /// The refs pushed to the remote since `watch_pushes`, in order — all but
+    /// the probes every start pushes and deletes (`probes`).
     pub fn pushes(&self) -> Vec<String> {
+        self.every_push().into_iter().filter(|name| !name.contains("probe-")).collect()
+    }
+
+    /// The probe refs pushed to the remote since `watch_pushes`: each once
+    /// when pushed and once when deleted.
+    pub fn probes(&self) -> Vec<String> {
+        self.every_push().into_iter().filter(|name| name.contains("probe-")).collect()
+    }
+
+    fn every_push(&self) -> Vec<String> {
         let log = std::fs::read_to_string(self.root.join("pushes.log")).unwrap_or_default();
         log.lines().map(str::to_string).collect()
+    }
+
+    /// Has the remote turn down every push of a ref whose name starts with
+    /// `prefix`, as a server's rule would.
+    pub fn remote_rejects(&self, prefix: &str) {
+        let hook = self.bare.join("hooks/pre-receive");
+        let script = format!(
+            "#!/bin/sh\nwhile read old new ref; do\n  case \"$ref\" in {prefix}*) \
+             echo 'refs like this are not allowed here' >&2; exit 1;; esac\ndone\n"
+        );
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Sets the stand-in GitHub's answer about the base branch's protection:
+    /// its rules, or — a string — why they cannot be read.
+    pub fn protect(&self, rules: Value) {
+        self.with_gh(|gh| gh["protection"][BASE] = rules);
     }
 
     /// git against the remote itself.

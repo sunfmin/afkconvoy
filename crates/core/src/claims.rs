@@ -3,20 +3,23 @@
 
 use flux_rs::attrs::*;
 
+use crate::layout::Layout;
 use crate::lease::heartbeat_due;
 use crate::record::{self, Fields};
 
-/// Under every ref the fleet keeps on the remote.
-pub const NAMESPACE: &str = "refs/convoy";
+/// The kinds of ref a scan reads: a claim's is named for its issue, a
+/// heartbeat's for its instance.
+pub const CLAIM_KIND: &str = "claim/";
+pub const HEARTBEAT_KIND: &str = "heartbeat/";
 
 /// The ref that is the claim on issue `number`.
-pub fn claim_ref(number: u64) -> String {
-    format!("{NAMESPACE}/claim/{number}")
+pub fn claim_ref(layout: Layout, number: u64) -> String {
+    layout.under(&format!("{CLAIM_KIND}{number}"))
 }
 
 /// The ref that carries `instance`'s heartbeat.
-pub fn heartbeat_ref(instance: &InstanceId) -> String {
-    format!("{NAMESPACE}/heartbeat/{instance}")
+pub fn heartbeat_ref(layout: Layout, instance: &InstanceId) -> String {
+    layout.under(&format!("{HEARTBEAT_KIND}{instance}"))
 }
 
 /// The name a fleet instance claims under: `[a-z0-9][a-z0-9-]{0,39}`. It is a
@@ -181,10 +184,8 @@ impl std::fmt::Display for NotMine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "issue #{} is not this fleet's claim ({} is held by {:?}); nothing was changed",
-            self.number,
-            claim_ref(self.number),
-            self.holder
+            "issue #{} is not this fleet's claim (it is held by {:?}); nothing was changed",
+            self.number, self.holder
         )
     }
 }
