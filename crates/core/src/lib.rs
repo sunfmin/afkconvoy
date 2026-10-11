@@ -4,6 +4,7 @@
 pub mod claims;
 pub mod closing;
 pub mod config;
+pub mod gate;
 pub mod lease;
 pub mod plan;
 pub mod prompt;

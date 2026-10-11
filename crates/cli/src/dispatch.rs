@@ -84,7 +84,7 @@ pub fn dispatch(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64) -> Resul
                     branch: &cut.branch,
                     worktree: &path,
                     base_branch: &fleet.config.base_branch,
-                    gate_command: &fleet.config.gate_command,
+                    gate_command: &crate::own_command("gate"),
                 })
                 .map_err(|e| anyhow!(e))?;
                 brief = Some(cut.write_brief(&prompt)?);
