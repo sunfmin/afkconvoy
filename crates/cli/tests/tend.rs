@@ -216,6 +216,51 @@ fn a_landed_claim_is_settled_and_the_checkout_follows() {
     assert!(world.clone.join("f7.txt").exists());
 }
 
+fn worker_branches(world: &World) -> Vec<String> {
+    let listed = world.remote(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+    listed.lines().filter(|name| *name != "main").map(str::to_string).collect()
+}
+
+/// Lands the train with GitHub slow to show PR #70 merged: the landing leaves
+/// its branch on the remote.
+fn land_with_the_branch_left(world: &World) {
+    world.with_gh(|gh| gh["slow_merge"] = json!([70]));
+    let train = train_worktree(world);
+    let landed =
+        world.afk_in(&train, &["--now", "1170", "land", "--train", "--merged-timeout", "0"]).ok();
+    assert_eq!(landed["unmerged"], json!([70]), "{landed}");
+    assert_eq!(worker_branches(world).len(), 1);
+}
+
+#[test]
+fn a_branch_the_landing_left_behind_is_deleted_when_its_claim_is_settled() {
+    let world = fleet(&[7]);
+    finish(&world, 7);
+    tick(&world, "1090");
+    land_with_the_branch_left(&world);
+
+    let ticked = tick(&world, "1180");
+    assert_eq!(did(&ticked), ["settle 7 done"]);
+    assert_eq!(ticked["errors"], json!([]));
+    assert_eq!(worker_branches(&world), [] as [&str; 0]);
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_branch_pushed_to_since_it_landed_is_kept() {
+    let world = fleet(&[7]);
+    finish(&world, 7);
+    tick(&world, "1090");
+    let worktree = worktree_of(&world, 7);
+    land_with_the_branch_left(&world);
+    commit(&worktree, "more.txt", "more\n");
+    git(&worktree, &["push", "-q", "origin", "HEAD"]);
+
+    let ticked = tick(&world, "1180");
+    assert_eq!(ticked["errors"], json!([]));
+    assert_eq!(worker_branches(&world).len(), 1, "it holds work nothing landed");
+}
+
 /// Puts the train on the base branch as a landing cut right after its push
 /// would leave it: nothing else done.
 fn cut_after_the_push(world: &World) -> String {
