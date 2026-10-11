@@ -14,6 +14,7 @@ use crate::judge::judge;
 use crate::settle::settle;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
+use crate::watch::watch;
 
 /// One step that failed, and why.
 struct Failure {
@@ -53,6 +54,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
         }
         TickStep::TendTrain => tend_train(fleet, agent),
         TickStep::Judge { issue } => judge(fleet, me, agent, issue),
+        TickStep::Watch { issue } => watch(fleet, me, agent, issue),
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
         TickStep::Reclaim { issue } => reclaim(fleet, me, agent, issue),
         TickStep::Dispatch { issue } => {
@@ -71,6 +73,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::TendTrain => ("tend_train", None),
         TickStep::Judge { issue } => ("judge", Some(issue)),
+        TickStep::Watch { issue } => ("watch", Some(issue)),
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
@@ -90,6 +93,7 @@ impl Ticked {
                     Outcome::Done => "done",
                     Outcome::Nudged => "nudged",
                     Outcome::Continued => "continued",
+                    Outcome::Restarted => "restarted",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Failed => "failed",
@@ -116,6 +120,7 @@ impl Ticked {
         for (verb, wanted) in [
             ("settled", "settle"),
             ("ended", "judge"),
+            ("escalated", "watch"),
             ("unlocked", "unlock"),
             ("reclaimed", "reclaim"),
             ("dispatched", "dispatch"),
@@ -131,7 +136,11 @@ impl Ticked {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
         }
-        for (verb, kept) in [("nudged", Outcome::Nudged), ("continued", Outcome::Continued)] {
+        for (verb, kept) in [
+            ("nudged", Outcome::Nudged),
+            ("continued", Outcome::Continued),
+            ("restarted", Outcome::Restarted),
+        ] {
             let issues: Vec<String> = self
                 .pass
                 .did

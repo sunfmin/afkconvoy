@@ -43,6 +43,8 @@ pub enum Variant {
     /// The worktree or branch carries an earlier worker's progress: inspect
     /// it first, as partial work toward the same criteria.
     Continue,
+    /// The issue's PR is open: nothing is left but joining it to the train.
+    Join { pr: u64 },
 }
 
 impl Variant {
@@ -50,6 +52,7 @@ impl Variant {
         match self {
             Variant::Fresh => "fresh",
             Variant::Continue => "continue",
+            Variant::Join { .. } => "join",
         }
     }
 }
@@ -81,6 +84,25 @@ impl Recovery {
     }
 }
 
+/// How a worker is started on a claim: the tier by what survived, and the
+/// join's own brief when the issue's PR (`joining`) is open and its work
+/// survived — a start from the base branch has no PR of its own to join.
+pub fn select_recovery(
+    worktree: Option<&Progress>,
+    pushed: Option<&Pushed>,
+    joining: Option<u64>,
+) -> Recovery {
+    let survived = survived(worktree, pushed);
+    match joining {
+        Some(pr) if survived.tier != Tier::Fresh => Recovery {
+            tier: survived.tier,
+            variant: Variant::Join { pr },
+            reason: format!("{}; PR #{pr} is open — brief only to join the train", survived.reason),
+        },
+        _ => survived,
+    }
+}
+
 /// Picks the tier a claim is continued from, by what survived: `worktree` is
 /// the progress of its worktree on this host (`None` when there is none),
 /// `pushed` the branch of its own furthest ahead on the remote.
@@ -88,7 +110,7 @@ impl Recovery {
 /// A worktree that is provably pristine — no commit past the base, a clean
 /// tree, nothing pushed either — gets the fresh prompt: there is nothing to
 /// continue. One whose progress could not be read is never pristine.
-pub fn select_recovery(worktree: Option<&Progress>, pushed: Option<&Pushed>) -> Recovery {
+fn survived(worktree: Option<&Progress>, pushed: Option<&Pushed>) -> Recovery {
     let pushed_ahead = match pushed {
         Some(pushed) => pushed.commits_ahead.unwrap_or(0),
         None => 0,
@@ -191,7 +213,7 @@ mod tests {
     }
 
     fn picked(worktree: Option<&Progress>, pushed: Option<&Pushed>) -> (u8, Variant) {
-        let recovery = select_recovery(worktree, pushed);
+        let recovery = select_recovery(worktree, pushed, None);
         (recovery.tier.number(), recovery.variant)
     }
 
@@ -210,7 +232,7 @@ mod tests {
         );
         // unreadable is not pristine
         assert_eq!(picked(Some(&worktree(None, false)), None), (1, Variant::Continue));
-        let reason = select_recovery(Some(&worktree(Some(3), true)), None).reason;
+        let reason = select_recovery(Some(&worktree(Some(3), true)), None, None).reason;
         assert_eq!(reason, "local worktree present with 3 commit(s) ahead and uncommitted changes");
     }
 
@@ -218,11 +240,27 @@ mod tests {
     fn with_no_worktree_a_pushed_branch_is_recreated_else_the_start_is_fresh() {
         let branch = pushed("u/a", Some(2));
         assert_eq!(picked(None, Some(&branch)), (2, Variant::Continue));
-        assert!(select_recovery(None, Some(&branch)).reason.contains("branch u/a is 2 commit(s)"));
+        assert!(
+            select_recovery(None, Some(&branch), None).reason.contains("branch u/a is 2 commit(s)")
+        );
         assert_eq!(picked(None, Some(&pushed("u/a", Some(0)))), (3, Variant::Fresh));
         assert_eq!(picked(None, Some(&pushed("u/a", None))), (3, Variant::Fresh));
         assert_eq!(picked(None, None), (3, Variant::Fresh));
         assert_eq!(Tier::Recreate.word(), "recreate_at_tip");
+    }
+
+    #[test]
+    fn with_its_pr_open_what_survived_is_briefed_only_to_join() {
+        let branch = pushed("u/a", Some(2));
+        let here = select_recovery(Some(&worktree(Some(2), false)), Some(&branch), Some(70));
+        assert_eq!((here.tier, here.variant), (Tier::Reuse, Variant::Join { pr: 70 }));
+        assert!(here.reason.ends_with("PR #70 is open — brief only to join the train"));
+        let gone = select_recovery(None, Some(&branch), Some(70));
+        assert_eq!((gone.tier, gone.variant), (Tier::Recreate, Variant::Join { pr: 70 }));
+        // nothing of the PR's survived: the start is the whole issue again
+        let nothing = select_recovery(None, None, Some(70));
+        assert_eq!((nothing.tier, nothing.variant), (Tier::Fresh, Variant::Fresh));
+        assert_eq!(Variant::Join { pr: 70 }.word(), "join");
     }
 
     #[test]

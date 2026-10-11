@@ -316,15 +316,85 @@ pub fn standing_verdict(
     verdict
 }
 
-/// What a worker's state alone settles for its PR-less claim, before
-/// anything else is read: `None` for one that stopped, whose reasons must be
-/// gathered. `state` is `None` when the claim has no worktree on this host —
+/// What a worker's state alone settles for its claim, before anything else is
+/// read: `None` for one that stopped, whose reasons must be gathered. `state` is `None` when the claim has no worktree on this host —
 /// which is a worker that is gone.
 pub fn settled_by_state(state: Option<WorkerState>) -> Option<Route> {
     match state {
         None | Some(WorkerState::Gone) => Some(Route::Continue),
         Some(WorkerState::Busy) => Some(Route::Leave),
         Some(WorkerState::Idle { .. }) => None,
+    }
+}
+
+/// Where a worker that may have stopped stands, before anything it said is
+/// read.
+enum Quiet {
+    Gone,
+    /// At work, or a sign of life within grace.
+    Lively,
+    Stopped,
+}
+
+/// `restarted`: when the worker here was started in place of a silent one —
+/// a sign of life like a nudge, so the new worker gets a grace period too.
+fn quiet(
+    state: WorkerState,
+    progress: &Progress,
+    nudged: Nudged,
+    restarted: Option<u64>,
+    now: u64,
+) -> Quiet {
+    let terminal = match state {
+        WorkerState::Gone => return Quiet::Gone,
+        WorkerState::Busy => return Quiet::Lively,
+        WorkerState::Idle { quiet } => quiet,
+    };
+    let restarted = match restarted {
+        Some(at) => stamp_age(at, now),
+        None => None,
+    };
+    match least(quiet_for(terminal, progress, nudged, now), restarted) {
+        Some(quiet) if quiet < GRACE => Quiet::Lively,
+        _ => Quiet::Stopped,
+    }
+}
+
+/// The silence of a worker that declared nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Silence {
+    /// Its terminal is gone.
+    Gone,
+    /// It is at work, or showed a sign of life within grace.
+    Lively,
+    /// It stopped: tell it, once, to carry on.
+    Nudge(Unnudged),
+    /// It stayed silent past its nudge, or cannot be nudged here.
+    Stalled(Silent),
+}
+
+/// How silent a worker is that declared nothing — or whose word is not on its
+/// issue to read: one with a PR open. The one place a nudge is allowed, and a
+/// silence proven.
+pub fn silence(
+    state: WorkerState,
+    progress: &Progress,
+    nudged: Nudged,
+    restarted: Option<u64>,
+    now: u64,
+) -> Silence {
+    match quiet(state, progress, nudged, restarted, now) {
+        Quiet::Gone => Silence::Gone,
+        Quiet::Lively => Silence::Lively,
+        Quiet::Stopped => match nudged {
+            Nudged::Never => Silence::Nudge(Unnudged { sent: 0 }),
+            Nudged::At(_) => {
+                Silence::Stalled(Silent { lively: false, declared: false, nudged: true })
+            }
+            Nudged::Nowhere => {
+                Silence::Stalled(Silent { lively: false, declared: false, nudged: false })
+            }
+        },
     }
 }
 
@@ -341,25 +411,19 @@ pub fn route(
     nudged: Nudged,
     now: u64,
 ) -> Route {
-    let quiet = match state {
-        WorkerState::Gone => return Route::Continue,
-        WorkerState::Busy => return Route::Leave,
-        WorkerState::Idle { quiet } => quiet,
-    };
-    let lively = match quiet_for(quiet, progress, nudged, now) {
-        Some(quiet) => quiet < GRACE,
-        None => false,
-    };
-    if lively {
-        return Route::Leave;
-    }
     let Some(verdict) = verdict else {
-        return match nudged {
-            Nudged::Never => Route::Nudge(Unnudged { sent: 0 }),
-            Nudged::At(_) => Route::Stalled(Silent { lively, declared: false, nudged: true }),
-            Nudged::Nowhere => Route::Stalled(Silent { lively, declared: false, nudged: false }),
+        return match silence(state, progress, nudged, None, now) {
+            Silence::Gone => Route::Continue,
+            Silence::Lively => Route::Leave,
+            Silence::Nudge(unnudged) => Route::Nudge(unnudged),
+            Silence::Stalled(silent) => Route::Stalled(silent),
         };
     };
+    match quiet(state, progress, nudged, None, now) {
+        Quiet::Gone => return Route::Continue,
+        Quiet::Lively => return Route::Leave,
+        Quiet::Stopped => {}
+    }
     match verdict.phase {
         Some(Phase::AlreadySatisfied) => match Workless::of(progress) {
             Some(workless) => Route::Close(workless),
