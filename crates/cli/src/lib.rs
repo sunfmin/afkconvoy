@@ -22,6 +22,7 @@ pub mod judge;
 pub mod landing;
 pub mod orca;
 pub mod park;
+pub mod recovery;
 pub mod settle;
 pub mod tend;
 pub mod tick;
@@ -112,6 +113,14 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+        /// Where to start from: what survives, or — discarding it — the base branch
+        #[arg(long, value_enum, default_value = "auto")]
+        start: dispatch::StartFrom,
+    },
+    /// Show what `dispatch` would continue an issue from, without acting
+    Recovery {
+        #[arg(long)]
+        issue: u64,
     },
     /// Close one of my claims whose issue needed no change
     Close {
@@ -285,9 +294,10 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 }
             }
         }
-        Command::Dispatch { issue, who, agent } => {
-            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)
+        Command::Dispatch { issue, who, agent, start } => {
+            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue, start)
         }
+        Command::Recovery { issue } => recovery::recovery(&Fleet::open(now)?, issue),
         Command::Close { issue, who } => judge::close(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Escalate { issue, who, reason } => {
             judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue, &reason)

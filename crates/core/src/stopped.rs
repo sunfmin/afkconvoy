@@ -128,6 +128,9 @@ pub enum Route {
     /// The issue needed no change: close it.
     Close(Workless),
     Escalate(Why),
+    /// Its worker is gone: the claim is orphaned, and continued from what
+    /// survived — never released back to the frontier.
+    Continue,
     /// It declared `blocked`: where the issues it named stand decides
     /// (`blocked::blocked_route`).
     Blocked,
@@ -313,6 +316,18 @@ pub fn standing_verdict(
     verdict
 }
 
+/// What a worker's state alone settles for its PR-less claim, before
+/// anything else is read: `None` for one that stopped, whose reasons must be
+/// gathered. `state` is `None` when the claim has no worktree on this host —
+/// which is a worker that is gone.
+pub fn settled_by_state(state: Option<WorkerState>) -> Option<Route> {
+    match state {
+        None | Some(WorkerState::Gone) => Some(Route::Continue),
+        Some(WorkerState::Busy) => Some(Route::Leave),
+        Some(WorkerState::Idle { .. }) => None,
+    }
+}
+
 /// Routes one PR-less claim from its worker's state, its worktree's progress,
 /// the latest verdict on its issue and the nudge this host recorded. Nothing
 /// is retried: a failure escalates (docs/adr/0005).
@@ -326,7 +341,11 @@ pub fn route(
     nudged: Nudged,
     now: u64,
 ) -> Route {
-    let WorkerState::Idle { quiet } = state else { return Route::Leave };
+    let quiet = match state {
+        WorkerState::Gone => return Route::Continue,
+        WorkerState::Busy => return Route::Leave,
+        WorkerState::Idle { quiet } => quiet,
+    };
     let lively = match quiet_for(quiet, progress, nudged, now) {
         Some(quiet) => quiet < GRACE,
         None => false,
@@ -538,9 +557,23 @@ mod tests {
             );
         }
         // nor is a worker at work, or one gone, told anything
-        for state in [WorkerState::Busy, WorkerState::Gone] {
-            assert_eq!(route(state, &progress(0, false), None, Nudged::Never, NOW), Route::Leave);
-        }
+        let gone = route(WorkerState::Gone, &progress(0, false), None, Nudged::Never, NOW);
+        assert_eq!(gone, Route::Continue);
+        let busy = route(WorkerState::Busy, &progress(0, false), None, Nudged::Never, NOW);
+        assert_eq!(busy, Route::Leave);
+    }
+
+    #[test]
+    fn an_orphaned_claim_is_continued_whatever_was_declared() {
+        assert_eq!(settled_by_state(None), Some(Route::Continue));
+        assert_eq!(settled_by_state(Some(WorkerState::Gone)), Some(Route::Continue));
+        assert_eq!(settled_by_state(Some(WorkerState::Busy)), Some(Route::Leave));
+        assert_eq!(settled_by_state(Some(STOPPED)), None);
+        let human = said(Some(Phase::NeedsHuman));
+        assert_eq!(
+            route(WorkerState::Gone, &progress(3, true), Some(&human), Nudged::At(1), NOW),
+            Route::Continue
+        );
     }
 
     #[test]

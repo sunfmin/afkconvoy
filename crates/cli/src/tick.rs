@@ -8,7 +8,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::claims::{Me, beat};
-use crate::dispatch::{Agent, dispatch};
+use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::judge::judge;
 use crate::settle::settle;
@@ -53,7 +53,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
         TickStep::TendTrain => tend_train(fleet, agent),
         TickStep::Judge { issue } => judge(fleet, me, agent, issue),
         TickStep::Dispatch { issue } => {
-            let started = dispatch(fleet, me, agent, issue)?;
+            let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
         TickStep::Heartbeat => {

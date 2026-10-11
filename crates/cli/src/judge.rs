@@ -8,7 +8,7 @@ use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::stopped::{
     NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
-    stalled_reason, standing_verdict,
+    settled_by_state, stalled_reason, standing_verdict,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
@@ -16,12 +16,11 @@ use afkconvoy_core::transition::{
     CloseStep, EscalateStep, Escalation, Released, escalation_begun, escalation_comment, relabelled,
 };
 use afkconvoy_core::verdict::{Verdict, latest_verdict};
-use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::claims::{Me, delete};
-use crate::dispatch::Agent;
+use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
@@ -182,18 +181,29 @@ struct Stopped {
     route: Route,
 }
 
-/// Asks after the worker of my claim on `issue`. `None` when there is nothing
-/// to route: no claim, no worktree on this host, or a worker that has not
-/// stopped — which costs no GitHub read.
-fn stopped(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Stopped>> {
+/// What asking after the worker of a PR-less claim of mine came to.
+enum Asked {
+    /// Its state alone settles it (`stopped::settled_by_state`): nothing on
+    /// GitHub was read.
+    Settled(Route),
+    Stopped(Box<Stopped>),
+}
+
+/// Asks after the worker of my claim on `issue`; `None` when I hold none. A
+/// worker at work, or gone, costs no GitHub read.
+fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(None) };
-    let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)? else {
-        return Ok(None);
+    let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
+    let state = match &worktree {
+        Some(worktree) => Some(worktree.state(fleet.now)?),
+        None => None,
     };
-    let state = worktree.state(fleet.now)?;
-    if !matches!(state, WorkerState::Idle { .. }) {
-        return Ok(None);
+    if let Some(settled) = settled_by_state(state) {
+        return Ok(Some(Asked::Settled(settled)));
     }
+    let (Some(worktree), Some(state)) = (worktree, state) else {
+        bail!("issue #{issue}: a worker that stopped has a worktree and a state");
+    };
     let progress = progress(&worktree, &fleet.base_tip()?)?;
     let comments = fleet.gh.comments(issue)?;
     let verdict = latest_verdict(comments.iter().map(|c| c.body.as_str()));
@@ -202,7 +212,7 @@ fn stopped(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Stopped>> {
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
     let said = said.filter(|_| verdict.is_some());
     let route = route(state, &progress, verdict.as_ref(), worktree.nudged()?, fleet.now);
-    Ok(Some(Stopped { claim, worktree, progress, verdict, said, route }))
+    Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, progress, verdict, said, route }))))
 }
 
 /// Types the nudge line at the worker in `worktree` and records it there.
@@ -233,12 +243,13 @@ fn where_it_stopped(worktree: &Worktree, silent: &Silent) -> String {
 /// nudge — at work, heard from within grace, one that declared a verdict, or
 /// one already nudged.
 pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
-    let Some(found) = stopped(fleet, me, issue)? else {
+    let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue)? else {
         bail!(
             "issue #{issue} has no stopped worker of {} on this host to nudge; nothing was sent",
             me.instance
         );
     };
+    let found = *found;
     let Route::Nudge(unnudged) = found.route else {
         bail!(
             "the worker on issue #{issue} is not nudged: {}; nothing was sent",
@@ -253,37 +264,27 @@ pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     Ok(json!({"issue": issue, "action": "nudged", "terminal": terminal}))
 }
 
-/// Starts a worker again in `worktree`, under the brief already there: the
-/// blockers its `blocked` verdict named are all closed. `said` is that
-/// verdict's comment, recorded as answered so the new worker is not judged by
-/// it.
-fn start_again(worktree: &Worktree, agent: &Agent, said: Option<&str>) -> Result<()> {
-    let brief = worktree.brief()?;
-    if !brief.is_file() {
-        bail!("{} holds no brief to start a worker under", worktree.path.display());
-    }
-    let terminal = worktree.start(&agent.command)?;
-    worktree.await_ready(&terminal, agent.ready_timeout)?;
-    worktree.deliver(&terminal, &brief)?;
-    // Last: a start that failed is made again by the next tick.
-    if let Some(said) = said {
-        worktree.record_answered(said)?;
-    }
-    Ok(())
-}
-
-/// The tick's look at one PR-less claim of mine: a worker that stopped is
-/// routed (`stopped::route`) → `Done` when that ended the claim.
+/// The tick's look at one PR-less claim of mine: a worker that is gone is
+/// continued, one that stopped is routed (`stopped::route`) → `Done` when that
+/// ended the claim.
 pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Outcome> {
-    let Some(Stopped { claim, worktree, progress, verdict, said, route }) =
-        stopped(fleet, me, issue)?
-    else {
-        return Ok(Outcome::Nothing);
+    let found = match ask_after(fleet, me, issue)? {
+        None | Some(Asked::Settled(Route::Leave)) => return Ok(Outcome::Nothing),
+        Some(Asked::Settled(_)) => {
+            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            return Ok(Outcome::Continued);
+        }
+        Some(Asked::Stopped(found)) => *found,
     };
+    let Stopped { claim, worktree, progress, verdict, said, route } = found;
     let workless = Workless::of(&progress);
     let said = said.as_deref();
     let reason = match route {
         Route::Leave => return Ok(Outcome::Nothing),
+        Route::Continue => {
+            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            return Ok(Outcome::Continued);
+        }
         Route::Nudge(unnudged) => {
             nudge_worker(&worktree, unnudged, fleet.now)?;
             return Ok(Outcome::Nudged);
@@ -300,7 +301,12 @@ pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
                     return Ok(Outcome::Done);
                 }
                 Blocked::Redispatch => {
-                    start_again(&worktree, agent, said)?;
+                    // Every blocker closed: the issue is worked again, from what is here.
+                    dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+                    // Last: a start that failed is made again by the next tick.
+                    if let Some(said) = said {
+                        worktree.record_answered(said)?;
+                    }
                     return Ok(Outcome::Continued);
                 }
                 Blocked::Escalate(reason) => {
