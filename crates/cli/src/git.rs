@@ -37,6 +37,13 @@ impl Repo {
         Ok(Repo { dir: PathBuf::from(ran.stdout) })
     }
 
+    /// The main worktree of this checkout: where its `.git` directory is.
+    pub fn main_checkout(&self) -> Result<PathBuf> {
+        let common = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        let common = PathBuf::from(common);
+        Ok(common.parent().map(Path::to_path_buf).unwrap_or(common))
+    }
+
     /// One git call whose failure the caller reads.
     pub fn try_git(&self, args: &[&str]) -> Result<Ran> {
         run(&self.dir, args, &[])

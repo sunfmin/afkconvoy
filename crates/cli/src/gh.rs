@@ -14,6 +14,8 @@ pub const ISSUES_JQ: &str = ".[] | select(.pull_request == null) | {number, titl
 /// What is read of one issue, open or not.
 pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].name], \
     pull_request: (.pull_request != null)}";
+/// What is read of each comment on an issue or a PR.
+pub const COMMENTS_JQ: &str = ".[] | {id, body, url: .html_url}";
 pub const PR_FIELDS: &str = "number,headRefName,headRefOid,body,closingIssuesReferences";
 
 pub struct GitHub {
@@ -30,6 +32,14 @@ pub struct IssueRead {
     pub state_reason: Option<String>,
     pub labels: Vec<String>,
     pub pull_request: bool,
+}
+
+/// One comment on an issue or a pull request.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Comment {
+    pub id: u64,
+    pub body: String,
+    pub url: String,
 }
 
 impl IssueRead {
@@ -121,5 +131,22 @@ impl GitHub {
         let out = self.gh(&["api", &endpoint, "--jq", ISSUE_JQ])?;
         serde_json::from_str(&out)
             .with_context(|| format!("gh api issue {number}: unexpected answer"))
+    }
+
+    /// Every comment on an issue or a PR, oldest first.
+    pub fn comments(&self, number: u64) -> Result<Vec<Comment>> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100");
+        let out = self.gh(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ])?;
+        out.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).context("gh api comments: unexpected answer"))
+            .collect()
+    }
+
+    /// Posts one comment on an issue or a PR.
+    pub fn comment(&self, number: u64, body: &str) -> Result<()> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments");
+        self.gh(&["api", "--method", "POST", &endpoint, "-f", &format!("body={body}")])?;
+        Ok(())
     }
 }

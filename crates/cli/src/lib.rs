@@ -13,11 +13,14 @@ use serde_json::{Value, json};
 
 pub mod claims;
 pub mod config;
+pub mod dispatch;
 pub mod fleet;
 pub mod gh;
 pub mod git;
+pub mod orca;
 
 use claims::{Me, Scan, Take};
+use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
 
@@ -45,6 +48,15 @@ enum Command {
         #[arg(long, value_parser = InstanceId::parse)]
         instance: Option<InstanceId>,
     },
+    /// Start a fresh worker on one issue
+    Dispatch {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
+        #[command(flatten)]
+        agent: AgentArgs,
+    },
     /// List every claim and heartbeat on the remote
     Scan,
     /// Claim one issue for a fleet instance
@@ -66,6 +78,17 @@ enum Command {
         #[command(flatten)]
         who: Who,
     },
+}
+
+/// How a command that starts a worker starts it.
+#[derive(clap::Args)]
+struct AgentArgs {
+    /// The worker launch command, handed to orca as it is
+    #[arg(long)]
+    worker_command: String,
+    /// Seconds an agent is given to be ready for its prompt
+    #[arg(long, default_value_t = 120, hide = true)]
+    ready_timeout: u64,
 }
 
 /// The fleet instance a command acts as.
@@ -124,6 +147,10 @@ fn run(command: Command, now: u64) -> anyhow::Result<Value> {
         }
         Command::Plan { instance } => {
             Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?)?)
+        }
+        Command::Dispatch { issue, who, agent } => {
+            let agent = Agent { command: agent.worker_command, ready_timeout: agent.ready_timeout };
+            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent, issue)
         }
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
