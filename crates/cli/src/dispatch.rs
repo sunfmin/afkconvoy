@@ -1,7 +1,9 @@
 //! Starting a worker on an issue.
 
+use std::path::PathBuf;
+
 use afkconvoy_core::prompt::{WorkerFields, worker_prompt};
-use afkconvoy_core::recovery::{Recovery, Tier, superseded};
+use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
 use afkconvoy_core::worker::{
     DispatchStep, branch_comment, dispatch_steps, recorded_branches, worktree_name,
 };
@@ -103,18 +105,7 @@ pub fn dispatch(
             }
             DispatchStep::Brief => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                let path = cut.path.display().to_string();
-                let fields = WorkerFields {
-                    number,
-                    title: &issue.title,
-                    branch: &cut.branch,
-                    worktree: &path,
-                    base_branch: &fleet.config.base_branch,
-                    gate_command: &crate::own_command("gate --train"),
-                    land_command: &crate::own_command(&format!("land --issue {number}")),
-                };
-                let prompt = worker_prompt(&fields, plan.variant).map_err(|e| anyhow!(e))?;
-                brief = Some(cut.write_brief(&prompt)?);
+                brief = Some(write_brief(fleet, cut, number, &issue.title, plan.variant)?);
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
@@ -142,6 +133,29 @@ pub fn dispatch(
         started["discarded"] = discarded;
     }
     Ok(started)
+}
+
+/// Writes the brief of the worker of issue `number` into its worktree → the
+/// file.
+pub(crate) fn write_brief(
+    fleet: &Fleet,
+    worktree: &Worktree,
+    number: u64,
+    title: &str,
+    variant: Variant,
+) -> Result<PathBuf> {
+    let path = worktree.path.display().to_string();
+    let fields = WorkerFields {
+        number,
+        title,
+        branch: &worktree.branch,
+        worktree: &path,
+        base_branch: &fleet.config.base_branch,
+        gate_command: &crate::own_command("gate --train"),
+        land_command: &crate::own_command(&format!("land --issue {number}")),
+    };
+    let prompt = worker_prompt(&fields, variant).map_err(|e| anyhow!(e))?;
+    worktree.write_brief(&prompt)
 }
 
 /// Has orca cut a worktree for issue `number` at the tip the remote has for

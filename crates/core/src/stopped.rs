@@ -336,13 +336,14 @@ enum Quiet {
     Stopped,
 }
 
-/// `restarted`: when the worker here was started in place of a silent one —
-/// a sign of life like a nudge, so the new worker gets a grace period too.
+/// `handed`: when the worker here was last handed its work by the fleet —
+/// started in place of a silent one, told of a train's tip. A sign of life
+/// like a nudge: it gets a grace period from then.
 fn quiet(
     state: WorkerState,
     progress: &Progress,
     nudged: Nudged,
-    restarted: Option<u64>,
+    handed: Option<u64>,
     now: u64,
 ) -> Quiet {
     let terminal = match state {
@@ -350,11 +351,11 @@ fn quiet(
         WorkerState::Busy => return Quiet::Lively,
         WorkerState::Idle { quiet } => quiet,
     };
-    let restarted = match restarted {
+    let handed = match handed {
         Some(at) => stamp_age(at, now),
         None => None,
     };
-    match least(quiet_for(terminal, progress, nudged, now), restarted) {
+    match least(quiet_for(terminal, progress, nudged, now), handed) {
         Some(quiet) if quiet < GRACE => Quiet::Lively,
         _ => Quiet::Stopped,
     }
@@ -380,10 +381,10 @@ pub fn silence(
     state: WorkerState,
     progress: &Progress,
     nudged: Nudged,
-    restarted: Option<u64>,
+    handed: Option<u64>,
     now: u64,
 ) -> Silence {
-    match quiet(state, progress, nudged, restarted, now) {
+    match quiet(state, progress, nudged, handed, now) {
         Quiet::Gone => Silence::Gone,
         Quiet::Lively => Silence::Lively,
         Quiet::Stopped => match nudged {

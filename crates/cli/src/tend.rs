@@ -6,6 +6,8 @@ use afkconvoy_core::train::{TRAIN_WORKTREE, Tend, tend};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow};
 
+use crate::abandon::{StoppedOn, stopped_train};
+use crate::claims::Me;
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::orca::{Source, Worktree};
@@ -18,7 +20,9 @@ use crate::train::Train;
 /// The train's worktree is the repo's, not a run's: it is found by its name,
 /// kept when the fleet stops, and used again, with what its gate runs built,
 /// by whichever fleet instance tends the train next.
-pub fn tend_train(fleet: &Fleet, agent: &Agent) -> Result<Outcome> {
+///
+/// A worker that stopped on the tip it was told about is `stopped_train`'s.
+pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {
     let train = Train::read(&fleet.repo, &fleet.config)?;
     if train.tip == train.base {
         return Ok(Outcome::Nothing);
@@ -29,13 +33,16 @@ pub fn tend_train(fleet: &Fleet, agent: &Agent) -> Result<Outcome> {
         Some(worktree) => (worktree.state(fleet.now)?, worktree.told()?),
         None => (WorkerState::Gone, None),
     };
-    let decided = tend(state, told.as_deref(), &train.tip);
-    if decided == Tend::Leave {
-        return Ok(Outcome::Nothing);
-    }
-    let worktree = match found {
-        Some(worktree) => worktree,
-        None => Worktree::cut(&source, TRAIN_WORKTREE, &train.base, None)?,
+    let decided = tend(state, told.as_ref().map(|told| told.tip.as_str()), &train.tip);
+    let worktree = match (decided, found) {
+        (Tend::Leave, _) => return Ok(Outcome::Nothing),
+        (Tend::Stopped, Some(worktree)) => {
+            let told_at = told.and_then(|told| told.at);
+            let stopped = StoppedOn { train: &train, worktree: &worktree, state, told_at };
+            return stopped_train(fleet, me, &stopped);
+        }
+        (_, Some(worktree)) => worktree,
+        (_, None) => Worktree::cut(&source, TRAIN_WORKTREE, &train.base, None)?,
     };
     let path = worktree.path.display().to_string();
     let prompt = train_prompt(&TrainFields {
@@ -57,6 +64,6 @@ pub fn tend_train(fleet: &Fleet, agent: &Agent) -> Result<Outcome> {
         }
     }
     // Last: a delivery that failed leaves a worker nobody told, and the next tick starts over.
-    worktree.record_told(&train.tip)?;
+    worktree.record_told(&train.tip, fleet.now)?;
     Ok(Outcome::Done)
 }

@@ -47,6 +47,9 @@ pub enum Outcome {
     /// `Watch` replaced a silent joining worker, the once that is allowed: the
     /// claim is still held.
     Restarted,
+    /// `TendTrain` gave the train up, its worker silent past a nudge: nothing
+    /// landed, and its PRs join the next one.
+    Abandoned,
     /// There was nothing for it to do.
     Nothing,
     /// A peer holds the issue — it won the race, or its heartbeat came back:
@@ -114,7 +117,11 @@ impl Pass {
             !matches!(step, TickStep::Heartbeat)
                 && matches!(
                     outcome,
-                    Outcome::Done | Outcome::Nudged | Outcome::Continued | Outcome::Restarted
+                    Outcome::Done
+                        | Outcome::Nudged
+                        | Outcome::Continued
+                        | Outcome::Restarted
+                        | Outcome::Abandoned
                 )
         })
     }

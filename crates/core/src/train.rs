@@ -276,9 +276,11 @@ pub fn is_train_worktree(directory: &str) -> bool {
 /// the train.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tend {
-    /// The worker is at work — or it stopped on the very tip it was last told
-    /// about: its silence is not this decision's.
+    /// The worker is at work.
     Leave,
+    /// The worker stopped on the very tip it was last told about, with the
+    /// train not landed: its silence decides (`abandon::train_route`).
+    Stopped,
     /// No worker is there: start one in the train's worktree.
     Start,
     /// The worker stopped, and the train holds something it was not told
@@ -295,7 +297,7 @@ pub fn tend(worker: WorkerState, told: Option<&str>, tip: &str) -> Tend {
         (WorkerState::Gone, _) | (_, None) => Tend::Start,
         (WorkerState::Idle { .. }, Some(told)) => {
             if told == tip {
-                Tend::Leave
+                Tend::Stopped
             } else {
                 Tend::Tell
             }
@@ -446,7 +448,7 @@ mod tests {
         assert_eq!(tend(idle, None, "t1"), Tend::Start, "a bare shell is no train worker");
         assert_eq!(tend(WorkerState::Busy, Some("t0"), "t1"), Tend::Leave);
         assert_eq!(tend(idle, Some("t0"), "t1"), Tend::Tell);
-        assert_eq!(tend(idle, Some("t1"), "t1"), Tend::Leave);
+        assert_eq!(tend(idle, Some("t1"), "t1"), Tend::Stopped);
     }
 
     #[test]

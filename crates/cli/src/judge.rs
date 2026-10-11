@@ -215,14 +215,20 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, progress, verdict, said, route }))))
 }
 
-/// Types the nudge line at the worker in `worktree` and records it there.
-pub(crate) fn nudge_worker(worktree: &Worktree, unnudged: Unnudged, now: u64) -> Result<String> {
+/// Types a nudge at the worker in `worktree` — `line` makes it from where the
+/// worker's brief is — and records it there.
+pub(crate) fn nudge_worker(
+    worktree: &Worktree,
+    unnudged: Unnudged,
+    line: fn(&str) -> String,
+    now: u64,
+) -> Result<String> {
     let Some(terminal) = worktree.terminal()? else {
         bail!("no live terminal in {} to take the nudge", worktree.path.display());
     };
     let brief = worktree.brief()?.display().to_string();
     afkconvoy_core::stopped::nudge(unnudged, |step| match step {
-        NudgeStep::Tell => worktree.tell(&terminal, &nudge_line(&brief)),
+        NudgeStep::Tell => worktree.tell(&terminal, &line(&brief)),
         NudgeStep::Record => worktree.record_nudge(now),
     })?;
     Ok(terminal)
@@ -260,7 +266,7 @@ pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
             }
         );
     };
-    let terminal = nudge_worker(&found.worktree, unnudged, fleet.now)?;
+    let terminal = nudge_worker(&found.worktree, unnudged, nudge_line, fleet.now)?;
     Ok(json!({"issue": issue, "action": "nudged", "terminal": terminal}))
 }
 
@@ -286,7 +292,7 @@ pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
             return Ok(Outcome::Continued);
         }
         Route::Nudge(unnudged) => {
-            nudge_worker(&worktree, unnudged, fleet.now)?;
+            nudge_worker(&worktree, unnudged, nudge_line, fleet.now)?;
             return Ok(Outcome::Nudged);
         }
         Route::Close(workless) => {

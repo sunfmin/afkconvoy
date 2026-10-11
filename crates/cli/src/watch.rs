@@ -3,9 +3,11 @@
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::joining::{
-    JoinRoute, RestartStep, Unrestarted, join_comment, join_route, restarted_at, stalled_reason,
+    JoinRecord, JoinRoute, RestartStep, Unrestarted, join_comment, join_route, read_join,
+    stalled_reason,
 };
 use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::stopped::{Route, settled_by_state};
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, bail};
@@ -14,6 +16,7 @@ use serde_json::{Value, json};
 use crate::claims::Me;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::gh::Comment;
 use crate::judge::{escalate_claim, mine, nudge_worker, progress, where_it_stopped};
 use crate::orca::{Source, Worktree};
 
@@ -22,6 +25,9 @@ struct Stopped {
     claim: Claim,
     pr: u64,
     worktree: Worktree,
+    /// The PR's join record, and the comments it was read from.
+    record: JoinRecord,
+    comments: Vec<Comment>,
     route: JoinRoute,
 }
 
@@ -57,11 +63,31 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let Some(pr) = closing_pr(&prs, issue).map(|pr| pr.number) else {
         return Ok(Some(Asked::NoPr));
     };
-    let comments = fleet.gh.comments(pr)?;
-    let restarted = restarted_at(comments.iter().map(|c| c.body.as_str()));
+    let (record, comments) = join_record(fleet, pr)?;
     let progress = progress(&worktree, &fleet.base_tip()?)?;
-    let route = join_route(state, &progress, worktree.nudged()?, restarted, fleet.now);
-    Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, route }))))
+    let route = join_route(state, &progress, worktree.nudged()?, record.restarted, fleet.now);
+    Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, record, comments, route }))))
+}
+
+/// The join record of `pr`, and the PR's comments it was read from.
+pub(crate) fn join_record(fleet: &Fleet, pr: u64) -> Result<(JoinRecord, Vec<Comment>)> {
+    let comments = fleet.gh.comments(pr)?;
+    Ok((read_join(comments.iter().map(|c| c.body.as_str())), comments))
+}
+
+/// Writes the join record of `pr` into its one marker comment, posted when the
+/// PR has none. `comments` are the ones `record` was read from.
+pub(crate) fn record_join(
+    fleet: &Fleet,
+    pr: u64,
+    record: &JoinRecord,
+    comments: &[Comment],
+) -> Result<()> {
+    let body = join_comment(record);
+    match record.comment.and_then(|at| comments.get(at)) {
+        Some(comment) => fleet.gh.edit_comment(comment.id, &body),
+        None => fleet.gh.comment(pr, &body),
+    }
 }
 
 /// Replaces the silent worker joining `pr`: the restart is recorded on the PR,
@@ -72,13 +98,16 @@ fn restart_worker(
     me: &Me,
     agent: &Agent,
     issue: u64,
-    pr: u64,
+    found: &Stopped,
     unrestarted: Unrestarted,
 ) -> Result<Value> {
     let mut started = Value::Null;
     afkconvoy_core::joining::restart(unrestarted, |step| {
         match step {
-            RestartStep::Record => fleet.gh.comment(pr, &join_comment(fleet.now))?,
+            RestartStep::Record => {
+                let record = JoinRecord { restarted: Some(fleet.now), ..found.record.clone() };
+                record_join(fleet, found.pr, &record, &found.comments)?;
+            }
             RestartStep::Replace => {
                 started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             }
@@ -100,7 +129,9 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
             me.instance
         );
     };
-    let Stopped { pr, route, .. } = *found;
+    let mut found = *found;
+    let pr = found.pr;
+    let route = std::mem::replace(&mut found.route, JoinRoute::Leave);
     let JoinRoute::Restart(unrestarted) = route else {
         bail!(
             "the worker on issue #{issue} is not restarted: {}; nothing was changed",
@@ -112,7 +143,7 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
             }
         );
     };
-    let started = restart_worker(fleet, me, agent, issue, pr, unrestarted)?;
+    let started = restart_worker(fleet, me, agent, issue, &found, unrestarted)?;
     Ok(json!({"issue": issue, "pr": pr, "action": "restarted", "restarted": fleet.now,
         "terminal": started["terminal"], "prompt": started["prompt"]}))
 }
@@ -130,25 +161,26 @@ pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
         }
         Some(Asked::Stopped(found)) => *found,
     };
-    let Stopped { claim, pr, worktree, route } = found;
-    match route {
+    let mut found = found;
+    match std::mem::replace(&mut found.route, JoinRoute::Leave) {
         JoinRoute::Leave => Ok(Outcome::Nothing),
         JoinRoute::Continue => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(Outcome::Continued)
         }
         JoinRoute::Nudge(unnudged) => {
-            nudge_worker(&worktree, unnudged, fleet.now)?;
+            nudge_worker(&found.worktree, unnudged, nudge_line, fleet.now)?;
             Ok(Outcome::Nudged)
         }
         JoinRoute::Restart(unrestarted) => {
-            restart_worker(fleet, me, agent, issue, pr, unrestarted)?;
+            restart_worker(fleet, me, agent, issue, &found, unrestarted)?;
             Ok(Outcome::Restarted)
         }
         JoinRoute::Stalled(silent) => {
-            let reason = stalled_reason(pr, &silent, &where_it_stopped(&worktree, &silent));
+            let tail = where_it_stopped(&found.worktree, &silent);
+            let reason = stalled_reason(found.pr, &silent, &tail);
             // No proof of a workless branch is offered: the worktree is kept.
-            escalate_claim(fleet, &claim, &reason, Some(&worktree), None)?;
+            escalate_claim(fleet, &found.claim, &reason, Some(&found.worktree), None)?;
             Ok(Outcome::Done)
         }
     }

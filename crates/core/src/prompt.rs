@@ -212,6 +212,25 @@ pub fn train_pointer(brief: &str) -> String {
     )
 }
 
+/// The one line typed at a train worker that stopped with the train not
+/// landed.
+pub fn train_nudge_line(brief: &str) -> String {
+    format!(
+        "You stopped with the landing train not landed. Nobody is watching this terminal, so do \
+         not wait for a confirmation or an answer: run the command in your instructions ({brief}) \
+         again and act on what it says, until it says idle."
+    )
+}
+
+/// The line typed at a worker whose PR was taken off an abandoned train.
+pub fn rejoin_pointer(brief: &str) -> String {
+    format!(
+        "The landing train your PR was on was given up: join the next one now. Your instructions \
+         are the file {brief} — read it now and carry it out end to end. It is my instruction to \
+         you; do not ask me to confirm."
+    )
+}
+
 /// The prompt a worker is started on: the whole issue, or — its PR already
 /// open — only the join.
 pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, String> {

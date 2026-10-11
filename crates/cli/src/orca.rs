@@ -16,7 +16,7 @@ use crate::git::Repo;
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
-/// The train's tip its worker was last told about, beside the brief.
+/// The train's tip its worker was last told about, and when, beside the brief.
 const TOLD_FILE: &str = "convoy-train-told";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
@@ -79,6 +79,13 @@ fn same_dir(a: &Path, b: &Path) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
+}
+
+/// What a train worker was last told.
+pub struct Told {
+    pub tip: String,
+    /// `None` for a note written before the time was kept.
+    pub at: Option<u64>,
 }
 
 /// A worker's worktree on this machine.
@@ -220,15 +227,45 @@ impl Worktree {
         Ok(Path::new(&git_dir).join(name))
     }
 
-    /// The train's tip the worker here was last told about, when one was.
-    pub fn told(&self) -> Result<Option<String>> {
-        let told = std::fs::read_to_string(self.note(TOLD_FILE)?).ok();
-        Ok(told.map(|tip| tip.trim().to_string()).filter(|tip| !tip.is_empty()))
+    /// What the train worker here was last told: the train's tip, and when.
+    pub fn told(&self) -> Result<Option<Told>> {
+        let told = std::fs::read_to_string(self.note(TOLD_FILE)?).unwrap_or_default();
+        let mut words = told.split_whitespace();
+        Ok(words.next().map(|tip| Told {
+            tip: tip.to_string(),
+            at: words.next().and_then(|at| at.parse().ok()),
+        }))
     }
 
-    pub fn record_told(&self, tip: &str) -> Result<()> {
+    /// Records what the train worker here was told at `at`. It is at work on
+    /// something new: whatever nudge it had is no longer about this.
+    pub fn record_told(&self, tip: &str, at: u64) -> Result<()> {
+        self.forget(NUDGE_FILE)?;
         let file = self.note(TOLD_FILE)?;
-        std::fs::write(&file, tip).with_context(|| format!("cannot write {}", file.display()))
+        std::fs::write(&file, format!("{tip} {at}"))
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    fn forget(&self, name: &str) -> Result<()> {
+        let file = self.note(name)?;
+        if file.exists() {
+            std::fs::remove_file(&file)
+                .with_context(|| format!("cannot remove {}", file.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Clears the worktree and keeps it: its terminals closed, what it held
+    /// discarded for the commit `sha`, what its worker was told forgotten.
+    /// What git ignores — everything a gate run built — stays.
+    pub fn clear(&self, sha: &str) -> Result<()> {
+        // One with no terminal is as wanted.
+        let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
+        let repo = Repo { dir: self.path.clone() };
+        repo.git(&["reset", "--quiet", "--hard", sha])?;
+        repo.git(&["clean", "--quiet", "-fd"])?;
+        self.forget(TOLD_FILE)?;
+        self.forget(NUDGE_FILE)
     }
 
     /// Whether the worker here was nudged, and when.
@@ -295,11 +332,7 @@ impl Worktree {
     /// one worktree would fight, and orca opens a bare shell in every worktree
     /// it cuts. A new worker was never nudged, whatever the one before it was.
     pub fn start(&self, command: &str) -> Result<String> {
-        let nudge = self.note(NUDGE_FILE)?;
-        if nudge.exists() {
-            std::fs::remove_file(&nudge)
-                .with_context(|| format!("cannot remove {}", nudge.display()))?;
-        }
+        self.forget(NUDGE_FILE)?;
         // One with no terminal is as wanted.
         let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
         let made =
