@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::git::{REMOTE, Repo};
+use crate::train::{Train, merge_in, unmerged};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
 /// untracked paths as `git status --porcelain` lists them, and — given the
@@ -134,13 +135,43 @@ pub fn recorded(
 /// `afkconvoy gate`: a worker's run of the gate, in the worktree it is called
 /// from. The log streams to the worker's terminal; the answer says whether the
 /// run is on record as a pass of the commit's tree.
-pub fn gate(repo: &Repo, config: &Config, now: u64, timeout: Duration) -> Result<Value> {
+///
+/// `train`: the branch first takes in what its PR will land behind — the
+/// train's tip, or the base branch when there is no train — by a merge, never
+/// a rebase. So a conflict with what is on the train is met before the run,
+/// and a green run is of the very tree the PR joins the train with. A merge
+/// that conflicts is left in progress and no gate runs.
+pub fn gate(
+    repo: &Repo,
+    config: &Config,
+    train: bool,
+    now: u64,
+    timeout: Duration,
+) -> Result<Value> {
     let command = GateCommand::new(&config.gate_command);
+    let mut merged = None;
+    if train {
+        let mut files = unmerged(repo)?;
+        if files.is_empty() {
+            let tip = Train::read(repo, config)?.tip;
+            files = merge_in(repo, &tip, "the landing train")?;
+            merged = Some(tip);
+        }
+        if !files.is_empty() {
+            return Ok(json!({"status": "conflict", "files": files, "recorded": false,
+                "detail": "merging what this PR lands behind into this branch conflicted; the \
+                    merge is in progress here — resolve every file, `git add` it, COMMIT the \
+                    merge, and run this again. No gate ran"}));
+        }
+    }
     let run = run_and_record(repo, &command, now, timeout)?;
     let status = if run.ran.green() { "green" } else { "red" };
     let mut answer = json!({"status": status, "exit_code": run.ran.exit_code,
         "timed_out": run.ran.timed_out, "command": command.text(), "head": run.head,
         "recorded": false});
+    if let Some(merged) = merged {
+        answer["merged"] = json!(merged);
+    }
     let head = &run.head;
     let detail = if !run.ran.green() {
         "the gate is red — nothing is on record; fix it, commit, and run this again".to_string()

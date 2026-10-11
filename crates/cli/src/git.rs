@@ -49,6 +49,33 @@ impl Repo {
         run(&self.dir, args, &[])
     }
 
+    /// One git call under extra environment, whose failure the caller reads.
+    pub fn try_git_with(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
+        run(&self.dir, args, env)
+    }
+
+    /// Is `commit` on `tip`'s history (or `tip` itself)?
+    pub fn within(&self, commit: &str, tip: &str) -> Result<bool> {
+        Ok(self.try_git(&["merge-base", "--is-ancestor", commit, tip])?.ok)
+    }
+
+    /// The sha the remote has at one ref, with its commits brought into this
+    /// repo; `None` when the remote has no such ref. Like every read of the
+    /// remote it writes no ref here and no FETCH_HEAD.
+    pub fn fetched(&self, refname: &str) -> Result<Option<String>> {
+        let Some(sha) = self.remote_sha(refname)? else { return Ok(None) };
+        let here = |repo: &Repo| -> Result<bool> {
+            Ok(repo.try_git(&["cat-file", "-e", &format!("{sha}^{{commit}}")])?.ok)
+        };
+        if !here(self)? {
+            self.git(&["fetch", "--quiet", "--no-write-fetch-head", "--no-tags", REMOTE, refname])?;
+            if !here(self)? {
+                bail!("{refname} moved on the remote while it was read — run this again");
+            }
+        }
+        Ok(Some(sha))
+    }
+
     /// One git call that must succeed → its stdout as it came: for output whose
     /// leading spaces mean something.
     pub fn git_raw(&self, args: &[&str]) -> Result<String> {

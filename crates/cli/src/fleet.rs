@@ -4,12 +4,14 @@
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::plan::{Observed, WorkingSet, assemble};
+use afkconvoy_core::train::on_train;
 use anyhow::Result;
 
 use crate::claims::Scan;
 use crate::config;
 use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::train::Train;
 
 pub struct Fleet {
     pub repo: Repo,
@@ -43,6 +45,9 @@ impl Fleet {
                 closed.push(claim.number);
             }
         }
+        // What is on the train is read off the train's own commits.
+        let joins = Train::read(&self.repo, &self.config)?.joins(&self.repo)?;
+        let joined: Vec<u64> = on_train(&joins, &prs).iter().map(|join| join.issue).collect();
         let heartbeats: Vec<(String, u64)> =
             self.scan.heartbeats.iter().map(|(instance, ts)| (instance.clone(), *ts)).collect();
         let seen = Observed {
@@ -51,6 +56,7 @@ impl Fleet {
             claims: &self.scan.claims,
             heartbeats: &heartbeats,
             closed: &closed,
+            joined: &joined,
         };
         Ok(assemble(&seen, me, self.now, &self.config))
     }

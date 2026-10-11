@@ -182,7 +182,7 @@ impl World {
     /// Adds an open PR from `branch` whose body closes issue `closes`.
     pub fn pr(&self, number: u64, closes: u64, branch: &str) {
         self.with_gh(|gh| {
-            let pr = json!({"number": number, "headRefName": branch, "headRefOid": "",
+            let pr = json!({"number": number, "title": format!("pr {number}"), "headRefName": branch, "headRefOid": "",
                 "body": format!("Closes #{closes}\n"), "state": "open"});
             gh["prs"].as_array_mut().unwrap().push(pr);
         });
