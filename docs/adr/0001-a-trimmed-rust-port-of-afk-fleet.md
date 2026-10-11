@@ -29,6 +29,7 @@ afkconvoy reimplements [`sunfmin/afk-fleet`](https://github.com/sunfmin/afk-flee
 - A wake is a subcommand that signals the host's `run` process, not a line typed into a terminal.
 - The base branch is a config key (ADR-0006).
 - Config stays a yaml block in a markdown file under `docs/agents/`, with six keys: `base_branch`, `ready_label`, `epic_labels`, `concurrency`, `gate_command`, `escalate_label`.
+- Everything the tool writes on the remote carries its own prefix: refs under `refs/convoy/*` (branches under `convoy-*` where the remote refuses non-branch refs) and comment markers as `<!--convoy:…-->`, where afk-fleet uses `refs/afk/*` and `<!--afk:…-->`. The two tools share no ref and no marker, so neither reads the other's claims as its own, and afkconvoy does not see a claim afk-fleet holds.
 
 ## Cut
 
