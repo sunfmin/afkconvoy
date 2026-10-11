@@ -41,8 +41,10 @@ use fleet::Fleet;
 use git::Repo;
 use tick::Pacing;
 
+/// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
+/// reads to learn the tool.
 #[derive(Parser)]
-#[command(name = "afkconvoy", version, about)]
+#[command(name = "afkconvoy", version, about, long_about = include_str!("help.txt"))]
 struct Cli {
     /// The time to act at, in epoch seconds [default: the clock's]
     #[arg(long, global = true, hide = true)]
