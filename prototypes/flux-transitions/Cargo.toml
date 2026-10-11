@@ -1,0 +1,17 @@
+# PROTOTYPE — throwaway. Answers one question: can Flux express afkconvoy's
+# transition-order rules (docs/adr/0007)? Not part of the product.
+[package]
+name = "flux-transitions-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+flux-rs = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+
+[package.metadata.flux]
+enabled = true
+check_overflow = "strict"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }
