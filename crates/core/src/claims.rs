@@ -37,6 +37,24 @@ impl InstanceId {
         }
     }
 
+    /// A new id for a fleet starting on `host`: the host's name, as far as the
+    /// grammar takes it, and `salt` to tell two runs apart.
+    pub fn mint(host: &str, salt: u32) -> InstanceId {
+        let mut name = String::new();
+        for c in host.chars() {
+            if name.len() >= 24 {
+                break;
+            }
+            if c.is_ascii_alphanumeric() {
+                name.push(c.to_ascii_lowercase());
+            } else if !name.is_empty() && !name.ends_with('-') {
+                name.push('-');
+            }
+        }
+        let name = name.trim_end_matches('-');
+        InstanceId(format!("{}-{salt:08x}", if name.is_empty() { "fleet" } else { name }))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -218,6 +236,15 @@ mod tests {
         for bad in ["", "-a", "A", "a_b", "a/b", "a b", &"a".repeat(41), "é"] {
             assert!(InstanceId::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_minted_id_is_in_the_grammar() {
+        for host in ["Felix's MacBook-Pro.local", "", "---", "主机", &"x".repeat(80)] {
+            let minted = InstanceId::mint(host, 0xdead_beef);
+            assert_eq!(InstanceId::parse(minted.as_str()), Ok(minted.clone()), "{host:?}");
+        }
+        assert_eq!(InstanceId::mint("My Mac.local", 255).as_str(), "my-mac-local-000000ff");
     }
 
     #[test]

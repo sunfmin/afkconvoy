@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 
@@ -18,11 +18,13 @@ pub mod fleet;
 pub mod gh;
 pub mod git;
 pub mod orca;
+pub mod tick;
 
 use claims::{Me, Scan, Take};
 use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
+use tick::Pacing;
 
 #[derive(Parser)]
 #[command(name = "afkconvoy", version, about)]
@@ -47,6 +49,29 @@ enum Command {
         /// The fleet instance whose claims are its own [default: nobody's]
         #[arg(long, value_parser = InstanceId::parse)]
         instance: Option<InstanceId>,
+    },
+    /// Run the fleet: tick after tick, until stopped
+    Run {
+        /// The fleet instance to run as [default: a new one, named for this host]
+        #[arg(long, value_parser = InstanceId::parse)]
+        instance: Option<InstanceId>,
+        #[arg(long)]
+        host: Option<String>,
+        #[command(flatten)]
+        agent: AgentArgs,
+        /// Stop after this many ticks
+        #[arg(long, hide = true)]
+        ticks: Option<u64>,
+        /// Milliseconds one second of sleep takes
+        #[arg(long, hide = true, default_value_t = 1000)]
+        second_ms: u64,
+    },
+    /// Run one reconciliation pass and exit
+    Tick {
+        #[command(flatten)]
+        who: Who,
+        #[command(flatten)]
+        agent: AgentArgs,
     },
     /// Start a fresh worker on one issue
     Dispatch {
@@ -103,8 +128,17 @@ struct Who {
 
 impl Who {
     fn me(self, now: u64) -> Me {
-        let host = self.host.unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into());
-        Me { instance: self.instance, host, now }
+        Me { instance: self.instance, host: self.host.unwrap_or_else(this_host), now }
+    }
+}
+
+fn this_host() -> String {
+    gethostname::gethostname().to_string_lossy().into()
+}
+
+impl AgentArgs {
+    fn agent(self) -> Agent {
+        Agent { command: self.worker_command, ready_timeout: self.ready_timeout }
     }
 }
 
@@ -117,8 +151,7 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(e) if !e.use_stderr() => e.exit(),
         Err(e) => return fail(2, e.render().to_string().trim()),
     };
-    let now = cli.now.unwrap_or_else(clock);
-    match run(cli.command, now) {
+    match run(cli.command, cli.now) {
         Ok(answer) => {
             println!("{answer}");
             ExitCode::SUCCESS
@@ -136,7 +169,8 @@ fn clock() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
 
-fn run(command: Command, now: u64) -> anyhow::Result<Value> {
+fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
+    let now = fixed_now.unwrap_or_else(clock);
     match command {
         Command::Config { file } => {
             let file = match file {
@@ -148,9 +182,19 @@ fn run(command: Command, now: u64) -> anyhow::Result<Value> {
         Command::Plan { instance } => {
             Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?)?)
         }
+        Command::Run { instance, host, agent, ticks, second_ms } => {
+            let host = host.unwrap_or_else(this_host);
+            let salt = clock() as u32 ^ std::process::id();
+            let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
+            let mut me = Me { instance, host, now };
+            let pacing = Pacing { ticks, second: Duration::from_millis(second_ms) };
+            tick::run(&mut me, &agent.agent(), &pacing, || fixed_now.unwrap_or_else(clock))
+        }
+        Command::Tick { who, agent } => {
+            Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent.agent())?.json())
+        }
         Command::Dispatch { issue, who, agent } => {
-            let agent = Agent { command: agent.worker_command, ready_timeout: agent.ready_timeout };
-            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent, issue)
+            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)
         }
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
