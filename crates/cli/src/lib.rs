@@ -22,6 +22,7 @@ pub mod gh;
 pub mod git;
 pub mod judge;
 pub mod landing;
+pub mod launch;
 pub mod orca;
 pub mod park;
 pub mod probe;
@@ -215,9 +216,10 @@ enum Command {
 /// How a command that starts a worker starts it.
 #[derive(clap::Args)]
 struct AgentArgs {
-    /// The worker launch command, handed to orca as it is
+    /// The worker launch command, handed to orca as it is [default: with no
+    /// ANTHROPIC_BASE_URL, `claude --dangerously-skip-permissions`; with one, asked for]
     #[arg(long)]
-    worker_command: String,
+    worker_command: Option<String>,
     /// Seconds an agent is given to be ready for its prompt
     #[arg(long, default_value_t = 120, hide = true)]
     ready_timeout: u64,
@@ -254,8 +256,11 @@ fn this_host() -> String {
 }
 
 impl AgentArgs {
-    fn agent(self) -> Agent {
-        Agent { command: self.worker_command, ready_timeout: self.ready_timeout }
+    /// Settles the worker launch command (`launch::settle`): nothing is
+    /// started on one that resolves to nothing.
+    fn agent(self) -> anyhow::Result<Agent> {
+        let command = launch::settle(self.worker_command.as_deref())?;
+        Ok(Agent { command, ready_timeout: self.ready_timeout })
     }
 }
 
@@ -307,11 +312,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let mut me = Me { instance, host, now };
             let pacing = Pacing { ticks, second: Duration::from_millis(second_ms) };
             probe::announce(&probe::startup(now)?);
-            tick::run(&mut me, &agent.agent(), &pacing, || fixed_now.unwrap_or_else(clock))
+            tick::run(&mut me, &agent.agent()?, &pacing, || fixed_now.unwrap_or_else(clock))
         }
         Command::Tick { who, agent } => {
             probe::announce(&probe::startup(now)?);
-            Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent.agent())?.json())
+            Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?)?.json())
         }
         Command::Gate { gate_timeout, train } => {
             let repo = Repo::here()?;
@@ -334,7 +339,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             }
         }
         Command::Dispatch { issue, who, agent, start } => {
-            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue, start)
+            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue, start)
         }
         Command::Recovery { issue } => recovery::recovery(&Fleet::open(now)?, issue),
         Command::Close { issue, who } => judge::close(&mut Fleet::open(now)?, &who.me(now), issue),
@@ -344,7 +349,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Park { issue, who } => park::park(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Nudge { issue, who } => judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Restart { issue, who, agent } => {
-            watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent(), issue)
+            watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue)
         }
         Command::Abandon { who } => abandon::abandon_by_hand(&mut Fleet::open(now)?, &who.me(now)),
         Command::Takeover { list, from, yes, instance, host } => {

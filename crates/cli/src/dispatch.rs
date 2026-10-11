@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use afkconvoy_core::launch::LaunchCommand;
 use afkconvoy_core::prompt::{WorkerFields, worker_prompt};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
 use afkconvoy_core::worker::{
@@ -20,7 +21,7 @@ use crate::recovery::{Survey, own_heads, survey};
 /// How a worker is started on this machine.
 pub struct Agent {
     /// The worker launch command: opaque, handed to orca as it was given.
-    pub command: String,
+    pub command: LaunchCommand,
     /// How long an agent is given to be ready for its prompt, in seconds.
     pub ready_timeout: u64,
 }
@@ -109,7 +110,7 @@ pub fn dispatch(
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                terminal = Some(cut.start(&agent.command)?);
+                terminal = Some(cut.start(agent.command.as_str())?);
             }
             DispatchStep::AwaitReady => {
                 let (cut, handle) =

@@ -9,6 +9,7 @@ pub mod closing;
 pub mod config;
 pub mod gate;
 pub mod joining;
+pub mod launch;
 pub mod layout;
 pub mod lease;
 pub mod plan;

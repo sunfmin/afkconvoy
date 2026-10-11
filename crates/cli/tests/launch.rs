@@ -1,0 +1,200 @@
+mod common;
+
+use std::path::Path;
+
+use common::{Answer, World};
+use serde_json::{Value, json};
+
+const PROVIDER: &str = "https://provider.example/v1";
+const SECRET: &str = "sk-not-for-workers";
+
+/// Runs the CLI as a fleet started through a provider wrapper would be: the
+/// provider and its key in the environment.
+fn wrapped(world: &World, args: &[&str]) -> Answer {
+    answer(world, args, true)
+}
+
+fn answer(world: &World, args: &[&str], wrapped: bool) -> Answer {
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    if wrapped {
+        command.env("ANTHROPIC_BASE_URL", PROVIDER).env("ANTHROPIC_AUTH_TOKEN", SECRET);
+    }
+    let out = command.args(args).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let last = stdout.lines().last().unwrap_or_default();
+    Answer {
+        json: serde_json::from_str(last).unwrap_or_else(|e| panic!("{e}: {stdout}")),
+        code: out.status.code().unwrap(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    }
+}
+
+const RUN: [&str; 11] = [
+    "run",
+    "--instance",
+    "alpha",
+    "--host",
+    "h1",
+    "--now",
+    "1000",
+    "--ticks",
+    "1",
+    "--second-ms",
+    "0",
+];
+const TICK: [&str; 7] = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+
+fn with<'a>(base: &[&'a str], extra: &[&'a str]) -> Vec<&'a str> {
+    base.iter().chain(extra).copied().collect()
+}
+
+/// The command each worker's terminal was started with.
+fn started(world: &World) -> Vec<String> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    terminals.iter().map(|t| t["command"].as_str().unwrap().to_string()).collect()
+}
+
+fn warnings(answer: &Answer) -> Vec<&str> {
+    answer.stderr.lines().filter(|line| line.starts_with("warning: ")).collect()
+}
+
+fn backlog() -> World {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world
+}
+
+/// Whether any file under `dir` holds `needle`.
+fn written_anywhere(dir: &Path, needle: &str, skip: &[&str]) -> Vec<String> {
+    let mut found = vec![];
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if skip.contains(&name.as_str()) || path.is_symlink() {
+            continue;
+        }
+        if path.is_dir() {
+            found.extend(written_anywhere(&path, needle, skip));
+        } else if let Ok(bytes) = std::fs::read(&path)
+            && String::from_utf8_lossy(&bytes).contains(needle)
+        {
+            found.push(path.display().to_string());
+        }
+    }
+    found
+}
+
+#[test]
+fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
+    let world = backlog();
+    let ran = answer(&world, &RUN, false);
+    assert_eq!(warnings(&ran), [] as [&str; 0], "{}", ran.stderr);
+    assert_eq!(ran.ok()["stopped"], true);
+    assert_eq!(started(&world), ["claude --dangerously-skip-permissions"]);
+    // checked to resolve like any other, and no alias was listed
+    assert_eq!(world.shell_asked(), ["type -- 'claude'"]);
+}
+
+#[test]
+fn on_stock_claude_a_command_that_was_passed_is_still_the_answer() {
+    let world = backlog();
+    answer(&world, &with(&TICK, &["--worker-command", "agent --fast"]), false).ok();
+    assert_eq!(started(&world), ["agent --fast"]);
+}
+
+#[test]
+fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
+    let world = backlog();
+    // Everything past the first word is the human's business.
+    let passed = "kim  --model 'big one' \"$HOME\" ; true ";
+    world.shell_knows(
+        "kim",
+        Some("kim is an alias for ANTHROPIC_BASE_URL=x claude --dangerously-skip-permissions"),
+    );
+    let ran = wrapped(&world, &with(&RUN, &["--worker-command", passed]));
+    assert_eq!(warnings(&ran), [] as [&str; 0], "{}", ran.stderr);
+    ran.ok();
+
+    assert_eq!(started(&world), [passed], "not trimmed, not composed, not appended to");
+    assert_eq!(world.shell_asked(), ["type -- 'kim'"], "only its first word was looked at");
+
+    // nothing of the fleet's own environment goes to orca, on any call
+    let calls = serde_json::to_string(&world.orca()["calls"]).unwrap();
+    assert!(!calls.contains(SECRET) && !calls.contains(PROVIDER), "{calls}");
+    let create = world.orca()["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|call| call[0] == "terminal" && call[1] == "create")
+        .cloned()
+        .unwrap();
+    let create: Vec<String> = serde_json::from_value(create).unwrap();
+    assert_eq!(create[create.len() - 3..create.len() - 1], ["--command", passed], "{create:?}");
+    assert!(create.len() <= 7, "a worktree, a command, and nothing else: {create:?}");
+
+    // …and the command is in no file: not the brief, not a note, not the repo
+    // (orca.json is the stand-in orca's own memory of what it was handed)
+    assert_eq!(written_anywhere(&world.root, "big one", &["orca.json"]), [] as [String; 0]);
+    assert_eq!(written_anywhere(&world.root, SECRET, &[]), [] as [String; 0]);
+}
+
+#[test]
+fn a_command_that_resolves_to_nothing_is_refused_before_any_worker_is_started() {
+    let world = backlog();
+    world.shell_knows("ckim", None);
+    let passed = ["--worker-command", "ckim --dangerously-skip-permissions"];
+    let dispatch =
+        ["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    for start in [&RUN[..], &TICK[..], &dispatch[..]] {
+        let error = wrapped(&world, &with(start, &passed)).error();
+        assert!(error.contains("\"ckim\" resolves to nothing in a login shell"), "{error}");
+    }
+    assert_eq!(world.orca()["worktrees"], json!([]));
+    assert_eq!(started(&world), [] as [String; 0]);
+    assert_eq!(world.claims(), [], "no claim was taken for a worker that cannot start");
+}
+
+#[test]
+fn an_empty_command_is_refused() {
+    let world = backlog();
+    let error = wrapped(&world, &with(&TICK, &["--worker-command", "  "])).error();
+    assert!(error.contains("is empty"), "{error}");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_command_with_no_visible_unattended_flag_is_warned_about_not_refused() {
+    let world = backlog();
+    world.shell_knows("kim", Some("kim is an alias for ANTHROPIC_BASE_URL=x claude --model k"));
+    let ran = wrapped(&world, &with(&TICK, &["--worker-command", "kim"]));
+    let said = warnings(&ran).join("\n");
+    assert!(said.contains("\"kim\" shows no unattended flag"), "{}", ran.stderr);
+    assert!(said.contains("claude --model k"), "what it resolves to is shown: {said}");
+    let ticked: Value = ran.ok();
+    assert_eq!(ticked["errors"], json!([]));
+    assert_eq!(started(&world), ["kim"]);
+}
+
+#[test]
+fn a_script_that_could_carry_the_flag_inside_is_not_warned_about() {
+    let world = backlog();
+    let ran = wrapped(&world, &with(&TICK, &["--worker-command", "agent"]));
+    assert_eq!(warnings(&ran), [] as [&str; 0], "{}", ran.stderr);
+    ran.ok();
+    assert_eq!(started(&world), ["agent"]);
+}
+
+#[test]
+fn a_custom_provider_with_no_command_and_no_terminal_is_an_error() {
+    let world = backlog();
+    world.shell_aliases("kim='ANTHROPIC_BASE_URL=x claude --yolo'\n");
+    for start in [&RUN[..], &TICK[..]] {
+        let error = wrapped(&world, start).error();
+        assert!(error.contains("--worker-command"), "{error}");
+        assert!(error.contains(PROVIDER), "{error}");
+        assert!(error.contains("no terminal to ask on"), "{error}");
+    }
+    assert_eq!(started(&world), [] as [String; 0], "never stock Claude, silently");
+    assert_eq!(world.claims(), []);
+}
