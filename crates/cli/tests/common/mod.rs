@@ -67,6 +67,7 @@ impl World {
         for (name, example) in [("gh", "fake_gh"), ("orca", "fake_orca")] {
             std::os::unix::fs::symlink(built.join(example), bin.join(name)).unwrap();
         }
+        write_script(&bin.join("shell"), SHELL);
         let world = World {
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -92,6 +93,7 @@ impl World {
             .env("PATH", path)
             .env("CONVOY_FAKE_GH", &self.gh_file)
             .env("CONVOY_FAKE_ORCA", &self.orca_file)
+            .env("SHELL", self.bin.join("shell"))
             .envs(GIT_ENV)
             .env_remove("ANTHROPIC_BASE_URL");
         cmd
@@ -355,6 +357,25 @@ impl World {
         log.lines().map(str::to_string).collect()
     }
 
+    /// What the stand-in login shell says a word is (`type`'s answer), in
+    /// place of what it says of every word by default: `<word> is <a path>`.
+    /// `None`: it resolves to nothing.
+    pub fn shell_knows(&self, word: &str, resolution: Option<&str>) {
+        let line = format!("{word}\t{}\n", resolution.unwrap_or("-"));
+        append(&self.root.join("shell-types"), &line);
+    }
+
+    /// What the stand-in login shell prints for `alias`.
+    pub fn shell_aliases(&self, aliases: &str) {
+        std::fs::write(self.root.join("shell-aliases"), aliases).unwrap();
+    }
+
+    /// Every script the stand-in login shell was asked to run, in order.
+    pub fn shell_asked(&self) -> Vec<String> {
+        let log = std::fs::read_to_string(self.root.join("shell-asked")).unwrap_or_default();
+        log.lines().map(str::to_string).collect()
+    }
+
     /// Has the remote turn down every push of a ref whose name starts with
     /// `prefix`, as a server's rule would.
     pub fn remote_rejects(&self, prefix: &str) {
@@ -363,10 +384,7 @@ impl World {
             "#!/bin/sh\nwhile read old new ref; do\n  case \"$ref\" in {prefix}*) \
              echo 'refs like this are not allowed here' >&2; exit 1;; esac\ndone\n"
         );
-        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-        std::fs::write(&hook, script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&hook, &script);
     }
 
     /// Sets the stand-in GitHub's answer about the base branch's protection:
@@ -379,6 +397,42 @@ impl World {
     pub fn remote(&self, args: &[&str]) -> String {
         git(&self.bare, args)
     }
+}
+
+/// The login shell a worker would get, as far as the fleet asks it anything:
+/// `shell -lic 'alias'` and `shell -lic "type -- '<word>'"`. Every word is a
+/// program unless `shell-types` beside `bin/` says otherwise.
+const SHELL: &str = r#"#!/bin/sh
+root=$(dirname "$0")/..
+echo "$2" >> "$root/shell-asked"
+case "$2" in
+  alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
+  "type -- "*)
+    word=${2#type -- \'}; word=${word%\'}
+    if [ -f "$root/shell-types" ]; then
+      while IFS='	' read -r name says; do
+        if [ "$name" = "$word" ]; then
+          if [ "$says" = "-" ]; then echo "$word not found"; exit 1; fi
+          echo "$says"; exit 0
+        fi
+      done < "$root/shell-types"
+    fi
+    echo "$word is /usr/local/bin/$word"; exit 0 ;;
+esac
+exit 2
+"#;
+
+fn write_script(file: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, script).unwrap();
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn append(file: &Path, text: &str) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().append(true).create(true).open(file).unwrap();
+    file.write_all(text.as_bytes()).unwrap();
 }
 
 fn is_board(body: &str) -> bool {
