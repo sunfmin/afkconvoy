@@ -33,6 +33,8 @@ pub enum Outcome {
     /// It did what it names. For `Settle` and `Judge` that ends the claim:
     /// its slot is free.
     Done,
+    /// `Judge` told a silent worker to carry on: its claim is still held.
+    Nudged,
     /// There was nothing for it to do.
     Nothing,
     /// A peer holds the issue: nothing was started, and no slot was taken.
@@ -96,7 +98,8 @@ impl Pass {
     /// refreshed its heartbeat, did no work.
     pub fn did_work(&self) -> bool {
         self.did.iter().any(|(step, outcome)| {
-            !matches!(step, TickStep::Heartbeat) && matches!(outcome, Outcome::Done)
+            !matches!(step, TickStep::Heartbeat)
+                && matches!(outcome, Outcome::Done | Outcome::Nudged)
         })
     }
 }

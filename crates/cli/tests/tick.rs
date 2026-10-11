@@ -24,8 +24,8 @@ fn did(ticked: &Value) -> Vec<String> {
         .as_array()
         .unwrap()
         .iter()
-        // a worker asked after and left at work is not what these tests are about
-        .filter(|step| !(step["do"] == "judge" && step["outcome"] == "nothing"))
+        // a worker asked after, and left or nudged, is not what these tests are about
+        .filter(|step| !(step["do"] == "judge" && step["outcome"] != "done"))
         .map(|step| {
             let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
             format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())
@@ -175,7 +175,8 @@ fn run_ticks_until_stopped_and_says_what_each_tick_did() {
         lines,
         [
             "tick 1: dispatched #3, #5 · holding 2/2 · frontier 1 · next in 90s",
-            "tick 2: nothing to do · holding 2/2 · frontier 1 · next in 90s",
+            // their workers, silent with no clock to read, are told to carry on
+            "tick 2: nudged #3, #5 · holding 2/2 · frontier 1 · next in 90s",
         ]
     );
     assert_eq!(stopped["ticks"], 2);

@@ -119,10 +119,11 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
     let dir = worktree(&world);
     world.watch_pushes(None);
 
-    let ticked = tick(&world, 1180);
+    // (its worker, silent with no clock to read, was nudged a grace period ago)
+    let ticked = tick(&world, 1390);
     assert_eq!(
         did(&ticked),
-        ["judge 7 done", "judge 9 nothing", "dispatch 10 done", "heartbeat done"],
+        ["judge 7 done", "judge 9 nudged", "dispatch 10 done", "heartbeat done"],
         "the latest verdict wins, and the slot it frees is filled"
     );
     assert_eq!(world.state(7), "closed");
@@ -175,13 +176,152 @@ fn needs_human_and_an_unknown_phase_escalate() {
     }
 }
 
+/// What was typed at the worker of issue 7.
+fn typed(world: &World) -> Vec<String> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let worker = terminals.iter().find(|terminal| terminal["command"] == "agent").unwrap();
+    let sent = worker["sent"].as_array().unwrap();
+    sent.iter().map(|line| line["text"].as_str().unwrap().to_string()).collect()
+}
+
+/// Every `orca terminal read` since the last look.
+fn screen_reads(world: &World) -> Vec<Vec<String>> {
+    let calls = world.orca_calls();
+    calls.into_iter().filter(|call| call[..2] == ["terminal", "read"]).collect()
+}
+
+fn nudge_record(world: &World) -> PathBuf {
+    let dir = worktree(world);
+    PathBuf::from(common::git(&dir, &["rev-parse", "--absolute-git-dir"])).join("convoy-nudged")
+}
+
 #[test]
-fn a_worker_that_declared_nothing_is_left() {
+fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
     let world = fleet(1000);
-    commit(&worktree(&world), "work.txt", "x\n");
+    let dir = worktree(&world);
+    commit(&dir, "work.txt", "x\n");
     world.comment(7, "a comment that is no verdict");
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["screen"] = json!(["Ran the tests.", "", "Shall I open the PR? [y/n]", "  "]);
+        }
+    });
+    world.orca_calls();
+
+    // within grace of stopping: left
     assert_eq!(did(&tick(&world, 1090)), ["judge 7 nothing", "heartbeat done"]);
-    assert_eq!(world.claims().len(), 1);
+    assert_eq!(typed(&world).len(), 1, "only its brief");
+
+    // past grace, having declared nothing: told once to carry on
+    let ticked = tick(&world, 1300);
+    assert_eq!(did(&ticked), ["judge 7 nudged", "heartbeat done"]);
+    let lines = typed(&world);
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].starts_with("You stopped without an outcome. Nobody is watching"));
+    assert!(lines[1].contains("convoy-worker-prompt.md") && lines[1].contains("convoy:verdict"));
+    assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1300");
+    assert_eq!(world.claims().len(), 1, "the claim is still held");
+    assert_eq!(screen_reads(&world), [] as [Vec<String>; 0], "nothing is read to nudge");
+
+    // the nudge is a sign of life for one grace period
+    assert_eq!(did(&tick(&world, 1599)), ["judge 7 nothing", "heartbeat done"]);
+    assert_eq!(typed(&world).len(), 2);
+    assert_eq!(screen_reads(&world), [] as [Vec<String>; 0]);
+
+    // still silent: escalated, saying where it stopped
+    assert_eq!(did(&tick(&world, 1600)), ["judge 7 done"]);
+    assert_eq!(typed(&world).len(), 2, "never a second nudge");
+    assert_eq!(world.claims(), []);
+    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
+    assert!(dir.exists(), "the worktree holds its work");
+    let comments = world.comments(7);
+    let said = comments.last().unwrap();
+    assert!(said.contains("stayed silent after one nudge"), "{said}");
+    let screen = "```\nRan the tests.\nShall I open the PR? [y/n]\n```";
+    assert!(said.trim_end().ends_with(screen), "{said}");
+    let reads = screen_reads(&world);
+    assert_eq!(reads.len(), 1, "{reads:?}");
+    let limit = reads[0].iter().position(|arg| arg == "--limit").unwrap();
+    assert_eq!(
+        (reads[0][limit + 1].as_str(), reads[0].contains(&"--screen".to_string())),
+        ("60", true)
+    );
+}
+
+#[test]
+fn a_verdict_is_never_overridden_by_a_nudge() {
+    // declared before any nudge: routed, nothing typed
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    declare(&world, "needs-human");
+    world.orca_calls();
+    assert_eq!(did(&tick(&world, 1300)), ["judge 7 done"]);
+    assert_eq!(screen_reads(&world), [] as [Vec<String>; 0], "a worker that declared is not read");
+    assert!(!world.comments(7).last().unwrap().contains("nudge"));
+
+    // declared in answer to the nudge: routed as declared, not as silence
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    assert_eq!(did(&tick(&world, 1300))[0], "judge 7 nudged");
+    declare(&world, "already-satisfied");
+    assert_eq!(did(&tick(&world, 1600)), ["judge 7 done"]);
+    assert_eq!(world.state(7), "closed");
+    assert_eq!(typed(&world).len(), 2);
+}
+
+#[test]
+fn a_nudge_the_worker_did_not_take_is_not_recorded() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| orca["send_refused"] = json!(true));
+    let ticked = tick(&world, 1300);
+    assert_eq!(did(&ticked)[0], "judge 7 failed");
+    assert!(!nudge_record(&world).exists());
+
+    // so the next tick nudges, and the silence is not held against the worker
+    world.with_orca(|orca| orca["send_refused"] = json!(false));
+    assert_eq!(did(&tick(&world, 1390))[0], "judge 7 nudged");
+    assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1390");
+    // a terminal that cannot be read does not hold the escalation back
+    world.with_orca(|orca| orca["read_fails"] = json!(true));
+    assert_eq!(did(&tick(&world, 1700)), ["judge 7 done"]);
+    assert!(world.comments(7).last().unwrap().trim_end().ends_with("after one nudge."));
+}
+
+#[test]
+fn nudge_is_sent_once_and_only_to_a_silent_worker_of_mine() {
+    let nudge = |world: &World, instance: &str, now: &str| {
+        world.afk(&["nudge", "--issue", "7", "--instance", instance, "--now", now])
+    };
+    let world = fleet(1000);
+    report(&world, "working", 1000, 1080);
+    let error = nudge(&world, "alpha", "1090").error();
+    assert!(error.contains("no stopped worker"), "{error}");
+    report(&world, "done", 1000, 1000);
+    let error = nudge(&world, "alpha", "1090").error();
+    assert!(error.contains("sign of life within the grace period"), "{error}");
+    let error = nudge(&world, "beta", "1300").error();
+    assert!(error.contains("alpha"), "{error}");
+    assert_eq!(typed(&world).len(), 1);
+
+    let answer = nudge(&world, "alpha", "1300").ok();
+    assert_eq!(answer["action"], "nudged");
+    assert_eq!(typed(&world).len(), 2);
+    for now in ["1400", "1700"] {
+        let error = nudge(&world, "alpha", now).error();
+        assert!(error.contains("nothing was sent"), "{error}");
+    }
+    assert!(nudge(&world, "alpha", "1700").error().contains("already nudged"));
+    assert_eq!(typed(&world).len(), 2);
+
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    declare(&world, "needs-human");
+    let error = nudge(&world, "alpha", "1300").error();
+    assert!(error.contains("declared a verdict"), "{error}");
+    assert_eq!(typed(&world).len(), 1);
 }
 
 #[test]

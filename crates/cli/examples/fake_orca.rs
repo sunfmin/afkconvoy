@@ -219,6 +219,9 @@ fn terminal_list(st: &State) -> ! {
 fn terminal_read(st: &State) -> ! {
     let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
     assert!(st.has("--screen") && st.opt("--limit").is_some(), "{:?}", st.argv);
+    if st.doc["read_fails"] == true {
+        fail(st, "terminal_not_readable");
+    }
     let terminal = &st.doc["terminals"][at];
     let tail = if terminal["screen"].is_array() { terminal["screen"].clone() } else { json!([]) };
     done(st, json!({"terminal": {"handle": terminal["handle"], "tail": tail, "source": "screen"}}))

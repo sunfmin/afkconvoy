@@ -17,8 +17,8 @@ fn did(ticked: &Value) -> Vec<String> {
     let steps = ticked["did"].as_array().unwrap();
     steps
         .iter()
-        // a worker asked after and left at work is not what these tests are about
-        .filter(|step| !(step["do"] == "judge" && step["outcome"] == "nothing"))
+        // a worker asked after, and left or nudged, is not what these tests are about
+        .filter(|step| !(step["do"] == "judge" && step["outcome"] != "done"))
         .map(|step| {
             let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
             format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())
@@ -319,4 +319,21 @@ fn a_base_branch_that_is_not_checked_out_follows_by_its_ref() {
         git(&world.clone, &["rev-parse", "side"])
     );
     assert!(!world.clone.join("f7.txt").exists(), "the checkout itself is not touched");
+}
+
+#[test]
+fn a_new_worker_in_a_worktree_was_never_nudged() {
+    let world = fleet(&[7]);
+    finish(&world, 7);
+    tick(&world, "1090");
+    let train = train_worktree(&world);
+    let nudged =
+        PathBuf::from(git(&train, &["rev-parse", "--absolute-git-dir"])).join("convoy-nudged");
+    std::fs::write(&nudged, "1100").unwrap();
+
+    // the worker that was nudged is gone, and another is started in its place
+    world.with_orca(|orca| orca["terminals"] = json!([]));
+    assert_eq!(did(&tick(&world, "1180"))[0], "tend_train done");
+    assert_eq!(terminals(&world, &train).len(), 1);
+    assert!(!nudged.exists(), "the record of the nudge went with the worker it was sent to");
 }
