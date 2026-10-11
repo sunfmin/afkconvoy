@@ -2,7 +2,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{World, git};
+use common::{World, commit, git};
 use serde_json::Value;
 
 const LINE: &str = "refs/convoy/train/line/main";
@@ -12,30 +12,6 @@ fn world() -> World {
     let world = World::new();
     world.set_gate(&format!("echo gate-ran; test ! -f {}", world.root.join("red").display()));
     world
-}
-
-fn commit(dir: &Path, file: &str, text: &str) -> String {
-    std::fs::write(dir.join(file), text).unwrap();
-    git(dir, &["add", "."]);
-    git(dir, &["commit", "-q", "-m", file]);
-    git(dir, &["rev-parse", "HEAD"])
-}
-
-/// A worker's worktree for `issue`, cut from the base branch, with one commit
-/// pushed and PR #`issue`0 open for it.
-fn worker(world: &World, issue: u64, file: &str, text: &str) -> PathBuf {
-    let dir = world.root.join(format!("wt-{issue}"));
-    let branch = format!("issue-{issue}");
-    git(&world.clone, &["fetch", "-q", "origin"]);
-    git(
-        &world.clone,
-        &["worktree", "add", "-q", "-b", &branch, dir.to_str().unwrap(), "origin/main"],
-    );
-    commit(&dir, file, text);
-    git(&dir, &["push", "-q", "origin", "HEAD"]);
-    world.issue(issue, &["ready-for-agent"]);
-    world.pr(issue * 10, issue, &branch);
-    dir
 }
 
 fn land(world: &World, dir: &Path, issue: u64) -> Value {
@@ -71,7 +47,7 @@ fn claim(world: &World, issue: u64) {
 #[test]
 fn a_pr_joins_the_train_as_one_merge_commit() {
     let world = world();
-    let dir = worker(&world, 7, "seven.txt", "7\n");
+    let dir = world.worker(7, "seven.txt", "7\n");
     claim(&world, 7);
     assert_eq!(status(&world, 7), "joining");
     // what the worker committed since its last push is pushed by the join
@@ -102,7 +78,7 @@ fn a_pr_joins_the_train_as_one_merge_commit() {
 #[test]
 fn a_pr_already_on_the_train_is_joined_as_it_stands() {
     let world = world();
-    let dir = worker(&world, 7, "seven.txt", "7\n");
+    let dir = world.worker(7, "seven.txt", "7\n");
     let first = land(&world, &dir, 7);
     world.watch_pushes(None);
     let again = land(&world, &dir, 7);
@@ -115,8 +91,8 @@ fn a_pr_already_on_the_train_is_joined_as_it_stands() {
 #[test]
 fn a_pr_whose_worker_pushed_again_joins_again_and_nothing_is_rewritten() {
     let world = world();
-    let seven = worker(&world, 7, "seven.txt", "7\n");
-    let eight = worker(&world, 8, "eight.txt", "8\n");
+    let seven = world.worker(7, "seven.txt", "7\n");
+    let eight = world.worker(8, "eight.txt", "8\n");
     claim(&world, 7);
     let first = land(&world, &seven, 7)["commit"].as_str().unwrap().to_string();
     let second = land(&world, &eight, 8)["commit"].as_str().unwrap().to_string();
@@ -142,7 +118,7 @@ fn prs_joining_at_once_all_get_on_one_line() {
     let world = world();
     let issues = [3u64, 4, 5, 6];
     let dirs: Vec<PathBuf> =
-        issues.iter().map(|n| worker(&world, *n, &format!("f{n}.txt"), "x\n")).collect();
+        issues.iter().map(|n| world.worker(*n, &format!("f{n}.txt"), "x\n")).collect();
     std::thread::scope(|scope| {
         for (issue, dir) in issues.iter().zip(&dirs) {
             let world = &world;
@@ -162,8 +138,8 @@ fn prs_joining_at_once_all_get_on_one_line() {
 #[test]
 fn a_pr_that_conflicts_with_the_train_resolves_it_in_its_own_branch() {
     let world = world();
-    let seven = worker(&world, 7, "README.md", "seven\n");
-    let eight = worker(&world, 8, "README.md", "eight\n");
+    let seven = world.worker(7, "README.md", "seven\n");
+    let eight = world.worker(8, "README.md", "eight\n");
     let tip = land(&world, &seven, 7)["commit"].as_str().unwrap().to_string();
 
     let answer = land(&world, &eight, 8);
@@ -196,11 +172,12 @@ fn a_pr_that_conflicts_with_the_train_resolves_it_in_its_own_branch() {
 #[test]
 fn a_line_the_base_branch_holds_is_no_train() {
     let world = world();
-    let seven = worker(&world, 7, "seven.txt", "7\n");
-    let eight = worker(&world, 8, "eight.txt", "8\n");
+    let seven = world.worker(7, "seven.txt", "7\n");
+    let eight = world.worker(8, "eight.txt", "8\n");
     claim(&world, 7);
     let landed = land(&world, &seven, 7)["commit"].as_str().unwrap().to_string();
-    // the train lands, and the base branch moves on past it
+    // the train lands, and the base branch moves on past it; GitHub has not caught up
+    world.with_gh(|gh| gh["slow_merge"] = serde_json::json!([70]));
     world.remote(&["update-ref", "refs/heads/main", &landed]);
     let moved = world.land_elsewhere("else.txt");
     assert_eq!(status(&world, 7), "joining", "nothing is on a train the base branch holds");
@@ -218,7 +195,7 @@ fn a_line_the_base_branch_holds_is_no_train() {
 #[test]
 fn land_refuses_what_it_cannot_join() {
     let world = world();
-    let dir = worker(&world, 7, "seven.txt", "7\n");
+    let dir = world.worker(7, "seven.txt", "7\n");
     let error = world.afk_in(&dir, &["land", "--issue", "9"]).error();
     assert!(error.contains("no open PR closes issue #9"), "{error}");
 
@@ -231,7 +208,7 @@ fn land_refuses_what_it_cannot_join() {
 #[test]
 fn a_worktree_behind_its_pr_catches_up_before_it_joins() {
     let world = world();
-    let dir = worker(&world, 7, "seven.txt", "7\n");
+    let dir = world.worker(7, "seven.txt", "7\n");
     let head = git(&dir, &["rev-parse", "HEAD"]);
     git(&dir, &["reset", "-q", "--hard", "HEAD^"]);
     let answer = land(&world, &dir, 7);
@@ -247,8 +224,8 @@ fn gate_records(world: &World) -> usize {
 #[test]
 fn gate_train_gates_the_branch_with_the_train_merged_in() {
     let world = world();
-    let seven = worker(&world, 7, "seven.txt", "7\n");
-    let eight = worker(&world, 8, "eight.txt", "8\n");
+    let seven = world.worker(7, "seven.txt", "7\n");
+    let eight = world.worker(8, "eight.txt", "8\n");
 
     // no train yet: what the PR lands behind is the base branch
     let moved = world.land_elsewhere("else.txt");
@@ -280,8 +257,8 @@ fn gate_train_gates_the_branch_with_the_train_merged_in() {
 #[test]
 fn a_gate_train_merge_that_conflicts_runs_no_gate() {
     let world = world();
-    let seven = worker(&world, 7, "README.md", "seven\n");
-    let eight = worker(&world, 8, "README.md", "eight\n");
+    let seven = world.worker(7, "README.md", "seven\n");
+    let eight = world.worker(8, "README.md", "eight\n");
     land(&world, &seven, 7);
 
     let gate = world.afk_in(&eight, &["gate", "--train"]);

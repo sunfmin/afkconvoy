@@ -1,12 +1,17 @@
 //! Running the gate in a worktree, and its records on the remote.
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::claims::NAMESPACE;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{GateCommand, GreenRun, Ran, Recording, Tree, after_run, record_ref};
-use anyhow::{Context, Result};
+use afkconvoy_core::train::{last_green, train_refs, under_repair};
+use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
 use crate::git::{REMOTE, Repo};
@@ -28,33 +33,65 @@ pub fn off_commit(repo: &Repo, head: Option<&str>) -> Result<Vec<String>> {
     Ok(off)
 }
 
-/// Runs the gate command in a worktree, its log going straight to this
-/// process's stderr → (exit code, timed out). A run that outlives `timeout`
-/// is killed, with everything it started.
-fn run_command(repo: &Repo, command: &str, timeout: Duration) -> Result<(i32, bool)> {
+/// How much of the end of a red run's log is kept, to be shown to whoever
+/// was not at the terminal.
+const EXCERPT_LINES: usize = 40;
+
+/// Runs the gate command in a worktree, its log going line by line to this
+/// process's stderr → (exit code, timed out, the end of the log). A run that
+/// outlives `timeout` is killed, with everything it started.
+fn run_command(repo: &Repo, command: &str, timeout: Duration) -> Result<(i32, bool, Vec<String>)> {
     let mut child = Command::new("sh")
-        .args(["-c", command])
+        // one stream, so the log reads in the order it was written
+        .args(["-c", &format!("exec 2>&1\n{command}")])
         .current_dir(&repo.dir)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(std::io::stderr()))
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .process_group(0)
         .spawn()
         .context("the gate command could not be started")?;
+    let log = child.stdout.take().context("the gate command has no log")?;
+    let (lines, read) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(log).split(b'\n').map_while(|line| line.ok()) {
+            let line = String::from_utf8_lossy(&line).into_owned();
+            eprintln!("{line}");
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut tail: VecDeque<String> = VecDeque::new();
+    let mut keep = |line: String| {
+        if tail.len() == EXCERPT_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line);
+    };
     let started = Instant::now();
-    loop {
+    let (code, timed_out) = loop {
+        while let Ok(line) = read.try_recv() {
+            keep(line);
+        }
         if let Some(status) = child.try_wait()? {
-            return Ok((status.code().unwrap_or(-1), false));
+            break (status.code().unwrap_or(-1), false);
         }
         if started.elapsed() >= timeout {
             let group = format!("-{}", child.id());
             let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate timed out after {}s", timeout.as_secs());
-            return Ok((124, true));
+            break (124, true);
         }
         std::thread::sleep(Duration::from_millis(50));
+    };
+    // What the command wrote before it ended; something it left running may
+    // hold the log open, and is not waited for.
+    while let Ok(line) = read.recv_timeout(Duration::from_millis(200)) {
+        keep(line);
     }
+    Ok((code, timed_out, tail.into()))
 }
 
 /// One run of the gate in a worktree, and what became of its record.
@@ -68,6 +105,8 @@ pub struct GateRun {
     pub green: Option<GreenRun>,
     /// Why a green run is not on record on the remote, when it is not.
     pub not_recorded: Option<String>,
+    /// The end of the run's log.
+    pub excerpt: Vec<String>,
 }
 
 /// The tree the worktree's commit holds.
@@ -87,7 +126,7 @@ pub fn run_and_record(
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let (exit_code, timed_out) = run_command(repo, command.text(), timeout)?;
+    let (exit_code, timed_out, excerpt) = run_command(repo, command.text(), timeout)?;
     let after = if before.is_empty() { off_commit(repo, Some(&head))? } else { vec![] };
     let ran = Ran {
         exit_code,
@@ -97,7 +136,7 @@ pub fn run_and_record(
     };
     let refname = record_ref(&tree, command);
     let strays = if before.is_empty() { after } else { before };
-    let mut run = GateRun { ran, head, strays, green: None, not_recorded: None };
+    let mut run = GateRun { ran, head, strays, green: None, not_recorded: None, excerpt };
     match after_run(&tree, command, ran, now) {
         Recording::Write(green) => {
             // The record is a parentless commit OF the tested tree.
@@ -132,13 +171,103 @@ pub fn recorded(
     Ok(run.filter(|run| run.stands(now)))
 }
 
+/// Whether the committed tree of a worktree passes the gate — the one question
+/// a landing asks of it.
+pub enum Gated {
+    /// It does: by the run the remote has on record for that tree, or by one
+    /// made now (`source`).
+    Green {
+        run: GreenRun,
+        source: &'static str,
+    },
+    Red {
+        ran: Ran,
+        excerpt: Vec<String>,
+    },
+}
+
+/// Answers from the green run on record for the worktree's tree and the
+/// command, else by a run made now, which is put on record in its turn. A run
+/// made now answers only when it was a run of the committed tree: otherwise
+/// this is an error, and nothing lands.
+pub fn gated(repo: &Repo, command: &GateCommand, now: u64, timeout: Duration) -> Result<Gated> {
+    let tree = head_tree(repo)?;
+    if let Some(run) = recorded(repo, &tree, command, now)? {
+        return Ok(Gated::Green { run, source: "recorded" });
+    }
+    let not_the_commit = |why: &str, strays: &[String]| {
+        let listed: Vec<&str> = strays.iter().take(20).map(String::as_str).collect();
+        anyhow!(
+            "the worktree {} is not the commit that would land — {why}. Nothing landed and \
+             nothing is on record. Commit what belongs to the change, have the gate's own \
+             artifacts ignored (`.gitignore`), discard the rest, and run this again:\n{}",
+            repo.dir.display(),
+            listed.join("\n")
+        )
+    };
+    let strays = off_commit(repo, None)?;
+    if !strays.is_empty() {
+        return Err(not_the_commit("it has uncommitted or untracked files", &strays));
+    }
+    let run = run_and_record(repo, command, now, timeout)?;
+    match run.green {
+        Some(green) => Ok(Gated::Green { run: green, source: "run" }),
+        None if run.ran.green() => {
+            Err(not_the_commit("the gate left it other than the commit it started on", &run.strays))
+        }
+        None => Ok(Gated::Red { ran: run.ran, excerpt: run.excerpt }),
+    }
+}
+
+/// What a worker's branch takes in before its own gate run → (the commit, what
+/// to call it): the train's tip — or, while the train is under repair, its
+/// newest commit below the red one with a green run on record, else the base
+/// branch.
+fn lands_behind(
+    repo: &Repo,
+    config: &Config,
+    command: &GateCommand,
+) -> Result<(String, &'static str)> {
+    let train = Train::read(repo, config)?;
+    let ahead = train.tip != train.base;
+    if !ahead {
+        return Ok((train.base, "the base branch"));
+    }
+    let red = repo.fetched(&train_refs(&config.base_branch).red)?;
+    let marked = match &red {
+        Some(red) => Some((repo.within(red, &train.base)?, repo.within(red, &train.tip)?)),
+        None => None,
+    };
+    let Some(red) = red.filter(|_| under_repair(ahead, marked)) else {
+        return Ok((train.tip, "the landing train"));
+    };
+    let on_record = repo.git(&["ls-remote", REMOTE, &format!("{NAMESPACE}/gate/*")])?;
+    let range = format!("{}..{red}^", train.base);
+    let listed = repo.git(&["log", "--first-parent", "--format=%H %T", &range])?;
+    let below: Vec<(&str, bool)> = listed
+        .lines()
+        .filter_map(|row| row.split_once(' '))
+        .map(|(commit, tree)| {
+            let name = record_ref(&Tree::named(tree), command);
+            (commit, on_record.lines().any(|row| row.ends_with(&format!("\t{name}"))))
+        })
+        .collect();
+    let green = last_green(&below, &train.base);
+    let what = if green == train.base {
+        "the base branch"
+    } else {
+        "the landing train's last green commit"
+    };
+    Ok((green.to_string(), what))
+}
+
 /// `afkconvoy gate`: a worker's run of the gate, in the worktree it is called
 /// from. The log streams to the worker's terminal; the answer says whether the
 /// run is on record as a pass of the commit's tree.
 ///
 /// `train`: the branch first takes in what its PR will land behind — the
 /// train's tip, or the base branch when there is no train — by a merge, never
-/// a rebase. So a conflict with what is on the train is met before the run,
+/// a rebase (`lands_behind`). So a conflict with what is on the train is met before the run,
 /// and a green run is of the very tree the PR joins the train with. A merge
 /// that conflicts is left in progress and no gate runs.
 pub fn gate(
@@ -153,9 +282,9 @@ pub fn gate(
     if train {
         let mut files = unmerged(repo)?;
         if files.is_empty() {
-            let tip = Train::read(repo, config)?.tip;
-            files = merge_in(repo, &tip, "the landing train")?;
-            merged = Some(tip);
+            let (commit, what) = lands_behind(repo, config, &command)?;
+            files = merge_in(repo, &commit, what)?;
+            merged = Some(commit);
         }
         if !files.is_empty() {
             return Ok(json!({"status": "conflict", "files": files, "recorded": false,

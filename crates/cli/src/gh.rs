@@ -151,4 +151,11 @@ impl GitHub {
         self.gh(&["api", "--method", "POST", &endpoint, "-f", &format!("body={body}")])?;
         Ok(())
     }
+
+    /// Closes one issue as completed.
+    pub fn close_issue(&self, number: u64) -> Result<()> {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}");
+        self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"])?;
+        Ok(())
+    }
 }
