@@ -13,3 +13,24 @@ use crate::config::Config;
 fn a_config_with_no_slots(config: &Config) -> usize {
     config.concurrency()
 }
+
+mod lease {
+    use flux_rs::attrs::*;
+
+    use crate::lease::{proved, stamp_stale};
+
+    /// A heartbeat is not live merely for having been read.
+    #[should_fail]
+    #[spec(fn(stamp: u64, now: u64))]
+    fn a_heartbeat_assumed_live(stamp: u64, now: u64) {
+        let _ = (stamp, now);
+        proved(!stamp_stale(stamp, now));
+    }
+
+    /// A stamp from the future is not fresh for being new.
+    #[should_fail]
+    #[spec(fn(stamp: u64, now: u64) requires stamp > now)]
+    fn a_future_stamp_read_as_live(stamp: u64, now: u64) {
+        proved(!stamp_stale(stamp, now));
+    }
+}
