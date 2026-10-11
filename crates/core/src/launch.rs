@@ -215,6 +215,58 @@ pub fn no_reply() -> String {
     "no worker launch command was given: nothing was started".to_string()
 }
 
+/// What a wait on a freshly started worker came back with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waited {
+    /// Ready for a prompt.
+    Ready,
+    /// Asking whether the folder it was started in is trusted: every key it
+    /// is sent goes to that question, not to the agent.
+    AtTrustPrompt,
+    NotReady,
+}
+
+/// The trust question of one start: whether it has been answered.
+#[refined_by(answered: bool)]
+struct Trust {
+    #[field(bool[answered])]
+    answered: bool,
+}
+
+impl Trust {
+    #[spec(fn() -> Trust[false])]
+    fn unanswered() -> Trust {
+        Trust { answered: false }
+    }
+
+    /// Answers the question — once: the keys that answer it, typed again, go
+    /// to whatever came after it.
+    #[spec(fn(self: &strg Trust[false], answer: A) -> Result<(), E> ensures self: Trust[true])]
+    fn answer<E, A: FnOnce() -> Result<(), E>>(&mut self, answer: A) -> Result<(), E> {
+        self.answered = true;
+        answer()
+    }
+}
+
+/// Waits for a freshly started worker to be ready for a prompt, answering the
+/// trust question when it asks: the fleet only starts workers in worktrees of
+/// the repo it was itself started in → what the worker was at last. A worker
+/// still `AtTrustPrompt` then was answered and asks again.
+pub fn until_ready<E, W, A>(mut wait: W, answer: A) -> Result<Waited, E>
+where
+    W: FnMut() -> Result<Waited, E>,
+    A: FnOnce() -> Result<(), E>,
+{
+    let mut trust = Trust::unanswered();
+    match wait()? {
+        Waited::AtTrustPrompt => {
+            trust.answer(answer)?;
+            wait()
+        }
+        waited => Ok(waited),
+    }
+}
+
 #[cfg(flux)]
 #[allow(dead_code)]
 mod rejected {
@@ -232,11 +284,64 @@ mod rejected {
     fn an_unresolved_command_used(command: String) -> LaunchCommand {
         LaunchCommand { command, resolved: false, warning: None }
     }
+
+    /// The trust question answered twice: the second answer's keys land in
+    /// the agent's own prompt.
+    #[should_fail]
+    fn a_trust_question_answered_twice<
+        A: FnOnce() -> Result<(), ()>,
+        B: FnOnce() -> Result<(), ()>,
+    >(
+        first: A,
+        second: B,
+    ) {
+        let mut trust = Trust::unanswered();
+        let _ = trust.answer(first);
+        let _ = trust.answer(second);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn waits(
+        mut answers: Vec<Waited>,
+        fails: bool,
+    ) -> (Result<Waited, &'static str>, usize, usize) {
+        answers.reverse();
+        let (mut waited, mut answered) = (0, 0);
+        let last = until_ready(
+            || {
+                waited += 1;
+                Ok(answers.pop().expect("a wait nobody expected"))
+            },
+            || {
+                answered += 1;
+                if fails { Err("refused") } else { Ok(()) }
+            },
+        );
+        (last, waited, answered)
+    }
+
+    #[test]
+    fn a_worker_that_is_ready_is_asked_nothing() {
+        assert_eq!(waits(vec![Waited::Ready], false), (Ok(Waited::Ready), 1, 0));
+        assert_eq!(waits(vec![Waited::NotReady], false), (Ok(Waited::NotReady), 1, 0));
+    }
+
+    #[test]
+    fn a_trust_question_is_answered_once_and_the_worker_waited_for_again() {
+        let asked = vec![Waited::AtTrustPrompt, Waited::Ready];
+        assert_eq!(waits(asked, false), (Ok(Waited::Ready), 2, 1));
+        let stuck = vec![Waited::AtTrustPrompt, Waited::AtTrustPrompt];
+        assert_eq!(waits(stuck, false), (Ok(Waited::AtTrustPrompt), 2, 1));
+    }
+
+    #[test]
+    fn an_answer_that_fails_ends_the_wait() {
+        assert_eq!(waits(vec![Waited::AtTrustPrompt], true), (Err("refused"), 1, 1));
+    }
 
     const KIM: &str = "kim is an alias for ANTHROPIC_BASE_URL=https://kimi claude --yolo";
 

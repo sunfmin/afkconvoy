@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use afkconvoy_core::launch::{Waited, until_ready};
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::train::is_train_worktree;
@@ -24,30 +25,56 @@ const NUDGE_FILE: &str = "convoy-nudged";
 const ANSWERED_FILE: &str = "convoy-answered";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
+/// What orca says holds up a worker asking whether its folder is trusted.
+const TRUST_PROMPT: &str = "agent-trust-workspace";
+/// The Down key: from that question's default, "No, exit", to "Yes, I trust
+/// this folder".
+const DOWN: &str = "\x1b[B";
 
 /// One `orca … --json` call → its `result` object. An error when orca cannot
 /// be run, exits non-zero, or answers `ok: false` — never an empty answer.
 pub fn orca(args: &[&str]) -> Result<Value> {
-    let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-    let out = Command::new("orca")
-        .args(args)
-        .arg("--json")
-        .output()
-        .with_context(|| format!("orca {what} could not run"))?;
-    let answer: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
-    if !out.status.success() || answer["ok"] != true {
-        let code = answer["error"]["code"].as_str().map(str::to_string);
-        let said = code.unwrap_or_else(|| {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if stderr.is_empty() {
-                String::from_utf8_lossy(&out.stdout).trim().to_string()
-            } else {
-                stderr
-            }
-        });
-        bail!("orca {what} failed: {said}");
+    let asked = Asked::of(args)?;
+    if !asked.exited_ok || asked.answer["ok"] != true {
+        return Err(asked.failure());
     }
-    Ok(answer["result"].clone())
+    Ok(asked.answer["result"].clone())
+}
+
+/// One `orca … --json` call, as it came back.
+struct Asked {
+    what: String,
+    exited_ok: bool,
+    answer: Value,
+    stdout: String,
+    stderr: String,
+}
+
+impl Asked {
+    fn of(args: &[&str]) -> Result<Asked> {
+        let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
+        let out = Command::new("orca")
+            .args(args)
+            .arg("--json")
+            .output()
+            .with_context(|| format!("orca {what} could not run"))?;
+        Ok(Asked {
+            what,
+            exited_ok: out.status.success(),
+            answer: serde_json::from_slice(&out.stdout).unwrap_or(Value::Null),
+            stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        })
+    }
+
+    fn failure(&self) -> anyhow::Error {
+        let said = match self.answer["error"]["code"].as_str() {
+            Some(code) => code,
+            None if self.stderr.is_empty() => &self.stdout,
+            None => &self.stderr,
+        };
+        anyhow!("orca {} failed: {said}", self.what)
+    }
 }
 
 /// The repo orca cuts this checkout's worktrees from.
@@ -343,10 +370,26 @@ impl Worktree {
             .to_string())
     }
 
-    /// Waits until the agent in `terminal` is ready for a prompt.
+    /// Waits until the agent in `terminal` is ready for a prompt, trusting
+    /// the worktree for it when it asks.
     pub fn await_ready(&self, terminal: &str, timeout_seconds: u64) -> Result<()> {
+        let waited = until_ready(|| self.wait(terminal, timeout_seconds), || self.trust(terminal))?;
+        let held_up = match waited {
+            Waited::Ready => return Ok(()),
+            Waited::AtTrustPrompt => "still asks whether to trust the folder, once answered",
+            Waited::NotReady => "was not ready for a prompt",
+        };
+        bail!(
+            "the worker in {} {held_up} within {timeout_seconds}s (terminal {terminal})",
+            self.path.display()
+        )
+    }
+
+    /// One wait for the agent in `terminal`. orca exits non-zero on a wait it
+    /// answered but that was not satisfied: what it answered is still read.
+    fn wait(&self, terminal: &str, timeout_seconds: u64) -> Result<Waited> {
         let timeout = (timeout_seconds * 1000).to_string();
-        let waited = orca(&[
+        let asked = Asked::of(&[
             "terminal",
             "wait",
             "--terminal",
@@ -355,15 +398,31 @@ impl Worktree {
             "tui-idle",
             "--timeout-ms",
             &timeout,
-        ]);
-        match waited {
-            Ok(result) if result["wait"]["satisfied"] == true => Ok(()),
-            Ok(_) => bail!(
-                "the worker in {} was not ready for a prompt within {timeout_seconds}s (terminal {terminal})",
-                self.path.display()
-            ),
-            Err(e) => Err(e),
+        ])?;
+        let wait = &asked.answer["result"]["wait"];
+        if asked.answer["ok"] != true || !wait.is_object() {
+            return Err(asked.failure());
         }
+        Ok(if wait["satisfied"] == true {
+            Waited::Ready
+        } else if wait["blockedReason"] == TRUST_PROMPT {
+            Waited::AtTrustPrompt
+        } else {
+            Waited::NotReady
+        })
+    }
+
+    /// Answers the agent's trust question in `terminal`: yes. Two sends —
+    /// typed in one, the Enter is read before the selection has moved, and
+    /// picks "No, exit".
+    fn trust(&self, terminal: &str) -> Result<()> {
+        for keys in [["--text", DOWN].as_slice(), &["--enter"]] {
+            let sent = orca(&[&["terminal", "send", "--terminal", terminal], keys].concat())?;
+            if sent["send"]["accepted"] != true {
+                bail!("terminal {terminal} did not accept the answer to its trust question");
+            }
+        }
+        Ok(())
     }
 
     /// Types one line at the worker and submits it. Typed but unsubmitted, a

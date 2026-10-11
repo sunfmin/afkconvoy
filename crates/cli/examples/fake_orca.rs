@@ -187,15 +187,48 @@ fn terminal_wait(st: &State) -> ! {
     if st.doc["terminals"][at]["tui_busy"] == true {
         fail(st, "timeout"); // as real orca: a timeout is an error
     }
+    if asks_trust(st, at) {
+        // as real orca: answered, and a non-zero exit
+        let wait = json!({"satisfied": false, "status": "running",
+            "blockedReason": "agent-trust-workspace"});
+        let answer = json!({"id": "x", "ok": true, "result": {"wait": wait}});
+        st.finish(&answer.to_string(), 1, "")
+    }
     let ready = st.doc["never_ready"] != true;
     let status = if ready { "idle" } else { "timeout" };
     done(st, json!({"wait": {"satisfied": ready, "status": status}}))
+}
+
+/// `trust_prompt`: every agent asks whether its folder is trusted before it
+/// takes a prompt. `trust_sticks`: and asks again however it is answered.
+fn asks_trust(st: &State, at: usize) -> bool {
+    st.doc["trust_prompt"] == true && st.doc["terminals"][at]["trusted"] != true
+}
+
+/// The trust question takes the keys: Down to "Yes, I trust this folder",
+/// then — in a send of its own — Enter. Anything else picks "No, exit".
+fn answer_trust(st: &mut State, at: usize) -> ! {
+    let (text, enter) = (st.opt("--text").map(str::to_string), st.has("--enter"));
+    let sticks = st.doc["trust_sticks"] == true;
+    let at_yes = st.doc["terminals"][at]["trust_cursor"] == 1;
+    match (text.as_deref(), enter, at_yes) {
+        (Some("\x1b[B"), false, _) => st.doc["terminals"][at]["trust_cursor"] = json!(1),
+        (None, true, true) => st.doc["terminals"][at]["trusted"] = json!(!sticks),
+        _ => {
+            st.doc["terminals"][at]["open"] = json!(false);
+            fail(st, "terminal_exited")
+        }
+    }
+    done(st, json!({"send": {"accepted": true}}))
 }
 
 fn terminal_send(st: &mut State) -> ! {
     let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
     if st.doc["send_refused"] == true {
         done(st, json!({"send": {"accepted": false}}));
+    }
+    if asks_trust(st, at) {
+        answer_trust(st, at);
     }
     let sent = json!({"text": st.opt("--text").expect("--text"), "enter": st.has("--enter")});
     st.doc["terminals"][at]["sent"].as_array_mut().unwrap().push(sent);
