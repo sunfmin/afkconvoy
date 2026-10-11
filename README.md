@@ -21,6 +21,12 @@ Homebrew installs `git` and `gh` with it. Two things are yours to set up:
 
 `afkconvoy --version` prints the release you have.
 
+**For an AI agent**: `afkconvoy --help` is written as the guide an agent learns the tool from. A skill that sends an agent there installs with:
+
+```sh
+npx skills add sunfmin/afkconvoy
+```
+
 ## Configure a repo
 
 Add `docs/agents/afkconvoy.md` to the repo's base branch. afkconvoy reads the first `yaml` block in it and nothing else; an unknown key or a wrong type is an error.
