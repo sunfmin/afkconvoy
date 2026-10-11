@@ -13,9 +13,12 @@ use serde_json::{Value, json};
 
 pub mod claims;
 pub mod config;
+pub mod fleet;
+pub mod gh;
 pub mod git;
 
 use claims::{Me, Scan, Take};
+use fleet::Fleet;
 use git::Repo;
 
 #[derive(Parser)]
@@ -35,6 +38,12 @@ enum Command {
         /// The config file [default: docs/agents/afkconvoy.md of this checkout]
         #[arg(long)]
         file: Option<PathBuf>,
+    },
+    /// Show what a tick would act on, and change nothing
+    Plan {
+        /// The fleet instance whose claims are its own [default: nobody's]
+        #[arg(long, value_parser = InstanceId::parse)]
+        instance: Option<InstanceId>,
     },
     /// List every claim and heartbeat on the remote
     Scan,
@@ -112,6 +121,9 @@ fn run(command: Command, now: u64) -> anyhow::Result<Value> {
                 None => config::default_file()?,
             };
             Ok(serde_json::to_value(config::load(&file)?)?)
+        }
+        Command::Plan { instance } => {
+            Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?)?)
         }
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
