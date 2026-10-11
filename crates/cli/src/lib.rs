@@ -21,6 +21,7 @@ pub mod git;
 pub mod judge;
 pub mod landing;
 pub mod orca;
+pub mod park;
 pub mod settle;
 pub mod tend;
 pub mod tick;
@@ -128,6 +129,13 @@ enum Command {
         /// Why: what a human needs to act on it in one reply
         #[arg(long)]
         reason: String,
+    },
+    /// Leave one of my claims waiting on the issues its worker declared it blocked by
+    Park {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        who: Who,
     },
     /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
     Nudge {
@@ -284,6 +292,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Escalate { issue, who, reason } => {
             judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue, &reason)
         }
+        Command::Park { issue, who } => park::park(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Nudge { issue, who } => judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {

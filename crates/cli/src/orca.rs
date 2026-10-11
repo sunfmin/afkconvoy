@@ -20,6 +20,8 @@ const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 const TOLD_FILE: &str = "convoy-train-told";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
+/// The comment of the `blocked` verdict a worker was last started again over.
+const ANSWERED_FILE: &str = "convoy-answered";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
 
@@ -242,6 +244,17 @@ impl Worktree {
         let file = self.note(NUDGE_FILE)?;
         std::fs::write(&file, at.to_string())
             .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The comment of the `blocked` verdict last answered here, when one was.
+    pub fn answered(&self) -> Result<Option<String>> {
+        let said = std::fs::read_to_string(self.note(ANSWERED_FILE)?).ok();
+        Ok(said.map(|url| url.trim().to_string()).filter(|url| !url.is_empty()))
+    }
+
+    pub fn record_answered(&self, said: &str) -> Result<()> {
+        let file = self.note(ANSWERED_FILE)?;
+        std::fs::write(&file, said).with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// The last `lines` lines of what `terminal` shows.

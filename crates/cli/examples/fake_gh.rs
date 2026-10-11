@@ -2,13 +2,13 @@
 //! as one JSON file (`CONVOY_FAKE_GH`), the code in the bare repo it names.
 //!
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?,
-//! blocked_by?, id?}], `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
+//! blocked_by?, id?}], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail.
 
 mod fake;
 
-use afkconvoy::gh::{COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, PR_FIELDS};
+use afkconvoy::gh::{BLOCKED_BY_JQ, COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, PR_FIELDS};
 use fake::State;
 use serde_json::{Value, json};
 
@@ -132,9 +132,13 @@ fn api(st: &mut State) -> ! {
                 .iter()
                 .filter(|issue| is_open(issue))
                 .map(|issue| {
+                    let open_blockers = blockers(st, &issue["number"].to_string())
+                        .iter()
+                        .filter(|blocker| is_open(blocker))
+                        .count() as u64;
                     json!({"number": issue["number"], "title": issue["title"],
                         "labels": issue["labels"],
-                        "blocked_by": issue["blocked_by"].as_u64().unwrap_or(0)})
+                        "blocked_by": issue["blocked_by"].as_u64().unwrap_or(open_blockers)})
                     .to_string()
                 })
                 .collect();
@@ -159,12 +163,42 @@ fn api(st: &mut State) -> ! {
             let Some(issue) = issue(st, number) else {
                 st.finish("", 1, "gh: Not Found (HTTP 404)\n")
             };
-            let id = issue["id"].as_u64().unwrap_or(9000 + issue["number"].as_u64().unwrap());
-            let row = json!({"id": id, "title": issue["title"],
+            let row = json!({"id": issue_id(issue), "title": issue["title"],
                 "state": issue["state"].as_str().unwrap_or("open"),
                 "state_reason": issue["state_reason"], "labels": issue["labels"],
                 "pull_request": issue["pull_request"].as_bool().unwrap_or(false)});
             st.finish(&row.to_string(), 0, "")
+        }
+        ["issues", number, "dependencies", "blocked_by"] if method == "POST" => {
+            let id = st.argv.iter().find_map(|a| a.strip_prefix("issue_id=")).expect("issue_id");
+            let id: u64 = id.parse().unwrap();
+            assert!(st.has("-F"), "an issue id is sent as a number: {:?}", st.argv);
+            let rows = st.doc["issues"].as_array().unwrap();
+            let Some(blocker) = rows.iter().find(|issue| issue_id(issue) == id) else {
+                st.finish("", 1, "gh: Validation Failed (HTTP 422)\n")
+            };
+            let blocker = blocker["number"].clone();
+            let edges = &mut st.doc["edges"][*number];
+            if !edges.is_array() {
+                *edges = json!([]);
+            }
+            if edges.as_array().unwrap().contains(&blocker) {
+                st.finish("", 1, "gh: Validation Failed (HTTP 422)\n")
+            }
+            edges.as_array_mut().unwrap().push(blocker);
+            st.finish("", 0, "")
+        }
+        ["issues", number, "dependencies", "blocked_by"] => {
+            assert_eq!(jq, Some(BLOCKED_BY_JQ), "fake gh: unsupported jq");
+            assert!(st.has("--paginate"), "{:?}", st.argv);
+            let lines: Vec<String> = blockers(st, number)
+                .iter()
+                .map(|blocker| {
+                    let state = blocker["state"].as_str().unwrap_or("open");
+                    json!({"number": blocker["number"], "state": state}).to_string()
+                })
+                .collect();
+            st.finish(&lines.join("\n"), 0, "")
         }
         ["issues", number, "labels"] if method == "POST" => {
             let added: Vec<String> = st
@@ -225,6 +259,17 @@ fn api(st: &mut State) -> ! {
         }
         _ => unsupported(st),
     }
+}
+
+fn issue_id(issue: &Value) -> u64 {
+    issue["id"].as_u64().unwrap_or(9000 + issue["number"].as_u64().unwrap())
+}
+
+/// The issues `number` is recorded as blocked by.
+fn blockers(st: &State, number: &str) -> Vec<Value> {
+    let named = st.doc["edges"][number].as_array().cloned().unwrap_or_default();
+    let rows = st.doc["issues"].as_array().unwrap();
+    named.iter().filter_map(|n| rows.iter().find(|issue| issue["number"] == *n).cloned()).collect()
 }
 
 fn next_comment_id(st: &State) -> u64 {
