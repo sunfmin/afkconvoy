@@ -58,6 +58,7 @@ fn a_bad_config_is_an_error_naming_the_key() {
 #[test]
 fn a_failure_is_one_json_object_and_a_non_zero_exit() {
     let world = World::new();
+    std::fs::remove_file(world.clone.join("docs/agents/afkconvoy.md")).unwrap();
     assert!(world.afk(&["config"]).error().contains("cannot read the config file"));
     assert!(world.afk(&["no-such-command"]).error().contains("no-such-command"));
     assert!(world.afk(&["config", "--file", "/nowhere.md"]).error().contains("/nowhere.md"));

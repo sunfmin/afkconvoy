@@ -189,6 +189,7 @@ pub fn releasable<'a>(
 }
 
 #[cfg(flux)]
+#[allow(dead_code)]
 mod rejected {
     use super::*;
 

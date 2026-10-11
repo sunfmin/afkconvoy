@@ -10,6 +10,10 @@ use tempfile::TempDir;
 
 pub const BASE: &str = "main";
 
+/// The config every world starts with, committed on the base branch.
+pub const CONFIG: &str =
+    "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nconcurrency: 2\n```\n";
+
 pub struct World {
     _root: TempDir,
     pub root: PathBuf,
@@ -51,6 +55,8 @@ impl World {
         git(&root, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
         git(&root, &["clone", "-q", bare.to_str().unwrap(), clone.to_str().unwrap()]);
         std::fs::write(clone.join("README.md"), "widgets\n").unwrap();
+        std::fs::create_dir_all(clone.join("docs/agents")).unwrap();
+        std::fs::write(clone.join("docs/agents/afkconvoy.md"), CONFIG).unwrap();
         git(&clone, &["add", "."]);
         git(&clone, &["commit", "-q", "-m", "initial"]);
         git(&clone, &["push", "-q", "origin", BASE]);
@@ -108,6 +114,38 @@ impl World {
 
     pub fn gh(&self) -> Value {
         read(&self.gh_file)
+    }
+
+    /// Changes the stand-in GitHub's state in place.
+    pub fn with_gh(&self, change: impl FnOnce(&mut Value)) {
+        let mut state = self.gh();
+        change(&mut state);
+        self.write_gh(&state);
+    }
+
+    /// Adds an open issue carrying `labels`.
+    pub fn issue(&self, number: u64, labels: &[&str]) {
+        self.with_gh(|gh| {
+            let issue = json!({"number": number, "title": format!("issue {number}"),
+                "labels": labels, "state": "open"});
+            gh["issues"].as_array_mut().unwrap().push(issue);
+        });
+    }
+
+    /// Adds an open PR from `branch` whose body closes issue `closes`.
+    pub fn pr(&self, number: u64, closes: u64, branch: &str) {
+        self.with_gh(|gh| {
+            let pr = json!({"number": number, "headRefName": branch, "headRefOid": "",
+                "body": format!("Closes #{closes}\n"), "state": "open"});
+            gh["prs"].as_array_mut().unwrap().push(pr);
+        });
+    }
+
+    /// Every `gh` call made since the last look, as argv lists.
+    pub fn gh_calls(&self) -> Vec<Vec<String>> {
+        let calls = serde_json::from_value(self.gh()["calls"].clone()).unwrap();
+        self.with_gh(|gh| gh["calls"] = json!([]));
+        calls
     }
 
     pub fn write_gh(&self, state: &Value) {
