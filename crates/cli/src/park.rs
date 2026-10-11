@@ -5,6 +5,7 @@ use afkconvoy_core::blocked::{
     Blocked, BlockerRead, Named, Parkable, Standing, WalkError, blocked_route, standing, walk,
     walk_from,
 };
+use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::stopped::Workless;
@@ -13,6 +14,7 @@ use afkconvoy_core::verdict::{Phase, latest_verdict};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
+use crate::board::last_word;
 use crate::claims::{Me, delete};
 use crate::fleet::Fleet;
 use crate::judge::{mine, nothing_held, worktree_and_work};
@@ -70,16 +72,16 @@ pub fn park_claim(
 ) -> Result<Released> {
     let issue = claim.number;
     let recorded = fleet.gh.blocked_by(issue)?;
-    let Fleet { repo, gh, scan, .. } = fleet;
     transition::park(issue, parkable, workless, |step| {
         match step {
             ParkStep::Edge { blocker } => {
                 if !recorded.iter().any(|edge| edge.number == blocker) {
-                    gh.add_blocker(issue, gh.issue(blocker)?.id)?;
+                    fleet.gh.add_blocker(issue, fleet.gh.issue(blocker)?.id)?;
                 }
             }
+            ParkStep::Board => last_word(fleet, claim, Stage::Parked, None, &parkable.blockers())?,
             ParkStep::Release => {
-                delete(repo, scan, issue, &claim.sha)?;
+                delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
             ParkStep::RemoveWorktree => {
                 if let Some(worktree) = worktree {

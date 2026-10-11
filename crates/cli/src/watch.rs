@@ -180,7 +180,8 @@ pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
             let tail = where_it_stopped(&found.worktree, &silent);
             let reason = stalled_reason(found.pr, &silent, &tail);
             // No proof of a workless branch is offered: the worktree is kept.
-            escalate_claim(fleet, &found.claim, &reason, Some(&found.worktree), None)?;
+            let pr = Some(found.pr);
+            escalate_claim(fleet, &found.claim, &reason, pr, Some(&found.worktree), None)?;
             Ok(Outcome::Done)
         }
     }

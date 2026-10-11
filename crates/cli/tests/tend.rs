@@ -18,6 +18,7 @@ fn did(ticked: &Value) -> Vec<String> {
     steps
         .iter()
         // a worker asked after, and left or nudged, is not what these tests are about
+        .filter(|step| step["do"] != "board")
         .filter(|step| {
             !((step["do"] == "judge" || step["do"] == "watch") && step["outcome"] != "done")
         })

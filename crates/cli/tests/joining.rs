@@ -16,6 +16,8 @@ fn did(ticked: &Value) -> Vec<String> {
     let steps = ticked["did"].as_array().unwrap();
     steps
         .iter()
+        // the status boards a tick brings up to date are `board.rs`'s to test
+        .filter(|step| step["do"] != "board")
         .map(|step| {
             let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
             format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())
@@ -225,11 +227,13 @@ fn a_worker_at_work_on_its_join_is_left_with_no_github_read() {
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
             terminal["agent"] = json!({"state": "working", "stateStartedAt": 1_000_000});
-            terminal["lastOutputAt"] = json!(1_080_000);
+            terminal["lastOutputAt"] = json!(1_170_000);
         }
     });
-    world.gh_calls();
+    // the tick that first sees the PR brings the status board up to date
     assert_eq!(did(&tick(&world, 1090)), ["watch 7 nothing", "heartbeat done"]);
+    world.gh_calls();
+    assert_eq!(did(&tick(&world, 1180)), ["watch 7 nothing", "heartbeat done"]);
     let calls: Vec<String> = world.gh_calls().iter().map(|call| call.join(" ")).collect();
     assert!(!calls.iter().any(|call| call.contains("/comments")), "{calls:?}");
     assert_eq!(calls.iter().filter(|call| call.starts_with("pr list")).count(), 1, "{calls:?}");

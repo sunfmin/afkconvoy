@@ -7,6 +7,7 @@
 
 use flux_rs::{attrs::*, macros::qualifier};
 
+use crate::board::Stage;
 use crate::plan::{Status, WorkingSet};
 
 /// One thing a pass does.
@@ -30,6 +31,8 @@ pub enum TickStep {
     Reclaim { issue: u64 },
     /// Start a worker on a frontier issue, into a free slot.
     Dispatch { issue: u64 },
+    /// Show on the issue's status board the stage a claim of mine is at.
+    Board { issue: u64, stage: Stage, pr: Option<u64> },
     /// Refresh my heartbeat, if it is due.
     Heartbeat,
 }
@@ -110,11 +113,11 @@ pub struct Pass {
 }
 
 impl Pass {
-    /// Whether the pass changed anything: a pass that only looked, or only
-    /// refreshed its heartbeat, did no work.
+    /// Whether the pass changed anything: a pass that only looked, refreshed
+    /// its heartbeat or brought a status board up to date did no work.
     pub fn did_work(&self) -> bool {
         self.did.iter().any(|(step, outcome)| {
-            !matches!(step, TickStep::Heartbeat)
+            !matches!(step, TickStep::Heartbeat | TickStep::Board { .. })
                 && matches!(
                     outcome,
                     Outcome::Done
@@ -131,7 +134,7 @@ impl Pass {
 /// claims whose work landed, tend the landing train, ask after the workers
 /// not on the train yet, delete the stale locks on closed issues, take stale
 /// claims and then frontier issues into the free slots, lowest number first,
-/// then refresh the heartbeat. `carry_out` performs one
+/// bring the status boards up to date, then refresh the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
 /// the rest of the pass goes on.
 ///
@@ -155,6 +158,9 @@ where
         did.push((step, carry_out(step)));
     }
     let held = fill_slots(&takes(set), concurrency, held, &mut did, &mut carry_out);
+    for step in boards(set, &did) {
+        did.push((step, carry_out(step)));
+    }
     if held > 0 {
         let step = TickStep::Heartbeat;
         did.push((step, carry_out(step)));
@@ -210,6 +216,49 @@ where
         }
     }
     slots.held()
+}
+
+/// Whether `did` holds a step on `issue` that ended as `outcome`.
+fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
+    for (step, how) in did {
+        let about = match step {
+            TickStep::Settle { issue }
+            | TickStep::Judge { issue }
+            | TickStep::Watch { issue }
+            | TickStep::Dispatch { issue } => Some(*issue),
+            _ => None,
+        };
+        if about == Some(issue) && *how == outcome {
+            return true;
+        }
+    }
+    false
+}
+
+/// The status boards a pass brings up to date, once it has done everything
+/// else: of each claim of mine it left held, at the stage the pass found it
+/// at, and of each issue it dispatched. Never of a claim whose step ended it
+/// — or failed, having got who knows how far: its last word may be written
+/// already, and is not written over. A claim taken from a peer is shown by
+/// the next pass, which knows where its PR stands.
+fn boards(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> Vec<TickStep> {
+    let mut steps: Vec<TickStep> = Vec::new();
+    for mine in &set.mine {
+        let Some(stage) = Stage::held(mine.status) else {
+            continue;
+        };
+        let ending =
+            ended(did, mine.number, Outcome::Done) || ended(did, mine.number, Outcome::Failed);
+        if !ending {
+            steps.push(TickStep::Board { issue: mine.number, stage, pr: mine.pr });
+        }
+    }
+    for issue in &set.frontier {
+        if ended(did, issue.number, Outcome::Done) {
+            steps.push(TickStep::Board { issue: issue.number, stage: Stage::Claimed, pr: None });
+        }
+    }
+    steps
 }
 
 /// What a pass may take a claim for, in the order it does: the stale claims
@@ -361,7 +410,7 @@ mod tests {
         set.stale = peers(&[9, 3, 6]);
         set.stale_closed = peers(&[8]);
         let pass = run_pass(&set, 3, 1, left_at_work);
-        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let steps = steps(&pass);
         assert_eq!(
             steps,
             [
@@ -384,7 +433,7 @@ mod tests {
             Reclaim { issue: 3 } => Lost,
             _ => Done,
         });
-        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let steps = steps(&pass);
         assert_eq!(steps, [Reclaim { issue: 3 }, Reclaim { issue: 6 }, Heartbeat]);
         assert_eq!(pass.held, 1);
     }
@@ -395,12 +444,21 @@ mod tests {
         set.stale = peers(&[3]);
         // three held under a bound of one — a takeover: only the settle frees anything
         let pass = run_pass(&set, 1, 3, left_at_work);
-        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let steps = steps(&pass);
         assert_eq!(steps, [Settle { issue: 7 }, Judge { issue: 1 }, Judge { issue: 5 }, Heartbeat]);
         assert_eq!(pass.held, 2);
     }
 
     /// Carries every step out, and finds every worker asked after at work.
+    /// What a pass did, without the status boards it brought up to date.
+    fn acts(pass: &Pass) -> Vec<(TickStep, Outcome)> {
+        pass.did.iter().copied().filter(|(step, _)| !matches!(step, Board { .. })).collect()
+    }
+
+    fn steps(pass: &Pass) -> Vec<TickStep> {
+        acts(pass).into_iter().map(|(step, _)| step).collect()
+    }
+
     fn left_at_work(step: TickStep) -> Outcome {
         if matches!(step, Judge { .. } | Watch { .. } | TendTrain) { Nothing } else { Done }
     }
@@ -409,7 +467,7 @@ mod tests {
     fn a_pass_settles_then_dispatches_then_beats() {
         let set = set(&[5, 6, 7], &[(1, Status::NoPr), (2, Status::Closed)]);
         let pass = run_pass(&set, 3, 2, left_at_work);
-        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let steps = steps(&pass);
         assert_eq!(
             steps,
             [
@@ -439,7 +497,7 @@ mod tests {
         let set = set(&[5], &[(1, Status::Closed)]);
         let pass =
             run_pass(&set, 1, 1, |step| if matches!(step, Settle { .. }) { Failed } else { Done });
-        assert_eq!(pass.did, [(Settle { issue: 1 }, Failed), (Heartbeat, Done)]);
+        assert_eq!(acts(&pass), [(Settle { issue: 1 }, Failed), (Heartbeat, Done)]);
         assert_eq!(pass.held, 1);
     }
 
@@ -451,7 +509,7 @@ mod tests {
             Dispatch { issue: 6 } => Failed,
             _ => Done,
         });
-        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let steps = steps(&pass);
         assert_eq!(
             steps,
             [Dispatch { issue: 5 }, Dispatch { issue: 6 }, Dispatch { issue: 7 }, Heartbeat]
@@ -465,7 +523,7 @@ mod tests {
         // #1's worker declared a verdict that ends its claim; #3's is at work on its join
         let ended = |step| if matches!(step, Watch { .. }) { Nothing } else { Done };
         let pass = run_pass(&set, 3, 3, ended);
-        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let steps = steps(&pass);
         assert_eq!(
             steps,
             [TendTrain, Judge { issue: 1 }, Watch { issue: 3 }, Dispatch { issue: 5 }, Heartbeat]
@@ -473,7 +531,7 @@ mod tests {
         assert_eq!(pass.held, 3);
         let left = run_pass(&set, 3, 3, left_at_work);
         assert_eq!(
-            left.did,
+            acts(&left),
             [
                 (TendTrain, Nothing),
                 (Judge { issue: 1 }, Nothing),
@@ -492,18 +550,58 @@ mod tests {
                 Watch { .. } => kept,
                 _ => Done,
             });
-            assert_eq!(pass.did, [(Watch { issue: 3 }, kept), (Heartbeat, Done)]);
+            assert_eq!(acts(&pass), [(Watch { issue: 3 }, kept), (Heartbeat, Done)]);
             assert!(pass.did_work() && pass.held == 1);
         }
         let pass = run_pass(&set, 1, 1, |_| Done);
-        let steps: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let steps = steps(&pass);
         assert_eq!(steps, [Watch { issue: 3 }, Dispatch { issue: 5 }, Heartbeat]);
+    }
+
+    #[test]
+    fn the_boards_of_what_is_still_held_and_of_what_was_dispatched_are_brought_up_to_date() {
+        let mine =
+            [(1, Status::NoPr), (2, Status::Joined), (3, Status::Joining), (4, Status::Closed)];
+        let held = set(&[5, 6], &mine);
+        // #1 is escalated, #4 settled, #5 dispatched into the slot that frees, #6 lost to a peer
+        let pass = run_pass(&held, 4, 4, |step| match step {
+            Watch { .. } | TendTrain => Nothing,
+            Dispatch { issue: 6 } => Lost,
+            _ => Done,
+        });
+        let boards: Vec<TickStep> =
+            pass.did.iter().map(|(step, _)| *step).filter(|s| matches!(s, Board { .. })).collect();
+        use crate::board::Stage;
+        assert_eq!(
+            boards,
+            [
+                Board { issue: 2, stage: Stage::Joined, pr: None },
+                Board { issue: 3, stage: Stage::Joining, pr: None },
+                Board { issue: 5, stage: Stage::Claimed, pr: None },
+            ],
+            "never of a claim the pass ended: its last board is the ending's to write"
+        );
+        // …nor of one whose ending was cut: the last word may be written already
+        let cut = run_pass(&held, 4, 4, |step| match step {
+            Judge { .. } => Failed,
+            _ => Nothing,
+        });
+        assert!(!cut.did.iter().any(|(step, _)| matches!(step, Board { issue: 1, .. })));
+        let last = pass.did.len() - 1;
+        assert_eq!(pass.did[last].0, Heartbeat);
+        assert!(matches!(pass.did[last - 1].0, Board { .. }), "after everything else");
+        // a pass that only brought boards up to date did no work
+        let quiet = run_pass(&set(&[], &[(2, Status::Joined)]), 1, 1, |step| match step {
+            TendTrain => Nothing,
+            _ => Done,
+        });
+        assert!(!quiet.did_work());
     }
 
     #[test]
     fn a_fleet_holding_nothing_does_not_beat() {
         let pass = run_pass(&set(&[], &[]), 2, 0, |_| Done);
-        assert_eq!(pass.did, []);
+        assert_eq!(acts(&pass), []);
         assert!(!pass.did_work());
     }
 

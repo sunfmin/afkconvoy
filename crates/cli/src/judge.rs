@@ -4,7 +4,9 @@
 use std::time::UNIX_EPOCH;
 
 use afkconvoy_core::blocked::{Blocked, blocked_route};
+use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
+use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::stopped::{
     NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
@@ -19,6 +21,7 @@ use afkconvoy_core::verdict::{Verdict, latest_verdict};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::board::last_word;
 use crate::claims::{Me, delete};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
@@ -83,15 +86,19 @@ pub(crate) fn worktree_and_work(
 pub fn escalate(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
     let (worktree, workless) = worktree_and_work(fleet, issue)?;
-    escalate_claim(fleet, &claim, reason, worktree.as_ref(), workless.as_ref())?;
+    let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
+    escalate_claim(fleet, &claim, reason, pr, worktree.as_ref(), workless.as_ref())?;
     Ok(json!({"issue": issue, "action": "escalated", "released": true,
         "worktree": if workless.is_some() { "removed" } else { "kept" }}))
 }
 
+/// Escalates `claim`. `pr` is the issue's open PR, when it has one: the
+/// status board keeps how far the claim got.
 pub(crate) fn escalate_claim(
     fleet: &mut Fleet,
     claim: &Claim,
     reason: &str,
+    pr: Option<u64>,
     worktree: Option<&Worktree>,
     workless: Option<&Workless>,
 ) -> Result<Released> {
@@ -100,20 +107,23 @@ pub(crate) fn escalate_claim(
     let comments = fleet.gh.comments(issue)?;
     let said = escalation_begun(comments.iter().map(|c| c.body.as_str()), &claim.sha);
     let begun = Escalation::read(said, relabelled(&labels, &fleet.config));
-    let Fleet { repo, gh, scan, config, .. } = fleet;
     transition::escalate(issue, begun, workless, |step| {
         match step {
-            EscalateStep::Comment => gh.comment(issue, &escalation_comment(&claim.sha, reason))?,
+            EscalateStep::Comment => {
+                fleet.gh.comment(issue, &escalation_comment(&claim.sha, reason))?
+            }
             EscalateStep::Relabel => {
+                let config = &fleet.config;
                 if !labels.contains(&config.escalate_label) {
-                    gh.add_label(issue, &config.escalate_label)?;
+                    fleet.gh.add_label(issue, &config.escalate_label)?;
                 }
                 if labels.contains(&config.ready_label) {
-                    gh.remove_label(issue, &config.ready_label)?;
+                    fleet.gh.remove_label(issue, &config.ready_label)?;
                 }
             }
+            EscalateStep::Board => last_word(fleet, claim, Stage::Escalated, pr, &[])?,
             EscalateStep::Release => {
-                delete(repo, scan, issue, &claim.sha)?;
+                delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
             EscalateStep::RemoveWorktree => {
                 if let Some(worktree) = worktree {
@@ -152,12 +162,12 @@ fn close_claim(
     workless: &Workless,
 ) -> Result<Released> {
     let issue = claim.number;
-    let Fleet { repo, gh, scan, .. } = fleet;
     transition::close(issue, workless, |step| {
         match step {
-            CloseStep::CloseIssue => gh.close_issue(issue)?,
+            CloseStep::CloseIssue => fleet.gh.close_issue(issue)?,
+            CloseStep::Board => last_word(fleet, claim, Stage::Closed, None, &[])?,
             CloseStep::Release => {
-                delete(repo, scan, issue, &claim.sha)?;
+                delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
             CloseStep::RemoveWorktree => {
                 if let Some(worktree) = worktree {
@@ -323,7 +333,8 @@ pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
         Route::Escalate(why) => why.reason(said.unwrap_or("(its comment)")),
         Route::Stalled(silent) => stalled_reason(&silent, &where_it_stopped(&worktree, &silent)),
     };
-    escalate_claim(fleet, &claim, &reason, Some(&worktree), workless.as_ref())?;
+    // A claim the tick judges has no PR.
+    escalate_claim(fleet, &claim, &reason, None, Some(&worktree), workless.as_ref())?;
     Ok(Outcome::Done)
 }
 

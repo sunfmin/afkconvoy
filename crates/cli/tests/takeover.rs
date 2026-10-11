@@ -29,6 +29,8 @@ fn did(ticked: &Value) -> Vec<String> {
     let steps = ticked["did"].as_array().unwrap();
     steps
         .iter()
+        // the status boards a tick brings up to date are `board.rs`'s to test
+        .filter(|step| step["do"] != "board")
         .map(|step| {
             let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
             format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())

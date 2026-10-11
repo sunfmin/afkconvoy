@@ -24,6 +24,8 @@ fn did(ticked: &Value) -> Vec<String> {
         .as_array()
         .unwrap()
         .iter()
+        // the status boards a tick brings up to date are `board.rs`'s to test
+        .filter(|step| step["do"] != "board")
         // a worker asked after, and left or nudged, is not what these tests are about
         .filter(|step| !(step["do"] == "judge" && step["outcome"] != "done"))
         .map(|step| {
