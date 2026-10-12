@@ -77,10 +77,7 @@ pub fn propose(
         .as_ref()
         .ok_or_else(|| anyhow!("the team names nobody who proposes precedents"))?
         .work;
-    let role = kept
-        .team
-        .role(&work.role)
-        .ok_or_else(|| anyhow!("the team has no role {:?}", work.role))?;
+    let role = kept.team.role_of(work);
     let role_copy = kept.role(role)?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &ruling.claim_key())? else {
         return Ok(Outcome::Lost);
@@ -94,7 +91,7 @@ pub fn propose(
         drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
         return Ok(Outcome::Lost);
     };
-    fleet.gh.comment(ruling.issue, &proposed_comment(ruling, &work.role, team.as_str()))?;
+    fleet.gh.comment(ruling.issue, &proposed_comment(ruling, &role.name, team.as_str()))?;
 
     let base = fleet.base_tip()?;
     let source = Source::of(&fleet.repo)?;
@@ -111,7 +108,7 @@ pub fn propose(
         number: ruling.issue,
         link: &said.url,
         ruling: &record.text,
-        role: &work.role,
+        role: &role.name,
         skill: &work.skill,
         team: team.as_str(),
         branch: &ruling.branch(),
@@ -128,7 +125,7 @@ pub fn propose(
         guard: &crate::own_command().fixed(" guard").own(),
         facts: Facts {
             on: On::Proposal { issue: ruling.issue },
-            role: &work.role,
+            role: &role.name,
             skill: &work.skill,
             // In a clone of the team's repo, of its own: not in the checkout.
             writes: true,

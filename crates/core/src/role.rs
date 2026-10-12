@@ -3,6 +3,8 @@
 //! bound repo, and whether the command takes it. What is added is fixed: nothing here is
 //! configurable, and an unbound repo's command never comes this way.
 
+use flux_rs::attrs::*;
+
 use crate::line::Line;
 use crate::patrol::PATROL_ENV;
 use crate::position::Position;
@@ -77,6 +79,7 @@ pub fn flows(labels: &[String]) -> Vec<&str> {
 
 /// The workflow of `team` an issue carrying `labels` follows: the one its
 /// flow label names. An error says why it follows none.
+#[spec(fn(&Team[@roles], &[String]) -> Result<&Workflow{v: v.roles == roles}, String>)]
 pub fn workflow_of<'t>(team: &'t Team, labels: &[String]) -> Result<&'t Workflow, String> {
     let named = flows(labels);
     let name = match named.as_slice() {
@@ -153,30 +156,24 @@ pub fn due<'t>(
         Err(why) => return Due::Human(why),
     };
     let position = history(workflow, records).place.position;
-    let roleless = |work: &Work| Due::Nothing(format!("the team has no role {:?}", work.role));
     if let Some((stage, work)) = position.start() {
-        return match team.role(&work.role) {
-            Some(role) => Due::Worker(Entry { workflow, stage, work, role }),
-            None => roleless(work),
-        };
+        return Due::Worker(Entry { workflow, stage, work, role: team.role_of(work) });
     }
     let waits = |stage: &Stage, on: &str| {
         Due::Nothing(format!("its stage {:?} waits for {on}", stage.name))
     };
     match position {
         Position::Escalating(stage, reason) => Due::Human(reason.said(stage)),
-        Position::Consult(stage, work) => match team.role(&work.role) {
-            Some(role) => Due::Consult(Entry { workflow, stage, work, role }),
-            None => roleless(work),
-        },
+        Position::Consult(stage, work) => {
+            Due::Consult(Entry { workflow, stage, work, role: team.role_of(work) })
+        }
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
             waits(stage, "a human: no worker performs it")
         }
         Position::Landing => match (&workflow.land, pr) {
-            (Some(work), Some(pr)) => match team.role(&work.role) {
-                Some(role) => Due::Lander(Lander { workflow, work, role, pr }),
-                None => roleless(work),
-            },
+            (Some(work), Some(pr)) => {
+                Due::Lander(Lander { workflow, work, role: team.role_of(work), pr })
+            }
             (Some(_), None) => Due::Human(
                 "its last stage passed it to the landing train, and no open PR closes it: there \
                  is nothing to join"
@@ -471,7 +468,7 @@ land: { by: boss, do: implement }
         };
         assert_eq!(entry.workflow.name, "feature");
         assert_eq!(entry.stage.name, "build");
-        assert_eq!((entry.work.role.as_str(), entry.work.skill.as_str()), ("dev", "implement"));
+        assert_eq!((entry.role.name.as_str(), entry.work.skill.as_str()), ("dev", "implement"));
         assert_eq!(
             (entry.role.repo.as_str(), entry.role.commit.as_str()),
             ("acme/dev", "acme/dev@1")
@@ -482,11 +479,11 @@ land: { by: boss, do: implement }
     /// What is due, in a few words.
     fn said(due: Due) -> String {
         match due {
-            Due::Worker(entry) => format!("{} by {}", entry.stage.name, entry.work.role),
+            Due::Worker(entry) => format!("{} by {}", entry.stage.name, entry.role.name),
             Due::Consult(entry) => {
-                format!("consult on {} by {}", entry.stage.name, entry.work.role)
+                format!("consult on {} by {}", entry.stage.name, entry.role.name)
             }
-            Due::Lander(lander) => format!("PR #{} joined by {}", lander.pr, lander.work.role),
+            Due::Lander(lander) => format!("PR #{} joined by {}", lander.pr, lander.role.name),
             Due::Human(why) => format!("human: {why}"),
             Due::Nothing(why) => format!("nothing: {why}"),
         }
@@ -530,7 +527,7 @@ land: { by: boss, do: implement }
             panic!("a consult is due")
         };
         assert_eq!(entry.stage.name, "build");
-        assert_eq!((entry.work.role.as_str(), entry.work.skill.as_str()), ("boss", "implement"));
+        assert_eq!((entry.role.name.as_str(), entry.work.skill.as_str()), ("boss", "implement"));
         assert_eq!(entry.role.repo.as_str(), "acme/boss");
         let ruled = [&asked[..], &[consult(Declared::Ruling)]].concat();
         assert_eq!(said(due(&team, &flow, &ruled, None)), "build by dev");
@@ -552,7 +549,7 @@ land: { by: boss, do: implement }
         let Due::Lander(lander) = due(&team, &flow, &built, Some(70)) else {
             panic!("a landing worker is due")
         };
-        assert_eq!((lander.work.role.as_str(), lander.work.skill.as_str()), ("boss", "implement"));
+        assert_eq!((lander.role.name.as_str(), lander.work.skill.as_str()), ("boss", "implement"));
         assert_eq!((lander.role.repo.as_str(), lander.pr), ("acme/boss", 70));
         assert_eq!(lander.workflow.name, "lands");
         // With no PR there is nothing to join: a human's.

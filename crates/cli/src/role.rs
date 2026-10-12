@@ -94,7 +94,7 @@ impl Staged {
             issue,
             flow: workflow.name.clone(),
             stage: at.map_or(LAND, |stage| &stage.name).to_string(),
-            role: work.role.clone(),
+            role: role.name.clone(),
             skill: work.skill.clone(),
             writes: at.is_none_or(|stage| stage.writes),
             consult,

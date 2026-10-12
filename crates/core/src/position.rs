@@ -110,37 +110,37 @@ impl Reason {
 }
 
 /// Where an issue is in its workflow: `at_stage` while it is at a stage, one
-/// of a workflow of `n` stages.
+/// of a workflow of `n` stages, of a team of `roles` roles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[refined_by(at_stage: bool, n: int)]
+#[refined_by(at_stage: bool, n: int, roles: int)]
 pub enum Position<'w> {
     /// A worker is to perform the stage, as this skill of this role.
-    #[variant((&Stage[@s], &Work) -> Position[true, s.n])]
+    #[variant((&Stage[@s], &Work[s.roles]) -> Position[true, s.n, s.roles])]
     Perform(&'w Stage, &'w Work),
     /// The stage is a human's: nothing happens until they declare its verdict.
-    #[variant((&Stage[@s]) -> Position[true, s.n])]
+    #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
     Waiting(&'w Stage),
     /// A worker is to rule on the stage's `escalate`, as this skill of this role.
-    #[variant((&Stage[@s], &Work) -> Position[true, s.n])]
+    #[variant((&Stage[@s], &Work[s.roles]) -> Position[true, s.n, s.roles])]
     Consult(&'w Stage, &'w Work),
     /// Parked on what the stage declared it blocked by. The stage runs again
     /// when those close, which counts as no rework.
-    #[variant((&Stage[@s]) -> Position[true, s.n])]
+    #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
     Parked(&'w Stage),
     /// Its last stage passed to the landing train.
-    #[variant(Position[false, 0])]
+    #[variant(Position[false, 0, 0])]
     Landing,
     /// Nothing more to do.
-    #[variant(Position[false, 0])]
+    #[variant(Position[false, 0, 0])]
     Ended,
     /// Handed to a human. Under their ruling the stage runs again.
-    #[variant((&Stage[@s], Reason) -> Position[true, s.n])]
+    #[variant((&Stage[@s], Reason) -> Position[true, s.n, s.roles])]
     Escalating(&'w Stage, Reason),
 }
 
 impl<'w> Position<'w> {
     /// The stage the issue is at; `None` once it has left its stages.
-    #[spec(fn(Position[@p]) -> Option<&Stage{v: p.at_stage && v.n == p.n}>)]
+    #[spec(fn(Position[@p]) -> Option<&Stage{v: p.at_stage && v.n == p.n && v.roles == p.roles}>)]
     pub fn stage(self) -> Option<&'w Stage> {
         match self {
             Position::Perform(stage, _)
@@ -155,6 +155,7 @@ impl<'w> Position<'w> {
     /// The stage a worker is to be started on, and as whom: the stage to
     /// perform, or the one a park ended at — which runs again once nothing
     /// blocks the issue. `None` where no stage's worker is to be started.
+    #[spec(fn(Position[@p]) -> Option<(&Stage, &Work{v: p.at_stage && v.roles == p.roles})>)]
     pub fn start(self) -> Option<(&'w Stage, &'w Work)> {
         match self {
             Position::Perform(stage, work) => Some((stage, work)),
@@ -223,15 +224,16 @@ impl Count {
     }
 }
 
-/// An issue's position in a workflow of `n` stages, with its two rework
-/// counts. The stage it is at, while at one, is a stage of that workflow, and
-/// it holds one count of rejections in a row for each of the `n`.
+/// An issue's position in a workflow of `n` stages, of a team of `roles`
+/// roles, with its two rework counts. The stage it is at, while at one, is a
+/// stage of that workflow, and it holds one count of rejections in a row for
+/// each of the `n`.
 #[derive(Debug, PartialEq, Eq)]
-#[refined_by(n: int)]
+#[refined_by(n: int, roles: int)]
 pub struct Place<'w> {
-    #[field(&Workflow[n])]
+    #[field(&Workflow[n, roles])]
     workflow: &'w Workflow,
-    #[field(Position{v: v.at_stage => v.n == n})]
+    #[field(Position{v: v.at_stage => v.n == n && v.roles == roles})]
     pub position: Position<'w>,
     total: Count,
     /// Each stage's rejections in a row, at the stage's place.
@@ -240,7 +242,7 @@ pub struct Place<'w> {
 }
 
 impl Clone for Place<'_> {
-    #[spec(fn(&Place[@n]) -> Place[n])]
+    #[spec(fn(&Place[@p]) -> Place[p])]
     fn clone(&self) -> Self {
         Place {
             workflow: self.workflow,
@@ -252,7 +254,7 @@ impl Clone for Place<'_> {
 }
 
 /// The position of an issue that comes to `stage`.
-#[spec(fn(&Stage[@s]) -> Position[true, s.n])]
+#[spec(fn(&Stage[@s]) -> Position[true, s.n, s.roles])]
 fn at(stage: &Stage) -> Position<'_> {
     match &stage.by {
         Performer::Human => Position::Waiting(stage),
@@ -263,7 +265,7 @@ fn at(stage: &Stage) -> Position<'_> {
 impl<'w> Place<'w> {
     /// Where an issue is that has just entered `workflow`: at its first
     /// stage, with no rework.
-    #[spec(fn(&Workflow[@n]) -> Place[n])]
+    #[spec(fn(&Workflow[@w]) -> Place[w.n, w.roles])]
     pub fn enter(workflow: &'w Workflow) -> Place<'w> {
         let mut consecutive: Vec<Count> = vec![];
         while consecutive.len() < workflow.stages().len() {
@@ -280,7 +282,7 @@ impl<'w> Place<'w> {
     /// Where the issue is once a human puts it at `stage` — by ruling on it
     /// there, or by sending it there: the stage is to be performed, and both
     /// counts start over.
-    #[spec(fn(Place[@n], &Stage{v: v.n == n}) -> Place[n])]
+    #[spec(fn(Place[@p], &Stage{v: v.n == p.n && v.roles == p.roles}) -> Place[p])]
     pub fn put(self, stage: &'w Stage) -> Place<'w> {
         Place { position: at(stage), ..Place::enter(self.workflow) }
     }
@@ -298,14 +300,14 @@ impl<'w> Place<'w> {
 
     /// The rejections `stage` has declared in a row, with no `pass` of its
     /// own between. `stage` is one of the issue's workflow.
-    #[spec(fn(&Place[@n], &Stage{v: v.n == n}) -> u64)]
+    #[spec(fn(&Place[@p], &Stage{v: v.n == p.n}) -> u64)]
     pub fn consecutive_rework(&self, stage: &Stage) -> u64 {
         self.consecutive[stage.at()].times()
     }
 
     /// The rejections in a row `stage`, one of the issue's workflow, has left
     /// before its breaker stops it.
-    #[spec(fn(&Place[@n], &Stage{v: v.n == n}) -> u64)]
+    #[spec(fn(&Place[@p], &Stage{v: v.n == p.n}) -> u64)]
     pub fn consecutive_rework_left(&self, stage: &Stage) -> u64 {
         self.consecutive[stage.at()].left()
     }
@@ -318,7 +320,7 @@ impl<'w> Place<'w> {
     /// Where the issue is once `declared` is declared on it. What may not be
     /// declared where it is escalates it from a stage, and changes nothing
     /// once it is escalated, landing or ended.
-    #[spec(fn(Place[@n], Declared) -> Place[n])]
+    #[spec(fn(Place[@p], Declared) -> Place[p])]
     pub fn after(self, declared: Declared) -> Place<'w> {
         if let Some(next) = self.valid(declared) {
             return next;
@@ -334,7 +336,7 @@ impl<'w> Place<'w> {
     }
 
     /// The place after `declared`; `None` when it may not be declared here.
-    #[spec(fn(&Place[@n], Declared) -> Option<Place[n]>)]
+    #[spec(fn(&Place[@p], Declared) -> Option<Place[p]>)]
     fn valid(&self, declared: Declared) -> Option<Place<'w>> {
         let mut next = self.clone();
         next.position = match (self.position, declared) {
@@ -399,7 +401,7 @@ impl<'w> Place<'w> {
 
 /// Where an issue of `workflow` is, given everything declared on it since it
 /// entered, oldest first.
-#[spec(fn(&Workflow[@n], &[Declared]) -> Place[n])]
+#[spec(fn(&Workflow[@w], &[Declared]) -> Place[w.n, w.roles])]
 pub fn position<'w>(workflow: &'w Workflow, declared: &[Declared]) -> Place<'w> {
     let mut place = Place::enter(workflow);
     for declared in declared {
@@ -435,11 +437,12 @@ mod tests {
         let place = position(workflow, declared);
         let said = match place.position {
             Position::Perform(stage, work) => {
-                format!("{} by {}: {}", stage.name, work.role, work.skill)
+                format!("{} by {}: {}", stage.name, team.role_of(work).name, work.skill)
             }
             Position::Waiting(stage) => format!("{} by a human", stage.name),
             Position::Consult(stage, work) => {
-                format!("consult on {} by {}: {}", stage.name, work.role, work.skill)
+                let role = &team.role_of(work).name;
+                format!("consult on {} by {role}: {}", stage.name, work.skill)
             }
             Position::Parked(stage) => format!("parked at {}", stage.name),
             Position::Landing => "landing".to_string(),
@@ -593,7 +596,7 @@ mod tests {
         let workflow = team.workflow("feature").unwrap();
         let start = |declared: &[Declared]| {
             let started = position(workflow, declared).position.start();
-            started.map(|(stage, work)| format!("{} by {}", stage.name, work.role))
+            started.map(|(stage, work)| format!("{} by {}", stage.name, team.role_of(work).name))
         };
         assert_eq!(start(&[]).as_deref(), Some("plan by dev"));
         assert_eq!(start(&[Pass, Pass, Reject]).as_deref(), Some("build by dev"));

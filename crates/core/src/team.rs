@@ -183,16 +183,22 @@ impl std::fmt::Display for Fault {
     }
 }
 
-/// A loaded team.
+/// A loaded team of `roles` roles. Whoever its workflows, its patrols and its
+/// precedents have perform a skill is one of them.
 #[derive(Debug, PartialEq, Eq)]
+#[refined_by(roles: int)]
 pub struct Team {
     /// Swapped in for the flow label when the fleet hands an issue to a human.
     pub escalate_label: String,
+    #[field(Vec<Role>[roles])]
     pub roles: Vec<Role>,
+    #[field(Vec<Workflow{v: v.roles == roles}>)]
     pub workflows: Vec<Workflow>,
+    #[field(Vec<Patrol[roles]>)]
     pub patrols: Vec<Patrol>,
     /// Who proposes a human's ruling as a precedent. `None`: the team names
     /// nobody, and none is proposed.
+    #[field(Option<Precedents[roles]>)]
     pub precedents: Option<Precedents>,
 }
 
@@ -201,6 +207,14 @@ impl Team {
         self.roles.iter().find(|role| role.name == name)
     }
 
+    /// The role `work` is a skill of: one of the team's, with nothing to
+    /// look for.
+    #[spec(fn(&Team[@roles], &Work[roles]) -> &Role)]
+    pub fn role_of(&self, work: &Work) -> &Role {
+        &self.roles[work.role]
+    }
+
+    #[spec(fn(&Team[@roles], name: &str) -> Option<&Workflow{v: v.roles == roles}>)]
     pub fn workflow(&self, name: &str) -> Option<&Workflow> {
         self.workflows.iter().find(|workflow| workflow.name == name)
     }
@@ -235,20 +249,36 @@ pub struct Role {
     pub skills: Vec<String>,
 }
 
-/// One skill of one role: what a worker is started to perform. Both exist.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One skill of one role of a team of `roles` roles: what a worker is started
+/// to perform. Both exist: the role is kept as its place among the team's
+/// roles, which is below `roles` (`Team::role_of`).
+#[derive(Debug, PartialEq, Eq)]
+#[refined_by(roles: int)]
 pub struct Work {
-    pub role: String,
+    #[field(usize{v: v < roles})]
+    role: usize,
+    /// How many roles its team has.
+    #[field(usize[roles])]
+    of: usize,
     pub skill: String,
+}
+
+impl Clone for Work {
+    #[spec(fn(&Work[@roles]) -> Work[roles])]
+    fn clone(&self) -> Self {
+        Work { role: self.role, of: self.of, skill: self.skill.clone() }
+    }
 }
 
 /// One patrol: a skill of a role, run on a schedule and for no issue. Its
 /// name is one a ref and a worktree can carry (`patrol_name`), and its
 /// interval is longer than nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[refined_by(roles: int)]
 pub struct Patrol {
     /// The name of its file: what a repo's `patrols` names it by.
     pub name: String,
+    #[field(Work[roles])]
     pub work: Work,
     /// How long after one run the next is due, in seconds.
     pub every: u64,
@@ -260,18 +290,23 @@ pub struct Patrol {
 /// Who proposes a human's ruling as a precedent — a skill of a role, started
 /// once for the ruling — and how many proposals may wait for a human at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[refined_by(roles: int)]
 pub struct Precedents {
+    #[field(Work[roles])]
     pub work: Work,
     /// How many proposals may be open on the team's repo before no other is
     /// started.
     pub max_open: u64,
 }
 
-/// Who performs a stage.
+/// Who performs a stage: `by_role` when a role does, one of a team of `roles`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[refined_by(by_role: bool, roles: int)]
 pub enum Performer {
     /// A decision waited for from a human. No worker is started.
+    #[variant(Performer[false, 0])]
     Human,
+    #[variant((Work[@roles]) -> Performer[true, roles])]
     Role(Work),
 }
 
@@ -290,26 +325,32 @@ pub enum Pass {
     Done,
 }
 
-/// One stage of a workflow of `n` stages. Its place is below `n`, and so is
-/// the place of the stage its `pass` leads to, when it leads to one. Its
-/// `reject`, if it may reject, leads to a stage before it: every way back
-/// through a workflow is a counted rejection.
+/// One stage of a workflow of `n` stages, of a team of `roles` roles. Its
+/// place is below `n`, and so is the place of the stage its `pass` leads to,
+/// when it leads to one. Its `reject`, if it may reject, leads to a stage
+/// before it: every way back through a workflow is a counted rejection. The
+/// role that performs it and the one it consults are roles of the team.
 #[derive(Debug, PartialEq, Eq)]
-#[refined_by(at: int, n: int)]
+#[refined_by(at: int, n: int, roles: int)]
 #[invariant(at < n)]
 pub struct Stage {
     pub name: String,
+    #[field(Performer{v: v.by_role => v.roles == roles})]
     pub by: Performer,
     pub model: Option<String>,
     /// Whether it may commit. A stage that reviews does not.
     pub writes: bool,
     /// Who rules on its `escalate` verdict before a human is asked.
+    #[field(Option<Work[roles]>)]
     pub consult: Option<Work>,
     #[field(usize[at])]
     at: usize,
     /// How many stages its workflow has.
     #[field(usize[n])]
     of: usize,
+    /// How many roles its team has.
+    #[field(usize[roles])]
+    roles: usize,
     #[field(Pass{v: v.to_stage => v.to < n})]
     pass: Pass,
     #[field(Option<usize{v: v < at}>)]
@@ -341,19 +382,25 @@ impl Stage {
 /// comes to the landing train or to nothing more to do; every stage can be
 /// reached from the first; and `land` is set exactly when a `pass` leads there.
 /// It has `n` stages, each a stage of a workflow of `n`: where one's `pass` or
-/// `reject` leads, there is a stage.
+/// `reject` leads, there is a stage. It is a workflow of a team of `roles`
+/// roles, and so is each of its stages: whoever performs one, is consulted by
+/// one or lands is a role of that team.
 #[derive(Debug, PartialEq, Eq)]
-#[refined_by(n: int)]
+#[refined_by(n: int, roles: int)]
 #[invariant(n > 0)]
 pub struct Workflow {
     /// What follows `flow:` in its flow label.
     pub name: String,
     pub max_rework: u64,
     pub max_consecutive_rework: u64,
-    #[field(Vec<Stage{v: v.n == n}>[n])]
+    #[field(Vec<Stage{v: v.n == n && v.roles == roles}>[n])]
     stages: Vec<Stage>,
     /// Who gates the PR and joins the landing train.
+    #[field(Option<Work[roles]>)]
     pub land: Option<Work>,
+    /// How many roles its team has.
+    #[field(usize[roles])]
+    roles: usize,
 }
 
 impl Workflow {
@@ -363,26 +410,26 @@ impl Workflow {
 
     /// The stage an issue entering the workflow is at. There is one, by the
     /// workflow's invariant.
-    #[spec(fn(&Workflow[@w]) -> &Stage{v: v.n == w.n})]
+    #[spec(fn(&Workflow[@w]) -> &Stage{v: v.n == w.n && v.roles == w.roles})]
     pub fn first(&self) -> &Stage {
         &self.stages[0]
     }
 
     /// The stage at a place the workflow has: where a `pass` or a `reject`
     /// of one of its stages leads.
-    #[spec(fn(&Workflow[@w], at: usize{at < w.n}) -> &Stage{v: v.n == w.n})]
+    #[spec(fn(&Workflow[@w], at: usize{at < w.n}) -> &Stage{v: v.n == w.n && v.roles == w.roles})]
     pub fn stage(&self, at: usize) -> &Stage {
         &self.stages[at]
     }
 
-    #[spec(fn(&Workflow[@w]) -> &[Stage{v: v.n == w.n}][w.n])]
+    #[spec(fn(&Workflow[@w]) -> &[Stage{v: v.n == w.n && v.roles == w.roles}][w.n])]
     pub fn stages(&self) -> &[Stage] {
         &self.stages
     }
 
     /// The place among the workflow's stages of the one `name` names; `None`
     /// when the workflow has no such stage.
-    #[spec(fn(&Workflow[@n], name: &str) -> Option<usize{v: v < n}>)]
+    #[spec(fn(&Workflow[@w], name: &str) -> Option<usize{v: v < w.n}>)]
     pub fn place_of(&self, name: &str) -> Option<usize> {
         let mut at = 0;
         while at < self.stages.len() {
@@ -397,7 +444,8 @@ impl Workflow {
 
 /// The one place a `Workflow` is built: one with no stage never gets out, nor
 /// one whose stages were made for a workflow of another number of them.
-#[spec(fn(String, u64, u64, Vec<Stage{v: v.n == n}>, n: usize, Option<Work>) -> Option<Workflow[n]>)]
+#[spec(fn(String, u64, u64, Vec<Stage{v: v.n == n && v.roles == roles}>, n: usize, Option<Work[roles]>, roles: usize)
+    -> Option<Workflow[n, roles]>)]
 fn workflow(
     name: String,
     max_rework: u64,
@@ -405,11 +453,12 @@ fn workflow(
     stages: Vec<Stage>,
     n: usize,
     land: Option<Work>,
+    roles: usize,
 ) -> Option<Workflow> {
     if n == 0 || stages.len() != n {
         return None;
     }
-    Some(Workflow { name, max_rework, max_consecutive_rework, stages, land })
+    Some(Workflow { name, max_rework, max_consecutive_rework, stages, land, roles })
 }
 
 /// `target` as where the stage at `at` may reject to: only a stage before it.
@@ -428,6 +477,13 @@ fn among(pass: Pass, n: usize) -> Option<Pass> {
         Pass::Land => Some(Pass::Land),
         Pass::Done => Some(Pass::Done),
     }
+}
+
+/// `work` as a skill of a role of a team of `roles` roles: `None` when it was
+/// read under another number of them.
+#[spec(fn(Work, roles: usize) -> Option<Work[roles]>)]
+fn among_roles(work: Work, roles: usize) -> Option<Work> {
+    if work.of == roles { Some(work) } else { None }
 }
 
 /// The repos a team file names as its roles: what to read before `load`. It
@@ -631,52 +687,69 @@ fn limit(report: &mut Report, at: &str, entries: &[(String, Node)]) -> Option<u6
     count(report, at, entries, "max_open", 0)
 }
 
-/// The roles a team file names.
+/// The roles a team file names, `n` of them with their repo read.
+#[refined_by(n: int)]
 struct Roles<'n> {
     /// Whether the team file could be read at all. Where it could not, a role
     /// a workflow names is neither confirmed nor reported.
     known: bool,
     /// Every name under `roles`.
     names: Vec<&'n str>,
-    /// The ones whose repo was read.
+    /// The ones whose repo was read: the roles of the team, once it loads.
+    #[field(Vec<Role>[n])]
     loaded: Vec<Role>,
+}
+
+impl Roles<'_> {
+    /// The place among the roles whose repo was read of the one `name` names.
+    #[spec(fn(&Roles[@n], name: &str) -> Option<usize{v: v < n}>)]
+    fn place_of(&self, name: &str) -> Option<usize> {
+        let mut at = 0;
+        while at < self.loaded.len() {
+            if self.loaded[at].name == name {
+                return Some(at);
+            }
+            at += 1;
+        }
+        None
+    }
 }
 
 /// Reads the team file → its escalate label and its roles.
 fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Roles<'n>) {
     let mut report = Report { file: &sources.team.path, faults };
-    let mut roles = Roles { known: false, names: vec![], loaded: vec![] };
+    let mut names: Vec<&str> = vec![];
+    let mut loaded: Vec<Role> = vec![];
     let mut escalate_label = ESCALATE_LABEL.to_string();
     let node = match &sources.team.yaml {
         Ok(node) => node,
         Err(why) => {
             report.fault("", why.clone());
-            return (escalate_label, roles);
+            return (escalate_label, Roles { known: false, names, loaded });
         }
     };
     let Some(entries) = map(&mut report, "", node, &TEAM_KEYS) else {
-        return (escalate_label, roles);
+        return (escalate_label, Roles { known: false, names, loaded });
     };
-    roles.known = true;
     if let Some(label) = text(&mut report, "", entries, "escalate_label") {
         escalate_label = label.to_string();
     }
     let named = match get(entries, "roles") {
-        None => return (escalate_label, roles),
+        None => return (escalate_label, Roles { known: true, names, loaded }),
         Some(Node::Map(named)) => named,
         Some(other) => {
             let problem = format!("must be a map of role names to repos, not {}", kind(other));
             report.fault("roles", problem);
-            return (escalate_label, roles);
+            return (escalate_label, Roles { known: true, names, loaded });
         }
     };
     for (name, repo) in named {
         let key = under("roles", name);
-        if roles.names.contains(&name.as_str()) {
+        if names.contains(&name.as_str()) {
             report.fault(&key, "written twice".to_string());
             continue;
         }
-        roles.names.push(name);
+        names.push(name);
         if name == HUMAN {
             report
                 .fault(&key, format!("a role cannot be named `{HUMAN}`: `by: {HUMAN}` is a human"));
@@ -696,7 +769,7 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
             }
         };
         match sources.repos.iter().find(|(read, _)| read == repo.as_str()) {
-            Some((_, Ok(read))) => roles.loaded.push(Role {
+            Some((_, Ok(read))) => loaded.push(Role {
                 name: name.clone(),
                 repo: repo.clone(),
                 commit: read.commit.clone(),
@@ -706,12 +779,13 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
             None => report.fault(&key, format!("{repo} was not read")),
         }
     }
-    (escalate_label, roles)
+    (escalate_label, Roles { known: true, names, loaded })
 }
 
 /// Reads the team file's `precedents` → who proposes a ruling as one;
 /// `Some(None)` where the file has no such key, `None` when the key is at
 /// fault. What is wrong with the file itself is `team_file`'s to say.
+#[spec(fn(&mut Vec<Fault>, &Sources, &Roles[@n]) -> Option<Option<Precedents[n]>>)]
 fn precedents_key(
     faults: &mut Vec<Fault>,
     sources: &Sources,
@@ -728,7 +802,9 @@ fn precedents_key(
 
 /// The skill `skill_key` names of the role `role_key` names, both under `at`.
 /// `None` when either is missing or does not exist — reported, unless the
-/// team file already says why the role cannot be had.
+/// team file already says why the role cannot be had. The role is kept as its
+/// place among the roles whose repo was read.
+#[spec(fn(&mut Report, &Roles[@n], &str, &[(String, Node)], (&str, &str)) -> Option<Work[n]>)]
 fn work(
     report: &mut Report,
     roles: &Roles,
@@ -752,7 +828,8 @@ fn work(
         report.fault(&under(at, role_key), problem);
         return None;
     }
-    let loaded = roles.loaded.iter().find(|loaded| loaded.name == role)?;
+    let place = roles.place_of(role)?;
+    let loaded = &roles.loaded[place];
     let skill = skill?;
     if !loaded.skills.iter().any(|has| has == skill) {
         let problem = format!(
@@ -762,7 +839,7 @@ fn work(
         report.fault(&under(at, skill_key), problem);
         return None;
     }
-    Some(Work { role: role.to_string(), skill: skill.to_string() })
+    Some(Work { role: place, of: roles.loaded.len(), skill: skill.to_string() })
 }
 
 /// One stage as its file wrote it, its targets still names.
@@ -896,8 +973,25 @@ fn follow_pass(edges: &[Edges], from: usize) -> Leads {
     Leads::Round
 }
 
+/// Reads a workflow file's `land` → who lands; `Some(None)` where the file has
+/// no such key, `None` when the key is at fault.
+#[spec(fn(&mut Report, &Roles[@n], &[(String, Node)]) -> Option<Option<Work[n]>>)]
+fn land_key(
+    report: &mut Report,
+    roles: &Roles,
+    entries: &[(String, Node)],
+) -> Option<Option<Work>> {
+    let node = match get(entries, LAND) {
+        Some(node) => node,
+        None => return Some(None),
+    };
+    let entries = map(report, LAND, node, &LAND_KEYS)?;
+    work(report, roles, LAND, entries, ("by", "do")).map(Some)
+}
+
 /// Reads one entry of the workflows directory → the workflow it defines, when
 /// nothing is wrong with it.
+#[spec(fn(&mut Report, &File, &Roles[@n]) -> Option<Workflow{v: v.roles == n}>)]
 fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Workflow> {
     let Some(name) = workflow_name(&file.path) else {
         report.fault(
@@ -917,13 +1011,7 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
     let max_rework = count(report, "", entries, "max_rework", MAX_REWORK);
     let max_consecutive_rework =
         count(report, "", entries, "max_consecutive_rework", MAX_CONSECUTIVE_REWORK);
-    let land = match get(entries, LAND) {
-        None => Some(None),
-        Some(node) => match map(report, LAND, node, &LAND_KEYS) {
-            Some(entries) => work(report, roles, LAND, entries, ("by", "do")).map(Some),
-            None => None,
-        },
-    };
+    let land = land_key(report, roles, entries);
     let listed = match get(entries, "stages") {
         Some(Node::List(listed)) if !listed.is_empty() => listed,
         Some(Node::List(_)) => {
@@ -1026,6 +1114,24 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
         _ => {}
     }
 
+    let roles = roles.loaded.len();
+    built(name, max_rework?, max_consecutive_rework?, drafts, edges, land?, roles)
+}
+
+/// The workflow `name` of a team of `roles` roles that the drafts of its
+/// stages make, each with where its verdicts lead: `None` when one of them
+/// has something wrong in it, which was reported as it was read.
+#[spec(fn(&str, u64, u64, Vec<Option<Draft>>, Vec<Edges>, Option<Work[roles]>, roles: usize)
+    -> Option<Workflow{v: v.roles == roles}>)]
+fn built(
+    name: &str,
+    max_rework: u64,
+    max_consecutive_rework: u64,
+    drafts: Vec<Option<Draft>>,
+    edges: Vec<Edges>,
+    land: Option<Work>,
+    roles: usize,
+) -> Option<Workflow> {
     let n = drafts.len();
     let mut stages: Vec<Stage> = vec![];
     for (at, (draft, edges)) in drafts.into_iter().zip(edges).enumerate() {
@@ -1039,13 +1145,14 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
         if draft.reject.is_some() && reject.is_none() {
             return None;
         }
-        stages.push(stage(draft, at, n, among(edges.pass?, n)?, reject)?);
+        stages.push(stage(draft, at, n, roles, among(edges.pass?, n)?, reject)?);
     }
-    workflow(name.to_string(), max_rework?, max_consecutive_rework?, stages, n, land?)
+    workflow(name.to_string(), max_rework, max_consecutive_rework, stages, n, land, roles)
 }
 
 /// Reads one entry of the patrols directory → the patrol it defines, when
 /// nothing is wrong with it.
+#[spec(fn(&mut Report, &File, &Roles[@n]) -> Option<Patrol[n]>)]
 fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol> {
     let Some(name) = patrol_name(&file.path) else {
         report.fault(
@@ -1091,21 +1198,38 @@ fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol
 }
 
 /// The stage a draft with nothing wrong in it is, at the place `at` of a
-/// workflow of `n` stages: `None` when that is no place of such a workflow.
-#[spec(fn(Draft, at: usize, n: usize, Pass{v: v.to_stage => v.to < n}, Option<usize{v: v < at}>)
-    -> Option<Stage[at, n]>)]
-fn stage(draft: Draft, at: usize, n: usize, pass: Pass, reject: Option<usize>) -> Option<Stage> {
+/// workflow of `n` stages, of a team of `roles` roles: `None` when that is no
+/// place of such a workflow, or the draft was read under other roles.
+#[spec(fn(Draft, at: usize, n: usize, roles: usize, Pass{v: v.to_stage => v.to < n}, Option<usize{v: v < at}>)
+    -> Option<Stage[at, n, roles]>)]
+fn stage(
+    draft: Draft,
+    at: usize,
+    n: usize,
+    roles: usize,
+    pass: Pass,
+    reject: Option<usize>,
+) -> Option<Stage> {
     if at >= n {
         return None;
     }
+    let by = match draft.by? {
+        Performer::Human => Performer::Human,
+        Performer::Role(work) => Performer::Role(among_roles(work, roles)?),
+    };
+    let consult = match draft.consult? {
+        Some(work) => Some(among_roles(work, roles)?),
+        None => None,
+    };
     Some(Stage {
         name: draft.name?.to_string(),
-        by: draft.by?,
+        by,
         model: draft.model,
         writes: draft.writes?,
-        consult: draft.consult?,
+        consult,
         at,
         of: n,
+        roles,
         pass,
         reject,
     })
@@ -1119,18 +1243,25 @@ mod rejected {
     /// A workflow with no stage.
     #[should_fail]
     fn a_workflow_with_no_stage(name: String) -> Workflow {
-        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages: Vec::new(), land: None }
+        Workflow {
+            name,
+            max_rework: 0,
+            max_consecutive_rework: 0,
+            stages: Vec::new(),
+            land: None,
+            roles: 0,
+        }
     }
 
     /// Whatever stages were listed, taken as a workflow without a look.
     #[should_fail]
     fn a_workflow_of_whatever_was_listed(name: String, stages: Vec<Stage>) -> Workflow {
-        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages, land: None }
+        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages, land: None, roles: 0 }
     }
 
     /// A `pass` past the last stage of a workflow.
     #[should_fail]
-    #[spec(fn(String, n: usize{n > 0}) -> Stage[0, n])]
+    #[spec(fn(String, n: usize{n > 0}) -> Stage[0, n, 0])]
     fn a_pass_past_the_last_stage(name: String, n: usize) -> Stage {
         Stage {
             name,
@@ -1140,6 +1271,7 @@ mod rejected {
             consult: None,
             at: 0,
             of: n,
+            roles: 0,
             pass: Pass::Stage(n),
             reject: None,
         }
@@ -1155,6 +1287,19 @@ mod rejected {
     #[should_fail]
     fn a_place_past_the_stages(workflow: &Workflow, at: usize) -> &Stage {
         workflow.stage(at)
+    }
+
+    /// A role kept as at the number of roles: one past the last.
+    #[should_fail]
+    fn a_role_at_the_number_of_roles(skill: String, roles: usize) -> Work {
+        Work { role: roles, of: roles, skill }
+    }
+
+    /// A role read for whatever skill it is, of a role of this team or past
+    /// its roles.
+    #[should_fail]
+    fn a_role_read_past_the_teams_roles<'t>(team: &'t Team, work: &Work) -> &'t Role {
+        team.role_of(work)
     }
 }
 
@@ -1207,6 +1352,14 @@ land: { by: dev, do: land }
         }
     }
 
+    /// The skill `skill` of the usual team's role at `role`: `dev` is its
+    /// first, `reviewer` its second.
+    fn work(role: usize, skill: &str) -> Work {
+        Work { role, of: 2, skill: skill.to_string() }
+    }
+    const DEV: usize = 0;
+    const REVIEWER: usize = 1;
+
     /// The usual team with `workflow` as its one workflow, `feature`.
     pub(crate) fn one(workflow: &str) -> Team {
         load(&sources(TEAM, &[("workflows/feature.md", workflow)])).unwrap()
@@ -1249,7 +1402,7 @@ land: { by: dev, do: land }
         let nightly = "by: reviewer\ndo: review\nevery: 1d\nmax_open: 0\n";
         let team =
             patrolled(&[("patrols/sweep.md", sweep), ("patrols/nightly-x2.md", nightly)]).unwrap();
-        let work = Work { role: "dev".to_string(), skill: "plan".to_string() };
+        let work = work(DEV, "plan");
         assert_eq!(
             team.patrol("sweep"),
             Some(&Patrol {
@@ -1278,7 +1431,7 @@ land: { by: dev, do: land }
         assert_eq!(without.precedents, None);
         let named = format!("{TEAM}precedents: {{ by: reviewer, do: rule, max_open: 4 }}\n");
         let with = load(&sources(&named, &[])).unwrap();
-        let work = Work { role: "reviewer".to_string(), skill: "rule".to_string() };
+        let work = work(REVIEWER, "rule");
         assert_eq!(with.precedents, Some(Precedents { work, max_open: 4 }));
 
         let keys = |precedents: &str| -> Vec<String> {
@@ -1352,13 +1505,12 @@ land: { by: dev, do: land }
         let flow = team.workflow("feature").unwrap();
         assert_eq!(flow.flow_label(), "flow:feature");
         assert_eq!(flow.first().name, "plan");
-        let work = |role: &str, skill: &str| Work { role: role.into(), skill: skill.into() };
-        assert_eq!(flow.land, Some(work("dev", "land")));
+        assert_eq!(flow.land, Some(work(DEV, "land")));
         let [plan, build, review, sign_off] = flow.stages() else { panic!("four stages") };
         assert_eq!((plan.at(), plan.pass(), plan.reject()), (0, Pass::Stage(1), None));
-        assert_eq!(build.by, Performer::Role(work("dev", "implement")));
+        assert_eq!(build.by, Performer::Role(work(DEV, "implement")));
         assert_eq!(build.model.as_deref(), Some("opus"));
-        assert_eq!(build.consult, Some(work("reviewer", "rule")));
+        assert_eq!(build.consult, Some(work(REVIEWER, "rule")));
         assert!(build.writes && !review.writes, "a stage writes unless it says not");
         assert_eq!((review.pass(), review.reject()), (Pass::Stage(3), Some(1)));
         assert_eq!(sign_off.by, Performer::Human);

@@ -11,7 +11,7 @@ use std::fmt::Write;
 
 use afkconvoy_core::plan::{Excluded, Status, WorkingSet};
 use afkconvoy_core::position::Position;
-use afkconvoy_core::team::{LAND, Performer, Workflow};
+use afkconvoy_core::team::{LAND, Performer, Team, Work, Workflow};
 use afkconvoy_core::tick::{Outcome, TickStep};
 use afkconvoy_core::worker::WorkerState;
 
@@ -119,7 +119,8 @@ pub struct Seen<'a> {
     pub set: &'a WorkingSet,
     /// Whether the repo names a team: an unbound one has the one fixed lane.
     pub bound_repo: bool,
-    pub workflows: &'a [Workflow],
+    /// The team; none where no team was read, or it did not load.
+    pub team: Option<&'a Team>,
     pub positions: &'a [(u64, &'a Workflow, Position<'a>)],
     /// The state of the worker of each claim of mine that was asked after.
     pub workers: &'a [(u64, WorkerState)],
@@ -127,25 +128,27 @@ pub struct Seen<'a> {
     pub did: &'a [(TickStep, Outcome)],
 }
 
-fn lane_of(workflow: &Workflow) -> Lane {
+fn lane_of(team: &Team, workflow: &Workflow) -> Lane {
+    let said = |work: &Work| format!("{}: {}", team.role_of(work).name, work.skill);
     let mut nodes: Vec<Node> = vec![];
     for stage in workflow.stages() {
         let by = match &stage.by {
             Performer::Human => "a human".to_string(),
-            Performer::Role(work) => format!("{}: {}", work.role, work.skill),
+            Performer::Role(work) => said(work),
         };
         let human = stage.by == Performer::Human;
         nodes.push(Node { human, ..Node::new(&stage.name, by) });
     }
     if let Some(land) = &workflow.land {
-        nodes.push(Node::new(LAND, format!("{}: {}", land.role, land.skill)));
+        nodes.push(Node::new(LAND, said(land)));
     }
     Lane { name: workflow.name.clone(), nodes }
 }
 
 fn lanes(seen: &Seen) -> Vec<Lane> {
     if seen.bound_repo {
-        return seen.workflows.iter().map(lane_of).collect();
+        let Some(team) = seen.team else { return vec![] };
+        return team.workflows.iter().map(|workflow| lane_of(team, workflow)).collect();
     }
     let nodes = vec![
         Node::new(WORK, "one worker writes the PR".to_string()),
@@ -382,7 +385,7 @@ pub fn read(
     let seen = Seen {
         set,
         bound_repo: fleet.config.bound.is_some(),
-        workflows: flows.workflows(),
+        team: flows.team().ok(),
         positions: &flows.positions(),
         workers: &workers,
         did,

@@ -4,7 +4,7 @@
 
 use afkconvoy_core::graph;
 use afkconvoy_core::position::{Declared, Place, Position};
-use afkconvoy_core::team::{HUMAN, Workflow};
+use afkconvoy_core::team::{HUMAN, Team, Workflow};
 use anyhow::{Result, bail};
 use serde_json::{Map, Value, json};
 
@@ -26,8 +26,8 @@ fn named<'t>(loaded: &'t Loaded, name: &str) -> Result<&'t Workflow> {
 /// team, a blank line between two.
 pub fn show(loaded: &Loaded, name: Option<&str>) -> Result<String> {
     let drawn: Vec<String> = match name {
-        Some(name) => vec![graph::draw(named(loaded, name)?)],
-        None => loaded.team.workflows.iter().map(graph::draw).collect(),
+        Some(name) => vec![graph::draw(&loaded.team, named(loaded, name)?)],
+        None => loaded.team.workflows.iter().map(|flow| graph::draw(&loaded.team, flow)).collect(),
     };
     if drawn.is_empty() {
         bail!("the team {} has no workflow to draw", loaded.name);
@@ -40,7 +40,7 @@ pub fn show(loaded: &Loaded, name: Option<&str>) -> Result<String> {
 pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Value> {
     let workflow = named(loaded, name)?;
     let mut place = Place::enter(workflow);
-    let enters = position(workflow, place.position);
+    let enters = position(&loaded.team, workflow, place.position);
     let mut steps: Vec<Value> = vec![];
     for declared in declared {
         let stage = place.position.stage().map(|stage| stage.name.as_str());
@@ -60,7 +60,7 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
             "stage": stage,
             "valid": valid,
             "breaker": breaker,
-            "position": position(workflow, next.position),
+            "position": position(&loaded.team, workflow, next.position),
             "rework": next.rework(),
             "consecutive_rework": in_a_row,
         }));
@@ -72,13 +72,13 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
         "max_consecutive_rework": workflow.max_consecutive_rework,
         "enters": enters,
         "steps": steps,
-        "ends": position(workflow, place.position),
+        "ends": position(&loaded.team, workflow, place.position),
     }))
 }
 
 /// A position as a command answers it: what it is, at which stage, and who
 /// acts on it.
-pub(crate) fn position(workflow: &Workflow, position: Position) -> Value {
+pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> Value {
     let is = match position {
         Position::Perform(..) => "perform",
         Position::Waiting(_) => "waiting",
@@ -94,7 +94,7 @@ pub(crate) fn position(workflow: &Workflow, position: Position) -> Value {
     };
     let by = match position {
         Position::Waiting(_) | Position::Escalating(..) => Some(HUMAN),
-        _ => worker.map(|work| work.role.as_str()),
+        _ => worker.map(|work| team.role_of(work).name.as_str()),
     };
     let reason = match position {
         Position::Escalating(stage, reason) => Some(reason.said(stage)),
