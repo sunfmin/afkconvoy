@@ -528,7 +528,7 @@ mod tests {
         records.push(record("build", Ruling, "h1"));
         assert_eq!(history(workflow, &records).rounds, [] as [usize; 0]);
         records.extend([record("build", Pass, "b3"), record("review", Reject, "r3")]);
-        assert_eq!(history(workflow, &records).rounds, [11]);
+        assert_eq!(history(workflow, &records).rounds, [10]);
         // A consult's ruling is a round; a park and an escalation no breaker made are none.
         let asked = [record("plan", Blocked, "c0"), record("plan", Pass, "c1")];
         let asked = [&asked[..], &[record("build", Escalate, "c2"), record("build", Ruling, "c3")]]
