@@ -61,9 +61,27 @@ pub fn last_word(
     pr: Option<u64>,
     blocked_by: &[u64],
 ) -> Result<()> {
-    let instance = claim.owner.as_ref().map(|owner| owner.instance.as_str()).unwrap_or("unknown");
-    post(fleet, claim, &Board { instance, stage, pr, blocked_by })?;
+    let instance = instance_of(claim);
+    post(fleet, claim, &Board { instance, stage, pr, blocked_by, waits_at: None })?;
     Ok(())
+}
+
+/// The last word of a claim whose stage declared. `waits_at` is the stage
+/// the verdict left the issue at, when that is a human's: the board says who
+/// the issue waits for.
+pub fn declared(
+    fleet: &Fleet,
+    claim: &Claim,
+    pr: Option<u64>,
+    waits_at: Option<&str>,
+) -> Result<()> {
+    let (instance, stage) = (instance_of(claim), Stage::Declared);
+    post(fleet, claim, &Board { instance, stage, pr, blocked_by: &[], waits_at })?;
+    Ok(())
+}
+
+fn instance_of(claim: &Claim) -> &str {
+    claim.owner.as_ref().map(|owner| owner.instance.as_str()).unwrap_or("unknown")
 }
 
 /// The tick's step: show a claim of mine in `stage`. A claim that is no
@@ -73,6 +91,7 @@ pub fn show(fleet: &Fleet, me: &Me, issue: u64, stage: Stage, pr: Option<u64>) -
     let Some(claim) = mine(fleet, me, issue).ok().flatten() else {
         return Ok(Outcome::Nothing);
     };
-    let board = Board { instance: me.instance.as_str(), stage, pr, blocked_by: &[] };
+    let board =
+        Board { instance: me.instance.as_str(), stage, pr, blocked_by: &[], waits_at: None };
     Ok(if post(fleet, &claim, &board)? { Outcome::Done } else { Outcome::Nothing })
 }

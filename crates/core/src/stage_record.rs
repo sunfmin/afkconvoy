@@ -1,12 +1,13 @@
-//! The stage record: the one comment a stage leaves on its issue, what an
-//! issue's records say of where it is, and what they call for of the claim a
-//! stage was dispatched under (docs/adr/0010). The comment's format has this
-//! one home: only the fleet's commands write it, and nothing else reads it.
+//! The stage record: the one comment a stage — or a human who steers the
+//! issue — leaves on it, what an issue's records say of where it is, and what
+//! they call for of the claim a stage was dispatched under (docs/adr/0010).
+//! The comment's format has this one home: only the fleet's commands write
+//! it, and nothing else reads it.
 
 use crate::position::{Declared, Place, Position, Reason};
 use crate::prompt::quoted;
 use crate::record;
-use crate::team::{LAND, Workflow};
+use crate::team::{HUMAN, LAND, Workflow};
 
 /// The kind of record a stage record's comment opens with.
 pub const STAGE_RECORD: &str = "convoy:stage";
@@ -14,46 +15,129 @@ pub const STAGE_RECORD: &str = "convoy:stage";
 /// for humans to filter by and never read back.
 pub const STAGE_LABEL: &str = "stage:";
 
-/// What one stage left on its issue.
+/// What a stage record states of its stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stated {
+    /// What ended the stage, or answered its escalation.
+    Declared(Declared),
+    /// A human sent the issue to the stage.
+    Sent,
+}
+
+impl Stated {
+    pub fn word(self) -> &'static str {
+        match self {
+            Stated::Declared(declared) => declared.word(),
+            Stated::Sent => "sent",
+        }
+    }
+
+    pub fn read(word: &str) -> Option<Stated> {
+        if word == Stated::Sent.word() {
+            return Some(Stated::Sent);
+        }
+        Declared::read(word).map(Stated::Declared)
+    }
+}
+
+/// Who left a stage record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Author {
+    /// The worker of the stage.
+    Worker {
+        /// The claim it declared under: the commit of the claim's ref, which
+        /// is written once.
+        claim: String,
+        /// The commits of the role's repo and of the team's the stage ran under.
+        role_commit: String,
+        team_commit: String,
+    },
+    /// A human, through the fleet, on an issue nobody held.
+    Human,
+}
+
+impl Author {
+    pub fn word(&self) -> &'static str {
+        match self {
+            Author::Worker { .. } => "worker",
+            Author::Human => HUMAN,
+        }
+    }
+}
+
+/// What one stage, or a human who steered the issue, left on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageRecord {
-    /// The name of the stage that declared it.
+    /// The name of the stage it is about: the one that declared, was ruled
+    /// on, or was sent to.
     pub stage: String,
-    pub declared: Declared,
-    /// The claim it was declared under: the commit of the claim's ref, which
-    /// is written once.
-    pub claim: String,
-    /// The commits of the role's repo and of the team's the stage ran under.
-    pub role_commit: String,
-    pub team_commit: String,
+    pub stated: Stated,
+    pub by: Author,
     /// The issues a `blocked` verdict says it waits on.
     pub blocked_by: Vec<u64>,
-    /// What the stage produced, as its worker wrote it.
+    /// What the stage produced, as its worker wrote it; of a human, what
+    /// they ruled or why they sent the issue.
     pub text: String,
 }
 
 impl StageRecord {
+    /// The claim a worker declared it under; `None` of a human's.
+    pub fn claim(&self) -> Option<&str> {
+        match &self.by {
+            Author::Worker { claim, .. } => Some(claim),
+            Author::Human => None,
+        }
+    }
+
+    /// Whether a human ruled or sent with it: what puts the issue at its
+    /// stage, to be performed under what it says.
+    pub fn puts(&self) -> bool {
+        match (&self.by, self.stated) {
+            (Author::Human, Stated::Declared(Declared::Ruling)) | (_, Stated::Sent) => true,
+            (..) => false,
+        }
+    }
+
+    /// The record in a few words, as a human and a later stage's worker read it.
+    pub fn headline(&self) -> String {
+        let (stage, word) = (&self.stage, self.stated.word());
+        match (&self.by, self.stated) {
+            (_, Stated::Sent) => format!("a human sent this issue to the stage `{stage}`"),
+            (Author::Human, Stated::Declared(Declared::Ruling)) => {
+                format!("a human ruled on the stage `{stage}`, which runs again under the ruling")
+            }
+            (Author::Human, Stated::Declared(_)) => {
+                format!("a human declared `{word}` for the stage `{stage}`")
+            }
+            (Author::Worker { .. }, Stated::Declared(_)) => {
+                format!("the stage `{stage}` declared `{word}`")
+            }
+        }
+    }
+
     /// The comment that carries the record: its marker, a line for a human,
     /// then the text.
     pub fn comment(&self) -> String {
         let blocked_by: Vec<String> = self.blocked_by.iter().map(u64::to_string).collect();
+        let (claim, role_commit, team_commit, by) = match &self.by {
+            Author::Worker { claim, role_commit, team_commit } => {
+                (claim.as_str(), role_commit.as_str(), team_commit.as_str(), "")
+            }
+            Author::Human => ("", "", "", HUMAN),
+        };
         let marker = record::marker(
             STAGE_RECORD,
             &[
                 ("stage", &self.stage),
-                ("verdict", self.declared.word()),
-                ("claim", &self.claim),
-                ("role_commit", &self.role_commit),
-                ("team_commit", &self.team_commit),
+                ("verdict", self.stated.word()),
+                ("by", by),
+                ("claim", claim),
+                ("role_commit", role_commit),
+                ("team_commit", team_commit),
                 ("blocked_by", &blocked_by.join(",")),
             ],
         );
-        format!(
-            "{marker}\n**afkconvoy** — the stage `{}` declared `{}`.\n\n{}",
-            self.stage,
-            self.declared.word(),
-            self.text.trim()
-        )
+        format!("{marker}\n**afkconvoy** — {}.\n\n{}", self.headline(), self.text.trim())
     }
 
     /// The record a comment carries; `None` when it is no stage record: it
@@ -63,12 +147,19 @@ impl StageRecord {
         let (marker, rest) = body.strip_prefix("<!--")?.split_once("-->")?;
         let fields = record::read(STAGE_RECORD, marker)?;
         let text = rest.split_once("\n\n").map_or("", |(_, text)| text);
+        let by = match fields.get("by") {
+            Some(HUMAN) => Author::Human,
+            Some(_) => return None,
+            None => Author::Worker {
+                claim: fields.get("claim")?.to_string(),
+                role_commit: fields.get("role_commit")?.to_string(),
+                team_commit: fields.get("team_commit")?.to_string(),
+            },
+        };
         Some(StageRecord {
             stage: fields.get("stage")?.to_string(),
-            declared: Declared::read(fields.get("verdict")?)?,
-            claim: fields.get("claim")?.to_string(),
-            role_commit: fields.get("role_commit")?.to_string(),
-            team_commit: fields.get("team_commit")?.to_string(),
+            stated: Stated::read(fields.get("verdict")?)?,
+            by,
             blocked_by: fields.numbers("blocked_by"),
             text: text.to_string(),
         })
@@ -90,8 +181,11 @@ pub fn stage_records<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<(usiz
 /// How one stage record reads among those before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reading {
-    /// It is the verdict of the stage its claim was dispatched to.
+    /// It is the verdict of the stage its claim was dispatched to, or what a
+    /// human declared or ruled at the stage the issue was at.
     Verdict,
+    /// A human sent the issue to its stage.
+    Sent,
     /// Its stage is not the one the issue was at: not the stage dispatched
     /// under its claim, so not a verdict.
     OtherStage,
@@ -107,6 +201,7 @@ impl Reading {
     pub fn word(self) -> &'static str {
         match self {
             Reading::Verdict => "verdict",
+            Reading::Sent => "sent",
             Reading::OtherStage => "other-stage",
             Reading::UnknownStage => "unknown-stage",
             Reading::ClaimSpent => "claim-spent",
@@ -122,17 +217,20 @@ pub struct History<'w> {
     /// How each record read, in the records' order.
     pub readings: Vec<Reading>,
     /// Which records are the issue's rework since it entered or a human last
-    /// ruled, oldest first: each rejection and each consult's ruling the
+    /// put it at a stage, oldest first: each rejection and each consult's ruling the
     /// breakers counted, and the one a breaker refused.
     pub rounds: Vec<usize>,
 }
 
 /// Where an issue of `workflow` is, given its stage records, oldest first. A
 /// claim is dispatched to the stage the issue is at when it is taken, so a
-/// record is a verdict only when it names that stage and is the first under
-/// its claim. A record naming a stage the workflow does not have escalates
-/// the issue: the workflow changed, and nothing is guessed (docs/adr/0010).
-/// Every other record changes nothing.
+/// worker's record is a verdict only when it names that stage and is the
+/// first under its claim. A human declares and rules at the stage the issue
+/// is at, and sends it to any stage; ruling and sending put the issue at the
+/// stage, to be performed, with both rework counts started over. A record
+/// naming a stage the workflow does not have escalates the issue: the
+/// workflow changed, and nothing is guessed (docs/adr/0010). Every other
+/// record changes nothing.
 pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'w> {
     let mut place = Place::enter(workflow);
     let mut spent: Vec<&str> = vec![];
@@ -140,10 +238,14 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
     let mut rounds = vec![];
     for (nth, record) in records.iter().enumerate() {
         let at = place.position.stage();
-        let known = workflow.stages().iter().any(|stage| stage.name == record.stage);
-        let reading = if spent.contains(&record.claim.as_str()) {
+        let named = workflow.stages().iter().find(|stage| stage.name == record.stage);
+        let reading = if record.claim().is_some_and(|claim| spent.contains(&claim)) {
             Reading::ClaimSpent
-        } else if !known {
+        } else if let Some(stage) = named.filter(|_| record.stated == Stated::Sent) {
+            place = place.put(stage);
+            rounds.clear();
+            Reading::Sent
+        } else if named.is_none() {
             // An issue already with a human, or past its stages, stays as it is.
             if let Some(stage) = at
                 && !matches!(place.position, Position::Escalating(..))
@@ -153,11 +255,19 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
             Reading::UnknownStage
         } else if at.map(|stage| stage.name.as_str()) != Some(record.stage.as_str()) {
             Reading::OtherStage
-        } else {
-            spent.push(&record.claim);
+        } else if let Some(stage) = at.filter(|_| record.puts()) {
+            // A human rules wherever the issue stopped: an escalation is not
+            // always one its records show.
+            place = place.put(stage);
+            rounds.clear();
+            Reading::Verdict
+        } else if let Stated::Declared(declared) = record.stated {
+            if let Some(claim) = record.claim() {
+                spent.push(claim);
+            }
             let before = place.position;
             let had = place.rework();
-            place = place.after(record.declared);
+            place = place.after(declared);
             // The counts are the one account of what is rework: a round is
             // what raised the total, or what a breaker refused to count. A
             // human's ruling starts the rounds over with the counts.
@@ -170,6 +280,9 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
                 rounds.push(nth);
             }
             Reading::Verdict
+        } else {
+            // A sending: read above, whatever stage it names.
+            Reading::Sent
         };
         readings.push(reading);
     }
@@ -183,7 +296,7 @@ impl History<'_> {
     pub fn verdict_under(&self, records: &[StageRecord], claim: &str) -> Option<usize> {
         for (at, record) in records.iter().enumerate() {
             let verdict = self.readings.get(at) == Some(&Reading::Verdict);
-            if verdict && record.claim == claim {
+            if verdict && record.claim() == Some(claim) {
                 return Some(at);
             }
         }
@@ -205,7 +318,7 @@ impl History<'_> {
         for nth in &self.rounds {
             let Some(record) = records.get(*nth) else { continue };
             round = round.saturating_add(1);
-            let (stage, declared) = (&record.stage, record.declared.word());
+            let (stage, declared) = (&record.stage, record.stated.word());
             said.push_str(&format!("\n\n{round}. `{stage}` declared `{declared}`"));
             if let Some(url) = urls.get(*nth) {
                 said.push_str(&format!(" — {url}"));
@@ -253,7 +366,9 @@ pub fn advance(history: &History, records: &[StageRecord], claim: &str) -> Advan
     };
     match position {
         Position::Parked(_) => Advance::Blocked(verdict.blocked_by.clone()),
-        Position::Ended if verdict.declared == Declared::AlreadySatisfied => Advance::Close,
+        Position::Ended if verdict.stated == Stated::Declared(Declared::AlreadySatisfied) => {
+            Advance::Close
+        }
         Position::Ended => Advance::End,
         _ => Advance::HandOn,
     }
@@ -295,6 +410,7 @@ pub fn label_moves(labels: &[String], position: Position) -> LabelMoves {
 
 #[cfg(test)]
 mod tests {
+    use super::Author::Human;
     use super::*;
     use crate::position::Declared::*;
     use crate::team::tests::{FEATURE, one};
@@ -302,13 +418,21 @@ mod tests {
     fn record(stage: &str, declared: Declared, claim: &str) -> StageRecord {
         StageRecord {
             stage: stage.to_string(),
-            declared,
-            claim: claim.to_string(),
-            role_commit: "r1".to_string(),
-            team_commit: "t1".to_string(),
+            stated: Stated::Declared(declared),
+            by: Author::Worker {
+                claim: claim.to_string(),
+                role_commit: "r1".to_string(),
+                team_commit: "t1".to_string(),
+            },
             blocked_by: vec![],
             text: format!("{stage} is done"),
         }
+    }
+
+    /// What a human left about `stage` with no claim: a verdict, a ruling,
+    /// or a sending.
+    fn human(stage: &str, stated: Stated) -> StageRecord {
+        StageRecord { stated, by: Author::Human, ..record(stage, Pass, "") }
     }
 
     fn labels(labels: &[&str]) -> Vec<String> {
@@ -317,19 +441,42 @@ mod tests {
 
     #[test]
     fn a_record_reads_back_from_its_comment() {
-        for declared in Declared::ALL {
+        let worker = Author::Worker {
+            claim: "c0ffee".to_string(),
+            role_commit: "abc".to_string(),
+            team_commit: "def".to_string(),
+        };
+        let stated = Declared::ALL.into_iter().map(Stated::Declared).chain([Stated::Sent]);
+        for (stated, by) in stated.flat_map(|stated| [(stated, worker.clone()), (stated, Human)]) {
             let written = StageRecord {
                 stage: "sign off".to_string(),
-                declared,
-                claim: "c0ffee".to_string(),
-                role_commit: "abc".to_string(),
-                team_commit: "def".to_string(),
+                stated,
+                by,
                 blocked_by: vec![41, 42],
                 text: "## Plan\n\nTwo steps.\n\n<!--convoy:stage stage=x-->\nand `-->`".to_string(),
             };
             let comment = written.comment();
             assert_eq!(StageRecord::read(&comment), Some(written), "{comment}");
         }
+    }
+
+    #[test]
+    fn a_human_s_record_names_no_claim_and_says_so_to_a_human() {
+        let ruled = human("build", Stated::Declared(Ruling)).comment();
+        assert_eq!(
+            ruled,
+            "<!--convoy:stage stage=build verdict=ruling by=human-->\n**afkconvoy** — a human \
+             ruled on the stage `build`, which runs again under the ruling.\n\nbuild is done"
+        );
+        let passed = human("sign-off", Stated::Declared(Pass)).headline();
+        assert_eq!(passed, "a human declared `pass` for the stage `sign-off`");
+        let sent = human("plan", Stated::Sent).comment();
+        assert!(sent.starts_with("<!--convoy:stage stage=plan verdict=sent by=human-->\n"));
+        assert!(sent.contains("a human sent this issue to the stage `plan`."), "{sent}");
+        // Whoever else a marker names is nobody the fleet writes for.
+        assert_eq!(StageRecord::read(&ruled.replace("by=human", "by=robot")), None);
+        assert_eq!(human("plan", Stated::Sent).claim(), None);
+        assert_eq!((Author::Human.word(), record("a", Pass, "c").by.word()), ("human", "worker"));
     }
 
     #[test]
@@ -356,7 +503,7 @@ mod tests {
         assert_eq!(StageRecord::read(&comment.replace("verdict=pass", "verdict=done")), None);
         // What a human reads is not what is parsed.
         let reworded = comment.replace("declared `pass`", "declared `reject`");
-        assert_eq!(StageRecord::read(&reworded).unwrap().declared, Pass);
+        assert_eq!(StageRecord::read(&reworded).unwrap().stated, Stated::Declared(Pass));
         let found = stage_records(["chat", comment.as_str(), "more chat", comment.as_str()]);
         assert_eq!(found.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [1, 3]);
     }
@@ -536,6 +683,87 @@ mod tests {
         assert_eq!(history(workflow, &asked).rounds, [3]);
         let stuck = [record("plan", Escalate, "c1")];
         assert_eq!(history(workflow, &stuck).rounds_said(&stuck, &[]), None);
+    }
+
+    #[test]
+    fn a_human_declares_the_verdict_of_a_stage_under_no_claim() {
+        let reviewed =
+            [record("plan", Pass, "c1"), record("build", Pass, "c2"), record("review", Pass, "c3")];
+        assert_eq!(after(&reviewed).0, "stage:sign-off");
+        let pass = Stated::Declared(Pass);
+        let signed = [&reviewed[..], &[human("sign-off", pass)]].concat();
+        assert_eq!(after(&signed).0, "stage:land");
+        assert_eq!(after(&signed).1.last(), Some(&"verdict"));
+        // A human's stage may reject, and that is rework like any rejection.
+        let back = [&reviewed[..], &[human("sign-off", Stated::Declared(Reject))]].concat();
+        assert_eq!(after(&back).0, "stage:plan");
+        let team = one(FEATURE);
+        let read = history(team.workflow("feature").unwrap(), &back);
+        assert_eq!((read.place.rework(), &read.rounds[..]), (1, &[3][..]));
+        // Each of a human's records counts: none is under a claim to be spent.
+        let twice = [human("plan", pass), human("build", pass)];
+        assert_eq!(after(&twice), ("stage:review".to_string(), vec!["verdict", "verdict"]));
+        // …but only at the stage the issue is at.
+        assert_eq!(after(&[human("review", pass)]).1, ["other-stage"]);
+    }
+
+    #[test]
+    fn a_human_s_ruling_runs_the_stage_again_wherever_the_issue_stopped() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let ruling = Stated::Declared(Ruling);
+        // On an escalation its records show…
+        let asked = [record("plan", Escalate, "c1"), human("plan", ruling)];
+        assert_eq!(after(&asked), ("stage:plan".to_string(), vec!["verdict", "verdict"]));
+        assert!(matches!(history(workflow, &asked).place.position, Position::Perform(..)));
+        // …and on one they do not: a worker that went silent declared nothing.
+        let silent = [record("plan", Pass, "c1"), human("build", ruling)];
+        assert_eq!(after(&silent), ("stage:build".to_string(), vec!["verdict", "verdict"]));
+        // Both rework counts are taken from after it.
+        let mut records = vec![record("plan", Pass, "c1")];
+        for round in 0..3 {
+            records.push(record("build", Pass, &format!("b{round}")));
+            records.push(record("review", Reject, &format!("r{round}")));
+        }
+        assert_eq!(after(&records).0, "escalating at build: Breaker(ConsecutiveRework)");
+        records.push(human("build", ruling));
+        let ruled = history(workflow, &records);
+        let review = &workflow.stages()[2];
+        assert_eq!((ruled.place.rework(), ruled.place.consecutive_rework(review)), (0, 0));
+        assert_eq!(ruled.rounds, [] as [usize; 0]);
+        records.extend([record("build", Pass, "b3"), record("review", Reject, "r3")]);
+        let on = history(workflow, &records);
+        assert_eq!((on.place.rework(), on.place.consecutive_rework(review)), (1, 1));
+        assert_eq!(on.rounds, [9]);
+        // A ruling names the stage the issue is at, and an issue past its stages is at none.
+        assert_eq!(after(&[human("build", ruling)]).1, ["other-stage"]);
+        let ended = [record("plan", AlreadySatisfied, "c1"), human("plan", ruling)];
+        assert_eq!(after(&ended), ("ended".to_string(), vec!["verdict", "other-stage"]));
+    }
+
+    #[test]
+    fn a_human_sends_an_issue_to_any_stage_of_its_workflow() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let sent = [record("plan", Pass, "c1"), human("review", Stated::Sent)];
+        assert_eq!(after(&sent), ("stage:review".to_string(), vec!["verdict", "sent"]));
+        // From an escalation and from an end alike.
+        for from in [Escalate, AlreadySatisfied] {
+            let back = [record("plan", from, "c1"), human("build", Stated::Sent)];
+            assert_eq!(after(&back).0, "stage:build", "{from:?}");
+        }
+        // The counts start over with it, as with a ruling.
+        let mut rejected = vec![record("plan", Pass, "c1"), record("build", Pass, "c2")];
+        rejected.extend([record("review", Reject, "c3"), human("review", Stated::Sent)]);
+        let read = history(workflow, &rejected);
+        assert_eq!((read.place.rework(), read.rounds.len()), (0, 0));
+        // To a human's stage it waits for them; to a stage the workflow lacks, nothing is guessed.
+        let waiting = history(workflow, &[human("sign-off", Stated::Sent)]).place.position;
+        assert!(matches!(waiting, Position::Waiting(_)));
+        assert_eq!(
+            after(&[human("deploy", Stated::Sent)]),
+            ("escalating at plan: WorkflowChanged".to_string(), vec!["unknown-stage"])
+        );
     }
 
     #[test]

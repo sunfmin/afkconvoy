@@ -4,7 +4,6 @@
 //! for is the core's to say (`afkconvoy_core::stage_record::advance`).
 
 use afkconvoy_core::blocked::{Blocked, blocked_route};
-use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::stage_nudge_line;
@@ -16,7 +15,7 @@ use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{self, HandOnStep, Released};
 use anyhow::{Result, anyhow, bail};
 
-use crate::board::last_word;
+use crate::board::declared;
 use crate::claims::{Me, Take, delete, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
@@ -50,18 +49,20 @@ fn stated(reason: &str, said: Option<&str>, rounds: Option<&str>) -> String {
 }
 
 /// Ends `claim` once its stage has declared, the issue left where its stage
-/// records put it. `ended` is given when its workflow has ended: a worktree
-/// whose branch then holds no work goes too.
+/// records put it — at `waits_at`, when that is a human's stage. `ended` is
+/// given when its workflow has ended: a worktree whose branch then holds no
+/// work goes too.
 fn hand_on(
     fleet: &mut Fleet,
     claim: &Claim,
+    waits_at: Option<&str>,
     ended: Option<(&Worktree, &Workless)>,
 ) -> Result<Released> {
     let issue = claim.number;
     let pr = pr_of(fleet, issue)?;
     transition::hand_on(issue, ended.map(|(_, workless)| workless), |step| {
         match step {
-            HandOnStep::Board => last_word(fleet, claim, Stage::Declared, pr, &[])?,
+            HandOnStep::Board => declared(fleet, claim, pr, waits_at)?,
             HandOnStep::Release => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
@@ -142,7 +143,7 @@ pub fn advance(
             return ask_after(fleet, me, agent, &claim, called.stage.as_deref().unwrap_or("?"));
         }
         Advance::HandOn => {
-            hand_on(fleet, &claim, None)?;
+            hand_on(fleet, &claim, called.waits_at.as_deref(), None)?;
             // What follows is the next tick's to start: it need not wait
             // out a sleep. A wake nobody hears costs only that wait.
             let _ = wake(&fleet.repo);
@@ -150,7 +151,7 @@ pub fn advance(
         }
         Advance::End => {
             let (worktree, workless) = worktree_and_work(fleet, issue)?;
-            hand_on(fleet, &claim, worktree.as_ref().zip(workless.as_ref()))?;
+            hand_on(fleet, &claim, None, worktree.as_ref().zip(workless.as_ref()))?;
             return Ok(Outcome::Done);
         }
         Advance::Close => {
@@ -170,7 +171,7 @@ pub fn advance(
             // Every blocker closed: the frontier holds the issue at the
             // stage that parked it.
             Blocked::Redispatch => {
-                hand_on(fleet, &claim, None)?;
+                hand_on(fleet, &claim, None, None)?;
                 return Ok(Outcome::Done);
             }
             Blocked::Escalate(reason) => stated(&reason.to_string(), said, None),

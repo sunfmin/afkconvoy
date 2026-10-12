@@ -33,8 +33,8 @@ pub struct Staged {
     model: Option<String>,
     role_copy: Copy,
     team_copy: Copy,
-    /// The verdicts declared on the issue so far, oldest first, each with
-    /// the URL of its comment: the worker's history.
+    /// The stage records that counted on the issue so far, oldest first,
+    /// each with the URL of its comment: the worker's history.
     verdicts: Vec<(StageRecord, String)>,
 }
 
@@ -57,7 +57,7 @@ impl Staged {
         let verdicts = records.into_iter().zip(urls).zip(readings);
         Ok(Staged {
             verdicts: verdicts
-                .filter(|(_, reading)| *reading == Reading::Verdict)
+                .filter(|(_, reading)| matches!(reading, Reading::Verdict | Reading::Sent))
                 .map(|(verdict, _)| verdict)
                 .collect(),
             issue,
@@ -98,7 +98,9 @@ impl Staged {
     /// under it: a claim declares once, so the stage started would have no
     /// say. The tick ends such a claim, and the next start takes another.
     pub fn refuse_spent(&self, claim: Option<&Claim>) -> Result<()> {
-        let spent = |claim: &&Claim| self.verdicts.iter().any(|(said, _)| said.claim == claim.sha);
+        let spent = |claim: &&Claim| {
+            self.verdicts.iter().any(|(said, _)| said.claim() == Some(claim.sha.as_str()))
+        };
         match claim.filter(spent) {
             Some(_) => bail!(
                 "issue #{}: a stage already declared under the claim held on it, and a claim \
@@ -113,16 +115,8 @@ impl Staged {
     /// Writes the worker's brief into `worktree` → the file.
     pub fn write_brief(&self, fleet: &Fleet, worktree: &Worktree, title: &str) -> Result<PathBuf> {
         let verdict = format!("verdict --issue {} --stage {}", self.issue, quoted(&self.stage));
-        let records: Vec<Said> = self
-            .verdicts
-            .iter()
-            .map(|(record, url)| Said {
-                stage: &record.stage,
-                declared: record.declared,
-                text: &record.text,
-                url,
-            })
-            .collect();
+        let records: Vec<Said> =
+            self.verdicts.iter().map(|(record, url)| Said { record, url }).collect();
         let fields = StageFields {
             number: self.issue,
             title,

@@ -43,6 +43,10 @@ THE COMMANDS, by who runs them
   worker, or are finding out why one stopped:
       gate  land  verdict  wake
 
+  A human an issue waits for — in a bound repo. Read them to answer an escalated issue,
+  to put an issue at a stage of your choosing, or to see what a `by: human` stage asks:
+      rule  send
+
   One transition by hand — each is something a tick does on its own. Read one when a
   plan shows a transition the fleet is not making, or you are told to make it yourself:
       dispatch  recovery  close  escalate  park  nudge  restart  abandon

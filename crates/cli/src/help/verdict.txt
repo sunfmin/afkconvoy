@@ -17,11 +17,19 @@ WHEN TO RUN IT
 
   Opening a PR declares nothing: a stage that wrote one still declares `pass`.
 
+  A human runs it too, for a stage a workflow gives them (`by: human`): the issue waits
+  there, unclaimed, until they declare. `afkconvoy show --issue 7` names the stage:
+
+      afkconvoy verdict pass --issue 7 --stage sign-off --text "Approved."
+
 WHO RUNS IT
 
   A worker, in its own worktree: it starts in its role's directory, so the line its
   brief gives changes to the worktree first. The fleet put the commits of its role and
   of its team in its environment, and the command reads them from there.
+
+  Or a human, in a checkout of the bound repo, with neither commit named and none in
+  the environment: that is what makes the record a human's.
 
 WHAT IT READS AND WRITES
 
@@ -30,6 +38,11 @@ WHAT IT READS AND WRITES
   carries the stage, the verdict, the claim it was declared under and the commits of the
   role and of the team, and the text follows it. Nothing but this command writes that
   format.
+
+  A human's record is written under no claim, and only on an issue nobody holds. It
+  says a human left it and carries no commit. Unlike a worker's it is checked first,
+  against the team the config names and the issue's records: the issue must be at the
+  stage named, and the verdict one that may be declared there.
 
   The text is `--text`, or the contents of `--text-file`: one of the two, and not empty.
   Then it wakes the fleet, as `afkconvoy wake` does.
@@ -40,6 +53,7 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"issue", "stage", "verdict", "claim", "declared", "woke"}
+  {"issue", "stage", "verdict", "by": "human", "declared": true, "woke"} — a human's
 
     declared: true   the record was written
     declared: false  this stage already has a record under this claim: nothing was
@@ -48,9 +62,14 @@ WHAT IT ANSWERS
 
   Errors, as {"error": …} with a non-zero exit: a word that is none of the five
   verdicts; no text, or an empty one; `--blocked-by` with another verdict than
-  `blocked`; the issue is not claimed; the commits are neither in the environment
-  (AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT) nor given as `--role-commit` and
-  `--team-commit`; "is not in a git checkout".
+  `blocked`; a worker's on an issue that is not claimed; one of `--role-commit` and
+  `--team-commit` (or AFKCONVOY_ROLE_COMMIT and AFKCONVOY_TEAM_COMMIT) without the
+  other; "is not in a git checkout".
+
+  A human's is refused, with nothing written, when the issue "is claimed" — its stage
+  is its worker's, and a worker's record names both commits; when it is at another
+  stage, or has left its stages; when the verdict "cannot be declared" there; with
+  `--blocked-by`; and when the issue carries no one flow label.
 
 WHAT TRIPS YOU UP
 
@@ -61,4 +80,8 @@ WHAT TRIPS YOU UP
     as having declared no verdict.
   - It does not check that the verdict is one the stage may declare. A `reject` from a
     stage whose workflow gives it none is no valid verdict, and the issue escalates.
-  - A ruling is not a verdict, and is not declared here.
+  - A ruling is not a verdict, and is not declared here: see `afkconvoy rule --help`.
+  - With no commit named a record is a human's. A worker whose environment lost its
+    commits is refused, as its issue is claimed.
+  - A human's `already-satisfied` ends the workflow and closes nothing, and a human's
+    `blocked` parks nothing: no claim is there to do either.
