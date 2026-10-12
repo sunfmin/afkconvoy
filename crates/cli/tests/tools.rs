@@ -213,16 +213,12 @@ fn the_commands_that_make_one_transition_by_hand_check_no_tool() {
 }
 
 /// The install lines are written out where a human reads them before any
-/// start: each must be the line a refusal gives.
+/// start: each must be the line a refusal gives (the formula's: `release.rs`).
 #[test]
-fn the_readme_and_the_formula_give_the_install_lines_a_refusal_gives() {
+fn the_readme_gives_the_install_lines_a_refusal_gives() {
     use afkconvoy_core::tools::Tool;
     let readme = include_str!("../../../README.md");
-    let formula = include_str!("../../../packaging/release.sh");
     assert!(readme.contains(&format!("`{}`", Tool::Orca.install())));
     assert!(readme.contains(&format!("`{}`", Tool::Claude.install())));
-    assert!(formula.contains(&format!("\n        {}\n", Tool::Orca.install())));
-    for text in [readme, formula] {
-        assert!(!text.contains("Homebrew does not"), "orca has an install line now");
-    }
+    assert!(!readme.contains("Homebrew does not"), "orca has an install line now");
 }
