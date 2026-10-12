@@ -328,20 +328,20 @@ fn answer(loaded: &Loaded) -> Value {
         "files": loaded.files,
         "escalate_label": team.escalate_label,
         "roles": roles,
-        "workflows": team.workflows.iter().map(workflow).collect::<Vec<_>>(),
-        "patrols": team.patrols.iter().map(|p| patrol(p, &loaded.runs)).collect::<Vec<_>>(),
+        "workflows": team.workflows.iter().map(|w| workflow(team, w)).collect::<Vec<_>>(),
+        "patrols": team.patrols.iter().map(|p| patrol(team, p, &loaded.runs)).collect::<Vec<_>>(),
         "precedents": team.precedents.as_ref().map(|precedents| {
-            json!({"by": precedents.work.role, "do": precedents.work.skill,
+            json!({"by": team.role_of(&precedents.work).name, "do": precedents.work.skill,
                 "max_open": precedents.max_open})
         }),
     })
 }
 
-/// One patrol, and whether it is among `runs`: the ones the repo names.
-fn patrol(patrol: &Patrol, runs: &[String]) -> Value {
+/// One patrol of `team`, and whether it is among `runs`: the ones the repo names.
+fn patrol(team: &Team, patrol: &Patrol, runs: &[String]) -> Value {
     json!({
         "name": patrol.name,
-        "by": patrol.work.role,
+        "by": team.role_of(&patrol.work).name,
         "do": patrol.work.skill,
         "every": patrol.every,
         "model": patrol.model,
@@ -350,16 +350,13 @@ fn patrol(patrol: &Patrol, runs: &[String]) -> Value {
     })
 }
 
-fn work(work: &Work) -> Value {
-    json!({"by": work.role, "do": work.skill})
-}
-
-fn workflow(workflow: &Workflow) -> Value {
+fn workflow(team: &Team, workflow: &Workflow) -> Value {
     let name = |at: usize| workflow.stage(at).name.clone();
+    let role = |work: &Work| team.role_of(work).name.as_str();
     let stage = |stage: &Stage| {
         let (by, skill) = match &stage.by {
             Performer::Human => (team::HUMAN, None),
-            Performer::Role(work) => (work.role.as_str(), Some(&work.skill)),
+            Performer::Role(work) => (role(work), Some(&work.skill)),
         };
         let pass = match stage.pass() {
             Pass::Stage(at) => name(at),
@@ -372,7 +369,7 @@ fn workflow(workflow: &Workflow) -> Value {
             "do": skill,
             "model": stage.model,
             "writes": stage.writes,
-            "escalate": stage.consult.as_ref().map(|consult| json!({"to": consult.role, "do": consult.skill})),
+            "escalate": stage.consult.as_ref().map(|consult| json!({"to": role(consult), "do": consult.skill})),
             "pass": pass,
             "reject": stage.reject().map(name),
         })
@@ -383,7 +380,7 @@ fn workflow(workflow: &Workflow) -> Value {
         "max_rework": workflow.max_rework,
         "max_consecutive_rework": workflow.max_consecutive_rework,
         "stages": workflow.stages().iter().map(stage).collect::<Vec<_>>(),
-        "land": workflow.land.as_ref().map(work),
+        "land": workflow.land.as_ref().map(|land| json!({"by": role(land), "do": land.skill})),
     })
 }
 

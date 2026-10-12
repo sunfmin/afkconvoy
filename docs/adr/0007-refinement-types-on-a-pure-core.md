@@ -13,5 +13,6 @@ The effect layer runs `git`, `gh` and `orca` as subprocesses, as afk-fleet does,
 - The proof starts at what the effect layer reports. That a read returns what GitHub holds is not proved.
 - Flux knows the length of a `Vec` only through its own `flux-alloc` and `flux-core` crates, so the core depends on both at the revision of `flux-rs`: without them an index into a `Vec` goes unchecked. Both are empty under a plain build.
 - What a refined struct is indexed by has to be the value of one of its fields: a stage holds the number of stages its workflow has, which Flux proves is that number.
+- What Flux has to infer of a refined value, it carries through every loop that follows in the same function. A long function makes and joins none: each is made in a function of its own, under a spec.
 - A loop needs its invariant written as a qualifier, and a function whose result an invariant mentions must return a named value, not a formula.
 - The Homebrew formula depends on `git` and `gh`; orca is the user's to install.

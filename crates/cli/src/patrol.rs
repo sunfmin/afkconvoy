@@ -69,10 +69,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let kept = read.kept()?;
     let patrol =
         kept.team.patrol(name).ok_or_else(|| anyhow!("the team has no patrol {name:?}"))?;
-    let role = kept
-        .team
-        .role(&patrol.work.role)
-        .ok_or_else(|| anyhow!("the team has no role {:?}", patrol.work.role))?;
+    let role = kept.team.role_of(&patrol.work);
     let role_copy = kept.role(role)?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &claim_key(name))? else {
         return Ok(Outcome::Lost);
@@ -103,7 +100,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         kept.team.workflows.iter().map(|workflow| workflow.name.as_str()).collect();
     let fields = PatrolFields {
         patrol: name,
-        role: &patrol.work.role,
+        role: &role.name,
         skill: &patrol.work.skill,
         worktree: &path,
         base_branch: &fleet.config.base_branch,
@@ -122,7 +119,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         guard: &crate::own_command().fixed(" guard").own(),
         facts: Facts {
             on: On::Patrol(name),
-            role: &patrol.work.role,
+            role: &role.name,
             skill: &patrol.work.skill,
             writes: false,
             consult: false,

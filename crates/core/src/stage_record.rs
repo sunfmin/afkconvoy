@@ -4,6 +4,7 @@
 //! The comment's format has this one home: only the fleet's commands write
 //! it, and nothing else reads it.
 
+use flux_rs::attrs::*;
 use flux_rs::macros::qualifier;
 
 use crate::position::{Declared, Place, Position, Reason};
@@ -227,10 +228,13 @@ impl Reading {
     }
 }
 
-/// What an issue's stage records come to.
+/// What the stage records of an issue come to, in a workflow of `n` stages of
+/// a team of `roles` roles.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[refined_by(n: int, roles: int)]
 pub struct History<'w> {
     /// Where the issue is, with its rework.
+    #[field(Place[n, roles])]
     pub place: Place<'w>,
     /// How each record read, in the records' order.
     pub readings: Vec<Reading>,
@@ -249,6 +253,7 @@ pub struct History<'w> {
 /// naming a stage the workflow does not have escalates the issue: the
 /// workflow changed, and nothing is guessed (docs/adr/0010). Every other
 /// record changes nothing.
+#[spec(fn(&Workflow[@w], &[StageRecord]) -> History[w.n, w.roles])]
 pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'w> {
     let mut place = Place::enter(workflow);
     let mut spent: Vec<&str> = vec![];

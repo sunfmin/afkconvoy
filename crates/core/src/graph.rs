@@ -3,8 +3,10 @@
 //! a line up the left margin to the stage it leads back to. It reads the same
 //! in a terminal and in a code block of a GitHub comment.
 
+use flux_rs::attrs::*;
+
 use crate::position::Breaker;
-use crate::team::{DONE, HUMAN, LAND, Pass, Performer, Stage, Work, Workflow};
+use crate::team::{DONE, HUMAN, LAND, Pass, Performer, Stage, Team, Work, Workflow};
 
 /// One `reject`: from the stage at `from` back to the one at `to`.
 struct Back {
@@ -12,8 +14,9 @@ struct Back {
     to: usize,
 }
 
-/// The drawing of `workflow`: lines, each ended by a newline.
-pub fn draw(workflow: &Workflow) -> String {
+/// The drawing of `workflow`, one of `team`: lines, each ended by a newline.
+#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}) -> String)]
+pub fn draw(team: &Team, workflow: &Workflow) -> String {
     let stages = workflow.stages();
     // The reject of a later stage is drawn further out, so one that spans
     // another goes round it.
@@ -48,7 +51,7 @@ pub fn draw(workflow: &Workflow) -> String {
     for stage in stages {
         let mut said = vec![match &stage.by {
             Performer::Human => HUMAN.to_string(),
-            Performer::Role(work) => work_said(work),
+            Performer::Role(work) => work_said(team, work),
         }];
         if let Some(model) = &stage.model {
             said.push(format!("model {model}"));
@@ -57,7 +60,7 @@ pub fn draw(workflow: &Workflow) -> String {
             said.push("writes nothing".to_string());
         }
         if let Some(consult) = &stage.consult {
-            said.push(format!("escalate → {}", work_said(consult)));
+            said.push(format!("escalate → {}", work_said(team, consult)));
         }
         if let Some(to) = stage.reject() {
             said.push(format!("reject → {}", workflow.stage(to).name));
@@ -73,7 +76,7 @@ pub fn draw(workflow: &Workflow) -> String {
     }
     let blank = "  ".repeat(backs.len());
     if let Some(land) = &workflow.land {
-        out.push_str(&format!("{blank}  {LAND:<width$}  {}\n", work_said(land)));
+        out.push_str(&format!("{blank}  {LAND:<width$}  {}\n", work_said(team, land)));
     }
     if ends_in_nothing {
         out.push_str(&format!("{blank}  {DONE}\n"));
@@ -81,8 +84,9 @@ pub fn draw(workflow: &Workflow) -> String {
     out
 }
 
-fn work_said(work: &Work) -> String {
-    format!("{}: {}", work.role, work.skill)
+#[spec(fn(&Team[@roles], &Work[roles]) -> String)]
+fn work_said(team: &Team, work: &Work) -> String {
+    format!("{}: {}", team.role_of(work).name, work.skill)
 }
 
 /// The left margin of a stage's row: every reject that starts, ends or
@@ -136,7 +140,7 @@ mod tests {
     #[test]
     fn every_stage_its_role_and_skill_and_every_edge_is_drawn() {
         let team = one(FEATURE);
-        let drawn = draw(team.workflow("feature").unwrap());
+        let drawn = draw(&team, team.workflow("feature").unwrap());
         let expected = "\
 feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
@@ -163,7 +167,7 @@ stages:
   - { name: c, by: dev, do: plan, on: { pass: d, reject: a } }
   - { name: d, by: dev, do: plan, on: { pass: done, reject: c } }
 ");
-        let drawn = draw(team.workflow("feature").unwrap());
+        let drawn = draw(&team, team.workflow("feature").unwrap());
         let expected = "\
 feature — flow:feature — max_rework 5, max_consecutive_rework 2
 

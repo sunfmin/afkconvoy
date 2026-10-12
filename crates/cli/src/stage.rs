@@ -148,7 +148,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
     let place = &history.place;
     let follows = place
         .takes(Declared::Pass)
-        .then(|| position(workflow, place.clone().after(Declared::Pass).position));
+        .then(|| position(team, workflow, place.clone().after(Declared::Pass).position));
     let mut in_a_row = Map::new();
     for stage in workflow.stages().iter().filter(|stage| stage.reject().is_some()) {
         let had = place.consecutive_rework(stage);
@@ -175,7 +175,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
         "issue": number,
         "workflow": workflow.name,
         "intake": came_in(&issue.labels, &comments),
-        "position": position(workflow, place.position),
+        "position": position(team, workflow, place.position),
         "follows": follows,
         "rework": {"had": place.rework(), "left": place.rework_left()},
         "consecutive_rework": in_a_row,
@@ -264,7 +264,8 @@ impl Flows {
         Ok(Flows { team: Some(team), issues })
     }
 
-    fn team(&self) -> Result<&Team> {
+    /// The team as this rebuild read it.
+    pub fn team(&self) -> Result<&Team> {
         Ok(&self.kept()?.team)
     }
 
@@ -280,11 +281,6 @@ impl Flows {
     /// The patrol that opened each issue read that one opened.
     pub fn opened(&self) -> Vec<String> {
         self.issues.iter().filter_map(|issue| issue.opened_by.clone()).collect()
-    }
-
-    /// The team's workflows; none where no team was read, or it did not load.
-    pub fn workflows(&self) -> &[Workflow] {
-        self.team().map_or(&[], |team| team.workflows.as_slice())
     }
 
     /// Where each issue read is in the workflow it follows, with that
