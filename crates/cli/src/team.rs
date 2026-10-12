@@ -1,6 +1,6 @@
 //! Reads a team — its own files, and the repo of each role it names — for the
 //! core to load (`afkconvoy_core::team`), and answers `check` with what was
-//! read or with every fault.
+//! read or with every fault. `load` is how any command comes by a team.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,8 +16,8 @@ use crate::config;
 use crate::gh::GitHub;
 use crate::git::Repo;
 
-/// Where `check` takes a team's own files from. Its roles' repos are always
-/// read from GitHub.
+/// Where a team's own files are taken from. Its roles' repos are always read
+/// from GitHub.
 pub enum From {
     /// The team the config of this checkout names.
     Config,
@@ -170,9 +170,26 @@ fn yaml(markdown: &str) -> Result<Node, String> {
     serde_yaml::from_str(&block).map_err(|error| format!("its yaml cannot be read: {error}"))
 }
 
+/// A team that loaded, and what it was read from.
+pub struct Loaded {
+    /// What the team was named by: its repo, or its directory.
+    pub name: String,
+    /// The commit its own files were read at; `None` for a directory.
+    pub commit: Option<String>,
+    /// The definition files read, the team file first.
+    pub files: Vec<String>,
+    pub team: Team,
+}
+
 /// Reads the team `from` names and every role's repo, and loads it → what was
 /// read. A team with a fault fails with `Refused`.
 pub fn check(from: From) -> Result<Value> {
+    Ok(answer(&load(from)?))
+}
+
+/// Reads the team `from` names and every role's repo, and loads it. A team
+/// with a fault fails with `Refused`.
+pub fn load(from: From) -> Result<Loaded> {
     let scratch = Scratch::new();
     let gh = GitHub { dir: PathBuf::from(".") };
     let (name, tree) = match from {
@@ -203,7 +220,7 @@ pub fn check(from: From) -> Result<Value> {
     let mut files = vec![sources.team.path.clone()];
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
     match team::load(&sources) {
-        Ok(team) => Ok(answer(&name, tree.commit(), &files, &team)),
+        Ok(team) => Ok(Loaded { commit: tree.commit().map(str::to_string), name, files, team }),
         Err(faults) => Err(Refused { team: name, faults }.into()),
     }
 }
@@ -224,7 +241,8 @@ fn read(gh: &GitHub, tree: &Tree, scratch: &Scratch) -> Result<Sources> {
     Ok(Sources { team, workflows, repos })
 }
 
-fn answer(name: &str, commit: Option<&str>, files: &[String], team: &Team) -> Value {
+fn answer(loaded: &Loaded) -> Value {
+    let team = &loaded.team;
     let roles: Vec<Value> = team
         .roles
         .iter()
@@ -234,9 +252,9 @@ fn answer(name: &str, commit: Option<&str>, files: &[String], team: &Team) -> Va
         })
         .collect();
     json!({
-        "team": name,
-        "commit": commit,
-        "files": files,
+        "team": loaded.name,
+        "commit": loaded.commit,
+        "files": loaded.files,
         "escalate_label": team.escalate_label,
         "roles": roles,
         "workflows": team.workflows.iter().map(workflow).collect::<Vec<_>>(),

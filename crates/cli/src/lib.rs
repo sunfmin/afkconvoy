@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
+use afkconvoy_core::position::Declared;
 
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -36,6 +37,7 @@ pub mod tools;
 pub mod train;
 pub mod wake;
 pub mod watch;
+pub mod workflow;
 
 use claims::{Me, Scan, Take};
 use dispatch::Agent;
@@ -68,12 +70,28 @@ enum Command {
     /// Read a team and its workflows: what was read, or every fault
     #[command(after_long_help = include_str!("help/check.txt"))]
     Check {
-        /// The team's repo, as owner/repo [default: the team this checkout's config names]
-        #[arg(long, value_parser = team_repo)]
-        team: Option<String>,
-        /// A directory of a team's files, read as they are instead of from GitHub
-        #[arg(long, conflicts_with = "team")]
-        dir: Option<PathBuf>,
+        #[command(flatten)]
+        team: TeamArgs,
+    },
+    /// Draw a team's workflows as graphs: every stage, and where its verdicts lead
+    #[command(after_long_help = include_str!("help/show.txt"))]
+    Show {
+        /// The workflow to draw [default: every workflow of the team]
+        workflow: Option<String>,
+        #[command(flatten)]
+        team: TeamArgs,
+    },
+    /// Say where an issue would be after each of a list of verdicts, starting no worker
+    #[command(after_long_help = include_str!("help/rehearse.txt"))]
+    Rehearse {
+        /// The workflow the issue follows
+        workflow: String,
+        /// What is declared on it, in order: pass, reject, blocked, already-satisfied,
+        /// escalate, or ruling
+        #[arg(value_parser = declared)]
+        declared: Vec<Declared>,
+        #[command(flatten)]
+        team: TeamArgs,
     },
     /// Show what a tick would act on, and change nothing
     #[command(after_long_help = include_str!("help/plan.txt"))]
@@ -251,6 +269,27 @@ enum Command {
     },
 }
 
+/// The team a command reads.
+#[derive(clap::Args)]
+struct TeamArgs {
+    /// The team's repo, as owner/repo [default: the team this checkout's config names]
+    #[arg(long, value_parser = team_repo)]
+    team: Option<String>,
+    /// A directory of a team's files, read as they are instead of from GitHub
+    #[arg(long, conflicts_with = "team")]
+    dir: Option<PathBuf>,
+}
+
+impl TeamArgs {
+    fn from(self) -> team::From {
+        match (self.team, self.dir) {
+            (_, Some(dir)) => team::From::Dir(dir),
+            (Some(repo), None) => team::From::Repo(repo),
+            (None, None) => team::From::Config,
+        }
+    }
+}
+
 /// How a command that starts a worker starts it.
 #[derive(clap::Args)]
 struct AgentArgs {
@@ -297,6 +336,13 @@ fn team_repo(text: &str) -> Result<String, String> {
     }
 }
 
+fn declared(text: &str) -> Result<Declared, String> {
+    Declared::read(text).ok_or_else(|| {
+        let words: Vec<&str> = Declared::ALL.iter().map(|declared| declared.word()).collect();
+        format!("what is declared is one of: {}", words.join(", "))
+    })
+}
+
 fn this_host() -> String {
     gethostname::gethostname().to_string_lossy().into()
 }
@@ -320,7 +366,8 @@ impl AgentArgs {
 }
 
 /// Runs one command line. Prints exactly one JSON object on stdout: the
-/// command's answer, or `{"error": …}` with a non-zero exit.
+/// command's answer, or `{"error": …}` with a non-zero exit. An answer that
+/// is text — a drawing — is printed as it is.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
@@ -329,6 +376,10 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(e) => return fail(2, e.render().to_string().trim()),
     };
     match run(cli.command, cli.now) {
+        Ok(Value::String(drawing)) => {
+            print!("{drawing}");
+            ExitCode::SUCCESS
+        }
         Ok(answer) => {
             println!("{answer}");
             ExitCode::SUCCESS
@@ -362,13 +413,12 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             };
             Ok(serde_json::to_value(config::load(&file)?)?)
         }
-        Command::Check { team, dir } => {
-            let from = match (team, dir) {
-                (_, Some(dir)) => team::From::Dir(dir),
-                (Some(repo), None) => team::From::Repo(repo),
-                (None, None) => team::From::Config,
-            };
-            team::check(from)
+        Command::Check { team } => team::check(team.from()),
+        Command::Show { workflow, team } => {
+            Ok(Value::String(workflow::show(&team::load(team.from())?, workflow.as_deref())?))
+        }
+        Command::Rehearse { workflow, declared, team } => {
+            workflow::rehearse(&team::load(team.from())?, &workflow, &declared)
         }
         Command::Plan { instance } => {
             probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);

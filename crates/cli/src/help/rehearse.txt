@@ -1,0 +1,77 @@
+WHEN TO RUN IT
+
+  While designing a workflow, to test it without starting a worker or spending anything:
+  name the workflow and what is declared on an issue, in order, and it says where the
+  issue would be after each and where it ends. Use it to see that a rejection leads
+  back where you meant, and how many it takes to trip a breaker.
+
+      afkconvoy rehearse feature pass pass reject pass pass
+
+WHO RUNS IT
+
+  The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere
+  with `--team` or `--dir`.
+
+WHAT IT READS AND WRITES
+
+  It writes nothing and starts nothing. It reads a team as `check` does, with the same
+  `--team` and `--dir`: see `afkconvoy check --help`. No issue is read: the issue is one
+  that has just entered the workflow, at its first stage.
+
+  After the workflow's name comes what is declared, each by whoever the issue is with
+  at that point. The five verdicts:
+
+      pass               follows the stage's `on.pass`: to a stage, `land` or `done`
+      reject             follows the stage's `on.reject`, back to an earlier stage
+      blocked            parks the issue; the same stage runs again afterwards
+      already-satisfied  ends the workflow
+      escalate           goes to the stage's consult if its `escalate:` names one, else
+                         to a human
+
+  and `ruling`: what a consult, or a human on an escalated issue, decides. The stage
+  that asked runs again under it.
+
+WHAT IT ANSWERS
+
+  {"workflow", "max_rework", "max_consecutive_rework", "enters", "steps", "ends"}
+
+    enters, ends   the position before anything is declared, and after everything
+    steps          one per thing declared, in order: {"declared", "stage", "valid",
+                   "breaker", "position", "rework", "consecutive_rework"}
+
+  Of a step, `stage` is the stage it was declared in, null once the issue is landing
+  or ended, and `position` where the issue is after it. A position is {"is", "stage",
+  "by", "do", "reason"}:
+
+    is: perform     a worker is to perform `stage`, as the skill `do` of the role `by`
+    is: waiting     `stage` is a human's (`by: human`): it waits for their verdict
+    is: consult     a worker is to rule on the `escalate` of `stage`, as `do` of `by`
+    is: parked      parked at `stage`, which runs again when its blockers close
+    is: landing     the workflow's `land` joins the landing train, as `do` of `by`
+    is: ended       nothing more to do
+    is: escalating  handed to a human, with the `reason`; under their `ruling` the
+                    `stage` runs again
+
+  `valid` is false for what may not be declared where the issue is: a `reject` from a
+  stage with no `on.reject`, a `ruling` nobody asked for, anything but `ruling` or
+  `escalate` from a consult. It is no valid verdict, and the issue escalates with that
+  as its reason. Anything declared on an issue that is landing or ended, and anything
+  but a `ruling` on one that is escalating, is not valid either and changes nothing.
+
+  `rework` is the issue's rework in total: its rejections and its consults' rulings.
+  `consecutive_rework` is, for each stage that may reject, its rejections in a row: a
+  `pass` of that stage starts its count over. A human's `ruling` starts every count
+  over. `breaker` is null, or the breaker this step tripped — "max_rework" or
+  "max_consecutive_rework": the rework that would have passed it is refused and not
+  counted, and the issue escalates at the stage that would have run again.
+
+  Errors, as {"error": …} with a non-zero exit: a word that is none of the six; the
+  team has no workflow of that name; the team has a fault — {"error", "faults"}, as
+  `check` answers it; and every error of `check`.
+
+WHAT TRIPS YOU UP
+
+  - It rehearses only a team that loads. Run `check` first.
+  - A count never passes its breaker. With `max_rework: 3` the fourth rework is the one
+    refused: the step says `"breaker": "max_rework"` and `"rework": 3`.
+  - Running again after `blocked` is no rework.
