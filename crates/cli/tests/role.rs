@@ -1,0 +1,382 @@
+//! A bound repo's worker starts in its role: the fleet keeps a read-only copy
+//! of the team and of each role per commit, opens the terminal on the issue's
+//! worktree as ever, and has it change to the role's copy and start the
+//! worker launch command with a fixed set added (docs/adr/0009).
+
+mod common;
+
+use std::path::{Path, PathBuf};
+
+use common::{World, commit, git, write};
+use serde_json::{Value, json};
+
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+const FEATURE: &str = "\
+```yaml
+stages:
+  - name: build
+    by: dev
+    do: implement
+    model: opus
+    on: { pass: review }
+  - name: review
+    by: reviewer
+    do: review
+    writes: false
+    on: { pass: done, reject: build }
+```
+";
+/// A workflow whose first stage reviews: no model, and nothing written.
+const AUDIT: &str = "\
+```yaml
+stages:
+  - name: look
+    by: reviewer
+    do: review
+    writes: false
+    on: { pass: done }
+```
+";
+const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
+const STOCK: &str = "claude --dangerously-skip-permissions";
+
+/// A world whose repo is bound to a team of two roles and two workflows.
+fn bound() -> World {
+    let world = World::new();
+    world.repo(
+        "acme/dev",
+        &[("CLAUDE.md", "the rules of a dev\n"), (".claude/skills/implement/SKILL.md", "build\n")],
+    );
+    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/team",
+        &[("team.md", TEAM), ("workflows/feature.md", FEATURE), ("workflows/audit.md", AUDIT)],
+    );
+    write(&world.clone, "docs/agents/afkconvoy.md", CONFIG);
+    git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world
+}
+
+fn tick(world: &World, now: u64) -> common::Answer {
+    let now = now.to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now])
+}
+
+fn did(ticked: &Value) -> Vec<String> {
+    let steps = ticked["did"].as_array().unwrap();
+    steps
+        .iter()
+        .filter(|step| step["do"] != "board")
+        .map(|step| {
+            let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
+            format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())
+        })
+        .collect()
+}
+
+fn dispatch(world: &World, issue: u64) -> common::Answer {
+    let issue = issue.to_string();
+    world.afk(&["dispatch", "--issue", &issue, "--instance", "alpha", "--host", "h1"])
+}
+
+fn head(world: &World, repo: &str) -> String {
+    git(&world.root.join("github").join(repo), &["rev-parse", "HEAD"])
+}
+
+/// Where the fleet keeps its copy of `repo` at `commit`.
+fn copy(world: &World, repo: &str, commit: &str) -> PathBuf {
+    world.cache().join("afkconvoy/copies").join(repo).join(commit)
+}
+
+fn worktree(world: &World, issue: u64) -> PathBuf {
+    let orca = world.orca();
+    let rows = orca["worktrees"].as_array().unwrap();
+    let row = rows.iter().rev().find(|row| row["linkedIssue"] == issue).expect("a worktree");
+    PathBuf::from(row["path"].as_str().unwrap())
+}
+
+/// The terminals open in `dir`, as the stand-in orca has them.
+fn open_terminals(world: &World, dir: &Path) -> Vec<Value> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
+    here.filter(|t| t["open"] == true).cloned().collect()
+}
+
+fn brief(dir: &Path) -> String {
+    let git_dir = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::read_to_string(git_dir.join("convoy-worker-prompt.md")).unwrap()
+}
+
+/// The repos `gh` was asked to clone since the last look.
+fn cloned(world: &World) -> Vec<String> {
+    let calls = world.gh_calls();
+    let clones = calls.iter().filter(|call| call[..2] == ["repo", "clone"]);
+    clones.map(|call| call[2].clone()).collect()
+}
+
+fn is_read_only(path: &Path) -> bool {
+    std::fs::metadata(path).unwrap().permissions().readonly()
+}
+
+#[test]
+fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its_role() {
+    let world = bound();
+    world.issue(7, &["flow:feature", "bug"]);
+    world.issue(8, &["ready-for-agent"]);
+    world.orca_calls();
+
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked), ["dispatch 7 done", "heartbeat done"], "{ticked}");
+    assert_eq!(world.claims(), [(7, "alpha".to_string())], "no flow label: left alone");
+
+    // The copies: the role's and the team's files at their heads, and no git dir.
+    let (dev, team) = (head(&world, "acme/dev"), head(&world, "acme/team"));
+    let (role_dir, team_dir) = (copy(&world, "acme/dev", &dev), copy(&world, "acme/team", &team));
+    assert_eq!(
+        std::fs::read_to_string(role_dir.join("CLAUDE.md")).unwrap(),
+        "the rules of a dev\n"
+    );
+    assert!(role_dir.join(".claude/skills/implement/SKILL.md").is_file());
+    assert!(team_dir.join("workflows/feature.md").is_file());
+    assert!(!role_dir.join(".git").exists());
+    for kept in
+        [&role_dir, &role_dir.join("CLAUDE.md"), &role_dir.join(".claude/skills"), &team_dir]
+    {
+        assert!(is_read_only(kept), "{}", kept.display());
+    }
+    assert!(std::fs::write(role_dir.join("CLAUDE.md"), "edited").is_err());
+    assert!(std::fs::write(role_dir.join("new.md"), "added").is_err());
+
+    // The terminal is opened on the issue's worktree, as ever…
+    let dir = worktree(&world, 7);
+    let terminals = open_terminals(&world, &dir);
+    assert_eq!(terminals.len(), 1, "{terminals:?}");
+    let calls = world.orca_calls();
+    let created = calls.iter().find(|call| call[..2] == ["terminal", "create"]).unwrap();
+    assert_eq!(created[2..4], ["--worktree".to_string(), format!("path:{}", dir.display())]);
+    // …and what it runs changes to the role's copy first, then adds a fixed set.
+    let command = format!(
+        "cd '{role}' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
+         CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+         AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
+         AFKCONVOY_WRITES='true' AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' && \
+         {STOCK} --add-dir '{worktree}' --add-dir '{team_dir}' --setting-sources project \
+         --model 'opus'",
+        role = role_dir.display(),
+        worktree = dir.display(),
+        team_dir = team_dir.display(),
+    );
+    assert_eq!(terminals[0]["command"], command);
+    assert_eq!(created[4..], ["--command".to_string(), command]);
+
+    // The brief is a fixed form, and the worker is pointed at it.
+    let brief = brief(&dir);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    for said in [
+        "- **Issue:** #7 — issue 7\n".to_string(),
+        "- **Stage:** `build`, of the workflow `feature`\n".to_string(),
+        "- **Skill to perform:** `implement`, of the role you were started in (`dev`)\n".into(),
+        format!(
+            "- **Worktree:** `{}`, on the branch `{branch}` (the base is `main`)",
+            dir.display()
+        ),
+        "- **History:** the issue and every comment on it (`gh issue view 7 --comments`)".into(),
+        format!("- **Precedents:** `{}`\n", team_dir.join("precedents.md").display()),
+        " verdict --issue 7 --stage 'build'\n```".to_string(),
+    ] {
+        assert!(brief.contains(&said), "{said}\n{brief}");
+    }
+    for how in ["Implement", "gh pr create", "landing train", "git commit"] {
+        assert!(!brief.contains(how), "the brief says nothing of how: {how}");
+    }
+    let sent = terminals[0]["sent"].as_array().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
+    assert_eq!(sent[0]["enter"], true);
+}
+
+#[test]
+fn a_dispatch_answers_with_the_stage_and_the_commits_fixed_for_it() {
+    let world = bound();
+    world.issue(7, &["flow:audit"]);
+    let started = dispatch(&world, 7).ok();
+    let (reviewer, team) = (head(&world, "acme/reviewer"), head(&world, "acme/team"));
+    assert_eq!(started["prompt"], "stage");
+    assert_eq!(
+        started["stage"],
+        json!({"flow": "audit", "name": "look", "role": "reviewer", "skill": "review",
+            "writes": false, "model": null,
+            "role_commit": reviewer, "role_dir": copy(&world, "acme/reviewer", &reviewer),
+            "team_commit": team, "team_dir": copy(&world, "acme/team", &team)})
+    );
+    // A stage that names no model starts with none, and says it writes nothing.
+    let command = open_terminals(&world, &worktree(&world, 7))[0]["command"].clone();
+    let command = command.as_str().unwrap();
+    assert!(command.ends_with("--setting-sources project"), "{command}");
+    assert!(command.contains(" AFKCONVOY_STAGE='look' AFKCONVOY_ROLE='reviewer' "), "{command}");
+    assert!(command.contains(" AFKCONVOY_WRITES='false' "), "{command}");
+}
+
+#[test]
+fn a_second_dispatch_at_the_same_commit_fetches_nothing() {
+    let world = bound();
+    for issue in [7, 8, 9] {
+        world.issue(issue, &["flow:feature"]);
+    }
+    world.gh_calls();
+    dispatch(&world, 7).ok();
+    let mut first = cloned(&world);
+    first.sort();
+    assert_eq!(first, ["acme/dev", "acme/reviewer", "acme/team"], "each once");
+
+    dispatch(&world, 8).ok();
+    assert_eq!(cloned(&world), [] as [String; 0]);
+    let old = head(&world, "acme/dev");
+    let command = |issue| open_terminals(&world, &worktree(&world, issue))[0]["command"].clone();
+    assert!(
+        command(8)
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("cd '{}' && ", copy(&world, "acme/dev", &old).display()))
+    );
+
+    // A push is how a change to a role reaches a worker: the next stage that
+    // starts runs under the new commit, and the old copy is as it was.
+    let new = commit(&world.root.join("github/acme/dev"), "CLAUDE.md", "stricter rules\n");
+    dispatch(&world, 9).ok();
+    assert_eq!(cloned(&world), ["acme/dev"]);
+    let kept = |commit: &str| {
+        std::fs::read_to_string(copy(&world, "acme/dev", commit).join("CLAUDE.md")).unwrap()
+    };
+    assert_eq!(
+        (kept(&old).as_str(), kept(&new).as_str()),
+        ("the rules of a dev\n", "stricter rules\n")
+    );
+    assert!(command(9).as_str().unwrap().contains(&format!(" AFKCONVOY_ROLE_COMMIT='{new}' ")));
+}
+
+#[test]
+fn a_start_refuses_a_launch_command_that_does_not_take_the_flags() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    world.shell_help(Some("Usage: agent [options]\n  --model <model>\n  --add-dir <dir>\n"));
+    for start in [&["tick", "--instance", "alpha", "--host", "h1"][..], &["plan"]] {
+        let refused = world.afk(start).error();
+        assert!(refused.contains("bound to a team"), "{refused}");
+        assert!(
+            refused.contains(&format!("`{STOCK} --help` names no --setting-sources.")),
+            "{refused}"
+        );
+    }
+    // A command that does not answer at all is refused too, in its own words.
+    world.shell_help(None);
+    let refused =
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--worker-command", "agent -x"]);
+    let refused = refused.error();
+    assert!(refused.contains("\"agent -x\""), "{refused}");
+    assert!(refused.contains("`agent -x --help` failed in a login shell"), "{refused}");
+    // Nothing was started, and nothing claimed.
+    assert_eq!(world.claims(), []);
+    assert_eq!(world.orca()["terminals"], json!([]));
+    assert!(world.shell_asked().contains(&format!("{STOCK} --help")));
+}
+
+#[test]
+fn an_unbound_repo_s_launch_command_is_still_passed_to_orca_exactly_as_given() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    // It need take no flag at all: it is never asked.
+    world.shell_help(None);
+    let passed = "agent  --fast ; true ";
+    let now = ["--now", "1000", "--worker-command", passed];
+    world.afk(&[&["tick", "--instance", "alpha", "--host", "h1"][..], &now].concat()).ok();
+    assert_eq!(open_terminals(&world, &worktree(&world, 7))[0]["command"], passed);
+    let asked = world.shell_asked();
+    assert!(!asked.iter().any(|script| script.ends_with("--help")), "{asked:?}");
+    assert!(!world.cache().exists(), "an unbound repo keeps no copy");
+    assert!(brief(&worktree(&world, 7)).contains("**Implement**"));
+}
+
+#[test]
+fn an_issue_no_worker_can_be_started_on_is_not_claimed() {
+    let world = bound();
+    world.issue(7, &["flow:chore"]);
+    world.issue(8, &["flow:feature", "flow:audit"]);
+    world.issue(9, &["bug"]);
+    let why = dispatch(&world, 7).error();
+    assert!(why.contains("issue #7 cannot be started"), "{why}");
+    assert!(why.contains("flow:chore names no workflow of the team"), "{why}");
+    assert!(dispatch(&world, 8).error().contains("2 flow labels (flow:feature, flow:audit)"));
+    assert!(dispatch(&world, 9).error().contains("it carries no flow label"));
+    assert_eq!(world.claims(), []);
+    assert_eq!(world.orca()["worktrees"], json!([]));
+
+    // A team that does not load starts nobody, and says every fault.
+    let team = world.root.join("github/acme/team");
+    commit(&team, "workflows/audit.md", &AUDIT.replace("do: review", "do: deploy"));
+    world.issue(10, &["flow:feature"]);
+    let refused = dispatch(&world, 10);
+    assert_eq!(refused.json["faults"][0]["file"], "workflows/audit.md", "{}", refused.json);
+    assert_eq!(refused.json["faults"][0]["key"], "stages[0].do");
+    assert_eq!(world.claims(), []);
+}
+
+/// The worker's terminal reports that it stopped at `since`.
+fn stopped(world: &World, since: u64) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["open"] == true && !terminal["command"].is_null() {
+                terminal["agent"] = json!({"state": "done", "stateStartedAt": since * 1000});
+                terminal["lastOutputAt"] = json!(since * 1000);
+                terminal["screen"] = json!(["", "Shall I go on? [y/n]", ""]);
+            }
+        }
+    });
+}
+
+#[test]
+fn a_worker_in_its_role_is_nudged_and_its_screen_is_read() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let dir = worktree(&world, 7);
+    let handle = open_terminals(&world, &dir)[0]["handle"].clone();
+
+    // The nudge is typed at the one terminal of the worktree: the worker's.
+    stopped(&world, 1000);
+    assert_eq!(did(&tick(&world, 1400).ok())[0], "judge 7 nudged");
+    let terminals = open_terminals(&world, &dir);
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0]["handle"], handle);
+    let sent = terminals[0]["sent"].as_array().unwrap();
+    assert_eq!(sent.len(), 2, "the brief, then the nudge: {sent:?}");
+    assert!(sent[1]["text"].as_str().unwrap().starts_with("You stopped without an outcome."));
+
+    // Silent past the nudge: escalated, with what its screen showed.
+    assert_eq!(did(&tick(&world, 1800).ok())[0], "judge 7 done");
+    let said = world.comments(7).join("\n");
+    assert!(said.contains("Shall I go on? [y/n]"), "{said}");
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn a_restart_starts_the_new_worker_in_its_role_too() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let dir = worktree(&world, 7);
+    commit(&dir, "seven.txt", "7\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
+    let first = open_terminals(&world, &dir);
+
+    assert_eq!(did(&tick(&world, 1090).ok())[0], "watch 7 nudged");
+    assert_eq!(did(&tick(&world, 1390).ok())[0], "watch 7 restarted");
+    let second = open_terminals(&world, &dir);
+    assert_eq!(second.len(), 1, "the idle session was closed");
+    assert_ne!(second[0]["handle"], first[0]["handle"]);
+    assert_eq!(second[0]["command"], first[0]["command"], "the same role, the same commits");
+    assert!(second[0]["command"].as_str().unwrap().starts_with("cd '"));
+}

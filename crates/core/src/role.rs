@@ -141,7 +141,7 @@ pub fn in_role(command: &str, start: &Start) -> String {
 }
 
 /// `text` as one word of a shell line, whatever it holds.
-fn quoted(text: &str) -> String {
+pub fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 

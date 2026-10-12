@@ -98,9 +98,16 @@ impl World {
             .env("CONVOY_FAKE_GH", &self.gh_file)
             .env("CONVOY_FAKE_ORCA", &self.orca_file)
             .env("SHELL", self.bin.join("shell"))
+            .env("XDG_CACHE_HOME", self.cache())
             .envs(GIT_ENV)
             .env_remove("ANTHROPIC_BASE_URL");
         cmd
+    }
+
+    /// Where this world's fleet keeps what it caches on its host: the copies
+    /// of a team and its roles are under it.
+    pub fn cache(&self) -> PathBuf {
+        self.root.join("cache")
     }
 
     /// Runs the real CLI in the fleet's checkout.
@@ -415,6 +422,13 @@ impl World {
         std::fs::write(self.root.join(format!("logged-out-{tool}")), "").unwrap();
     }
 
+    /// What the stand-in login shell prints when a command is asked for its
+    /// `--help`, in place of a help that names every flag Claude Code takes.
+    /// `None`: the command fails.
+    pub fn shell_help(&self, help: Option<&str>) {
+        std::fs::write(self.root.join("shell-help"), help.unwrap_or("-")).unwrap();
+    }
+
     /// What the stand-in login shell prints for `alias`.
     pub fn shell_aliases(&self, aliases: &str) {
         std::fs::write(self.root.join("shell-aliases"), aliases).unwrap();
@@ -449,9 +463,19 @@ impl World {
     }
 }
 
+/// The copies a fleet kept are read-only, directories included: they are
+/// opened again so that the world's directory can be removed.
+impl Drop for World {
+    fn drop(&mut self) {
+        if self.cache().exists() {
+            let _ = Command::new("chmod").arg("-R").arg("u+w").arg(self.cache()).status();
+        }
+    }
+}
+
 /// The login shell a worker would get, as far as the fleet asks it anything:
-/// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, and whether `gh` and
-/// `claude` are logged in. Every word is a program unless `shell-types`
+/// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'`,
+/// and whether `gh` and `claude` are logged in. Every word is a program unless `shell-types`
 /// beside `bin/` says otherwise, and both are logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
 const SHELL: &str = r#"#!/bin/sh
@@ -466,6 +490,13 @@ case "$2" in
     if [ -e "$root/logged-out-claude" ]; then echo '{ "loggedIn": false }'; exit 0; fi
     echo 'a line an rc file printed'; echo '{'; echo '  "loggedIn": true'; echo '}'; exit 1 ;;
   alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
+  *" --help")
+    if [ -f "$root/shell-help" ]; then
+      if [ "$(cat "$root/shell-help")" = "-" ]; then echo "unknown option --help" >&2; exit 1; fi
+      cat "$root/shell-help"; exit 0
+    fi
+    echo "Usage: claude [options]"; echo "  --add-dir <directories...>"
+    echo "  --model <model>"; echo "  --setting-sources <sources>"; exit 0 ;;
   "type -- "*)
     word=${2#type -- \'}; word=${word%\'}
     if [ -f "$root/shell-types" ]; then

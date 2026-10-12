@@ -73,6 +73,17 @@ impl GitHub {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// The commit at the head of the default branch of `repo` (`owner/repo`).
+    pub fn head_commit(&self, repo: &str) -> Result<String> {
+        let out = self.gh(&["api", &format!("repos/{repo}/commits/HEAD"), "--jq", ".sha"])?;
+        let commit = out.trim();
+        let plain = !commit.is_empty() && commit.bytes().all(|b| b.is_ascii_hexdigit());
+        if !plain {
+            bail!("gh api: {repo} has no commit at the head of its default branch");
+        }
+        Ok(commit.to_string())
+    }
+
     /// Clones the head of `repo`'s default branch, and nothing behind it, into
     /// the bare repo `into`. `gh` picks the protocol the user set it up with.
     pub fn clone_head(&self, repo: &str, into: &std::path::Path) -> Result<()> {

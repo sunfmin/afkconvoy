@@ -9,10 +9,11 @@ use afkconvoy_core::team::{
     self, Fault, File, Node, Pass, Performer, RoleRepo, SKILLS, Sources, Stage, TEAM_FILE, Team,
     WORKFLOWS, Work, Workflow,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::config;
+use crate::copies::{Copies, Copy};
 use crate::gh::GitHub;
 use crate::git::Repo;
 
@@ -199,7 +200,11 @@ pub fn check(from: From) -> Result<Value> {
             (bound.team, tree)
         }
     };
-    let sources = read(&gh, &tree, &scratch)?;
+    let sources = read(&tree, |repo| {
+        let tree = Tree::head(&gh, repo, &scratch)?;
+        let commit = tree.commit().unwrap_or_default().to_string();
+        Ok(RoleRepo { commit, skills: tree.list(SKILLS)? })
+    })?;
     let mut files = vec![sources.team.path.clone()];
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
     match team::load(&sources) {
@@ -208,20 +213,56 @@ pub fn check(from: From) -> Result<Value> {
     }
 }
 
-/// Everything the core loads a team from.
-fn read(gh: &GitHub, tree: &Tree, scratch: &Scratch) -> Result<Sources> {
+/// Everything the core loads a team from: the team's own files out of
+/// `tree`, and of each role's repo what `role` reads.
+fn read(tree: &Tree, role: impl Fn(&str) -> Result<RoleRepo>) -> Result<Sources> {
     let team = tree.file(TEAM_FILE);
     let entries = tree.list(WORKFLOWS)?;
     let workflows = entries.iter().map(|name| tree.file(&format!("{WORKFLOWS}/{name}"))).collect();
-    let role = |repo: String| {
-        let read = Tree::head(gh, &repo, scratch).and_then(|tree| {
-            let commit = tree.commit().unwrap_or_default().to_string();
-            Ok(RoleRepo { commit, skills: tree.list(SKILLS)? })
-        });
-        (repo, read.map_err(|error| format!("{error:#}")))
-    };
-    let repos = team::role_repos(&team).into_iter().map(role).collect();
-    Ok(Sources { team, workflows, repos })
+    let repos = team::role_repos(&team).into_iter();
+    let repos = repos.map(|repo| {
+        let read = role(&repo).map_err(|error| format!("{error:#}"));
+        (repo, read)
+    });
+    Ok(Sources { team, workflows, repos: repos.collect() })
+}
+
+/// A team as a stage starts under it: loaded from the fleet's copies, at the
+/// commits those were taken at.
+pub struct Kept {
+    pub team: Team,
+    /// The copy of the team's own repo.
+    pub copy: Copy,
+    /// The copy of each role's repo, by the repo's name.
+    roles: Vec<(String, Copy)>,
+}
+
+impl Kept {
+    /// The copy of the repo of `role`.
+    pub fn role(&self, role: &team::Role) -> Result<&Copy> {
+        let kept =
+            self.roles.iter().find(|(repo, copy)| *repo == role.repo && copy.commit == role.commit);
+        kept.map(|(_, copy)| copy).ok_or_else(|| anyhow!("no copy of {} was kept", role.repo))
+    }
+}
+
+/// Loads the team `repo` names as it stands now: the head of its repo and of
+/// each role's, each read from the fleet's copy of that commit and fetched
+/// only when no copy of it is here. A team with a fault fails with `Refused`.
+pub fn keep(gh: &GitHub, copies: &Copies, repo: &str) -> Result<Kept> {
+    let copy = copies.of(gh, repo).with_context(|| format!("the team {repo} cannot be read"))?;
+    let roles = std::cell::RefCell::new(vec![]);
+    let sources = read(&Tree::Dir(copy.dir.clone()), |role| {
+        let kept = copies.of(gh, role)?;
+        let skills = Tree::Dir(kept.dir.clone()).list(SKILLS)?;
+        let commit = kept.commit.clone();
+        roles.borrow_mut().push((role.to_string(), kept));
+        Ok(RoleRepo { commit, skills })
+    })?;
+    match team::load(&sources) {
+        Ok(team) => Ok(Kept { team, copy, roles: roles.into_inner() }),
+        Err(faults) => Err(Refused { team: repo.to_string(), faults }.into()),
+    }
 }
 
 fn answer(name: &str, commit: Option<&str>, files: &[String], team: &Team) -> Value {

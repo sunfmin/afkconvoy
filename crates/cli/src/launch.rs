@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use afkconvoy_core::launch::{
     LaunchCommand, Source, candidates, checked, first_word, no_reply, question, replied, source,
 };
+use afkconvoy_core::role::flags_question;
 use anyhow::{Result, anyhow, bail};
 
 /// How long the login shell is given to answer.
@@ -34,6 +35,12 @@ impl Proposed {
     /// Whether its first word resolves in a login shell.
     pub fn resolves(&self) -> bool {
         self.resolution.is_some()
+    }
+
+    /// What the login shell prints when the command is asked which flags it
+    /// takes (`role::flags_question`); `None` when that failed.
+    pub fn flags(&self) -> Option<String> {
+        login_shell(&flags_question(&self.command))
     }
 
     /// Why it cannot start a worker, when it cannot.

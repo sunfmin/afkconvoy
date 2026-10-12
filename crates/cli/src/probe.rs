@@ -11,6 +11,7 @@ use crate::config;
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
 use crate::launch::Proposed;
+use crate::role;
 use crate::tools;
 
 /// What a probe's commit says it is.
@@ -22,7 +23,9 @@ const PROBE_RECORD: &str = "convoy:probe";
 /// knows it.
 ///
 /// In order: every command the fleet needs is here and logged in
-/// (`tools::check`), before anything is read or written; the base branch exists (none is ever created); no rule of its
+/// (`tools::check`), before anything is read or written; in a bound repo, the
+/// worker launch command takes what starts a worker in its role
+/// (`role::probe`); the base branch exists (none is ever created); no rule of its
 /// protection refuses the train's push; where the remote takes the fleet's
 /// refs — noted for every later command (`Repo::layout`); whether it takes
 /// gate records, and the ones past their day are swept.
@@ -30,6 +33,10 @@ pub fn startup(now: u64, launch: Option<&Proposed>) -> Result<Vec<String>> {
     tools::check(launch)?;
     let repo = Repo::here()?;
     let config = config::load(&repo.dir.join(config::FILE))?;
+    // A bound repo's workers start in their roles: the command must take that.
+    if let (Some(_), Some(launch)) = (&config.bound, launch) {
+        role::probe(launch)?;
+    }
     let branch = &config.base_branch;
     let mut warnings = vec![];
 
