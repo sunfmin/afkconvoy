@@ -5,6 +5,7 @@
 
 use crate::patrol::PATROL_ENV;
 use crate::position::Position;
+use crate::precedent::PROPOSAL_ENV;
 use crate::stage_record::{StageRecord, history};
 use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
 use crate::transition::escalated_from;
@@ -198,6 +199,9 @@ pub enum On<'a> {
     },
     /// A run of the patrol of this name: no issue, and no stage.
     Patrol(&'a str),
+    /// The proposal, as a precedent, of a ruling a human gave this issue: no
+    /// stage, and the issue is not its worker's.
+    Proposal { issue: u64 },
 }
 
 /// The facts of one start: what its worker, and the commands it runs, read
@@ -207,7 +211,8 @@ pub struct Facts<'a> {
     pub on: On<'a>,
     pub role: &'a str,
     pub skill: &'a str,
-    /// Whether the worker may commit. A patrol's never may.
+    /// Whether the worker may commit. A patrol's never may; a proposal's
+    /// does, in its own clone of the team's repo.
     pub writes: bool,
     /// Whether the worker is a consult, which writes no code whatever its
     /// stage may.
@@ -233,6 +238,7 @@ impl Facts<'_> {
                 (STAGE_ENV, stage.to_string()),
             ],
             On::Patrol(patrol) => vec![(PATROL_ENV, patrol.to_string())],
+            On::Proposal { issue } => vec![(PROPOSAL_ENV, issue.to_string())],
         };
         env.extend([
             (ROLE_ENV, self.role.to_string()),
@@ -254,7 +260,8 @@ impl Facts<'_> {
 pub struct Start<'a> {
     /// The fleet's copy of the role's repo: the worker's working directory.
     pub role_dir: &'a str,
-    /// The issue's worktree, or a patrol's checkout of the base branch.
+    /// The issue's worktree, or the checkout of the base branch a patrol's
+    /// worker or a proposal's is given.
     pub worktree: &'a str,
     /// The fleet's copy of the team's repo.
     pub team_dir: &'a str,

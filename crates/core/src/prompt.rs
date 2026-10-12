@@ -2,8 +2,10 @@
 //! a prompt with a placeholder left in it.
 
 use crate::position::Declared;
+use crate::precedent::entry_form;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
+use crate::team::PRECEDENTS;
 use crate::verdict;
 
 /// What a worker prompt is filled with: the issue, and the branch and path
@@ -199,6 +201,9 @@ in this order:
 The issue is then parked on them, and when they have all closed this stage runs again, to judge the
 whole.
 
+## Before an `escalate`
+
+<precedents_first>
 ## Declare a verdict
 
 The stage ends when you declare its verdict with this command, and not before; its `--help` says
@@ -287,6 +292,9 @@ The stage `{stage}` could not decide, and said why:
 
 {reason}
 
+## Before you let it through
+
+<precedents_first>
 ## Rule, or let it through
 
 End with exactly one of these two commands, and not before; each one's `--help` says what it takes.
@@ -409,7 +417,10 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
         Some(_) => GATE_BEFORE_PASS.replace("<gate_step>", &GATE_STEP.replace("<g>", "1")),
         None => String::new(),
     };
-    let template = STAGE.replace("<rework>", why).replace("<gate>", &gate);
+    let template = STAGE
+        .replace("<rework>", why)
+        .replace("<gate>", &gate)
+        .replace("<precedents_first>", PRECEDENTS_FIRST);
     fill(
         &template,
         &[
@@ -516,6 +527,98 @@ pub fn patrol_prompt(fields: &PatrolFields) -> Result<String, String> {
     )
 }
 
+/// What a worker is told of the precedents before it may ask a human: a
+/// settled question is not asked again.
+const PRECEDENTS_FIRST: &str = "\
+The precedents are rulings a human gave before, kept so that a stage follows them instead of asking
+again; none are kept while the file is not there. Read them before you declare `escalate`. Where
+one covers what you would ask, follow it and go on. Declare `escalate` only for what none covers,
+and say in the text of that verdict that you read the precedents.
+";
+
+/// The brief of a worker started to propose a precedent: a fixed form that
+/// says what a proposal is and nothing of how to word one — that is the
+/// role's to say.
+const PROPOSAL: &str = "\
+You are an afkconvoy worker, started in your role to propose one **precedent**. You own no issue.
+Nobody reads this terminal: never wait for an answer.
+
+- **Ruling:** what a human ruled on issue #{n}, which was escalated to them — {link}
+- **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
+- **Team:** `{team}`. Its precedents are the file `{file}` of that repo; as it stands now it
+  is `{precedents}`, yours to read only
+- **History:** the issue and every comment on it (`gh issue view {n} --comments`), read from the
+  checkout
+- **Checkout:** `{worktree_path}`, the base branch `{base_branch}` of the issue's repo as it stood
+  when you started. It is read-only to you: commit nothing in it and push nothing from it
+
+## The ruling
+
+{ruling}
+
+## What a proposal is
+
+A precedent is a ruling kept so that later stages follow it instead of escalating. You propose this
+one by opening one PR on `{team}`, from the branch `{branch}` of a clone of your own, that appends
+one entry to the end of `{file}` and changes nothing else. An entry is one line — the ruling in a
+sentence, when it applies, and the link to the ruling:
+```
+{entry}
+```
+A human merging the PR is what accepts the precedent; the issue does not wait for it.
+
+If a precedent already kept covers the case, there is nothing to propose: open no PR.
+
+## Hard rules
+
+- At most one PR, on `{team}`, from the branch `{branch}`. The fleet closes one that changes
+  anything but `{file}`, or does anything there but append that one line.
+- Never merge it, and push nothing but that branch.
+- When the PR is open, or there is nothing to propose, stop. There is nothing to declare.
+";
+
+/// What the brief of a proposal's worker is filled with.
+#[derive(Debug, Clone)]
+pub struct ProposalFields<'a> {
+    /// The issue the ruling was given, and the comment that is the ruling.
+    pub number: u64,
+    pub link: &'a str,
+    /// What the human ruled.
+    pub ruling: &'a str,
+    pub role: &'a str,
+    pub skill: &'a str,
+    /// The team's repo, as `owner/repo`.
+    pub team: &'a str,
+    /// The branch of the team's repo the PR is opened from.
+    pub branch: &'a str,
+    /// The precedents file, in the fleet's copy of the team.
+    pub precedents: &'a str,
+    /// The worker's checkout of the base branch.
+    pub worktree: &'a str,
+    pub base_branch: &'a str,
+}
+
+/// The brief a proposal's worker is given.
+pub fn proposal_prompt(fields: &ProposalFields) -> Result<String, String> {
+    fill(
+        PROPOSAL,
+        &[
+            ("n", &fields.number.to_string()),
+            ("link", fields.link),
+            ("ruling", &quoted(fields.ruling)),
+            ("role", fields.role),
+            ("skill", fields.skill),
+            ("team", fields.team),
+            ("file", PRECEDENTS),
+            ("branch", fields.branch),
+            ("entry", &entry_form(fields.link)),
+            ("precedents", fields.precedents),
+            ("worktree_path", fields.worktree),
+            ("base_branch", fields.base_branch),
+        ],
+    )
+}
+
 /// The brief a consult is given: `fields` are those of the stage that asked,
 /// with the consult's role and skill, and `rule_command` is the line it rules
 /// with. The last of the records is the `escalate` it rules on.
@@ -523,7 +626,7 @@ pub fn consult_prompt(fields: &StageFields, rule_command: &str) -> Result<String
     let number = fields.number.to_string();
     let asked = fields.records.last().map_or(String::new(), |said| quoted(&said.record.text));
     fill(
-        CONSULT,
+        &CONSULT.replace("<precedents_first>", PRECEDENTS_FIRST),
         &[
             ("records", &records_said(fields.records)),
             ("reason", &asked),

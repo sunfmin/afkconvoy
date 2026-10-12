@@ -19,6 +19,7 @@ pub mod lock;
 pub mod patrol;
 pub mod plan;
 pub mod position;
+pub mod precedent;
 pub mod prompt;
 pub mod record;
 pub mod recovery;

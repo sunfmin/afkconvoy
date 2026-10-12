@@ -19,6 +19,7 @@ use crate::git::Repo;
 use crate::judge::judge;
 use crate::panel::{self, Panel};
 use crate::patrol;
+use crate::precedent;
 use crate::serve::Served;
 use crate::settle::settle;
 use crate::stage::Flows;
@@ -103,6 +104,14 @@ fn carry_out(
             Some(row) => patrol::run(fleet, me, agent, read.flows, row),
             None => Ok(Outcome::Nothing),
         },
+        TickStep::EndProposal { proposal } => match read.set.proposals.get(proposal) {
+            Some(row) => precedent::end(fleet, me, row),
+            None => Ok(Outcome::Nothing),
+        },
+        TickStep::Propose { proposal } => match read.set.proposals.get(proposal) {
+            Some(row) => precedent::propose(fleet, me, agent, read.flows, row),
+            None => Ok(Outcome::Nothing),
+        },
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
         TickStep::Reclaim { issue } => reclaim(fleet, me, agent, issue),
         TickStep::Dispatch { issue } => {
@@ -128,6 +137,8 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Escalate { issue } => ("escalate", Some(issue)),
         TickStep::EndPatrol { .. } => ("end_patrol", None),
         TickStep::Patrol { .. } => ("patrol", None),
+        TickStep::EndProposal { .. } => ("end_proposal", None),
+        TickStep::Propose { .. } => ("propose", None),
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
@@ -149,11 +160,23 @@ impl Ticked {
         }
     }
 
+    /// The issue whose ruling `step` proposes as a precedent, when it is on a
+    /// proposal: a step names it by its place in the working set.
+    fn proposal(&self, step: TickStep) -> Option<u64> {
+        match step {
+            TickStep::EndProposal { proposal } | TickStep::Propose { proposal } => {
+                self.set.proposals.get(proposal).map(|proposal| proposal.ruling.issue)
+            }
+            _ => None,
+        }
+    }
+
     /// One step as an answer names it: what it does, and the issue or the
-    /// patrol it is on.
+    /// patrol it is on. A step on a proposal names the issue that was ruled
+    /// on.
     fn named(&self, step: TickStep) -> Value {
         let (word, issue) = words(step);
-        let mut named = json!({"do": word, "issue": issue});
+        let mut named = json!({"do": word, "issue": issue.or(self.proposal(step))});
         if let Some(patrol) = self.patrol(step) {
             named["patrol"] = json!(patrol);
         }
@@ -259,6 +282,21 @@ impl Ticked {
                 parts.push(format!("{verb} {}", patrols.join(", ")));
             }
         }
+        for (verb, wanted) in [
+            ("proposed as a precedent the ruling on", "propose"),
+            ("ended the proposal of the ruling on", "end_proposal"),
+        ] {
+            let issues: Vec<String> = self
+                .pass
+                .did
+                .iter()
+                .filter(|(step, outcome)| words(*step).0 == wanted && *outcome == Outcome::Done)
+                .filter_map(|(step, _)| self.proposal(*step).map(|issue| format!("#{issue}")))
+                .collect();
+            if !issues.is_empty() {
+                parts.push(format!("{verb} {}", issues.join(", ")));
+            }
+        }
         for (outcome, said) in [
             (Outcome::Done, "tended the train"),
             (Outcome::Nudged, "nudged the train worker"),
@@ -275,6 +313,7 @@ impl Ticked {
         parts.push(format!("frontier {}", self.pass.frontier_remaining));
         for failure in &self.failures {
             let (word, issue) = words(failure.step);
+            let issue = issue.or(self.proposal(failure.step));
             let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
             let patrol = self.patrol(failure.step).map(|p| format!(" {p}")).unwrap_or_default();
             parts.push(format!("FAILED {word}{issue}{patrol}: {}", failure.error));

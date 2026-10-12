@@ -13,6 +13,7 @@ use crate::config;
 use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::patrol;
+use crate::precedent;
 use crate::settle::cut_landing_of;
 use crate::stage::Flows;
 use crate::train::Train;
@@ -88,6 +89,7 @@ impl Fleet {
             due: &stages.due(&prs),
             landing: &stages.landing(&self.scan.claims),
             patrols: &patrol::seen(self, &stages, &issues)?,
+            proposals: &precedent::seen(self, &stages)?,
         };
         let set = assemble(&seen, me, self.now, &self.config);
         Ok((set, stages))

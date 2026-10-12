@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
+use crate::precedent::PROPOSAL_ENV;
 use crate::role::{
     BASE_BRANCH_ENV, CONSULT_ENV, ESCALATE_LABEL_ENV, LOCK_LABEL_ENV, STAGE_ENV, WRITES_ENV,
 };
@@ -75,6 +76,9 @@ impl Call {
 enum At {
     Stage(String),
     Patrol(String),
+    /// The proposal of a precedent: its worker commits and pushes, in its
+    /// clone of the team's repo, and is held to what holds every worker.
+    Proposal,
 }
 
 /// What the worker of one stage, or of one patrol, may not do, read from the
@@ -104,10 +108,12 @@ impl Limits {
             "false" => Ok(false),
             other => Err(format!("{name} is {other:?}, neither true nor false")),
         };
-        // A patrol's worker is at no stage: its facts name the patrol.
-        let at = match var(PATROL_ENV) {
-            Some(patrol) => At::Patrol(patrol),
-            None => At::Stage(fact(STAGE_ENV)?),
+        // A patrol's worker is at no stage, and neither is a proposal's:
+        // its facts name the patrol, or the issue whose ruling it proposes.
+        let at = match (var(PATROL_ENV), var(PROPOSAL_ENV)) {
+            (Some(patrol), _) => At::Patrol(patrol),
+            (None, Some(_)) => At::Proposal,
+            (None, None) => At::Stage(fact(STAGE_ENV)?),
         };
         Ok(Limits {
             at,
@@ -177,7 +183,7 @@ impl Limits {
                          nothing; say what you found in the text of your verdict"
                     ));
                 }
-                At::Stage(_) => {}
+                At::Stage(_) | At::Proposal => {}
             }
         }
         None

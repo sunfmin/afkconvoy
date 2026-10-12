@@ -9,6 +9,7 @@ use afkconvoy_core::config::Bound;
 use afkconvoy_core::intake::{opened_by, taken_in};
 use afkconvoy_core::plan::{Issue, PullRequest, closing_pr};
 use afkconvoy_core::position::{Declared, Position};
+use afkconvoy_core::precedent::{Ruling, proposed, rulings};
 use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, advance, history, label_moves, lands, stage_records,
@@ -108,9 +109,14 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
 /// The stage records among `comments`, oldest first, each with the URL of
 /// its comment.
 fn records_among(comments: &[Comment]) -> (Vec<StageRecord>, Vec<String>) {
+    let (records, comments) = records_in(comments);
+    (records, comments.iter().map(|comment| comment.url.clone()).collect())
+}
+
+/// The stage records among `comments`, oldest first, each with its comment.
+fn records_in(comments: &[Comment]) -> (Vec<StageRecord>, Vec<&Comment>) {
     let found = stage_records(comments.iter().map(|comment| comment.body.as_str()));
-    let url = |at: usize| comments.get(at).map(|c| c.url.clone()).unwrap_or_default();
-    found.into_iter().map(|(at, record)| (record, url(at))).unzip()
+    found.into_iter().filter_map(|(at, record)| Some((record, comments.get(at)?))).unzip()
 }
 
 /// The stage records of issue `number`, oldest first, each with the URL of
@@ -184,6 +190,11 @@ struct Flowing {
     records: Vec<StageRecord>,
     /// The URL of each record's comment.
     urls: Vec<String>,
+    /// The id of each record's comment.
+    ids: Vec<u64>,
+    /// The rulings its comments say were proposed as precedents
+    /// (`precedent::proposed`).
+    proposed: Vec<u64>,
     /// Whether a worker took it in (`intake::taken_in`).
     taken_in: bool,
     /// The patrol that opened it, when one did (`intake::opened_by`).
@@ -231,12 +242,24 @@ impl Flows {
         let mut issues = vec![];
         for issue in flowing {
             let comments = fleet.gh.comments(issue.number)?;
-            let (records, urls) = records_among(&comments);
+            let (records, said) = records_in(&comments);
+            let urls = said.iter().map(|comment| comment.url.clone()).collect();
+            let ids = said.iter().map(|comment| comment.id).collect();
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
+            let proposed = proposed(bodies());
             let taken_in = taken_in(&issue.labels, bodies()).is_some();
             let opened_by = opened_by(bodies());
             let (number, labels) = (issue.number, issue.labels.clone());
-            issues.push(Flowing { number, labels, records, urls, taken_in, opened_by });
+            issues.push(Flowing {
+                number,
+                labels,
+                records,
+                urls,
+                ids,
+                proposed,
+                taken_in,
+                opened_by,
+            });
         }
         Ok(Flows { team: Some(team), issues })
     }
@@ -273,6 +296,24 @@ impl Flows {
             Some((issue.number, workflow, history(workflow, &issue.records).place.position))
         };
         self.issues.iter().filter_map(placed).collect()
+    }
+
+    /// The rulings humans gave the issues read that nothing says were
+    /// proposed as precedents, lowest issue first and oldest first on each.
+    pub fn unproposed(&self) -> Vec<Ruling> {
+        let Ok(team) = self.team() else { return vec![] };
+        let mut found = vec![];
+        for issue in &self.issues {
+            let Ok(workflow) = workflow_of(team, &issue.labels) else { continue };
+            let readings = history(workflow, &issue.records).readings;
+            for ruling in rulings(issue.number, &issue.records, &readings, &issue.ids) {
+                if !issue.proposed.contains(&ruling.comment) {
+                    found.push(ruling);
+                }
+            }
+        }
+        found.sort_by_key(|ruling| (ruling.issue, ruling.comment));
+        found
     }
 
     /// How many of the issues read — the open ones that follow a workflow — a
