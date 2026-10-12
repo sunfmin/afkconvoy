@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::launch::{Waited, until_ready};
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::stopped::Nudged;
@@ -21,6 +22,8 @@ const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 const TOLD_FILE: &str = "convoy-train-told";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
+/// Where a stage that writes nothing started here (`guard::WritesNothing`).
+const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The comment of the `blocked` verdict a worker was last started again over.
 const ANSWERED_FILE: &str = "convoy-answered";
 /// More worktrees than one machine runs workers in.
@@ -307,6 +310,30 @@ impl Worktree {
     pub fn record_nudge(&self, at: u64) -> Result<()> {
         let file = self.note(NUDGE_FILE)?;
         std::fs::write(&file, at.to_string())
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The commit the branch here is at.
+    pub fn tip(&self) -> Result<String> {
+        Repo { dir: self.path.clone() }.git(&["rev-parse", "HEAD"])
+    }
+
+    /// Where the stage that writes nothing started here, when one did.
+    pub fn writes_nothing(&self) -> Result<Option<WritesNothing>> {
+        let note = std::fs::read_to_string(self.note(WRITES_NOTHING_FILE)?).unwrap_or_default();
+        Ok(WritesNothing::read(&note))
+    }
+
+    /// Keeps where a stage that writes nothing starts here: what `started`
+    /// makes of the branch's tip. A start kept under the same claim stands:
+    /// the worker that continues a stage answers for the one before it.
+    pub fn keep_writes_nothing(&self, started: impl FnOnce(String) -> WritesNothing) -> Result<()> {
+        let starting = started(self.tip()?);
+        if self.writes_nothing()?.is_some_and(|kept| kept.claim == starting.claim) {
+            return Ok(());
+        }
+        let file = self.note(WRITES_NOTHING_FILE)?;
+        std::fs::write(&file, starting.note())
             .with_context(|| format!("cannot write {}", file.display()))
     }
 

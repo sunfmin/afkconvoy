@@ -496,7 +496,8 @@ case "$2" in
       cat "$root/shell-help"; exit 0
     fi
     echo "Usage: claude [options]"; echo "  --add-dir <directories...>"
-    echo "  --model <model>"; echo "  --setting-sources <sources>"; exit 0 ;;
+    echo "  --model <model>"; echo "  --setting-sources <sources>"
+    echo "  --settings <file-or-json>"; exit 0 ;;
   "type -- "*)
     word=${2#type -- \'}; word=${word%\'}
     if [ -f "$root/shell-types" ]; then

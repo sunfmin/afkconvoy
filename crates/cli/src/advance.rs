@@ -123,10 +123,23 @@ fn ask_after(
     }
 }
 
+/// Why the stage that declared under `claim` failed for what it left behind,
+/// when it did: marked as writing nothing, it left a commit on the branch. A
+/// guard refuses the commit as it is made; this is the check of what a guard
+/// missed (docs/adr/0012).
+fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<String>> {
+    let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, claim.number)? else {
+        return Ok(None);
+    };
+    let Some(started) = worktree.writes_nothing()? else { return Ok(None) };
+    Ok(started.broken(&claim.sha, &worktree.tip()?))
+}
+
 /// The tick's look at one claim of mine at a stage → `Done` when that ended
 /// the claim. A verdict is carried out as soon as it is read, whatever its
 /// worker is doing: it was declared through the fleet, and a claim declares
-/// once. The PR, the branch and the worktree are the issue's next stage's.
+/// once. A stage that left what it may not have is escalated instead,
+/// whatever it declared. The PR, the branch and the worktree are the issue's next stage's.
 pub fn advance(
     fleet: &mut Fleet,
     me: &Me,
@@ -137,6 +150,13 @@ pub fn advance(
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(Outcome::Nothing) };
     let called = flows.called(issue, &claim.sha)?;
     let said = called.said.as_deref();
+    let declared = !matches!(called.advance, Advance::AskAfter);
+    if declared && let Some(failed) = left_behind(fleet, &claim)? {
+        let (worktree, workless) = worktree_and_work(fleet, issue)?;
+        let (reason, pr) = (stated(&failed, said, None), pr_of(fleet, issue)?);
+        escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
+        return Ok(Outcome::Done);
+    }
     let reason = match called.advance {
         Advance::AskAfter => {
             return ask_after(fleet, me, agent, &claim, called.stage.as_deref().unwrap_or("?"));

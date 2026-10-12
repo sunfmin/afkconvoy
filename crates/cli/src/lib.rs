@@ -25,6 +25,7 @@ pub mod fleet;
 pub mod gate;
 pub mod gh;
 pub mod git;
+pub mod guard;
 pub mod judge;
 pub mod landing;
 pub mod launch;
@@ -188,6 +189,9 @@ enum Command {
         #[arg(long, env = TEAM_COMMIT_ENV)]
         team_commit: String,
     },
+    /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
+    #[command(after_long_help = include_str!("help/guard.txt"))]
+    Guard,
     /// Start a fresh worker on one issue
     #[command(after_long_help = include_str!("help/dispatch.txt"))]
     Dispatch {
@@ -414,7 +418,8 @@ impl AgentArgs {
 
 /// Runs one command line. Prints exactly one JSON object on stdout: the
 /// command's answer, or `{"error": …}` with a non-zero exit. An answer that
-/// is text — a drawing — is printed as it is.
+/// is text — a drawing — is printed as it is. `guard` answers Claude Code,
+/// in the way a hook does: with its exit code, and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
@@ -422,6 +427,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(e) if !e.use_stderr() => e.exit(),
         Err(e) => return fail(2, e.render().to_string().trim()),
     };
+    if matches!(cli.command, Command::Guard) {
+        return guard::guard();
+    }
     match run(cli.command, cli.now) {
         Ok(Value::String(drawing)) => {
             print!("{drawing}");
@@ -538,6 +546,8 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             };
             stage::verdict(&Repo::here()?, declaring)
         }
+        // `main` answers it: a hook's answer is no JSON object.
+        Command::Guard => anyhow::bail!("guard answers with its exit code"),
         Command::Dispatch { issue, who, agent, start } => {
             dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue, start)
         }
