@@ -96,29 +96,15 @@ pub fn remembered(
     now: u64,
 ) -> Vec<Remembered> {
     let mut rows: Vec<Remembered> = Vec::new();
-    let row_of = |rows: &mut Vec<Remembered>, instance: Option<String>| -> usize {
-        if let Some(at) = rows.iter().position(|row| row.instance == instance) {
-            return at;
-        }
-        let beat = instance.as_ref().and_then(|instance| {
-            heartbeats.iter().find(|(name, _)| name == instance).map(|(_, ts)| *ts)
-        });
-        rows.push(Remembered {
-            is_me: match (&instance, me) {
-                (Some(instance), Some(me)) => instance == me.as_str(),
-                _ => false,
-            },
-            instance,
-            host: None,
-            claims: vec![],
-            heartbeat: beat,
-            heartbeat_age: beat.and_then(|beat| stamp_age(beat, now)),
-            fresh: !is_stale(beat, now),
-        });
-        rows.len() - 1
-    };
     for claim in claims {
-        let at = row_of(&mut rows, claim.owner.as_ref().map(|owner| owner.instance.clone()));
+        let instance = claim.owner.as_ref().map(|owner| owner.instance.clone());
+        let at = match row_of(&rows, &instance) {
+            Some(at) => at,
+            None => {
+                rows.push(row(instance, heartbeats, me, now));
+                rows.len() - 1
+            }
+        };
         rows[at].claims.push(claim.number);
         if rows[at].host.is_none() {
             let host = claim.owner.as_ref().map(|owner| owner.host.clone());
@@ -126,7 +112,10 @@ pub fn remembered(
         }
     }
     for (instance, _) in heartbeats {
-        row_of(&mut rows, Some(instance.clone()));
+        let instance = Some(instance.clone());
+        if row_of(&rows, &instance).is_none() {
+            rows.push(row(instance, heartbeats, me, now));
+        }
     }
     for row in &mut rows {
         row.claims.sort();
@@ -138,6 +127,43 @@ pub fn remembered(
             .then(a.instance.cmp(&b.instance))
     });
     rows
+}
+
+/// Where `instance`'s row is among `rows`; `None` when it has none yet.
+#[spec(fn(&[Remembered][@n], &Option<String>) -> Option<usize{v: v < n}>)]
+fn row_of(rows: &[Remembered], instance: &Option<String>) -> Option<usize> {
+    let mut at = 0;
+    while at < rows.len() {
+        if rows[at].instance == *instance {
+            return Some(at);
+        }
+        at += 1;
+    }
+    None
+}
+
+/// The row of an instance no claim has been filed under yet.
+fn row(
+    instance: Option<String>,
+    heartbeats: &[(String, u64)],
+    me: Option<&InstanceId>,
+    now: u64,
+) -> Remembered {
+    let beat = instance.as_ref().and_then(|instance| {
+        heartbeats.iter().find(|(name, _)| name == instance).map(|(_, ts)| *ts)
+    });
+    Remembered {
+        is_me: match (&instance, me) {
+            (Some(instance), Some(me)) => instance == me.as_str(),
+            _ => false,
+        },
+        instance,
+        host: None,
+        claims: vec![],
+        heartbeat: beat,
+        heartbeat_age: beat.and_then(|beat| stamp_age(beat, now)),
+        fresh: !is_stale(beat, now),
+    }
 }
 
 /// What `takeover --from <target>` comes to.
