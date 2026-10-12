@@ -4,7 +4,7 @@
 use flux_rs::attrs::*;
 
 use crate::layout::Layout;
-use crate::lease::heartbeat_due;
+use crate::lease::{heartbeat_due, is_stale};
 use crate::record::{self, Fields};
 
 /// The kinds of ref a scan reads: a claim's is named for its issue, a
@@ -15,6 +15,12 @@ pub const HEARTBEAT_KIND: &str = "heartbeat/";
 /// The ref that is the claim on issue `number`.
 pub fn claim_ref(layout: Layout, number: u64) -> String {
     layout.under(&format!("{CLAIM_KIND}{number}"))
+}
+
+/// The ref that is the claim on a run — work that is no issue's — keyed `key`:
+/// a claim like an issue's. No issue's number reads as a run's key.
+pub fn run_ref(layout: Layout, key: &str) -> String {
+    layout.under(&format!("{CLAIM_KIND}{key}"))
 }
 
 /// The ref that carries `instance`'s heartbeat.
@@ -114,6 +120,52 @@ pub struct Claim {
     pub number: u64,
     pub owner: Option<Owner>,
     pub sha: String,
+}
+
+/// The claim on a run: work a fleet instance does for no issue — a patrol's
+/// run, the proposal of a precedent — as the remote has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunClaim {
+    /// What follows `CLAIM_KIND` in its ref's name: whoever claims runs of
+    /// one kind says how theirs are keyed.
+    pub key: String,
+    /// `None`: the claim's record names nobody.
+    pub owner: Option<Owner>,
+    /// What a delete of the claim is leased to.
+    pub sha: String,
+}
+
+/// Whose a run still claimed is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holder {
+    Mine,
+    /// A peer whose heartbeat is within the lease.
+    Peer,
+    /// A peer presumed dead, or nobody: the claim is to be deleted.
+    Dead,
+}
+
+impl RunClaim {
+    /// Whose the run is for the fleet instance `me` (`None`: nobody's claims
+    /// are its own) at `now`, with each instance's heartbeat in `heartbeats`.
+    pub fn holder(
+        &self,
+        me: Option<&InstanceId>,
+        heartbeats: &[(String, u64)],
+        now: u64,
+    ) -> Holder {
+        let owner = self.owner.as_ref().map(|owner| owner.instance.as_str());
+        let beat = owner.and_then(|instance| {
+            heartbeats.iter().find(|(name, _)| name == instance).map(|(_, ts)| *ts)
+        });
+        if me.is_some_and(|me| owner == Some(me.as_str())) {
+            Holder::Mine
+        } else if is_stale(beat, now) {
+            Holder::Dead
+        } else {
+            Holder::Peer
+        }
+    }
 }
 
 impl Claim {

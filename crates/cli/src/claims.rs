@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use afkconvoy_core::claims::{
-    CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, Owner, claim_ref, claim_steps,
-    heartbeat_ref, read_heartbeat, releasable, write_heartbeat,
+    CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, Owner, RunClaim, claim_ref,
+    claim_steps, heartbeat_ref, read_heartbeat, releasable, run_ref, write_heartbeat,
 };
-use afkconvoy_core::patrol::{self, RUN_KIND, RunClaim, read_run};
+use afkconvoy_core::patrol::{RUN_KIND, read_run};
 use afkconvoy_core::record::fleet_number;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -28,7 +28,8 @@ pub struct Me {
 pub struct Scan {
     pub claims: Vec<Claim>,
     pub heartbeats: BTreeMap<String, u64>,
-    /// The claims on patrol runs: one for each patrol whose run is still going.
+    /// The claims on runs — a patrol's, the proposal of a precedent: one for
+    /// each still going.
     pub runs: Vec<RunClaim>,
     /// patrol → when its last recorded run started.
     pub last_runs: BTreeMap<String, u64>,
@@ -47,9 +48,8 @@ impl Scan {
                 let owner = Owner::read(&record.subject);
                 if let Some(number) = fleet_number(name) {
                     scan.claims.push(Claim { number, owner, sha: record.sha });
-                } else if let Some(patrol) = patrol::claimed(name) {
-                    let patrol = patrol.to_string();
-                    scan.runs.push(RunClaim { patrol, owner, sha: record.sha });
+                } else {
+                    scan.runs.push(RunClaim { key: name.to_string(), owner, sha: record.sha });
                 }
             } else if let Some(instance) = kept.strip_prefix(HEARTBEAT_KIND)
                 && let Some(ts) = read_heartbeat(&record.subject)
@@ -201,18 +201,18 @@ pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Re
     }
 }
 
-/// Claims a run of the patrol `name` in my name → the claim, or `None` when a
-/// peer holds one: of several hosts that found the patrol due, one runs it.
-pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, name: &str) -> Result<Option<RunClaim>> {
-    let refname = patrol::claim_ref(repo.layout(), name);
-    scan.runs.retain(|run| run.patrol != name);
+/// Claims the run keyed `key` in my name → the claim, or `None` when a peer
+/// holds one: of several hosts that found the run due, one makes it.
+pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, key: &str) -> Result<Option<RunClaim>> {
+    let refname = run_ref(repo.layout(), key);
+    scan.runs.retain(|run| run.key != key);
     let (claim, won) = match put(repo, scan, me, &refname, Take::Fresh)? {
         Put::Won { owner, sha } => {
-            (Some(RunClaim { patrol: name.to_string(), owner: Some(owner), sha }), true)
+            (Some(RunClaim { key: key.to_string(), owner: Some(owner), sha }), true)
         }
         Put::Lost { there, .. } => {
             let read = |now: RemoteRecord| RunClaim {
-                patrol: name.to_string(),
+                key: key.to_string(),
                 owner: Owner::read(&now.subject),
                 sha: now.sha,
             };
@@ -223,11 +223,11 @@ pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, name: &str) -> Result<Opt
     Ok(claim.filter(|_| won))
 }
 
-/// Deletes the claim on a patrol's run, only while it is still `claim`.
-/// Already gone counts as released.
+/// Deletes the claim on a run, only while it is still `claim`. Already gone
+/// counts as released.
 pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
-    unput(repo, &patrol::claim_ref(repo.layout(), &claim.patrol), &claim.sha)?;
-    scan.runs.retain(|run| run.patrol != claim.patrol);
+    unput(repo, &run_ref(repo.layout(), &claim.key), &claim.sha)?;
+    scan.runs.retain(|run| run.key != claim.key);
     Ok(())
 }
 

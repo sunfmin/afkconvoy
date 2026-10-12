@@ -4,8 +4,8 @@
 
 use afkconvoy_core::intake::opened_by;
 use afkconvoy_core::patrol::{
-    Row, Seen, Standing, broke, checkout_name, failure_of, failure_report, failure_title, is_due,
-    read_run, run_over, run_ref, write_run,
+    Row, Seen, Standing, broke, checkout_name, claim_key, failure_of, failure_report,
+    failure_title, is_due, read_run, run_over, run_ref, write_run,
 };
 use afkconvoy_core::plan::Issue;
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
@@ -49,7 +49,7 @@ pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue]) -> Result<Vec<Seen>> 
         every: patrol.every,
         max_open: patrol.max_open,
         last_run: fleet.scan.last_runs.get(&patrol.name).copied(),
-        claim: fleet.scan.runs.iter().find(|run| run.patrol == patrol.name).cloned(),
+        claim: fleet.scan.runs.iter().find(|run| run.key == claim_key(&patrol.name)).cloned(),
         open: opened.iter().filter(|by| **by == patrol.name).count() as u64,
         failure: failure_of(issues, &patrol.name, escalate),
     };
@@ -74,7 +74,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         .role(&patrol.work.role)
         .ok_or_else(|| anyhow!("the team has no role {:?}", patrol.work.role))?;
     let role_copy = kept.role(role)?;
-    let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, name)? else {
+    let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &claim_key(name))? else {
         return Ok(Outcome::Lost);
     };
     // A peer's run may have started and ended since the rebuild read the remote.

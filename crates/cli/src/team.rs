@@ -329,6 +329,10 @@ fn answer(loaded: &Loaded) -> Value {
         "roles": roles,
         "workflows": team.workflows.iter().map(workflow).collect::<Vec<_>>(),
         "patrols": team.patrols.iter().map(|p| patrol(p, &loaded.runs)).collect::<Vec<_>>(),
+        "precedents": team.precedents.as_ref().map(|precedents| {
+            json!({"by": precedents.work.role, "do": precedents.work.skill,
+                "max_open": precedents.max_open})
+        }),
     })
 }
 

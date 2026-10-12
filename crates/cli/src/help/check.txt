@@ -22,6 +22,7 @@ WHAT IT READS AND WRITES
       escalate_label: ready-for-human    # default
       roles:
         <short name>: owner/repo         # a role is a repo
+      precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional; see below
 
   A workflow file:
 
@@ -47,6 +48,12 @@ WHAT IT READS AND WRITES
       max_open: 5                        # required: it is skipped once this many issues
                                          # it opened are open
 
+  `precedents` names who proposes a human's ruling as a precedent: the fleet starts one
+  worker in that role, with that skill, for each ruling a human gives an escalated issue
+  (`afkconvoy rule`), to open a PR on the team's repo that appends one entry to
+  `precedents.md`. `max_open` is required: no proposal is started while that many are
+  open there. A team without the key has no precedents proposed (`afkconvoy tick --help`).
+
   A skill of a role is an entry of `.claude/skills/` in the role's repo.
 
   Without a flag it reads the config of this checkout for `team`, and that repo from
@@ -58,8 +65,8 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"team", "commit", "files", "escalate_label", "roles", "workflows", "patrols"} — what
-  it read.
+  {"team", "commit", "files", "escalate_label", "roles", "workflows", "patrols",
+  "precedents"} — what it read.
   `commit` is the team's commit read, null with `--dir`; `files` the files read. Each of
   `roles` is {"name", "repo", "commit", "skills"}: `commit` is the one the role's repo
   was read at. Each of `workflows` is {"name", "flow_label", "max_rework",
@@ -67,7 +74,8 @@ WHAT IT ANSWERS
   {"name", "by", "do", "model", "writes", "escalate", "pass", "reject"}. Each of
   `patrols` is {"name", "by", "do", "every", "model", "max_open", "runs_here"}: `every`
   in seconds, and `runs_here` whether the config of this checkout names it — false
-  with `--team` and `--dir`, which read no config.
+  with `--team` and `--dir`, which read no config. `precedents` is {"by", "do",
+  "max_open"}, or null where the team names nobody to propose them.
 
   A team with a fault: {"error", "faults"} and exit 1. `faults` holds every fault of the
   team, not the first: each {"file", "key", "problem"}. `key` is a path from the top of
