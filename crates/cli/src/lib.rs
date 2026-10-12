@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::position::Declared;
-use afkconvoy_core::role::{ROLE_COMMIT_ENV, TEAM_COMMIT_ENV};
+use afkconvoy_core::role::{ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -26,6 +26,7 @@ pub mod gate;
 pub mod gh;
 pub mod git;
 pub mod guard;
+pub mod intake;
 pub mod judge;
 pub mod landing;
 pub mod launch;
@@ -205,6 +206,22 @@ enum Command {
         stage: String,
         #[command(flatten)]
         text: TextArgs,
+    },
+    /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
+    #[command(after_long_help = include_str!("help/intake.txt"))]
+    Intake {
+        /// The issue to take in
+        #[arg(long)]
+        issue: u64,
+        /// The workflow it is to follow, by name: what follows `flow:` in its flow label
+        #[arg(long)]
+        workflow: String,
+        /// The role of the worker that takes it in
+        #[arg(long, env = ROLE_ENV)]
+        role: String,
+        /// The issue that worker is on
+        #[arg(long, env = ISSUE_ENV)]
+        from: u64,
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     #[command(after_long_help = include_str!("help/guard.txt"))]
@@ -523,7 +540,13 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Plan { instance } => {
             probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);
-            Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?.0)?)
+            let fleet = Fleet::open(now)?;
+            let (set, flows) = fleet.rebuild(instance.as_ref())?;
+            let mut plan = serde_json::to_value(set)?;
+            if let Some(bound) = &fleet.config.bound {
+                plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
+            }
+            Ok(plan)
         }
         Command::Run { instance, host, agent, ticks, second_ms } => {
             let host = host.unwrap_or_else(this_host);
@@ -576,6 +599,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Send { issue, stage, text } => {
             let team = team::load(team::From::Config)?.team;
             steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
+        }
+        Command::Intake { issue, workflow, role, from } => {
+            intake::intake(&Repo::here()?, intake::Taking { issue, workflow, role, from })
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),

@@ -18,7 +18,7 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
-   "now"}
+   "now"} — and in a bound repo "intake"
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage};
@@ -38,6 +38,10 @@ WHAT IT ANSWERS
                    (each of the three: {number, instance, sha})
     free_slots     how many more claims the instance may take
     now            the time the plan was made at, in epoch seconds
+    intake         in a bound repo: {"open", "limit"} — the open issues taken in by
+                   workers, counted from their intake records, against the repo's
+                   `intake_limit`. With `open` at `limit`, `afkconvoy intake` refuses.
+                   An issue a human labelled is not among them
 
   The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
   logged out (the error names each, with the line to run; `claude` is among them when

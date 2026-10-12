@@ -5,6 +5,7 @@
 //! (`afkconvoy_core::stage_record`).
 
 use afkconvoy_core::claims::Claim;
+use afkconvoy_core::intake::taken_in;
 use afkconvoy_core::plan::{Issue, PullRequest, closing_pr};
 use afkconvoy_core::position::{Declared, Position};
 use afkconvoy_core::role::{Due, due, followed, workflow_of};
@@ -21,6 +22,7 @@ use crate::copies::Copies;
 use crate::fleet::Fleet;
 use crate::gh::{Comment, GitHub};
 use crate::git::Repo;
+use crate::intake::came_in;
 use crate::team::{Kept, keep};
 use crate::wake::wake;
 use crate::workflow::position;
@@ -117,12 +119,15 @@ pub(crate) fn records_of(gh: &GitHub, number: u64) -> Result<(Vec<StageRecord>, 
 /// `team` its flow label names — or, escalated, the one it left — read off
 /// its stage records.
 ///
-///   {"issue", "workflow", "position", "follows", "rework": {"had", "left"},
-///    "consecutive_rework": {<stage>: {"had", "left"}}, "records": [{"stage",
-///    "verdict", "reads", "by", "claim", "role_commit", "team_commit", "url"}]}
+///   {"issue", "workflow", "intake": {"by", "role", "from", "url"}, "position",
+///    "follows", "rework": {"had", "left"}, "consecutive_rework": {<stage>:
+///    {"had", "left"}}, "records": [{"stage", "verdict", "reads", "by", "claim",
+///    "role_commit", "team_commit", "url"}]}
 ///
-/// `follows` is the position a `pass` declared now leads to; null where none
-/// can be declared.
+/// `intake` is how the issue came in: by a `worker`, with the role, the issue
+/// it was on and the intake record's comment, or by a `human`. `follows` is
+/// the position a `pass` declared now leads to; null where none can be
+/// declared.
 pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
     let issue = gh.issue(number)?;
     let comments = gh.comments(number)?;
@@ -159,6 +164,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
     Ok(json!({
         "issue": number,
         "workflow": workflow.name,
+        "intake": came_in(&issue.labels, &comments),
         "position": position(workflow, place.position),
         "follows": follows,
         "rework": {"had": place.rework(), "left": place.rework_left()},
@@ -174,6 +180,8 @@ struct Flowing {
     records: Vec<StageRecord>,
     /// The URL of each record's comment.
     urls: Vec<String>,
+    /// Whether a worker took it in (`intake::taken_in`).
+    taken_in: bool,
 }
 
 /// What a claim's stage records call for, with what a tick says of it.
@@ -212,9 +220,12 @@ impl Flows {
             .map_err(|error| format!("{error:#}"));
         let mut issues = vec![];
         for issue in flowing {
-            let (records, urls) = records_of(&fleet.gh, issue.number)?;
+            let comments = fleet.gh.comments(issue.number)?;
+            let (records, urls) = records_among(&comments);
+            let bodies = comments.iter().map(|comment| comment.body.as_str());
+            let taken_in = taken_in(&issue.labels, bodies).is_some();
             let (number, labels) = (issue.number, issue.labels.clone());
-            issues.push(Flowing { number, labels, records, urls });
+            issues.push(Flowing { number, labels, records, urls, taken_in });
         }
         Ok(Flows { team: Some(team), issues })
     }
@@ -225,6 +236,12 @@ impl Flows {
             Some(Err(why)) => Err(anyhow!("{why}")),
             None => Err(anyhow!("no issue of this repo follows a workflow")),
         }
+    }
+
+    /// How many of the issues read — the open ones that follow a workflow — a
+    /// worker took in: what the repo's `intake_limit` is held against.
+    pub fn taken_in(&self) -> usize {
+        self.issues.iter().filter(|issue| issue.taken_in).count()
     }
 
     /// What is due on each issue read (`role::due`), for the frontier. `prs`

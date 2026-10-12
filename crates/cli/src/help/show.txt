@@ -4,8 +4,8 @@ WHEN TO RUN IT
   which role performs each stage, and where every `pass` and `reject` leads. Paste it
   into a GitHub comment inside a code block to have it reviewed there.
 
-  With `--issue`, to ask where one issue is in its workflow: its position, what follows
-  it, and the rework it has left before a breaker stops it.
+  With `--issue`, to ask where one issue is in its workflow: how it came in, its
+  position, what follows it, and the rework it has left before a breaker stops it.
 
       afkconvoy show --issue 7
 
@@ -24,8 +24,9 @@ WHAT IT READS AND WRITES
   and its comments. The workflow is the one the issue's flow label names — for an
   escalated issue, whose flow label was swapped out, the one its escalation's comment
   says it left. The position is read off the issue's stage records — the comments
-  `afkconvoy verdict`, `rule` and `send` write — and off nothing else: not its `stage:` label, which the fleet writes for
-  humans to filter by and never reads.
+  `afkconvoy verdict`, `rule` and `send` write — and off nothing else: not its `stage:`
+  label, which the fleet writes for humans to filter by and never reads. How it came in
+  is read off its intake record, the comment `afkconvoy intake` writes.
 
 WHAT IT ANSWERS
 
@@ -52,8 +53,13 @@ WHAT IT ANSWERS
 
   With `--issue`, JSON:
 
-  {"issue", "workflow", "position", "follows", "rework", "consecutive_rework", "records"}
+  {"issue", "workflow", "intake", "position", "follows", "rework", "consecutive_rework",
+   "records"}
 
+    intake              how the issue came in. {"by": "worker", "role", "from", "url"}:
+                        a worker in that role, on the issue `from`, took it in with
+                        `afkconvoy intake`, and `url` is the comment that records it.
+                        {"by": "human"}: its flow label has no intake record for it
     position            where the issue is: {"is", "stage", "by", "do", "reason"}, as
                         `afkconvoy rehearse --help` spells out
     follows             the position a `pass` declared now would lead to; null where

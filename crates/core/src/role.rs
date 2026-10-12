@@ -33,6 +33,10 @@ const NO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 /// repo and of the team's in: the command that declares a verdict reads them.
 pub const ROLE_COMMIT_ENV: &str = "AFKCONVOY_ROLE_COMMIT";
 pub const TEAM_COMMIT_ENV: &str = "AFKCONVOY_TEAM_COMMIT";
+/// The variables it carries the issue its worker is on and the worker's role
+/// in: the command that takes an issue in reads them.
+pub const ISSUE_ENV: &str = "AFKCONVOY_ISSUE";
+pub const ROLE_ENV: &str = "AFKCONVOY_ROLE";
 /// The variables the guard reads its stage's limits from (`guard::Limits`).
 pub const STAGE_ENV: &str = "AFKCONVOY_STAGE";
 pub const WRITES_ENV: &str = "AFKCONVOY_WRITES";
@@ -203,10 +207,10 @@ impl Facts<'_> {
     /// The variables a worker's environment carries them in.
     pub fn env(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("AFKCONVOY_ISSUE", self.issue.to_string()),
+            (ISSUE_ENV, self.issue.to_string()),
             ("AFKCONVOY_FLOW", self.flow.to_string()),
             (STAGE_ENV, self.stage.to_string()),
-            ("AFKCONVOY_ROLE", self.role.to_string()),
+            (ROLE_ENV, self.role.to_string()),
             ("AFKCONVOY_SKILL", self.skill.to_string()),
             (WRITES_ENV, self.writes.to_string()),
             (CONSULT_ENV, self.consult.to_string()),
