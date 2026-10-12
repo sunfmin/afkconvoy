@@ -14,11 +14,12 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  `--issue` reads the open PRs and the train. It pushes this branch when it is ahead of
-  the remote's, then pushes one merge commit — the PR's head joined onto the train's
-  tip — as the train's new tip. No gate runs, and nothing on GitHub changes. A PR that
-  conflicts with the train gets the train's tip merged into this worktree, left in
-  progress.
+  `--issue` reads the open issues, the open PRs and the train. With a fleet lock
+  standing it joins the PR of a lock issue only, and for any other changes nothing.
+  Otherwise it pushes this branch when it is ahead of the remote's, then pushes one
+  merge commit — the PR's head joined onto the train's tip — as the train's new tip.
+  No gate runs, and nothing on GitHub changes. A PR that conflicts with the train gets
+  the train's tip merged into this worktree, left in progress.
 
   `--train` puts this worktree on the train's tip, merges the base branch in when it
   moved, pushes that as the train's tip, and gates it — by the run on record for that
@@ -36,6 +37,9 @@ WHAT IT ANSWERS
     merged    the base branch already holds the PR's head — stop. With "head"
     conflict  with "files" and "worktree": resolve every file, commit the merge, run the
               gate again, then this again
+    locked    a fleet lock stands, and this issue is not one: nothing joined and nothing
+              was pushed — stop, and run this again when told to carry on. With "locks",
+              the lock issues
 
   `--train`: {"train", "base", "outcome", "detail", …}
 

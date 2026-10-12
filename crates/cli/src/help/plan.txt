@@ -18,7 +18,7 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
-   "now"}
+   "now", "locks"}
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage};
@@ -38,6 +38,11 @@ WHAT IT ANSWERS
                    (each of the three: {number, instance, sha})
     free_slots     how many more claims the instance may take
     now            the time the plan was made at, in epoch seconds
+    locks          the fleet locks standing: the open issues that carry the lock label,
+                   lowest number first — none: []. While there is one, the frontier
+                   holds lock issues only, and every issue a tick would otherwise
+                   dispatch or hand to a human is under `excluded` with the reason
+                   "a fleet lock stands (#n)"
 
   The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
   logged out (the error names each, with the line to run; `claude` is among them when
@@ -52,5 +57,11 @@ WHAT TRIPS YOU UP
     fleet's claims show under `peer_live`, and `free_slots` is the whole concurrency.
     To see a running fleet as it sees itself, pass its instance id — `takeover --list`
     shows every id the remote remembers.
+  - A lock that stands is not thereby worked. A lock issue is on the frontier only when
+    it would be without the lock: with the ready label in an unbound repo, a flow label
+    in a bound one, no epic label, no open blocker, no claim. `excluded` says which
+    of these keeps it off — and the lock stands until the issue is closed.
+  - With a lock standing, `free_slots` counts as free the slot of every claim of
+    `--instance` the lock leaves alone: a lock issue does not wait for them.
   - "Changes nothing" is about fleet state. It still pushes to the remote, and deletes
     there: it needs push access, and it is not a read-only command.

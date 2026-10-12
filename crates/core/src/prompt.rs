@@ -62,7 +62,8 @@ const JOIN_STEP: &str = "\
    It ends with one JSON object. `\"outcome\": \"joined\"` (or `\"merged\"`): you are done — wake the
    fleet (below) and stop. On `\"conflict\"` the train was merged into your branch and left in
    progress: resolve every file it lists, `git add` it, commit the merge,
-   go back to step <g>, and run this again.";
+   go back to step <g>, and run this again. On `\"locked\"` a fleet lock stands and nothing but its
+   own PR joins: stop here, waking nobody, and run this again when you are told to carry on.";
 
 /// The wake, as every worker with an outcome of its own is told it.
 const WAKE: &str = "\

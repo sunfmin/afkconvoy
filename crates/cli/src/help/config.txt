@@ -16,17 +16,18 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"base_branch", "gate_command", "ready_label", "epic_labels", "concurrency",
-   "escalate_label"} — every key, the defaults filled in.
+   "escalate_label", "lock_label"} — every key, the defaults filled in. `lock_label`
+  is the label of a fleet lock (default fleet-lock): while an open issue carries it,
+  the fleet works lock issues only (`afkconvoy lock --help`).
 
-  A repo whose config names a team is a bound repo, and answers four keys more:
-  {"team", "patrols", "lock_label", "intake_limit"} — the team's repo as owner/repo,
-  which of its patrols run here (default none), the label of a fleet lock (default
-  fleet-lock) and how many issues taken in by workers may be open (default 50). A repo
-  that names no team is unbound and answers the six above only.
+  A repo whose config names a team is a bound repo, and answers three keys more:
+  {"team", "patrols", "intake_limit"} — the team's repo as owner/repo, which of its
+  patrols run here (default none) and how many issues taken in by workers may be open
+  (default 50). A repo that names no team is unbound and answers the seven above only.
 
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
   `gate_command` is missing; a key is unknown or of the wrong type; `team` is not
-  owner/repo; `patrols`, `lock_label` or `intake_limit` is set where no `team` is — the
+  owner/repo; `patrols` or `intake_limit` is set where no `team` is — the
   error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 
 WHAT TRIPS YOU UP
