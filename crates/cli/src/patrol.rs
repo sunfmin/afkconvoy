@@ -34,7 +34,7 @@ pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue]) -> Result<Vec<Seen>> 
     let named = kept
         .team
         .patrols_named(&bound.patrols)
-        .map_err(|unknown| unknown_patrols(&bound.team, &kept.team, &unknown))?;
+        .map_err(|unknown| unknown_patrols(bound.team.as_str(), &kept.team, &unknown))?;
     // An issue handed to a human left its workflow, and is open all the same.
     let escalate = &kept.team.escalate_label;
     let mut opened = read.opened();

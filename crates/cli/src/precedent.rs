@@ -94,7 +94,7 @@ pub fn propose(
         drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
         return Ok(Outcome::Lost);
     };
-    fleet.gh.comment(ruling.issue, &proposed_comment(ruling, &work.role, team))?;
+    fleet.gh.comment(ruling.issue, &proposed_comment(ruling, &work.role, team.as_str()))?;
 
     let base = fleet.base_tip()?;
     let source = Source::of(&fleet.repo)?;
@@ -113,7 +113,7 @@ pub fn propose(
         ruling: &record.text,
         role: &work.role,
         skill: &work.skill,
-        team,
+        team: team.as_str(),
         branch: &ruling.branch(),
         precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
         worktree: &path,
