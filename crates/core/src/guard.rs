@@ -310,6 +310,12 @@ impl Reading {
         self.begun = true;
     }
 
+    /// Begins a word at a quote → where what follows it stands.
+    fn quoted(&mut self, within: Within) -> Within {
+        self.begun = true;
+        within
+    }
+
     fn end_word(&mut self) {
         if self.begun {
             self.words.push(std::mem::take(&mut self.word));
@@ -330,42 +336,50 @@ impl Reading {
 /// it.
 fn commands(line: &str) -> Vec<Vec<String>> {
     let mut reading = Reading::default();
-    let mut quote: Option<char> = None;
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match quote {
-            Some(open) if c == open => quote = None,
-            Some('"') if c == '\\' => {
-                if let Some(escaped) = chars.next() {
-                    reading.letter(escaped);
-                }
+    let mut within = Within::Plain;
+    let mut escaped = false;
+    for c in line.chars() {
+        if escaped {
+            escaped = false;
+            // A line carried on outside quotes ends no word and adds nothing.
+            if c != '\n' || within != Within::Plain {
+                reading.letter(c);
             }
-            Some(_) => reading.letter(c),
-            None if c == '\'' || c == '"' => {
-                quote = Some(c);
-                reading.begun = true;
-            }
-            None if c == '\\' => match chars.next() {
-                // A line carried on: no word ends here.
-                Some('\n') | None => {}
-                Some(escaped) => reading.letter(escaped),
-            },
-            None if c == '#' && !reading.begun => {
-                // A comment, to the end of its line.
-                for commented in chars.by_ref() {
-                    if commented == '\n' {
-                        break;
-                    }
-                }
+            continue;
+        }
+        match within {
+            Within::Comment if c == '\n' => within = Within::Plain,
+            Within::Comment => {}
+            Within::Single if c == '\'' => within = Within::Plain,
+            Within::Double if c == '"' => within = Within::Plain,
+            Within::Double if c == '\\' => escaped = true,
+            Within::Single | Within::Double => reading.letter(c),
+            Within::Plain if c == '\'' => within = reading.quoted(Within::Single),
+            Within::Plain if c == '"' => within = reading.quoted(Within::Double),
+            Within::Plain if c == '\\' => escaped = true,
+            Within::Plain if c == '#' && !reading.begun => {
                 reading.end_command();
+                within = Within::Comment;
             }
-            None if COMMAND_ENDS.contains(&c) => reading.end_command(),
-            None if c.is_whitespace() || WORD_ENDS.contains(&c) => reading.end_word(),
-            None => reading.letter(c),
+            Within::Plain if COMMAND_ENDS.contains(&c) => reading.end_command(),
+            Within::Plain if c.is_whitespace() || WORD_ENDS.contains(&c) => reading.end_word(),
+            Within::Plain => reading.letter(c),
         }
     }
     reading.end_command();
     reading.commands
+}
+
+/// Where in a shell line a character stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Within {
+    Plain,
+    /// Between two single quotes, where every character is itself.
+    Single,
+    /// Between two double quotes, where a backslash still escapes.
+    Double,
+    /// After a `#`, to the end of its line.
+    Comment,
 }
 
 /// Why `call` is refused under `limits`; `None` when the worker may make it.
