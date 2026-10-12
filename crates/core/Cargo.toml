@@ -8,6 +8,11 @@ publish = false
 [dependencies]
 # Refinement attributes; they expand to nothing under a plain `cargo build`.
 flux-rs = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+# Flux's refinements of the standard library, at the same revision: without
+# them a `Vec` has no length Flux knows of, and an index into one goes unchecked.
+# Both are empty under a plain `cargo build`.
+flux-alloc = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
+flux-core = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
 serde.workspace = true
 
 [dev-dependencies]
@@ -17,6 +22,13 @@ serde_yaml = "0.9"
 [package.metadata.flux]
 enabled = true
 check_overflow = "strict"
+
+# The checker ../../verify.sh runs, beside the Flux revision above that
+# `cargo-flux` is built from. It refuses any other: each value is what the tool
+# reports about itself, to `fixpoint --version` and to `z3 --version`.
+[package.metadata.checker]
+fixpoint = "0.9.6.3.8 (684d0829c19fbee83b892c9f5e20c2598897297c)"
+z3 = "5.1.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }

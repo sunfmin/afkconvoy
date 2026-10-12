@@ -11,5 +11,6 @@ The effect layer runs `git`, `gh` and `orca` as subprocesses, as afk-fleet does,
 - The steps a transition has taken are indices on a runtime value, not type parameters: an interrupted transition is finished by a later tick that reads how far it got, which a typestate cannot follow.
 - Flux proves what a call requires, not that a call is made. That a transition runs to its release is held by ordinary Rust: the transition returns a value only the release produces.
 - The proof starts at what the effect layer reports. That a read returns what GitHub holds is not proved.
+- Flux knows the length of a `Vec` only through its own `flux-alloc` and `flux-core` crates, so the core depends on both at the revision of `flux-rs`: without them an index into a `Vec` goes unchecked. Both are empty under a plain build.
 - A loop needs its invariant written as a qualifier, and a function whose result an invariant mentions must return a named value, not a formula.
 - The Homebrew formula depends on `git` and `gh`; orca is the user's to install.

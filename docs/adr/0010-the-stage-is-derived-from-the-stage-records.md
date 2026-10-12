@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # The stage an issue is at is derived from its stage records

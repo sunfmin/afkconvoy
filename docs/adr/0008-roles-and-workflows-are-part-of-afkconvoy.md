@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Roles and workflows are part of afkconvoy, and a team repo holds them

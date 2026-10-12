@@ -48,7 +48,7 @@ lock_label: fleet-lock            # an open issue carrying this is a fleet lock
 
 `base_branch` and `gate_command` have no default; the rest default to the values shown. `afkconvoy config` prints what was read.
 
-A repo may also name a team — `team: owner/repo` — which makes it a bound repo (see [`GLOSSARY.md`](GLOSSARY.md)); `patrols` and `intake_limit` are read beside it. `afkconvoy check` reads the team and its workflows and reports every fault with its file and key; `afkconvoy check --help` gives the files and keys of a team. `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started. A worker ends its stage with `afkconvoy verdict`, which leaves one stage record on the issue; `afkconvoy show --issue <n>` reads an issue's position, what follows and the rework it has left off those records, and each tick keeps a `stage:<name>` label on the issue for humans to filter by — the fleet never reads it. A worker takes an issue in to a workflow with `afkconvoy intake`, which leaves a record of the role that did and the issue it was on; the open issues taken in that way are held under `intake_limit`, `afkconvoy plan` reports the count, and an issue a human labels is outside it. A stage that finds its issue too large splits it: it opens child issues, takes each in — `afkconvoy intake --blocked-by <n,…>` says which of the others a child waits for — and declares `blocked` on all of them; the issue is parked, its children are worked in the order their blockers close, and when the last has closed the stage that split it runs again and judges the whole. A workflow whose last stage passes to `land` names the role that lands (`land: { by, do }`): the tick after that `pass` starts a worker in it, which gates the issue's PR and joins the landing train, and the train lands it as it lands any PR. A stage may name a more senior role to consult (`escalate: { to, do }`): its `escalate` verdict then starts a worker in that role, in one slot of `concurrency`, which rules with `afkconvoy rule` — the stage that asked runs again under the ruling, as one more of the issue's rework in total — or lets the escalation through to a human with its own `escalate`; a stage that names none escalates to a human at once. A consult writes no code: one that left a commit has failed, and the issue escalates. An issue whose rework would pass one of its workflow's two breakers is escalated instead of dispatched, with every round's stage and reason in the comment. A human answers an escalated issue with `afkconvoy rule --issue <n> --text …`: the stage it stopped at runs again under the ruling, with both rework counts started over, and the team's escalate label is swapped back for the flow label. `afkconvoy send --issue <n> --stage <name> --text …` puts an issue at any stage of its workflow. A stage a workflow gives to a human (`by: human`) starts no worker and holds no claim: the issue waits there until a human declares its verdict with the same `afkconvoy verdict`. A team's patrols are files too (`patrols/<name>.md`: `by`, `do`, `every`, `model`, `max_open`), and a repo runs the ones its `patrols` names: the tick that finds one due — its interval passed since its last recorded run, no run of it still going, no fleet lock standing, fewer than `max_open` open issues it opened — claims the run on the remote, so of several hosts one runs it, and starts a worker in the patrol's role in a checkout of the base branch that is linked to no issue. That worker has `AFKCONVOY_PATROL` in its environment, opens issues and takes them in with `afkconvoy intake`; a run takes one slot of `concurrency`, a missed run is not made up, and `afkconvoy plan` lists how each patrol stands. A run that left a commit or opened a PR has failed: the fleet opens an issue with the team's escalate label that says so, touches no other issue, and does not run the patrol again until a human closes it. A team may name who proposes precedents (`precedents: { by, do, max_open }` in `team.md`): a human's ruling on an escalated issue then starts one worker in that role, in a checkout of the base branch linked to no issue, which opens one PR on the team's repo that appends one entry to `precedents.md` — the ruling in a sentence, when it applies, and the link to the ruling. A human merging that PR is what accepts the precedent: the fleet never merges on the team's repo, and once the worker has stopped it closes, with the reason, a PR that changes anything else or does anything but append that entry. A ruling is proposed at most once, none is started while the open proposals have reached `max_open`, and the issue goes on through its workflow without waiting. Every worker's brief says where the precedents are, to read them before declaring `escalate`, and to say in that verdict that it did. A repo that names no team is unbound and works as described here.
+A repo may also name a team, which makes it a bound repo: its issues then pass through the stages of a workflow, each performed by a worker in its own role. See [Bind a repo to a team](#bind-a-repo-to-a-team). A repo that names no team is unbound and works as described here.
 
 When the fault is one every issue shares — the base branch is broken — put the lock label on the issue that carries the fix, or have a worker run `afkconvoy lock --issue <n>`. While that issue is open the fleet works lock issues only: nothing else is dispatched, no PR of another issue joins the landing train, and the workers already running are left alone, what they declared being acted on afterwards. Closing the issue ends the lock; `plan` and every tick say which lock stands.
 
@@ -57,6 +57,85 @@ Then:
 - **Label the issues** the fleet may take with the ready label. An issue GitHub records as blocked by an open issue waits for it.
 - **Leave the base branch pushable.** The landing train lands by pushing a commit the gate passed. A base branch that requires status checks or pull request reviews, restricts who may push, or is locked is refused when the fleet starts, naming the rule.
 - **Make the gate one command** that exits 0 only when the tree is good. It is the only machine check a change passes before it lands.
+
+## Bind a repo to a team
+
+A **team** is a repo that names **roles** and holds **workflows**; a **role** is a repo too — the rules one kind of worker always works under, the limits it cannot cross, and the skills it can be asked to perform. A repo whose config names a team is a **bound repo**: an issue of it follows the workflow its flow label names, stage by stage, each stage one skill of one role performed by a new worker. The vocabulary is [`GLOSSARY.md`](GLOSSARY.md)'s; the decisions are [ADR-0008](docs/adr/0008-roles-and-workflows-are-part-of-afkconvoy.md) to [ADR-0012](docs/adr/0012-a-worker-is-limited-by-guards-not-by-identity.md).
+
+### From nothing to a bound repo
+
+```sh
+afkconvoy scaffold role dev --repo acme/dev             # a role's skeleton, created on GitHub
+afkconvoy scaffold team team --role dev=acme/dev        # a team's skeleton, naming that role
+afkconvoy check --dir team                              # does it load? every fault, with its file and key
+```
+
+`scaffold role` writes a rules file (`CLAUDE.md`), one example skill (`.claude/skills/implement/SKILL.md`) and a hooks file (`.claude/settings.json`); `scaffold team` writes the team file (`team.md`) and one example workflow (`workflows/feature.md`). Both pass `afkconvoy check` as written. `--repo owner/repo` commits the skeleton and creates that repo on GitHub, private, with `gh repo create`; without it only files are written. The role comes first: `check` reads a role's repo from GitHub, at the head of its default branch.
+
+From there a team is designed by editing those files: edit, run `afkconvoy check --dir <the team's checkout>`, repeat until it exits 0. `afkconvoy --help` lays out every file of a team and of a role and every key; `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started.
+
+**A role's skills** are added with the skills installer, run in a checkout of the role's repo, and committed there:
+
+```sh
+cd dev && npx skills add <owner/repo of the skills> && git add -A && git commit -m "Add a skill" && git push
+```
+
+A skill a role can be asked to perform is an entry of `.claude/skills/` in its repo, so every host that runs the role runs the same one. afkconvoy installs no skill and wraps no installer. Pushing is the only way a change to a role or a team reaches a worker.
+
+When the team loads, push it, name it in the repo's config on the base branch, and run `afkconvoy check` in that checkout.
+
+### The keys
+
+A bound repo's config keeps the keys only the repo knows — `base_branch`, `gate_command`, `epic_labels`, `concurrency`, `lock_label` — and reads three more:
+
+````markdown
+```yaml
+team: owner/repo                  # the team's repo: naming it is what binds this repo
+patrols: [triage]                 # which of the team's patrols run here, by name (default: none)
+intake_limit: 50                  # open issues taken in by workers, at most (default: 50)
+```
+````
+
+`ready_label` means nothing in a bound repo: its issues carry a flow label instead. The escalate label is the team's (`escalate_label` in `team.md`, default `ready-for-human`). `patrols` and `intake_limit` are errors where no `team` is.
+
+### The flow label
+
+A workflow is a file of the team, `workflows/<name>.md`, and its flow label is `flow:<name>`. An issue is the fleet's to work only while it carries one: put `flow:feature` on an issue and it enters the workflow `feature` at its first stage; an issue with no flow label is left alone. Putting it there is intake. A human does it on GitHub, outside any limit. A worker does it with `afkconvoy intake`, which leaves a record of the role that did and the issue it was on; the open issues taken in that way are held under `intake_limit`, and `afkconvoy plan` reports the count.
+
+### What a human is asked, and when
+
+Nothing, by default: a workflow runs from intake to the landing train with no human in it. A human is reached by exception, and each time the same way — the fleet says why in a comment on the issue, swaps the flow label for the team's escalate label, and releases its claim:
+
+- **A stage declared `escalate`** and no consult ruled on it. A stage may name a more senior role to consult (`escalate: { to, do }`): its `escalate` verdict then starts a worker in that role, in one slot of `concurrency`, which rules with `afkconvoy rule` — the stage that asked runs again under the ruling, as one more of the issue's rework in total — or lets the escalation through to a human with its own `escalate`. A stage that names none escalates to a human at once. A consult writes no code: one that left a commit has failed, and the issue escalates.
+- **A breaker tripped.** An issue whose rework would pass one of its workflow's two breakers (`max_rework`, `max_consecutive_rework`) is escalated instead of dispatched, with every round's stage and reason in the comment.
+- **A failure.** A worker that crashed or stayed silent, a gate that could not be turned green, a stage that ended with no verdict or a verdict of another stage, a commit left by a stage marked `writes: false`, a workflow changed under an issue in flight. Nothing is retried.
+
+A human answers an escalated issue with `afkconvoy rule --issue <n> --text …`: the stage it stopped at runs again under the ruling, with both rework counts started over, and the escalate label is swapped back for the flow label. `afkconvoy send --issue <n> --stage <name> --text …` puts an issue at any stage of its workflow instead.
+
+Two more things wait for a human, and only where the team chose them:
+
+- **A stage given to a human** (`by: human`) starts no worker and holds no claim: the issue waits there until a human declares its verdict with `afkconvoy verdict`.
+- **A patrol's run that failed** — it left a commit or opened a PR. The fleet opens an issue with the team's escalate label that says so, touches no other issue, and does not run the patrol again until a human closes it.
+
+### How an issue moves
+
+A worker ends its stage with `afkconvoy verdict`, which leaves one stage record on the issue; `afkconvoy show --issue <n>` reads an issue's position, what follows and the rework it has left off those records, and each tick keeps a `stage:<name>` label on the issue for humans to filter by — the fleet never reads it.
+
+A stage that finds its issue too large splits it: it opens child issues, takes each in — `afkconvoy intake --blocked-by <n,…>` says which of the others a child waits for — and declares `blocked` on all of them; the issue is parked, its children are worked in the order their blockers close, and when the last has closed the stage that split it runs again and judges the whole.
+
+A workflow whose last stage passes to `land` names the role that lands (`land: { by, do }`): the tick after that `pass` starts a worker in it, which gates the issue's PR and joins the landing train, and the train lands it as it lands any PR.
+
+A team's patrols are files too (`patrols/<name>.md`: `by`, `do`, `every`, `model`, `max_open`), and a repo runs the ones its `patrols` names: the tick that finds one due — its interval passed since its last recorded run, no run of it still going, no fleet lock standing, fewer than `max_open` open issues it opened — claims the run on the remote, so of several hosts one runs it, and starts a worker in the patrol's role in a checkout of the base branch that is linked to no issue. That worker has `AFKCONVOY_PATROL` in its environment, opens issues and takes them in with `afkconvoy intake`; a run takes one slot of `concurrency`, a missed run is not made up, and `afkconvoy plan` lists how each patrol stands.
+
+### Precedents
+
+A team may name who proposes precedents (`precedents: { by, do, max_open }` in `team.md`). A human's ruling on an escalated issue then starts one worker in that role, with that skill, in a checkout of the base branch linked to no issue. It opens one PR on the team's repo that appends one entry to `precedents.md` — the ruling in a sentence, when it applies, and the link to the ruling. A human merging that PR is what accepts the precedent: the fleet never merges on the team's repo. Once the worker has stopped, the fleet closes, with the reason, a PR that changes anything but that file or does anything there but append that entry.
+
+A ruling is proposed at most once, and none while the open proposals have reached `max_open`; `afkconvoy plan` lists how each stands. The issue goes on through its workflow without waiting. A verdict a human declares for a `by: human` stage is no ruling, and neither is a consult's. A team without the key has no precedents proposed.
+
+Every worker's brief says where the precedents are, to read them before declaring `escalate`, and to say in that verdict that it did.
+
+How a bound repo's worker is started — in its role, under the guard — is under [Start a fleet](#start-a-fleet).
 
 ## Start a fleet
 
@@ -108,6 +187,12 @@ Every transition the fleet makes is also a subcommand, for doing one by hand: se
 ```
 
 The gate runs the tests with [cargo-nextest](https://nexte.st) when it is installed (`brew install cargo-nextest`), which takes about a third of the time; without it, it runs them with `cargo test`.
+
+Flux on the core crate needs the checker that [`crates/core/Cargo.toml`](crates/core/Cargo.toml) pins, and `./verify.sh` refuses to run with any other, naming the one to install:
+
+- **`cargo-flux`**, built from the Flux revision of the `flux-rs` dependency: `git clone https://github.com/flux-rs/flux && cd flux && git checkout <rev> && cargo xtask install`. [rustup](https://rustup.rs) fetches the nightly toolchain that revision names. `cargo-flux` reports the first seven digits of its revision, which is what is compared; the driver and libraries it installs into `~/.flux` report none, and are not checked.
+- **`fixpoint`**, at the version and commit under `[package.metadata.checker]`: [built from source](https://github.com/ucsd-progsys/liquid-fixpoint#how-to-build-and-install) at that commit. Both are compared.
+- **`z3`**, at the version under `[package.metadata.checker]`: from [Z3's releases](https://github.com/Z3Prover/z3/releases), or `brew install z3` while Homebrew's is that version. Only the version is compared: `z3` reports nothing of its build.
 
 The decisions live in `crates/core` as pure functions checked by [Flux](https://github.com/flux-rs/flux) (`./verify.sh`); `crates/cli` carries them out through `git`, `gh` and `orca` ([ADR-0007](docs/adr/0007-refinement-types-on-a-pure-core.md)).
 

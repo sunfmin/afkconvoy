@@ -329,11 +329,14 @@ impl Stage {
 /// comes to the landing train or to nothing more to do; every stage can be
 /// reached from the first; and `land` is set exactly when a `pass` leads there.
 #[derive(Debug, PartialEq, Eq)]
+#[refined_by(n: int)]
+#[invariant(n > 0)]
 pub struct Workflow {
     /// What follows `flow:` in its flow label.
     pub name: String,
     pub max_rework: u64,
     pub max_consecutive_rework: u64,
+    #[field(Vec<Stage>[n])]
     stages: Vec<Stage>,
     /// Who gates the PR and joins the landing train.
     pub land: Option<Work>,
@@ -344,8 +347,8 @@ impl Workflow {
         format!("{FLOW_LABEL}{}", self.name)
     }
 
-    /// The stage an issue entering the workflow is at. There is one: `workflow`
-    /// builds none without.
+    /// The stage an issue entering the workflow is at. There is one, by the
+    /// workflow's invariant.
     pub fn first(&self) -> &Stage {
         &self.stages[0]
     }
@@ -1045,6 +1048,24 @@ fn stage(draft: Draft, at: usize, pass: Pass, reject: Option<usize>) -> Option<S
         pass,
         reject,
     })
+}
+
+#[cfg(flux)]
+#[allow(dead_code)]
+mod rejected {
+    use super::*;
+
+    /// A workflow with no stage.
+    #[should_fail]
+    fn a_workflow_with_no_stage(name: String) -> Workflow {
+        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages: Vec::new(), land: None }
+    }
+
+    /// Whatever stages were listed, taken as a workflow without a look.
+    #[should_fail]
+    fn a_workflow_of_whatever_was_listed(name: String, stages: Vec<Stage>) -> Workflow {
+        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages, land: None }
+    }
 }
 
 #[cfg(test)]

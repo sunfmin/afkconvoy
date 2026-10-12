@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # No human stands in a workflow by default

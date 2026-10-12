@@ -20,9 +20,24 @@ else
     echo "gate: cargo-nextest is not installed (brew install cargo-nextest): the tests run one program at a time" >&2
     cargo test --workspace --quiet
 fi
-# Every function of the core crate is checked: none is taken on trust.
-if grep -rnE '#!?\[(flux_rs::)?(trusted|trusted_impl|ignore|opaque)' crates/core/src; then
-    echo "gate: the core crate must not exempt anything from Flux" >&2
+# Every function of the core crate is checked: none is taken on trust. Flux
+# says so itself, in the summary that ends its run on a crate, so an exemption
+# counts however it is written. Flux summarises a dependency too: the core's
+# summary is the one before cargo's last artifact message, the core being the
+# crate checked and so the last one finished.
+flux_log=$(mktemp)
+trap 'rm -f "$flux_log"' EXIT
+./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 && flux_status=0 || flux_status=$?
+core_summary=$(awk '
+    /^\{/ { if (/"reason":"compiler-artifact"/) { core = last; last = "" }; next }
+    { print > "/dev/stderr" }
+    /^summary\./ { last = $0 }
+    END { print core }' "$flux_log")
+[ "$flux_status" -eq 0 ] || exit "$flux_status"
+case "$core_summary" in
+*"; 0 trusted; 0 ignored."*) ;;
+*)
+    echo "gate: the core crate must not exempt anything from Flux, and Flux reports: ${core_summary:-no summary of the core crate}" >&2
     exit 1
-fi
-./verify.sh
+    ;;
+esac

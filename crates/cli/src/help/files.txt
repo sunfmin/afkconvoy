@@ -1,0 +1,52 @@
+  A team is a repo that holds:
+
+      team.md                 the team file
+      workflows/<name>.md     one file per workflow; its flow label is `flow:<name>`
+      patrols/<name>.md       one file per patrol; a repo runs the ones its `patrols` names
+
+  and of each file only the first ```yaml block is read. The team file:
+
+      escalate_label: ready-for-human    # default
+      roles:
+        <short name>: owner/repo         # a role is a repo
+      precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional; see below
+
+  A workflow file:
+
+      max_rework: 3                      # default
+      max_consecutive_rework: 2          # default
+      stages:
+        - name: <unique; not land, done or human>
+          by: <role> | human
+          do: <skill>                    # required unless by: human
+          model: <model>                 # optional
+          writes: false                  # optional; default true
+          escalate: { to: <role>, do: <skill> }                  # optional
+          on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
+      land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
+
+  A patrol file — its name words of lowercase letters and digits, each starting with a
+  letter, joined by `-`, 40 characters at most:
+
+      by: <role>
+      do: <skill>
+      every: 6h                          # required: a whole number from 1 up, then m, h or d
+      model: <model>                     # optional
+      max_open: 5                        # required: it is skipped once this many issues
+                                         # it opened are open
+
+  `precedents` names who proposes a human's ruling as a precedent: the fleet starts one
+  worker in that role, with that skill, for each ruling a human gives an escalated issue
+  (`afkconvoy rule`), to open a PR on the team's repo that appends one entry to
+  `precedents.md`. `max_open` is required: no proposal is started while that many are
+  open there. A team without the key has no precedents proposed (`afkconvoy tick --help`).
+
+  A role is a repo that holds:
+
+      CLAUDE.md                          its rules: what a worker in it always works under
+      .claude/skills/<skill>/SKILL.md    one directory per skill it can be asked to perform
+      .claude/settings.json              its hooks: the limits it cannot cross
+
+  Claude Code loads all three from the directory a worker starts in, so a role opened by
+  hand is the role a worker gets; none of them has a key the fleet reads. A `do` names
+  an entry of `.claude/skills/` in the repo of the role beside it.
