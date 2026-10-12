@@ -399,15 +399,9 @@ pub fn patrol_name(path: &str) -> Option<&str> {
 /// The seconds a duration written as `text` lasts: a whole number from 1 up,
 /// then `m`, `h` or `d` — `30m`, `6h`, `1d`. `None` for anything else.
 pub fn duration(text: &str) -> Option<u64> {
-    let (count, unit) = if let Some(count) = text.strip_suffix('m') {
-        (count, 60)
-    } else if let Some(count) = text.strip_suffix('h') {
-        (count, 3600)
-    } else if let Some(count) = text.strip_suffix('d') {
-        (count, 86400)
-    } else {
-        return None;
-    };
+    let units = [('m', 60), ('h', 3600), ('d', 86400)];
+    let (count, unit) =
+        units.iter().find_map(|(unit, lasts)| Some((text.strip_suffix(*unit)?, *lasts)))?;
     let count = crate::record::fleet_number(count)?;
     if count == 0 { None } else { count.checked_mul(unit) }
 }

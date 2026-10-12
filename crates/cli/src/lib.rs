@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
+use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
 use afkconvoy_core::role::{ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
 
@@ -33,6 +34,7 @@ pub mod launch;
 pub mod lock;
 pub mod orca;
 pub mod park;
+pub mod patrol;
 pub mod probe;
 pub mod recovery;
 pub mod role;
@@ -221,8 +223,11 @@ enum Command {
         #[arg(long, env = ROLE_ENV)]
         role: String,
         /// The issue that worker is on
-        #[arg(long, env = ISSUE_ENV)]
-        from: u64,
+        #[arg(long, env = ISSUE_ENV, conflicts_with = "patrol")]
+        from: Option<u64>,
+        /// The patrol that worker runs, when it is on no issue
+        #[arg(long, env = PATROL_ENV)]
+        patrol: Option<String>,
     },
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
     #[command(after_long_help = include_str!("help/lock.txt"))]
@@ -611,7 +616,15 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let team = team::load(team::From::Config)?.team;
             steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
         }
-        Command::Intake { issue, workflow, role, from } => {
+        Command::Intake { issue, workflow, role, from, patrol } => {
+            let from = match (from, patrol) {
+                (Some(issue), _) => afkconvoy_core::intake::On::Issue(issue),
+                (None, Some(patrol)) => afkconvoy_core::intake::On::Patrol(patrol),
+                (None, None) => anyhow::bail!(
+                    "an intake names what its worker is on: the issue (--from, or {ISSUE_ENV} in \
+                     the environment) or the patrol (--patrol, or {PATROL_ENV})"
+                ),
+            };
             intake::intake(&Repo::here()?, intake::Taking { issue, workflow, role, from })
         }
         Command::Lock { issue, role } => {

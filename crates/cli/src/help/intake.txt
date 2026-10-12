@@ -12,14 +12,15 @@ WHO RUNS IT
   the worktree first, as the line its brief gives for `afkconvoy verdict` does. The
   fleet put its role and the issue it is on in its environment (AFKCONVOY_ROLE,
   AFKCONVOY_ISSUE), and the command reads them from there; `--role` and `--from` say
-  them by hand.
+  them by hand. A patrol's worker is on no issue: it has its patrol's name there
+  instead (AFKCONVOY_PATROL), which `--patrol` says by hand.
 
 WHAT IT READS AND WRITES
 
   It reads the config of the checkout, the team it names, the issue, and — to count —
   the comments of every open issue that carries a flow label. It writes two things on
   the issue, in this order: one comment, the intake record, whose marker carries the
-  workflow, the role and the issue the worker was on; then the workflow's flow label,
+  workflow, the role and the issue the worker was on — or the patrol it ran; then the workflow's flow label,
   `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the
   fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick.
 
@@ -35,7 +36,9 @@ WHAT IT ANSWERS
   {"issue", "workflow", "taken", "role", "from", "open", "limit", "woke"}
 
     taken: true   the record and the flow label were written
-    role, from    who took it in: the worker's role, and the issue it was on
+    role, from    who took it in: the worker's role, and the issue it was on. A
+                  patrol's worker answers `patrol`, the patrol's name, in place of
+                  `from`
     open          the open issues taken in by workers, this one among them
     limit         the repo's `intake_limit`
     woke          whether a `run` on this host was told, as `afkconvoy wake` answers
@@ -44,13 +47,15 @@ WHAT IT ANSWERS
 
     taken: false  the issue follows that workflow already: nothing was written
     standing      how it came in: {"by": "worker", "role", "from", "url"} with the
-                  comment of its intake record, or {"by": "human"}
+                  comment of its intake record — `patrol` in place of `from` where a
+                  patrol's worker took it in — or {"by": "human"}
 
   Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error
   says the count and the limit; the team has no workflow of that name — the error lists
-  the ones it has; the team has no such role; the repo is unbound; the issue is closed,
-  is a pull request, or already carries the flow label of another workflow; the role or
-  the issue the worker is on is neither in the environment nor given; the team has a
+  the ones it has; the team has no such role, or no such patrol; the repo is unbound; the issue is closed,
+  is a pull request, or already carries the flow label of another workflow; the role, or
+  both the issue the worker is on and its patrol, is neither in the environment nor
+  given; both `--from` and `--patrol` are given; the team has a
   fault; "is not in a git checkout".
 
 WHAT TRIPS YOU UP
@@ -58,6 +63,9 @@ WHAT TRIPS YOU UP
   - It is the only way a worker's intake is on the record. A flow label a worker puts
     on by itself would read as a human's and escape the limit: the guard refuses that,
     and an intake record written by hand (`afkconvoy guard --help`).
+  - An issue a patrol's worker takes in counts against two limits: the repo's
+    `intake_limit`, which refuses here, and the patrol's own `max_open`, which refuses
+    nothing here — the fleet does not run the patrol again while that many are open.
   - The limit bounds the work the fleet gives itself, not a day's work: it is set high,
     to stop a runaway. `afkconvoy plan` reports the count against it.
   - The record counts only while the issue carries the flow label it names. A human

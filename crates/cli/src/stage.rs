@@ -5,7 +5,8 @@
 //! (`afkconvoy_core::stage_record`).
 
 use afkconvoy_core::claims::Claim;
-use afkconvoy_core::intake::taken_in;
+use afkconvoy_core::config::Bound;
+use afkconvoy_core::intake::{opened_by, taken_in};
 use afkconvoy_core::plan::{Issue, PullRequest, closing_pr};
 use afkconvoy_core::position::{Declared, Position};
 use afkconvoy_core::role::{Due, due, followed, workflow_of};
@@ -182,6 +183,8 @@ struct Flowing {
     urls: Vec<String>,
     /// Whether a worker took it in (`intake::taken_in`).
     taken_in: bool,
+    /// The patrol that opened it, when one did (`intake::opened_by`).
+    opened_by: Option<String>,
 }
 
 /// What a claim's stage records call for, with what a tick says of it.
@@ -202,7 +205,8 @@ pub struct Called {
 /// derives of a position, it derives from this one read.
 pub struct Flows {
     /// The team, or why it does not load. `None` where nothing was read:
-    /// an unbound repo, or no issue that carries a flow label.
+    /// an unbound repo, or one with no issue that carries a flow label and
+    /// no patrol named.
     team: Option<Result<Kept, String>>,
     issues: Vec<Flowing>,
 }
@@ -212,7 +216,8 @@ impl Flows {
     /// each of `flowing`. A team that does not load is not an error here:
     /// the issues it leaves without a position are said so, one by one.
     pub fn read(fleet: &Fleet, flowing: &[&Issue]) -> Result<Flows> {
-        let Some(bound) = fleet.config.bound.as_ref().filter(|_| !flowing.is_empty()) else {
+        let read = |bound: &&Bound| !flowing.is_empty() || !bound.patrols.is_empty();
+        let Some(bound) = fleet.config.bound.as_ref().filter(read) else {
             return Ok(Flows { team: None, issues: vec![] });
         };
         let team = Copies::here()
@@ -222,20 +227,31 @@ impl Flows {
         for issue in flowing {
             let comments = fleet.gh.comments(issue.number)?;
             let (records, urls) = records_among(&comments);
-            let bodies = comments.iter().map(|comment| comment.body.as_str());
-            let taken_in = taken_in(&issue.labels, bodies).is_some();
+            let bodies = || comments.iter().map(|comment| comment.body.as_str());
+            let taken_in = taken_in(&issue.labels, bodies()).is_some();
+            let opened_by = opened_by(bodies());
             let (number, labels) = (issue.number, issue.labels.clone());
-            issues.push(Flowing { number, labels, records, urls, taken_in });
+            issues.push(Flowing { number, labels, records, urls, taken_in, opened_by });
         }
         Ok(Flows { team: Some(team), issues })
     }
 
     fn team(&self) -> Result<&Team> {
+        Ok(&self.kept()?.team)
+    }
+
+    /// The team as this rebuild read it, with the copies it was read from.
+    pub fn kept(&self) -> Result<&Kept> {
         match &self.team {
-            Some(Ok(kept)) => Ok(&kept.team),
+            Some(Ok(kept)) => Ok(kept),
             Some(Err(why)) => Err(anyhow!("{why}")),
             None => Err(anyhow!("no issue of this repo follows a workflow")),
         }
+    }
+
+    /// The patrol that opened each issue read that one opened.
+    pub fn opened(&self) -> Vec<String> {
+        self.issues.iter().filter_map(|issue| issue.opened_by.clone()).collect()
     }
 
     /// How many of the issues read — the open ones that follow a workflow — a

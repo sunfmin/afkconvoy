@@ -58,7 +58,8 @@ WHAT IT ANSWERS
 
     intake              how the issue came in. {"by": "worker", "role", "from", "url"}:
                         a worker in that role, on the issue `from`, took it in with
-                        `afkconvoy intake`, and `url` is the comment that records it.
+                        `afkconvoy intake`, and `url` is the comment that records it;
+                        `patrol` in place of `from` where a patrol's worker did.
                         {"by": "human"}: its flow label has no intake record for it
     position            where the issue is: {"is", "stage", "by", "do", "reason"}, as
                         `afkconvoy rehearse --help` spells out
