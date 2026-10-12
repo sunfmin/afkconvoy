@@ -6,6 +6,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use afkconvoy_core::config::RepoName;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::gh::GitHub;
@@ -36,10 +37,10 @@ impl Copies {
         Ok(Copies { root: cache.join("afkconvoy").join("copies") })
     }
 
-    /// The copy of `repo` (`owner/repo`) at the head of its default branch
+    /// The copy of `repo` at the head of its default branch
     /// now. One already here is used as it is: only the commit is asked for,
     /// and nothing is fetched.
-    pub fn of(&self, gh: &GitHub, repo: &str) -> Result<Copy> {
+    pub fn of(&self, gh: &GitHub, repo: &RepoName) -> Result<Copy> {
         let head = gh.head_commit(repo)?;
         let kept = self.at(repo, &head);
         if kept.dir.is_dir() {
@@ -48,14 +49,15 @@ impl Copies {
         self.fetch(gh, repo).with_context(|| format!("{repo} cannot be copied"))
     }
 
-    fn at(&self, repo: &str, commit: &str) -> Copy {
-        Copy { dir: self.root.join(repo).join(commit), commit: commit.to_string() }
+    fn at(&self, repo: &RepoName, commit: &str) -> Copy {
+        Copy { dir: self.root.join(repo.as_str()).join(commit), commit: commit.to_string() }
     }
 
     /// Clones the head of `repo` and keeps its files, named for the commit
     /// the clone has: the branch may have moved since it was asked about.
-    fn fetch(&self, gh: &GitHub, repo: &str) -> Result<Copy> {
-        let scratch = self.root.join(repo).join(format!("fetching-{}", std::process::id()));
+    fn fetch(&self, gh: &GitHub, repo: &RepoName) -> Result<Copy> {
+        let scratch =
+            self.root.join(repo.as_str()).join(format!("fetching-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         let (clone, files) = (scratch.join("git"), scratch.join("files"));
         std::fs::create_dir_all(&files)

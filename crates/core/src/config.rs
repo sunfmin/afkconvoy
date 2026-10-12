@@ -27,8 +27,8 @@ pub struct Settings {
 /// What a bound repo's config says beside the keys every repo has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Bound {
-    /// The team's repo, as `owner/repo`.
-    pub team: String,
+    /// The team's repo.
+    pub team: RepoName,
     /// Which of the team's patrols run on this repo.
     pub patrols: Vec<String>,
     /// How many issues taken in by workers may be open at once.
@@ -166,25 +166,42 @@ fn checked(
     })
 }
 
-/// Whether `text` names a repo as GitHub does: `owner/repo`, each part of
-/// letters, digits, `.`, `_` and `-`. The one home of the form: a team and a
-/// role are both named so.
-pub fn is_repo(text: &str) -> bool {
-    let part = |part: &str| {
-        !part.is_empty()
-            && !part.starts_with('-')
-            && part
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
-    };
-    match text.split_once('/') {
-        Some((owner, name)) => part(owner) && part(name),
-        None => false,
+/// A repo's name as GitHub names it: `owner/repo`, each part of letters,
+/// digits, `.`, `_` and `-`. The one home of the form: a team and a role are
+/// both named so, and `read` is the only way to one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct RepoName(String);
+
+impl RepoName {
+    /// `text` as a repo's name; `None` when it has not the form.
+    pub fn read(text: &str) -> Option<RepoName> {
+        let part = |part: &str| {
+            !part.is_empty()
+                && !part.starts_with('-')
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+        };
+        match text.split_once('/') {
+            Some((owner, name)) if part(owner) && part(name) => Some(RepoName(text.to_string())),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-fn repo(key: &'static str, value: String) -> Result<String, ConfigError> {
-    if is_repo(&value) { Ok(value) } else { Err(ConfigError::NotARepo(key)) }
+impl std::fmt::Display for RepoName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+fn repo(key: &'static str, value: String) -> Result<RepoName, ConfigError> {
+    RepoName::read(&value).ok_or(ConfigError::NotARepo(key))
 }
 
 fn required(key: &'static str, value: Option<String>) -> Result<String, ConfigError> {
@@ -229,7 +246,7 @@ mod tests {
     fn a_repo_that_names_a_team_is_bound_with_defaults_filled() {
         let named = Settings { team: Some("acme/team".into()), ..minimal() };
         let bound = Config::new(named).unwrap().bound.unwrap();
-        assert_eq!(bound.team, "acme/team");
+        assert_eq!(bound.team.as_str(), "acme/team");
         assert_eq!(bound.patrols, Vec::<String>::new());
         assert_eq!(bound.intake_limit, 50);
         let set = Settings {
@@ -248,7 +265,7 @@ mod tests {
             let named = Settings { team: Some(team.into()), ..minimal() };
             assert_eq!(Config::new(named), Err(ConfigError::NotARepo("team")), "{team:?}");
         }
-        assert!(is_repo("acme-inc/team.roles_2"));
+        assert!(RepoName::read("acme-inc/team.roles_2").is_some());
     }
 
     #[test]

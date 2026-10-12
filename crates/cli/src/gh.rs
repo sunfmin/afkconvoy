@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use afkconvoy_core::config::RepoName;
 use afkconvoy_core::layout::{Guard, Protection};
 use afkconvoy_core::plan::{Issue, PullRequest};
 use anyhow::{Context, Result, bail};
@@ -73,8 +74,8 @@ impl GitHub {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// The commit at the head of the default branch of `repo` (`owner/repo`).
-    pub fn head_commit(&self, repo: &str) -> Result<String> {
+    /// The commit at the head of the default branch of `repo`.
+    pub fn head_commit(&self, repo: &RepoName) -> Result<String> {
         let out = self.gh(&["api", &format!("repos/{repo}/commits/HEAD"), "--jq", ".sha"])?;
         let commit = out.trim();
         let plain = !commit.is_empty() && commit.bytes().all(|b| b.is_ascii_hexdigit());
@@ -86,9 +87,19 @@ impl GitHub {
 
     /// Clones the head of `repo`'s default branch, and nothing behind it, into
     /// the bare repo `into`. `gh` picks the protocol the user set it up with.
-    pub fn clone_head(&self, repo: &str, into: &std::path::Path) -> Result<()> {
+    pub fn clone_head(&self, repo: &RepoName, into: &std::path::Path) -> Result<()> {
         let into = into.to_string_lossy();
-        self.gh(&["repo", "clone", repo, &into, "--", "--bare", "--depth", "1", "--quiet"])?;
+        self.gh(&[
+            "repo",
+            "clone",
+            repo.as_str(),
+            &into,
+            "--",
+            "--bare",
+            "--depth",
+            "1",
+            "--quiet",
+        ])?;
         Ok(())
     }
 
@@ -289,9 +300,9 @@ impl GitHub {
         Ok(())
     }
 
-    /// The open PRs of another repo, `repo` (`owner/repo`): the number and
-    /// the head branch of each.
-    pub fn open_prs_of(&self, repo: &str) -> Result<Vec<(u64, String)>> {
+    /// The open PRs of another repo, `repo`: the number and the head branch
+    /// of each.
+    pub fn open_prs_of(&self, repo: &RepoName) -> Result<Vec<(u64, String)>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Row {
@@ -300,7 +311,16 @@ impl GitHub {
         }
         let fields = "number,headRefName";
         let out = self.gh(&[
-            "pr", "list", "--repo", repo, "--state", "open", "--limit", "1000", "--json", fields,
+            "pr",
+            "list",
+            "--repo",
+            repo.as_str(),
+            "--state",
+            "open",
+            "--limit",
+            "1000",
+            "--json",
+            fields,
         ])?;
         let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
         Ok(rows.into_iter().map(|row| (row.number, row.head_ref_name)).collect())
@@ -308,14 +328,15 @@ impl GitHub {
 
     /// What PR `number` of another repo, `repo`, changes, as `git diff`
     /// writes it.
-    pub fn pr_diff_of(&self, repo: &str, number: u64) -> Result<String> {
-        self.gh(&["pr", "diff", &number.to_string(), "--repo", repo])
+    pub fn pr_diff_of(&self, repo: &RepoName, number: u64) -> Result<String> {
+        self.gh(&["pr", "diff", &number.to_string(), "--repo", repo.as_str()])
     }
 
     /// Closes one PR of another repo, `repo`, without merging it, with a
     /// comment saying why.
-    pub fn close_pr_of(&self, repo: &str, number: u64, comment: &str) -> Result<()> {
-        self.gh(&["pr", "close", &number.to_string(), "--repo", repo, "--comment", comment])?;
+    pub fn close_pr_of(&self, repo: &RepoName, number: u64, comment: &str) -> Result<()> {
+        let number = number.to_string();
+        self.gh(&["pr", "close", &number, "--repo", repo.as_str(), "--comment", comment])?;
         Ok(())
     }
 
