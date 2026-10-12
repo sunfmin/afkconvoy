@@ -15,6 +15,7 @@ use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::judge::judge;
 use crate::settle::settle;
+use crate::stage::Labels;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
 use crate::wake::Listener;
@@ -40,9 +41,10 @@ pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
     let set = fleet.rebuild(Some(&me.instance))?;
     let concurrency = fleet.config.concurrency();
     let mut failures = vec![];
+    let mut labels = Labels::of(&set.flowing);
     let pass = run_pass(&set, concurrency, set.mine.len(), |step| {
         // Whatever a step raised, the rest of the tick is still owed.
-        carry_out(fleet, me, agent, step).unwrap_or_else(|error| {
+        carry_out(fleet, me, agent, &mut labels, step).unwrap_or_else(|error| {
             failures.push(Failure { step, error: format!("{error:#}") });
             Outcome::Failed
         })
@@ -50,7 +52,13 @@ pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
     Ok(Ticked { pass, failures, concurrency })
 }
 
-fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Result<Outcome> {
+fn carry_out(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    labels: &mut Labels,
+    step: TickStep,
+) -> Result<Outcome> {
     match step {
         TickStep::Settle { issue } => {
             settle(fleet, me, issue)?;
@@ -66,6 +74,7 @@ fn carry_out(fleet: &mut Fleet, me: &Me, agent: &Agent, step: TickStep) -> Resul
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
         TickStep::Board { issue, stage, pr } => show(fleet, me, issue, stage, pr),
+        TickStep::StageLabel { issue } => labels.bring(fleet, issue),
         TickStep::Heartbeat => {
             beat(&fleet.repo, &mut fleet.scan, me)?;
             Ok(Outcome::Done)
@@ -83,6 +92,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
         TickStep::Board { issue, .. } => ("board", Some(issue)),
+        TickStep::StageLabel { issue } => ("stage_label", Some(issue)),
         TickStep::Heartbeat => ("heartbeat", None),
     }
 }

@@ -175,6 +175,12 @@ impl Count {
     pub(crate) fn times(&self) -> u64 {
         self.times
     }
+
+    /// How many more the breaker allows.
+    #[spec(fn(&Count[@c]) -> u64[c.limit - c.times])]
+    fn left(&self) -> u64 {
+        self.limit - self.times
+    }
 }
 
 /// An issue's position in a workflow, with its two rework counts.
@@ -217,10 +223,20 @@ impl<'w> Place<'w> {
         self.total.times()
     }
 
+    /// The rework the issue has left before its breaker stops it.
+    pub fn rework_left(&self) -> u64 {
+        self.total.left()
+    }
+
     /// The rejections `stage` has declared in a row, with no `pass` of its
     /// own between.
     pub fn consecutive_rework(&self, stage: &Stage) -> u64 {
         self.consecutive.get(stage.at()).map_or(0, Count::times)
+    }
+
+    /// The rejections in a row `stage` has left before its breaker stops it.
+    pub fn consecutive_rework_left(&self, stage: &Stage) -> u64 {
+        self.consecutive.get(stage.at()).map_or(0, Count::left)
     }
 
     /// Whether `declared` is something that may be declared where the issue is.

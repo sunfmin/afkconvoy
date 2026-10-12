@@ -26,7 +26,7 @@ WHAT A COMMAND ANSWERS
 
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
   a non-zero exit. Warnings go to stderr. `run` instead prints one line per tick until
-  it is stopped, and `show` a drawing.
+  it is stopped, and `show` a drawing unless it is asked about an issue.
 
 THE COMMANDS, by who runs them
 
@@ -35,13 +35,13 @@ THE COMMANDS, by who runs them
   The operator — starting, watching or stopping a fleet. Read these first:
       config  check  plan  run  tick  takeover
 
-  Whoever designs a team — once `check` accepts it. Read them to review a workflow or
-  to try one out with no worker started:
+  Whoever designs a team — once `check` accepts it. Read them to review a workflow, to
+  try one out with no worker started, or to ask where an issue is in its workflow:
       show  rehearse
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped:
-      gate  land  wake
+      gate  land  verdict  wake
 
   One transition by hand — each is something a tick does on its own. Read one when a
   plan shows a transition the fleet is not making, or you are told to make it yourself:

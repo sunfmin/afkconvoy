@@ -90,7 +90,12 @@ impl Staged {
             worktree: &worktree.path.display().to_string(),
             base_branch: &fleet.config.base_branch,
             precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
-            verdict_command: &crate::own_command(&verdict),
+            // A worker starts in its role's copy: the command is run from the worktree.
+            verdict_command: &format!(
+                "cd {} && {}",
+                quoted(&worktree.path.display().to_string()),
+                crate::own_command(&verdict)
+            ),
         };
         worktree.write_brief(&stage_prompt(&fields).map_err(|e| anyhow!(e))?)
     }

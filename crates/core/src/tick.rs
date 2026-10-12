@@ -33,6 +33,9 @@ pub enum TickStep {
     Dispatch { issue: u64 },
     /// Show on the issue's status board the stage a claim of mine is at.
     Board { issue: u64, stage: Stage, pr: Option<u64> },
+    /// Bring the `stage:` label of an issue that follows a workflow to the
+    /// position its stage records give it.
+    StageLabel { issue: u64 },
     /// Refresh my heartbeat, if it is due.
     Heartbeat,
 }
@@ -114,18 +117,21 @@ pub struct Pass {
 
 impl Pass {
     /// Whether the pass changed anything: a pass that only looked, refreshed
-    /// its heartbeat or brought a status board up to date did no work.
+    /// its heartbeat or brought a status board or a `stage:` label up to date
+    /// did no work.
     pub fn did_work(&self) -> bool {
         self.did.iter().any(|(step, outcome)| {
-            !matches!(step, TickStep::Heartbeat | TickStep::Board { .. })
-                && matches!(
-                    outcome,
-                    Outcome::Done
-                        | Outcome::Nudged
-                        | Outcome::Continued
-                        | Outcome::Restarted
-                        | Outcome::Abandoned
-                )
+            !matches!(
+                step,
+                TickStep::Heartbeat | TickStep::Board { .. } | TickStep::StageLabel { .. }
+            ) && matches!(
+                outcome,
+                Outcome::Done
+                    | Outcome::Nudged
+                    | Outcome::Continued
+                    | Outcome::Restarted
+                    | Outcome::Abandoned
+            )
         })
     }
 }
@@ -134,7 +140,8 @@ impl Pass {
 /// claims whose work landed, tend the landing train, ask after the workers
 /// not on the train yet, delete the stale locks on closed issues, take stale
 /// claims and then frontier issues into the free slots, lowest number first,
-/// bring the status boards up to date, then refresh the heartbeat. `carry_out` performs one
+/// bring the status boards and the `stage:` labels up to date, then refresh
+/// the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
 /// the rest of the pass goes on.
 ///
@@ -159,6 +166,10 @@ where
     }
     let held = fill_slots(&takes(set), concurrency, held, &mut did, &mut carry_out);
     for step in boards(set, &did) {
+        did.push((step, carry_out(step)));
+    }
+    for issue in &set.flowing {
+        let step = TickStep::StageLabel { issue: issue.number };
         did.push((step, carry_out(step)));
     }
     if held > 0 {
@@ -393,6 +404,7 @@ mod tests {
             stale_closed: vec![],
             free_slots: 0,
             now: 0,
+            flowing: vec![],
         }
     }
 
@@ -402,6 +414,36 @@ mod tests {
     fn peers(numbers: &[u64]) -> Vec<crate::plan::PeerClaim> {
         let claim = |&number| crate::plan::PeerClaim { number, instance: None, sha: String::new() };
         numbers.iter().map(claim).collect()
+    }
+
+    #[test]
+    fn the_stage_label_of_every_issue_that_follows_a_workflow_is_brought_up_and_is_no_work() {
+        // Whoever holds it, or nobody: a position is not a claim's.
+        let mut set = set(&[], &[(4, Status::NoPr)]);
+        let flowing = |&number| crate::plan::Issue {
+            number,
+            title: String::new(),
+            labels: vec!["flow:feature".to_string()],
+            open_blockers: 0,
+        };
+        set.flowing = [4, 9].iter().map(flowing).collect();
+        let pass = run_pass(&set, 3, 1, |step| match step {
+            StageLabel { .. } => Done,
+            _ => Nothing,
+        });
+        let did: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        assert_eq!(
+            did,
+            [
+                Judge { issue: 4 },
+                Board { issue: 4, stage: Stage::Claimed, pr: None },
+                StageLabel { issue: 4 },
+                StageLabel { issue: 9 },
+                Heartbeat
+            ],
+            "after the boards"
+        );
+        assert!(!pass.did_work(), "a label moved is not work: the fleet may still go quiet");
     }
 
     #[test]

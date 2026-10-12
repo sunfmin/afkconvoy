@@ -277,7 +277,7 @@ fn api(st: &mut State) -> ! {
             st.finish("", 0, "")
         }
         ["issues", number, "labels", label] if method == "DELETE" => {
-            let label = label.replace("%20", " ");
+            let label = unescaped(label);
             let number: u64 = number.parse().unwrap();
             let rows = st.doc["issues"].as_array_mut().unwrap();
             let Some(issue) = rows.iter_mut().find(|issue| issue["number"] == number) else {
@@ -315,6 +315,27 @@ fn api(st: &mut State) -> ! {
         }
         _ => unsupported(st),
     }
+}
+
+/// A path segment with its `%XX` escapes read, as GitHub reads one.
+fn unescaped(segment: &str) -> String {
+    let mut out = vec![];
+    let mut bytes = segment.bytes();
+    while let Some(byte) = bytes.next() {
+        let escaped = (byte == b'%').then(|| bytes.clone().take(2).collect::<Vec<u8>>());
+        let read = escaped
+            .and_then(|hex| String::from_utf8(hex).ok())
+            .filter(|hex| hex.len() == 2)
+            .and_then(|hex| u8::from_str_radix(&hex, 16).ok());
+        match read {
+            Some(read) => {
+                out.push(read);
+                bytes.nth(1);
+            }
+            None => out.push(byte),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn issue_id(issue: &Value) -> u64 {

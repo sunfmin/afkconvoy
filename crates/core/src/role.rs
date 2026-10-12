@@ -24,6 +24,11 @@ const ADDED_RULES: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
 /// this host: a role is what its repo says, the same on every host.
 const NO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 
+/// The variables a worker's environment carries the commits of its role's
+/// repo and of the team's in: the command that declares a verdict reads them.
+pub const ROLE_COMMIT_ENV: &str = "AFKCONVOY_ROLE_COMMIT";
+pub const TEAM_COMMIT_ENV: &str = "AFKCONVOY_TEAM_COMMIT";
+
 /// The stage an issue is dispatched to, and who performs it.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry<'t> {
@@ -38,10 +43,9 @@ pub fn flows(labels: &[String]) -> Vec<&str> {
     labels.iter().filter_map(|label| label.strip_prefix(FLOW_LABEL)).collect()
 }
 
-/// Where an issue carrying `labels` and no stage record enters `team`'s
-/// workflows: the first stage of the one its flow label names. An error says
-/// why no worker can be started on it.
-pub fn first_stage<'t>(team: &'t Team, labels: &[String]) -> Result<Entry<'t>, String> {
+/// The workflow of `team` an issue carrying `labels` follows: the one its
+/// flow label names. An error says why it follows none.
+pub fn workflow_of<'t>(team: &'t Team, labels: &[String]) -> Result<&'t Workflow, String> {
     let named = flows(labels);
     let name = match named.as_slice() {
         [] => return Err("it carries no flow label".to_string()),
@@ -56,9 +60,16 @@ pub fn first_stage<'t>(team: &'t Team, labels: &[String]) -> Result<Entry<'t>, S
             ));
         }
     };
-    let Some(workflow) = team.workflow(name) else {
-        return Err(format!("its flow label {FLOW_LABEL}{name} names no workflow of the team"));
-    };
+    team.workflow(name)
+        .ok_or_else(|| format!("its flow label {FLOW_LABEL}{name} names no workflow of the team"))
+}
+
+/// Where an issue carrying `labels` and no stage record enters `team`'s
+/// workflows: the first stage of the one its flow label names. An error says
+/// why no worker can be started on it.
+pub fn first_stage<'t>(team: &'t Team, labels: &[String]) -> Result<Entry<'t>, String> {
+    let workflow = workflow_of(team, labels)?;
+    let name = &workflow.name;
     let stage = workflow.first();
     let Performer::Role(work) = &stage.by else {
         return Err(format!(
@@ -99,8 +110,8 @@ impl Facts<'_> {
             ("AFKCONVOY_ROLE", self.role.to_string()),
             ("AFKCONVOY_SKILL", self.skill.to_string()),
             ("AFKCONVOY_WRITES", self.writes.to_string()),
-            ("AFKCONVOY_ROLE_COMMIT", self.role_commit.to_string()),
-            ("AFKCONVOY_TEAM_COMMIT", self.team_commit.to_string()),
+            (ROLE_COMMIT_ENV, self.role_commit.to_string()),
+            (TEAM_COMMIT_ENV, self.team_commit.to_string()),
         ]
     }
 }
