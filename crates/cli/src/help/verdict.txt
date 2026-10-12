@@ -11,7 +11,10 @@ WHEN TO RUN IT
       pass               the stage did its work: the issue goes where the workflow says
       reject             the work of an earlier stage is turned down; the text says why.
                          Only a stage whose workflow gives it a `reject` may declare it
-      blocked            the issue waits on other issues: name them with `--blocked-by`
+      blocked            the issue waits on other issues: name them with `--blocked-by`.
+                         A stage that splits its issue declares it on the issues it
+                         opened and took in (`afkconvoy intake --help`), and runs again
+                         when they have all closed
       already-satisfied  the issue needs no change: it is already done
       escalate           the stage cannot decide; the text says what has to be decided
 

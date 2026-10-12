@@ -6,6 +6,12 @@ WHEN TO RUN IT
 
       afkconvoy intake --issue 12 --workflow feature
 
+  A stage that splits its issue runs it once per child, saying with `--blocked-by`
+  which of the others a child has to wait for, and then declares `blocked` on all of
+  them (`afkconvoy verdict --help`):
+
+      afkconvoy intake --issue 13 --workflow fix --blocked-by 11,12
+
 WHO RUNS IT
 
   A worker, in its own worktree: it starts in its role's directory, so it changes to
@@ -17,11 +23,14 @@ WHO RUNS IT
 WHAT IT READS AND WRITES
 
   It reads the config of the checkout, the team it names, the issue, and — to count —
-  the comments of every open issue that carries a flow label. It writes two things on
-  the issue, in this order: one comment, the intake record, whose marker carries the
-  workflow, the role and the issue the worker was on; then the workflow's flow label,
+  the comments of every open issue that carries a flow label. It writes on the issue,
+  in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does
+  not record yet; one comment, the intake record, whose marker carries the workflow,
+  the role and the issue the worker was on; then the workflow's flow label,
   `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the
-  fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick.
+  fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or,
+  with an open issue to wait for, once that has closed. The edges go first, so the
+  issue is never on the frontier ahead of what blocks it.
 
   The limit. Before it writes anything it counts the open issues taken in by workers:
   those that carry a flow label and an intake record for it. With that count at the
@@ -32,10 +41,11 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"issue", "workflow", "taken", "role", "from", "open", "limit", "woke"}
+  {"issue", "workflow", "taken", "role", "from", "blocked_by", "open", "limit", "woke"}
 
     taken: true   the record and the flow label were written
     role, from    who took it in: the worker's role, and the issue it was on
+    blocked_by    the issues it was said to wait for
     open          the open issues taken in by workers, this one among them
     limit         the repo's `intake_limit`
     woke          whether a `run` on this host was told, as `afkconvoy wake` answers
@@ -50,8 +60,9 @@ WHAT IT ANSWERS
   says the count and the limit; the team has no workflow of that name — the error lists
   the ones it has; the team has no such role; the repo is unbound; the issue is closed,
   is a pull request, or already carries the flow label of another workflow; the role or
-  the issue the worker is on is neither in the environment nor given; the team has a
-  fault; "is not in a git checkout".
+  the issue the worker is on is neither in the environment nor given; `--blocked-by`
+  names the issue itself, a pull request, or an issue that cannot be read; the team has
+  a fault; "is not in a git checkout".
 
 WHAT TRIPS YOU UP
 
@@ -62,5 +73,13 @@ WHAT TRIPS YOU UP
     to stop a runaway. `afkconvoy plan` reports the count against it.
   - The record counts only while the issue carries the flow label it names. A human
     who moves the issue to another workflow has taken it in themselves.
+  - A split is nothing but this and a `blocked` verdict: the parent is parked on its
+    children, and the stage that split it runs again when all of them have closed. A
+    child counts against the limit like any issue a worker takes in, and may be split
+    in turn.
+  - A child has to close for its parent to return. One whose workflow ends in `done`
+    stays open until somebody closes it.
+  - `--blocked-by` is read only as the issue is taken in. On one that follows the
+    workflow already, nothing is written.
   - Two workers taking in at the same moment can both pass the count: the limit can be
     overshot by as many as ran at once.

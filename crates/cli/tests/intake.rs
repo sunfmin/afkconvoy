@@ -73,7 +73,7 @@ fn an_intake_puts_the_flow_label_on_and_leaves_a_record_of_the_role_and_the_issu
     assert_eq!(
         taken,
         json!({"issue": 12, "workflow": "feature", "taken": true, "role": "dev", "from": 7,
-            "open": 1, "limit": 5, "woke": false})
+            "blocked_by": [], "open": 1, "limit": 5, "woke": false})
     );
     assert_eq!(world.labels(12), ["bug", "flow:feature"]);
     assert_eq!(world.comments(12), [record("feature")]);
