@@ -17,10 +17,52 @@ use anyhow::{Result, anyhow, bail};
 /// How long the login shell is given to answer.
 const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The command a start would give its workers, with what the login shell
+/// says its first word is: not yet one a worker may be started with.
+pub struct Proposed {
+    command: String,
+    /// `type`'s answer about the first word; `None` when it found nothing.
+    resolution: Option<String>,
+}
+
+impl Proposed {
+    /// The command, exactly as it was given.
+    pub fn as_str(&self) -> &str {
+        &self.command
+    }
+
+    /// Whether its first word resolves in a login shell.
+    pub fn resolves(&self) -> bool {
+        self.resolution.is_some()
+    }
+
+    /// Why it cannot start a worker, when it cannot.
+    pub fn fault(&self) -> Option<String> {
+        checked(&self.command, self.resolution.as_deref()).err()
+    }
+
+    /// The command as one a worker may be started with, warning a human of
+    /// what they should know about it. An error is its `fault`.
+    pub fn settle(self) -> Result<LaunchCommand> {
+        let command =
+            checked(&self.command, self.resolution.as_deref()).map_err(|why| anyhow!(why))?;
+        if let Some(warning) = command.warning() {
+            eprintln!("warning: {warning}");
+        }
+        Ok(command)
+    }
+}
+
 /// The command every worker of this start is started with: `supplied`
 /// (`--worker-command`), the stock one, or a human's answer — checked to
 /// resolve in a login shell before any worker is started.
 pub fn settle(supplied: Option<&str>) -> Result<LaunchCommand> {
+    propose(supplied)?.settle()
+}
+
+/// The command `settle` would check: `supplied`, the stock one, or a human's
+/// answer, with its first word looked up in a login shell.
+pub fn propose(supplied: Option<&str>) -> Result<Proposed> {
     let provider = std::env::var("ANTHROPIC_BASE_URL").ok();
     let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let command = match source(provider.as_deref(), supplied, terminal) {
@@ -33,15 +75,25 @@ pub fn settle(supplied: Option<&str>) -> Result<LaunchCommand> {
         )?,
         Source::Refuse(why) => bail!(why),
     };
-    let resolution = match first_word(&command) {
-        Some(word) => login_shell(&format!("type -- '{}'", word.replace('\'', "'\\''"))),
-        None => None,
-    };
-    let command = checked(&command, resolution.as_deref()).map_err(|why| anyhow!(why))?;
-    if let Some(warning) = command.warning() {
-        eprintln!("warning: {warning}");
+    Ok(resolved(command))
+}
+
+/// The command a `run` started here with no `--worker-command` would give
+/// its workers, for a start that starts none (`plan`): the stock one, or —
+/// on a custom provider, where a human would be asked — unknown.
+pub fn foreseen() -> Option<Proposed> {
+    let provider = std::env::var("ANTHROPIC_BASE_URL").ok();
+    match source(provider.as_deref(), None, false) {
+        Source::Given(command) => Some(resolved(command)),
+        Source::Ask | Source::Refuse(_) => None,
     }
-    Ok(command)
+}
+
+fn resolved(command: String) -> Proposed {
+    let resolution = first_word(&command)
+        .and_then(|word| login_shell(&format!("type -- '{}'", word.replace('\'', "'\\''"))))
+        .filter(|answer| !answer.trim().is_empty());
+    Proposed { command, resolution }
 }
 
 /// Asks which command starts a worker, offering the aliases `alias` printed
@@ -60,11 +112,19 @@ fn ask(
     replied(&reply, &offered).ok_or_else(|| anyhow!(no_reply()))
 }
 
-/// Runs `script` in the user's interactive login shell — where aliases and
-/// rc-defined functions exist, and what orca gives a worker → what it
-/// printed. `None` when it failed, timed out, or exited non-zero: `type`
-/// prints "not found" and exits 1, so its output alone proves nothing.
+/// Runs `script` in the user's interactive login shell → what it printed.
+/// `None` when it failed, timed out, or exited non-zero: `type` prints "not
+/// found" and exits 1, so its output alone proves nothing.
 fn login_shell(script: &str) -> Option<String> {
+    let (succeeded, printed) = ask_login_shell(script)?;
+    succeeded.then_some(printed)
+}
+
+/// Runs `script` in the user's interactive login shell — where aliases and
+/// rc-defined functions exist, and what orca gives a worker: it inherits
+/// nothing from the shell the fleet was started in → whether it exited zero,
+/// and what it printed. `None` when it could not run or timed out.
+pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
     let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty());
     let mut child = Command::new(shell.as_deref().unwrap_or("/bin/zsh"))
         .args(["-lic", script])
@@ -91,8 +151,7 @@ fn login_shell(script: &str) -> Option<String> {
             None => std::thread::sleep(Duration::from_millis(10)),
         }
     };
-    let text = reader.join().ok()?;
-    status.success().then_some(text)
+    Some((status.success(), reader.join().ok()?))
 }
 
 #[cfg(test)]

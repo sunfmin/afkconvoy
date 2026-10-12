@@ -29,9 +29,10 @@ WHAT IT ANSWERS
   in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as
   `tick N: FAILED: <why>`; the loop goes on either way.
 
-  Errors, before the first tick, as {"error": …} with a non-zero exit: the repo fails the
-  startup probe; the config cannot be read; the worker launch command resolves to
-  nothing.
+  Errors, before the first tick, as {"error": …} with a non-zero exit: a command the
+  fleet needs is missing or logged out (the error names each, with the line to run);
+  the repo fails the startup probe; the config cannot be read; the worker launch
+  command resolves to nothing.
 
 WHAT TRIPS YOU UP
 
