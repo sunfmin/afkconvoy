@@ -34,7 +34,7 @@ THE COMMANDS, by who runs them
   Read `afkconvoy <command> --help` before the first time you run one.
 
   The operator — starting, watching or stopping a fleet. Read these first:
-      config  check  plan  run  tick  takeover
+      config  check  plan  run  panel  tick  takeover
 
   Whoever designs a team — once `check` accepts it. Read them to review a workflow, to
   try one out with no worker started, or to ask where an issue is in its workflow:
