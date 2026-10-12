@@ -7,10 +7,10 @@
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::intake::taken_in;
 use afkconvoy_core::plan::{Issue, PullRequest, closing_pr};
-use afkconvoy_core::position::Declared;
-use afkconvoy_core::role::{Due, due, workflow_of};
+use afkconvoy_core::position::{Declared, Position};
+use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
-    Advance, StageRecord, advance, history, label_moves, lands, stage_records,
+    Advance, Author, StageRecord, Stated, advance, history, label_moves, lands, stage_records,
 };
 use afkconvoy_core::team::Team;
 use afkconvoy_core::tick::Outcome;
@@ -35,23 +35,24 @@ pub struct Declaring {
     pub blocked_by: Vec<u64>,
     /// What the stage produced.
     pub text: String,
-    /// The commits of the role's repo and of the team's it ran under.
-    pub role_commit: String,
-    pub team_commit: String,
+    /// The commits of the role's repo and of the team's a worker ran under;
+    /// `None` of a human, who declares under neither.
+    pub commits: Option<(String, String)>,
 }
 
 /// `afkconvoy verdict`: write the stage record of the stage `declaring` ends,
-/// under the claim the issue is held by, and wake the fleet. A stage that has
-/// a record under that claim already gets no second one.
+/// and wake the fleet. A worker's is written under the claim the issue is
+/// held by, and a stage that has a record under that claim already gets no
+/// second one:
 ///
 ///   {"issue", "stage", "verdict", "claim", "declared": true, "woke"}
 ///   {…, "declared": false, "standing": <the verdict already on record>, "woke"}
 ///
-/// Whether the record is a verdict is not decided here: the fleet reads it
-/// against the stage it dispatched under that claim.
+/// Whether a worker's record is a verdict is not decided here: the fleet
+/// reads it against the stage it dispatched under that claim. A human's — one
+/// that names no commits — is `steer::declare`'s.
 pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
-    let Declaring { issue, stage, declared, blocked_by, text, role_commit, team_commit } =
-        declaring;
+    let Declaring { issue, stage, declared, blocked_by, text, commits } = declaring;
     if stage.trim().is_empty() {
         bail!("--stage names no stage");
     }
@@ -61,6 +62,13 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     if !blocked_by.is_empty() && declared != Declared::Blocked {
         bail!("--blocked-by goes with `blocked` only, not with `{}`", declared.word());
     }
+    let Some((role_commit, team_commit)) = commits else {
+        if !blocked_by.is_empty() {
+            bail!("--blocked-by is a worker's: nobody parks an issue no fleet instance holds");
+        }
+        let team = crate::team::load(crate::team::From::Config)?.team;
+        return crate::steer::declare(repo, &team, issue, &stage, declared, text);
+    };
     let scan = Scan::read(repo)?;
     let Some(claim) = scan.claim_of(issue) else {
         bail!(
@@ -70,10 +78,8 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     };
     let record = StageRecord {
         stage,
-        declared,
-        claim: claim.sha.clone(),
-        role_commit,
-        team_commit,
+        stated: Stated::Declared(declared),
+        by: Author::Worker { claim: claim.sha.clone(), role_commit, team_commit },
         blocked_by,
         text,
     };
@@ -82,23 +88,17 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     let standing = stage_records(comments.iter().map(|comment| comment.body.as_str()))
         .into_iter()
         .map(|(_, standing)| standing)
-        .find(|standing| standing.stage == record.stage && standing.claim == record.claim);
+        .find(|standing| standing.stage == record.stage && standing.claim() == record.claim());
     if standing.is_none() {
         gh.comment(issue, &record.comment())?;
     }
     let mut answer = json!({"issue": issue, "stage": record.stage,
-        "verdict": record.declared.word(), "claim": record.claim,
+        "verdict": record.stated.word(), "claim": claim.sha,
         "declared": standing.is_none(), "woke": wake(repo)?["woke"]});
     if let Some(standing) = standing {
-        answer["standing"] = json!(standing.declared.word());
+        answer["standing"] = json!(standing.stated.word());
     }
     Ok(answer)
-}
-
-/// The stage records of issue `number`, oldest first, each with the URL of
-/// its comment.
-pub(crate) fn records_of(gh: &GitHub, number: u64) -> Result<(Vec<StageRecord>, Vec<String>)> {
-    Ok(records_among(&gh.comments(number)?))
 }
 
 /// The stage records among `comments`, oldest first, each with the URL of
@@ -109,12 +109,19 @@ fn records_among(comments: &[Comment]) -> (Vec<StageRecord>, Vec<String>) {
     found.into_iter().map(|(at, record)| (record, url(at))).unzip()
 }
 
+/// The stage records of issue `number`, oldest first, each with the URL of
+/// its comment.
+pub(crate) fn records_of(gh: &GitHub, number: u64) -> Result<(Vec<StageRecord>, Vec<String>)> {
+    Ok(records_among(&gh.comments(number)?))
+}
+
 /// `afkconvoy show --issue`: where issue `number` is in the workflow of
-/// `team` its flow label names, read off its stage records.
+/// `team` its flow label names — or, escalated, the one it left — read off
+/// its stage records.
 ///
 ///   {"issue", "workflow", "intake": {"by", "role", "from", "url"}, "position",
 ///    "follows", "rework": {"had", "left"}, "consecutive_rework": {<stage>:
-///    {"had", "left"}}, "records": [{"stage", "verdict", "reads", "claim",
+///    {"had", "left"}}, "records": [{"stage", "verdict", "reads", "by", "claim",
 ///    "role_commit", "team_commit", "url"}]}
 ///
 /// `intake` is how the issue came in: by a `worker`, with the role, the issue
@@ -123,9 +130,9 @@ fn records_among(comments: &[Comment]) -> (Vec<StageRecord>, Vec<String>) {
 /// declared.
 pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
     let issue = gh.issue(number)?;
-    let workflow = workflow_of(team, &issue.labels)
-        .map_err(|why| anyhow!("issue #{number} has no position: {why}"))?;
     let comments = gh.comments(number)?;
+    let workflow = followed(team, &issue.labels, comments.iter().map(|c| c.body.as_str()))
+        .map_err(|why| anyhow!("issue #{number} has no position: {why}"))?;
     let (records, urls) = records_among(&comments);
     let history = history(workflow, &records);
     let place = &history.place;
@@ -143,10 +150,15 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
         .zip(&urls)
         .zip(&history.readings)
         .map(|((record, url), reading)| {
-            json!({"stage": record.stage, "verdict": record.declared.word(),
-                "reads": reading.word(), "claim": record.claim,
-                "role_commit": record.role_commit, "team_commit": record.team_commit,
-                "url": url})
+            let (role_commit, team_commit) = match &record.by {
+                Author::Worker { role_commit, team_commit, .. } => {
+                    (Some(role_commit), Some(team_commit))
+                }
+                Author::Human => (None, None),
+            };
+            json!({"stage": record.stage, "verdict": record.stated.word(),
+                "reads": reading.word(), "by": record.by.word(), "claim": record.claim(),
+                "role_commit": role_commit, "team_commit": team_commit, "url": url})
         })
         .collect();
     Ok(json!({
@@ -181,6 +193,8 @@ pub struct Called {
     pub said: Option<String>,
     /// Every round of the rework a breaker stopped, where one did.
     pub rounds: Option<String>,
+    /// The stage the issue waits at for a human, when it is at a human's.
+    pub waits_at: Option<String>,
 }
 
 /// One rebuild's read of a bound repo's issues that follow a workflow: the
@@ -270,6 +284,7 @@ impl Flows {
             stage: None,
             said: None,
             rounds: None,
+            waits_at: None,
         };
         let Some(issue) = self.issues.iter().find(|issue| issue.number == number) else {
             return Ok(unfollowed("it carries no flow label".to_string()));
@@ -280,7 +295,12 @@ impl Flows {
         };
         let history = history(workflow, &issue.records);
         let verdict = history.verdict_under(&issue.records, claim);
+        let waits_at = match history.place.position {
+            Position::Waiting(stage) => Some(stage.name.clone()),
+            _ => None,
+        };
         Ok(Called {
+            waits_at,
             advance: advance(&history, &issue.records, claim),
             stage: history.place.position.stage().map(|stage| stage.name.clone()),
             said: verdict.and_then(|at| issue.urls.get(at).cloned()),

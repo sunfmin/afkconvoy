@@ -247,8 +247,15 @@ impl<'w> Place<'w> {
         }
     }
 
-    /// The issue's rework in total, since it entered or a human last ruled.
-    /// The rework a breaker refused is not in it.
+    /// Where the issue is once a human puts it at `stage` — by ruling on it
+    /// there, or by sending it there: the stage is to be performed, and both
+    /// counts start over.
+    pub fn put(self, stage: &'w Stage) -> Place<'w> {
+        Place { position: at(stage), ..Place::enter(self.workflow) }
+    }
+
+    /// The issue's rework in total, since it entered or a human last put it
+    /// at a stage. The rework a breaker refused is not in it.
     pub fn rework(&self) -> u64 {
         self.total.times()
     }
@@ -296,9 +303,9 @@ impl<'w> Place<'w> {
         let mut next = self.clone();
         next.position = match (self.position, declared) {
             (Position::Landing | Position::Ended, _) => return None,
-            // A human's ruling starts both counts over.
+            // A ruling on an escalated issue is a human's.
             (Position::Escalating(stage, _), Declared::Ruling) => {
-                return Some(Place { position: at(stage), ..Place::enter(self.workflow) });
+                return Some(self.clone().put(stage));
             }
             (Position::Escalating(..), _) => return None,
             // A consult's ruling is rework: the stage that asked runs again.

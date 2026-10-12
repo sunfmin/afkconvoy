@@ -44,6 +44,10 @@ THE COMMANDS, by who runs them
   worker, or are finding out why one stopped:
       gate  land  verdict  intake  wake
 
+  A human an issue waits for — in a bound repo. Read them to answer an escalated issue,
+  to put an issue at a stage of your choosing, or to see what a `by: human` stage asks:
+      rule  send
+
   A worker's hook — Claude Code runs it before each thing a bound repo's worker does.
   Nobody runs it by hand. Read it to learn what a worker is refused, and why one was:
       guard

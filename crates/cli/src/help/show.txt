@@ -21,11 +21,12 @@ WHAT IT READS AND WRITES
   With a workflow's name it draws that one; with none, every workflow of the team.
 
   With `--issue` it also reads, in a checkout of the issue's repo, the issue's labels
-  and its comments. The workflow is the one the issue's flow label names, and the
-  position is read off the issue's stage records — the comments `afkconvoy verdict`
-  writes — and off nothing else: not its `stage:` label, which the fleet writes for
-  humans to filter by and never reads. How it came in is read off its intake record,
-  the comment `afkconvoy intake` writes.
+  and its comments. The workflow is the one the issue's flow label names — for an
+  escalated issue, whose flow label was swapped out, the one its escalation's comment
+  says it left. The position is read off the issue's stage records — the comments
+  `afkconvoy verdict`, `rule` and `send` write — and off nothing else: not its `stage:`
+  label, which the fleet writes for humans to filter by and never reads. How it came in
+  is read off its intake record, the comment `afkconvoy intake` writes.
 
 WHAT IT ANSWERS
 
@@ -69,18 +70,24 @@ WHAT IT ANSWERS
     consecutive_rework  for each stage that may reject, {"had", "left"}: its rejections
                         in a row, and what `max_consecutive_rework` still allows
     records             its stage records, oldest first: {"stage", "verdict", "reads",
-                        "claim", "role_commit", "team_commit", "url"}
+                        "by", "claim", "role_commit", "team_commit", "url"}
 
-  Of a record, `reads` says how it counted:
+  Of a record, `by` says who left it: `worker`, under the `claim` and the two commits
+  it names, or `human`, for whom all three are null. `verdict` is what it states: one
+  of the five verdicts, `ruling`, or `sent`. And `reads` says how it counted:
 
-    verdict      it is the verdict of the stage its claim was dispatched to
-    other-stage  it names a stage the issue was not at: it is not a verdict
-    claim-spent  a verdict was already declared under its claim: it is not one
+    verdict        it is the verdict of the stage its claim was dispatched to, or what
+                   a human declared or ruled at the stage the issue was at
+    sent           a human sent the issue to its stage
+    other-stage    it names a stage the issue was not at: it counts for nothing
+    claim-spent    a verdict was already declared under its claim: it is not one
+    unknown-stage  it names a stage the workflow no longer has: the issue escalates
 
   Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error",
   "faults"}, as `check` answers it; the team has no workflow of that name, or none at
-  all; the issue has no position — it carries no flow label, several, or one that names
-  no workflow of the team; and every error of `check`.
+  all; the issue has no position — it carries several flow labels, one that names no
+  workflow of the team, or none with no escalation that says which it left; and every
+  error of `check`.
 
 WHAT TRIPS YOU UP
 

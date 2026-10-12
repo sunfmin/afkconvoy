@@ -6,6 +6,7 @@
 use crate::position::Position;
 use crate::stage_record::{StageRecord, history};
 use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
+use crate::transition::escalated_from;
 
 /// Claude Code's flag for a directory added to the one it was started in.
 pub const ADD_DIR: &str = "--add-dir";
@@ -89,6 +90,26 @@ pub fn workflow_of<'t>(team: &'t Team, labels: &[String]) -> Result<&'t Workflow
     };
     team.workflow(name)
         .ok_or_else(|| format!("its flow label {FLOW_LABEL}{name} names no workflow of the team"))
+}
+
+/// The workflow of `team` an issue carrying `labels` follows, or — handed to
+/// a human, its flow label swapped for the escalate label — followed: the
+/// one the latest escalation among its comments (`bodies`, oldest first) says
+/// it left.
+pub fn followed<'t, 'a>(
+    team: &'t Team,
+    labels: &[String],
+    bodies: impl IntoIterator<Item = &'a str>,
+) -> Result<&'t Workflow, String> {
+    if !flows(labels).is_empty() {
+        return workflow_of(team, labels);
+    }
+    let Some(left) = escalated_from(bodies) else {
+        return Err("it carries no flow label, and no escalation of it says which it left".into());
+    };
+    team.workflow(&left).ok_or_else(|| {
+        format!("it was escalated from {FLOW_LABEL}{left}, which names no workflow of the team")
+    })
 }
 
 /// What an issue's place in its workflow calls for while nobody holds it.
@@ -301,7 +322,9 @@ pub fn takes_flags(command: &str, answer: Option<&str>) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::position::Declared;
+    use crate::stage_record::{Author, Stated};
     use crate::team::{File, RoleRepo, Sources, TEAM_FILE, load};
+    use crate::transition::escalation_comment;
 
     const TEAM: &str = "roles:\n  dev: acme/dev\n  boss: acme/boss\n";
     const FEATURE: &str = "\
@@ -368,10 +391,12 @@ land: { by: boss, do: implement }
     fn record(stage: &str, declared: Declared) -> StageRecord {
         StageRecord {
             stage: stage.to_string(),
-            declared,
-            claim: format!("claim of {stage}"),
-            role_commit: "r".to_string(),
-            team_commit: "t".to_string(),
+            stated: Stated::Declared(declared),
+            by: Author::Worker {
+                claim: format!("claim of {stage}"),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            },
             blocked_by: vec![],
             text: "done".to_string(),
         }
@@ -463,6 +488,31 @@ land: { by: boss, do: implement }
             why(&["flow:signed"]),
             "nothing: its stage \"sign-off\" waits for a human: no worker performs it"
         );
+    }
+
+    #[test]
+    fn an_escalated_issue_followed_the_workflow_its_escalation_says_it_left() {
+        let team = team();
+        let name = |labels: &[&str], bodies: &[&str]| {
+            followed(&team, &self::labels(labels), bodies.iter().copied())
+                .map(|workflow| workflow.name.clone())
+        };
+        let left = escalation_comment("c1", Some("review"), "stuck");
+        let earlier = escalation_comment("c0", Some("feature"), "stuck before");
+        let bodies = [earlier.as_str(), "chat", left.as_str()];
+        assert_eq!(name(&["ready-for-human"], &bodies), Ok("review".to_string()));
+        // A flow label it carries is what it follows, whatever it left.
+        assert_eq!(name(&["flow:signed"], &bodies), Ok("signed".to_string()));
+        assert!(name(&["flow:chore"], &bodies).unwrap_err().contains("names no workflow"));
+        let why = name(&["bug"], &["chat"]).unwrap_err();
+        assert_eq!(why, "it carries no flow label, and no escalation of it says which it left");
+        let gone = escalation_comment("c2", Some("chore"), "stuck");
+        let why = name(&[], &[gone.as_str()]).unwrap_err();
+        assert!(why.starts_with("it was escalated from flow:chore, which names no"), "{why}");
+        // An escalation that says none — an unbound repo's, or of an issue
+        // that followed no one workflow — is no answer.
+        let silent = escalation_comment("c3", None, "stuck");
+        assert!(name(&[], &[left.as_str(), silent.as_str()]).is_err());
     }
 
     /// The settings that add the guard `/bin/afkconvoy guard`.

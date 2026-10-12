@@ -1,0 +1,58 @@
+WHEN TO RUN IT
+
+  When an issue of a bound repo was escalated and you have decided what it asked: the
+  issue carries the team's escalate label in place of its flow label, and the comment
+  above the label says why. Answer it with the ruling:
+
+      afkconvoy rule --issue 7 --text "Keep the v1 schema; migrate in a later issue."
+
+  The stage the issue stopped at runs again under the ruling, and both rework counts
+  start over from it. `afkconvoy show --issue 7` says which stage that is before you
+  rule. To put the issue at another stage instead, see `afkconvoy send --help`.
+
+WHO RUNS IT
+
+  The operator, or whichever human the issue was handed to: in a checkout of the bound
+  repo. No worker runs it: a ruling is a human's.
+
+WHAT IT READS AND WRITES
+
+  It reads the team the config names, the claims on the remote, and the issue's labels
+  and comments. The workflow is the one the issue's flow label names; with the label
+  swapped out, the one its escalation's comment says it left.
+
+  It writes one comment on the issue — a stage record that carries the ruling, says a
+  human left it and names the stage — then puts the flow label back on and takes the
+  team's `escalate_label` off, and wakes the fleet. The record is written first: once
+  the flow label is back the issue is the fleet's again, and its next tick starts a
+  worker on the stage, with the ruling in its brief.
+
+  The ruling is `--text`, or the contents of `--text-file`: one of the two, not empty.
+
+WHAT IT ANSWERS
+
+  {"issue", "workflow", "stage", "ruled": true, "relabelled", "woke"}
+
+    stage       the stage that runs again under the ruling
+    relabelled  whether a label was moved; false when the issue already carried its
+                flow label and no escalate label
+    woke        whether a `run` on this host was told, as `afkconvoy wake` answers
+
+  Errors, as {"error": …} with a non-zero exit, with nothing written: the issue "is
+  claimed" — its escalation is still under way, or a worker is at it; it "is not
+  escalated" — its records put it at a stage and it carries its flow label; it "cannot
+  be ruled on" — it has left the stages of its workflow, or no flow label and no
+  escalation says which workflow it follows; no text, or an empty one; the repo names
+  no team; and every error of `afkconvoy check`.
+
+WHAT TRIPS YOU UP
+
+  - A ruling runs the same stage again. It does not decide the stage's verdict: the
+    worker started under it does.
+  - An issue escalated because its worker went silent, or its gate stayed red, is at
+    the stage that worker was performing: a ruling starts that stage anew.
+  - An escalation made before its comment named the workflow cannot say which flow
+    label to put back. Put the flow label on by hand, then rule.
+  - Moving the labels by hand hands the issue back with no ruling on record: an issue
+    its records show as escalating is escalated again at the next tick.
+  - Run twice, it leaves two rulings. Both count: the stage runs again once.

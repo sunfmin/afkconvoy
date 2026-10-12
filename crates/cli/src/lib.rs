@@ -37,6 +37,7 @@ pub mod recovery;
 pub mod role;
 pub mod settle;
 pub mod stage;
+pub mod steer;
 pub mod takeover;
 pub mod team;
 pub mod tend;
@@ -163,7 +164,8 @@ enum Command {
         #[arg(long, default_value_t = 60)]
         merged_timeout: u64,
     },
-    /// Declare the verdict that ends a stage, with the text it produced (a worker's command)
+    /// Declare the verdict that ends a stage, with the text it produced (a worker's
+    /// command, and a human's for a stage nobody holds)
     #[command(after_long_help = include_str!("help/verdict.txt"))]
     Verdict {
         /// What the stage declares: pass, reject, blocked, already-satisfied, or escalate
@@ -174,21 +176,36 @@ enum Command {
         /// The stage that declares it: the one its worker was started on
         #[arg(long)]
         stage: String,
-        /// The text the stage produced, as the record's body
-        #[arg(long, required_unless_present = "text_file", conflicts_with = "text_file")]
-        text: Option<String>,
-        /// A file holding that text
-        #[arg(long)]
-        text_file: Option<PathBuf>,
+        #[command(flatten)]
+        text: TextArgs,
         /// The issues a `blocked` verdict waits on, as numbers separated by commas
         #[arg(long, value_delimiter = ',')]
         blocked_by: Vec<u64>,
-        /// The commit of the role's repo the stage ran under
-        #[arg(long, env = ROLE_COMMIT_ENV)]
-        role_commit: String,
-        /// The commit of the team's repo the stage ran under
-        #[arg(long, env = TEAM_COMMIT_ENV)]
-        team_commit: String,
+        /// The commit of the role's repo a worker's stage ran under [a human names none]
+        #[arg(long, env = ROLE_COMMIT_ENV, requires = "team_commit")]
+        role_commit: Option<String>,
+        /// The commit of the team's repo a worker's stage ran under [a human names none]
+        #[arg(long, env = TEAM_COMMIT_ENV, requires = "role_commit")]
+        team_commit: Option<String>,
+    },
+    /// Answer an escalated issue with a ruling: its stage runs again under it (a human's command)
+    #[command(after_long_help = include_str!("help/rule.txt"))]
+    Rule {
+        #[arg(long)]
+        issue: u64,
+        #[command(flatten)]
+        text: TextArgs,
+    },
+    /// Send an issue to a named stage of its workflow (a human's command)
+    #[command(after_long_help = include_str!("help/send.txt"))]
+    Send {
+        #[arg(long)]
+        issue: u64,
+        /// The stage to put it at
+        #[arg(long)]
+        stage: String,
+        #[command(flatten)]
+        text: TextArgs,
     },
     /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
     #[command(after_long_help = include_str!("help/intake.txt"))]
@@ -344,6 +361,28 @@ impl TeamArgs {
             (_, Some(dir)) => team::From::Dir(dir),
             (Some(repo), None) => team::From::Repo(repo),
             (None, None) => team::From::Config,
+        }
+    }
+}
+
+/// The text a stage record carries.
+#[derive(clap::Args)]
+struct TextArgs {
+    /// The text of the record: what the stage produced, or what a human says
+    #[arg(long, required_unless_present = "text_file", conflicts_with = "text_file")]
+    text: Option<String>,
+    /// A file holding that text
+    #[arg(long)]
+    text_file: Option<PathBuf>,
+}
+
+impl TextArgs {
+    fn read(self) -> anyhow::Result<String> {
+        match (self.text, self.text_file) {
+            (Some(text), _) => Ok(text),
+            (None, Some(file)) => std::fs::read_to_string(&file)
+                .with_context(|| format!("cannot read {}", file.display())),
+            (None, None) => Ok(String::new()),
         }
     }
 }
@@ -542,32 +581,24 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 }
             }
         }
-        Command::Verdict {
-            verdict,
-            issue,
-            stage,
-            text,
-            text_file,
-            blocked_by,
-            role_commit,
-            team_commit,
-        } => {
-            let text = match (text, text_file) {
-                (Some(text), _) => text,
-                (None, Some(file)) => std::fs::read_to_string(&file)
-                    .with_context(|| format!("cannot read {}", file.display()))?,
-                (None, None) => String::new(),
-            };
+        Command::Verdict { verdict, issue, stage, text, blocked_by, role_commit, team_commit } => {
             let declaring = stage::Declaring {
                 issue,
                 stage,
                 declared: verdict,
                 blocked_by,
-                text,
-                role_commit,
-                team_commit,
+                text: text.read()?,
+                commits: role_commit.zip(team_commit),
             };
             stage::verdict(&Repo::here()?, declaring)
+        }
+        Command::Rule { issue, text } => {
+            let team = team::load(team::From::Config)?.team;
+            steer::rule(&Repo::here()?, &team, issue, text.read()?)
+        }
+        Command::Send { issue, stage, text } => {
+            let team = team::load(team::From::Config)?.team;
+            steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
         }
         Command::Intake { issue, workflow, role, from } => {
             intake::intake(&Repo::here()?, intake::Taking { issue, workflow, role, from })

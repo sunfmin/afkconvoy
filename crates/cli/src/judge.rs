@@ -8,6 +8,7 @@ use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
+use afkconvoy_core::role::flows;
 use afkconvoy_core::stopped::{
     NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
     settled_by_state, stalled_reason, standing_verdict,
@@ -115,11 +116,16 @@ pub(crate) fn escalate_claim(
         None => None,
     };
     let swap = Relabel::of(&labels, &fleet.config, team_label.as_deref());
+    // The one workflow a bound repo's issue follows: a ruling puts its label back.
+    let flow = match flows(&labels).as_slice() {
+        [flow] if team_label.is_some() => Some(flow.to_string()),
+        _ => None,
+    };
     let begun = Escalation::read(said, swap.done());
     transition::escalate(issue, begun, workless, |step| {
         match step {
             EscalateStep::Comment => {
-                fleet.gh.comment(issue, &escalation_comment(&claim.sha, reason))?
+                fleet.gh.comment(issue, &escalation_comment(&claim.sha, flow.as_deref(), reason))?
             }
             EscalateStep::Relabel => {
                 if let Some(label) = &swap.add {

@@ -12,7 +12,9 @@ WHO RUNS IT
 WHAT IT READS AND WRITES
 
   On GitHub it comments `--reason` on the issue, swaps the config's `ready_label` for its
-  `escalate_label`, and writes the status board's last word. On the remote it releases
+  `escalate_label`, and writes the status board's last word. In a bound repo it swaps
+  the issue's flow label for the `escalate_label` of the team instead, and the comment
+  records which workflow the issue left: `afkconvoy rule` puts that label back. On the remote it releases
   the claim. The PR and the branch are kept, and so is the worktree, unless its branch
   holds no work.
 

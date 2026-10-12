@@ -3,6 +3,7 @@
 
 use crate::position::Declared;
 use crate::recovery::Variant;
+use crate::stage_record::{Author, StageRecord, Stated};
 use crate::verdict;
 
 /// What a worker prompt is filled with: the issue, and the branch and path
@@ -210,14 +211,28 @@ or pushed to its branch, turn the gate green before you declare `pass`:
 <gate_step>
 ";
 
-/// One stage record that read as a verdict, as a worker's brief names it.
-#[derive(Debug, Clone)]
+/// What a stage is told of the human's ruling it runs again under.
+const RULED: &str = "
+## Ruling
+
+This stage runs again under a human's ruling on it. Follow it:
+
+{reason}
+";
+
+/// What a stage is told of the human who sent the issue to it.
+const SENT: &str = "
+## Sent here
+
+A human sent the issue to this stage. What they said of it:
+
+{reason}
+";
+
+/// One stage record that counted, as a worker's brief names it.
+#[derive(Debug, Clone, Copy)]
 pub struct Said<'a> {
-    /// The stage that declared it.
-    pub stage: &'a str,
-    pub declared: Declared,
-    /// What the stage produced: of a `reject`, the reason.
-    pub text: &'a str,
+    pub record: &'a StageRecord,
     /// The comment the record is.
     pub url: &'a str,
 }
@@ -237,8 +252,9 @@ pub struct StageFields<'a> {
     pub base_branch: &'a str,
     /// The precedents file, in the fleet's copy of the team.
     pub precedents: &'a str,
-    /// The verdicts declared on the issue so far, oldest first: the worker's
-    /// history. When the last is a `reject`, the stage runs again for it.
+    /// What was declared on the issue so far, oldest first: the worker's
+    /// history. When the last is a `reject`, a human's ruling or a human's
+    /// sending, the stage runs for it.
     pub records: &'a [Said<'a>],
     /// The line the worker declares its verdict with.
     pub verdict_command: &'a str,
@@ -263,23 +279,33 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             .to_string(),
     };
     for said in fields.records {
-        let (stage, verdict) = (said.stage, said.declared.word());
-        records.push_str(&format!("\n- `{stage}` declared `{verdict}` — {}", said.url));
+        let (stage, word) = (&said.record.stage, said.record.stated.word());
+        let line = match said.record.by {
+            Author::Worker { .. } => format!("`{stage}` declared `{word}`"),
+            Author::Human => said.record.headline(),
+        };
+        records.push_str(&format!("\n- {line} — {}", said.url));
     }
-    let rejection = fields.records.last().filter(|last| last.declared == Declared::Reject);
-    let reason = rejection.map(|rejection| quoted(rejection.text)).unwrap_or_default();
+    // Only the last record says why the stage runs now.
+    let last = fields.records.last().map(|said| said.record);
+    let (why, reason) = match last {
+        Some(last) if last.stated == Stated::Sent => (SENT, quoted(&last.text)),
+        Some(last) if last.puts() => (RULED, quoted(&last.text)),
+        Some(last) if last.stated == Stated::Declared(Declared::Reject) => {
+            (REWORK, quoted(&last.text))
+        }
+        _ => ("", String::new()),
+    };
     let gate = match fields.gate_command {
         Some(_) => GATE_BEFORE_PASS.replace("<gate_step>", &GATE_STEP.replace("<g>", "1")),
         None => String::new(),
     };
-    let template = STAGE
-        .replace("<rework>", if rejection.is_some() { REWORK } else { "" })
-        .replace("<gate>", &gate);
+    let template = STAGE.replace("<rework>", why).replace("<gate>", &gate);
     fill(
         &template,
         &[
             ("records", &records),
-            ("rejecter", rejection.map_or("", |rejection| rejection.stage)),
+            ("rejecter", last.map_or("", |last| &last.stage)),
             ("reason", &reason),
             ("n", &number),
             ("title", fields.title),
@@ -657,11 +683,27 @@ mod tests {
         assert!(!prompt.contains("## Rework") && !prompt.contains("<rework>"), "{prompt}");
 
         // The stage records are its history, and a rejection's reason is in the brief.
-        let said = |stage, declared, text, url| Said { stage, declared, text, url };
-        let passed = [said("build", Declared::Pass, "built", "https://gh/c/1")];
+        let left = |stage: &str, stated, by, text: &str| StageRecord {
+            stage: stage.to_string(),
+            stated,
+            by,
+            blocked_by: vec![],
+            text: text.to_string(),
+        };
+        let worker = |stage: &str, declared, text: &str| {
+            let by = Author::Worker {
+                claim: "c".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            };
+            left(stage, Stated::Declared(declared), by, text)
+        };
         let reason = "## Not yet\n\nThe {parser} drops a `-->`.";
+        let (built, turned_down) =
+            (worker("build", Declared::Pass, "built"), worker("review", Declared::Reject, reason));
+        let passed = [Said { record: &built, url: "https://gh/c/1" }];
         let rejected =
-            [&passed[..], &[said("review", Declared::Reject, reason, "https://gh/c/2")]].concat();
+            [&passed[..], &[Said { record: &turned_down, url: "https://gh/c/2" }]].concat();
         let again = stage_prompt(&StageFields { records: &rejected, ..fields.clone() }).unwrap();
         assert!(
             again.contains(
@@ -681,6 +723,31 @@ mod tests {
         // A stage that follows a pass runs for the first time: no rework.
         let on = stage_prompt(&StageFields { records: &passed, ..fields }).unwrap();
         assert!(on.contains("- `build` declared `pass`") && !on.contains("## Rework"), "{on}");
+
+        // A human's ruling is what the stage runs again under, and a sending why it runs.
+        let ruling = left("build", Stated::Declared(Declared::Ruling), Author::Human, "Keep v1.");
+        let ruled = [&rejected[..], &[Said { record: &ruling, url: "https://gh/c/3" }]].concat();
+        let under = stage_prompt(&StageFields { records: &ruled, ..fields.clone() }).unwrap();
+        assert!(
+            under.contains(
+                "- a human ruled on the stage `build`, which runs again under the ruling — \
+                 https://gh/c/3\n\n## Ruling\n\nThis stage runs again under a human's ruling on \
+                 it. Follow it:\n\n> Keep v1.\n\n## Declare a verdict\n"
+            ),
+            "{under}"
+        );
+        assert!(!under.contains("## Rework"), "{under}");
+        let sending = left("build", Stated::Sent, Author::Human, "Start over.");
+        let sent = [Said { record: &sending, url: "https://gh/c/4" }];
+        let here = stage_prompt(&StageFields { records: &sent, ..fields.clone() }).unwrap();
+        assert!(
+            here.contains(
+                "- a human sent this issue to the stage `build` — https://gh/c/4\n\n\
+                 ## Sent here\n\nA human sent the issue to this stage. What they said of it:\n\n\
+                 > Start over.\n"
+            ),
+            "{here}"
+        );
         assert!(stage_nudge_line("/b.md").contains("task brief (/b.md)"));
     }
 
