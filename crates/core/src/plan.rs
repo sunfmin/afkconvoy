@@ -306,7 +306,9 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                     continue;
                 }
                 Some(Due::Nothing(why)) => why.clone(),
-                Some(Due::Worker(_) | Due::Lander(_)) if issue.open_blockers > 0 => {
+                Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_))
+                    if issue.open_blockers > 0 =>
+                {
                     format!("{} open blocker(s)", issue.open_blockers)
                 }
                 Some(Due::Lander(_)) => {
@@ -314,7 +316,8 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                     set.frontier.push(Dispatchable { number, title, stage });
                     continue;
                 }
-                Some(Due::Worker(entry)) => {
+                // A consult is started at the stage that asked it.
+                Some(Due::Worker(entry) | Due::Consult(entry)) => {
                     let (title, stage) = (issue.title.clone(), Some(entry.stage.name.clone()));
                     set.frontier.push(Dispatchable { number, title, stage });
                     continue;
@@ -545,6 +548,7 @@ mod tests {
             stage: "plan".to_string(),
             stated: Stated::Declared(Declared::Escalate),
             by: Author::Worker {
+                consult: false,
                 claim: "c1".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
@@ -605,6 +609,7 @@ mod tests {
             stage: stage.to_string(),
             stated: Stated::Declared(declared),
             by: Author::Worker {
+                consult: false,
                 claim: claim.to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),

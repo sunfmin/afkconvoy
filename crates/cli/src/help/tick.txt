@@ -46,6 +46,13 @@ WHAT TRIPS YOU UP
     the tick after a `pass` that leads to `land` starts a worker in the workflow's
     landing role, which gates the PR and joins the landing train; a `pass` to `land`
     with no open PR to join is handed to a human.
+  - An `escalate` does not always hand the issue to a human. From a stage that names a
+    consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim,
+    and the next one starts a worker in the consult's role — under a claim of its
+    own, in one slot of `concurrency`, in the same worktree. Its ruling (`afkconvoy
+    rule`) runs the stage that asked again, a tick later, and counts as one more of
+    the issue's rework in total; its own `escalate` goes to a human. A consult that
+    stays silent is nudged once and then escalated, like any worker.
   - A `reject` does not always start the earlier stage again. Where it would pass one
     of the workflow's breakers — `max_rework`, `max_consecutive_rework` — the tick
     escalates the issue straight to a human instead, whatever consult the stage names;
@@ -53,7 +60,8 @@ WHAT TRIPS YOU UP
     `afkconvoy rehearse` trips them at the same verdict.
   - A verdict is not carried out when its stage left what it may not have: a stage
     marked `writes: false` whose branch holds a commit that was not there when its
-    worker started has failed, and the issue escalates whatever it declared. The guard
+    worker started has failed, and the issue escalates whatever it declared. The same
+    holds for a consult, whatever its stage is marked: it writes no code. The guard
     (`afkconvoy guard --help`) refuses such a commit as it is made; this is the check
     of what a guard missed.
   - With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`).

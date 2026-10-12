@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::position::Declared;
-use afkconvoy_core::role::{ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
+use afkconvoy_core::role::{CONSULT_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -188,14 +188,27 @@ enum Command {
         /// The commit of the team's repo a worker's stage ran under [a human names none]
         #[arg(long, env = TEAM_COMMIT_ENV, requires = "role_commit")]
         team_commit: Option<String>,
+        /// The worker is the stage's consult, letting its `escalate` through [a human is none]
+        #[arg(long, env = CONSULT_ENV)]
+        consult: bool,
     },
-    /// Answer an escalated issue with a ruling: its stage runs again under it (a human's command)
+    /// Answer an escalated issue with a ruling: its stage runs again under it (a human's
+    /// command, and a consult's for the stage that asked it)
     #[command(after_long_help = include_str!("help/rule.txt"))]
     Rule {
         #[arg(long)]
         issue: u64,
         #[command(flatten)]
         text: TextArgs,
+        /// The stage whose `escalate` a consult rules on [a human names none]
+        #[arg(long, requires = "role_commit")]
+        stage: Option<String>,
+        /// The commit of the role's repo a consult ran under [a human names none]
+        #[arg(long, env = ROLE_COMMIT_ENV, requires = "team_commit")]
+        role_commit: Option<String>,
+        /// The commit of the team's repo a consult ran under [a human names none]
+        #[arg(long, env = TEAM_COMMIT_ENV, requires = "role_commit")]
+        team_commit: Option<String>,
     },
     /// Send an issue to a named stage of its workflow (a human's command)
     #[command(after_long_help = include_str!("help/send.txt"))]
@@ -595,7 +608,16 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 }
             }
         }
-        Command::Verdict { verdict, issue, stage, text, blocked_by, role_commit, team_commit } => {
+        Command::Verdict {
+            verdict,
+            issue,
+            stage,
+            text,
+            blocked_by,
+            role_commit,
+            team_commit,
+            consult,
+        } => {
             let declaring = stage::Declaring {
                 issue,
                 stage,
@@ -603,10 +625,32 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 blocked_by,
                 text: text.read()?,
                 commits: role_commit.zip(team_commit),
+                consult,
             };
             stage::verdict(&Repo::here()?, declaring)
         }
-        Command::Rule { issue, text } => {
+        Command::Rule { issue, text, stage, role_commit, team_commit } => {
+            // With the commits it ran under, the ruling is a consult's: a
+            // stage record under its claim, as a verdict is.
+            if let Some(commits) = role_commit.zip(team_commit) {
+                let Some(stage) = stage else {
+                    anyhow::bail!(
+                        "a consult rules with `--stage`, the stage that asked it: its brief \
+                         gives the line. A human rules with no commit named and none in the \
+                         environment"
+                    );
+                };
+                let declaring = stage::Declaring {
+                    issue,
+                    stage,
+                    declared: Declared::Ruling,
+                    blocked_by: vec![],
+                    text: text.read()?,
+                    commits: Some(commits),
+                    consult: true,
+                };
+                return stage::verdict(&Repo::here()?, declaring);
+            }
             let team = team::load(team::From::Config)?.team;
             steer::rule(&Repo::here()?, &team, issue, text.read()?)
         }

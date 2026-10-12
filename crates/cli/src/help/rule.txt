@@ -10,10 +10,24 @@ WHEN TO RUN IT
   start over from it. `afkconvoy show --issue 7` says which stage that is before you
   rule. To put the issue at another stage instead, see `afkconvoy send --help`.
 
+  Or as a consult: a stage that names one (`escalate: { to, do }` in its workflow)
+  declared `escalate`, and the fleet started you in that role to rule on it before a
+  human is asked. Your brief gives the line, with `--issue` and `--stage` filled in:
+
+      afkconvoy rule --issue 7 --stage build --text-file /tmp/ruling.md
+
+  The stage that asked runs again under your ruling. What is not yours to rule on you
+  let through to a human instead, with `afkconvoy verdict escalate` — your brief gives
+  that line too.
+
 WHO RUNS IT
 
   The operator, or whichever human the issue was handed to: in a checkout of the bound
-  repo. No worker runs it: a ruling is a human's.
+  repo, with no commit named and none in the environment.
+
+  Or a consult, in the issue's worktree: the fleet put the commits of its role and of
+  its team in its environment, and those are what make the ruling a consult's. No
+  other worker runs it: a stage does not rule on itself.
 
 WHAT IT READS AND WRITES
 
@@ -27,11 +41,19 @@ WHAT IT READS AND WRITES
   the flow label is back the issue is the fleet's again, and its next tick starts a
   worker on the stage, with the ruling in its brief.
 
+  A consult's ruling is one comment too, and nothing else: a stage record that says the
+  stage's consult left it, under the claim the consult holds on the issue, with the two
+  commits. It moves no label — the issue never left the fleet — and the next tick ends
+  the consult's claim; the one after starts the stage that asked, with the ruling in
+  its brief. It is checked no more than a worker's verdict is.
+
   The ruling is `--text`, or the contents of `--text-file`: one of the two, not empty.
 
 WHAT IT ANSWERS
 
   {"issue", "workflow", "stage", "ruled": true, "relabelled", "woke"}
+  {"issue", "stage", "verdict": "ruling", "claim", "declared", "woke"} — a consult's,
+  as `afkconvoy verdict` answers a worker
 
     stage       the stage that runs again under the ruling
     relabelled  whether a label was moved; false when the issue already carried its
@@ -43,7 +65,8 @@ WHAT IT ANSWERS
   escalated" — its records put it at a stage and it carries its flow label; it "cannot
   be ruled on" — it has left the stages of its workflow, or no flow label and no
   escalation says which workflow it follows; no text, or an empty one; the repo names
-  no team; and every error of `afkconvoy check`.
+  no team; and every error of `afkconvoy check`. A consult's: `--stage` is missing,
+  or given with no commits; the issue "is not claimed".
 
 WHAT TRIPS YOU UP
 
@@ -55,4 +78,10 @@ WHAT TRIPS YOU UP
     label to put back. Put the flow label on by hand, then rule.
   - Moving the labels by hand hands the issue back with no ruling on record: an issue
     its records show as escalating is escalated again at the next tick.
-  - Run twice, it leaves two rulings. Both count: the stage runs again once.
+  - Run twice, it leaves two rulings. Both count: the stage runs again once. A
+    consult's second changes nothing: one claim declares once.
+  - A human's ruling starts both rework counts over. A consult's does not: it is one
+    more of the issue's rework in total, and one that would pass `max_rework` escalates
+    the issue instead of running the stage again.
+  - A consult writes no code. The guard refuses its commits and pushes, and a commit it
+    left on the branch all the same is a failure: the issue escalates, whatever it ruled.

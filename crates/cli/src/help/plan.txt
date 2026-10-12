@@ -22,7 +22,8 @@ WHAT IT ANSWERS
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage};
-                   the stage is `land` once the last one passed to the landing train
+                   an issue whose stage's `escalate` waits for its consult is here
+                   too, at that stage; the stage is `land` once the last one passed to the landing train
                    and the issue's PR waits for a worker to join it
     excluded       every other open issue, with why: {number, reason}
     escalating     in a bound repo, when there are any: the unclaimed issues a tick

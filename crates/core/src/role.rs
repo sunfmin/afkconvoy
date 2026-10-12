@@ -45,7 +45,8 @@ pub const BASE_BRANCH_ENV: &str = "AFKCONVOY_BASE_BRANCH";
 pub const ESCALATE_LABEL_ENV: &str = "AFKCONVOY_ESCALATE_LABEL";
 pub const LOCK_LABEL_ENV: &str = "AFKCONVOY_LOCK_LABEL";
 
-/// The stage an issue is dispatched to, and who performs it.
+/// The stage an issue is dispatched to, and who performs it — or, of a
+/// consult, the stage that asked and who rules on its `escalate`.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry<'t> {
     pub workflow: &'t Workflow,
@@ -117,6 +118,9 @@ pub fn followed<'t, 'a>(
 pub enum Due<'t> {
     /// A worker is to be started on this stage.
     Worker(Entry<'t>),
+    /// A worker is to be started as the consult this stage names, to rule on
+    /// its `escalate`.
+    Consult(Entry<'t>),
     /// A worker is to be started in the workflow's landing role, to gate the
     /// issue's PR and join the landing train.
     Lander(Lander<'t>),
@@ -128,8 +132,9 @@ pub enum Due<'t> {
 
 /// What is due on an issue carrying `labels` whose stage records are
 /// `records`, oldest first, and whose open PR is `pr`: the stage its position
-/// starts a worker on, in the workflow of `team` its flow label names, or —
-/// its last stage having passed to the landing train — the join of that PR.
+/// starts a worker on, in the workflow of `team` its flow label names, the
+/// consult a stage that declared `escalate` names, or — its last stage having
+/// passed to the landing train — the join of that PR.
 /// A flow label that names no one workflow, a position that is an
 /// escalation, and a landing with no open PR to join hand it to a human; an
 /// issue with no flow label is not the fleet's.
@@ -157,7 +162,10 @@ pub fn due<'t>(
     };
     match position {
         Position::Escalating(stage, reason) => Due::Human(reason.said(stage)),
-        Position::Consult(stage, _) => waits(stage, "its consult"),
+        Position::Consult(stage, work) => match team.role(&work.role) {
+            Some(role) => Due::Consult(Entry { workflow, stage, work, role }),
+            None => roleless(work),
+        },
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
             waits(stage, "a human: no worker performs it")
         }
@@ -352,6 +360,14 @@ stages:
     do: implement
     on: { pass: done, reject: build }
 ";
+    const ASKS: &str = "\
+stages:
+  - name: build
+    by: dev
+    do: implement
+    escalate: { to: boss, do: implement }
+    on: { pass: done }
+";
 
     const LANDS: &str = "\
 stages:
@@ -378,6 +394,7 @@ land: { by: boss, do: implement }
                 file("workflows/signed.md", SIGNED),
                 file("workflows/review.md", REVIEW),
                 file("workflows/lands.md", LANDS),
+                file("workflows/asks.md", ASKS),
             ],
             repos: vec![repo("acme/dev"), repo("acme/boss")],
         })
@@ -393,6 +410,7 @@ land: { by: boss, do: implement }
             stage: stage.to_string(),
             stated: Stated::Declared(declared),
             by: Author::Worker {
+                consult: false,
                 claim: format!("claim of {stage}"),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
@@ -422,6 +440,9 @@ land: { by: boss, do: implement }
     fn said(due: Due) -> String {
         match due {
             Due::Worker(entry) => format!("{} by {}", entry.stage.name, entry.work.role),
+            Due::Consult(entry) => {
+                format!("consult on {} by {}", entry.stage.name, entry.work.role)
+            }
             Due::Lander(lander) => format!("PR #{} joined by {}", lander.pr, lander.work.role),
             Due::Human(why) => format!("human: {why}"),
             Due::Nothing(why) => format!("nothing: {why}"),
@@ -445,6 +466,36 @@ land: { by: boss, do: implement }
         assert_eq!(
             after(&[record("build", Declared::Escalate)]),
             "human: the stage `build` declared `escalate`, and it names no consult"
+        );
+    }
+
+    #[test]
+    fn an_escalate_makes_the_consult_its_stage_names_due_and_a_ruling_the_stage_again() {
+        let team = team();
+        let flow = labels(&["flow:asks"]);
+        let consult = |declared| StageRecord {
+            by: Author::Worker {
+                consult: true,
+                claim: "claim of the consult".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            },
+            ..record("build", declared)
+        };
+        let asked = [record("build", Declared::Escalate)];
+        let Due::Consult(entry) = due(&team, &flow, &asked, None) else {
+            panic!("a consult is due")
+        };
+        assert_eq!(entry.stage.name, "build");
+        assert_eq!((entry.work.role.as_str(), entry.work.skill.as_str()), ("boss", "implement"));
+        assert_eq!(entry.role.repo, "acme/boss");
+        let ruled = [&asked[..], &[consult(Declared::Ruling)]].concat();
+        assert_eq!(said(due(&team, &flow, &ruled, None)), "build by dev");
+        // The chain is one role long: a consult's own `escalate` goes to a human.
+        let through = [&asked[..], &[consult(Declared::Escalate)]].concat();
+        assert_eq!(
+            said(due(&team, &flow, &through, None)),
+            "human: the consult of the stage `build` let its `escalate` through"
         );
     }
 

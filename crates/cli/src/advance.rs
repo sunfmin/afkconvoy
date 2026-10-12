@@ -77,14 +77,15 @@ fn hand_on(
 }
 
 /// Asks after the worker of `claim`, whose stage `stage` has declared
-/// nothing: one that is gone is continued, one that stopped is nudged once,
+/// nothing — or, `consult`, whose consult has neither ruled nor let its
+/// `escalate` through: one that is gone is continued, one that stopped is nudged once,
 /// and one silent past its nudge is escalated, as a silent worker ever is.
 fn ask_after(
     fleet: &mut Fleet,
     me: &Me,
     agent: &Agent,
     claim: &Claim,
-    stage: &str,
+    (stage, consult): (&str, bool),
 ) -> Result<Outcome> {
     let issue = claim.number;
     let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
@@ -116,7 +117,7 @@ fn ask_after(
         }
         Silence::Stalled(silent) => {
             let tail = where_it_stopped(&worktree, &silent);
-            let reason = stage_stalled_reason(stage, &silent, &tail);
+            let reason = stage_stalled_reason(stage, consult, &silent, &tail);
             let (pr, workless) = (pr_of(fleet, issue)?, Workless::of(&progress));
             escalate_claim(fleet, claim, &reason, pr, Some(&worktree), workless.as_ref())?;
             Ok(Outcome::Done)
@@ -139,8 +140,8 @@ fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<String>> {
 /// The tick's look at one claim of mine at a stage → `Done` when that ended
 /// the claim. A verdict is carried out as soon as it is read, whatever its
 /// worker is doing: it was declared through the fleet, and a claim declares
-/// once. A stage that left what it may not have is escalated instead,
-/// whatever it declared. The PR, the branch and the worktree are the issue's next stage's.
+/// once. A stage that left what it may not have — and a consult that left a
+/// commit — is escalated instead, whatever it declared. The PR, the branch and the worktree are the issue's next stage's.
 pub fn advance(
     fleet: &mut Fleet,
     me: &Me,
@@ -160,7 +161,8 @@ pub fn advance(
     }
     let reason = match called.advance {
         Advance::AskAfter => {
-            return ask_after(fleet, me, agent, &claim, called.stage.as_deref().unwrap_or("?"));
+            let asked = (called.stage.as_deref().unwrap_or("?"), called.consulted);
+            return ask_after(fleet, me, agent, &claim, asked);
         }
         Advance::HandOn => {
             hand_on(fleet, &claim, called.waits_at.as_deref(), None)?;

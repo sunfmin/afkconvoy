@@ -14,6 +14,8 @@ pub const STAGE_RECORD: &str = "convoy:stage";
 /// What the label that shows an issue's position starts with. It is written
 /// for humans to filter by and never read back.
 pub const STAGE_LABEL: &str = "stage:";
+/// Who a stage record says left it, when a consult did.
+const CONSULT: &str = "consult";
 
 /// What a stage record states of its stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,8 +45,10 @@ impl Stated {
 /// Who left a stage record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Author {
-    /// The worker of the stage.
+    /// The worker of the stage, or the consult asked to rule on its `escalate`.
     Worker {
+        /// Whether it is the stage's consult.
+        consult: bool,
         /// The claim it declared under: the commit of the claim's ref, which
         /// is written once.
         claim: String,
@@ -59,7 +63,8 @@ pub enum Author {
 impl Author {
     pub fn word(&self) -> &'static str {
         match self {
-            Author::Worker { .. } => "worker",
+            Author::Worker { consult: true, .. } => CONSULT,
+            Author::Worker { consult: false, .. } => "worker",
             Author::Human => HUMAN,
         }
     }
@@ -109,7 +114,16 @@ impl StageRecord {
             (Author::Human, Stated::Declared(_)) => {
                 format!("a human declared `{word}` for the stage `{stage}`")
             }
-            (Author::Worker { .. }, Stated::Declared(_)) => {
+            (Author::Worker { consult: true, .. }, Stated::Declared(Declared::Ruling)) => {
+                format!(
+                    "the consult of the stage `{stage}` ruled on its `escalate`: the stage runs \
+                     again under the ruling"
+                )
+            }
+            (Author::Worker { consult: true, .. }, Stated::Declared(_)) => {
+                format!("the consult of the stage `{stage}` declared `{word}`")
+            }
+            (Author::Worker { consult: false, .. }, Stated::Declared(_)) => {
                 format!("the stage `{stage}` declared `{word}`")
             }
         }
@@ -120,8 +134,9 @@ impl StageRecord {
     pub fn comment(&self) -> String {
         let blocked_by: Vec<String> = self.blocked_by.iter().map(u64::to_string).collect();
         let (claim, role_commit, team_commit, by) = match &self.by {
-            Author::Worker { claim, role_commit, team_commit } => {
-                (claim.as_str(), role_commit.as_str(), team_commit.as_str(), "")
+            Author::Worker { consult, claim, role_commit, team_commit } => {
+                let by = if *consult { CONSULT } else { "" };
+                (claim.as_str(), role_commit.as_str(), team_commit.as_str(), by)
             }
             Author::Human => ("", "", "", HUMAN),
         };
@@ -149,8 +164,9 @@ impl StageRecord {
         let text = rest.split_once("\n\n").map_or("", |(_, text)| text);
         let by = match fields.get("by") {
             Some(HUMAN) => Author::Human,
-            Some(_) => return None,
-            None => Author::Worker {
+            Some(by) if by != CONSULT => return None,
+            by => Author::Worker {
+                consult: by.is_some(),
                 claim: fields.get("claim")?.to_string(),
                 role_commit: fields.get("role_commit")?.to_string(),
                 team_commit: fields.get("team_commit")?.to_string(),
@@ -319,7 +335,11 @@ impl History<'_> {
             let Some(record) = records.get(*nth) else { continue };
             round = round.saturating_add(1);
             let (stage, declared) = (&record.stage, record.stated.word());
-            said.push_str(&format!("\n\n{round}. `{stage}` declared `{declared}`"));
+            let who = match record.by {
+                Author::Worker { consult: true, .. } => format!("the consult of `{stage}`"),
+                _ => format!("`{stage}`"),
+            };
+            said.push_str(&format!("\n\n{round}. {who} declared `{declared}`"));
             if let Some(url) = urls.get(*nth) {
                 said.push_str(&format!(" — {url}"));
             }
@@ -332,8 +352,8 @@ impl History<'_> {
 /// What the tick does with a claim a stage was dispatched under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Advance {
-    /// Its stage has declared nothing yet, and is still to be performed: ask
-    /// after its worker.
+    /// Its stage has declared nothing yet, and is still to be performed —
+    /// or its consult has not ruled yet: ask after its worker.
     AskAfter,
     /// The claim has no more to do and the issue stays as its records put
     /// it: release it. A worker's next stage is the frontier's to start,
@@ -361,8 +381,10 @@ pub fn advance(history: &History, records: &[StageRecord], claim: &str) -> Advan
         return Advance::Escalate(reason.said(stage));
     }
     let Some(verdict) = history.verdict_under(records, claim).and_then(|at| records.get(at)) else {
-        // A claim on an issue no worker has a stage to perform on holds nothing.
-        return if position.start().is_some() { Advance::AskAfter } else { Advance::HandOn };
+        // A claim on an issue no worker has a stage to perform on, or to
+        // rule on, holds nothing.
+        let asked = position.start().is_some() || matches!(position, Position::Consult(..));
+        return if asked { Advance::AskAfter } else { Advance::HandOn };
     };
     match position {
         Position::Parked(_) => Advance::Blocked(verdict.blocked_by.clone()),
@@ -429,6 +451,7 @@ mod tests {
             stage: stage.to_string(),
             stated: Stated::Declared(declared),
             by: Author::Worker {
+                consult: false,
                 claim: claim.to_string(),
                 role_commit: "r1".to_string(),
                 team_commit: "t1".to_string(),
@@ -451,12 +474,20 @@ mod tests {
     #[test]
     fn a_record_reads_back_from_its_comment() {
         let worker = Author::Worker {
+            consult: false,
+            claim: "c0ffee".to_string(),
+            role_commit: "abc".to_string(),
+            team_commit: "def".to_string(),
+        };
+        let consult = Author::Worker {
+            consult: true,
             claim: "c0ffee".to_string(),
             role_commit: "abc".to_string(),
             team_commit: "def".to_string(),
         };
         let stated = Declared::ALL.into_iter().map(Stated::Declared).chain([Stated::Sent]);
-        for (stated, by) in stated.flat_map(|stated| [(stated, worker.clone()), (stated, Human)]) {
+        let by = [worker, consult, Human];
+        for (stated, by) in stated.flat_map(|stated| by.clone().map(|by| (stated, by))) {
             let written = StageRecord {
                 stage: "sign off".to_string(),
                 stated,
@@ -607,6 +638,42 @@ mod tests {
         assert_eq!(
             history(one(FEATURE).workflow("feature").unwrap(), &built).verdict_under(&built, "c2"),
             Some(1)
+        );
+    }
+
+    /// What the consult of `stage` left under `claim`.
+    fn consult(stage: &str, declared: Declared, claim: &str) -> StageRecord {
+        let mut left = record(stage, declared, claim);
+        if let Author::Worker { consult, .. } = &mut left.by {
+            *consult = true;
+        }
+        left
+    }
+
+    #[test]
+    fn a_consult_s_claim_is_asked_after_until_it_rules_or_lets_the_escalation_through() {
+        // `build` names a consult: its `escalate` ends its own claim…
+        let asked = [record("plan", Pass, "c1"), record("build", Escalate, "c2")];
+        assert_eq!(advanced(&asked, "c2"), Advance::HandOn);
+        // …and the consult's is asked after, as a stage's is.
+        assert_eq!(advanced(&asked, "c3"), Advance::AskAfter);
+        let ruled = [&asked[..], &[consult("build", Ruling, "c3")]].concat();
+        assert_eq!(after(&ruled), ("stage:build".to_string(), vec!["verdict"; 3]));
+        assert_eq!(advanced(&ruled, "c3"), Advance::HandOn);
+        assert_eq!(advanced(&ruled, "c4"), Advance::AskAfter, "`build` runs again");
+        let through = [&asked[..], &[consult("build", Escalate, "c3")]].concat();
+        let let_through = "the consult of the stage `build` let its `escalate` through";
+        assert_eq!(advanced(&through, "c3"), Advance::Escalate(let_through.to_string()));
+        // What it leaves says a consult did.
+        assert_eq!(
+            consult("build", Ruling, "c3").comment(),
+            "<!--convoy:stage stage=build verdict=ruling by=consult claim=c3 role_commit=r1 \
+             team_commit=t1-->\n**afkconvoy** — the consult of the stage `build` ruled on its \
+             `escalate`: the stage runs again under the ruling.\n\nbuild is done"
+        );
+        assert_eq!(
+            consult("build", Escalate, "c3").headline(),
+            "the consult of the stage `build` declared `escalate`"
         );
     }
 

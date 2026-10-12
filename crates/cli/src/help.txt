@@ -41,7 +41,7 @@ THE COMMANDS, by who runs them
       show  rehearse
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
-  worker, or are finding out why one stopped:
+  worker, or are finding out why one stopped (`rule`, below, is a consult's too):
       gate  land  verdict  intake  lock  wake
 
   A human an issue waits for — in a bound repo. Read them to answer an escalated issue,
