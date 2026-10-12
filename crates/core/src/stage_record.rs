@@ -162,11 +162,13 @@ impl History<'_> {
     /// the stage dispatched under `claim`; `None` while that stage has
     /// declared nothing that reads as one.
     pub fn verdict_under(&self, records: &[StageRecord], claim: &str) -> Option<usize> {
-        let verdicts = records.iter().zip(&self.readings).enumerate();
-        verdicts
-            .filter(|(_, (record, reading))| **reading == Reading::Verdict && record.claim == claim)
-            .map(|(at, _)| at)
-            .next()
+        for (at, record) in records.iter().enumerate() {
+            let verdict = self.readings.get(at) == Some(&Reading::Verdict);
+            if verdict && record.claim == claim {
+                return Some(at);
+            }
+        }
+        None
     }
 }
 
