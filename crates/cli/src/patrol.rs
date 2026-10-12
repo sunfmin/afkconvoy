@@ -9,7 +9,7 @@ use afkconvoy_core::patrol::{
 };
 use afkconvoy_core::plan::Issue;
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
-use afkconvoy_core::role::{Facts, On, Start, flows, in_role, quoted};
+use afkconvoy_core::role::{Facts, On, Start, flows, in_role};
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, anyhow};
@@ -98,8 +98,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
 
     let path = checkout.path.display().to_string();
     // A worker starts in its role's copy: its commands are run from the checkout.
-    let own =
-        |arguments: &str| format!("cd {} && {}", quoted(&path), crate::own_command(arguments));
+    let own = || crate::own_command_in(&path);
     let workflows: Vec<&str> =
         kept.team.workflows.iter().map(|workflow| workflow.name.as_str()).collect();
     let fields = PatrolFields {
@@ -111,8 +110,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
         workflows: &workflows,
         room: row.max_open.saturating_sub(row.open),
-        intake_command: &own("intake --issue <number> --workflow <name>"),
-        lock_command: &own("lock --issue <number>"),
+        intake_command: &own().fixed(" intake --issue <number> --workflow <name>").own(),
+        lock_command: &own().fixed(" lock --issue <number>").own(),
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let start = Start {
@@ -120,7 +119,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         worktree: &path,
         team_dir: &kept.copy.dir.display().to_string(),
         model: patrol.model.as_deref(),
-        guard: &crate::own_command("guard"),
+        guard: &crate::own_command().fixed(" guard").own(),
         facts: Facts {
             on: On::Patrol(name),
             role: &patrol.work.role,

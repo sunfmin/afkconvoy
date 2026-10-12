@@ -3,6 +3,7 @@
 //! bound repo, and whether the command takes it. What is added is fixed: nothing here is
 //! configurable, and an unbound repo's command never comes this way.
 
+use crate::line::Line;
 use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::precedent::PROPOSAL_ENV;
@@ -300,31 +301,46 @@ fn guard_settings(guard: &str) -> String {
 /// the worktree and the team's copy added, the user's settings left out, the
 /// guard added, and the stage's model.
 pub fn in_role(command: &str, start: &Start) -> String {
-    let mut line = format!("cd {} && export {ADDED_RULES}=1 {NO_MEMORY}=1", quoted(start.role_dir));
+    let mut line = Line::new()
+        .fixed("cd ")
+        .word(start.role_dir)
+        .fixed(" && export ")
+        .fixed(ADDED_RULES)
+        .fixed("=1 ")
+        .fixed(NO_MEMORY)
+        .fixed("=1");
     for (name, value) in start.facts.env() {
-        line.push_str(&format!(" {name}={}", quoted(&value)));
+        line = line.fixed(" ").fixed(name).fixed("=").word(&value);
     }
-    line.push_str(&format!(
-        " && {command} {ADD_DIR} {} {ADD_DIR} {} {SETTING_SOURCES} {SOURCES} {SETTINGS} {}",
-        quoted(start.worktree),
-        quoted(start.team_dir),
-        quoted(&guard_settings(start.guard))
-    ));
+    line = line
+        .fixed(" && ")
+        .launch(command)
+        .fixed(" ")
+        .fixed(ADD_DIR)
+        .fixed(" ")
+        .word(start.worktree)
+        .fixed(" ")
+        .fixed(ADD_DIR)
+        .fixed(" ")
+        .word(start.team_dir)
+        .fixed(" ")
+        .fixed(SETTING_SOURCES)
+        .fixed(" ")
+        .fixed(SOURCES)
+        .fixed(" ")
+        .fixed(SETTINGS)
+        .fixed(" ")
+        .word(&guard_settings(start.guard));
     if let Some(model) = start.model {
-        line.push_str(&format!(" {MODEL} {}", quoted(model)));
+        line = line.fixed(" ").fixed(MODEL).fixed(" ").word(model);
     }
-    line
-}
-
-/// `text` as one word of a shell line, whatever it holds.
-pub fn quoted(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
+    line.done()
 }
 
 /// The shell line whose answer says which flags `command` takes
 /// (`takes_flags` reads it).
 pub fn flags_question(command: &str) -> String {
-    format!("{command} --help")
+    Line::new().launch(command).fixed(" --help").done()
 }
 
 /// Whether the worker launch command `command` takes what a bound repo adds
@@ -354,11 +370,11 @@ pub fn takes_flags(command: &str, answer: Option<&str>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::line::quoted;
     use crate::position::Declared;
     use crate::stage_record::{Author, Stated};
     use crate::team::{File, RoleRepo, Sources, TEAM_FILE, load};
     use crate::transition::escalation_comment;
-    use proptest::prelude::*;
 
     const TEAM: &str = "roles:\n  dev: acme/dev\n  boss: acme/boss\n";
     const FEATURE: &str = "\
@@ -658,31 +674,6 @@ land: { by: boss, do: implement }
         let settings = guard_settings(odd.guard);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
-    }
-
-    /// Any text a shell word can hold: what a shell reads as more than text,
-    /// often, among any characters at all. Never a NUL, which no argument of
-    /// a command holds.
-    fn shell_text() -> impl Strategy<Value = String> {
-        let read_by_a_shell = prop::sample::select(vec![
-            '\'', '"', '\\', '\n', '\r', '\t', ' ', '$', '`', '!', '*', '?', '~', '#', ';', '&',
-            '|', '<', '>', '(', ')', '{', '}', '[', ']', '=', '-', 'a', 'é', '文', '\u{a0}',
-        ]);
-        let any_other = any::<char>().prop_filter("a NUL", |c| *c != '\0');
-        prop::collection::vec(prop_oneof![read_by_a_shell, any_other], 0..24)
-            .prop_map(|chars| chars.into_iter().collect())
-    }
-
-    proptest! {
-        /// `printf` writes its format once for each argument it is given: one
-        /// NUL after the text says the shell read one word, and that word.
-        #[test]
-        fn a_shell_reads_the_quoted_form_of_any_text_as_that_one_word(text in shell_text()) {
-            let line = format!("printf '%s\\0' {}", quoted(&text));
-            let read = std::process::Command::new("/bin/sh").arg("-c").arg(&line).output().unwrap();
-            prop_assert!(read.status.success(), "{line:?}: {read:?}");
-            prop_assert_eq!(read.stdout, [text.as_bytes(), b"\0"].concat(), "{:?}", line);
-        }
     }
 
     const HELP: &str = "Usage: claude [options]\n  --add-dir <directories...>\n  --model <model>\n  \
