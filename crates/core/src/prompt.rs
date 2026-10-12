@@ -141,7 +141,7 @@ body:
 - **`blocked`** — the issue needs something that belongs to another issue and does not exist yet. Do
   not create it yourself. Name every blocking issue in `blocked_by=` (e.g. `blocked_by=41,42`) and
   say what is missing.
-- **`needs-human`** — after a genuine effort you cannot complete the work or make the gate pass, or
+- **`escalate`** — after a genuine effort you cannot complete the work or make the gate pass, or
   the issue as written cannot be done. Say where you are stuck, or the decision that has to be made,
   so that a human can act on it in one reply.
 

@@ -248,7 +248,7 @@ fn park_reads_the_verdict_again_and_refuses_what_is_not_parkable_now() {
 
     let error = park(&world, "alpha").error();
     assert!(error.contains("latest verdict is not `blocked`"), "{error}");
-    world.comment(7, "<!--convoy:verdict phase=needs-human-->\nwhy");
+    world.comment(7, "<!--convoy:verdict phase=escalate-->\nwhy");
     assert!(park(&world, "alpha").error().contains("not `blocked`"));
 
     blocked_by(&world, "41,42");

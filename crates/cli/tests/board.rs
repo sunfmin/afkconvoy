@@ -167,7 +167,7 @@ fn the_last_word_is_on_the_board_before_the_claim_is_released() {
     let endings: [(Arrange, &str, &str, &str); 4] = [
         (
             |world| {
-                world.comment(7, "<!--convoy:verdict phase=needs-human-->\nstuck");
+                world.comment(7, "<!--convoy:verdict phase=escalate-->\nstuck");
             },
             "judge",
             "judge",
@@ -237,7 +237,7 @@ fn an_escalated_joining_claim_keeps_its_pr_on_the_board() {
 #[test]
 fn an_issue_claimed_again_keeps_its_one_board() {
     let world = fleet();
-    world.comment(7, "<!--convoy:verdict phase=needs-human-->\nstuck");
+    world.comment(7, "<!--convoy:verdict phase=escalate-->\nstuck");
     stopped(&world);
     assert_eq!(did(&tick(&world, 1400)), ["judge 7 done"]);
     let id = board_id(&world);

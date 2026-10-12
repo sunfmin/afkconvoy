@@ -54,8 +54,8 @@ impl Workless {
 /// Why a stopped worker's claim is handed to a human.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Why {
-    /// It declared `needs-human`.
-    NeedsHuman,
+    /// It declared `escalate`.
+    Escalate,
     /// It declared `already-satisfied` over work sitting on its branch.
     Refuted,
     /// It declared a verdict naming no phase the fleet knows.
@@ -67,7 +67,7 @@ impl Why {
     /// worker wrote.
     pub fn reason(self, said: &str) -> String {
         match self {
-            Why::NeedsHuman => format!("The worker declared `needs-human`: {said}"),
+            Why::Escalate => format!("The worker declared `escalate`: {said}"),
             Why::Refuted => format!(
                 "The worker declared `already-satisfied`, but its branch holds work (commits \
                  past the base, or uncommitted files): {said}"
@@ -430,7 +430,7 @@ pub fn route(
             Some(workless) => Route::Close(workless),
             None => Route::Escalate(Why::Refuted),
         },
-        Some(Phase::NeedsHuman) => Route::Escalate(Why::NeedsHuman),
+        Some(Phase::Escalate) => Route::Escalate(Why::Escalate),
         Some(Phase::Blocked) => Route::Blocked,
         None => Route::Escalate(Why::UnknownPhase),
     }
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn a_busy_worker_and_a_recent_sign_of_life_are_left() {
-        let verdict = said(Some(Phase::NeedsHuman));
+        let verdict = said(Some(Phase::Escalate));
         assert_eq!(
             route(WorkerState::Busy, &progress(0, false), Some(&verdict), Nudged::Never, NOW),
             Route::Leave
@@ -529,9 +529,9 @@ mod tests {
 
     #[test]
     fn commits_ahead_and_a_dirty_tree_are_no_signs_of_life() {
-        let verdict = said(Some(Phase::NeedsHuman));
+        let verdict = said(Some(Phase::Escalate));
         let route = route(STOPPED, &progress(9, true), Some(&verdict), Nudged::Never, NOW);
-        assert_eq!(route, Route::Escalate(Why::NeedsHuman));
+        assert_eq!(route, Route::Escalate(Why::Escalate));
         // nor is a stamp from the future, or no stamp at all
         let unknown = Progress { last_commit: Some(NOW * 2), touched: None, ..progress(0, false) };
         assert_eq!(quiet_for(None, &unknown, Nudged::Never, NOW), None);
@@ -562,7 +562,7 @@ mod tests {
             route(idle, &progress(0, false), Some(&said(None)), Nudged::Never, NOW),
             Route::Escalate(Why::UnknownPhase)
         );
-        assert!(Why::NeedsHuman.reason("https://x/1").contains("https://x/1"));
+        assert!(Why::Escalate.reason("https://x/1").contains("https://x/1"));
     }
 
     #[test]
@@ -614,11 +614,11 @@ mod tests {
 
     #[test]
     fn a_verdict_is_never_overridden_by_a_nudge() {
-        let human = said(Some(Phase::NeedsHuman));
+        let human = said(Some(Phase::Escalate));
         for nudged in [Nudged::Never, Nudged::At(1), Nudged::Nowhere] {
             assert_eq!(
                 route(STOPPED, &progress(0, false), Some(&human), nudged, NOW),
-                Route::Escalate(Why::NeedsHuman)
+                Route::Escalate(Why::Escalate)
             );
         }
         // nor is a worker at work, or one gone, told anything
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(settled_by_state(Some(WorkerState::Gone)), Some(Route::Continue));
         assert_eq!(settled_by_state(Some(WorkerState::Busy)), Some(Route::Leave));
         assert_eq!(settled_by_state(Some(STOPPED)), None);
-        let human = said(Some(Phase::NeedsHuman));
+        let human = said(Some(Phase::Escalate));
         assert_eq!(
             route(WorkerState::Gone, &progress(3, true), Some(&human), Nudged::At(1), NOW),
             Route::Continue
