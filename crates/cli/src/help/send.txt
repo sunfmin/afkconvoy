@@ -1,0 +1,54 @@
+WHEN TO RUN IT
+
+  To put an issue of a bound repo at a stage of your choosing, whatever its records say:
+  back to planning after a review that missed the point, past a stage you have done by
+  hand, or out of an escalation to another stage than the one that asked.
+
+      afkconvoy send --issue 7 --stage plan --text "The approach changed: see #12."
+
+  The issue is then at that stage, to be performed, with both rework counts started
+  over. To answer an escalated issue where it stopped, `afkconvoy rule` is the command.
+
+WHO RUNS IT
+
+  The operator, or whichever human steers the issue: in a checkout of the bound repo.
+  No worker runs it: where an issue goes is its workflow's to say, or a human's.
+
+WHAT IT READS AND WRITES
+
+  It reads the team the config names, the claims on the remote, and the issue's labels
+  and comments. The workflow is the one the issue's flow label names; for an escalated
+  issue, the one its escalation's comment says it left.
+
+  It writes one comment on the issue — a stage record that names the stage, says a
+  human sent the issue there and carries the text — and wakes the fleet. An escalated
+  issue also gets its flow label back and loses the team's `escalate_label`, after the
+  record is written. Nothing else moves: the next tick reads the issue's position off
+  its records, starts a worker on the stage if a role performs it, and waits for a
+  human's verdict if the stage is `by: human`.
+
+  The text is `--text`, or the contents of `--text-file`: one of the two, not empty.
+  The worker started on the stage is shown it in its brief.
+
+WHAT IT ANSWERS
+
+  {"issue", "workflow", "stage", "sent": true, "relabelled", "woke"}
+
+    relabelled  whether a label was moved: true for an issue that was escalated
+    woke        whether a `run` on this host was told, as `afkconvoy wake` answers
+
+  Errors, as {"error": …} with a non-zero exit, with nothing written: the workflow
+  "has no stage" of that name — the error lists the ones it has; the issue "is claimed"
+  — a worker is at a stage of it; it "cannot be sent to a stage" — no flow label and no
+  escalation says which workflow it follows; no text, or an empty one; the repo names
+  no team; and every error of `afkconvoy check`.
+
+WHAT TRIPS YOU UP
+
+  - It is refused while the issue is claimed: a claim is dispatched to one stage, and
+    its worker would go on performing it. Wait for the stage to declare, or hand the
+    claim to a human with `afkconvoy escalate` first.
+  - It reopens nothing and closes nothing. An issue sent back from an ended workflow
+    must be open to be worked.
+  - The stage is named as its workflow's file names it. `afkconvoy show` draws them.
+  - Run twice, it leaves two records; the issue is at the stage either way.

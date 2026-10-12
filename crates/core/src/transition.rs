@@ -152,10 +152,19 @@ where
 
 /// The comment an escalation leaves on the issue, under the record of whose
 /// it is: the claim it ends, by its sha — a claim ref is written once, so each
-/// claim of an issue has its own.
-pub fn escalation_comment(claim: &str, reason: &str) -> String {
-    let marker = record::marker(ESCALATION, &[("claim", claim)]);
+/// claim of an issue has its own. `flow` is the workflow a bound repo's issue
+/// follows as it is handed over: its flow label comes off, and this is what
+/// says which to put back.
+pub fn escalation_comment(claim: &str, flow: Option<&str>, reason: &str) -> String {
+    let marker = record::marker(ESCALATION, &[("claim", claim), ("flow", flow.unwrap_or(""))]);
     format!("{marker}\n**afkconvoy: escalated to a human.**\n\n{}\n", reason.trim())
+}
+
+/// The workflow an issue followed when it was last escalated, by its comments
+/// (oldest first); `None` when it never was, or its last escalation names none.
+pub fn escalated_from<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let (_, fields) = record::latest_marker(ESCALATION, bodies)?;
+    fields.get("flow").map(str::to_string)
 }
 
 /// Do an issue's comments (oldest first) already carry the escalation of the
@@ -173,8 +182,8 @@ pub fn relabelled(labels: &[String], config: &Config) -> bool {
     Relabel::of(labels, config, None).done()
 }
 
-/// The labels an escalation swaps on one issue: what hands it to the fleet
-/// comes off, and the escalate label goes on.
+/// The labels swapped on one issue. An escalation takes off what hands the
+/// issue to the fleet and puts the escalate label on; `back` is the reverse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Relabel {
     /// The escalate label, when the issue lacks it.
@@ -202,6 +211,17 @@ impl Relabel {
         }
         let carried = labels.iter().any(|label| label == escalate);
         Relabel { add: if carried { None } else { Some(escalate.to_string()) }, remove }
+    }
+
+    /// The swap back, for an issue of a bound repo a human put at a stage
+    /// again: its flow label `flow` goes on, and the team's escalate label
+    /// `escalate` comes off.
+    pub fn back(labels: &[String], flow: &str, escalate: &str) -> Relabel {
+        let carries = |wanted: &str| labels.iter().any(|label| label == wanted);
+        Relabel {
+            add: if carries(flow) { None } else { Some(flow.to_string()) },
+            remove: if carries(escalate) { vec![escalate.to_string()] } else { vec![] },
+        }
     }
 
     /// Whether nothing is left to swap.
@@ -452,12 +472,27 @@ mod tests {
 
     #[test]
     fn an_escalation_is_recognised_by_the_claim_it_ends() {
-        let comment = escalation_comment("abc123", "  stuck on the schema \n");
+        let comment = escalation_comment("abc123", None, "  stuck on the schema \n");
         assert!(comment.starts_with("<!--convoy:escalation claim=abc123-->\n"));
         assert!(comment.contains("\n\nstuck on the schema\n"));
         assert!(escalation_begun([comment.as_str()], "abc123"));
         assert!(!escalation_begun([comment.as_str()], "def456"), "an earlier claim's");
         assert!(!escalation_begun(["no marker"], "abc123"));
+        // In a bound repo it says which workflow the issue left.
+        let bound = escalation_comment("abc123", Some("feature"), "stuck");
+        assert!(bound.starts_with("<!--convoy:escalation claim=abc123 flow=feature-->\n"));
+        assert!(escalation_begun([bound.as_str()], "abc123"));
+        assert_eq!(escalated_from([bound.as_str()]).as_deref(), Some("feature"));
+        assert_eq!(escalated_from([bound.as_str(), comment.as_str()]), None, "the latest says");
+    }
+
+    #[test]
+    fn a_swap_back_puts_the_flow_label_on_and_takes_the_escalate_label_off() {
+        let labels = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let back = Relabel::back(&labels(&["bug", "stuck"]), "flow:feature", "stuck");
+        assert_eq!(back.add.as_deref(), Some("flow:feature"));
+        assert_eq!(back.remove, ["stuck"]);
+        assert!(Relabel::back(&labels(&["flow:feature"]), "flow:feature", "stuck").done());
     }
 
     #[test]

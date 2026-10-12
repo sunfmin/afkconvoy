@@ -167,7 +167,7 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let guide = guide(&long);
     let who = |command: &str| section(&asked(&[command, "--help"]), "WHO RUNS IT");
     let workers = group(guide, "  A worker");
-    assert_eq!(workers, ["gate", "land", "verdict", "lock", "wake"]);
+    assert_eq!(workers, ["gate", "land", "verdict", "intake", "lock", "wake"]);
     for command in &workers {
         let who = who(command);
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");

@@ -9,6 +9,7 @@
 
 use serde::Deserialize;
 
+use crate::intake::INTAKE_RECORD;
 use crate::role::{
     BASE_BRANCH_ENV, CONSULT_ENV, ESCALATE_LABEL_ENV, LOCK_LABEL_ENV, STAGE_ENV, WRITES_ENV,
 };
@@ -174,6 +175,13 @@ impl Limits {
                     .to_string(),
             );
         }
+        if args.iter().any(|arg| arg.contains(INTAKE_RECORD)) {
+            return Some(
+                "an intake record is written by the fleet's own command and nothing else: take \
+                 the issue in with `afkconvoy intake`"
+                    .to_string(),
+            );
+        }
         let words = positionals(args, &GH_VALUES);
         let (group, verb) = (words.first().copied()?, words.get(1).copied());
         if group == "api" {
@@ -231,9 +239,14 @@ impl Limits {
             ));
         }
         let lower = label.to_ascii_lowercase();
-        let kind = if lower.starts_with(FLOW_LABEL) {
-            "a flow"
-        } else if lower.starts_with(STAGE_LABEL) {
+        if lower.starts_with(FLOW_LABEL) {
+            return Some(format!(
+                "`{label}` is a flow label, and a worker neither adds nor removes one by hand: \
+                 take an issue in to a workflow with `afkconvoy intake`, which puts it on on the \
+                 record; where an issue goes from there is read off the verdict its stage declares"
+            ));
+        }
+        let kind = if lower.starts_with(STAGE_LABEL) {
             "a stage"
         } else if label.eq_ignore_ascii_case(&self.escalate_label) {
             "the escalate"
@@ -540,6 +553,7 @@ mod tests {
             "gh api repos/o/r/issues/7/labels",
             "gh api repos/o/r/pulls/70",
             "afkconvoy verdict pass --issue 7 --stage build --text 'convoy:stage in a text'",
+            "afkconvoy intake --issue 12 --workflow feature",
             "echo git push origin main",
             "grep -rn 'gh pr merge' docs",
         ]);
@@ -586,6 +600,17 @@ mod tests {
                 "gh api repos/o/r/issues/7/comments -f body='<!-- convoy:stage stage=x -->'",
             ],
             "`afkconvoy verdict`",
+        );
+    }
+
+    #[test]
+    fn no_worker_writes_an_intake_record_by_hand() {
+        refused_for(
+            &[
+                "gh issue comment 12 --body '<!--convoy:intake workflow=feature role=dev from=7-->'",
+                "gh api repos/o/r/issues/12/comments -f body='<!-- convoy:intake workflow=x -->'",
+            ],
+            "`afkconvoy intake`",
         );
     }
 

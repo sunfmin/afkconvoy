@@ -538,15 +538,17 @@ mod tests {
     fn in_a_bound_repo_a_lock_holds_back_what_a_worker_and_a_human_were_due() {
         use crate::position::Declared;
         use crate::role::due;
-        use crate::stage_record::StageRecord;
+        use crate::stage_record::{Author, StageRecord, Stated};
         use crate::team::tests::{FEATURE, one};
         let team = one(FEATURE);
         let escalated = [StageRecord {
             stage: "plan".to_string(),
-            declared: Declared::Escalate,
-            claim: "c1".to_string(),
-            role_commit: "r".to_string(),
-            team_commit: "t".to_string(),
+            stated: Stated::Declared(Declared::Escalate),
+            by: Author::Worker {
+                claim: "c1".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            },
             blocked_by: vec![],
             text: "stuck".to_string(),
         }];
@@ -596,15 +598,17 @@ mod tests {
     fn in_a_bound_repo_the_frontier_is_the_issues_a_worker_is_due_on_each_at_its_stage() {
         use crate::position::Declared;
         use crate::role::due;
-        use crate::stage_record::StageRecord;
+        use crate::stage_record::{Author, StageRecord, Stated};
         use crate::team::tests::{FEATURE, one};
         let team = one(FEATURE);
         let record = |stage: &str, declared, claim: &str| StageRecord {
             stage: stage.to_string(),
-            declared,
-            claim: claim.to_string(),
-            role_commit: "r".to_string(),
-            team_commit: "t".to_string(),
+            stated: Stated::Declared(declared),
+            by: Author::Worker {
+                claim: claim.to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            },
             blocked_by: vec![],
             text: "done".to_string(),
         };

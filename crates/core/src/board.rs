@@ -78,6 +78,9 @@ pub struct Board<'a> {
     pub pr: Option<u64>,
     /// The open issues a parked one waits on.
     pub blocked_by: &'a [u64],
+    /// The stage a claim's verdict left the issue at, when that stage is a
+    /// human's: the issue waits there for them.
+    pub waits_at: Option<&'a str>,
 }
 
 /// The steps of the board's task list, in order.
@@ -135,11 +138,16 @@ fn off_ramp(board: &Board) -> Option<String> {
                 blockers.join(", ")
             ))
         }
-        Stage::Declared => Some(
-            "**Its stage declared its verdict** — the stage record on this issue says which, and \
-             the `stage:` label where the issue is now."
+        Stage::Declared => Some(match board.waits_at {
+            None => "**Its stage declared its verdict** — the stage record on this issue says \
+                     which, and the `stage:` label where the issue is now."
                 .to_string(),
-        ),
+            Some(stage) => format!(
+                "**Its stage declared its verdict, and the issue waits for a human** — the \
+                 stage `{stage}` that follows is a human's. No worker is started and no claim is \
+                 held until they declare its verdict with `afkconvoy verdict`."
+            ),
+        }),
     }
 }
 
@@ -199,7 +207,7 @@ mod tests {
     use super::*;
 
     fn board(stage: Stage, pr: Option<u64>) -> Board<'static> {
-        Board { instance: "alpha", stage, pr, blocked_by: &[3, 4] }
+        Board { instance: "alpha", stage, pr, blocked_by: &[3, 4], waits_at: None }
     }
 
     fn ticked(text: &str) -> usize {

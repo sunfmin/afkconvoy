@@ -18,7 +18,7 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
-   "now", "locks"}
+   "now", "locks"} — and in a bound repo "intake"
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage};
@@ -43,6 +43,10 @@ WHAT IT ANSWERS
                    holds lock issues only, and every issue a tick would otherwise
                    dispatch or hand to a human is under `excluded` with the reason
                    "a fleet lock stands (#n)"
+    intake         in a bound repo: {"open", "limit"} — the open issues taken in by
+                   workers, counted from their intake records, against the repo's
+                   `intake_limit`. With `open` at `limit`, `afkconvoy intake` refuses.
+                   An issue a human labelled is not among them
 
   The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
   logged out (the error names each, with the line to run; `claude` is among them when
