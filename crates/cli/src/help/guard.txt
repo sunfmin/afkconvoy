@@ -36,7 +36,8 @@ WHAT IT READS AND WRITES
     - pushing the base branch (`git push` with a refspec that lands on it, `--all`,
       `--mirror`)
 
-  Refused besides in a stage its workflow marks `writes: false`, and for every consult:
+  Refused besides in a stage its workflow marks `writes: false`, for every consult, and
+  for a patrol's worker (AFKCONVOY_PATROL, in place of a stage's facts):
     - committing and pushing (`git commit`, `merge`, `cherry-pick`, `revert`, `am`,
       `push`)
 
@@ -57,6 +58,6 @@ WHAT TRIPS YOU UP
     in a substitution inside quotes gets past it: it stops a worker that errs, not one
     that means to get by.
   - What it misses is checked after the stage: a commit left on the branch by a stage
-    marked `writes: false` is a failure, and the issue escalates — see
-    `afkconvoy tick --help`.
+    marked `writes: false` is a failure, and the issue escalates; a commit or a PR a
+    patrol left is a failed run, reported to a human — see `afkconvoy tick --help`.
   - An unbound repo's workers have no guard: their worker launch command is opaque.

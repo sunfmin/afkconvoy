@@ -1070,6 +1070,90 @@ land: { by: dev, do: land }
         )
     }
 
+    /// The usual team with `patrols` as its patrol files, loaded.
+    fn patrolled(patrols: &[(&str, &str)]) -> Result<Team, Vec<(String, String)>> {
+        let mut sources = sources(TEAM, &[]);
+        sources.patrols = patrols.iter().map(|(path, yaml)| file(path, yaml)).collect();
+        load(&sources).map_err(|faults| {
+            faults.into_iter().map(|fault| (fault.file, fault.key)).collect::<Vec<_>>()
+        })
+    }
+
+    #[test]
+    fn a_patrol_file_loads_as_it_was_written() {
+        let sweep = "by: dev\ndo: plan\nevery: 6h\nmodel: opus\nmax_open: 3\n";
+        let nightly = "by: reviewer\ndo: review\nevery: 1d\nmax_open: 0\n";
+        let team =
+            patrolled(&[("patrols/sweep.md", sweep), ("patrols/nightly-x2.md", nightly)]).unwrap();
+        let work = Work { role: "dev".to_string(), skill: "plan".to_string() };
+        assert_eq!(
+            team.patrol("sweep"),
+            Some(&Patrol {
+                name: "sweep".to_string(),
+                work,
+                every: 6 * 3600,
+                model: Some("opus".to_string()),
+                max_open: 3,
+            })
+        );
+        assert_eq!(team.patrol("nightly-x2").map(|patrol| patrol.every), Some(86400));
+        // A repo names the ones it runs, and none the team has not.
+        let named = |names: &[&str]| {
+            let names: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+            team.patrols_named(&names)
+                .map(|found| found.iter().map(|patrol| patrol.name.clone()).collect::<Vec<_>>())
+        };
+        assert_eq!(named(&["nightly-x2", "sweep"]), Ok(vec!["nightly-x2".into(), "sweep".into()]));
+        assert_eq!(named(&[]), Ok(vec![]));
+        assert_eq!(named(&["sweep", "audit", "mop"]), Err(vec!["audit".into(), "mop".into()]));
+    }
+
+    #[test]
+    fn a_duration_is_a_count_from_one_up_and_a_unit() {
+        assert_eq!(duration("30m"), Some(1800));
+        assert_eq!(duration("6h"), Some(21600));
+        assert_eq!(duration("1d"), Some(86400));
+        for not in ["", "h", "0h", "6", "6s", "1.5h", "-1h", "6 h", "6H", "99999999999999999999d"] {
+            assert_eq!(duration(not), None, "{not:?}");
+        }
+    }
+
+    #[test]
+    fn a_patrols_name_is_one_a_ref_and_a_worktree_can_carry() {
+        assert_eq!(patrol_name("patrols/sweep.md"), Some("sweep"));
+        assert_eq!(patrol_name("patrols/dep-audit2.md"), Some("dep-audit2"));
+        // A word that is a number would read as the suffix orca numbers a worktree with.
+        for not in ["patrols/sweep-2.md", "patrols/Sweep.md", "patrols/.md", "patrols/a_b.md"] {
+            assert_eq!(patrol_name(not), None, "{not}");
+        }
+        assert_eq!(patrol_name("patrols/sweep.txt"), None);
+        assert_eq!(patrol_name(&format!("patrols/{}.md", "a".repeat(41))), None);
+    }
+
+    #[test]
+    fn every_fault_of_a_patrol_file_is_reported() {
+        let faults = patrolled(&[
+            ("patrols/a.md", "by: ops\ndo: plan\nevery: 1h\nmax_open: 1\n"),
+            ("patrols/b.md", "by: dev\ndo: mop\nevery: soon\n"),
+            ("patrols/c.md", "by: dev\ndo: plan\nmax_open: many\nwhen: 1h\n"),
+            ("patrols/README.md", "by: dev\n"),
+        ])
+        .unwrap_err();
+        let fault = |file: &str, key: &str| (format!("patrols/{file}"), key.to_string());
+        for wanted in [
+            fault("a.md", "by"),
+            fault("b.md", "do"),
+            fault("b.md", "every"),
+            fault("b.md", "max_open"),
+            fault("c.md", "when"),
+            fault("c.md", "every"),
+            fault("c.md", "max_open"),
+            fault("README.md", ""),
+        ] {
+            assert!(faults.contains(&wanted), "no fault {wanted:?} among {faults:#?}");
+        }
+    }
+
     #[test]
     fn a_well_formed_team_loads_as_it_was_written() {
         let team = load(&sources(TEAM, &[("workflows/feature.md", FEATURE)])).unwrap();

@@ -528,6 +528,66 @@ mod tests {
         numbers.iter().map(claim).collect()
     }
 
+    fn patrols(standing: &[Standing]) -> Vec<crate::patrol::Row> {
+        let row = |(at, standing): (usize, &Standing)| crate::patrol::Row {
+            name: format!("p{at}"),
+            standing: *standing,
+            every: 3600,
+            last_run: None,
+            open: 0,
+            max_open: 1,
+            failure: None,
+            claim: None,
+        };
+        standing.iter().enumerate().map(row).collect()
+    }
+
+    #[test]
+    fn a_pass_ends_the_runs_that_may_be_over_and_runs_the_patrols_due() {
+        use Standing::*;
+        let mut set = set(&[7, 8], &[]);
+        set.patrols = patrols(&[NotDue, Running, StaleRun, Due, Locked, Full, Failed, PeerRunning]);
+        // One run of mine is held as it starts; it is over, and its slot is free again.
+        let pass = run_pass(&set, 2, 1, |_| Done);
+        let did: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let on_patrols: Vec<TickStep> = did
+            .iter()
+            .filter(|step| matches!(step, EndPatrol { .. } | TickStep::Patrol { .. }))
+            .copied()
+            .collect();
+        assert_eq!(
+            on_patrols,
+            [EndPatrol { patrol: 1 }, EndPatrol { patrol: 2 }, TickStep::Patrol { patrol: 3 }]
+        );
+        // The patrol due is run before an issue is dispatched, and takes a slot as one does.
+        let dispatched: Vec<&TickStep> =
+            did.iter().filter(|step| matches!(step, Dispatch { .. })).collect();
+        assert_eq!(dispatched, [&Dispatch { issue: 7 }]);
+        assert_eq!(pass.held, 2);
+        assert_eq!(pass.frontier_remaining, 1);
+    }
+
+    #[test]
+    fn a_run_still_going_keeps_its_slot_and_a_patrol_lost_to_a_peer_takes_none() {
+        use Standing::*;
+        let mut set = set(&[7], &[]);
+        set.patrols = patrols(&[Running, Due]);
+        let pass = run_pass(&set, 2, 1, |step| match step {
+            EndPatrol { .. } => Nothing,
+            TickStep::Patrol { .. } => Lost,
+            _ => Done,
+        });
+        assert!(pass.did.contains(&(Dispatch { issue: 7 }, Done)));
+        assert_eq!(pass.held, 2);
+        // With every slot held, a patrol due waits.
+        let pass = run_pass(&set, 1, 1, |step| match step {
+            EndPatrol { .. } => Nothing,
+            _ => Done,
+        });
+        assert!(!pass.did.iter().any(|(step, _)| matches!(step, TickStep::Patrol { .. })));
+        assert_eq!(pass.held, 1);
+    }
+
     #[test]
     fn the_stage_label_of_every_issue_that_follows_a_workflow_is_brought_up_and_is_no_work() {
         // Whoever holds it, or nobody: a position is not a claim's.
