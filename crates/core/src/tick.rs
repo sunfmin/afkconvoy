@@ -141,7 +141,8 @@ impl Pass {
     }
 }
 
-/// Runs one pass over `set` under a bound of `concurrency` claims: settle the
+/// Runs one pass over `set` under a bound of `concurrency` claims — what
+/// `WorkingSet::bound` makes of the config's: settle the
 /// claims whose work landed, tend the landing train, ask after the workers
 /// not on the train yet, delete the stale locks on closed issues, hand to a
 /// human the unclaimed issues that call for one, take stale
@@ -150,6 +151,11 @@ impl Pass {
 /// the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
 /// the rest of the pass goes on.
+///
+/// With a fleet lock standing, the pass leaves alone every claim of mine on
+/// another issue whose worker is not on the train yet — what it declared is
+/// acted on once no lock stands — and takes no stale claim but a lock
+/// issue's. The frontier it is handed holds lock issues only.
 ///
 /// The claims held afterwards are at most `concurrency`, or no more than
 /// before: a pass never takes a claim past the bound.
@@ -225,6 +231,9 @@ where
 {
     let mut slots = Slots::new(0, held);
     for mine in &set.mine {
+        if sweep == Sweep::Stopped && set.locked_out(mine.number) {
+            continue;
+        }
         let Some(step) = ending_step(sweep, mine.number, mine.status) else {
             continue;
         };
@@ -283,8 +292,14 @@ fn boards(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> Vec<TickStep> {
 
 /// What a pass may take a claim for, in the order it does: the stale claims
 /// ahead of the frontier — work somebody began — each lowest number first.
+/// Never a stale claim a fleet lock keeps the fleet off.
 fn takes(set: &WorkingSet) -> Vec<TickStep> {
-    let mut stale: Vec<u64> = set.stale.iter().map(|claim| claim.number).collect();
+    let mut stale: Vec<u64> = vec![];
+    for claim in &set.stale {
+        if !set.locked_out(claim.number) {
+            stale.push(claim.number);
+        }
+    }
     stale.sort();
     let mut steps: Vec<TickStep> = Vec::new();
     for issue in stale {
@@ -448,6 +463,7 @@ mod tests {
             stale_closed: vec![],
             free_slots: 0,
             now: 0,
+            locks: vec![],
             flowing: vec![],
         }
     }
@@ -569,6 +585,56 @@ mod tests {
             "lowest first; #9 past the free slots is left stale, and so is the frontier"
         );
         assert_eq!((pass.held, pass.frontier_remaining), (3, 2));
+    }
+
+    #[test]
+    fn with_a_lock_standing_a_pass_leaves_every_other_claim_at_work_alone() {
+        let mine = [
+            (1, Status::NoPr),
+            (2, Status::Joining),
+            (3, Status::AtStage),
+            (4, Status::Closed),
+            (5, Status::Joined),
+            (7, Status::NoPr),
+        ];
+        // #6, #7 and #8 are locks: a dead peer began #6, #7 is at work under
+        // my claim, #8 is on the frontier.
+        let mut locked = set(&[8], &mine);
+        locked.locks = vec![6, 7, 8];
+        locked.stale = peers(&[6, 9]);
+        let bound = locked.bound(4);
+        assert_eq!(bound, 7, "the three left alone take none of the four slots");
+        let pass = run_pass(&locked, bound, 6, |step| match step {
+            Judge { .. } | TendTrain => Nothing,
+            _ => Done,
+        });
+        assert_eq!(
+            steps(&pass),
+            [
+                Settle { issue: 4 },
+                TendTrain,
+                Judge { issue: 7 },
+                Reclaim { issue: 6 },
+                Dispatch { issue: 8 },
+                Heartbeat
+            ],
+            "what landed is settled and the train tended; no stale claim but a lock's is taken"
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (7, 0));
+        // The lock ended: what the workers left alone declared is acted on.
+        locked.locks = vec![];
+        let after = run_pass(&locked, locked.bound(4), 6, |_| Done);
+        let acted: Vec<TickStep> = steps(&after).into_iter().take(5).collect();
+        assert_eq!(
+            acted,
+            [
+                Settle { issue: 4 },
+                TendTrain,
+                Judge { issue: 1 },
+                Watch { issue: 2 },
+                Advance { issue: 3 }
+            ]
+        );
     }
 
     #[test]

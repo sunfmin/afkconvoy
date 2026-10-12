@@ -1,6 +1,7 @@
 //! The landing train on the remote, and a worker joining its PR to it.
 
 use afkconvoy_core::config::Config;
+use afkconvoy_core::lock::{keeps_off, named};
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::train::{
     JoinStep, Joined, Line, Logged, PUSH_TRIES, join_message, join_steps, joins_onto, on_train,
@@ -11,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
+use crate::lock::standing_locks;
 
 /// The landing train as one read of the remote saw it, its commits in the
 /// repo that asked.
@@ -159,6 +161,9 @@ const RESOLVE: &str = "resolve every file, `git add` it, COMMIT the merge, run t
 /// `merged` when the base branch already holds the PR's head. No gate runs
 /// here: the train's own worker gates the train and lands it.
 ///
+/// With a fleet lock standing, the PR of an issue that is not one joins
+/// nothing → `locked`, and nothing is pushed.
+///
 /// The push of the train's tip is the only lock: refused — another PR joined
 /// first — the join is made again on the new tip. Nothing on the train is
 /// rewritten, so a PR that conflicts with it resolves that once.
@@ -180,6 +185,15 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
         answer.clone()
     };
     let conflict = |files: Vec<String>, detail: String| json!({"files": files, "worktree": repo.dir, "detail": detail});
+    let locks = standing_locks(gh, config)?;
+    if keeps_off(&locks, issue) {
+        let detail = format!(
+            "a fleet lock stands ({}): no PR of another issue joins the landing train until it \
+             has ended — stop, and run this again when you are told to carry on",
+            named(&locks)
+        );
+        return Ok(stop("locked", json!({"locks": locks, "detail": detail})));
+    }
     let mut pushed = own_head(repo, &pr.head_branch)?;
 
     for _ in 0..PUSH_TRIES {

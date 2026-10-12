@@ -100,7 +100,7 @@ impl Staged {
             model: at.filter(|_| !consult).and_then(|stage| stage.model.clone()),
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
-            lock_label: bound.lock_label.clone(),
+            lock_label: fleet.config.lock_label.clone(),
             joins,
             role_copy: kept.role(role)?.clone(),
             team_copy: kept.copy.clone(),
