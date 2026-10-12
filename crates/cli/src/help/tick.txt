@@ -40,6 +40,11 @@ WHAT TRIPS YOU UP
     tick that reads a verdict ends the claim its stage was performed under (`advance`);
     the stage that follows is on the frontier of the tick after it, and is started
     under a claim of its own when a slot is free.
+  - A `reject` does not always start the earlier stage again. Where it would pass one
+    of the workflow's breakers — `max_rework`, `max_consecutive_rework` — the tick
+    escalates the issue straight to a human instead, whatever consult the stage names;
+    the comment names the breaker and lists every round's stage and reason in order.
+    `afkconvoy rehearse` trips them at the same verdict.
   - A step that failed is not a failed command: the exit is 0 and the failure is in
     `errors`. Read `errors`, not the exit code.
   - It does not take the claims stamped with this host: only `run` does that, at its
