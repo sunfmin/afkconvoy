@@ -358,6 +358,7 @@ mod tests {
     use crate::stage_record::{Author, Stated};
     use crate::team::{File, RoleRepo, Sources, TEAM_FILE, load};
     use crate::transition::escalation_comment;
+    use proptest::prelude::*;
 
     const TEAM: &str = "roles:\n  dev: acme/dev\n  boss: acme/boss\n";
     const FEATURE: &str = "\
@@ -657,6 +658,31 @@ land: { by: boss, do: implement }
         let settings = guard_settings(odd.guard);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
+    }
+
+    /// Any text a shell word can hold: what a shell reads as more than text,
+    /// often, among any characters at all. Never a NUL, which no argument of
+    /// a command holds.
+    fn shell_text() -> impl Strategy<Value = String> {
+        let read_by_a_shell = prop::sample::select(vec![
+            '\'', '"', '\\', '\n', '\r', '\t', ' ', '$', '`', '!', '*', '?', '~', '#', ';', '&',
+            '|', '<', '>', '(', ')', '{', '}', '[', ']', '=', '-', 'a', 'é', '文', '\u{a0}',
+        ]);
+        let any_other = any::<char>().prop_filter("a NUL", |c| *c != '\0');
+        prop::collection::vec(prop_oneof![read_by_a_shell, any_other], 0..24)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    proptest! {
+        /// `printf` writes its format once for each argument it is given: one
+        /// NUL after the text says the shell read one word, and that word.
+        #[test]
+        fn a_shell_reads_the_quoted_form_of_any_text_as_that_one_word(text in shell_text()) {
+            let line = format!("printf '%s\\0' {}", quoted(&text));
+            let read = std::process::Command::new("/bin/sh").arg("-c").arg(&line).output().unwrap();
+            prop_assert!(read.status.success(), "{line:?}: {read:?}");
+            prop_assert_eq!(read.stdout, [text.as_bytes(), b"\0"].concat(), "{:?}", line);
+        }
     }
 
     const HELP: &str = "Usage: claude [options]\n  --add-dir <directories...>\n  --model <model>\n  \

@@ -153,6 +153,7 @@ pub fn refusal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     const ALL_READY: [(Tool, Found); 4] = [
         (Tool::Git, Found::Ready),
@@ -246,6 +247,41 @@ mod tests {
             ("", None),
         ] {
             assert_eq!(remote_host(url), host, "{url:?}");
+        }
+    }
+
+    /// Any URL a remote can have, and any text in place of one: the parts of
+    /// a URL and what does not belong in a host name, in any order, alone or
+    /// where one of the three forms of URL has its host.
+    fn remote_url() -> impl Strategy<Value = String> {
+        let not_of_a_host = " \n;&|$`'\"\\_()é文．".chars().collect::<Vec<_>>();
+        let part = prop_oneof![
+            4 => "[a0.-]{0,6}",
+            1 => prop::sample::select(vec!["://", ":", "@", "/", "https", "git", "22", "$(id)"])
+                .prop_map(String::from),
+            1 => prop::sample::select(not_of_a_host).prop_map(String::from),
+            1 => any::<char>().prop_map(String::from),
+        ];
+        let parts =
+            |most| prop::collection::vec(part.clone(), 0..most).prop_map(|parts| parts.concat());
+        let before = prop::sample::select(vec!["https://", "https://user@", "ssh://git@", "git@"]);
+        let after = prop::sample::select(vec!["/o/r", ":22/o/r", ":o/r", ""]);
+        prop_oneof![
+            parts(8),
+            (before, parts(3), after)
+                .prop_map(|(before, host, after)| [before, &host, after].concat()),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn the_host_read_from_any_url_is_plainly_a_host_name(url in remote_url()) {
+            if let Some(host) = remote_host(&url) {
+                let plain = |b: u8| b.is_ascii_alphanumeric() || b == b'.' || b == b'-';
+                prop_assert!(host.bytes().all(plain), "{host:?} of {url:?}");
+                prop_assert!(host.contains('.'), "{host:?} of {url:?}");
+                prop_assert!(!host.starts_with('-'), "{host:?} of {url:?}");
+            }
         }
     }
 
