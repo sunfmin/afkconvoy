@@ -21,9 +21,13 @@ WHAT IT ANSWERS
    "now"}
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
+                   — in a bound repo with the stage each is at: {number, title, stage}
     excluded       every other open issue, with why: {number, reason}
+    escalating     in a bound repo, when there are any: the unclaimed issues a tick
+                   hands to a human, with why: {number, reason}
     mine           the claims of `--instance`: {number, title, status, pr}. status is
-                   no_pr, joining, joined, landed or closed
+                   no_pr, joining, joined, landed or closed — in a bound repo at_stage,
+                   whatever PR is open
     peer_live      other instances' claims within the lease — never touched
     stale          other instances' claims past the lease, on open issues — a tick
                    takes them

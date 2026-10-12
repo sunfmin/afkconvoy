@@ -18,7 +18,9 @@ WHAT IT READS AND WRITES
   worktree, starts the worker launch command in it, and hands the worker its prompt.
 
   In a bound repo the issue's flow label names its workflow, and the worker performs
-  that workflow's first stage in the stage's role. The team's repo and each role's are
+  the stage the issue's stage records put it at — the workflow's first while there are
+  none — in the stage's role, with the verdicts declared so far, and the reason of a
+  rejection, in its brief. The team's repo and each role's are
   asked for the commit at their head; one the fleet has no copy of yet is cloned and
   kept, read-only, under the user's cache directory (afkconvoy/copies/<owner>/<repo>/
   <commit>). The terminal is opened on the worktree as ever, and the line it runs
@@ -49,8 +51,10 @@ WHAT IT ANSWERS
   claim. Nothing was started.
 
   Errors: the issue is closed; in a bound repo, the issue carries no flow label, more
-  than one, or one that names no workflow of the team, or the team does not load (the
-  error carries its `faults`) — none of which claims the issue; the worker launch
+  than one, or one that names no workflow of the team, it is at no stage a worker
+  performs (the error says where it is), or the team does not load (the error carries
+  its `faults`) — none of which claims the issue; the instance's claim on it is one a
+  stage already declared under; the worker launch
   command resolves to nothing; orca
   fails, or the worker is not ready in time. After a failed step the claim is still
   held: the instance's next tick finds a claim with no worker and continues it.
