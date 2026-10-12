@@ -9,6 +9,7 @@ use crate::claims::{Claim, InstanceId};
 use crate::closing::issues_closed_by;
 use crate::config::Config;
 use crate::lease::is_stale;
+use crate::role::flows;
 
 /// One open issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +63,9 @@ pub enum LabelBar {
     Epic(String),
     /// It lacks this, the ready label.
     NotReady(String),
+    /// A bound repo's issue that carries no flow label: it was not handed to
+    /// the fleet.
+    NoFlow,
 }
 
 impl LabelBar {
@@ -69,6 +73,7 @@ impl LabelBar {
         match self {
             LabelBar::Epic(label) => format!("epic label ({label})"),
             LabelBar::NotReady(ready) => format!("no {ready} label"),
+            LabelBar::NoFlow => "no flow label".to_string(),
         }
     }
 }
@@ -80,10 +85,14 @@ pub fn label_bar(labels: &[String], config: &Config) -> Option<LabelBar> {
     if let Some(epic) = labels.iter().find(|label| config.epic_labels.contains(label)) {
         return Some(LabelBar::Epic(epic.clone()));
     }
-    if !labels.contains(&config.ready_label) {
-        return Some(LabelBar::NotReady(config.ready_label.clone()));
+    // The ready label means something only in an unbound repo.
+    match &config.bound {
+        Some(_) if flows(labels).is_empty() => Some(LabelBar::NoFlow),
+        None if !labels.contains(&config.ready_label) => {
+            Some(LabelBar::NotReady(config.ready_label.clone()))
+        }
+        _ => None,
     }
-    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -352,6 +361,39 @@ mod tests {
                 (6, "2 open blocker(s)"),
             ]
         );
+    }
+
+    #[test]
+    fn in_a_bound_repo_the_flow_label_is_what_hands_an_issue_to_the_fleet() {
+        let bound = Config::new(Settings {
+            base_branch: Some("main".into()),
+            gate_command: Some("true".into()),
+            team: Some("acme/team".into()),
+            ..Settings::default()
+        })
+        .unwrap();
+        let issues = [
+            issue(1, &["flow:feature"]),
+            issue(2, READY),
+            issue(3, &["flow:feature", "epic"]),
+            issue(4, &["flow:"]),
+        ];
+        let seen = Observed {
+            issues: &issues,
+            prs: &[],
+            claims: &[],
+            heartbeats: &[],
+            closed: &[],
+            joined: &[],
+            landed: &[],
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &bound);
+        let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
+        // Which workflow a flow label names is the dispatch's to say.
+        assert_eq!(frontier, [1, 4]);
+        let reasons: Vec<(u64, &str)> =
+            set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
+        assert_eq!(reasons, [(2, "no flow label"), (3, "epic label (epic)")]);
     }
 
     #[test]

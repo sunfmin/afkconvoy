@@ -13,6 +13,8 @@ pub const TEAM_FILE: &str = "team.md";
 pub const WORKFLOWS: &str = "workflows";
 /// The directory of a role's repo that holds one entry per skill.
 pub const SKILLS: &str = ".claude/skills";
+/// The file of a team's repo that holds its precedents.
+pub const PRECEDENTS: &str = "precedents.md";
 /// What a flow label is made of: this, then the workflow's name.
 pub const FLOW_LABEL: &str = "flow:";
 /// How much rework an issue may have in total, where its workflow does not say.

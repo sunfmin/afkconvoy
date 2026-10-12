@@ -31,6 +31,14 @@ fn main() {
             let number = number.to_string();
             pr_close(&mut st, &number)
         }
+        ["api", endpoint, "--jq", ".sha"] if endpoint.ends_with("/commits/HEAD") => {
+            let name = endpoint.trim_start_matches("repos/").trim_end_matches("/commits/HEAD");
+            let Some(from) = st.doc["repos"][name].as_str() else {
+                st.finish("", 1, "gh: Not Found (HTTP 404)\n")
+            };
+            let head = fake::git(&["-C", from, "rev-parse", "HEAD"]);
+            st.finish(&head, 0, "")
+        }
         ["api", ..] => api(&mut st),
         ["repo", "clone", repo, into, "--", flags @ ..] => {
             let Some(from) = st.doc["repos"][*repo].as_str() else {

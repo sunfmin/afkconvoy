@@ -17,10 +17,13 @@ use crate::gh::IssueRead;
 use crate::git::REMOTE;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
+use crate::role::Staged;
 
 /// How a worker is started on this machine.
 pub struct Agent {
-    /// The worker launch command: opaque, handed to orca as it was given.
+    /// The worker launch command. In an unbound repo it is opaque, handed to
+    /// orca as it was given; in a bound repo what starts the worker in its
+    /// role is added to it (`role::Staged::command`).
     pub command: LaunchCommand,
     /// How long an agent is given to be ready for its prompt, in seconds.
     pub ready_timeout: u64,
@@ -40,7 +43,7 @@ pub enum StartFrom {
 /// frontier issue, or continuing a claim already held from what survived.
 ///
 ///   {"started": true, "claim": "won"|"held", tier, action, prompt, reason,
-///    worktree, branch, terminal}
+///    worktree, branch, terminal}   and, in a bound repo, the `stage` it performs
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
 ///
 /// A step that fails is an error with the claim still held: the next tick
@@ -58,6 +61,12 @@ pub fn dispatch(
         // before the claim: never lock a closed issue
         bail!("issue #{number} is closed, not open — nothing to dispatch");
     }
+    // In a bound repo the worker performs a stage, in its role. Read before
+    // the claim: an issue no worker can be started on is never locked.
+    let staged = match &fleet.config.bound {
+        Some(bound) => Some(Staged::enter(fleet, bound, number, &issue.labels)?),
+        None => None,
+    };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
     let by_hand = from == StartFrom::Fresh;
     let mut found: Option<Survey> = None;
@@ -106,11 +115,18 @@ pub fn dispatch(
             }
             DispatchStep::Brief => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                brief = Some(write_brief(fleet, cut, number, &issue.title, plan.variant)?);
+                brief = Some(match &staged {
+                    Some(staged) => staged.write_brief(fleet, cut, &issue.title)?,
+                    None => write_brief(fleet, cut, number, &issue.title, plan.variant)?,
+                });
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                terminal = Some(cut.start(agent.command.as_str())?);
+                let launch = agent.command.as_str();
+                terminal = Some(match &staged {
+                    Some(staged) => cut.start(&staged.command(launch, cut))?,
+                    None => cut.start(launch)?,
+                });
             }
             DispatchStep::AwaitReady => {
                 let (cut, handle) =
@@ -130,6 +146,10 @@ pub fn dispatch(
         "tier": plan.tier.number(), "action": plan.tier.word(),
         "prompt": plan.variant.word(), "reason": plan.reason,
         "worktree": cut.path, "branch": cut.branch, "terminal": terminal});
+    if let Some(staged) = &staged {
+        started["prompt"] = json!("stage");
+        started["stage"] = staged.json();
+    }
     if let Some(discarded) = discarded {
         started["discarded"] = discarded;
     }

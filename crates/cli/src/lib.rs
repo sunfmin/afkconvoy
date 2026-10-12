@@ -16,6 +16,7 @@ pub mod abandon;
 pub mod board;
 pub mod claims;
 pub mod config;
+pub mod copies;
 pub mod dispatch;
 pub mod fleet;
 pub mod gate;
@@ -28,6 +29,7 @@ pub mod orca;
 pub mod park;
 pub mod probe;
 pub mod recovery;
+pub mod role;
 pub mod settle;
 pub mod takeover;
 pub mod team;
@@ -293,8 +295,9 @@ impl TeamArgs {
 /// How a command that starts a worker starts it.
 #[derive(clap::Args)]
 struct AgentArgs {
-    /// The worker launch command, handed to orca as it is [default: with no
-    /// ANTHROPIC_BASE_URL, `claude --dangerously-skip-permissions`; with one, asked for]
+    /// The worker launch command, handed to orca as it is — in a bound repo, with what
+    /// starts a worker in its role added [default: with no ANTHROPIC_BASE_URL,
+    /// `claude --dangerously-skip-permissions`; with one, asked for]
     #[arg(long)]
     worker_command: Option<String>,
     /// Seconds an agent is given to be ready for its prompt
