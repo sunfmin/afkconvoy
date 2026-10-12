@@ -231,6 +231,13 @@ impl Limits {
 
     /// Why `label` is not a worker's to add or remove, when it is the fleet's.
     fn fleets(&self, label: &str) -> Option<String> {
+        if label.eq_ignore_ascii_case(&self.lock_label) {
+            return Some(format!(
+                "`{label}` is the lock label, and a worker neither adds nor removes it by hand: \
+                 a fleet lock is raised with `afkconvoy lock --issue <n>`, and ends when its \
+                 issue closes"
+            ));
+        }
         let lower = label.to_ascii_lowercase();
         if lower.starts_with(FLOW_LABEL) {
             return Some(format!(
@@ -243,8 +250,6 @@ impl Limits {
             "a stage"
         } else if label.eq_ignore_ascii_case(&self.escalate_label) {
             "the escalate"
-        } else if label.eq_ignore_ascii_case(&self.lock_label) {
-            "the lock"
         } else {
             return None;
         };

@@ -39,7 +39,7 @@ The read-only pass at the top of every tick that derives the working set. Any fl
 _Avoid_: refresh, resync
 
 **Frontier**:
-The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR.
+The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR. While a fleet lock stands: of these, the lock issues only.
 _Avoid_: queue, backlog
 
 **Base branch**:
@@ -119,7 +119,7 @@ A role run on a schedule rather than for an issue. It opens issues and takes the
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:
-An open issue carrying the lock label. While one stands the fleet works lock issues only, and closing the last one ends it.
+An open issue carrying the lock label, in a bound repo or an unbound one. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it.
 _Avoid_: freeze, pause, kill switch
 
 ### Workers

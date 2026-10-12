@@ -202,7 +202,7 @@ fn a_team_that_cannot_be_read_and_an_unbound_repo_are_errors() {
 }
 
 #[test]
-fn a_bound_repos_config_answers_its_four_keys_more() {
+fn a_bound_repos_config_answers_its_three_keys_more() {
     let world = World::new();
     let config = |yaml: &str| {
         let text = format!("```yaml\nbase_branch: main\ngate_command: make\n{yaml}\n```\n");
@@ -212,7 +212,7 @@ fn a_bound_repos_config_answers_its_four_keys_more() {
     let bound = config("team: acme/team").ok();
     assert_eq!(bound["team"], "acme/team");
     assert_eq!(bound["patrols"], json!([]));
-    assert_eq!(bound["lock_label"], "fleet-lock");
+    assert_eq!(bound["lock_label"], "fleet-lock", "a key every repo has");
     assert_eq!(bound["intake_limit"], 50);
     assert_eq!(bound["concurrency"], 3, "the keys every repo has are read as before");
     let set = config("team: acme/team\npatrols: [triage]\nlock_label: stop\nintake_limit: 9").ok();
@@ -224,12 +224,15 @@ fn a_bound_repos_config_answers_its_four_keys_more() {
         ("team: acme/team\nintake_limit: -1", "intake_limit"),
         ("team: acme/team\npatrols: triage", "patrols"),
         ("patrols: [triage]", "patrols"),
-        ("lock_label: stop", "lock_label"),
         ("intake_limit: 5", "intake_limit"),
     ] {
         let error = config(yaml).error();
         assert!(error.contains(key), "{yaml:?} → {error}");
     }
+    // A fleet lock needs no team: an unbound repo reads its label too.
+    let unbound = config("lock_label: stop").ok();
+    assert_eq!((&unbound["lock_label"], &unbound["team"]), (&json!("stop"), &Value::Null));
+    assert_eq!(config("concurrency: 1").ok()["lock_label"], "fleet-lock");
 }
 
 /// The help is where an agent learns a team's files: it names every key the

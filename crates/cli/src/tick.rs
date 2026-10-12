@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::WorkingSet;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass};
 use afkconvoy_core::wake::turn;
@@ -33,7 +34,10 @@ struct Failure {
 pub struct Ticked {
     pub pass: Pass,
     failures: Vec<Failure>,
-    concurrency: usize,
+    /// The claims the pass could hold (`WorkingSet::bound`).
+    bound: usize,
+    /// The fleet locks that stood as it ran.
+    locks: Vec<u64>,
 }
 
 /// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
@@ -41,17 +45,17 @@ pub struct Ticked {
 /// needs: the next one rebuilds from GitHub and the remote.
 pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
     let (set, flows) = fleet.rebuild(Some(&me.instance))?;
-    let concurrency = fleet.config.concurrency();
+    let bound = set.bound(fleet.config.concurrency());
     let mut failures = vec![];
     let read = Read { set: &set, flows: &flows };
-    let pass = run_pass(&set, concurrency, set.mine.len(), |step| {
+    let pass = run_pass(&set, bound, set.mine.len(), |step| {
         // Whatever a step raised, the rest of the tick is still owed.
         carry_out(fleet, me, agent, &read, step).unwrap_or_else(|error| {
             failures.push(Failure { step, error: format!("{error:#}") });
             Outcome::Failed
         })
     });
-    Ok(Ticked { pass, failures, concurrency })
+    Ok(Ticked { pass, failures, bound, locks: set.locks })
 }
 
 /// What the tick's rebuild read: its steps act on this, and read nothing of
@@ -149,13 +153,17 @@ impl Ticked {
             })
             .collect();
         json!({"did": did, "errors": errors, "held": self.pass.held,
-            "frontier_remaining": self.pass.frontier_remaining})
+            "frontier_remaining": self.pass.frontier_remaining, "locks": self.locks})
     }
 
     /// One line for whoever watches the loop: what the tick did, and where the
     /// fleet stands.
     pub fn line(&self) -> String {
         let mut parts: Vec<String> = vec![];
+        if !self.locks.is_empty() {
+            parts.push(format!("FLEET LOCK {} stands: only it is worked", named(&self.locks)));
+        }
+        let lead = parts.len();
         for (verb, wanted) in [
             ("settled", "settle"),
             ("ended", "judge"),
@@ -202,10 +210,10 @@ impl Ticked {
                 parts.push(said.to_string());
             }
         }
-        if parts.is_empty() {
+        if parts.len() == lead {
             parts.push("nothing to do".to_string());
         }
-        parts.push(format!("holding {}/{}", self.pass.held, self.concurrency));
+        parts.push(format!("holding {}/{}", self.pass.held, self.bound));
         parts.push(format!("frontier {}", self.pass.frontier_remaining));
         for failure in &self.failures {
             let (word, issue) = words(failure.step);
