@@ -192,9 +192,14 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
     ] {
         assert!(brief.contains(&said), "{said}\n{brief}");
     }
-    for how in ["Implement", "gh pr create", "landing train", "git commit"] {
+    for how in ["Implement", "gh pr create", "Join the landing train", "git commit"] {
         assert!(!brief.contains(how), "the brief says nothing of how: {how}");
     }
+    // But for the gate: a stage that may commit hands on no red PR.
+    let gate =
+        format!("   cd '{}' && {} gate --train\n", dir.display(), env!("CARGO_BIN_EXE_afkconvoy"));
+    assert!(brief.contains("## The gate, before a `pass`\n"), "{brief}");
+    assert!(brief.contains(&gate), "{gate}\n{brief}");
     let sent = terminals[0]["sent"].as_array().unwrap();
     assert_eq!(sent.len(), 1);
     assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
