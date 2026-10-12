@@ -9,3 +9,9 @@ GitHub checks are never read, and there is no adversarial verify. That removes t
 - `gate_command` is required. A repo whose CI cannot be reproduced locally cannot use afkconvoy.
 - The base branch must accept a direct fast-forward push and must not require status checks; a start on one that does is refused.
 - A marker comment on the PR is still needed, for the two records the landing turn's marker used to carry on a train: that a joining worker was already restarted once, and that the PR was already taken off an abandoned train once.
+
+## Amended by ADR-0008
+
+"There is no adversarial verify" now holds for an unbound repo only. In a bound repo a review is a stage a workflow may have, before the PR joins the landing train. The gate is still the only machine check, the landing turn is still gone, and the train is unchanged.
+
+The worker that wrote a PR no longer joins the train when it is done, since stages follow it. A workflow that lands names the role whose worker gates and joins after its last stage passes. What that worker changes to resolve a conflict on joining is not reviewed again; the gate alone covers it, as it already does for the train worker's repairs.
