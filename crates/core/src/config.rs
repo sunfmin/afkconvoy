@@ -4,6 +4,9 @@
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
+/// The escalate label where nothing names one: a repo's, and a team's.
+pub const ESCALATE_LABEL: &str = "ready-for-human";
+
 /// The keys as a repo wrote them: any may be left out, none is yet checked.
 /// A key that is not one of these is refused where the file is read.
 #[derive(Debug, Default, Deserialize)]
@@ -93,7 +96,7 @@ impl Config {
         let base_branch = required("base_branch", settings.base_branch)?;
         let gate_command = required("gate_command", settings.gate_command)?;
         let ready_label = label("ready_label", settings.ready_label, "ready-for-agent")?;
-        let escalate_label = label("escalate_label", settings.escalate_label, "ready-for-human")?;
+        let escalate_label = label("escalate_label", settings.escalate_label, ESCALATE_LABEL)?;
         if escalate_label == ready_label {
             return Err(ConfigError::EscalatesToReady);
         }

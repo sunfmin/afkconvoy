@@ -221,6 +221,8 @@ fn a_help_names_every_key_its_command_answers_with() {
         |issue: &'static str, instance: &'static str| ["--issue", issue, "--instance", instance];
 
     check(&["config"], &["base_branch"]);
+    world.repo("acme/team", &[("team.md", "```yaml\n{}\n```\n")]);
+    check(&["check", "--team", "acme/team"], &["workflows"]);
     check(&["plan"], &["frontier"]);
     check(&["scan"], &["claims"]);
     check(&["takeover", "--list"], &["instances"]);

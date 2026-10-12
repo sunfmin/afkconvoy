@@ -18,12 +18,20 @@ WHAT IT ANSWERS
   {"base_branch", "gate_command", "ready_label", "epic_labels", "concurrency",
    "escalate_label"} — every key, the defaults filled in.
 
+  A repo whose config names a team is a bound repo, and answers four keys more:
+  {"team", "patrols", "lock_label", "intake_limit"} — the team's repo as owner/repo,
+  which of its patrols run here (default none), the label of a fleet lock (default
+  fleet-lock) and how many issues taken in by workers may be open (default 50). A repo
+  that names no team is unbound and answers the six above only.
+
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
-  `gate_command` is missing; a key is unknown or of the wrong type — the error names the
-  key. Without `--file`, outside a git checkout: "is not in a git checkout".
+  `gate_command` is missing; a key is unknown or of the wrong type; `team` is not
+  owner/repo; `patrols`, `lock_label` or `intake_limit` is set where no `team` is — the
+  error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 
 WHAT TRIPS YOU UP
 
+  - It reads the config only. Whether the team it names loads is `afkconvoy check`.
   - It reads the file as it is in this checkout, committed or not. A worker reads the
     one in its own worktree, which is cut from the base branch: a change is in force only
     once it is on the base branch.

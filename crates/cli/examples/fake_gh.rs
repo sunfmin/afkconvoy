@@ -4,7 +4,8 @@
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?,
 //! blocked_by?, id?}], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
-//! command line that make the call fail.
+//! command line that make the call fail. `repos` {owner/repo: the git repo that
+//! stands in for it}: the other repos GitHub holds, which `repo clone` clones.
 
 mod fake;
 
@@ -31,6 +32,23 @@ fn main() {
             pr_close(&mut st, &number)
         }
         ["api", ..] => api(&mut st),
+        ["repo", "clone", repo, into, "--", flags @ ..] => {
+            let Some(from) = st.doc["repos"][*repo].as_str() else {
+                st.finish(
+                    "",
+                    1,
+                    &format!(
+                        "GraphQL: Could not resolve to a Repository with the name '{repo}'.\n"
+                    ),
+                )
+            };
+            let cloned = fake::ok(&[&["clone"], flags, &[from, *into]].concat());
+            st.finish(
+                "",
+                if cloned { 0 } else { 1 },
+                if cloned { "" } else { "fake gh: clone failed\n" },
+            )
+        }
         _ => unsupported(&st),
     }
 }

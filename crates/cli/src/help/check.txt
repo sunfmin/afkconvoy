@@ -1,0 +1,77 @@
+WHEN TO RUN IT
+
+  After every edit to a team's files, a role's skills or a repo's `team` key, and before
+  a fleet is started on a bound repo: it says whether the team loads, and if not, every
+  fault at once. Edit, run it, and repeat until it exits 0.
+
+WHO RUNS IT
+
+  The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere
+  with `--team` or `--dir`.
+
+WHAT IT READS AND WRITES
+
+  It writes nothing. A team is a repo that holds:
+
+      team.md                 the team file
+      workflows/<name>.md     one file per workflow; its flow label is `flow:<name>`
+
+  and of each file only the first ```yaml block is read. The team file:
+
+      escalate_label: ready-for-human    # default
+      roles:
+        <short name>: owner/repo         # a role is a repo
+
+  A workflow file:
+
+      max_rework: 3                      # default
+      max_consecutive_rework: 2          # default
+      stages:
+        - name: <unique; not land, done or human>
+          by: <role> | human
+          do: <skill>                    # required unless by: human
+          model: <model>                 # optional
+          writes: false                  # optional; default true
+          escalate: { to: <role>, do: <skill> }                  # optional
+          on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
+      land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
+
+  A skill of a role is an entry of `.claude/skills/` in the role's repo.
+
+  Without a flag it reads the config of this checkout for `team`, and that repo from
+  GitHub at the head of its default branch. `--team owner/repo` names the repo instead.
+  `--dir <path>` reads a team's files from a directory as they are, committed or not.
+  Every role's repo is always read from GitHub, at the head of its default branch:
+  through `gh repo clone`, into a temporary directory it removes.
+
+WHAT IT ANSWERS
+
+  {"team", "commit", "files", "escalate_label", "roles", "workflows"} — what it read.
+  `commit` is the team's commit read, null with `--dir`; `files` the files read. Each of
+  `roles` is {"name", "repo", "commit", "skills"}: `commit` is the one the role's repo
+  was read at. Each of `workflows` is {"name", "flow_label", "max_rework",
+  "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
+  {"name", "by", "do", "model", "writes", "escalate", "pass", "reject"}.
+
+  A team with a fault: {"error", "faults"} and exit 1. `faults` holds every fault of the
+  team, not the first: each {"file", "key", "problem"}. `key` is a path from the top of
+  the file's yaml, counting from 0 — `stages[1].on.reject` — and empty when the fault is
+  the file itself. A fault is one of: an unknown key, or one written twice; a wrong
+  type; a duplicate stage name; a stage named `land`, `done` or `human`; a `pass` or
+  `reject` that names no stage; a `reject` to its own or a later stage; a stage no path
+  from the first reaches; a stage whose passes never come to `land` or `done`; a
+  `pass: land` with no `land:`, or a `land:` no pass leads to; a role the team file does
+  not name; a role whose repo cannot be read; a skill its role's repo does not hold; a
+  missing `by`, `do` or `on`.
+
+  Other errors, as {"error": …}: the repo's config names no team and no flag was given;
+  the team's repo cannot be read.
+
+WHAT TRIPS YOU UP
+
+  - From GitHub it reads what is pushed to the default branch. An edit in a checkout
+    of the team is checked with `--dir`; a role's is checked only once it is pushed.
+  - Following `pass` alone from any stage must end. A loop back is made with `reject`,
+    which the breakers count; a round of passes nothing would ever stop.
+  - A stage nothing leads to is reported only once every `pass` and `reject` names a
+    stage: fix those first and run it again.

@@ -5,7 +5,7 @@
 
 use flux_rs::attrs::*;
 
-use crate::config::is_repo;
+use crate::config::{ESCALATE_LABEL, is_repo};
 
 /// The team file, at the top of a team's repo.
 pub const TEAM_FILE: &str = "team.md";
@@ -21,9 +21,19 @@ pub const MAX_REWORK: u64 = 3;
 pub const MAX_CONSECUTIVE_REWORK: u64 = 2;
 
 /// Who performs a stage that no role does.
-const HUMAN: &str = "human";
-const LAND: &str = "land";
-const DONE: &str = "done";
+pub const HUMAN: &str = "human";
+/// Where a `pass` leads that ends a workflow in the landing train.
+pub const LAND: &str = "land";
+/// Where a `pass` leads that ends a workflow in nothing more to do.
+pub const DONE: &str = "done";
+
+/// The keys of each map a definition holds: what `check`'s help must name.
+pub const TEAM_KEYS: [&str; 2] = ["escalate_label", "roles"];
+pub const WORKFLOW_KEYS: [&str; 4] = ["max_rework", "max_consecutive_rework", "stages", LAND];
+pub const STAGE_KEYS: [&str; 7] = ["name", "by", "do", "model", "writes", "escalate", "on"];
+pub const ON_KEYS: [&str; 2] = ["pass", "reject"];
+pub const ESCALATE_KEYS: [&str; 2] = ["to", "do"];
+pub const LAND_KEYS: [&str; 2] = ["by", "do"];
 
 /// One value of a definition file's yaml, as it was parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -465,7 +475,7 @@ struct Roles<'n> {
 fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Roles<'n>) {
     let mut report = Report { file: &sources.team.path, faults };
     let mut roles = Roles { known: false, names: vec![], loaded: vec![] };
-    let mut escalate_label = "ready-for-human".to_string();
+    let mut escalate_label = ESCALATE_LABEL.to_string();
     let node = match &sources.team.yaml {
         Ok(node) => node,
         Err(why) => {
@@ -473,7 +483,7 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
             return (escalate_label, roles);
         }
     };
-    let Some(entries) = map(&mut report, "", node, &["escalate_label", "roles"]) else {
+    let Some(entries) = map(&mut report, "", node, &TEAM_KEYS) else {
         return (escalate_label, roles);
     };
     roles.known = true;
@@ -581,8 +591,7 @@ struct Draft<'n> {
 
 /// Reads one stage: everything that can be said of it alone.
 fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) -> Option<Draft<'n>> {
-    let known = ["name", "by", "do", "model", "writes", "escalate", "on"];
-    let entries = map(report, &key, node, &known)?;
+    let entries = map(report, &key, node, &STAGE_KEYS)?;
     let name = required(report, &key, entries, "name");
     if let Some(name) = name
         && [LAND, DONE, HUMAN].contains(&name)
@@ -618,7 +627,7 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
     let consult = match get(entries, "escalate") {
         Some(node) if !human => {
             let at = under(&key, "escalate");
-            let consult = match map(report, &at, node, &["to", "do"]) {
+            let consult = match map(report, &at, node, &ESCALATE_KEYS) {
                 Some(entries) => work(report, roles, &at, entries, ("to", "do")),
                 None => None,
             };
@@ -631,7 +640,7 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
         None => report.fault(&under(&key, "on"), "required, and it is missing".to_string()),
         Some(node) => {
             let at = under(&key, "on");
-            if let Some(entries) = map(report, &at, node, &["pass", "reject"]) {
+            if let Some(entries) = map(report, &at, node, &ON_KEYS) {
                 pass = required(report, &at, entries, "pass");
                 reject = text(report, &at, entries, "reject");
             }
@@ -714,14 +723,13 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
             return None;
         }
     };
-    let known = ["max_rework", "max_consecutive_rework", "stages", "land"];
-    let entries = map(report, "", node, &known)?;
+    let entries = map(report, "", node, &WORKFLOW_KEYS)?;
     let max_rework = count(report, entries, "max_rework", MAX_REWORK);
     let max_consecutive_rework =
         count(report, entries, "max_consecutive_rework", MAX_CONSECUTIVE_REWORK);
     let land = match get(entries, LAND) {
         None => Some(None),
-        Some(node) => match map(report, LAND, node, &["by", "do"]) {
+        Some(node) => match map(report, LAND, node, &LAND_KEYS) {
             Some(entries) => work(report, roles, LAND, entries, ("by", "do")).map(Some),
             None => None,
         },

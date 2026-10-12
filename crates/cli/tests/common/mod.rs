@@ -172,6 +172,24 @@ impl World {
         self.write_gh(&state);
     }
 
+    /// Puts another repo on the stand-in GitHub as `name` (`owner/repo`), with
+    /// `files` committed on its default branch → its checkout, to commit more to.
+    pub fn repo(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let dir = self.root.join("github").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", BASE]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "initial"]);
+        for (file, text) in files {
+            write(&dir, file, text);
+        }
+        if !files.is_empty() {
+            git(&dir, &["add", "."]);
+            git(&dir, &["commit", "-q", "-m", "files"]);
+        }
+        self.with_gh(|gh| gh["repos"][name] = json!(dir));
+        dir
+    }
+
     /// Adds an open issue carrying `labels`.
     pub fn issue(&self, number: u64, labels: &[&str]) {
         self.with_gh(|gh| {
@@ -451,10 +469,17 @@ const GIT_ENV: [(&str, &str); 6] = [
 
 /// Commits one file in a checkout → the commit.
 pub fn commit(dir: &Path, file: &str, text: &str) -> String {
-    std::fs::write(dir.join(file), text).unwrap();
+    write(dir, file, text);
     git(dir, &["add", "."]);
     git(dir, &["commit", "-q", "-m", file]);
     git(dir, &["rev-parse", "HEAD"])
+}
+
+/// Writes `text` to `file` under `dir`, making the directories it is in.
+pub fn write(dir: &Path, file: &str, text: &str) {
+    let path = dir.join(file);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
 }
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.
