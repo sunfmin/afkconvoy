@@ -65,12 +65,18 @@ impl Unheld {
         self.gh.comment(self.number, &record.comment())
     }
 
+    /// The labels that hand the issue back to the fleet as one that follows
+    /// `workflow`: nothing to swap unless it was handed to a human.
+    fn back(&self, team: &Team, workflow: &Workflow) -> Relabel {
+        let flow = format!("{FLOW_LABEL}{}", workflow.name);
+        Relabel::back(&self.labels, &flow, &team.escalate_label)
+    }
+
     /// Hands the issue back to the fleet as one that follows `workflow` →
     /// whether a label was moved. The record is written first: an issue
     /// that carries its flow label is the fleet's to act on at once.
     fn hand_back(&self, team: &Team, workflow: &Workflow) -> Result<bool> {
-        let flow = format!("{FLOW_LABEL}{}", workflow.name);
-        let back = Relabel::back(&self.labels, &flow, &team.escalate_label);
+        let back = self.back(team, workflow);
         if let Some(label) = &back.add {
             self.gh.add_label(self.number, label)?;
         }
@@ -110,13 +116,12 @@ pub fn rule(repo: &Repo, team: &Team, number: u64, text: String) -> Result<Value
     };
     // Handed over means the records say so, or the labels do: an issue whose
     // worker went silent was escalated with no record of it.
-    let flow = format!("{FLOW_LABEL}{}", workflow.name);
-    let handed_over = matches!(position, Position::Escalating(..))
-        || !Relabel::back(&issue.labels, &flow, &team.escalate_label).done();
+    let handed_over =
+        matches!(position, Position::Escalating(..)) || !issue.back(team, workflow).done();
     if !handed_over {
         bail!(
-            "issue #{number} is not escalated: it is at the stage `{}` and carries {flow}; \
-             nothing was written",
+            "issue #{number} is not escalated: it is at the stage `{}` and carries its flow \
+             label; nothing was written",
             stage.name
         );
     }

@@ -1,0 +1,430 @@
+//! A human rules, steers and may hold a stage (docs/adr/0010, docs/adr/0011):
+//! `rule` answers an escalated issue and its stage runs again, `send` puts an
+//! issue at a named stage, and a stage a workflow gives to a human waits for
+//! their verdict with no claim and no slot held.
+
+mod common;
+
+use std::path::PathBuf;
+
+use common::{World, git, write};
+use serde_json::{Value, json};
+
+/// The team names its own escalate label: a bound repo's config says none.
+const TEAM: &str =
+    "```yaml\nescalate_label: stuck\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+const FEATURE: &str = "\
+```yaml
+max_rework: 1
+stages:
+  - name: build
+    by: dev
+    do: implement
+    on: { pass: review }
+  - name: review
+    by: reviewer
+    do: review
+    writes: false
+    on: { pass: sign-off, reject: build }
+  - name: sign-off
+    by: human
+    on: { pass: done, reject: build }
+```
+";
+
+/// A world whose repo is bound to a team with the one workflow `feature`,
+/// and runs `concurrency` workers at once.
+fn bound(concurrency: u64) -> World {
+    let world = World::new();
+    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
+    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let config = format!(
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
+         concurrency: {concurrency}\n```\n"
+    );
+    write(&world.clone, "docs/agents/afkconvoy.md", &config);
+    git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world
+}
+
+/// One tick at `now`, every worker that has not stopped being at work.
+fn tick(world: &World, now: u64) -> Value {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            let at_work = terminal["agent"].is_null() || terminal["agent"]["state"] == "working";
+            if terminal["open"] == true && !terminal["command"].is_null() && at_work {
+                terminal["agent"] = json!({"state": "working", "stateStartedAt": now * 1000});
+                terminal["lastOutputAt"] = json!(now * 1000);
+            }
+        }
+    });
+    let now = now.to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok()
+}
+
+/// What a tick did that came to anything, but for the boards and the
+/// `stage:` labels.
+fn did(ticked: &Value) -> Vec<String> {
+    let steps = ticked["did"].as_array().unwrap().iter();
+    let kept = steps.filter(|step| {
+        !["board", "stage_label", "heartbeat"].contains(&step["do"].as_str().unwrap())
+            && step["outcome"] != "nothing"
+    });
+    kept.map(|step| {
+        let word = |key: &str| step[key].as_str().unwrap();
+        format!("{} {} {}", word("do"), step["issue"], word("outcome"))
+    })
+    .collect()
+}
+
+/// One whole stage of `issue`, from `now`: a tick starts its worker, the
+/// worker declares `verdict`, and the next tick carries that out.
+fn stage(world: &World, issue: u64, now: u64, stage: &str, verdict: &str) {
+    assert_eq!(did(&tick(world, now)), [format!("dispatch {issue} done")], "{stage}");
+    let number = issue.to_string();
+    let line = ["verdict", verdict, "--issue", &number, "--stage", stage, "--text", "As asked."];
+    let commits = ["--role-commit", "r1", "--team-commit", "t1"];
+    assert_eq!(world.afk(&[&line[..], &commits].concat()).ok()["declared"], true);
+    assert_eq!(did(&tick(world, now + 30)), [format!("advance {issue} done")], "{stage}");
+}
+
+fn show(world: &World, issue: u64) -> Value {
+    world.afk(&["show", "--issue", &issue.to_string()]).ok()
+}
+
+/// Where `show` says `issue` is: what its position is, and at which stage.
+fn at(world: &World, issue: u64) -> (String, String) {
+    let position = &show(world, issue)["position"];
+    let word = |key: &str| position[key].as_str().unwrap_or_default().to_string();
+    (word("is"), word("stage"))
+}
+
+fn frontier(world: &World) -> Vec<(u64, String)> {
+    let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
+    let rows = plan["frontier"].as_array().unwrap().iter();
+    rows.map(|row| (row["number"].as_u64().unwrap(), row["stage"].as_str().unwrap().to_string()))
+        .collect()
+}
+
+/// The brief of the worker last started on `issue`.
+fn brief(world: &World, issue: u64) -> String {
+    let orca = world.orca();
+    let rows = orca["worktrees"].as_array().unwrap();
+    let row = rows.iter().rev().find(|row| row["linkedIssue"] == issue).expect("a worktree");
+    let dir = PathBuf::from(row["path"].as_str().unwrap());
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::read_to_string(git_dir.join("convoy-worker-prompt.md")).unwrap()
+}
+
+/// The stage records on `issue`, oldest first, as their comments stand.
+fn records(world: &World, issue: u64) -> Vec<String> {
+    let comments = world.comments(issue).into_iter();
+    comments.filter(|body| body.starts_with("<!--convoy:stage ")).collect()
+}
+
+fn has(world: &World, issue: u64, label: &str) -> bool {
+    world.labels(issue).contains(&label.to_string())
+}
+
+#[test]
+fn a_ruling_runs_the_stage_that_asked_again_with_the_ruling_in_its_history() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature", "bug"]);
+    stage(&world, 7, 1000, "build", "escalate");
+    // Handed to a human under the label the team names, with no flow label.
+    assert_eq!(world.labels(7), ["bug", "stage:build", "stuck"]);
+    let said = world.comments(7).join("\n");
+    assert!(said.contains("<!--convoy:escalation claim="), "{said}");
+    assert!(said.contains(" flow=feature-->"), "it says which workflow it left: {said}");
+    // It still has a position: the one it was escalated from.
+    assert_eq!(at(&world, 7), ("escalating".to_string(), "build".to_string()));
+    assert_eq!(frontier(&world), []);
+
+    let ruling = "Keep the v1 schema.\nMigrate in a later issue.";
+    let ruled = world.afk(&["rule", "--issue", "7", "--text", ruling]).ok();
+    assert_eq!(
+        (&ruled["stage"], &ruled["ruled"], &ruled["relabelled"], &ruled["workflow"]),
+        (&json!("build"), &json!(true), &json!(true), &json!("feature"))
+    );
+    let record = records(&world, 7).pop().unwrap();
+    assert!(
+        record.starts_with(
+            "<!--convoy:stage stage=build verdict=ruling by=human-->\n**afkconvoy** — a human \
+             ruled on the stage `build`"
+        ),
+        "{record}"
+    );
+    assert!(record.ends_with(ruling), "{record}");
+    // The escalate label is swapped back for the flow label, and nothing else moved.
+    assert_eq!(world.labels(7), ["bug", "stage:build", "flow:feature"]);
+    assert_eq!(world.claims(), []);
+
+    // A human's record is told apart from a worker's.
+    let read = show(&world, 7);
+    let left = read["records"].as_array().unwrap();
+    assert_eq!((&left[0]["by"], &left[0]["role_commit"]), (&json!("worker"), &json!("r1")));
+    let last = left.last().unwrap();
+    assert_eq!(
+        (&last["by"], &last["verdict"], &last["reads"], &last["claim"], &last["role_commit"]),
+        (&json!("human"), &json!("ruling"), &json!("verdict"), &Value::Null, &Value::Null)
+    );
+    assert_eq!(read["position"]["is"], "perform");
+
+    // The next tick runs the stage that asked, under the ruling.
+    assert_eq!(frontier(&world), [(7, "build".to_string())]);
+    assert_eq!(did(&tick(&world, 1090)), ["dispatch 7 done"]);
+    let told = brief(&world, 7);
+    assert!(told.contains("- **Stage:** `build`, of the workflow `feature`\n"), "{told}");
+    assert!(told.contains("- `build` declared `escalate` — https://gh/c/"), "{told}");
+    assert!(told.contains("- a human ruled on the stage `build`"), "{told}");
+    assert!(
+        told.contains("## Ruling\n") && told.contains("> Keep the v1 schema.\n> Migrate in a"),
+        "{told}"
+    );
+    // A claim is on it now: it is its worker's, and a second ruling is refused.
+    let held = world.afk(&["rule", "--issue", "7", "--text", "And another."]).error();
+    assert!(held.contains("issue #7 is claimed"), "{held}");
+    assert_eq!(records(&world, 7).pop().unwrap(), record, "nothing was written");
+}
+
+#[test]
+fn both_rework_counts_are_taken_from_after_the_ruling() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 7, 1000, "build", "pass");
+    stage(&world, 7, 1100, "review", "reject");
+    stage(&world, 7, 1200, "build", "pass");
+    // `max_rework` is 1: a second rejection is the one its breaker refuses.
+    stage(&world, 7, 1300, "review", "reject");
+    let tripped = show(&world, 7);
+    assert_eq!(tripped["position"]["is"], "escalating");
+    assert!(tripped["position"]["reason"].as_str().unwrap().contains("`max_rework`"));
+    assert_eq!(tripped["rework"], json!({"had": 1, "left": 0}));
+    assert!(has(&world, 7, "stuck") && !has(&world, 7, "flow:feature"));
+
+    world
+        .afk(&["rule", "--issue", "7", "--text", "The reviewer is right: handle the empty list."])
+        .ok();
+    let ruled = show(&world, 7);
+    assert_eq!(
+        (&ruled["position"]["is"], &ruled["position"]["stage"]),
+        (&json!("perform"), &json!("build"))
+    );
+    assert_eq!(ruled["rework"], json!({"had": 0, "left": 1}));
+    assert_eq!(ruled["consecutive_rework"]["review"], json!({"had": 0, "left": 2}));
+
+    // The fix gets a fresh allowance: one more rejection is rework, not a breaker.
+    stage(&world, 7, 1400, "build", "pass");
+    stage(&world, 7, 1500, "review", "reject");
+    assert_eq!(at(&world, 7), ("perform".to_string(), "build".to_string()));
+    assert_eq!(show(&world, 7)["rework"], json!({"had": 1, "left": 0}));
+    assert!(has(&world, 7, "flow:feature"));
+}
+
+#[test]
+fn a_ruling_answers_an_issue_whose_worker_went_silent() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 7, 1000, "build", "pass");
+    assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done"]);
+    // Its reviewer stops with no verdict, past its nudge: no record says so.
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["open"] == true && !terminal["command"].is_null() {
+                terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_100_000});
+                terminal["lastOutputAt"] = json!(1_100_000);
+            }
+        }
+    });
+    assert_eq!(did(&tick(&world, 1500)), ["advance 7 nudged"]);
+    assert_eq!(did(&tick(&world, 1900)), ["advance 7 done"]);
+    assert!(has(&world, 7, "stuck") && !has(&world, 7, "flow:feature"));
+    assert_eq!(at(&world, 7), ("perform".to_string(), "review".to_string()));
+
+    let ruled = world.afk(&["rule", "--issue", "7", "--text", "Review it again."]).ok();
+    assert_eq!((&ruled["stage"], &ruled["relabelled"]), (&json!("review"), &json!(true)));
+    assert!(has(&world, 7, "flow:feature") && !has(&world, 7, "stuck"));
+    assert_eq!(did(&tick(&world, 2000)), ["dispatch 7 done"]);
+    assert!(brief(&world, 7).contains("## Ruling\n\nThis stage runs again under a human's ruling"));
+}
+
+#[test]
+fn a_ruling_is_refused_where_there_is_nothing_to_rule_on() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["bug"]);
+    let refused =
+        |issue: &str, text: &str| world.afk(&["rule", "--issue", issue, "--text", text]).error();
+    let healthy = refused("7", "Go on.");
+    assert!(healthy.contains("issue #7 is not escalated: it is at the stage `build`"), "{healthy}");
+    assert!(refused("7", " \n").contains("carries the ruling: there is none"));
+    let unfollowed = refused("8", "Go on.");
+    assert!(unfollowed.contains("issue #8 cannot be ruled on: it carries no flow label"));
+    assert_eq!(world.comments(7), Vec::<String>::new());
+    assert_eq!(world.labels(8), ["bug"]);
+    // An issue past its stages has none to run again.
+    stage(&world, 7, 1000, "build", "already-satisfied");
+    world.issue(9, &["flow:feature"]);
+    world.comment(9, "<!--convoy:stage stage=build verdict=already-satisfied by=human-->\n\nDone.");
+    assert!(refused("9", "Go on.").contains("it has left the stages of its workflow"));
+}
+
+#[test]
+fn an_issue_is_sent_to_a_named_stage_of_its_workflow() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 7, 1000, "build", "pass");
+    assert_eq!(frontier(&world), [(7, "review".to_string())]);
+
+    // A stage the workflow does not have is refused, and nothing is written.
+    let unknown =
+        world.afk(&["send", "--issue", "7", "--stage", "deploy", "--text", "Ship it."]).error();
+    assert!(
+        unknown.contains("has no stage `deploy`; it has: build, review, sign-off"),
+        "{unknown}"
+    );
+    assert_eq!(records(&world, 7).len(), 1);
+
+    let why = "The approach changed: start over.";
+    let sent = world.afk(&["send", "--issue", "7", "--stage", "build", "--text", why]).ok();
+    assert_eq!(
+        (&sent["stage"], &sent["sent"], &sent["relabelled"]),
+        (&json!("build"), &json!(true), &json!(false))
+    );
+    let record = records(&world, 7).pop().unwrap();
+    assert!(
+        record.starts_with(
+            "<!--convoy:stage stage=build verdict=sent by=human-->\n**afkconvoy** — a human \
+             sent this issue to the stage `build`.\n\n"
+        ),
+        "{record}"
+    );
+    let read = show(&world, 7);
+    let last = read["records"].as_array().unwrap().last().unwrap();
+    assert_eq!((&last["by"], &last["reads"]), (&json!("human"), &json!("sent")));
+    assert_eq!(frontier(&world), [(7, "build".to_string())]);
+
+    // The next tick starts the stage it was sent to, told why.
+    assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done"]);
+    let told = brief(&world, 7);
+    assert!(told.contains("## Sent here\n") && told.contains(&format!("> {why}")), "{told}");
+    // While a worker is at it, it is not sent anywhere.
+    let held = world.afk(&["send", "--issue", "7", "--stage", "review", "--text", "x"]).error();
+    assert!(held.contains("issue #7 is claimed"), "{held}");
+}
+
+#[test]
+fn sending_an_escalated_issue_hands_it_back_to_the_fleet() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 7, 1000, "build", "pass");
+    stage(&world, 7, 1100, "review", "escalate");
+    assert!(has(&world, 7, "stuck") && !has(&world, 7, "flow:feature"));
+
+    let sent =
+        world.afk(&["send", "--issue", "7", "--stage", "build", "--text", "Rebuild it."]).ok();
+    assert_eq!(sent["relabelled"], true);
+    assert!(has(&world, 7, "flow:feature") && !has(&world, 7, "stuck"));
+    assert_eq!(frontier(&world), [(7, "build".to_string())]);
+    // To a human's stage it waits for them, and no worker is started.
+    stage(&world, 7, 1200, "build", "pass");
+    world.afk(&["send", "--issue", "7", "--stage", "sign-off", "--text", "I read it."]).ok();
+    assert_eq!(at(&world, 7), ("waiting".to_string(), "sign-off".to_string()));
+    assert_eq!(did(&tick(&world, 1300)), [] as [&str; 0]);
+}
+
+#[test]
+fn an_issue_at_a_human_s_stage_is_not_dispatched_and_holds_no_claim_and_no_slot() {
+    let world = bound(1);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 7, 1000, "build", "pass");
+    stage(&world, 7, 1100, "review", "pass");
+    assert_eq!(at(&world, 7), ("waiting".to_string(), "sign-off".to_string()));
+    assert_eq!(show(&world, 7)["position"]["by"], "human");
+    assert_eq!(world.claims(), []);
+    // The status board says who it waits for.
+    let board = world.boards(7).pop().unwrap();
+    assert!(board.contains("the issue waits for a human"), "{board}");
+    assert!(board.contains("the stage `sign-off` that follows is a human's"), "{board}");
+
+    // Nothing is started on it, tick after tick, and it takes none of the
+    // one slot: another issue is worked meanwhile.
+    let idle = tick(&world, 1200);
+    assert_eq!((did(&idle), &idle["held"]), (vec![], &json!(0)));
+    let plan = world.afk(&["plan", "--instance", "alpha"]).ok();
+    let row = plan["excluded"].as_array().unwrap().iter().find(|row| row["number"] == 7).unwrap();
+    assert!(row["reason"].as_str().unwrap().contains("waits for a human"), "{row}");
+    assert_eq!(plan["free_slots"], 1);
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1300)), ["dispatch 8 done"]);
+    assert_eq!(world.claims(), [(8, "alpha".to_string())]);
+    assert_eq!(world.labels(7), ["flow:feature", "stage:sign-off"]);
+}
+
+#[test]
+fn a_human_declares_the_verdict_of_their_stage_with_the_verdict_command() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    stage(&world, 7, 1000, "build", "pass");
+    stage(&world, 7, 1100, "review", "pass");
+    let declare = |verdict: &str, stage: &str| {
+        world.afk(&["verdict", verdict, "--issue", "7", "--stage", stage, "--text", "Read it."])
+    };
+
+    // It is checked before it is written: a human reads the refusal.
+    let elsewhere = declare("pass", "review").error();
+    assert!(elsewhere.contains("issue #7 is at the stage `sign-off`, not at `review`"));
+    let parked = world.afk(&[
+        "verdict",
+        "blocked",
+        "--issue",
+        "7",
+        "--stage",
+        "sign-off",
+        "--text",
+        "x",
+        "--blocked-by",
+        "3",
+    ]);
+    assert!(parked.error().contains("--blocked-by is a worker's"));
+    assert_eq!(records(&world, 7).len(), 2);
+
+    // A rejection leads where the workflow says, and is rework like any other.
+    let rejected = declare("reject", "sign-off").ok();
+    assert_eq!(
+        (&rejected["declared"], &rejected["by"], &rejected["verdict"]),
+        (&json!(true), &json!("human"), &json!("reject"))
+    );
+    let record = records(&world, 7).pop().unwrap();
+    assert!(
+        record.starts_with(
+            "<!--convoy:stage stage=sign-off verdict=reject by=human-->\n**afkconvoy** — a \
+             human declared `reject` for the stage `sign-off`.\n\nRead it."
+        ),
+        "{record}"
+    );
+    assert_eq!(frontier(&world), [(7, "build".to_string())]);
+    assert_eq!(show(&world, 7)["rework"], json!({"had": 1, "left": 0}));
+    stage(&world, 7, 1200, "build", "pass");
+    // While a worker holds the issue its stage is the worker's to declare.
+    assert_eq!(did(&tick(&world, 1300)), ["dispatch 7 done"]);
+    let held = declare("pass", "review").error();
+    assert!(held.contains("issue #7 is claimed") && held.contains("--role-commit"), "{held}");
+    let commits = ["--role-commit", "r1", "--team-commit", "t1"];
+    let line = ["verdict", "pass", "--issue", "7", "--stage", "review", "--text", "Fine."];
+    world.afk(&[&line[..], &commits].concat()).ok();
+    assert_eq!(did(&tick(&world, 1330)), ["advance 7 done"]);
+
+    // A pass ends the workflow here; what it declared is on the record as a human's.
+    assert_eq!(declare("pass", "sign-off").ok()["declared"], true);
+    let read = show(&world, 7);
+    assert_eq!(read["position"]["is"], "ended");
+    let by: Vec<&str> =
+        read["records"].as_array().unwrap().iter().map(|r| r["by"].as_str().unwrap()).collect();
+    assert_eq!(by, ["worker", "worker", "human", "worker", "worker", "human"]);
+    assert_eq!(did(&tick(&world, 1400)), [] as [&str; 0]);
+    let gone = declare("pass", "sign-off").error();
+    assert!(gone.contains("issue #7 is at no stage: it has left them"), "{gone}");
+}

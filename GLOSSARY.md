@@ -83,7 +83,7 @@ One step of a workflow: one skill of one role, performed by one new worker — o
 _Avoid_: step, phase, state
 
 **Stage record**:
-The comment a stage leaves on its issue: what it produced, its verdict, and the versions of the role and team it ran under. The stage an issue is at is derived from these and stored nowhere.
+The comment a stage leaves on its issue: what it produced, its verdict, and the versions of the role and team it ran under. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did. The stage an issue is at is derived from these and stored nowhere.
 _Avoid_: handoff note, log, stage label
 
 **Position**:
@@ -91,7 +91,7 @@ Where an issue is in its workflow: at a stage a worker is to perform, waiting on
 _Avoid_: state, status, current stage
 
 **Rework**:
-A stage running again because a later stage rejected its work or a consult ruled on it. It is counted per issue from the stage records.
+A stage running again because a later stage rejected its work or a consult ruled on it. It is counted per issue from the stage records, from where a human last ruled on the issue or sent it to a stage.
 _Avoid_: retry, round, attempt
 
 **Breaker**:
@@ -103,7 +103,7 @@ A worker in a more senior role, asked to rule on a stage's `escalate` verdict be
 _Avoid_: review, second opinion, handoff
 
 **Ruling**:
-What a consult or a human decides on an escalated issue. The stage that asked runs again under it.
+What a consult or a human decides on an escalated issue. The stage that asked runs again under it; a human's also hands the issue back to the fleet.
 _Avoid_: answer, decision, override
 
 **Precedent**:
