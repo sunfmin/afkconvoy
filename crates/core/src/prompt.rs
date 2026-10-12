@@ -248,7 +248,7 @@ pub struct StageFields<'a> {
 }
 
 /// `text` as a quotation: nothing in it reads as part of the brief.
-fn quoted(text: &str) -> String {
+pub(crate) fn quoted(text: &str) -> String {
     let lines: Vec<String> = text.trim().lines().map(|line| format!("> {line}")).collect();
     lines.join("\n")
 }

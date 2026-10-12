@@ -165,6 +165,8 @@ pub struct Called {
     pub stage: Option<String>,
     /// The comment the verdict under the claim is in, once there is one.
     pub said: Option<String>,
+    /// Every round of the rework a breaker stopped, where one did.
+    pub rounds: Option<String>,
 }
 
 /// One rebuild's read of a bound repo's issues that follow a workflow: the
@@ -244,6 +246,7 @@ impl Flows {
             advance: Advance::Escalate(format!("its stage cannot be carried on: {why}")),
             stage: None,
             said: None,
+            rounds: None,
         };
         let Some(issue) = self.issues.iter().find(|issue| issue.number == number) else {
             return Ok(unfollowed("it carries no flow label".to_string()));
@@ -258,7 +261,16 @@ impl Flows {
             advance: advance(&history, &issue.records, claim),
             stage: history.place.position.stage().map(|stage| stage.name.clone()),
             said: verdict.and_then(|at| issue.urls.get(at).cloned()),
+            rounds: history.rounds_said(&issue.records, &issue.urls),
         })
+    }
+
+    /// Every round of the rework a breaker stopped on issue `number`, as the
+    /// human it is handed to is told it; `None` where no breaker did.
+    pub fn rounds(&self, number: u64) -> Option<String> {
+        let issue = self.issues.iter().find(|issue| issue.number == number)?;
+        let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
+        history(workflow, &issue.records).rounds_said(&issue.records, &issue.urls)
     }
 
     /// Brings the `stage:` label of issue `number` to the position its stage
