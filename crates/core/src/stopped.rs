@@ -212,10 +212,14 @@ pub fn stalled_reason(silent: &Silent, tail: &Tail) -> String {
     stalled("The worker stopped with no PR and no verdict", silent, tail)
 }
 
-/// Why the claim of a silent worker of the stage `stage` is handed to a
-/// human, with where it stopped.
-pub fn stage_stalled_reason(stage: &str, silent: &Silent, tail: &Tail) -> String {
-    let stopped = format!("The worker of the stage `{stage}` stopped with no valid verdict");
+/// Why the claim of a silent worker of the stage `stage` — its consult, when
+/// `consult` — is handed to a human, with where it stopped.
+pub fn stage_stalled_reason(stage: &str, consult: bool, silent: &Silent, tail: &Tail) -> String {
+    let stopped = if consult {
+        format!("The consult of the stage `{stage}` stopped with no ruling and no `escalate`")
+    } else {
+        format!("The worker of the stage `{stage}` stopped with no valid verdict")
+    };
     stalled(&stopped, silent, tail)
 }
 

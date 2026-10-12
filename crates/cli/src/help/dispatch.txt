@@ -29,6 +29,13 @@ WHAT IT READS AND WRITES
   worker launch command with the worktree and the team's copy added as directories, the
   user's own settings left out, and the stage's model when it names one.
 
+  Where the stage declared `escalate` and names a consult, the worker is started as
+  that consult instead: in the consult's role, on a brief that names the skill, the
+  stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`,
+  or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is
+  `true` in its environment, the guard refuses its commits, and the stage's model is
+  not its own.
+
   Once the issue's last stage has passed to `land`, the worker is started in the
   workflow's landing role instead, on the join-only brief with that role's landing skill
   named in it: it gates the issue's open PR and joins the landing train. Its stage is
@@ -45,10 +52,13 @@ WHAT IT ANSWERS
                — a new worktree at the issue's pushed branch; 3 dispatch_fresh — a new
                worktree at the base branch
     prompt     the brief the worker got: fresh, continue, or join (its PR is open: only
-               the join is left) — in a bound repo, stage, or join for a landing worker
-    stage      in a bound repo: {flow, name, role, skill, writes, model, role_commit,
-               role_dir, team_commit, team_dir} — the stage the worker performs, and the
-               copies and commits fixed for it; name is `land` for a landing worker
+               the join is left) — in a bound repo, stage, consult, or join for a
+               landing worker
+    stage      in a bound repo: {flow, name, role, skill, writes, consult, model,
+               role_commit, role_dir, team_commit, team_dir} — the stage the worker
+               performs, and the copies and commits fixed for it; name is `land` for a
+               landing worker. For a consult (`consult: true`), name is the stage that
+               asked, and role and skill are the consult's
     reason     why that tier, in words
     discarded  with `--start fresh`: {closed_prs, deleted_branches, removed_worktree}
 

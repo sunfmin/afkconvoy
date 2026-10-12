@@ -335,7 +335,7 @@ fn an_intake_by_a_patrols_worker_is_on_record_as_the_patrols() {
     assert_eq!(
         taken,
         json!({"issue": 12, "workflow": "feature", "taken": true, "role": "dev",
-            "patrol": "sweep", "open": 1, "limit": 50, "woke": false})
+            "patrol": "sweep", "blocked_by": [], "open": 1, "limit": 50, "woke": false})
     );
     assert_eq!(world.labels(12), ["flow:feature"]);
     let record = &world.comments(12)[0];

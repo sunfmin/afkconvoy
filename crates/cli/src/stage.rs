@@ -39,10 +39,13 @@ pub struct Declaring {
     /// The commits of the role's repo and of the team's a worker ran under;
     /// `None` of a human, who declares under neither.
     pub commits: Option<(String, String)>,
+    /// Whether the worker is the stage's consult.
+    pub consult: bool,
 }
 
-/// `afkconvoy verdict`: write the stage record of the stage `declaring` ends,
-/// and wake the fleet. A worker's is written under the claim the issue is
+/// `afkconvoy verdict`, and a consult's `afkconvoy rule`: write the stage
+/// record of the stage `declaring` ends — or, of a consult, the one whose
+/// `escalate` it answers — and wake the fleet. A worker's is written under the claim the issue is
 /// held by, and a stage that has a record under that claim already gets no
 /// second one:
 ///
@@ -53,7 +56,7 @@ pub struct Declaring {
 /// reads it against the stage it dispatched under that claim. A human's — one
 /// that names no commits — is `steer::declare`'s.
 pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
-    let Declaring { issue, stage, declared, blocked_by, text, commits } = declaring;
+    let Declaring { issue, stage, declared, blocked_by, text, commits, consult } = declaring;
     if stage.trim().is_empty() {
         bail!("--stage names no stage");
     }
@@ -80,7 +83,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     let record = StageRecord {
         stage,
         stated: Stated::Declared(declared),
-        by: Author::Worker { claim: claim.sha.clone(), role_commit, team_commit },
+        by: Author::Worker { consult, claim: claim.sha.clone(), role_commit, team_commit },
         blocked_by,
         text,
     };
@@ -198,6 +201,8 @@ pub struct Called {
     pub rounds: Option<String>,
     /// The stage the issue waits at for a human, when it is at a human's.
     pub waits_at: Option<String>,
+    /// Whether the issue is with a consult: the worker asked after is one.
+    pub consulted: bool,
 }
 
 /// One rebuild's read of a bound repo's issues that follow a workflow: the
@@ -301,6 +306,7 @@ impl Flows {
             said: None,
             rounds: None,
             waits_at: None,
+            consulted: false,
         };
         let Some(issue) = self.issues.iter().find(|issue| issue.number == number) else {
             return Ok(unfollowed("it carries no flow label".to_string()));
@@ -317,6 +323,7 @@ impl Flows {
         };
         Ok(Called {
             waits_at,
+            consulted: matches!(history.place.position, Position::Consult(..)),
             advance: advance(&history, &issue.records, claim),
             stage: history.place.position.stage().map(|stage| stage.name.clone()),
             said: verdict.and_then(|at| issue.urls.get(at).cloned()),

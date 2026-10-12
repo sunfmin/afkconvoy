@@ -256,7 +256,7 @@ fn a_dispatch_answers_with_the_stage_and_the_commits_fixed_for_it() {
     assert_eq!(
         started["stage"],
         json!({"flow": "audit", "name": "look", "role": "reviewer", "skill": "review",
-            "writes": false, "model": null,
+            "writes": false, "consult": false, "model": null,
             "role_commit": reviewer, "role_dir": copy(&world, "acme/reviewer", &reviewer),
             "team_commit": team, "team_dir": copy(&world, "acme/team", &team)})
     );

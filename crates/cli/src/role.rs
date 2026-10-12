@@ -9,7 +9,7 @@ use afkconvoy_core::config::Bound;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
-    Landing, Said, StageFields, WorkerFields, landing_prompt, stage_prompt,
+    Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
 use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role, quoted, takes_flags};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
@@ -24,17 +24,21 @@ use crate::orca::Worktree;
 use crate::stage::records_of;
 use crate::team::keep;
 
-/// One stage of one issue, as its worker is started on it — or the join that
-/// follows the last one: the role and the team at the commits fixed for it.
+/// One stage of one issue, as its worker is started on it — or its consult,
+/// or the join that follows the last one: the role and the team at the
+/// commits fixed for it.
 pub struct Staged {
     issue: u64,
     /// The workflow's name.
     flow: String,
-    /// The stage's name; `land` for the join.
+    /// The stage's name — of a consult, the stage that asked; `land` for the join.
     stage: String,
     role: String,
     skill: String,
     writes: bool,
+    /// Whether the worker is the stage's consult: it rules on the stage's
+    /// `escalate`, and writes no code whatever the stage may.
+    consult: bool,
     model: Option<String>,
     /// What the guard holds every worker to: the repo's base branch, the
     /// team's escalate label and the repo's lock label.
@@ -45,6 +49,9 @@ pub struct Staged {
     joins: Option<u64>,
     role_copy: Copy,
     team_copy: Copy,
+    /// The team's workflows, by name: what a stage that splits its issue
+    /// may take a child in to.
+    workflows: Vec<String>,
     /// The stage records that counted on the issue so far, oldest first,
     /// each with the URL of its comment: the worker's history.
     verdicts: Vec<(StageRecord, String)>,
@@ -52,8 +59,9 @@ pub struct Staged {
 
 impl Staged {
     /// The stage issue `issue`, carrying `labels`, is at by its stage
-    /// records as they stand now — or, its last stage having passed to the
-    /// landing train, the join of its open PR — with the team and its roles
+    /// records as they stand now — or the consult its `escalate` goes to, or,
+    /// its last stage having passed to the landing train, the join of its
+    /// open PR — with the team and its roles
     /// as they stand now, each copied here unless a copy of that commit
     /// already is. An error is an issue no worker can be started on, or a
     /// team that does not load.
@@ -63,8 +71,12 @@ impl Staged {
         let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
         // A landing worker is at no stage: it may commit, to resolve a
         // conflict on joining, and its workflow names no model for it.
-        let (workflow, work, role, at, joins) = match due(&kept.team, labels, &records, pr) {
-            Due::Worker(entry) => (entry.workflow, entry.work, entry.role, Some(entry.stage), None),
+        let due = due(&kept.team, labels, &records, pr);
+        let consult = matches!(due, Due::Consult(_));
+        let (workflow, work, role, at, joins) = match due {
+            Due::Worker(entry) | Due::Consult(entry) => {
+                (entry.workflow, entry.work, entry.role, Some(entry.stage), None)
+            }
             Due::Lander(lander) => {
                 (lander.workflow, lander.work, lander.role, None, Some(lander.pr))
             }
@@ -85,13 +97,17 @@ impl Staged {
             role: work.role.clone(),
             skill: work.skill.clone(),
             writes: at.is_none_or(|stage| stage.writes),
-            model: at.and_then(|stage| stage.model.clone()),
+            consult,
+            // The stage's model is its own worker's: a workflow names none
+            // for a consult.
+            model: at.filter(|_| !consult).and_then(|stage| stage.model.clone()),
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
             joins,
             role_copy: kept.role(role)?.clone(),
             team_copy: kept.copy.clone(),
+            workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
     }
 
@@ -109,8 +125,7 @@ impl Staged {
                 role: &self.role,
                 skill: &self.skill,
                 writes: self.writes,
-                // No consult is started yet: a stage's own worker never is one.
-                consult: false,
+                consult: self.consult,
                 base_branch: &self.base_branch,
                 escalate_label: &self.escalate_label,
                 lock_label: &self.lock_label,
@@ -121,17 +136,18 @@ impl Staged {
         in_role(launch, &start)
     }
 
-    /// Keeps, for a stage that writes nothing, where the branch in `worktree`
-    /// is as its worker starts under `claim`: what the fleet checks once the
-    /// stage has declared (`advance::advance`).
+    /// Keeps, for a stage that writes nothing and for a consult, where the
+    /// branch in `worktree` is as its worker starts under `claim`: what the
+    /// fleet checks once it has declared (`advance::advance`).
     pub fn keep_start(&self, worktree: &Worktree, claim: &Claim) -> Result<()> {
-        if self.writes {
+        if self.writes && !self.consult {
             return Ok(());
         }
         worktree.keep_writes_nothing(|tip| WritesNothing {
             claim: claim.sha.clone(),
             tip,
             stage: self.stage.clone(),
+            consult: self.consult,
         })
     }
 
@@ -153,13 +169,19 @@ impl Staged {
         }
     }
 
-    /// Which brief the worker is given: the stage's, or the join-only one.
+    /// Which brief the worker is given: the stage's, the consult's, or the
+    /// join-only one.
     pub fn prompt(&self) -> &'static str {
-        if self.joins.is_some() { "join" } else { "stage" }
+        match (self.joins, self.consult) {
+            (Some(_), _) => "join",
+            (None, true) => "consult",
+            (None, false) => "stage",
+        }
     }
 
-    /// Writes the worker's brief into `worktree` → the file: its stage's, or
-    /// — a landing worker's — the join-only brief of its PR.
+    /// Writes the worker's brief into `worktree` → the file: its stage's, a
+    /// consult's of the `escalate` it rules on, or — a landing worker's — the
+    /// join-only brief of its PR.
     pub fn write_brief(&self, fleet: &Fleet, worktree: &Worktree, title: &str) -> Result<PathBuf> {
         let path = worktree.path.display().to_string();
         // A worker starts in its role's copy: its commands are run from the worktree.
@@ -197,14 +219,22 @@ impl Staged {
             precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
             records: &records,
             verdict_command: &own(&verdict),
+            intake_command: &own("intake"),
+            workflows: &self.workflows,
             gate_command: self.writes.then_some(gate.as_str()),
         };
-        worktree.write_brief(&stage_prompt(&fields).map_err(|e| anyhow!(e))?)
+        let prompt = if self.consult {
+            let rule = format!("rule --issue {} --stage {}", self.issue, quoted(&self.stage));
+            consult_prompt(&fields, &own(&rule))
+        } else {
+            stage_prompt(&fields)
+        };
+        worktree.write_brief(&prompt.map_err(|e| anyhow!(e))?)
     }
 
     pub fn json(&self) -> Value {
         json!({"flow": self.flow, "name": self.stage, "role": self.role, "skill": self.skill,
-            "writes": self.writes, "model": self.model,
+            "writes": self.writes, "consult": self.consult, "model": self.model,
             "role_commit": self.role_copy.commit, "role_dir": self.role_copy.dir,
             "team_commit": self.team_copy.commit, "team_dir": self.team_copy.dir})
     }

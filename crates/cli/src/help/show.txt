@@ -73,8 +73,9 @@ WHAT IT ANSWERS
     records             its stage records, oldest first: {"stage", "verdict", "reads",
                         "by", "claim", "role_commit", "team_commit", "url"}
 
-  Of a record, `by` says who left it: `worker`, under the `claim` and the two commits
-  it names, or `human`, for whom all three are null. `verdict` is what it states: one
+  Of a record, `by` says who left it: `worker` or — asked to rule on the stage's
+  `escalate` — `consult`, under the `claim` and the two commits it names, or `human`,
+  for whom all three are null. `verdict` is what it states: one
   of the five verdicts, `ruling`, or `sent`. And `reads` says how it counted:
 
     verdict        it is the verdict of the stage its claim was dispatched to, or what

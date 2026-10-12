@@ -7,7 +7,7 @@
 use afkconvoy_core::intake::{IntakeRecord, On, has_room, taken_in};
 use afkconvoy_core::plan::Issue;
 use afkconvoy_core::role::flows;
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::config;
@@ -25,6 +25,9 @@ pub struct Taking {
     /// The worker's role, and what it is on: an issue, or a patrol.
     pub role: String,
     pub from: On,
+    /// The issues it is to wait for: what a stage that splits its issue says
+    /// of the order of the children.
+    pub blocked_by: Vec<u64>,
 }
 
 /// What a worker was on, as an answer says it: `from`, the issue, or
@@ -63,16 +66,40 @@ fn open_taken_in(gh: &GitHub, issues: &[Issue]) -> Result<usize> {
     Ok(open)
 }
 
-/// `afkconvoy intake`: take the issue `taking` names in to its workflow — the
-/// intake record, then the flow label — and wake the fleet. An issue that
-/// follows that workflow already is left as it is, whoever took it in.
+/// The database id of each issue `blocked_by` names, as a blocker of issue
+/// `number`: an edge is written by id. Refused: the issue itself, a pull
+/// request, and one that cannot be read.
+fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u64)>> {
+    let mut found = vec![];
+    for &blocker in blocked_by {
+        if blocker == number {
+            bail!("issue #{number} cannot wait for itself: --blocked-by names it");
+        }
+        let read = gh.issue(blocker).map_err(|error| {
+            anyhow!("--blocked-by names #{blocker}, which cannot be read: {error:#}")
+        })?;
+        if read.pull_request {
+            bail!("--blocked-by names #{blocker}, a pull request: an issue waits for issues");
+        }
+        found.push((blocker, read.id));
+    }
+    Ok(found)
+}
+
+/// `afkconvoy intake`: take the issue `taking` names in to its workflow — a
+/// blocked-by edge to each issue it is to wait for, the intake record, then
+/// the flow label — and wake the fleet. The edges come first: the flow label
+/// is what puts the issue on the frontier, and it is never there ahead of
+/// what blocks it. An issue that follows that workflow already is left as it
+/// is, whoever took it in.
 ///
-///   {"issue", "workflow", "taken": true, "role", "from" | "patrol", "open", "limit", "woke"}
+///   {"issue", "workflow", "taken": true, "role", "from" | "patrol", "blocked_by", "open",
+///    "limit", "woke"}
 ///   {"issue", "workflow", "taken": false, "standing": <how it came in>}
 ///
 /// `open` is the open issues taken in by workers, this one among them.
 pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
-    let Taking { issue: number, workflow: name, role, from } = taking;
+    let Taking { issue: number, workflow: name, role, from, blocked_by } = taking;
     let config = config::load(&repo.dir.join(config::FILE))?;
     let Some(bound) = config.bound else {
         bail!("this repo is unbound: its config names no team, so it has no workflow to take in to")
@@ -116,6 +143,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             carried.join(", ")
         ),
     }
+    let blockers = blockers(&gh, number, &blocked_by)?;
     let (open, limit) = (open_taken_in(&gh, &gh.open_issues()?)?, bound.intake_limit);
     if !has_room(open, limit) {
         bail!(
@@ -123,11 +151,18 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
              `intake_limit` is {limit}. One has to close before a worker takes another in"
         );
     }
+    let recorded = gh.blocked_by(number)?;
+    for (blocker, id) in blockers {
+        if !recorded.iter().any(|edge| edge.number == blocker) {
+            gh.add_blocker(number, id)?;
+        }
+    }
     let record = IntakeRecord { workflow: name, role, from };
     gh.comment(number, &record.comment())?;
     gh.add_label(number, &workflow.flow_label())?;
     let (key, from) = on(&record.from);
     Ok(json!({"issue": number, "workflow": record.workflow, "taken": true,
-        "role": record.role, key: from, "open": open + 1, "limit": limit,
+        "role": record.role, key: from, "blocked_by": blocked_by, "open": open + 1,
+        "limit": limit,
         "woke": wake(repo)?["woke"]}))
 }
