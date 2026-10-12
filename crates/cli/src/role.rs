@@ -7,10 +7,13 @@ use std::path::PathBuf;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::Bound;
 use afkconvoy_core::guard::WritesNothing;
-use afkconvoy_core::prompt::{Said, StageFields, stage_prompt};
+use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::prompt::{
+    Landing, Said, StageFields, WorkerFields, landing_prompt, stage_prompt,
+};
 use afkconvoy_core::role::{Due, Facts, Start, due, in_role, quoted, takes_flags};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
-use afkconvoy_core::team::PRECEDENTS;
+use afkconvoy_core::team::{LAND, PRECEDENTS};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -21,12 +24,13 @@ use crate::orca::Worktree;
 use crate::stage::records_of;
 use crate::team::keep;
 
-/// One stage of one issue, as its worker is started on it: the role and the
-/// team at the commits fixed for the stage.
+/// One stage of one issue, as its worker is started on it — or the join that
+/// follows the last one: the role and the team at the commits fixed for it.
 pub struct Staged {
     issue: u64,
     /// The workflow's name.
     flow: String,
+    /// The stage's name; `land` for the join.
     stage: String,
     role: String,
     skill: String,
@@ -37,6 +41,8 @@ pub struct Staged {
     base_branch: String,
     escalate_label: String,
     lock_label: String,
+    /// The PR a landing worker gates and joins. `None` at a stage.
+    joins: Option<u64>,
     role_copy: Copy,
     team_copy: Copy,
     /// The verdicts declared on the issue so far, oldest first, each with
@@ -46,37 +52,45 @@ pub struct Staged {
 
 impl Staged {
     /// The stage issue `issue`, carrying `labels`, is at by its stage
-    /// records as they stand now, with the team and its roles as they stand
-    /// now — each copied here unless a copy of that commit already is. An
-    /// error is an issue no worker can be started on, or a team that does
-    /// not load.
+    /// records as they stand now — or, its last stage having passed to the
+    /// landing train, the join of its open PR — with the team and its roles
+    /// as they stand now, each copied here unless a copy of that commit
+    /// already is. An error is an issue no worker can be started on, or a
+    /// team that does not load.
     pub fn enter(fleet: &Fleet, bound: &Bound, issue: u64, labels: &[String]) -> Result<Staged> {
         let kept = keep(&fleet.gh, &Copies::here()?, &bound.team)?;
         let (records, urls) = records_of(&fleet.gh, issue)?;
-        let entry = match due(&kept.team, labels, &records) {
-            Due::Worker(entry) => entry,
+        let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
+        // A landing worker is at no stage: it may commit, to resolve a
+        // conflict on joining, and its workflow names no model for it.
+        let (workflow, work, role, at, joins) = match due(&kept.team, labels, &records, pr) {
+            Due::Worker(entry) => (entry.workflow, entry.work, entry.role, Some(entry.stage), None),
+            Due::Lander(lander) => {
+                (lander.workflow, lander.work, lander.role, None, Some(lander.pr))
+            }
             Due::Human(why) | Due::Nothing(why) => {
                 bail!("issue #{issue} cannot be started: {why}")
             }
         };
-        let readings = history(entry.workflow, &records).readings;
-        let verdicts = records.into_iter().zip(urls).zip(readings);
+        let history = history(workflow, &records);
+        let verdicts = records.into_iter().zip(urls).zip(history.readings);
         Ok(Staged {
             verdicts: verdicts
                 .filter(|(_, reading)| *reading == Reading::Verdict)
                 .map(|(verdict, _)| verdict)
                 .collect(),
             issue,
-            flow: entry.workflow.name.clone(),
-            stage: entry.stage.name.clone(),
-            role: entry.work.role.clone(),
-            skill: entry.work.skill.clone(),
-            writes: entry.stage.writes,
-            model: entry.stage.model.clone(),
+            flow: workflow.name.clone(),
+            stage: at.map_or(LAND, |stage| &stage.name).to_string(),
+            role: work.role.clone(),
+            skill: work.skill.clone(),
+            writes: at.is_none_or(|stage| stage.writes),
+            model: at.and_then(|stage| stage.model.clone()),
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: bound.lock_label.clone(),
-            role_copy: kept.role(entry.role)?.clone(),
+            joins,
+            role_copy: kept.role(role)?.clone(),
             team_copy: kept.copy.clone(),
         })
     }
@@ -139,8 +153,34 @@ impl Staged {
         }
     }
 
-    /// Writes the worker's brief into `worktree` → the file.
+    /// Which brief the worker is given: the stage's, or the join-only one.
+    pub fn prompt(&self) -> &'static str {
+        if self.joins.is_some() { "join" } else { "stage" }
+    }
+
+    /// Writes the worker's brief into `worktree` → the file: its stage's, or
+    /// — a landing worker's — the join-only brief of its PR.
     pub fn write_brief(&self, fleet: &Fleet, worktree: &Worktree, title: &str) -> Result<PathBuf> {
+        let path = worktree.path.display().to_string();
+        // A worker starts in its role's copy: its commands are run from the worktree.
+        let own =
+            |arguments: &str| format!("cd {} && {}", quoted(&path), crate::own_command(arguments));
+        let gate = own("gate --train");
+        if let Some(pr) = self.joins {
+            let fields = WorkerFields {
+                number: self.issue,
+                title,
+                branch: &worktree.branch,
+                worktree: &path,
+                base_branch: &fleet.config.base_branch,
+                gate_command: &gate,
+                land_command: &own(&format!("land --issue {}", self.issue)),
+                wake_command: &own("wake"),
+            };
+            let landing = Landing { role: &self.role, skill: &self.skill };
+            let prompt = landing_prompt(&fields, pr, landing).map_err(|e| anyhow!(e))?;
+            return worktree.write_brief(&prompt);
+        }
         let verdict = format!("verdict --issue {} --stage {}", self.issue, quoted(&self.stage));
         let records: Vec<Said> = self
             .verdicts
@@ -160,16 +200,12 @@ impl Staged {
             role: &self.role,
             skill: &self.skill,
             branch: &worktree.branch,
-            worktree: &worktree.path.display().to_string(),
+            worktree: &path,
             base_branch: &fleet.config.base_branch,
             precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
             records: &records,
-            // A worker starts in its role's copy: the command is run from the worktree.
-            verdict_command: &format!(
-                "cd {} && {}",
-                quoted(&worktree.path.display().to_string()),
-                crate::own_command(&verdict)
-            ),
+            verdict_command: &own(&verdict),
+            gate_command: self.writes.then_some(gate.as_str()),
         };
         worktree.write_brief(&stage_prompt(&fields).map_err(|e| anyhow!(e))?)
     }

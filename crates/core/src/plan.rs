@@ -10,6 +10,7 @@ use crate::closing::issues_closed_by;
 use crate::config::Config;
 use crate::lease::is_stale;
 use crate::role::{Due, flows};
+use crate::team::LAND;
 
 /// One open issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,8 +100,9 @@ pub fn label_bar(labels: &[String], config: &Config) -> Option<LabelBar> {
 pub struct Dispatchable {
     pub number: u64,
     pub title: String,
-    /// The stage a worker is to be started on. `None` in an unbound repo,
-    /// whose issues have no stages.
+    /// The stage a worker is to be started on, or `land` for the join that
+    /// follows the last one. `None` in an unbound repo, whose issues have no
+    /// stages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
 }
@@ -117,7 +119,8 @@ pub struct Excluded {
 pub enum Status {
     /// No open PR closes the issue: its worker is still at it, or stopped.
     NoPr,
-    /// An open PR closes it, and that PR is not on the landing train yet.
+    /// An open PR closes it, and that PR is not on the landing train yet. In
+    /// a bound repo, only under a landing worker's claim.
     Joining,
     /// Its open PR is on the landing train, at the head the PR has now.
     Joined,
@@ -126,8 +129,9 @@ pub enum Status {
     Landed,
     /// The issue is closed: the claim is to be settled and released.
     Closed,
-    /// A bound repo's claim on an open issue: it was dispatched to a stage,
-    /// and what that stage declares is what ends it. An open PR says nothing.
+    /// A bound repo's claim on an open issue that is not a landing worker's:
+    /// it was dispatched to a stage, and what that stage declares is what
+    /// ends it. An open PR says nothing.
     AtStage,
 }
 
@@ -193,6 +197,9 @@ pub struct Observed<'a> {
     /// What is due on each open issue of a bound repo that carries a flow
     /// label (`role::due`). Empty in an unbound repo.
     pub due: &'a [(u64, Due<'a>)],
+    /// The claimed issues of a bound repo whose claim is a landing worker's
+    /// (`stage_record::lands`). Empty in an unbound repo.
+    pub landing: &'a [u64],
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -243,8 +250,13 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                     continue;
                 }
                 Some(Due::Nothing(why)) => why.clone(),
-                Some(Due::Worker(_)) if issue.open_blockers > 0 => {
+                Some(Due::Worker(_) | Due::Lander(_)) if issue.open_blockers > 0 => {
                     format!("{} open blocker(s)", issue.open_blockers)
+                }
+                Some(Due::Lander(_)) => {
+                    let (title, stage) = (issue.title.clone(), Some(LAND.to_string()));
+                    set.frontier.push(Dispatchable { number, title, stage });
+                    continue;
                 }
                 Some(Due::Worker(entry)) => {
                     let (title, stage) = (issue.title.clone(), Some(entry.stage.name.clone()));
@@ -273,7 +285,11 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                 Status::Landed
             } else if seen.joined.contains(&claim.number) && pr.is_some() {
                 Status::Joined
-            } else if config.bound.is_some() {
+            } else if config.bound.is_some()
+                && !(pr.is_some() && seen.landing.contains(&claim.number))
+            {
+                // A landing worker's claim with no PR left to join has
+                // nothing to do either, and is ended as a stage's is.
                 Status::AtStage
             } else if pr.is_none() {
                 Status::NoPr
@@ -392,6 +408,7 @@ mod tests {
             joined: &[],
             landed: &[],
             due: &[],
+            landing: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -437,6 +454,12 @@ mod tests {
             text: "done".to_string(),
         };
         let planned = [record("plan", Declared::Pass, "c1")];
+        let signed = [
+            record("plan", Declared::Pass, "c1"),
+            record("build", Declared::Pass, "c2"),
+            record("review", Declared::Pass, "c3"),
+            record("sign-off", Declared::Pass, "c4"),
+        ];
         let parked = [&planned[..], &[record("build", Declared::Blocked, "c2")]].concat();
         let escalated = [record("plan", Declared::Escalate, "c1")];
         let ended = [record("plan", Declared::AlreadySatisfied, "c1")];
@@ -453,10 +476,14 @@ mod tests {
             issue(8, &["flow:feature"]),
             issue(9, &["flow:feature"]),
             issue(10, &["flow:feature"]),
+            issue(11, &["flow:feature"]),
+            issue(12, &["flow:feature"]),
         ];
+        // An open PR declares nothing: #5 has a stage to perform.
+        let prs = [pr(50, 5), pr(110, 11)];
         let of = |number: u64, records: &[StageRecord]| {
             let carried = &issues.iter().find(|issue| issue.number == number).unwrap().labels;
-            (number, due(&team, carried, records))
+            (number, due(&team, carried, records, closing_pr(&prs, number).map(|pr| pr.number)))
         };
         let due = [
             of(1, &[]),
@@ -468,23 +495,29 @@ mod tests {
             of(8, &escalated),
             of(9, &ended),
             of(10, &planned),
+            of(11, &signed),
+            of(12, &signed),
         ];
         let seen = Observed {
             issues: &issues,
-            // An open PR declares nothing: #5 has a stage to perform.
-            prs: &[pr(50, 5)],
+            prs: &prs,
             claims: &[claim(10, "peer")],
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             joined: &[],
             landed: &[],
             due: &due,
+            landing: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
             set.frontier.iter().map(|d| (d.number, d.stage.as_deref())).collect();
         // #7 returned from its park: it is at the stage that parked it.
-        assert_eq!(frontier, [(1, Some("plan")), (5, Some("build")), (7, Some("build"))]);
+        // #11's last stage passed to the landing train: its PR is to be joined.
+        assert_eq!(
+            frontier,
+            [(1, Some("plan")), (5, Some("build")), (7, Some("build")), (11, Some("land"))]
+        );
         let reasons = |rows: &[Excluded]| -> Vec<(u64, String)> {
             rows.iter().map(|e| (e.number, e.reason.clone())).collect()
         };
@@ -493,6 +526,12 @@ mod tests {
             [
                 (4, "its flow label flow:chore names no workflow of the team".to_string()),
                 (8, "the stage `plan` declared `escalate`, and it names no consult".to_string()),
+                (
+                    12,
+                    "its last stage passed it to the landing train, and no open PR closes it: \
+                     there is nothing to join"
+                        .to_string()
+                ),
             ]
         );
         assert_eq!(
@@ -508,17 +547,26 @@ mod tests {
     }
 
     #[test]
-    fn a_bound_repo_s_claim_is_at_a_stage_whatever_pr_is_open() {
-        let issues = [issue(1, &["flow:feature"]), issue(7, &["flow:feature"])];
+    fn a_bound_repo_s_claim_is_at_a_stage_whatever_pr_is_open_until_a_landing_worker_holds_it() {
+        let issues = [
+            issue(1, &["flow:feature"]),
+            issue(7, &["flow:feature"]),
+            issue(9, &["flow:feature"]),
+            issue(10, &["flow:feature"]),
+        ];
+        let claims =
+            [claim(1, "me"), claim(6, "me"), claim(7, "me"), claim(8, "me"), claim(9, "me")];
         let seen = Observed {
             issues: &issues,
-            prs: &[pr(70, 7), pr(80, 8)],
-            claims: &[claim(1, "me"), claim(6, "me"), claim(7, "me"), claim(8, "me")],
+            prs: &[pr(70, 7), pr(80, 8), pr(90, 9)],
+            claims: &[&claims[..], &[claim(10, "me")]].concat(),
             heartbeats: &[],
             closed: &[6],
             joined: &[8],
             landed: &[],
             due: &[],
+            // #10's PR is gone: its landing worker has nothing to join.
+            landing: &[8, 9, 10],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -529,6 +577,8 @@ mod tests {
                 (6, Status::Closed, None),
                 (7, Status::AtStage, Some(70)),
                 (8, Status::Joined, Some(80)),
+                (9, Status::Joining, Some(90)),
+                (10, Status::AtStage, None),
             ]
         );
     }
@@ -562,6 +612,7 @@ mod tests {
             joined: &[8],
             landed: &[9],
             due: &[],
+            landing: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -598,6 +649,7 @@ mod tests {
             joined: &[],
             landed: &[],
             due: &[],
+            landing: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -627,6 +679,7 @@ mod tests {
                     joined: &[],
                     landed: &[],
                     due: &[],
+                    landing: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };

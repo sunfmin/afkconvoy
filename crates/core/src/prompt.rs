@@ -82,7 +82,7 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 **Your issue:** #{n} — {title}
 **Your PR:** #{pr}, from the branch `{branch}` (already checked out; the base is `{base_branch}`).
 **Your worktree:** `{worktree_path}` — work only here.
-
+<landing>
 ## Steps
 
 1. **See where the worker before you stopped.** Run `git status`. A merge left in progress is a
@@ -154,6 +154,14 @@ body:
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
 
+/// What the join-only brief adds for a worker started in a workflow's landing
+/// role: the role, and the skill of it the join is performed as.
+const LANDING: &str = "\
+**Your role:** `{role}`, which you were started in. Perform its skill `{skill}` as you carry out the
+steps below. You were started in your role's directory, not in the worktree: the commands below
+change to the worktree themselves.
+";
+
 /// The brief of a worker started in its role: a fixed form that says what the
 /// stage is and nothing of how to perform it — that is the role's to say.
 const STAGE: &str = "\
@@ -171,7 +179,7 @@ reads this terminal: never wait for an answer.
 ## Stage records
 
 {records}
-<rework>
+<rework><gate>
 ## Declare a verdict
 
 The stage ends when you declare its verdict with this command, and not before; its `--help` says
@@ -189,6 +197,17 @@ const REWORK: &str = "
 This stage runs again: the stage `{rejecter}` rejected the work it was handed. Its reason:
 
 {reason}
+";
+
+/// What a stage that may commit is told of the gate: a PR it wrote is handed
+/// on green (docs/adr/0010).
+const GATE_BEFORE_PASS: &str = "
+## The gate, before a `pass`
+
+Opening a PR declares nothing, and no stage is handed red code. If this stage opened the issue's PR
+or pushed to its branch, turn the gate green before you declare `pass`:
+
+<gate_step>
 ";
 
 /// One stage record that read as a verdict, as a worker's brief names it.
@@ -223,10 +242,13 @@ pub struct StageFields<'a> {
     pub records: &'a [Said<'a>],
     /// The line the worker declares its verdict with.
     pub verdict_command: &'a str,
+    /// The line the worker runs the gate with, when its stage may commit: a
+    /// stage that writes nothing has no PR of its own to turn green.
+    pub gate_command: Option<&'a str>,
 }
 
 /// `text` as a quotation: nothing in it reads as part of the brief.
-fn quoted(text: &str) -> String {
+pub(crate) fn quoted(text: &str) -> String {
     let lines: Vec<String> = text.trim().lines().map(|line| format!("> {line}")).collect();
     lines.join("\n")
 }
@@ -246,7 +268,13 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     }
     let rejection = fields.records.last().filter(|last| last.declared == Declared::Reject);
     let reason = rejection.map(|rejection| quoted(rejection.text)).unwrap_or_default();
-    let template = STAGE.replace("<rework>", if rejection.is_some() { REWORK } else { "" });
+    let gate = match fields.gate_command {
+        Some(_) => GATE_BEFORE_PASS.replace("<gate_step>", &GATE_STEP.replace("<g>", "1")),
+        None => String::new(),
+    };
+    let template = STAGE
+        .replace("<rework>", if rejection.is_some() { REWORK } else { "" })
+        .replace("<gate>", &gate);
     fill(
         &template,
         &[
@@ -264,6 +292,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             ("base_branch", fields.base_branch),
             ("precedents", fields.precedents),
             ("verdict_command", fields.verdict_command),
+            ("gate_command", fields.gate_command.unwrap_or_default()),
         ],
     )
 }
@@ -364,9 +393,32 @@ pub fn rejoin_pointer(brief: &str) -> String {
     )
 }
 
+/// Who a join-only brief is for, when its worker was started in a role: the
+/// workflow's landing role, and that role's landing skill.
+#[derive(Debug, Clone, Copy)]
+pub struct Landing<'a> {
+    pub role: &'a str,
+    pub skill: &'a str,
+}
+
 /// The prompt a worker is started on: the whole issue, or — its PR already
 /// open — only the join.
 pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, String> {
+    prompt(fields, variant, None)
+}
+
+/// The join-only brief of PR `pr` for a worker started in a workflow's
+/// landing role: the brief every joining worker gets, with the role and the
+/// skill it joins as.
+pub fn landing_prompt(fields: &WorkerFields, pr: u64, landing: Landing) -> Result<String, String> {
+    prompt(fields, Variant::Join { pr }, Some(landing))
+}
+
+fn prompt(
+    fields: &WorkerFields,
+    variant: Variant,
+    landing: Option<Landing>,
+) -> Result<String, String> {
     let number = fields.number.to_string();
     let marker = verdict::marker_format();
     // The variant's blocks first, so the one fill reads their placeholders too.
@@ -374,12 +426,15 @@ pub fn worker_prompt(fields: &WorkerFields, variant: Variant) -> Result<String, 
         Variant::Fresh => (briefed(OPENING_FRESH, STEP1_FRESH), String::new()),
         Variant::Continue => (briefed(OPENING_CONTINUE, STEP1_CONTINUE), String::new()),
         Variant::Join { pr } => {
-            (steps(JOINER, "2", "3", " — your PR is on the landing train"), pr.to_string())
+            let joiner = JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" });
+            (steps(&joiner, "2", "3", " — your PR is on the landing train"), pr.to_string())
         }
     };
     fill(
         &template,
         &[
+            ("role", landing.map_or("", |landing| landing.role)),
+            ("skill", landing.map_or("", |landing| landing.skill)),
             ("n", &number),
             ("title", fields.title),
             ("branch", fields.branch),
@@ -580,6 +635,7 @@ mod tests {
             precedents: "/copies/acme/team/def/precedents.md",
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            gate_command: None,
         };
         let prompt = stage_prompt(&fields).unwrap();
         for said in [
@@ -626,6 +682,67 @@ mod tests {
         let on = stage_prompt(&StageFields { records: &passed, ..fields }).unwrap();
         assert!(on.contains("- `build` declared `pass`") && !on.contains("## Rework"), "{on}");
         assert!(stage_nudge_line("/b.md").contains("task brief (/b.md)"));
+    }
+
+    #[test]
+    fn a_stage_that_may_commit_is_told_to_turn_the_gate_green_before_it_passes() {
+        let fields = StageFields {
+            number: 7,
+            title: "Add support",
+            flow: "feature",
+            stage: "build",
+            role: "dev",
+            skill: "implement",
+            branch: "tester/issue-7-add",
+            worktree: "/wt/issue-7",
+            base_branch: "develop",
+            precedents: "/copies/acme/team/def/precedents.md",
+            records: &[],
+            verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            gate_command: Some("cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train"),
+        };
+        let prompt = stage_prompt(&fields).unwrap();
+        assert!(
+            prompt.contains(
+                "## The gate, before a `pass`\n\nOpening a PR declares nothing, and no stage is \
+                 handed red code."
+            ),
+            "{prompt}"
+        );
+        assert!(prompt.contains("turn the gate green before you declare `pass`:\n\n1. **Gate.**"));
+        assert!(prompt.contains("   cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train\n"));
+        // The gate step every worker with a PR is given, said in one place.
+        let whole = worker_prompt(&super::tests::fields(), Variant::Fresh).unwrap();
+        let step = |prompt: &str| {
+            let from = prompt.find("It first merges in what your PR will land behind").unwrap();
+            prompt[from..prompt[from..].find("Never rebase.").unwrap() + from].to_string()
+        };
+        assert_eq!(step(&prompt), step(&whole));
+        let gate = prompt.find("## The gate").unwrap();
+        assert!(gate < prompt.find("## Declare a verdict").unwrap(), "before the verdict");
+        assert!(!prompt.contains("<gate") && !prompt.contains("<g>"), "{prompt}");
+        // A stage that writes nothing has no PR of its own to turn green.
+        let reads = stage_prompt(&StageFields { gate_command: None, ..fields }).unwrap();
+        assert!(!reads.contains("gate") && !reads.contains("<gate>"), "{reads}");
+    }
+
+    #[test]
+    fn a_landing_worker_gets_the_join_only_brief_with_its_role_and_skill() {
+        let landing = Landing { role: "dev", skill: "land" };
+        let prompt = landing_prompt(&fields(), 70, landing).unwrap();
+        assert!(
+            prompt.contains(
+                "**Your worktree:** `/wt/issue-7` — work only here.\n**Your role:** `dev`, which \
+                 you were started in. Perform its skill `land` as you carry out the\nsteps below."
+            ),
+            "{prompt}"
+        );
+        // But for those lines it is the brief every joining worker gets.
+        let joiner = worker_prompt(&fields(), Variant::Join { pr: 70 }).unwrap();
+        let role = prompt.find("**Your role:**").unwrap();
+        let steps = prompt.find("\n## Steps").unwrap();
+        assert_eq!(format!("{}{}", &prompt[..role], &prompt[steps..]), joiner);
+        assert!(!joiner.contains("<landing>") && !joiner.contains("Your role"), "{joiner}");
     }
 
     #[test]

@@ -7,7 +7,6 @@ use afkconvoy_core::abandon::{
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::joining::JoinRecord;
 use afkconvoy_core::prompt::{rejoin_pointer, train_nudge_line};
-use afkconvoy_core::recovery::Variant;
 use afkconvoy_core::stopped::Silent;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::train::{Tend, on_train, tend, train_refs};
@@ -16,9 +15,9 @@ use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::claims::Me;
-use crate::dispatch::write_brief;
+use crate::dispatch::write_join_brief;
 use crate::fleet::Fleet;
-use crate::gh::Comment;
+use crate::gh::{Comment, IssueRead};
 use crate::git::REMOTE;
 use crate::judge::{escalate_claim, nudge_worker, progress};
 use crate::orca::{Source, Worktree};
@@ -38,7 +37,7 @@ pub struct StoppedOn<'a> {
 /// of it.
 struct Riding {
     claim: Claim,
-    title: String,
+    issue: IssueRead,
     record: JoinRecord,
     comments: Vec<Comment>,
 }
@@ -86,9 +85,9 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
         };
         let claim = claim.clone();
         let (record, comments) = join_record(fleet, join.pr)?;
-        let title = fleet.gh.issue(join.issue)?.title;
+        let issue = fleet.gh.issue(join.issue)?;
         riders.push(Rider { issue: join.issue, pr: join.pr, standing: standing(&record) });
-        riding.push((join.issue, Riding { claim, title, record, comments }));
+        riding.push((join.issue, Riding { claim, issue, record, comments }));
     }
     let of = |issue: u64| -> Result<&Riding> {
         let found = riding.iter().find(|(number, _)| *number == issue);
@@ -108,8 +107,7 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
                 // With no worker there to tell, the next tick continues the claim onto the join.
                 let Some(worktree) = Worktree::of_issue(&source, issue)? else { return Ok(()) };
                 let Some(terminal) = worktree.terminal()? else { return Ok(()) };
-                let title = &of(issue)?.title;
-                let brief = write_brief(fleet, &worktree, issue, title, Variant::Join { pr })?;
+                let brief = write_join_brief(fleet, &worktree, (issue, &of(issue)?.issue), pr)?;
                 worktree.tell(&terminal, &rejoin_pointer(&brief.display().to_string()))?;
             }
             AbandonStep::Escalate { issue, pr } => {

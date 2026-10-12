@@ -49,6 +49,18 @@ pub struct Entry<'t> {
     pub role: &'t Role,
 }
 
+/// The join an issue is dispatched to once its last stage passed to the
+/// landing train, and who performs it.
+#[derive(Debug, Clone, Copy)]
+pub struct Lander<'t> {
+    pub workflow: &'t Workflow,
+    /// The workflow's `land:`: the role, and its landing skill.
+    pub work: &'t Work,
+    pub role: &'t Role,
+    /// The issue's open PR: what is gated and joined.
+    pub pr: u64,
+}
+
 /// The names of the workflows an issue's labels name, in the labels' order.
 pub fn flows(labels: &[String]) -> Vec<&str> {
     labels.iter().filter_map(|label| label.strip_prefix(FLOW_LABEL)).collect()
@@ -80,6 +92,9 @@ pub fn workflow_of<'t>(team: &'t Team, labels: &[String]) -> Result<&'t Workflow
 pub enum Due<'t> {
     /// A worker is to be started on this stage.
     Worker(Entry<'t>),
+    /// A worker is to be started in the workflow's landing role, to gate the
+    /// issue's PR and join the landing train.
+    Lander(Lander<'t>),
     /// The issue is to be handed to a human, for this reason.
     Human(String),
     /// Nothing is to be done with it, for this reason.
@@ -87,21 +102,29 @@ pub enum Due<'t> {
 }
 
 /// What is due on an issue carrying `labels` whose stage records are
-/// `records`, oldest first: the stage its position starts a worker on, in the
-/// workflow of `team` its flow label names. A flow label that names no one
-/// workflow, and a position that is an escalation, hand it to a human; an
+/// `records`, oldest first, and whose open PR is `pr`: the stage its position
+/// starts a worker on, in the workflow of `team` its flow label names, or —
+/// its last stage having passed to the landing train — the join of that PR.
+/// A flow label that names no one workflow, a position that is an
+/// escalation, and a landing with no open PR to join hand it to a human; an
 /// issue with no flow label is not the fleet's.
-pub fn due<'t>(team: &'t Team, labels: &[String], records: &[StageRecord]) -> Due<'t> {
+pub fn due<'t>(
+    team: &'t Team,
+    labels: &[String],
+    records: &[StageRecord],
+    pr: Option<u64>,
+) -> Due<'t> {
     let workflow = match workflow_of(team, labels) {
         Ok(workflow) => workflow,
         Err(why) if flows(labels).is_empty() => return Due::Nothing(why),
         Err(why) => return Due::Human(why),
     };
     let position = history(workflow, records).place.position;
+    let roleless = |work: &Work| Due::Nothing(format!("the team has no role {:?}", work.role));
     if let Some((stage, work)) = position.start() {
         return match team.role(&work.role) {
             Some(role) => Due::Worker(Entry { workflow, stage, work, role }),
-            None => Due::Nothing(format!("the team has no role {:?}", work.role)),
+            None => roleless(work),
         };
     }
     let waits = |stage: &Stage, on: &str| {
@@ -113,7 +136,18 @@ pub fn due<'t>(team: &'t Team, labels: &[String], records: &[StageRecord]) -> Du
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
             waits(stage, "a human: no worker performs it")
         }
-        Position::Landing => Due::Nothing("its last stage passed it to the landing train".into()),
+        Position::Landing => match (&workflow.land, pr) {
+            (Some(work), Some(pr)) => match team.role(&work.role) {
+                Some(role) => Due::Lander(Lander { workflow, work, role, pr }),
+                None => roleless(work),
+            },
+            (Some(_), None) => Due::Human(
+                "its last stage passed it to the landing train, and no open PR closes it: there \
+                 is nothing to join"
+                    .to_string(),
+            ),
+            (None, _) => Due::Human("its workflow names nobody who lands".to_string()),
+        },
         Position::Ended => Due::Nothing("its workflow has ended".to_string()),
     }
 }
@@ -292,6 +326,15 @@ stages:
     on: { pass: done, reject: build }
 ";
 
+    const LANDS: &str = "\
+stages:
+  - name: build
+    by: dev
+    do: implement
+    on: { pass: land }
+land: { by: boss, do: implement }
+";
+
     fn file(path: &str, yaml: &str) -> File {
         File { path: path.to_string(), yaml: serde_yaml::from_str(yaml).map_err(|e| e.to_string()) }
     }
@@ -307,6 +350,7 @@ stages:
                 file("workflows/feature.md", FEATURE),
                 file("workflows/signed.md", SIGNED),
                 file("workflows/review.md", REVIEW),
+                file("workflows/lands.md", LANDS),
             ],
             repos: vec![repo("acme/dev"), repo("acme/boss")],
         })
@@ -332,7 +376,7 @@ stages:
     #[test]
     fn an_issue_enters_at_the_first_stage_of_the_workflow_its_flow_label_names() {
         let team = team();
-        let Due::Worker(entry) = due(&team, &labels(&["bug", "flow:feature"]), &[]) else {
+        let Due::Worker(entry) = due(&team, &labels(&["bug", "flow:feature"]), &[], None) else {
             panic!("a worker is due")
         };
         assert_eq!(entry.workflow.name, "feature");
@@ -349,6 +393,7 @@ stages:
     fn said(due: Due) -> String {
         match due {
             Due::Worker(entry) => format!("{} by {}", entry.stage.name, entry.work.role),
+            Due::Lander(lander) => format!("PR #{} joined by {}", lander.pr, lander.work.role),
             Due::Human(why) => format!("human: {why}"),
             Due::Nothing(why) => format!("nothing: {why}"),
         }
@@ -358,7 +403,7 @@ stages:
     fn the_stage_records_say_which_stage_a_worker_is_due_on() {
         let team = team();
         let flow = labels(&["flow:review"]);
-        let after = |records: &[StageRecord]| said(due(&team, &flow, records));
+        let after = |records: &[StageRecord]| said(due(&team, &flow, records, None));
         assert_eq!(after(&[]), "build by dev");
         let built = [record("build", Declared::Pass)];
         assert_eq!(after(&built), "check by boss");
@@ -375,9 +420,30 @@ stages:
     }
 
     #[test]
+    fn a_pass_that_leads_to_land_makes_the_join_of_the_issue_s_pr_due() {
+        let team = team();
+        let flow = labels(&["flow:lands"]);
+        let built = [record("build", Declared::Pass)];
+        // An open PR declares nothing while a stage is still to be performed.
+        assert_eq!(said(due(&team, &flow, &[], Some(70))), "build by dev");
+        let Due::Lander(lander) = due(&team, &flow, &built, Some(70)) else {
+            panic!("a landing worker is due")
+        };
+        assert_eq!((lander.work.role.as_str(), lander.work.skill.as_str()), ("boss", "implement"));
+        assert_eq!((lander.role.repo.as_str(), lander.pr), ("acme/boss", 70));
+        assert_eq!(lander.workflow.name, "lands");
+        // With no PR there is nothing to join: a human's.
+        assert_eq!(
+            said(due(&team, &flow, &built, None)),
+            "human: its last stage passed it to the landing train, and no open PR closes it: \
+             there is nothing to join"
+        );
+    }
+
+    #[test]
     fn an_issue_no_worker_is_due_on_says_why() {
         let team = team();
-        let why = |carried: &[&str]| said(due(&team, &labels(carried), &[]));
+        let why = |carried: &[&str]| said(due(&team, &labels(carried), &[], None));
         // No flow label: it was never handed to the fleet.
         assert_eq!(why(&["ready-for-agent"]), "nothing: it carries no flow label");
         // A flow label that names no one workflow hands it to a human.

@@ -29,10 +29,19 @@ stages:
 /// A world whose repo is bound to a team with the one workflow `feature`,
 /// and runs `concurrency` workers at once.
 fn bound(concurrency: u64) -> World {
+    bound_to(FEATURE, concurrency)
+}
+
+/// `bound`, the workflow `feature` being `feature`.
+fn bound_to(feature: &str, concurrency: u64) -> World {
     let world = World::new();
     world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
-    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let reviewer = [
+        (".claude/skills/review/SKILL.md", "review\n"),
+        (".claude/skills/rule/SKILL.md", "rule\n"),
+    ];
+    world.repo("acme/reviewer", &reviewer);
+    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", feature)]);
     let config = format!(
         "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
          concurrency: {concurrency}\n```\n"
@@ -383,4 +392,163 @@ fn every_stage_worker_takes_one_slot_of_concurrency() {
     assert_eq!(did(&third), [] as [&str; 0]);
     assert_eq!((&third["held"], &third["frontier_remaining"]), (&json!(1), &json!(1)));
     assert_eq!(frontier(&world), [(7, "review".to_string())]);
+}
+
+/// `FEATURE` under these breakers, its `build` naming a consult.
+fn limited(max_rework: u64, max_consecutive_rework: u64) -> String {
+    let limits = format!(
+        "```yaml\nmax_rework: {max_rework}\nmax_consecutive_rework: {max_consecutive_rework}\n"
+    );
+    let consult = "    do: implement\n    escalate: { to: reviewer, do: rule }\n";
+    FEATURE.replacen("```yaml\n", &limits, 1).replacen("    do: implement\n", consult, 1)
+}
+
+/// Where issue 7 is and the rework it has had, as `show --issue` reads them
+/// off its stage records.
+fn shown(world: &World) -> Value {
+    world.afk(&["show", "--issue", "7"]).ok()
+}
+
+/// Walks issue 7 through `verdicts`, a worker each: a tick starts the one its
+/// position calls for, it declares the next verdict, and a tick carries that
+/// out. After each, the rework the tick acts on is what `rehearse` prints for
+/// the same verdicts, and the issue is a human's exactly where `rehearse` says
+/// a breaker trips. `blocked` is by #3, which closes once the issue is parked.
+fn walk(world: &World, verdicts: &[&str]) -> Value {
+    let args = [&["rehearse", "--team", "acme/team", "feature"][..], verdicts].concat();
+    let rehearsed = world.afk(&args).ok();
+    let mut now = 1000;
+    for (nth, verdict) in verdicts.iter().enumerate() {
+        assert_eq!(did(&tick(world, now)), ["dispatch 7 done"], "before verdict {nth}");
+        let stage = shown(world)["position"]["stage"].as_str().unwrap().to_string();
+        let text = format!("Verdict {nth}: `{stage}` says {verdict}.");
+        let blocked_by: &[&str] = if *verdict == "blocked" { &["--blocked-by", "3"] } else { &[] };
+        declare(world, 7, &stage, verdict, &[&["--text", &text][..], blocked_by].concat());
+        assert_eq!(did(&tick(world, now + 90)), ["advance 7 done"], "after verdict {nth}");
+        if *verdict == "blocked" {
+            world.close(3, "completed");
+        }
+        now += 180;
+
+        let step = &rehearsed["steps"][nth];
+        let escalated = world.labels(7).contains(&"ready-for-human".to_string());
+        assert_eq!(escalated, !step["breaker"].is_null(), "after verdict {nth}: {step}");
+        if escalated {
+            let said = world.comments(7).join("\n");
+            let breaker = step["breaker"].as_str().unwrap();
+            assert!(said.contains(&format!("The breaker `{breaker}` tripped")), "{said}");
+        } else {
+            let read = shown(world);
+            assert_eq!(read["rework"]["had"], step["rework"], "after verdict {nth}");
+            assert_eq!(
+                read["consecutive_rework"]["review"]["had"], step["consecutive_rework"]["review"],
+                "after verdict {nth}"
+            );
+        }
+    }
+    rehearsed
+}
+
+/// The commands of every terminal ever opened.
+fn started(world: &World) -> Vec<String> {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap().iter();
+    terminals.filter_map(|t| t["command"].as_str().map(str::to_string)).collect()
+}
+
+#[test]
+fn a_stage_that_rejects_too_often_in_a_row_is_escalated_with_every_round_listed() {
+    // `build` names a consult: a breaker goes straight to a human all the same.
+    let world = bound_to(&limited(3, 2), 2);
+    world.issue(7, &["flow:feature"]);
+    let rehearsed = walk(&world, &["pass", "reject", "pass", "reject", "pass", "reject"]);
+    assert_eq!(rehearsed["steps"][5]["breaker"], "max_consecutive_rework");
+
+    let said = world.comments(7).join("\n");
+    assert!(
+        said.contains(
+            "The breaker `max_consecutive_rework` tripped: `build` would have run again once \
+             more than it allows.\n\nIts stage record: https://gh/c/"
+        ),
+        "{said}"
+    );
+    let rounds: Vec<usize> = [1, 3, 5]
+        .iter()
+        .enumerate()
+        .map(|(round, verdict)| {
+            let listed = format!("{}. `review` declared `reject` — https://gh/c/", round + 1);
+            let reason = format!("> Verdict {verdict}: `review` says reject.");
+            let at = said.find(&listed).unwrap_or_else(|| panic!("{listed} in {said}"));
+            assert!(said[at..].contains(&reason), "{reason} after {listed} in {said}");
+            at
+        })
+        .collect();
+    assert!(rounds.is_sorted(), "oldest first: {said}");
+    assert!(!said.contains("4. `"), "{said}");
+
+    // It is a human's: no flow label, no claim, and nobody started on it —
+    // not `build` again, and not its consult.
+    assert_eq!(world.labels(7), ["ready-for-human", "stage:build"]);
+    assert_eq!(world.claims(), []);
+    let before = started(&world).len();
+    assert_eq!(frontier(&world), []);
+    assert_eq!(did(&tick(&world, 5000)), [] as [&str; 0]);
+    assert_eq!(did(&tick(&world, 5090)), [] as [&str; 0]);
+    assert_eq!(started(&world).len(), before);
+    assert!(started(&world).iter().all(|command| !command.contains("AFKCONVOY_SKILL='rule'")));
+}
+
+#[test]
+fn an_issue_reworked_too_often_in_total_is_escalated_instead_of_dispatched() {
+    let world = bound_to(&limited(2, 5), 2);
+    world.issue(7, &["flow:feature"]);
+    let rehearsed = walk(&world, &["pass", "reject", "pass", "reject", "pass", "reject"]);
+    assert_eq!(rehearsed["steps"][5]["breaker"], "max_rework");
+    assert_eq!(rehearsed["steps"][5]["rework"], 2, "the rework it refuses is not counted");
+
+    let said = world.comments(7).join("\n");
+    for round in ["1. `review`", "2. `review`", "3. `review`"] {
+        assert!(said.contains(round), "{round} in {said}");
+    }
+    assert_eq!(world.labels(7), ["ready-for-human", "stage:build"]);
+    assert_eq!(world.claims(), []);
+    assert_eq!(did(&tick(&world, 5000)), [] as [&str; 0]);
+}
+
+#[test]
+fn running_again_after_a_park_counts_as_no_rework() {
+    let world = bound_to(&limited(2, 2), 2);
+    world.issue(3, &["flow:feature"]);
+    world.issue(7, &["flow:feature"]);
+    // Twice parked and twice rejected: the two rejections are all the rework
+    // there is, and both breakers allow them.
+    let verdicts = ["blocked", "pass", "blocked", "reject", "pass", "reject"];
+    let rehearsed = walk(&world, &verdicts);
+    assert!(rehearsed["steps"].as_array().unwrap().iter().all(|step| step["breaker"].is_null()));
+    let read = shown(&world);
+    assert_eq!(read["rework"], json!({"had": 2, "left": 0}));
+    assert_eq!(read["position"]["stage"], "build");
+    assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
+    assert_eq!(did(&tick(&world, 5000)), ["dispatch 7 done"]);
+}
+
+#[test]
+fn a_breaker_found_on_an_issue_nobody_holds_is_escalated_with_its_rounds_too() {
+    let world = bound_to(&limited(0, 2), 2);
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 1000);
+    declare(&world, 7, "build", "pass", &["--text", "Built."]);
+    tick(&world, 1090);
+    tick(&world, 1180);
+    declare(&world, 7, "review", "reject", &["--text", "Not yet."]);
+    world.afk(&["release", "--issue", "7", "--instance", "alpha", "--host", "h1"]).ok();
+    assert_eq!(excluded(&world, 7), "");
+
+    assert_eq!(did(&tick(&world, 1270)), ["escalate 7 done"]);
+    let said = world.comments(7).join("\n");
+    assert!(said.contains("The breaker `max_rework` tripped"), "{said}");
+    assert!(said.contains("1. `review` declared `reject` — https://gh/c/"), "{said}");
+    assert!(said.contains("> Not yet."), "{said}");
+    assert_eq!(world.claims(), []);
+    assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
 }

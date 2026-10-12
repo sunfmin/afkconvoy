@@ -80,7 +80,10 @@ fn carry_out(
         TickStep::Escalate { issue } => {
             let calling = read.set.escalating.iter().find(|calling| calling.number == issue);
             match calling {
-                Some(calling) => hand_to_human(fleet, me, issue, &calling.reason),
+                Some(calling) => {
+                    let rounds = read.flows.rounds(issue);
+                    hand_to_human(fleet, me, issue, &calling.reason, rounds.as_deref())
+                }
                 None => Ok(Outcome::Nothing),
             }
         }

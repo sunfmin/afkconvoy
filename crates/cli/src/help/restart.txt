@@ -12,8 +12,8 @@ WHO RUNS IT
 WHAT IT READS AND WRITES
 
   It records the restart in the fleet's comment on the PR, then starts a new worker in
-  the same worktree, briefed only to join the landing train. The PR, the branch and the
-  worktree are untouched.
+  the same worktree, briefed only to join the landing train — in a bound repo, in the
+  landing role of the issue's workflow. The PR, the branch and the worktree are untouched.
 
 WHAT IT ANSWERS
 
