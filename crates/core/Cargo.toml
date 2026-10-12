@@ -18,5 +18,12 @@ serde_yaml = "0.9"
 enabled = true
 check_overflow = "strict"
 
+# The checker ../../verify.sh runs, beside the Flux revision above that
+# `cargo-flux` is built from. It refuses any other: each value is what the tool
+# reports about itself, to `fixpoint --version` and to `z3 --version`.
+[package.metadata.checker]
+fixpoint = "0.9.6.3.8 (684d0829c19fbee83b892c9f5e20c2598897297c)"
+z3 = "5.1.0"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(flux)'] }
