@@ -27,7 +27,8 @@ WHAT IT ANSWERS
 
   Errors: a command the fleet needs is missing or logged out (the error names each,
   with the line to run); the repo fails the startup probe; the config, GitHub or the
-  remote cannot be read; the worker launch command resolves to nothing; `--instance` is
+  remote cannot be read; the worker launch command resolves to nothing, or — in a bound
+  repo — does not take the flags that start a worker in its role; `--instance` is
   not an instance id ([a-z0-9][a-z0-9-]{0,39}).
 
 WHAT TRIPS YOU UP

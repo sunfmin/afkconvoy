@@ -380,3 +380,23 @@ fn a_restart_starts_the_new_worker_in_its_role_too() {
     assert_eq!(second[0]["command"], first[0]["command"], "the same role, the same commits");
     assert!(second[0]["command"].as_str().unwrap().starts_with("cd '"));
 }
+
+#[test]
+fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
+    use afkconvoy_core::role::{FLAGS, Facts};
+    let readme = include_str!("../../../README.md");
+    let facts = Facts {
+        issue: 7,
+        flow: "f",
+        stage: "s",
+        role: "r",
+        skill: "k",
+        writes: true,
+        role_commit: "a",
+        team_commit: "b",
+    };
+    let named = FLAGS.iter().map(|flag| flag.to_string());
+    for name in named.chain(facts.env().into_iter().map(|(name, _)| name.to_string())) {
+        assert!(readme.contains(&format!("`{name}`")), "the README does not name {name}");
+    }
+}
