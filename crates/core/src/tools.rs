@@ -153,6 +153,7 @@ pub fn refusal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     const ALL_READY: [(Tool, Found); 4] = [
         (Tool::Git, Found::Ready),
@@ -246,6 +247,56 @@ mod tests {
             ("", None),
         ] {
             assert_eq!(remote_host(url), host, "{url:?}");
+        }
+    }
+
+    /// Any URL a remote can have, and any text in place of one: the parts of
+    /// a URL and what does not belong in a host name, in any order.
+    fn remote_url() -> impl Strategy<Value = String> {
+        let part = prop_oneof![
+            "[a-z0-9.-]{0,8}",
+            prop::sample::select(vec![
+                "://",
+                ":",
+                "@",
+                "/",
+                ".",
+                "-",
+                "https",
+                "ssh",
+                "git",
+                "github.com",
+                "22",
+                " ",
+                "\n",
+                ";",
+                "&",
+                "|",
+                "$(id)",
+                "`id`",
+                "'",
+                "\"",
+                "\\",
+                "_",
+                "é",
+                "文",
+                "．",
+            ])
+            .prop_map(String::from),
+            any::<char>().prop_map(String::from),
+        ];
+        prop::collection::vec(part, 0..10).prop_map(|parts| parts.concat())
+    }
+
+    proptest! {
+        #[test]
+        fn the_host_read_from_any_url_is_plainly_a_host_name(url in remote_url()) {
+            if let Some(host) = remote_host(&url) {
+                let plain = |b: u8| b.is_ascii_alphanumeric() || b == b'.' || b == b'-';
+                prop_assert!(host.bytes().all(plain), "{host:?} of {url:?}");
+                prop_assert!(host.contains('.'), "{host:?} of {url:?}");
+                prop_assert!(!host.starts_with('-'), "{host:?} of {url:?}");
+            }
         }
     }
 
