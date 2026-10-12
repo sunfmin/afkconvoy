@@ -56,7 +56,8 @@ WHAT IT ANSWERS
 WHAT TRIPS YOU UP
 
   - It is the only way a worker's intake is on the record. A flow label a worker puts
-    on by itself reads as a human's and escapes the limit.
+    on by itself would read as a human's and escape the limit: the guard refuses that,
+    and an intake record written by hand (`afkconvoy guard --help`).
   - The limit bounds the work the fleet gives itself, not a day's work: it is set high,
     to stop a runaway. `afkconvoy plan` reports the count against it.
   - The record counts only while the issue carries the flow label it names. A human

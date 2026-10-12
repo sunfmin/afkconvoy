@@ -172,7 +172,12 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
         let who = who(command);
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");
     }
-    for command in listed(&help("-h")).into_iter().filter(|command| !workers.contains(command)) {
+    // The guard is nobody's to run: it is a hook of Claude Code's.
+    let hooks = group(guide, "  A worker's hook");
+    assert_eq!(hooks, ["guard"]);
+    assert!(who("guard").trim_start().starts_with("Claude Code, as a hook"));
+    let operated = |command: &&str| !workers.contains(command) && !hooks.contains(command);
+    for command in listed(&help("-h")).into_iter().filter(operated) {
         assert!(who(command).trim_start().starts_with("The operator, "), "{command}");
     }
     // Each transition the guide says a tick makes on its own says so itself,

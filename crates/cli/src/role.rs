@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::Bound;
+use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     Landing, Said, StageFields, WorkerFields, landing_prompt, stage_prompt,
@@ -35,6 +36,11 @@ pub struct Staged {
     skill: String,
     writes: bool,
     model: Option<String>,
+    /// What the guard holds every worker to: the repo's base branch, the
+    /// team's escalate label and the repo's lock label.
+    base_branch: String,
+    escalate_label: String,
+    lock_label: String,
     /// The PR a landing worker gates and joins. `None` at a stage.
     joins: Option<u64>,
     role_copy: Copy,
@@ -80,6 +86,9 @@ impl Staged {
             skill: work.skill.clone(),
             writes: at.is_none_or(|stage| stage.writes),
             model: at.and_then(|stage| stage.model.clone()),
+            base_branch: fleet.config.base_branch.clone(),
+            escalate_label: kept.team.escalate_label.clone(),
+            lock_label: bound.lock_label.clone(),
             joins,
             role_copy: kept.role(role)?.clone(),
             team_copy: kept.copy.clone(),
@@ -94,6 +103,7 @@ impl Staged {
             worktree: &worktree.path.display().to_string(),
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
+            guard: &crate::own_command("guard"),
             facts: Facts {
                 issue: self.issue,
                 flow: &self.flow,
@@ -101,11 +111,30 @@ impl Staged {
                 role: &self.role,
                 skill: &self.skill,
                 writes: self.writes,
+                // No consult is started yet: a stage's own worker never is one.
+                consult: false,
+                base_branch: &self.base_branch,
+                escalate_label: &self.escalate_label,
+                lock_label: &self.lock_label,
                 role_commit: &self.role_copy.commit,
                 team_commit: &self.team_copy.commit,
             },
         };
         in_role(launch, &start)
+    }
+
+    /// Keeps, for a stage that writes nothing, where the branch in `worktree`
+    /// is as its worker starts under `claim`: what the fleet checks once the
+    /// stage has declared (`advance::advance`).
+    pub fn keep_start(&self, worktree: &Worktree, claim: &Claim) -> Result<()> {
+        if self.writes {
+            return Ok(());
+        }
+        worktree.keep_writes_nothing(|tip| WritesNothing {
+            claim: claim.sha.clone(),
+            tip,
+            stage: self.stage.clone(),
+        })
     }
 
     /// Refuses a start under `claim` when a verdict was already declared
