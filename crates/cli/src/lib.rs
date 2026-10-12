@@ -39,6 +39,7 @@ pub mod patrol;
 pub mod probe;
 pub mod recovery;
 pub mod role;
+pub mod scaffold;
 pub mod serve;
 pub mod settle;
 pub mod stage;
@@ -63,7 +64,7 @@ use tick::Pacing;
 /// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
 /// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
 #[derive(Parser)]
-#[command(name = "afkconvoy", version, about, long_about = include_str!("help.txt"))]
+#[command(name = "afkconvoy", version, about, long_about = with_files(include_str!("help.txt")))]
 struct Cli {
     /// The time to act at, in epoch seconds [default: the clock's]
     #[arg(long, global = true, hide = true)]
@@ -82,10 +83,28 @@ enum Command {
         file: Option<PathBuf>,
     },
     /// Read a team and its workflows: what was read, or every fault
-    #[command(after_long_help = include_str!("help/check.txt"))]
+    #[command(after_long_help = with_files(include_str!("help/check.txt")))]
     Check {
         #[command(flatten)]
         team: TeamArgs,
+    },
+    /// Write the skeleton of a team's repo or of a role's, and create it on GitHub if asked
+    #[command(after_long_help = include_str!("help/scaffold.txt"))]
+    Scaffold {
+        /// What to write the skeleton of
+        #[arg(value_enum)]
+        what: scaffold::What,
+        /// The directory to write it in: one not there yet, or empty
+        dir: PathBuf,
+        /// A team's one role, which its example workflow is performed by, as <name>=<owner/repo>
+        #[arg(long, value_parser = scaffold::named)]
+        role: Option<scaffold::Named>,
+        /// Also commit the skeleton and create this repo on GitHub from it, as owner/repo
+        #[arg(long, value_parser = repo)]
+        repo: Option<String>,
+        /// Create that repo public [default: private]
+        #[arg(long, requires = "repo")]
+        public: bool,
     },
     /// Draw a team's workflows as graphs, or say where one issue is in its workflow
     #[command(after_long_help = include_str!("help/show.txt"))]
@@ -472,6 +491,20 @@ pub fn own_command(arguments: &str) -> String {
     format!("{exe} {arguments}")
 }
 
+/// A help text with the files and keys of a team and a role put in where it
+/// says `{files}`: `help/files.txt` is the one place they are written.
+fn with_files(help: &str) -> String {
+    help.replace("{files}", include_str!("help/files.txt").trim_end())
+}
+
+fn repo(text: &str) -> Result<String, String> {
+    if afkconvoy_core::config::is_repo(text) {
+        Ok(text.to_string())
+    } else {
+        Err("a repo is named as owner/repo".to_string())
+    }
+}
+
 fn team_repo(text: &str) -> Result<String, String> {
     if afkconvoy_core::config::is_repo(text) {
         Ok(text.to_string())
@@ -571,6 +604,10 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             Ok(serde_json::to_value(config::load(&file)?)?)
         }
         Command::Check { team } => team::check(team.from()),
+        Command::Scaffold { what, dir, role, repo, public } => {
+            let create = repo.map(|repo| scaffold::Create { repo, public });
+            scaffold::scaffold(what, &dir, role.as_ref(), create.as_ref())
+        }
         Command::Show { workflow, issue, team } => {
             let loaded = team::load(team.from())?;
             match issue {

@@ -99,10 +99,72 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     assert_eq!(listed(&long), listed(&help("-h")));
 }
 
+/// The guide is where an agent learns to design a team from any directory:
+/// the files of a team and of a role, every key, and the loop.
+#[test]
+fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
+    use afkconvoy::scaffold::{HOOKS, RULES};
+    use afkconvoy_core::team::{
+        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PATROLS, SKILLS, STAGE_KEYS, TEAM_FILE,
+        TEAM_KEYS, WORKFLOW_KEYS, WORKFLOWS,
+    };
+    let long = help("--help");
+    let guide = guide(&long);
+    for file in [TEAM_FILE, WORKFLOWS, PATROLS, RULES, SKILLS, HOOKS] {
+        assert!(guide.contains(&format!("      {file}")), "the guide lays out no {file}");
+    }
+    let keys = [
+        &TEAM_KEYS[..],
+        &WORKFLOW_KEYS,
+        &STAGE_KEYS,
+        &ON_KEYS,
+        &ESCALATE_KEYS,
+        &LAND_KEYS,
+        &PATROL_KEYS,
+    ];
+    for key in keys.concat() {
+        assert!(guide.contains(&format!(" {key}:")), "the guide never shows the key {key}");
+    }
+    // The loop, in order: a role, the team that names it, then `check` after each edit.
+    let at = |line: &str| guide.find(line).unwrap_or_else(|| panic!("the guide lost {line:?}"));
+    assert!(at("afkconvoy scaffold role") < at("afkconvoy scaffold team"));
+    assert!(at("afkconvoy scaffold team") < at("afkconvoy check --dir"));
+    assert!(guide.contains("until it exits 0"));
+    assert!(guide.contains("skills installer") && guide.contains("wraps no installer"));
+    // `check` lays the same files out, from the same text.
+    let files = guide.split("\n  A team is a repo that holds:").nth(1).unwrap();
+    let files = files.split("\n\n  The loop").next().unwrap();
+    assert!(asked(&["check", "--help"]).contains(files));
+    assert!(!long.contains("{files}"));
+}
+
+#[test]
+fn the_readme_says_how_a_repo_is_bound_and_how_a_role_gets_its_skills() {
+    let bind = README.split("\n## Bind a repo to a team\n").nth(1).expect("the section");
+    let bind = bind.split("\n## ").next().unwrap();
+    for said in [
+        "team: owner/repo",
+        "`patrols`",
+        "`intake_limit`",
+        "flow label",
+        "`flow:<name>`",
+        "afkconvoy scaffold role",
+        "afkconvoy scaffold team",
+        "afkconvoy check",
+        "### What a human is asked, and when",
+        "afkconvoy rule",
+        "`by: human`",
+        "npx skills add",
+        "wraps no installer",
+    ] {
+        assert!(bind.contains(said), "the README's section on binding lost {said:?}");
+    }
+}
+
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 40, "{short}");
+    assert!(short.lines().count() <= 41, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -230,6 +292,7 @@ fn a_help_names_every_key_its_command_answers_with() {
     world.repo("acme/team", &[("team.md", "```yaml\n{}\n```\n"), ("workflows/note.md", note)]);
     check(&["check", "--team", "acme/team"], &["workflows"]);
     check(&["rehearse", "--team", "acme/team", "note", "pass"], &["steps"]);
+    check(&["scaffold", "role", world.root.join("role").to_str().unwrap()], &["scaffolded"]);
     check(&["plan"], &["frontier"]);
     check(&["scan"], &["claims"]);
     check(&["takeover", "--list"], &["instances"]);
