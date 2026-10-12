@@ -355,7 +355,7 @@ fn work(work: &Work) -> Value {
 }
 
 fn workflow(workflow: &Workflow) -> Value {
-    let name = |at: usize| workflow.stages().get(at).map(|stage| stage.name.clone());
+    let name = |at: usize| workflow.stage(at).name.clone();
     let stage = |stage: &Stage| {
         let (by, skill) = match &stage.by {
             Performer::Human => (team::HUMAN, None),
@@ -363,8 +363,8 @@ fn workflow(workflow: &Workflow) -> Value {
         };
         let pass = match stage.pass() {
             Pass::Stage(at) => name(at),
-            Pass::Land => Some(team::LAND.to_string()),
-            Pass::Done => Some(team::DONE.to_string()),
+            Pass::Land => team::LAND.to_string(),
+            Pass::Done => team::DONE.to_string(),
         };
         json!({
             "name": stage.name,
@@ -374,7 +374,7 @@ fn workflow(workflow: &Workflow) -> Value {
             "writes": stage.writes,
             "escalate": stage.consult.as_ref().map(|consult| json!({"to": consult.role, "do": consult.skill})),
             "pass": pass,
-            "reject": stage.reject().and_then(name),
+            "reject": stage.reject().map(name),
         })
     };
     json!({

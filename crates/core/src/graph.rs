@@ -23,7 +23,6 @@ pub fn draw(workflow: &Workflow) -> String {
             backs.push(Back { from: stage.at(), to });
         }
     }
-    let name = |at: usize| stages.get(at).map_or("", |stage| stage.name.as_str());
     let ends_in_nothing = stages.iter().any(|stage| stage.pass() == Pass::Done);
     // Every name drawn in the column of stage names: the ends are rows too.
     let mut width = 0;
@@ -61,12 +60,12 @@ pub fn draw(workflow: &Workflow) -> String {
             said.push(format!("escalate → {}", work_said(consult)));
         }
         if let Some(to) = stage.reject() {
-            said.push(format!("reject → {}", name(to)));
+            said.push(format!("reject → {}", workflow.stage(to).name));
         }
         let said = said.join(" · ");
         out.push_str(&format!("{}{:<width$}  {said}\n", margin(&backs, stage), stage.name));
         let pass = match stage.pass() {
-            Pass::Stage(to) => name(to),
+            Pass::Stage(to) => workflow.stage(to).name.as_str(),
             Pass::Land => LAND,
             Pass::Done => DONE,
         };

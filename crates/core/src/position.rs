@@ -109,28 +109,38 @@ impl Reason {
     }
 }
 
-/// Where an issue is in its workflow.
+/// Where an issue is in its workflow: `at_stage` while it is at a stage, one
+/// of a workflow of `n` stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[refined_by(at_stage: bool, n: int)]
 pub enum Position<'w> {
     /// A worker is to perform the stage, as this skill of this role.
+    #[variant((&Stage[@s], &Work) -> Position[true, s.n])]
     Perform(&'w Stage, &'w Work),
     /// The stage is a human's: nothing happens until they declare its verdict.
+    #[variant((&Stage[@s]) -> Position[true, s.n])]
     Waiting(&'w Stage),
     /// A worker is to rule on the stage's `escalate`, as this skill of this role.
+    #[variant((&Stage[@s], &Work) -> Position[true, s.n])]
     Consult(&'w Stage, &'w Work),
     /// Parked on what the stage declared it blocked by. The stage runs again
     /// when those close, which counts as no rework.
+    #[variant((&Stage[@s]) -> Position[true, s.n])]
     Parked(&'w Stage),
     /// Its last stage passed to the landing train.
+    #[variant(Position[false, 0])]
     Landing,
     /// Nothing more to do.
+    #[variant(Position[false, 0])]
     Ended,
     /// Handed to a human. Under their ruling the stage runs again.
+    #[variant((&Stage[@s], Reason) -> Position[true, s.n])]
     Escalating(&'w Stage, Reason),
 }
 
 impl<'w> Position<'w> {
     /// The stage the issue is at; `None` once it has left its stages.
+    #[spec(fn(Position[@p]) -> Option<&Stage{v: p.at_stage && v.n == p.n}>)]
     pub fn stage(self) -> Option<&'w Stage> {
         match self {
             Position::Perform(stage, _)
@@ -213,17 +223,36 @@ impl Count {
     }
 }
 
-/// An issue's position in a workflow, with its two rework counts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An issue's position in a workflow of `n` stages, with its two rework
+/// counts. The stage it is at, while at one, is a stage of that workflow, and
+/// it holds one count of rejections in a row for each of the `n`.
+#[derive(Debug, PartialEq, Eq)]
+#[refined_by(n: int)]
 pub struct Place<'w> {
+    #[field(&Workflow[n])]
     workflow: &'w Workflow,
+    #[field(Position{v: v.at_stage => v.n == n})]
     pub position: Position<'w>,
     total: Count,
     /// Each stage's rejections in a row, at the stage's place.
+    #[field(Vec<Count>[n])]
     consecutive: Vec<Count>,
 }
 
+impl Clone for Place<'_> {
+    #[spec(fn(&Place[@n]) -> Place[n])]
+    fn clone(&self) -> Self {
+        Place {
+            workflow: self.workflow,
+            position: self.position,
+            total: self.total,
+            consecutive: self.consecutive.clone(),
+        }
+    }
+}
+
 /// The position of an issue that comes to `stage`.
+#[spec(fn(&Stage[@s]) -> Position[true, s.n])]
 fn at(stage: &Stage) -> Position<'_> {
     match &stage.by {
         Performer::Human => Position::Waiting(stage),
@@ -234,9 +263,10 @@ fn at(stage: &Stage) -> Position<'_> {
 impl<'w> Place<'w> {
     /// Where an issue is that has just entered `workflow`: at its first
     /// stage, with no rework.
+    #[spec(fn(&Workflow[@n]) -> Place[n])]
     pub fn enter(workflow: &'w Workflow) -> Place<'w> {
         let mut consecutive: Vec<Count> = vec![];
-        for _ in workflow.stages() {
+        while consecutive.len() < workflow.stages().len() {
             consecutive.push(Count::none(workflow.max_consecutive_rework));
         }
         Place {
@@ -250,6 +280,7 @@ impl<'w> Place<'w> {
     /// Where the issue is once a human puts it at `stage` — by ruling on it
     /// there, or by sending it there: the stage is to be performed, and both
     /// counts start over.
+    #[spec(fn(Place[@n], &Stage{v: v.n == n}) -> Place[n])]
     pub fn put(self, stage: &'w Stage) -> Place<'w> {
         Place { position: at(stage), ..Place::enter(self.workflow) }
     }
@@ -266,14 +297,17 @@ impl<'w> Place<'w> {
     }
 
     /// The rejections `stage` has declared in a row, with no `pass` of its
-    /// own between.
+    /// own between. `stage` is one of the issue's workflow.
+    #[spec(fn(&Place[@n], &Stage{v: v.n == n}) -> u64)]
     pub fn consecutive_rework(&self, stage: &Stage) -> u64 {
-        self.consecutive.get(stage.at()).map_or(0, Count::times)
+        self.consecutive[stage.at()].times()
     }
 
-    /// The rejections in a row `stage` has left before its breaker stops it.
+    /// The rejections in a row `stage`, one of the issue's workflow, has left
+    /// before its breaker stops it.
+    #[spec(fn(&Place[@n], &Stage{v: v.n == n}) -> u64)]
     pub fn consecutive_rework_left(&self, stage: &Stage) -> u64 {
-        self.consecutive.get(stage.at()).map_or(0, Count::left)
+        self.consecutive[stage.at()].left()
     }
 
     /// Whether `declared` is something that may be declared where the issue is.
@@ -284,6 +318,7 @@ impl<'w> Place<'w> {
     /// Where the issue is once `declared` is declared on it. What may not be
     /// declared where it is escalates it from a stage, and changes nothing
     /// once it is escalated, landing or ended.
+    #[spec(fn(Place[@n], Declared) -> Place[n])]
     pub fn after(self, declared: Declared) -> Place<'w> {
         if let Some(next) = self.valid(declared) {
             return next;
@@ -299,13 +334,14 @@ impl<'w> Place<'w> {
     }
 
     /// The place after `declared`; `None` when it may not be declared here.
+    #[spec(fn(&Place[@n], Declared) -> Option<Place[n]>)]
     fn valid(&self, declared: Declared) -> Option<Place<'w>> {
         let mut next = self.clone();
         next.position = match (self.position, declared) {
             (Position::Landing | Position::Ended, _) => return None,
             // A ruling on an escalated issue is a human's.
             (Position::Escalating(stage, _), Declared::Ruling) => {
-                return Some(self.clone().put(stage));
+                return Some(next.put(stage));
             }
             (Position::Escalating(..), _) => return None,
             // A consult's ruling is rework: the stage that asked runs again.
@@ -325,18 +361,17 @@ impl<'w> Place<'w> {
                 declared,
             ) => match declared {
                 Declared::Pass => {
-                    if let Some(count) = next.consecutive.get_mut(stage.at()) {
-                        *count = Count::none(self.workflow.max_consecutive_rework);
-                    }
+                    next.consecutive[stage.at()] =
+                        Count::none(self.workflow.max_consecutive_rework);
                     match stage.pass() {
-                        Pass::Stage(to) => at(self.workflow.stages().get(to)?),
+                        Pass::Stage(to) => at(self.workflow.stage(to)),
                         Pass::Land => Position::Landing,
                         Pass::Done => Position::Ended,
                     }
                 }
                 Declared::Reject => {
-                    let back = self.workflow.stages().get(stage.reject()?)?;
-                    let in_a_row = self.consecutive.get(stage.at())?.more();
+                    let back = self.workflow.stage(stage.reject()?);
+                    let in_a_row = self.consecutive[stage.at()].more();
                     match (in_a_row, self.total.more()) {
                         (None, _) => {
                             Position::Escalating(back, Reason::Breaker(Breaker::ConsecutiveRework))
@@ -344,9 +379,7 @@ impl<'w> Place<'w> {
                         (_, None) => Position::Escalating(back, Reason::Breaker(Breaker::Rework)),
                         (Some(in_a_row), Some(total)) => {
                             next.total = total;
-                            if let Some(count) = next.consecutive.get_mut(stage.at()) {
-                                *count = in_a_row;
-                            }
+                            next.consecutive[stage.at()] = in_a_row;
                             at(back)
                         }
                     }
@@ -366,12 +399,25 @@ impl<'w> Place<'w> {
 
 /// Where an issue of `workflow` is, given everything declared on it since it
 /// entered, oldest first.
+#[spec(fn(&Workflow[@n], &[Declared]) -> Place[n])]
 pub fn position<'w>(workflow: &'w Workflow, declared: &[Declared]) -> Place<'w> {
     let mut place = Place::enter(workflow);
     for declared in declared {
         place = place.after(*declared);
     }
     place
+}
+
+#[cfg(flux)]
+#[allow(dead_code)]
+mod rejected {
+    use super::*;
+
+    /// A count read for a stage the issue's workflow lacks.
+    #[should_fail]
+    fn a_count_read_for_a_stage_the_workflow_lacks(place: &Place, stage: &Stage) -> u64 {
+        place.consecutive_rework(stage)
+    }
 }
 
 #[cfg(test)]
