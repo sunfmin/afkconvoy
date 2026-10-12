@@ -1,0 +1,490 @@
+//! Where an issue is in its workflow, and how much rework it has had: both
+//! derived from what was declared on it, in order, and stored nowhere
+//! (docs/adr/0010, docs/adr/0011). A `Place` takes a loaded workflow as given
+//! and checks nothing of it.
+
+use flux_rs::attrs::*;
+
+use crate::team::{Pass, Performer, Stage, Work, Workflow};
+use crate::verdict::Phase;
+
+/// What ends a stage or answers an escalation: one of the five verdicts, or
+/// a ruling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Declared {
+    Pass,
+    Reject,
+    Blocked,
+    AlreadySatisfied,
+    Escalate,
+    /// What a consult or a human decides on an escalated issue.
+    Ruling,
+}
+
+impl Declared {
+    pub const ALL: [Declared; 6] = [
+        Declared::Pass,
+        Declared::Reject,
+        Declared::Blocked,
+        Declared::AlreadySatisfied,
+        Declared::Escalate,
+        Declared::Ruling,
+    ];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Declared::Pass => "pass",
+            Declared::Reject => "reject",
+            Declared::Blocked => Phase::Blocked.word(),
+            Declared::AlreadySatisfied => Phase::AlreadySatisfied.word(),
+            Declared::Escalate => Phase::Escalate.word(),
+            Declared::Ruling => "ruling",
+        }
+    }
+
+    pub fn read(word: &str) -> Option<Declared> {
+        Declared::ALL.into_iter().find(|declared| declared.word() == word)
+    }
+}
+
+/// One of the two limits on rework.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Breaker {
+    /// On an issue's rework in total.
+    Rework,
+    /// On one stage's rejections in a row.
+    ConsecutiveRework,
+}
+
+impl Breaker {
+    /// The key of a workflow that sets it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Breaker::Rework => "max_rework",
+            Breaker::ConsecutiveRework => "max_consecutive_rework",
+        }
+    }
+}
+
+/// Why an issue is handed to a human.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// Its stage declared `escalate` and names no consult.
+    Verdict,
+    /// Its stage's consult let the escalation through.
+    Consult,
+    /// What was declared is no verdict its stage may declare.
+    NoValidVerdict,
+    /// One more rework would have passed this breaker.
+    Breaker(Breaker),
+}
+
+impl Reason {
+    /// The reason as a human is told it, of an issue escalated at `stage`.
+    pub fn said(self, stage: &Stage) -> String {
+        let name = &stage.name;
+        match self {
+            Reason::Verdict => {
+                format!("the stage `{name}` declared `escalate`, and it names no consult")
+            }
+            Reason::Consult => {
+                format!("the consult of the stage `{name}` let its `escalate` through")
+            }
+            Reason::NoValidVerdict => {
+                format!("no valid verdict was declared at the stage `{name}`")
+            }
+            Reason::Breaker(breaker) => format!(
+                "the breaker `{}` tripped: `{name}` would have run again once more than it allows",
+                breaker.key()
+            ),
+        }
+    }
+}
+
+/// Where an issue is in its workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position<'w> {
+    /// A worker is to perform the stage, as this skill of this role.
+    Perform(&'w Stage, &'w Work),
+    /// The stage is a human's: nothing happens until they declare its verdict.
+    Waiting(&'w Stage),
+    /// A worker is to rule on the stage's `escalate`, as this skill of this role.
+    Consult(&'w Stage, &'w Work),
+    /// Parked on what the stage declared it blocked by. The stage runs again
+    /// when those close, which counts as no rework.
+    Parked(&'w Stage),
+    /// Its last stage passed to the landing train.
+    Landing,
+    /// Nothing more to do.
+    Ended,
+    /// Handed to a human. Under their ruling the stage runs again.
+    Escalating(&'w Stage, Reason),
+}
+
+impl<'w> Position<'w> {
+    /// The stage the issue is at; `None` once it has left its stages.
+    pub fn stage(self) -> Option<&'w Stage> {
+        match self {
+            Position::Perform(stage, _)
+            | Position::Waiting(stage)
+            | Position::Consult(stage, _)
+            | Position::Parked(stage)
+            | Position::Escalating(stage, _) => Some(stage),
+            Position::Landing | Position::Ended => None,
+        }
+    }
+
+    /// Who a worker is to be started as; `None` where none is to be.
+    pub fn worker(self) -> Option<&'w Work> {
+        match self {
+            Position::Perform(_, work) | Position::Consult(_, work) => Some(work),
+            _ => None,
+        }
+    }
+}
+
+/// How often something happened, under the breaker that limits it. It never
+/// holds more than the breaker allows: what would pass it is not counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[refined_by(times: int, limit: int)]
+#[invariant(times <= limit)]
+pub(crate) struct Count {
+    #[field(u64[times])]
+    times: u64,
+    #[field(u64[limit])]
+    limit: u64,
+}
+
+impl Count {
+    #[spec(fn(limit: u64) -> Count[0, limit])]
+    fn none(limit: u64) -> Count {
+        Count { times: 0, limit }
+    }
+
+    /// The count after one more; `None` when that would pass the breaker.
+    #[spec(fn(&Count[@c]) -> Option<Count[c.times + 1, c.limit]>)]
+    fn more(&self) -> Option<Count> {
+        if self.times < self.limit {
+            Some(Count { times: self.times + 1, limit: self.limit })
+        } else {
+            None
+        }
+    }
+
+    #[spec(fn(&Count[@c]) -> u64{v: v == c.times && v <= c.limit})]
+    pub(crate) fn times(&self) -> u64 {
+        self.times
+    }
+}
+
+/// An issue's position in a workflow, with its two rework counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place<'w> {
+    workflow: &'w Workflow,
+    pub position: Position<'w>,
+    total: Count,
+    /// Each stage's rejections in a row, at the stage's place.
+    consecutive: Vec<Count>,
+}
+
+/// The position of an issue that comes to `stage`.
+fn at(stage: &Stage) -> Position<'_> {
+    match &stage.by {
+        Performer::Human => Position::Waiting(stage),
+        Performer::Role(work) => Position::Perform(stage, work),
+    }
+}
+
+impl<'w> Place<'w> {
+    /// Where an issue is that has just entered `workflow`: at its first
+    /// stage, with no rework.
+    pub fn enter(workflow: &'w Workflow) -> Place<'w> {
+        let mut consecutive: Vec<Count> = vec![];
+        for _ in workflow.stages() {
+            consecutive.push(Count::none(workflow.max_consecutive_rework));
+        }
+        Place {
+            workflow,
+            position: at(workflow.first()),
+            total: Count::none(workflow.max_rework),
+            consecutive,
+        }
+    }
+
+    /// The issue's rework in total, since it entered or a human last ruled.
+    /// The rework a breaker refused is not in it.
+    pub fn rework(&self) -> u64 {
+        self.total.times()
+    }
+
+    /// The rejections `stage` has declared in a row, with no `pass` of its
+    /// own between.
+    pub fn consecutive_rework(&self, stage: &Stage) -> u64 {
+        self.consecutive.get(stage.at()).map_or(0, Count::times)
+    }
+
+    /// Whether `declared` is something that may be declared where the issue is.
+    pub fn takes(&self, declared: Declared) -> bool {
+        self.valid(declared).is_some()
+    }
+
+    /// Where the issue is once `declared` is declared on it. What may not be
+    /// declared where it is escalates it from a stage, and changes nothing
+    /// once it is escalated, landing or ended.
+    pub fn after(self, declared: Declared) -> Place<'w> {
+        if let Some(next) = self.valid(declared) {
+            return next;
+        }
+        let position = match self.position {
+            Position::Perform(stage, _)
+            | Position::Waiting(stage)
+            | Position::Consult(stage, _)
+            | Position::Parked(stage) => Position::Escalating(stage, Reason::NoValidVerdict),
+            Position::Escalating(..) | Position::Landing | Position::Ended => self.position,
+        };
+        Place { position, ..self }
+    }
+
+    /// The place after `declared`; `None` when it may not be declared here.
+    fn valid(&self, declared: Declared) -> Option<Place<'w>> {
+        let mut next = self.clone();
+        next.position = match (self.position, declared) {
+            (Position::Landing | Position::Ended, _) => return None,
+            // A human's ruling starts both counts over.
+            (Position::Escalating(stage, _), Declared::Ruling) => {
+                return Some(Place { position: at(stage), ..Place::enter(self.workflow) });
+            }
+            (Position::Escalating(..), _) => return None,
+            // A consult's ruling is rework: the stage that asked runs again.
+            (Position::Consult(stage, _), Declared::Ruling) => match self.total.more() {
+                Some(total) => {
+                    next.total = total;
+                    at(stage)
+                }
+                None => Position::Escalating(stage, Reason::Breaker(Breaker::Rework)),
+            },
+            (Position::Consult(stage, _), Declared::Escalate) => {
+                Position::Escalating(stage, Reason::Consult)
+            }
+            (Position::Consult(..), _) => return None,
+            (
+                Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage),
+                declared,
+            ) => match declared {
+                Declared::Pass => {
+                    if let Some(count) = next.consecutive.get_mut(stage.at()) {
+                        *count = Count::none(self.workflow.max_consecutive_rework);
+                    }
+                    match stage.pass() {
+                        Pass::Stage(to) => at(self.workflow.stages().get(to)?),
+                        Pass::Land => Position::Landing,
+                        Pass::Done => Position::Ended,
+                    }
+                }
+                Declared::Reject => {
+                    let back = self.workflow.stages().get(stage.reject()?)?;
+                    let in_a_row = self.consecutive.get(stage.at())?.more();
+                    match (in_a_row, self.total.more()) {
+                        (None, _) => {
+                            Position::Escalating(back, Reason::Breaker(Breaker::ConsecutiveRework))
+                        }
+                        (_, None) => Position::Escalating(back, Reason::Breaker(Breaker::Rework)),
+                        (Some(in_a_row), Some(total)) => {
+                            next.total = total;
+                            if let Some(count) = next.consecutive.get_mut(stage.at()) {
+                                *count = in_a_row;
+                            }
+                            at(back)
+                        }
+                    }
+                }
+                Declared::Blocked => Position::Parked(stage),
+                Declared::AlreadySatisfied => Position::Ended,
+                Declared::Escalate => match &stage.consult {
+                    Some(consult) => Position::Consult(stage, consult),
+                    None => Position::Escalating(stage, Reason::Verdict),
+                },
+                Declared::Ruling => return None,
+            },
+        };
+        Some(next)
+    }
+}
+
+/// Where an issue of `workflow` is, given everything declared on it since it
+/// entered, oldest first.
+pub fn position<'w>(workflow: &'w Workflow, declared: &[Declared]) -> Place<'w> {
+    let mut place = Place::enter(workflow);
+    for declared in declared {
+        place = place.after(*declared);
+    }
+    place
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Declared::*;
+    use super::*;
+    use crate::team::tests::{FEATURE, one};
+    use crate::team::{Team, WORKFLOW_KEYS};
+
+    /// Where an issue of the team's `feature` workflow is after `declared`: its
+    /// position in a few words, its rework in total, and `review`'s and
+    /// `sign-off`'s rejections in a row.
+    fn after(team: &Team, declared: &[Declared]) -> (String, u64, [u64; 2]) {
+        let workflow = team.workflow("feature").unwrap();
+        let place = position(workflow, declared);
+        let said = match place.position {
+            Position::Perform(stage, work) => {
+                format!("{} by {}: {}", stage.name, work.role, work.skill)
+            }
+            Position::Waiting(stage) => format!("{} by a human", stage.name),
+            Position::Consult(stage, work) => {
+                format!("consult on {} by {}: {}", stage.name, work.role, work.skill)
+            }
+            Position::Parked(stage) => format!("parked at {}", stage.name),
+            Position::Landing => "landing".to_string(),
+            Position::Ended => "ended".to_string(),
+            Position::Escalating(stage, reason) => {
+                format!("escalating at {}: {reason:?}", stage.name)
+            }
+        };
+        let [.., review, sign_off] = workflow.stages() else { panic!("two stages at least") };
+        let in_a_row = [place.consecutive_rework(review), place.consecutive_rework(sign_off)];
+        (said, place.rework(), in_a_row)
+    }
+
+    fn at(team: &Team, declared: &[Declared]) -> String {
+        after(team, declared).0
+    }
+
+    #[test]
+    fn pass_and_reject_follow_the_workflow() {
+        let team = one(FEATURE);
+        assert_eq!(at(&team, &[]), "plan by dev: plan");
+        assert_eq!(at(&team, &[Pass]), "build by dev: implement");
+        assert_eq!(at(&team, &[Pass, Pass]), "review by reviewer: review");
+        assert_eq!(at(&team, &[Pass, Pass, Reject]), "build by dev: implement");
+        assert_eq!(at(&team, &[Pass, Pass, Pass]), "sign-off by a human");
+        assert_eq!(at(&team, &[Pass, Pass, Pass, Reject]), "plan by dev: plan");
+        assert_eq!(at(&team, &[Pass, Pass, Pass, Pass]), "landing");
+        let triage = one("stages:\n  - { name: a, by: dev, do: plan, on: { pass: done } }\n");
+        let ended = position(triage.workflow("feature").unwrap(), &[Pass]);
+        assert_eq!(ended.position, Position::Ended);
+    }
+
+    #[test]
+    fn the_other_three_verdicts_mean_the_same_at_every_stage() {
+        let team = one(FEATURE);
+        assert_eq!(at(&team, &[Blocked]), "parked at plan");
+        // The stage runs again once its blockers close, and that is no rework.
+        assert_eq!(after(&team, &[Blocked, Pass]), ("build by dev: implement".into(), 0, [0, 0]));
+        assert_eq!(at(&team, &[Pass, Blocked, Blocked]), "parked at build");
+        assert_eq!(at(&team, &[AlreadySatisfied]), "ended");
+        assert_eq!(at(&team, &[Pass, Pass, AlreadySatisfied]), "ended");
+        // `build` names a consult; `plan` and a human's stage name none.
+        assert_eq!(at(&team, &[Pass, Escalate]), "consult on build by reviewer: rule");
+        assert_eq!(at(&team, &[Escalate]), "escalating at plan: Verdict");
+        assert_eq!(at(&team, &[Pass, Pass, Pass, Escalate]), "escalating at sign-off: Verdict");
+    }
+
+    #[test]
+    fn what_a_stage_may_not_declare_is_no_valid_verdict() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        // `plan` has no `reject`.
+        assert!(!Place::enter(workflow).takes(Reject));
+        assert_eq!(at(&team, &[Reject]), "escalating at plan: NoValidVerdict");
+        assert_eq!(
+            at(&team, &[Pass, Pass, Blocked, Ruling]),
+            "escalating at review: NoValidVerdict"
+        );
+        // A consult rules or lets the escalation through, and nothing else.
+        assert_eq!(at(&team, &[Pass, Escalate, Pass]), "escalating at build: NoValidVerdict");
+        // Nothing is declared on an issue that has left its stages or waits
+        // for a ruling: it stays where it is, and why.
+        for left in [&[AlreadySatisfied][..], &[Pass, Pass, Pass, Pass], &[Escalate]] {
+            let place = position(workflow, left);
+            for declared in Declared::ALL.into_iter().filter(|declared| *declared != Ruling) {
+                assert!(!place.takes(declared), "{left:?} then {declared:?}");
+                assert_eq!(place.clone().after(declared), place);
+            }
+        }
+        assert!(!position(workflow, &[AlreadySatisfied]).takes(Ruling));
+    }
+
+    #[test]
+    fn rework_is_counted_in_total_and_per_stage_in_a_row() {
+        let team = one(FEATURE);
+        let once = [Pass, Pass, Reject];
+        assert_eq!(after(&team, &once), ("build by dev: implement".into(), 1, [1, 0]));
+        let twice = [&once[..], &[Pass, Reject]].concat();
+        assert_eq!(after(&team, &twice).1, 2);
+        assert_eq!(after(&team, &twice).2, [2, 0]);
+        // A pass of a stage starts that stage's count over, and no other's.
+        let passed = [&twice[..], &[Pass, Pass]].concat();
+        assert_eq!(after(&team, &passed), ("sign-off by a human".into(), 2, [0, 0]));
+        let back = [&passed[..], &[Reject, Pass, Pass, Pass]].concat();
+        assert_eq!(after(&team, &back), ("sign-off by a human".into(), 3, [0, 1]));
+    }
+
+    #[test]
+    fn a_breaker_escalates_the_rework_that_would_pass_it() {
+        let team = one(FEATURE);
+        // `review` rejects a third time in a row: max_consecutive_rework is 2.
+        let twice = [Pass, Pass, Reject, Pass, Reject, Pass];
+        let third = [&twice[..], &[Reject]].concat();
+        let tripped = "escalating at build: Breaker(ConsecutiveRework)".to_string();
+        assert_eq!(after(&team, &third), (tripped, 2, [2, 0]));
+        // A fourth rework in total, with no stage three times in a row.
+        let three = [&twice[..], &[Pass, Reject, Pass, Pass]].concat();
+        assert_eq!(after(&team, &three), ("review by reviewer: review".into(), 3, [0, 1]));
+        let fourth = [&three[..], &[Reject]].concat();
+        let tripped = "escalating at build: Breaker(Rework)".to_string();
+        assert_eq!(after(&team, &fourth), (tripped, 3, [0, 1]));
+        // A breaker set to 0 allows no rework at all.
+        let strict = one(&format!("max_rework: 0\n{FEATURE}"));
+        assert_eq!(at(&strict, &[Pass, Pass, Reject]), "escalating at build: Breaker(Rework)");
+    }
+
+    #[test]
+    fn a_human_ruling_starts_both_counts_over_and_a_consults_is_rework() {
+        let team = one(FEATURE);
+        let tripped = [Pass, Pass, Reject, Pass, Reject, Pass, Reject];
+        // The stage the rejection led back to runs again, under the ruling.
+        let ruled = [&tripped[..], &[Ruling]].concat();
+        assert_eq!(after(&team, &ruled), ("build by dev: implement".into(), 0, [0, 0]));
+        let on = [&ruled[..], &[Pass, Reject]].concat();
+        assert_eq!(after(&team, &on), ("build by dev: implement".into(), 1, [1, 0]));
+        let waiting = [Pass, Pass, Pass, Escalate, Ruling];
+        assert_eq!(at(&team, &waiting), "sign-off by a human");
+
+        // The stage that asked a consult runs again under its ruling.
+        let asked = [Pass, Pass, Reject, Escalate];
+        assert_eq!(after(&team, &asked), ("consult on build by reviewer: rule".into(), 1, [1, 0]));
+        let ruled = [&asked[..], &[Ruling]].concat();
+        assert_eq!(after(&team, &ruled), ("build by dev: implement".into(), 2, [1, 0]));
+        // Or the consult lets it through, which is no rework.
+        let through = [&asked[..], &[Escalate]].concat();
+        assert_eq!(after(&team, &through), ("escalating at build: Consult".into(), 1, [1, 0]));
+        // A consult's ruling is held to the breaker like any rework.
+        let most = [&ruled[..], &[Escalate, Ruling, Escalate, Ruling]].concat();
+        assert_eq!(at(&team, &most), "escalating at build: Breaker(Rework)");
+    }
+
+    #[test]
+    fn the_words_read_back_and_a_breaker_is_named_by_its_key() {
+        for declared in Declared::ALL {
+            assert_eq!(Declared::read(declared.word()), Some(declared));
+        }
+        assert_eq!(Declared::read("needs-human"), None);
+        for breaker in [Breaker::Rework, Breaker::ConsecutiveRework] {
+            assert!(WORKFLOW_KEYS.contains(&breaker.key()));
+        }
+        let team = one(FEATURE);
+        let place = position(team.workflow("feature").unwrap(), &[Reject]);
+        let Position::Escalating(stage, reason) = place.position else { panic!("escalating") };
+        assert_eq!(reason.said(stage), "no valid verdict was declared at the stage `plan`");
+        assert_eq!(place.position.worker(), None);
+    }
+}

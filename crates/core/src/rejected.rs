@@ -48,3 +48,16 @@ mod lease {
         proved(!stamp_stale(stamp, now));
     }
 }
+
+mod position {
+    use flux_rs::attrs::*;
+
+    use crate::position::Count;
+
+    /// Rework is counted under its breaker, so no count may be read as past it.
+    #[should_fail]
+    #[spec(fn(&Count[@c]) -> u64{v: v > c.limit})]
+    fn a_count_past_its_breaker(count: &Count) -> u64 {
+        count.times()
+    }
+}
