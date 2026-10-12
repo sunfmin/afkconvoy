@@ -3,7 +3,7 @@
 //! the core decides (`afkconvoy_core::graph`, `afkconvoy_core::position`).
 
 use afkconvoy_core::graph;
-use afkconvoy_core::position::{Declared, Place, Position, Reason};
+use afkconvoy_core::position::{Declared, Place, Position};
 use afkconvoy_core::team::{HUMAN, Workflow};
 use anyhow::{Result, bail};
 use serde_json::{Map, Value, json};
@@ -47,8 +47,8 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
         let valid = place.takes(*declared);
         let next = place.after(*declared);
         // A breaker is tripped by what was declared, not by what follows it.
-        let breaker = match next.position {
-            Position::Escalating(_, Reason::Breaker(breaker)) if valid => Some(breaker.key()),
+        let breaker = match next.position.breaker() {
+            Some(breaker) if valid => Some(breaker.key()),
             _ => None,
         };
         let mut in_a_row = Map::new();

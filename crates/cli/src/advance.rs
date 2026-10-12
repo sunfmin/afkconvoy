@@ -33,16 +33,20 @@ fn pr_of(fleet: &Fleet, issue: u64) -> Result<Option<u64>> {
     Ok(closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number))
 }
 
-/// A reason as the comment of an escalation opens: one sentence, and where
-/// the stage said it when it did.
-fn stated(reason: &str, said: Option<&str>) -> String {
+/// A reason as the comment of an escalation opens: one sentence, where the
+/// stage said it when it did, and every round of the rework a breaker
+/// stopped when one did.
+fn stated(reason: &str, said: Option<&str>, rounds: Option<&str>) -> String {
     let mut letters = reason.chars();
     let first = letters.next().map(|first| first.to_uppercase().to_string()).unwrap_or_default();
-    let sentence = format!("{first}{}.", letters.as_str());
-    match said {
-        Some(url) => format!("{sentence}\n\nIts stage record: {url}"),
-        None => sentence,
+    let mut stated = format!("{first}{}.", letters.as_str());
+    if let Some(url) = said {
+        stated.push_str(&format!("\n\nIts stage record: {url}"));
     }
+    if let Some(rounds) = rounds {
+        stated.push_str(&format!("\n\n{rounds}"));
+    }
+    stated
 }
 
 /// Ends `claim` once its stage has declared, the issue left where its stage
@@ -169,9 +173,9 @@ pub fn advance(
                 hand_on(fleet, &claim, None)?;
                 return Ok(Outcome::Done);
             }
-            Blocked::Escalate(reason) => stated(&reason.to_string(), said),
+            Blocked::Escalate(reason) => stated(&reason.to_string(), said, None),
         },
-        Advance::Escalate(reason) => stated(&reason, said),
+        Advance::Escalate(reason) => stated(&reason, said, called.rounds.as_deref()),
     };
     let (worktree, workless) = worktree_and_work(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
@@ -180,14 +184,22 @@ pub fn advance(
 }
 
 /// The tick's step for an unclaimed issue that calls for a human: claim it,
-/// so that one fleet instance says so once, and escalate it for `reason`.
-pub fn hand_to_human(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<Outcome> {
+/// so that one fleet instance says so once, and escalate it for `reason`,
+/// with `rounds` — every round of the rework a breaker stopped, where one did.
+pub fn hand_to_human(
+    fleet: &mut Fleet,
+    me: &Me,
+    issue: u64,
+    reason: &str,
+    rounds: Option<&str>,
+) -> Result<Outcome> {
     if take(&fleet.repo, &mut fleet.scan, me, issue, Take::Fresh)?["won"] != true {
         return Ok(Outcome::Lost);
     }
     let claim = mine(fleet, me, issue)?.ok_or_else(|| anyhow!("issue #{issue}: no claim"))?;
     let (worktree, workless) = worktree_and_work(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
-    escalate_claim(fleet, &claim, &stated(reason, None), pr, worktree.as_ref(), workless.as_ref())?;
+    let reason = stated(reason, None, rounds);
+    escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
     Ok(Outcome::Done)
 }

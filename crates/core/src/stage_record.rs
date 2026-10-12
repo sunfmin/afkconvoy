@@ -4,6 +4,7 @@
 //! one home: only the fleet's commands write it, and nothing else reads it.
 
 use crate::position::{Declared, Place, Position, Reason};
+use crate::prompt::quoted;
 use crate::record;
 use crate::team::{LAND, Workflow};
 
@@ -120,6 +121,10 @@ pub struct History<'w> {
     pub place: Place<'w>,
     /// How each record read, in the records' order.
     pub readings: Vec<Reading>,
+    /// Which records are the issue's rework since it entered or a human last
+    /// ruled, oldest first: each rejection and each consult's ruling the
+    /// breakers counted, and the one a breaker refused.
+    pub rounds: Vec<usize>,
 }
 
 /// Where an issue of `workflow` is, given its stage records, oldest first. A
@@ -132,7 +137,8 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
     let mut place = Place::enter(workflow);
     let mut spent: Vec<&str> = vec![];
     let mut readings = vec![];
-    for record in records {
+    let mut rounds = vec![];
+    for (nth, record) in records.iter().enumerate() {
         let at = place.position.stage();
         let known = workflow.stages().iter().any(|stage| stage.name == record.stage);
         let reading = if spent.contains(&record.claim.as_str()) {
@@ -149,12 +155,25 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
             Reading::OtherStage
         } else {
             spent.push(&record.claim);
+            let before = place.position;
+            let had = place.rework();
             place = place.after(record.declared);
+            // The counts are the one account of what is rework: a round is
+            // what raised the total, or what a breaker refused to count. A
+            // human's ruling starts the rounds over with the counts.
+            let escalated = matches!(place.position, Position::Escalating(..));
+            if matches!(before, Position::Escalating(..)) {
+                if !escalated {
+                    rounds.clear();
+                }
+            } else if place.rework() > had || place.position.breaker().is_some() {
+                rounds.push(nth);
+            }
             Reading::Verdict
         };
         readings.push(reading);
     }
-    History { place, readings }
+    History { place, readings, rounds }
 }
 
 impl History<'_> {
@@ -169,6 +188,31 @@ impl History<'_> {
             }
         }
         None
+    }
+
+    /// The rework a breaker stopped, as the human it is handed to is told
+    /// it: every round's stage and reason, oldest first, from `records` —
+    /// the ones this was read from — and the URL of each one's comment.
+    /// `None` where no breaker tripped.
+    pub fn rounds_said(&self, records: &[StageRecord], urls: &[String]) -> Option<String> {
+        let breaker = self.place.position.breaker()?;
+        let mut said = format!(
+            "Every round of rework since this issue entered its workflow or a human last ruled \
+             on it, oldest first. The last is the one `{}` refused.",
+            breaker.key()
+        );
+        let mut round = 0u64;
+        for nth in &self.rounds {
+            let Some(record) = records.get(*nth) else { continue };
+            round = round.saturating_add(1);
+            let (stage, declared) = (&record.stage, record.declared.word());
+            said.push_str(&format!("\n\n{round}. `{stage}` declared `{declared}`"));
+            if let Some(url) = urls.get(*nth) {
+                said.push_str(&format!(" — {url}"));
+            }
+            said.push_str(&format!("\n\n{}", quoted(&record.text)));
+        }
+        Some(said)
     }
 }
 
@@ -449,6 +493,49 @@ mod tests {
         assert!(
             matches!(advanced(&changed, "c1"), Advance::Escalate(why) if why.contains("changed"))
         );
+    }
+
+    #[test]
+    fn a_breaker_s_rounds_are_every_rework_since_a_human_last_ruled_in_order() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let mut records = vec![record("plan", Pass, "c1")];
+        // `review` rejects three times in a row: max_consecutive_rework is 2.
+        for round in 0..3 {
+            records.push(record("build", Pass, &format!("b{round}")));
+            let mut rejection = record("review", Reject, &format!("r{round}"));
+            rejection.text = format!("Finding {round}.\nStill there.");
+            records.push(rejection);
+        }
+        let urls: Vec<String> = (0..records.len()).map(|at| format!("https://gh/c/{at}")).collect();
+        let before = history(workflow, &records[..5]);
+        assert_eq!(before.rounds, [2, 4]);
+        assert_eq!(before.rounds_said(&records, &urls), None, "no breaker tripped");
+        let tripped = history(workflow, &records);
+        assert_eq!(tripped.rounds, [2, 4, 6], "the one the breaker refused is a round too");
+        assert_eq!(
+            tripped.rounds_said(&records, &urls).unwrap(),
+            "Every round of rework since this issue entered its workflow or a human last ruled \
+             on it, oldest first. The last is the one `max_consecutive_rework` refused.\n\n\
+             1. `review` declared `reject` — https://gh/c/2\n\n> Finding 0.\n> Still there.\n\n\
+             2. `review` declared `reject` — https://gh/c/4\n\n> Finding 1.\n> Still there.\n\n\
+             3. `review` declared `reject` — https://gh/c/6\n\n> Finding 2.\n> Still there."
+        );
+        // What is declared on an escalated issue is no round, and a human's
+        // ruling starts the rounds over with the counts.
+        records.push(record("build", Reject, "x1"));
+        assert_eq!(history(workflow, &records).rounds, [2, 4, 6]);
+        records.push(record("build", Ruling, "h1"));
+        assert_eq!(history(workflow, &records).rounds, [] as [usize; 0]);
+        records.extend([record("build", Pass, "b3"), record("review", Reject, "r3")]);
+        assert_eq!(history(workflow, &records).rounds, [10]);
+        // A consult's ruling is a round; a park and an escalation no breaker made are none.
+        let asked = [record("plan", Blocked, "c0"), record("plan", Pass, "c1")];
+        let asked = [&asked[..], &[record("build", Escalate, "c2"), record("build", Ruling, "c3")]]
+            .concat();
+        assert_eq!(history(workflow, &asked).rounds, [3]);
+        let stuck = [record("plan", Escalate, "c1")];
+        assert_eq!(history(workflow, &stuck).rounds_said(&stuck, &[]), None);
     }
 
     #[test]

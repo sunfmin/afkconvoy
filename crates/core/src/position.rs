@@ -156,6 +156,14 @@ impl<'w> Position<'w> {
         }
     }
 
+    /// The breaker that handed the issue to a human; `None` where none did.
+    pub fn breaker(self) -> Option<Breaker> {
+        match self {
+            Position::Escalating(_, Reason::Breaker(breaker)) => Some(breaker),
+            _ => None,
+        }
+    }
+
     /// Who a worker is to be started as; `None` where none is to be.
     pub fn worker(self) -> Option<&'w Work> {
         match self {
