@@ -42,7 +42,7 @@ THE COMMANDS, by who runs them
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped:
-      gate  land  verdict  wake
+      gate  land  verdict  intake  wake
 
   A worker's hook — Claude Code runs it before each thing a bound repo's worker does.
   Nobody runs it by hand. Read it to learn what a worker is refused, and why one was:

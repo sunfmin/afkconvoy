@@ -30,6 +30,8 @@ WHAT IT READS AND WRITES
       label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`,
       and any write of an issue's labels through `gh api`)
     - writing a stage record by hand: only `afkconvoy verdict` writes one
+    - writing an intake record by hand: only `afkconvoy intake` writes one, and it is
+      what puts a flow label on for a worker
     - merging a PR (`gh pr merge`, or the merge endpoint through `gh api`)
     - pushing the base branch (`git push` with a refspec that lands on it, `--all`,
       `--mirror`)
