@@ -108,6 +108,10 @@ _Avoid_: answer, decision, override
 
 **Precedent**:
 A ruling kept so that later stages follow it instead of escalating. A worker proposes it; a human accepts it.
+
+**Proposal**:
+One human's ruling put forward as a precedent: a PR on the team's repo that appends one entry to its precedents file. A ruling gets one; a human merging it is what accepts the precedent.
+_Avoid_: suggestion, draft, candidate
 _Avoid_: rule, policy, guideline
 
 **Split**:
