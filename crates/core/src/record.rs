@@ -220,11 +220,8 @@ mod tests {
 
     #[test]
     fn the_latest_marker_wins() {
-        let bodies = [
-            "<!--convoy:verdict phase=blocked-->",
-            "chat",
-            "<!--convoy:verdict phase=escalate-->",
-        ];
+        let bodies =
+            ["<!--convoy:verdict phase=blocked-->", "chat", "<!--convoy:verdict phase=escalate-->"];
         let (at, fields) = latest_marker("convoy:verdict", bodies).unwrap();
         assert_eq!((at, fields.get("phase")), (2, Some("escalate")));
         assert!(latest_marker("convoy:branch", bodies).is_none());
