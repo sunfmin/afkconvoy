@@ -879,11 +879,11 @@ fn stage(draft: Draft, at: usize, pass: Pass, reject: Option<usize>) -> Option<S
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const TEAM: &str = "roles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n";
-    const FEATURE: &str = "\
+    pub(crate) const FEATURE: &str = "\
 stages:
   - name: plan
     by: dev
@@ -924,6 +924,11 @@ land: { by: dev, do: land }
                 repo("acme/reviewer", &["review", "rule"]),
             ],
         }
+    }
+
+    /// The usual team with `workflow` as its one workflow, `feature`.
+    pub(crate) fn one(workflow: &str) -> Team {
+        load(&sources(TEAM, &[("workflows/feature.md", workflow)])).unwrap()
     }
 
     /// Every fault of a team with one workflow, as (file, key, problem).

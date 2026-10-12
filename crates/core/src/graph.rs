@@ -1,0 +1,183 @@
+//! A workflow drawn as a graph, in plain text: one row per stage in the order
+//! its file lists them, each `pass` named under its stage, and each `reject`
+//! a line up the left margin to the stage it leads back to. It reads the same
+//! in a terminal and in a code block of a GitHub comment.
+
+use crate::position::Breaker;
+use crate::team::{DONE, HUMAN, LAND, Pass, Performer, Stage, Work, Workflow};
+
+/// One `reject`: from the stage at `from` back to the one at `to`.
+struct Back {
+    from: usize,
+    to: usize,
+}
+
+/// The drawing of `workflow`: lines, each ended by a newline.
+pub fn draw(workflow: &Workflow) -> String {
+    let stages = workflow.stages();
+    // The reject of a later stage is drawn further out, so one that spans
+    // another goes round it.
+    let mut backs: Vec<Back> = vec![];
+    for stage in stages.iter().rev() {
+        if let Some(to) = stage.reject() {
+            backs.push(Back { from: stage.at(), to });
+        }
+    }
+    let name = |at: usize| stages.get(at).map_or("", |stage| stage.name.as_str());
+    let ends_in_nothing = stages.iter().any(|stage| stage.pass() == Pass::Done);
+    // Every name drawn in the column of stage names: the ends are rows too.
+    let mut width = 0;
+    for stage in stages {
+        width = width.max(stage.name.chars().count());
+    }
+    if workflow.land.is_some() {
+        width = width.max(LAND.len());
+    }
+    if ends_in_nothing {
+        width = width.max(DONE.len());
+    }
+
+    let mut out = format!(
+        "{} — {} — {} {}, {} {}\n\n",
+        workflow.name,
+        workflow.flow_label(),
+        Breaker::Rework.key(),
+        workflow.max_rework,
+        Breaker::ConsecutiveRework.key(),
+        workflow.max_consecutive_rework,
+    );
+    for stage in stages {
+        let mut said = vec![match &stage.by {
+            Performer::Human => HUMAN.to_string(),
+            Performer::Role(work) => work_said(work),
+        }];
+        if let Some(model) = &stage.model {
+            said.push(format!("model {model}"));
+        }
+        if !stage.writes {
+            said.push("writes nothing".to_string());
+        }
+        if let Some(consult) = &stage.consult {
+            said.push(format!("escalate → {}", work_said(consult)));
+        }
+        if let Some(to) = stage.reject() {
+            said.push(format!("reject → {}", name(to)));
+        }
+        let said = said.join(" · ");
+        out.push_str(&format!("{}{:<width$}  {said}\n", margin(&backs, stage), stage.name));
+        let pass = match stage.pass() {
+            Pass::Stage(to) => name(to),
+            Pass::Land => LAND,
+            Pass::Done => DONE,
+        };
+        out.push_str(&format!("{}  ↓ pass → {pass}\n", between(&backs, stage)));
+    }
+    let blank = "  ".repeat(backs.len());
+    if let Some(land) = &workflow.land {
+        out.push_str(&format!("{blank}  {LAND:<width$}  {}\n", work_said(land)));
+    }
+    if ends_in_nothing {
+        out.push_str(&format!("{blank}  {DONE}\n"));
+    }
+    out
+}
+
+fn work_said(work: &Work) -> String {
+    format!("{}: {}", work.role, work.skill)
+}
+
+/// The left margin of a stage's row: every reject that starts, ends or
+/// passes by it, and the arrow into a stage one leads back to.
+fn margin(backs: &[Back], stage: &Stage) -> String {
+    let at = stage.at();
+    let mut out = String::new();
+    // Whether a reject has turned towards the stage: the line runs on to it.
+    let mut across = false;
+    let mut arrives = false;
+    for back in backs {
+        let cell = if back.to == at {
+            arrives = true;
+            if across { "┬─" } else { "┌─" }
+        } else if back.from == at {
+            if across { "┴─" } else { "└─" }
+        } else if back.to < at && at < back.from {
+            if across { "┼─" } else { "│ " }
+        } else if across {
+            "──"
+        } else {
+            "  "
+        };
+        across = across || back.to == at || back.from == at;
+        out.push_str(cell);
+    }
+    out.push_str(match (arrives, across) {
+        (true, _) => "▶ ",
+        (false, true) => "─ ",
+        (false, false) => "  ",
+    });
+    out
+}
+
+/// The left margin of the row under a stage: every reject that passes by.
+fn between(backs: &[Back], stage: &Stage) -> String {
+    let at = stage.at();
+    let mut out = String::new();
+    for back in backs {
+        out.push_str(if back.to <= at && at < back.from { "│ " } else { "  " });
+    }
+    out.push_str("  ");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::team::tests::{FEATURE, one};
+
+    #[test]
+    fn every_stage_its_role_and_skill_and_every_edge_is_drawn() {
+        let team = one(FEATURE);
+        let drawn = draw(team.workflow("feature").unwrap());
+        let expected = "\
+feature — flow:feature — max_rework 3, max_consecutive_rework 2
+
+┌───▶ plan      dev: plan
+│       ↓ pass → build
+│ ┌─▶ build     dev: implement · model opus · escalate → reviewer: rule
+│ │     ↓ pass → review
+│ └── review    reviewer: review · writes nothing · reject → build
+│       ↓ pass → sign-off
+└──── sign-off  human · reject → plan
+        ↓ pass → land
+      land      dev: land
+";
+        assert_eq!(drawn, expected, "\n{drawn}");
+    }
+
+    #[test]
+    fn rejects_that_cross_or_share_a_stage_are_each_drawn_to_their_own() {
+        let team = one("\
+max_rework: 5
+stages:
+  - { name: a, by: dev, do: plan, on: { pass: b } }
+  - { name: b, by: dev, do: plan, on: { pass: c, reject: a } }
+  - { name: c, by: dev, do: plan, on: { pass: d, reject: a } }
+  - { name: d, by: dev, do: plan, on: { pass: done, reject: c } }
+");
+        let drawn = draw(team.workflow("feature").unwrap());
+        let expected = "\
+feature — flow:feature — max_rework 5, max_consecutive_rework 2
+
+  ┌─┬─▶ a     dev: plan
+  │ │     ↓ pass → b
+  │ └── b     dev: plan · reject → a
+  │       ↓ pass → c
+┌─┴───▶ c     dev: plan · reject → a
+│         ↓ pass → d
+└────── d     dev: plan · reject → c
+          ↓ pass → done
+        done
+";
+        assert_eq!(drawn, expected, "\n{drawn}");
+    }
+}
