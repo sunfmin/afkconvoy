@@ -4,17 +4,20 @@
 
 use std::path::PathBuf;
 
+use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::Bound;
-use afkconvoy_core::prompt::{StageFields, stage_prompt};
-use afkconvoy_core::role::{Facts, Start, first_stage, in_role, quoted, takes_flags};
+use afkconvoy_core::prompt::{Said, StageFields, stage_prompt};
+use afkconvoy_core::role::{Due, Facts, Start, due, in_role, quoted, takes_flags};
+use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::PRECEDENTS;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::copies::{Copies, Copy};
 use crate::fleet::Fleet;
 use crate::launch::Proposed;
 use crate::orca::Worktree;
+use crate::stage::records_of;
 use crate::team::keep;
 
 /// One stage of one issue, as its worker is started on it: the role and the
@@ -30,18 +33,33 @@ pub struct Staged {
     model: Option<String>,
     role_copy: Copy,
     team_copy: Copy,
+    /// The verdicts declared on the issue so far, oldest first, each with
+    /// the URL of its comment: the worker's history.
+    verdicts: Vec<(StageRecord, String)>,
 }
 
 impl Staged {
-    /// The stage issue `issue`, carrying `labels`, enters its workflow at,
-    /// with the team and its roles as they stand now — each copied here
-    /// unless a copy of that commit already is. An error is an issue no
-    /// worker can be started on, or a team that does not load.
+    /// The stage issue `issue`, carrying `labels`, is at by its stage
+    /// records as they stand now, with the team and its roles as they stand
+    /// now — each copied here unless a copy of that commit already is. An
+    /// error is an issue no worker can be started on, or a team that does
+    /// not load.
     pub fn enter(fleet: &Fleet, bound: &Bound, issue: u64, labels: &[String]) -> Result<Staged> {
         let kept = keep(&fleet.gh, &Copies::here()?, &bound.team)?;
-        let entry = first_stage(&kept.team, labels)
-            .map_err(|why| anyhow!("issue #{issue} cannot be started: {why}"))?;
+        let (records, urls) = records_of(&fleet.gh, issue)?;
+        let entry = match due(&kept.team, labels, &records) {
+            Due::Worker(entry) => entry,
+            Due::Human(why) | Due::Nothing(why) => {
+                bail!("issue #{issue} cannot be started: {why}")
+            }
+        };
+        let readings = history(entry.workflow, &records).readings;
+        let verdicts = records.into_iter().zip(urls).zip(readings);
         Ok(Staged {
+            verdicts: verdicts
+                .filter(|(_, reading)| *reading == Reading::Verdict)
+                .map(|(verdict, _)| verdict)
+                .collect(),
             issue,
             flow: entry.workflow.name.clone(),
             stage: entry.stage.name.clone(),
@@ -76,9 +94,35 @@ impl Staged {
         in_role(launch, &start)
     }
 
+    /// Refuses a start under `claim` when a verdict was already declared
+    /// under it: a claim declares once, so the stage started would have no
+    /// say. The tick ends such a claim, and the next start takes another.
+    pub fn refuse_spent(&self, claim: Option<&Claim>) -> Result<()> {
+        let spent = |claim: &&Claim| self.verdicts.iter().any(|(said, _)| said.claim == claim.sha);
+        match claim.filter(spent) {
+            Some(_) => bail!(
+                "issue #{}: a stage already declared under the claim held on it, and a claim \
+                 declares once; the stage `{}` is started under the next one",
+                self.issue,
+                self.stage
+            ),
+            None => Ok(()),
+        }
+    }
+
     /// Writes the worker's brief into `worktree` → the file.
     pub fn write_brief(&self, fleet: &Fleet, worktree: &Worktree, title: &str) -> Result<PathBuf> {
         let verdict = format!("verdict --issue {} --stage {}", self.issue, quoted(&self.stage));
+        let records: Vec<Said> = self
+            .verdicts
+            .iter()
+            .map(|(record, url)| Said {
+                stage: &record.stage,
+                declared: record.declared,
+                text: &record.text,
+                url,
+            })
+            .collect();
         let fields = StageFields {
             number: self.issue,
             title,
@@ -90,6 +134,7 @@ impl Staged {
             worktree: &worktree.path.display().to_string(),
             base_branch: &fleet.config.base_branch,
             precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
+            records: &records,
             // A worker starts in its role's copy: the command is run from the worktree.
             verdict_command: &format!(
                 "cd {} && {}",

@@ -1,6 +1,7 @@
 //! The worker prompt: a template, filled by code. No worker is ever started on
 //! a prompt with a placeholder left in it.
 
+use crate::position::Declared;
 use crate::recovery::Variant;
 use crate::verdict;
 
@@ -167,6 +168,10 @@ reads this terminal: never wait for an answer.
   branch holds past `origin/{base_branch}`
 - **Precedents:** `{precedents}`
 
+## Stage records
+
+{records}
+<rework>
 ## Declare a verdict
 
 The stage ends when you declare its verdict with this command, and not before; its `--help` says
@@ -175,6 +180,28 @@ what it takes. Then stop.
 {verdict_command}
 ```
 ";
+
+/// What a stage running again is told of the rejection that sent the issue
+/// back to it. `<rejecter>` is the stage that rejected.
+const REWORK: &str = "
+## Rework
+
+This stage runs again: the stage `{rejecter}` rejected the work it was handed. Its reason:
+
+{reason}
+";
+
+/// One stage record that read as a verdict, as a worker's brief names it.
+#[derive(Debug, Clone)]
+pub struct Said<'a> {
+    /// The stage that declared it.
+    pub stage: &'a str,
+    pub declared: Declared,
+    /// What the stage produced: of a `reject`, the reason.
+    pub text: &'a str,
+    /// The comment the record is.
+    pub url: &'a str,
+}
 
 /// What the brief of a worker started in its role is filled with.
 #[derive(Debug, Clone)]
@@ -191,16 +218,41 @@ pub struct StageFields<'a> {
     pub base_branch: &'a str,
     /// The precedents file, in the fleet's copy of the team.
     pub precedents: &'a str,
+    /// The verdicts declared on the issue so far, oldest first: the worker's
+    /// history. When the last is a `reject`, the stage runs again for it.
+    pub records: &'a [Said<'a>],
     /// The line the worker declares its verdict with.
     pub verdict_command: &'a str,
+}
+
+/// `text` as a quotation: nothing in it reads as part of the brief.
+fn quoted(text: &str) -> String {
+    let lines: Vec<String> = text.trim().lines().map(|line| format!("> {line}")).collect();
+    lines.join("\n")
 }
 
 /// The brief a worker started in its role is given.
 pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     let number = fields.number.to_string();
+    let mut records = match fields.records {
+        [] => "None yet: no stage of this issue has declared a verdict.".to_string(),
+        _ => "What the stages before this one declared, oldest first — each is a comment on \
+              the issue, with what the stage produced:\n"
+            .to_string(),
+    };
+    for said in fields.records {
+        let (stage, verdict) = (said.stage, said.declared.word());
+        records.push_str(&format!("\n- `{stage}` declared `{verdict}` — {}", said.url));
+    }
+    let rejection = fields.records.last().filter(|last| last.declared == Declared::Reject);
+    let reason = rejection.map(|rejection| quoted(rejection.text)).unwrap_or_default();
+    let template = STAGE.replace("<rework>", if rejection.is_some() { REWORK } else { "" });
     fill(
-        STAGE,
+        &template,
         &[
+            ("records", &records),
+            ("rejecter", rejection.map_or("", |rejection| rejection.stage)),
+            ("reason", &reason),
             ("n", &number),
             ("title", fields.title),
             ("flow", fields.flow),
@@ -378,6 +430,15 @@ pub fn nudge_line(brief: &str) -> String {
     )
 }
 
+/// The one line typed at a worker in its role that stopped with no verdict.
+pub fn stage_nudge_line(brief: &str) -> String {
+    format!(
+        "You stopped without declaring a verdict. Nobody is watching this terminal, so do not \
+         wait for a confirmation or an answer: continue your task brief ({brief}) to the end, and \
+         finish by declaring your stage's verdict with the command it gives."
+    )
+}
+
 /// Fills every `{name}` of `template` in one pass, so a value is never itself
 /// read for placeholders: a title naming `{branch}` reaches the worker as it
 /// was given. A placeholder no field answers to, or a field with nothing in
@@ -506,7 +567,7 @@ mod tests {
 
     #[test]
     fn the_brief_of_a_worker_in_its_role_is_a_fixed_form() {
-        let prompt = stage_prompt(&StageFields {
+        let fields = StageFields {
             number: 7,
             title: "Add {branch} support",
             flow: "feature",
@@ -517,9 +578,10 @@ mod tests {
             worktree: "/wt/issue-7",
             base_branch: "develop",
             precedents: "/copies/acme/team/def/precedents.md",
+            records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
-        })
-        .unwrap();
+        };
+        let prompt = stage_prompt(&fields).unwrap();
         for said in [
             "- **Issue:** #7 — Add {branch} support\n",
             "- **Stage:** `build`, of the workflow `feature`\n",
@@ -535,6 +597,35 @@ mod tests {
         for absent in ["Implement", "gh pr create", "Gate", "landing train", "git add", "wake"] {
             assert!(!prompt.contains(absent), "{absent}");
         }
+        assert!(prompt.contains("## Stage records\n\nNone yet: no stage of this issue has"));
+        assert!(!prompt.contains("## Rework") && !prompt.contains("<rework>"), "{prompt}");
+
+        // The stage records are its history, and a rejection's reason is in the brief.
+        let said = |stage, declared, text, url| Said { stage, declared, text, url };
+        let passed = [said("build", Declared::Pass, "built", "https://gh/c/1")];
+        let reason = "## Not yet\n\nThe {parser} drops a `-->`.";
+        let rejected =
+            [&passed[..], &[said("review", Declared::Reject, reason, "https://gh/c/2")]].concat();
+        let again = stage_prompt(&StageFields { records: &rejected, ..fields.clone() }).unwrap();
+        assert!(
+            again.contains(
+                "\n\n- `build` declared `pass` — https://gh/c/1\n\
+                 - `review` declared `reject` — https://gh/c/2\n"
+            ),
+            "{again}"
+        );
+        assert!(
+            again.contains(
+                "## Rework\n\nThis stage runs again: the stage `review` rejected the work it was \
+                 handed. Its reason:\n\n> ## Not yet\n> \n> The {parser} drops a `-->`.\n\n\
+                 ## Declare a verdict\n"
+            ),
+            "{again}"
+        );
+        // A stage that follows a pass runs for the first time: no rework.
+        let on = stage_prompt(&StageFields { records: &passed, ..fields }).unwrap();
+        assert!(on.contains("- `build` declared `pass`") && !on.contains("## Rework"), "{on}");
+        assert!(stage_nudge_line("/b.md").contains("task brief (/b.md)"));
     }
 
     #[test]

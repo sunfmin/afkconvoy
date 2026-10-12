@@ -282,20 +282,21 @@ fn a_record_whose_stage_was_not_dispatched_under_its_claim_is_not_a_verdict() {
     let world = bound();
     world.issue(7, &["flow:feature"]);
     claim(&world, 7, 1000);
-    // The issue is at `build`: a record of any other stage moves nothing…
-    declare(&world, "deploy", "pass", &["--text", "shipped"]).ok();
-    let stray = show(&world);
-    assert_eq!(stray["position"]["stage"], "build");
-    assert_eq!(stray["records"][0]["reads"], "other-stage");
-    // …the stage that was dispatched still declares, and that ends the claim's
-    // say: the same worker does not declare the stage that follows.
+    // The stage that was dispatched declares, and that ends the claim's say:
+    // the same worker does not declare the stage that follows.
     declare(&world, "build", "pass", &["--text", "built"]).ok();
     declare(&world, "review", "pass", &["--text", "and reviewed, by the same worker"]).ok();
+    assert_eq!(show(&world)["position"]["stage"], "review");
+    // The issue is at `review`: under the next claim, a record of any other
+    // stage moves nothing.
+    release(&world, 7);
+    claim(&world, 7, 2000);
+    declare(&world, "build", "pass", &["--text", "built again, unasked"]).ok();
     let read = show(&world);
     assert_eq!(read["position"]["stage"], "review", "{read}");
     let reads: Vec<&str> =
         read["records"].as_array().unwrap().iter().map(|r| r["reads"].as_str().unwrap()).collect();
-    assert_eq!(reads, ["other-stage", "verdict", "claim-spent"]);
+    assert_eq!(reads, ["verdict", "claim-spent", "other-stage"]);
     // A marker typed into prose, or below anything else, is no record at all.
     world.comment(
         7,
@@ -349,15 +350,16 @@ fn a_label_that_cannot_be_derived_fails_its_step_and_nothing_else() {
     world.issue(7, &["flow:feature"]);
     world.issue(9, &["flow:chore"]);
     let ticked = tick(&world, 1000);
-    // A flow label that names no workflow gives no position to show.
+    // A flow label that names no workflow gives no position to show: the
+    // issue is handed to a human, and follows no workflow from then on.
     assert_eq!(labelled(&ticked), ["7 done", "9 nothing"], "{ticked}");
-    assert_eq!(stage_labels(&world, 9), Vec::<String>::new());
+    assert_eq!(world.labels(9), ["ready-for-human"]);
 
     // A team that no longer loads: the labels are left as they are, and said so.
     let team = world.root.join("github/acme/team");
     common::commit(&team, "workflows/feature.md", "```yaml\nstages: []\n```\n");
     let broken = tick(&world, 1090);
-    assert_eq!(labelled(&broken), ["7 failed", "9 failed"], "{broken}");
+    assert_eq!(labelled(&broken), ["7 failed"], "{broken}");
     let errors = broken["errors"].as_array().unwrap();
     assert!(errors[0]["error"].as_str().unwrap().contains("the team acme/team has"), "{broken}");
     assert_eq!(stage_labels(&world, 7), ["stage:build"]);

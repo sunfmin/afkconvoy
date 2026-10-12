@@ -29,10 +29,13 @@ pub enum Stage {
     Escalated,
     /// Left waiting on the issues that block it.
     Parked,
+    /// Its stage declared its verdict: the claim ended, and the issue is
+    /// where its stage records put it.
+    Declared,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 7] = [
+    pub const ALL: [Stage; 8] = [
         Stage::Claimed,
         Stage::Joining,
         Stage::Joined,
@@ -40,13 +43,14 @@ impl Stage {
         Stage::Closed,
         Stage::Escalated,
         Stage::Parked,
+        Stage::Declared,
     ];
 
     /// The stage a tick shows a claim in while it is held: `None` for one the
     /// same tick settles, whose last board the settling writes.
     pub fn held(status: Status) -> Option<Stage> {
         match status {
-            Status::NoPr => Some(Stage::Claimed),
+            Status::NoPr | Status::AtStage => Some(Stage::Claimed),
             Status::Joining => Some(Stage::Joining),
             Status::Joined => Some(Stage::Joined),
             Status::Landed | Status::Closed => None,
@@ -57,7 +61,9 @@ impl Stage {
     pub fn ends(self) -> bool {
         match self {
             Stage::Claimed | Stage::Joining | Stage::Joined => false,
-            Stage::Merged | Stage::Closed | Stage::Escalated | Stage::Parked => true,
+            Stage::Merged | Stage::Closed | Stage::Escalated | Stage::Parked | Stage::Declared => {
+                true
+            }
         }
     }
 }
@@ -87,7 +93,7 @@ fn steps_done(stage: Stage, has_pr: bool) -> usize {
         Stage::Joining => 3,
         Stage::Joined => 4,
         Stage::Merged => 5,
-        Stage::Closed | Stage::Escalated | Stage::Parked => {
+        Stage::Closed | Stage::Escalated | Stage::Parked | Stage::Declared => {
             if has_pr {
                 3
             } else {
@@ -129,6 +135,11 @@ fn off_ramp(board: &Board) -> Option<String> {
                 blockers.join(", ")
             ))
         }
+        Stage::Declared => Some(
+            "**Its stage declared its verdict** — the stage record on this issue says which, and \
+             the `stage:` label where the issue is now."
+                .to_string(),
+        ),
     }
 }
 
@@ -206,7 +217,7 @@ mod tests {
             assert!(!seen.contains(&text), "{stage:?} renders as another stage does");
             seen.push(text);
         }
-        assert_eq!(seen.len(), 7);
+        assert_eq!(seen.len(), 8);
     }
 
     #[test]
@@ -247,6 +258,9 @@ mod tests {
         ));
         assert!(render(&board(Stage::Closed, None)).contains("**Closed with nothing landed**"));
         assert_eq!(ticked(&render(&board(Stage::Closed, Some(70)))), 3);
+        let declared = render(&board(Stage::Declared, Some(70)));
+        assert!(declared.contains("was worked by") && declared.contains("**Its stage declared"));
+        assert_eq!(Stage::held(Status::AtStage), Some(Stage::Claimed));
     }
 
     #[test]

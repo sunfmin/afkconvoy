@@ -209,14 +209,26 @@ pub fn screen_request(_silent: &Silent) -> usize {
 
 /// Why a silent worker's claim is handed to a human, with where it stopped.
 pub fn stalled_reason(silent: &Silent, tail: &Tail) -> String {
+    stalled("The worker stopped with no PR and no verdict", silent, tail)
+}
+
+/// Why the claim of a silent worker of the stage `stage` is handed to a
+/// human, with where it stopped.
+pub fn stage_stalled_reason(stage: &str, silent: &Silent, tail: &Tail) -> String {
+    let stopped = format!("The worker of the stage `{stage}` stopped with no valid verdict");
+    stalled(&stopped, silent, tail)
+}
+
+/// `stopped` — what the worker stopped without — with how its silence was
+/// established, and the end of its screen.
+fn stalled(stopped: &str, silent: &Silent, tail: &Tail) -> String {
     let why = if silent.nudged {
-        "The worker stopped with no PR and no verdict, and stayed silent after one nudge."
+        format!("{stopped}, and stayed silent after one nudge.")
     } else {
-        "The worker stopped with no PR and no verdict, and this host has no worktree of its to \
-         nudge it in."
+        format!("{stopped}, and this host has no worktree of its to nudge it in.")
     };
     if tail.is_empty() {
-        return why.to_string();
+        return why;
     }
     format!("{why} Its terminal ended with:\n\n```\n{}\n```", tail.text())
 }

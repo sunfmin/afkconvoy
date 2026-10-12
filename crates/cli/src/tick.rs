@@ -3,11 +3,13 @@
 
 use std::time::Duration;
 
+use afkconvoy_core::plan::WorkingSet;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass};
 use afkconvoy_core::wake::turn;
 use anyhow::Result;
 use serde_json::{Value, json};
 
+use crate::advance::{advance, hand_to_human};
 use crate::board::show;
 use crate::claims::{Me, beat};
 use crate::dispatch::{Agent, StartFrom, dispatch};
@@ -15,7 +17,7 @@ use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::judge::judge;
 use crate::settle::settle;
-use crate::stage::Labels;
+use crate::stage::Flows;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
 use crate::wake::Listener;
@@ -38,13 +40,13 @@ pub struct Ticked {
 /// for the workers it started, and leaves nothing on this host a later tick
 /// needs: the next one rebuilds from GitHub and the remote.
 pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
-    let set = fleet.rebuild(Some(&me.instance))?;
+    let (set, flows) = fleet.rebuild(Some(&me.instance))?;
     let concurrency = fleet.config.concurrency();
     let mut failures = vec![];
-    let mut labels = Labels::of(&set.flowing);
+    let read = Read { set: &set, flows: &flows };
     let pass = run_pass(&set, concurrency, set.mine.len(), |step| {
         // Whatever a step raised, the rest of the tick is still owed.
-        carry_out(fleet, me, agent, &mut labels, step).unwrap_or_else(|error| {
+        carry_out(fleet, me, agent, &read, step).unwrap_or_else(|error| {
             failures.push(Failure { step, error: format!("{error:#}") });
             Outcome::Failed
         })
@@ -52,11 +54,18 @@ pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
     Ok(Ticked { pass, failures, concurrency })
 }
 
+/// What the tick's rebuild read: its steps act on this, and read nothing of
+/// an issue's place in its workflow again.
+struct Read<'r> {
+    set: &'r WorkingSet,
+    flows: &'r Flows,
+}
+
 fn carry_out(
     fleet: &mut Fleet,
     me: &Me,
     agent: &Agent,
-    labels: &mut Labels,
+    read: &Read,
     step: TickStep,
 ) -> Result<Outcome> {
     match step {
@@ -67,6 +76,14 @@ fn carry_out(
         TickStep::TendTrain => tend_train(fleet, me, agent),
         TickStep::Judge { issue } => judge(fleet, me, agent, issue),
         TickStep::Watch { issue } => watch(fleet, me, agent, issue),
+        TickStep::Advance { issue } => advance(fleet, me, agent, read.flows, issue),
+        TickStep::Escalate { issue } => {
+            let calling = read.set.escalating.iter().find(|calling| calling.number == issue);
+            match calling {
+                Some(calling) => hand_to_human(fleet, me, issue, &calling.reason),
+                None => Ok(Outcome::Nothing),
+            }
+        }
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
         TickStep::Reclaim { issue } => reclaim(fleet, me, agent, issue),
         TickStep::Dispatch { issue } => {
@@ -74,7 +91,7 @@ fn carry_out(
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
         TickStep::Board { issue, stage, pr } => show(fleet, me, issue, stage, pr),
-        TickStep::StageLabel { issue } => labels.bring(fleet, issue),
+        TickStep::StageLabel { issue } => read.flows.bring(fleet, issue),
         TickStep::Heartbeat => {
             beat(&fleet.repo, &mut fleet.scan, me)?;
             Ok(Outcome::Done)
@@ -88,6 +105,8 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::TendTrain => ("tend_train", None),
         TickStep::Judge { issue } => ("judge", Some(issue)),
         TickStep::Watch { issue } => ("watch", Some(issue)),
+        TickStep::Advance { issue } => ("advance", Some(issue)),
+        TickStep::Escalate { issue } => ("escalate", Some(issue)),
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
@@ -138,6 +157,8 @@ impl Ticked {
             ("settled", "settle"),
             ("ended", "judge"),
             ("escalated", "watch"),
+            ("advanced", "advance"),
+            ("handed to a human", "escalate"),
             ("unlocked", "unlock"),
             ("reclaimed", "reclaim"),
             ("dispatched", "dispatch"),

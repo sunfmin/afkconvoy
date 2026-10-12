@@ -1,9 +1,11 @@
-//! A worker's start in its role (docs/adr/0009): where an issue enters its
-//! workflow, what the fleet adds to the worker launch command of a bound repo,
-//! and whether the command takes it. What is added is fixed: nothing here is
+//! A worker's start in its role (docs/adr/0009): the stage an issue's worker
+//! is to be started on, what the fleet adds to the worker launch command of a
+//! bound repo, and whether the command takes it. What is added is fixed: nothing here is
 //! configurable, and an unbound repo's command never comes this way.
 
-use crate::team::{FLOW_LABEL, Performer, Role, Stage, Team, Work, Workflow};
+use crate::position::Position;
+use crate::stage_record::{StageRecord, history};
+use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
 
 /// Claude Code's flag for a directory added to the one it was started in.
 pub const ADD_DIR: &str = "--add-dir";
@@ -64,23 +66,47 @@ pub fn workflow_of<'t>(team: &'t Team, labels: &[String]) -> Result<&'t Workflow
         .ok_or_else(|| format!("its flow label {FLOW_LABEL}{name} names no workflow of the team"))
 }
 
-/// Where an issue carrying `labels` and no stage record enters `team`'s
-/// workflows: the first stage of the one its flow label names. An error says
-/// why no worker can be started on it.
-pub fn first_stage<'t>(team: &'t Team, labels: &[String]) -> Result<Entry<'t>, String> {
-    let workflow = workflow_of(team, labels)?;
-    let name = &workflow.name;
-    let stage = workflow.first();
-    let Performer::Role(work) = &stage.by else {
-        return Err(format!(
-            "the first stage of {FLOW_LABEL}{name}, {:?}, waits for a human: no worker performs it",
-            stage.name
-        ));
+/// What an issue's place in its workflow calls for while nobody holds it.
+#[derive(Debug, Clone)]
+pub enum Due<'t> {
+    /// A worker is to be started on this stage.
+    Worker(Entry<'t>),
+    /// The issue is to be handed to a human, for this reason.
+    Human(String),
+    /// Nothing is to be done with it, for this reason.
+    Nothing(String),
+}
+
+/// What is due on an issue carrying `labels` whose stage records are
+/// `records`, oldest first: the stage its position starts a worker on, in the
+/// workflow of `team` its flow label names. A flow label that names no one
+/// workflow, and a position that is an escalation, hand it to a human; an
+/// issue with no flow label is not the fleet's.
+pub fn due<'t>(team: &'t Team, labels: &[String], records: &[StageRecord]) -> Due<'t> {
+    let workflow = match workflow_of(team, labels) {
+        Ok(workflow) => workflow,
+        Err(why) if flows(labels).is_empty() => return Due::Nothing(why),
+        Err(why) => return Due::Human(why),
     };
-    let Some(role) = team.role(&work.role) else {
-        return Err(format!("the team has no role {:?}", work.role));
+    let position = history(workflow, records).place.position;
+    if let Some((stage, work)) = position.start() {
+        return match team.role(&work.role) {
+            Some(role) => Due::Worker(Entry { workflow, stage, work, role }),
+            None => Due::Nothing(format!("the team has no role {:?}", work.role)),
+        };
+    }
+    let waits = |stage: &Stage, on: &str| {
+        Due::Nothing(format!("its stage {:?} waits for {on}", stage.name))
     };
-    Ok(Entry { workflow, stage, work, role })
+    match position {
+        Position::Escalating(stage, reason) => Due::Human(reason.said(stage)),
+        Position::Consult(stage, _) => waits(stage, "its consult"),
+        Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
+            waits(stage, "a human: no worker performs it")
+        }
+        Position::Landing => Due::Nothing("its last stage passed it to the landing train".into()),
+        Position::Ended => Due::Nothing("its workflow has ended".to_string()),
+    }
 }
 
 /// The facts of one stage: what its worker, and the commands it runs, read
@@ -189,6 +215,7 @@ pub fn takes_flags(command: &str, answer: Option<&str>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::position::Declared;
     use crate::team::{File, RoleRepo, Sources, TEAM_FILE, load};
 
     const TEAM: &str = "roles:\n  dev: acme/dev\n  boss: acme/boss\n";
@@ -206,6 +233,17 @@ stages:
     by: human
     on: { pass: done }
 ";
+    const REVIEW: &str = "\
+stages:
+  - name: build
+    by: dev
+    do: implement
+    on: { pass: check }
+  - name: check
+    by: boss
+    do: implement
+    on: { pass: done, reject: build }
+";
 
     fn file(path: &str, yaml: &str) -> File {
         File { path: path.to_string(), yaml: serde_yaml::from_str(yaml).map_err(|e| e.to_string()) }
@@ -221,6 +259,7 @@ stages:
             workflows: vec![
                 file("workflows/feature.md", FEATURE),
                 file("workflows/signed.md", SIGNED),
+                file("workflows/review.md", REVIEW),
             ],
             repos: vec![repo("acme/dev"), repo("acme/boss")],
         })
@@ -231,10 +270,24 @@ stages:
         labels.iter().map(|label| label.to_string()).collect()
     }
 
+    fn record(stage: &str, declared: Declared) -> StageRecord {
+        StageRecord {
+            stage: stage.to_string(),
+            declared,
+            claim: format!("claim of {stage}"),
+            role_commit: "r".to_string(),
+            team_commit: "t".to_string(),
+            blocked_by: vec![],
+            text: "done".to_string(),
+        }
+    }
+
     #[test]
     fn an_issue_enters_at_the_first_stage_of_the_workflow_its_flow_label_names() {
         let team = team();
-        let entry = first_stage(&team, &labels(&["bug", "flow:feature"])).unwrap();
+        let Due::Worker(entry) = due(&team, &labels(&["bug", "flow:feature"]), &[]) else {
+            panic!("a worker is due")
+        };
         assert_eq!(entry.workflow.name, "feature");
         assert_eq!(entry.stage.name, "build");
         assert_eq!((entry.work.role.as_str(), entry.work.skill.as_str()), ("dev", "implement"));
@@ -245,17 +298,54 @@ stages:
         assert_eq!(entry.stage.model.as_deref(), Some("opus"));
     }
 
+    /// What is due, in a few words.
+    fn said(due: Due) -> String {
+        match due {
+            Due::Worker(entry) => format!("{} by {}", entry.stage.name, entry.work.role),
+            Due::Human(why) => format!("human: {why}"),
+            Due::Nothing(why) => format!("nothing: {why}"),
+        }
+    }
+
     #[test]
-    fn an_issue_no_worker_can_be_started_on_says_why() {
+    fn the_stage_records_say_which_stage_a_worker_is_due_on() {
         let team = team();
-        let why = |carried: &[&str]| first_stage(&team, &labels(carried)).unwrap_err();
-        assert_eq!(why(&["ready-for-agent"]), "it carries no flow label");
+        let flow = labels(&["flow:review"]);
+        let after = |records: &[StageRecord]| said(due(&team, &flow, records));
+        assert_eq!(after(&[]), "build by dev");
+        let built = [record("build", Declared::Pass)];
+        assert_eq!(after(&built), "check by boss");
+        let back = [&built[..], &[record("check", Declared::Reject)]].concat();
+        assert_eq!(after(&back), "build by dev");
+        // Returned from a park, it is at the stage that parked it.
+        assert_eq!(after(&[record("build", Declared::Blocked)]), "build by dev");
+        let done = [&built[..], &[record("check", Declared::Pass)]].concat();
+        assert_eq!(after(&done), "nothing: its workflow has ended");
+        assert_eq!(
+            after(&[record("build", Declared::Escalate)]),
+            "human: the stage `build` declared `escalate`, and it names no consult"
+        );
+    }
+
+    #[test]
+    fn an_issue_no_worker_is_due_on_says_why() {
+        let team = team();
+        let why = |carried: &[&str]| said(due(&team, &labels(carried), &[]));
+        // No flow label: it was never handed to the fleet.
+        assert_eq!(why(&["ready-for-agent"]), "nothing: it carries no flow label");
+        // A flow label that names no one workflow hands it to a human.
         assert!(
             why(&["flow:feature", "flow:signed"])
-                .contains("2 flow labels (flow:feature, flow:signed)")
+                .starts_with("human: it carries 2 flow labels (flow:feature, flow:signed)")
         );
-        assert!(why(&["flow:chore"]).contains("flow:chore names no workflow of the team"));
-        assert!(why(&["flow:signed"]).contains("\"sign-off\", waits for a human"));
+        assert_eq!(
+            why(&["flow:chore"]),
+            "human: its flow label flow:chore names no workflow of the team"
+        );
+        assert_eq!(
+            why(&["flow:signed"]),
+            "nothing: its stage \"sign-off\" waits for a human: no worker performs it"
+        );
     }
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {

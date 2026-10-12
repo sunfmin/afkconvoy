@@ -9,7 +9,7 @@ use crate::claims::{Claim, InstanceId};
 use crate::closing::issues_closed_by;
 use crate::config::Config;
 use crate::lease::is_stale;
-use crate::role::flows;
+use crate::role::{Due, flows};
 
 /// One open issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +99,10 @@ pub fn label_bar(labels: &[String], config: &Config) -> Option<LabelBar> {
 pub struct Dispatchable {
     pub number: u64,
     pub title: String,
+    /// The stage a worker is to be started on. `None` in an unbound repo,
+    /// whose issues have no stages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -122,6 +126,9 @@ pub enum Status {
     Landed,
     /// The issue is closed: the claim is to be settled and released.
     Closed,
+    /// A bound repo's claim on an open issue: it was dispatched to a stage,
+    /// and what that stage declares is what ends it. An open PR says nothing.
+    AtStage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -144,8 +151,14 @@ pub struct PeerClaim {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkingSet {
-    /// The issues dispatchable right now, lowest number first.
+    /// The issues a worker can be started on right now, lowest number first:
+    /// in a bound repo, each at the stage its stage records put it at.
     pub frontier: Vec<Dispatchable>,
+    /// A bound repo's unclaimed issues to hand to a human, each with the
+    /// reason: a flow label that names no one workflow, or a position that
+    /// is an escalation nobody carried out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub escalating: Vec<Excluded>,
     /// Every other open issue, with the reason it is not on the frontier.
     pub excluded: Vec<Excluded>,
     pub mine: Vec<Mine>,
@@ -177,6 +190,9 @@ pub struct Observed<'a> {
     pub joined: &'a [u64],
     /// My open issues the landing train landed under my claim.
     pub landed: &'a [u64],
+    /// What is due on each open issue of a bound repo that carries a flow
+    /// label (`role::due`). Empty in an unbound repo.
+    pub due: &'a [(u64, Due<'a>)],
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -199,6 +215,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
 
     let mut set = WorkingSet {
         frontier: vec![],
+        escalating: vec![],
         excluded: vec![],
         mine: vec![],
         peer_live: vec![],
@@ -213,19 +230,38 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             set.flowing.push((*issue).clone());
         }
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
+        let number = issue.number;
         let reason = if let Some(bar) = label_bar(&issue.labels, config) {
             bar.reason()
         } else if claimed {
             "already claimed".to_string()
-        } else if closing_pr(seen.prs, issue.number).is_some() {
+        } else if config.bound.is_some() {
+            // Where its stage records put it decides. An open PR declares nothing.
+            match seen.due.iter().find(|(due, _)| *due == number).map(|(_, due)| due) {
+                Some(Due::Human(reason)) => {
+                    set.escalating.push(Excluded { number, reason: reason.clone() });
+                    continue;
+                }
+                Some(Due::Nothing(why)) => why.clone(),
+                Some(Due::Worker(_)) if issue.open_blockers > 0 => {
+                    format!("{} open blocker(s)", issue.open_blockers)
+                }
+                Some(Due::Worker(entry)) => {
+                    let (title, stage) = (issue.title.clone(), Some(entry.stage.name.clone()));
+                    set.frontier.push(Dispatchable { number, title, stage });
+                    continue;
+                }
+                None => "its position was not read".to_string(),
+            }
+        } else if closing_pr(seen.prs, number).is_some() {
             "has an open linked PR".to_string()
         } else if issue.open_blockers > 0 {
             format!("{} open blocker(s)", issue.open_blockers)
         } else {
-            set.frontier.push(Dispatchable { number: issue.number, title: issue.title.clone() });
+            set.frontier.push(Dispatchable { number, title: issue.title.clone(), stage: None });
             continue;
         };
-        set.excluded.push(Excluded { number: issue.number, reason });
+        set.excluded.push(Excluded { number, reason });
     }
     for claim in claims {
         let closed = seen.closed.contains(&claim.number);
@@ -235,10 +271,12 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                 Status::Closed
             } else if seen.landed.contains(&claim.number) {
                 Status::Landed
+            } else if seen.joined.contains(&claim.number) && pr.is_some() {
+                Status::Joined
+            } else if config.bound.is_some() {
+                Status::AtStage
             } else if pr.is_none() {
                 Status::NoPr
-            } else if seen.joined.contains(&claim.number) {
-                Status::Joined
             } else {
                 Status::Joining
             };
@@ -353,6 +391,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            due: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -371,37 +410,127 @@ mod tests {
         );
     }
 
-    #[test]
-    fn in_a_bound_repo_the_flow_label_is_what_hands_an_issue_to_the_fleet() {
-        let bound = Config::new(Settings {
+    fn bound() -> Config {
+        Config::new(Settings {
             base_branch: Some("main".into()),
             gate_command: Some("true".into()),
             team: Some("acme/team".into()),
             ..Settings::default()
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn in_a_bound_repo_the_frontier_is_the_issues_a_worker_is_due_on_each_at_its_stage() {
+        use crate::position::Declared;
+        use crate::role::due;
+        use crate::stage_record::StageRecord;
+        use crate::team::tests::{FEATURE, one};
+        let team = one(FEATURE);
+        let record = |stage: &str, declared, claim: &str| StageRecord {
+            stage: stage.to_string(),
+            declared,
+            claim: claim.to_string(),
+            role_commit: "r".to_string(),
+            team_commit: "t".to_string(),
+            blocked_by: vec![],
+            text: "done".to_string(),
+        };
+        let planned = [record("plan", Declared::Pass, "c1")];
+        let parked = [&planned[..], &[record("build", Declared::Blocked, "c2")]].concat();
+        let escalated = [record("plan", Declared::Escalate, "c1")];
+        let ended = [record("plan", Declared::AlreadySatisfied, "c1")];
+        let mut waiting = issue(6, &["flow:feature"]);
+        waiting.open_blockers = 1;
         let issues = [
             issue(1, &["flow:feature"]),
             issue(2, READY),
             issue(3, &["flow:feature", "epic"]),
-            issue(4, &["flow:"]),
+            issue(4, &["flow:chore"]),
+            issue(5, &["flow:feature"]),
+            waiting,
+            issue(7, &["flow:feature"]),
+            issue(8, &["flow:feature"]),
+            issue(9, &["flow:feature"]),
+            issue(10, &["flow:feature"]),
+        ];
+        let of = |number: u64, records: &[StageRecord]| {
+            let carried = &issues.iter().find(|issue| issue.number == number).unwrap().labels;
+            (number, due(&team, carried, records))
+        };
+        let due = [
+            of(1, &[]),
+            of(3, &[]),
+            of(4, &[]),
+            of(5, &planned),
+            of(6, &parked),
+            of(7, &parked),
+            of(8, &escalated),
+            of(9, &ended),
+            of(10, &planned),
         ];
         let seen = Observed {
             issues: &issues,
-            prs: &[],
-            claims: &[],
-            heartbeats: &[],
+            // An open PR declares nothing: #5 has a stage to perform.
+            prs: &[pr(50, 5)],
+            claims: &[claim(10, "peer")],
+            heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             joined: &[],
             landed: &[],
+            due: &due,
         };
-        let set = assemble(&seen, Some(&me()), 1000, &bound);
-        let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
-        // Which workflow a flow label names is the dispatch's to say.
-        assert_eq!(frontier, [1, 4]);
-        let reasons: Vec<(u64, &str)> =
-            set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
-        assert_eq!(reasons, [(2, "no flow label"), (3, "epic label (epic)")]);
+        let set = assemble(&seen, Some(&me()), 1000, &bound());
+        let frontier: Vec<(u64, Option<&str>)> =
+            set.frontier.iter().map(|d| (d.number, d.stage.as_deref())).collect();
+        // #7 returned from its park: it is at the stage that parked it.
+        assert_eq!(frontier, [(1, Some("plan")), (5, Some("build")), (7, Some("build"))]);
+        let reasons = |rows: &[Excluded]| -> Vec<(u64, String)> {
+            rows.iter().map(|e| (e.number, e.reason.clone())).collect()
+        };
+        assert_eq!(
+            reasons(&set.escalating),
+            [
+                (4, "its flow label flow:chore names no workflow of the team".to_string()),
+                (8, "the stage `plan` declared `escalate`, and it names no consult".to_string()),
+            ]
+        );
+        assert_eq!(
+            reasons(&set.excluded),
+            [
+                (2, "no flow label".to_string()),
+                (3, "epic label (epic)".to_string()),
+                (6, "1 open blocker(s)".to_string()),
+                (9, "its workflow has ended".to_string()),
+                (10, "already claimed".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bound_repo_s_claim_is_at_a_stage_whatever_pr_is_open() {
+        let issues = [issue(1, &["flow:feature"]), issue(7, &["flow:feature"])];
+        let seen = Observed {
+            issues: &issues,
+            prs: &[pr(70, 7), pr(80, 8)],
+            claims: &[claim(1, "me"), claim(6, "me"), claim(7, "me"), claim(8, "me")],
+            heartbeats: &[],
+            closed: &[6],
+            joined: &[8],
+            landed: &[],
+            due: &[],
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &bound());
+        let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
+        assert_eq!(
+            mine,
+            [
+                (1, Status::AtStage, None),
+                (6, Status::Closed, None),
+                (7, Status::AtStage, Some(70)),
+                (8, Status::Joined, Some(80)),
+            ]
+        );
     }
 
     #[test]
@@ -432,6 +561,7 @@ mod tests {
             closed: &[4, 6],
             joined: &[8],
             landed: &[9],
+            due: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -467,6 +597,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            due: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -495,6 +626,7 @@ mod tests {
                     closed: &[9],
                     joined: &[],
                     landed: &[],
+                    due: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };

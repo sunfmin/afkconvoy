@@ -1,5 +1,5 @@
-//! The transitions that end a claim other than a landing: `escalate`, `close`
-//! and `park`. Each runs in one order, writes the status board's last word,
+//! The transitions that end a claim other than a landing: `escalate`, `close`,
+//! `park` and `hand_on`. Each runs in one order, writes the status board's last word,
 //! releases the claim as its last write to the remote, and hands back a
 //! `Released` only that release produces — so one cannot end half way and be
 //! taken for done.
@@ -13,6 +13,7 @@ use crate::blocked::Parkable;
 use crate::config::Config;
 use crate::record;
 use crate::stopped::Workless;
+use crate::team::FLOW_LABEL;
 
 /// What is left of a transition once its claim is gone: nothing to act on.
 #[derive(Debug, PartialEq, Eq)]
@@ -106,7 +107,7 @@ impl Escalation {
 pub enum EscalateStep {
     /// Comment the reason on the issue.
     Comment,
-    /// Swap `ready_label` for `escalate_label`.
+    /// Swap what hands the issue to the fleet for the escalate label (`Relabel`).
     Relabel,
     /// Write the status board: escalated.
     Board,
@@ -169,7 +170,44 @@ pub fn escalation_begun<'a>(bodies: impl IntoIterator<Item = &'a str>, claim: &s
 
 /// Is the issue labelled as handed over: `escalate_label` on, `ready_label` off?
 pub fn relabelled(labels: &[String], config: &Config) -> bool {
-    labels.contains(&config.escalate_label) && !labels.contains(&config.ready_label)
+    Relabel::of(labels, config, None).done()
+}
+
+/// The labels an escalation swaps on one issue: what hands it to the fleet
+/// comes off, and the escalate label goes on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relabel {
+    /// The escalate label, when the issue lacks it.
+    pub add: Option<String>,
+    /// What it carries that hands it to the fleet: the ready label, or — in
+    /// a bound repo — every flow label.
+    pub remove: Vec<String>,
+}
+
+impl Relabel {
+    /// The swap for an issue carrying `labels`. `team_label` is the escalate
+    /// label of the team a bound repo follows; `None` in an unbound repo,
+    /// whose own config names it.
+    pub fn of(labels: &[String], config: &Config, team_label: Option<&str>) -> Relabel {
+        let escalate = team_label.unwrap_or(&config.escalate_label);
+        let mut remove = vec![];
+        for label in labels {
+            let hands_over = match team_label {
+                Some(_) => label.starts_with(FLOW_LABEL),
+                None => *label == config.ready_label,
+            };
+            if hands_over {
+                remove.push(label.clone());
+            }
+        }
+        let carried = labels.iter().any(|label| label == escalate);
+        Relabel { add: if carried { None } else { Some(escalate.to_string()) }, remove }
+    }
+
+    /// Whether nothing is left to swap.
+    pub fn done(&self) -> bool {
+        self.add.is_none() && self.remove.is_empty()
+    }
 }
 
 /// One step of closing an issue that needed no change.
@@ -266,6 +304,36 @@ where
     // A worktree with work in it is what a later continuation starts from.
     if workless.is_some() {
         carry_out(ParkStep::RemoveWorktree)?;
+    }
+    Ok(released)
+}
+
+/// One step of ending the claim of a stage that declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandOnStep {
+    /// Write the status board: the stage declared.
+    Board,
+    Release,
+    RemoveWorktree,
+}
+
+/// Ends the claim on `issue` once its stage has declared, leaving the issue
+/// where its stage records put it: write the board → release the claim. The
+/// issue's labels are not touched: a later stage is the frontier's to start,
+/// in the same worktree. `ended` is given when the workflow has ended, with
+/// the proof that the branch holds no work when it does not: only then does
+/// the worktree go.
+pub fn hand_on<E, F>(issue: u64, ended: Option<&Workless>, mut carry_out: F) -> Result<Released, E>
+where
+    F: FnMut(HandOnStep) -> Result<(), E>,
+{
+    let mut word = LastWord::unwritten();
+    carry_out(HandOnStep::Board)?;
+    word.write();
+    carry_out(HandOnStep::Release)?;
+    let released = word.release(issue);
+    if ended.is_some() {
+        carry_out(HandOnStep::RemoveWorktree)?;
     }
     Ok(released)
 }
@@ -404,6 +472,47 @@ mod tests {
         assert!(relabelled(&labels(&["ready-for-human"]), &config));
         assert!(!relabelled(&labels(&["ready-for-human", "ready-for-agent"]), &config));
         assert!(!relabelled(&labels(&["bug"]), &config));
+    }
+
+    #[test]
+    fn in_a_bound_repo_every_flow_label_is_swapped_for_the_team_s_escalate_label() {
+        let config = Config::new(Settings {
+            base_branch: Some("main".into()),
+            gate_command: Some("true".into()),
+            team: Some("acme/team".into()),
+            ..Settings::default()
+        })
+        .unwrap();
+        let labels = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let carried = labels(&["flow:feature", "bug", "flow:chore", "ready-for-agent"]);
+        let swap = Relabel::of(&carried, &config, Some("for-a-human"));
+        assert_eq!(swap.add.as_deref(), Some("for-a-human"));
+        assert_eq!(
+            swap.remove,
+            ["flow:feature", "flow:chore"],
+            "the ready label means nothing here"
+        );
+        assert!(!swap.done());
+        assert!(Relabel::of(&labels(&["bug", "for-a-human"]), &config, Some("for-a-human")).done());
+    }
+
+    #[test]
+    fn handing_on_releases_after_the_board_and_keeps_a_worktree_another_stage_needs() {
+        use HandOnStep::*;
+        let run = |ended: Option<&Workless>, fail_at: Option<HandOnStep>| {
+            let mut steps = vec![];
+            let done = hand_on(7, ended, |step| {
+                steps.push(step);
+                if Some(step) == fail_at { Err("cut") } else { Ok(()) }
+            });
+            (done.map(|released| released.issue), steps)
+        };
+        assert_eq!(run(None, None), (Ok(7), vec![Board, Release]));
+        let empty =
+            Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
+        let workless = Workless::of(&empty).unwrap();
+        assert_eq!(run(Some(&workless), None), (Ok(7), vec![Board, Release, RemoveWorktree]));
+        assert_eq!(run(None, Some(Board)), (Err("cut"), vec![Board]), "the claim is still held");
     }
 
     #[test]
