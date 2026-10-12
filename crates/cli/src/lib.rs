@@ -29,6 +29,7 @@ pub mod probe;
 pub mod recovery;
 pub mod settle;
 pub mod takeover;
+pub mod team;
 pub mod tend;
 pub mod tick;
 pub mod tools;
@@ -63,6 +64,16 @@ enum Command {
         /// The config file [default: docs/agents/afkconvoy.md of this checkout]
         #[arg(long)]
         file: Option<PathBuf>,
+    },
+    /// Read a team and its workflows: what was read, or every fault
+    #[command(after_long_help = include_str!("help/check.txt"))]
+    Check {
+        /// The team's repo, as owner/repo [default: the team this checkout's config names]
+        #[arg(long, value_parser = team_repo)]
+        team: Option<String>,
+        /// A directory of a team's files, read as they are instead of from GitHub
+        #[arg(long, conflicts_with = "team")]
+        dir: Option<PathBuf>,
     },
     /// Show what a tick would act on, and change nothing
     #[command(after_long_help = include_str!("help/plan.txt"))]
@@ -278,6 +289,14 @@ pub fn own_command(arguments: &str) -> String {
     format!("{exe} {arguments}")
 }
 
+fn team_repo(text: &str) -> Result<String, String> {
+    if afkconvoy_core::config::is_repo(text) {
+        Ok(text.to_string())
+    } else {
+        Err("a team is named as its repo: owner/repo".to_string())
+    }
+}
+
 fn this_host() -> String {
     gethostname::gethostname().to_string_lossy().into()
 }
@@ -314,7 +333,13 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             println!("{answer}");
             ExitCode::SUCCESS
         }
-        Err(e) => fail(1, &format!("{e:#}")),
+        Err(e) => match e.downcast_ref::<team::Refused>() {
+            Some(refused) => {
+                println!("{}", json!({ "error": refused.to_string(), "faults": refused.json() }));
+                ExitCode::from(1)
+            }
+            None => fail(1, &format!("{e:#}")),
+        },
     }
 }
 
@@ -336,6 +361,14 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 None => config::default_file()?,
             };
             Ok(serde_json::to_value(config::load(&file)?)?)
+        }
+        Command::Check { team, dir } => {
+            let from = match (team, dir) {
+                (_, Some(dir)) => team::From::Dir(dir),
+                (Some(repo), None) => team::From::Repo(repo),
+                (None, None) => team::From::Config,
+            };
+            team::check(from)
         }
         Command::Plan { instance } => {
             probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);

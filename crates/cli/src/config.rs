@@ -28,7 +28,9 @@ pub fn parse(markdown: &str) -> Result<Config> {
     Ok(Config::new(settings)?)
 }
 
-fn yaml_block(markdown: &str) -> Option<String> {
+/// The text of the first ```` ```yaml ```` block of a markdown text: the one
+/// carrier of every definition afkconvoy reads.
+pub fn yaml_block(markdown: &str) -> Option<String> {
     let mut lines = markdown.lines().skip_while(|line| line.trim_end() != "```yaml");
     lines.next()?;
     let mut block = String::new();

@@ -1,7 +1,11 @@
-//! A repo's config: the six keys of `docs/agents/afkconvoy.md` (docs/adr/0001).
+//! A repo's config: the keys of `docs/agents/afkconvoy.md` (docs/adr/0001), and
+//! whether they bind the repo to a team (docs/adr/0008).
 
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
+
+/// The escalate label where nothing names one: a repo's, and a team's.
+pub const ESCALATE_LABEL: &str = "ready-for-human";
 
 /// The keys as a repo wrote them: any may be left out, none is yet checked.
 /// A key that is not one of these is refused where the file is read.
@@ -14,6 +18,23 @@ pub struct Settings {
     pub epic_labels: Option<Vec<String>>,
     pub concurrency: Option<usize>,
     pub escalate_label: Option<String>,
+    pub team: Option<String>,
+    pub patrols: Option<Vec<String>>,
+    pub lock_label: Option<String>,
+    pub intake_limit: Option<u64>,
+}
+
+/// What a bound repo's config says beside the keys every repo has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Bound {
+    /// The team's repo, as `owner/repo`.
+    pub team: String,
+    /// Which of the team's patrols run on this repo.
+    pub patrols: Vec<String>,
+    /// An open issue carrying this is a fleet lock.
+    pub lock_label: String,
+    /// How many issues taken in by workers may be open at once.
+    pub intake_limit: u64,
 }
 
 /// A config a fleet can run on: every key present, defaults filled.
@@ -28,6 +49,9 @@ pub struct Config {
     #[field(usize[concurrency])]
     concurrency: usize,
     pub escalate_label: String,
+    /// `None` in an unbound repo, whose config is the keys above and nothing else.
+    #[serde(flatten)]
+    pub bound: Option<Bound>,
 }
 
 /// Why a repo's settings are no config. Each names the key at fault.
@@ -40,6 +64,10 @@ pub enum ConfigError {
     ZeroConcurrency,
     /// `escalate_label` is `ready_label`: escalating would leave the issue dispatchable.
     EscalatesToReady,
+    /// `team` is not `owner/repo`.
+    NotARepo(&'static str),
+    /// A key that means something only in a bound repo, in a repo naming no team.
+    NeedsTeam(&'static str),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -50,6 +78,10 @@ impl std::fmt::Display for ConfigError {
             ConfigError::ZeroConcurrency => write!(f, "concurrency: must be at least 1"),
             ConfigError::EscalatesToReady => {
                 write!(f, "escalate_label: must differ from ready_label")
+            }
+            ConfigError::NotARepo(key) => write!(f, "{key}: must be a repo, as owner/repo"),
+            ConfigError::NeedsTeam(key) => {
+                write!(f, "{key}: is read only in a bound repo, and this one names no team")
             }
         }
     }
@@ -64,11 +96,27 @@ impl Config {
         let base_branch = required("base_branch", settings.base_branch)?;
         let gate_command = required("gate_command", settings.gate_command)?;
         let ready_label = label("ready_label", settings.ready_label, "ready-for-agent")?;
-        let escalate_label = label("escalate_label", settings.escalate_label, "ready-for-human")?;
+        let escalate_label = label("escalate_label", settings.escalate_label, ESCALATE_LABEL)?;
         if escalate_label == ready_label {
             return Err(ConfigError::EscalatesToReady);
         }
         let epic_labels = settings.epic_labels.unwrap_or_else(|| vec!["epic".into(), "prd".into()]);
+        let bound = match settings.team {
+            Some(team) => Some(Bound {
+                team: repo("team", team)?,
+                patrols: settings.patrols.unwrap_or_default(),
+                lock_label: label("lock_label", settings.lock_label, "fleet-lock")?,
+                intake_limit: settings.intake_limit.unwrap_or(50),
+            }),
+            None if settings.patrols.is_some() => return Err(ConfigError::NeedsTeam("patrols")),
+            None if settings.lock_label.is_some() => {
+                return Err(ConfigError::NeedsTeam("lock_label"));
+            }
+            None if settings.intake_limit.is_some() => {
+                return Err(ConfigError::NeedsTeam("intake_limit"));
+            }
+            None => None,
+        };
         match checked(
             base_branch,
             gate_command,
@@ -76,6 +124,7 @@ impl Config {
             epic_labels,
             settings.concurrency.unwrap_or(3),
             escalate_label,
+            bound,
         ) {
             Some(config) => Ok(config),
             None => Err(ConfigError::ZeroConcurrency),
@@ -90,7 +139,7 @@ impl Config {
 }
 
 /// The one place a `Config` is built: a zero concurrency never gets in.
-#[spec(fn(String, String, String, Vec<String>, concurrency: usize, String)
+#[spec(fn(String, String, String, Vec<String>, concurrency: usize, String, Option<Bound>)
     -> Option<Config[concurrency]>)]
 fn checked(
     base_branch: String,
@@ -99,6 +148,7 @@ fn checked(
     epic_labels: Vec<String>,
     concurrency: usize,
     escalate_label: String,
+    bound: Option<Bound>,
 ) -> Option<Config> {
     if concurrency == 0 {
         return None;
@@ -110,7 +160,29 @@ fn checked(
         epic_labels,
         concurrency,
         escalate_label,
+        bound,
     })
+}
+
+/// Whether `text` names a repo as GitHub does: `owner/repo`, each part of
+/// letters, digits, `.`, `_` and `-`. The one home of the form: a team and a
+/// role are both named so.
+pub fn is_repo(text: &str) -> bool {
+    let part = |part: &str| {
+        !part.is_empty()
+            && !part.starts_with('-')
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+    };
+    match text.split_once('/') {
+        Some((owner, name)) => part(owner) && part(name),
+        None => false,
+    }
+}
+
+fn repo(key: &'static str, value: String) -> Result<String, ConfigError> {
+    if is_repo(&value) { Ok(value) } else { Err(ConfigError::NotARepo(key)) }
 }
 
 fn required(key: &'static str, value: Option<String>) -> Result<String, ConfigError> {
@@ -147,6 +219,51 @@ mod tests {
         assert_eq!(config.escalate_label, "ready-for-human");
         assert_eq!(config.epic_labels, ["epic", "prd"]);
         assert_eq!(config.concurrency(), 3);
+        assert_eq!(config.bound, None, "a repo that names no team is unbound");
+    }
+
+    #[test]
+    fn a_repo_that_names_a_team_is_bound_with_defaults_filled() {
+        let named = Settings { team: Some("acme/team".into()), ..minimal() };
+        let bound = Config::new(named).unwrap().bound.unwrap();
+        assert_eq!(bound.team, "acme/team");
+        assert_eq!(bound.patrols, Vec::<String>::new());
+        assert_eq!(bound.lock_label, "fleet-lock");
+        assert_eq!(bound.intake_limit, 50);
+        let set = Settings {
+            team: Some("acme/team".into()),
+            patrols: Some(vec!["triage".into()]),
+            lock_label: Some("stop".into()),
+            intake_limit: Some(7),
+            ..minimal()
+        };
+        let bound = Config::new(set).unwrap().bound.unwrap();
+        assert_eq!(
+            (bound.patrols, bound.lock_label, bound.intake_limit),
+            (vec!["triage".to_string()], "stop".to_string(), 7)
+        );
+    }
+
+    #[test]
+    fn a_team_is_named_as_github_names_a_repo() {
+        for team in ["team", "acme/", "/team", "acme/team/x", "acme/te am", "-x/team", ""] {
+            let named = Settings { team: Some(team.into()), ..minimal() };
+            assert_eq!(Config::new(named), Err(ConfigError::NotARepo("team")), "{team:?}");
+        }
+        assert!(is_repo("acme-inc/team.roles_2"));
+    }
+
+    #[test]
+    fn a_key_of_a_bound_repo_is_refused_where_no_team_is_named() {
+        let patrols = Settings { patrols: Some(vec![]), ..minimal() };
+        assert_eq!(Config::new(patrols), Err(ConfigError::NeedsTeam("patrols")));
+        let lock = Settings { lock_label: Some("stop".into()), ..minimal() };
+        assert_eq!(Config::new(lock), Err(ConfigError::NeedsTeam("lock_label")));
+        let limit = Settings { intake_limit: Some(1), ..minimal() };
+        assert_eq!(Config::new(limit), Err(ConfigError::NeedsTeam("intake_limit")));
+        let empty =
+            Settings { team: Some("a/b".into()), lock_label: Some(" ".into()), ..minimal() };
+        assert_eq!(Config::new(empty), Err(ConfigError::Empty("lock_label")));
     }
 
     #[test]

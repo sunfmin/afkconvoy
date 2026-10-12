@@ -73,6 +73,14 @@ impl GitHub {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// Clones the head of `repo`'s default branch, and nothing behind it, into
+    /// the bare repo `into`. `gh` picks the protocol the user set it up with.
+    pub fn clone_head(&self, repo: &str, into: &std::path::Path) -> Result<()> {
+        let into = into.to_string_lossy();
+        self.gh(&["repo", "clone", repo, &into, "--", "--bare", "--depth", "1", "--quiet"])?;
+        Ok(())
+    }
+
     /// The protection of one branch, as far as it can be read. A branch with
     /// none is a read that succeeded; only a read GitHub refused, or one
     /// nobody can parse, is unreadable.

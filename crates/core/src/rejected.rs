@@ -14,6 +14,20 @@ fn a_config_with_no_slots(config: &Config) -> usize {
     config.concurrency()
 }
 
+mod team {
+    use flux_rs::attrs::*;
+
+    use crate::team::Stage;
+
+    /// A stage's reject leads back, so none may be read as leading to the
+    /// stage itself or past it.
+    #[should_fail]
+    #[spec(fn(&Stage[@s]) -> Option<usize{v: v >= s.at}>)]
+    fn a_reject_that_leads_forward(stage: &Stage) -> Option<usize> {
+        stage.reject()
+    }
+}
+
 mod lease {
     use flux_rs::attrs::*;
 

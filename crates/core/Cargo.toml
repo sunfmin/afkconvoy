@@ -10,6 +10,9 @@ publish = false
 flux-rs = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
 serde.workspace = true
 
+[dev-dependencies]
+serde_yaml = "0.9"
+
 # `cargo flux` (through ../../verify.sh) checks every refinement in this crate.
 [package.metadata.flux]
 enabled = true

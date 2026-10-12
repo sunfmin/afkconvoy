@@ -18,6 +18,7 @@ WHAT IT NEEDS
 WHAT TO RUN FIRST, in a checkout of the repo
 
   1. afkconvoy config    Read the config: what the fleet goes by.
+     afkconvoy check     Only where the config names a team: does the team load?
   2. afkconvoy plan      What a tick would act on. It changes nothing.
   3. afkconvoy run       The fleet instance: tick after tick, until stopped.
 
@@ -32,7 +33,7 @@ THE COMMANDS, by who runs them
   Read `afkconvoy <command> --help` before the first time you run one.
 
   The operator — starting, watching or stopping a fleet. Read these first:
-      config  plan  run  tick  takeover
+      config  check  plan  run  tick  takeover
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped:

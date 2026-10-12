@@ -22,6 +22,7 @@ version = "0.1.2"
 dependencies = [
  "flux-rs",
  "serde",
+ "serde_yaml",
 ]
 
 [[package]]

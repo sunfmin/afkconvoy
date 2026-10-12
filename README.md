@@ -47,6 +47,8 @@ escalate_label: ready-for-human   # swapped in for ready_label when the fleet gi
 
 `base_branch` and `gate_command` have no default; the rest default to the values shown. `afkconvoy config` prints what was read.
 
+A repo may also name a team — `team: owner/repo` — which makes it a bound repo (see [`GLOSSARY.md`](GLOSSARY.md)); `patrols`, `lock_label` and `intake_limit` are read beside it. `afkconvoy check` reads the team and its workflows and reports every fault with its file and key; `afkconvoy check --help` gives the files and keys of a team. A repo that names no team is unbound and works as described here.
+
 Then:
 
 - **Label the issues** the fleet may take with the ready label. An issue GitHub records as blocked by an open issue waits for it.
