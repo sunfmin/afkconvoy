@@ -39,7 +39,7 @@ The read-only pass at the top of every tick that derives the working set. Any fl
 _Avoid_: refresh, resync
 
 **Frontier**:
-The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR.
+The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR.
 _Avoid_: queue, backlog
 
 **Base branch**:

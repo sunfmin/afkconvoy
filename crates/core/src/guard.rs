@@ -417,17 +417,25 @@ pub struct WritesNothing {
     /// The commit its branch was at when its worker started.
     pub tip: String,
     pub stage: String,
+    /// Whether the worker is the stage's consult, which writes no code
+    /// whatever the stage may.
+    pub consult: bool,
 }
 
+/// What the second line of a kept start says of a consult's.
+const CONSULT_NOTE: &str = "consult";
+
 impl WritesNothing {
-    /// The one line it is kept as.
+    /// The text it is kept as: one line, and a second of a consult's.
     pub fn note(&self) -> String {
-        format!("{} {} {}", self.claim, self.tip, self.stage)
+        let consult = if self.consult { format!("\n{CONSULT_NOTE}") } else { String::new() };
+        format!("{} {} {}{consult}", self.claim, self.tip, self.stage)
     }
 
-    /// What `note` kept; `None` when the text is no such line.
+    /// What `note` kept; `None` when the text is no such note.
     pub fn read(note: &str) -> Option<WritesNothing> {
-        let mut parts = note.trim().splitn(3, ' ');
+        let mut lines = note.trim().lines();
+        let mut parts = lines.next()?.splitn(3, ' ');
         let (claim, tip, stage) = (parts.next()?, parts.next()?, parts.next()?);
         if claim.is_empty() || tip.is_empty() || stage.is_empty() {
             return None;
@@ -436,6 +444,7 @@ impl WritesNothing {
             claim: claim.to_string(),
             tip: tip.to_string(),
             stage: stage.to_string(),
+            consult: lines.next() == Some(CONSULT_NOTE),
         })
     }
 
@@ -446,10 +455,14 @@ impl WritesNothing {
         if self.claim != claim || self.tip == tip {
             return None;
         }
+        let who = if self.consult {
+            format!("a consult writes no code, and the consult of the stage `{}`", self.stage)
+        } else {
+            format!("the stage `{}` is marked `writes: false`, and it", self.stage)
+        };
         Some(format!(
-            "the stage `{}` is marked `writes: false`, and it left a commit on the branch: it \
-             started at {} and the branch is now at {tip}",
-            self.stage, self.tip
+            "{who} left a commit on the branch: it started at {} and the branch is now at {tip}",
+            self.tip
         ))
     }
 }
@@ -669,8 +682,12 @@ mod tests {
 
     #[test]
     fn a_commit_left_by_a_stage_that_writes_nothing_is_a_failure() {
-        let started =
-            WritesNothing { claim: "c1".into(), tip: "aaa".into(), stage: "code review".into() };
+        let started = WritesNothing {
+            claim: "c1".into(),
+            tip: "aaa".into(),
+            stage: "code review".into(),
+            consult: false,
+        };
         assert_eq!(started.note(), "c1 aaa code review");
         assert_eq!(WritesNothing::read("c1 aaa code review\n"), Some(started.clone()));
         for none in ["", "c1", "c1 aaa", "c1 aaa "] {
@@ -681,5 +698,17 @@ mod tests {
         let why = started.broken("c1", "bbb").unwrap();
         assert!(why.contains("the stage `code review` is marked `writes: false`"), "{why}");
         assert!(why.contains("started at aaa") && why.contains("now at bbb"), "{why}");
+        // A consult's start says whose it is, and so does its failure.
+        let consult = WritesNothing { consult: true, ..started.clone() };
+        assert_eq!(consult.note(), "c1 aaa code review\nconsult");
+        assert_eq!(WritesNothing::read(&consult.note()), Some(consult.clone()));
+        let why = consult.broken("c1", "bbb").unwrap();
+        assert!(
+            why.starts_with(
+                "a consult writes no code, and the consult of the stage `code review` \
+                             left a commit"
+            ),
+            "{why}"
+        );
     }
 }

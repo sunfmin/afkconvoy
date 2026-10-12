@@ -220,6 +220,58 @@ This stage runs again under a human's ruling on it. Follow it:
 {reason}
 ";
 
+/// What a stage is told of its consult's ruling it runs again under.
+const CONSULTED: &str = "
+## Ruling
+
+This stage declared `escalate`, and its consult ruled on that. It runs again under the ruling.
+Follow it:
+
+{reason}
+";
+
+/// The brief of a consult: a fixed form that says what was asked and how to
+/// answer, and nothing of how to decide — that is the role's to say.
+const CONSULT: &str = "\
+You are an afkconvoy worker, started in your role as a **consult**: a stage of one GitHub issue
+declared `escalate`, and you rule on that before a human is asked. Nobody reads this terminal: never
+wait for an answer.
+
+- **Issue:** #{n} — {title}
+- **Stage that asked:** `{stage}`, of the workflow `{flow}`
+- **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
+- **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`). It is
+  yours to read only: a consult writes no code, so never commit and never push
+- **History:** the issue and every comment on it (`gh issue view {n} --comments`), and what the
+  branch holds past `origin/{base_branch}`
+- **Precedents:** `{precedents}`
+
+## Stage records
+
+{records}
+
+## What was asked
+
+The stage `{stage}` could not decide, and said why:
+
+{reason}
+
+## Rule, or let it through
+
+End with exactly one of these two commands, and not before; each one's `--help` says what it takes.
+Then stop.
+
+- **Rule.** The stage `{stage}` runs again under your ruling, which is the text you give:
+  ```bash
+  {rule_command} --text-file <file>
+  ```
+- **Let it through.** The question is not yours to rule on either: the issue goes to a human, and
+  your text says what has to be decided:
+  ```bash
+  {verdict_command} escalate --text-file <file>
+  ```
+";
+
 /// What a stage is told of the human who sent the issue to it.
 const SENT: &str = "
 ## Sent here
@@ -253,8 +305,8 @@ pub struct StageFields<'a> {
     /// The precedents file, in the fleet's copy of the team.
     pub precedents: &'a str,
     /// What was declared on the issue so far, oldest first: the worker's
-    /// history. When the last is a `reject`, a human's ruling or a human's
-    /// sending, the stage runs for it.
+    /// history. When the last is a `reject`, a ruling or a human's sending,
+    /// the stage runs for it; a consult rules on the last, an `escalate`.
     pub records: &'a [Said<'a>],
     /// The line the worker declares its verdict with.
     pub verdict_command: &'a str,
@@ -269,28 +321,37 @@ pub(crate) fn quoted(text: &str) -> String {
     lines.join("\n")
 }
 
-/// The brief a worker started in its role is given.
-pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
-    let number = fields.number.to_string();
-    let mut records = match fields.records {
+/// The stage records of a brief, as a list a worker reads.
+fn records_said(records: &[Said]) -> String {
+    let mut records_said = match records {
         [] => "None yet: no stage of this issue has declared a verdict.".to_string(),
         _ => "What the stages before this one declared, oldest first — each is a comment on \
               the issue, with what the stage produced:\n"
             .to_string(),
     };
-    for said in fields.records {
+    for said in records {
         let (stage, word) = (&said.record.stage, said.record.stated.word());
         let line = match said.record.by {
-            Author::Worker { .. } => format!("`{stage}` declared `{word}`"),
-            Author::Human => said.record.headline(),
+            Author::Worker { consult: false, .. } => format!("`{stage}` declared `{word}`"),
+            Author::Worker { consult: true, .. } | Author::Human => said.record.headline(),
         };
-        records.push_str(&format!("\n- {line} — {}", said.url));
+        records_said.push_str(&format!("\n- {line} — {}", said.url));
     }
+    records_said
+}
+
+/// The brief a worker started in its role is given.
+pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
+    let number = fields.number.to_string();
+    let records = records_said(fields.records);
     // Only the last record says why the stage runs now.
     let last = fields.records.last().map(|said| said.record);
     let (why, reason) = match last {
         Some(last) if last.stated == Stated::Sent => (SENT, quoted(&last.text)),
         Some(last) if last.puts() => (RULED, quoted(&last.text)),
+        Some(last) if last.stated == Stated::Declared(Declared::Ruling) => {
+            (CONSULTED, quoted(&last.text))
+        }
         Some(last) if last.stated == Stated::Declared(Declared::Reject) => {
             (REWORK, quoted(&last.text))
         }
@@ -319,6 +380,33 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             ("precedents", fields.precedents),
             ("verdict_command", fields.verdict_command),
             ("gate_command", fields.gate_command.unwrap_or_default()),
+        ],
+    )
+}
+
+/// The brief a consult is given: `fields` are those of the stage that asked,
+/// with the consult's role and skill, and `rule_command` is the line it rules
+/// with. The last of the records is the `escalate` it rules on.
+pub fn consult_prompt(fields: &StageFields, rule_command: &str) -> Result<String, String> {
+    let number = fields.number.to_string();
+    let asked = fields.records.last().map_or(String::new(), |said| quoted(&said.record.text));
+    fill(
+        CONSULT,
+        &[
+            ("records", &records_said(fields.records)),
+            ("reason", &asked),
+            ("n", &number),
+            ("title", fields.title),
+            ("flow", fields.flow),
+            ("stage", fields.stage),
+            ("role", fields.role),
+            ("skill", fields.skill),
+            ("branch", fields.branch),
+            ("worktree_path", fields.worktree),
+            ("base_branch", fields.base_branch),
+            ("precedents", fields.precedents),
+            ("verdict_command", fields.verdict_command),
+            ("rule_command", rule_command),
         ],
     )
 }
@@ -692,6 +780,7 @@ mod tests {
         };
         let worker = |stage: &str, declared, text: &str| {
             let by = Author::Worker {
+                consult: false,
                 claim: "c".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
@@ -749,6 +838,58 @@ mod tests {
             "{here}"
         );
         assert!(stage_nudge_line("/b.md").contains("task brief (/b.md)"));
+
+        // A stage its consult ruled on runs again under that ruling; the
+        // consult's brief is the `escalate` it rules on and the two lines it
+        // ends with.
+        let consult = |declared, text: &str| {
+            let by = Author::Worker {
+                consult: true,
+                claim: "c".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            };
+            left("build", Stated::Declared(declared), by, text)
+        };
+        let (asked, answer) = (
+            worker("build", Declared::Escalate, "v1 or v2?"),
+            consult(Declared::Ruling, "Keep {v1}."),
+        );
+        let escalated = [Said { record: &asked, url: "https://gh/c/5" }];
+        let rule = "/opt/bin/afkconvoy rule --issue 7 --stage build";
+        let consulted = StageFields { role: "boss", skill: "rule", ..fields.clone() };
+        let brief = consult_prompt(&StageFields { records: &escalated, ..consulted.clone() }, rule)
+            .unwrap();
+        for said in [
+            "started in your role as a **consult**",
+            "- **Stage that asked:** `build`, of the workflow `feature`\n",
+            "- **Skill to perform:** `rule`, of the role you were started in (`boss`)\n",
+            "a consult writes no code, so never commit and never push\n",
+            "- `build` declared `escalate` — https://gh/c/5\n",
+            "## What was asked\n\nThe stage `build` could not decide, and said why:\n\n> v1 or v2?\n",
+            "```bash\n  /opt/bin/afkconvoy rule --issue 7 --stage build --text-file <file>\n",
+            "/opt/bin/afkconvoy verdict --issue 7 --stage build escalate --text-file <file>\n",
+        ] {
+            assert!(brief.contains(said), "{said}\n{brief}");
+        }
+        assert!(consult_prompt(&consulted, rule).is_err(), "nothing was asked");
+        let answered =
+            [&escalated[..], &[Said { record: &answer, url: "https://gh/c/6" }]].concat();
+        let under = stage_prompt(&StageFields { records: &answered, ..fields.clone() }).unwrap();
+        assert!(
+            under.contains(
+                "- the consult of the stage `build` ruled on its `escalate`: the stage runs \
+                 again under the ruling — https://gh/c/6\n"
+            ),
+            "{under}"
+        );
+        assert!(
+            under.contains(
+                "## Ruling\n\nThis stage declared `escalate`, and its consult ruled on that. It \
+                 runs again under the ruling.\nFollow it:\n\n> Keep {v1}.\n"
+            ),
+            "{under}"
+        );
     }
 
     #[test]
