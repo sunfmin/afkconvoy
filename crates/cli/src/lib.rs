@@ -7,6 +7,8 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
+use afkconvoy_core::config::RepoName;
+use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
 use afkconvoy_core::role::{CONSULT_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
@@ -102,7 +104,7 @@ enum Command {
         role: Option<scaffold::Named>,
         /// Also commit the skeleton and create this repo on GitHub from it, as owner/repo
         #[arg(long, value_parser = repo)]
-        repo: Option<String>,
+        repo: Option<RepoName>,
         /// Create that repo public [default: private]
         #[arg(long, requires = "repo")]
         public: bool,
@@ -415,7 +417,7 @@ enum Command {
 struct TeamArgs {
     /// The team's repo, as owner/repo [default: the team this checkout's config names]
     #[arg(long, value_parser = team_repo)]
-    team: Option<String>,
+    team: Option<RepoName>,
     /// A directory of a team's files, read as they are instead of from GitHub
     #[arg(long, conflicts_with = "team")]
     dir: Option<PathBuf>,
@@ -482,14 +484,21 @@ impl Who {
     }
 }
 
-/// The command line that runs this very binary with `arguments`, for a prompt:
-/// a worker's shell need not have it on its PATH.
-pub fn own_command(arguments: &str) -> String {
+/// The start of a command line that runs this very binary, for a prompt: a
+/// worker's shell need not have it on its PATH. What follows is its arguments.
+pub fn own_command() -> Line {
+    Line::new().program(&own_program())
+}
+
+/// The same, run from `dir`: a worker that starts in its role's copy runs its
+/// commands from its worktree.
+pub fn own_command_in(dir: &str) -> Line {
+    Line::new().fixed("cd ").word(dir).fixed(" && ").program(&own_program())
+}
+
+fn own_program() -> String {
     let exe = std::env::current_exe().ok().and_then(|path| path.to_str().map(str::to_string));
-    let exe = exe.unwrap_or_else(|| "afkconvoy".to_string());
-    let plain = exe.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+".contains(&b));
-    let exe = if plain { exe } else { format!("'{}'", exe.replace('\'', "'\\''")) };
-    format!("{exe} {arguments}")
+    exe.unwrap_or_else(|| "afkconvoy".to_string())
 }
 
 /// A help text with the files and keys of a team and a role put in where it
@@ -498,20 +507,12 @@ fn with_files(help: &str) -> String {
     help.replace("{files}", include_str!("help/files.txt").trim_end())
 }
 
-fn repo(text: &str) -> Result<String, String> {
-    if afkconvoy_core::config::is_repo(text) {
-        Ok(text.to_string())
-    } else {
-        Err("a repo is named as owner/repo".to_string())
-    }
+fn repo(text: &str) -> Result<RepoName, String> {
+    RepoName::read(text).ok_or_else(|| "a repo is named as owner/repo".to_string())
 }
 
-fn team_repo(text: &str) -> Result<String, String> {
-    if afkconvoy_core::config::is_repo(text) {
-        Ok(text.to_string())
-    } else {
-        Err("a team is named as its repo: owner/repo".to_string())
-    }
+fn team_repo(text: &str) -> Result<RepoName, String> {
+    RepoName::read(text).ok_or_else(|| "a team is named as its repo: owner/repo".to_string())
 }
 
 fn declared(text: &str) -> Result<Declared, String> {

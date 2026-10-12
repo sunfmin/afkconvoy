@@ -5,7 +5,7 @@
 
 use flux_rs::attrs::*;
 
-use crate::config::{ESCALATE_LABEL, is_repo};
+use crate::config::{ESCALATE_LABEL, RepoName};
 
 /// The team file, at the top of a team's repo.
 pub const TEAM_FILE: &str = "team.md";
@@ -229,8 +229,7 @@ impl Team {
 pub struct Role {
     /// What the team's workflows call it.
     pub name: String,
-    /// Its repo, as `owner/repo`.
-    pub repo: String,
+    pub repo: RepoName,
     /// The head of the repo's default branch when it was read.
     pub commit: String,
     pub skills: Vec<String>,
@@ -369,8 +368,8 @@ impl Workflow {
         &self.stages[0]
     }
 
-    /// The stage at the place `at`: where a `pass` or a `reject` of one of
-    /// its stages leads.
+    /// The stage at a place the workflow has: where a `pass` or a `reject`
+    /// of one of its stages leads.
     #[spec(fn(&Workflow[@w], at: usize{at < w.n}) -> &Stage{v: v.n == w.n})]
     pub fn stage(&self, at: usize) -> &Stage {
         &self.stages[at]
@@ -379,6 +378,20 @@ impl Workflow {
     #[spec(fn(&Workflow[@w]) -> &[Stage{v: v.n == w.n}][w.n])]
     pub fn stages(&self) -> &[Stage] {
         &self.stages
+    }
+
+    /// The place among the workflow's stages of the one `name` names; `None`
+    /// when the workflow has no such stage.
+    #[spec(fn(&Workflow[@n], name: &str) -> Option<usize{v: v < n}>)]
+    pub fn place_of(&self, name: &str) -> Option<usize> {
+        let mut at = 0;
+        while at < self.stages.len() {
+            if self.stages[at].name == name {
+                return Some(at);
+            }
+            at += 1;
+        }
+        None
     }
 }
 
@@ -419,16 +432,16 @@ fn among(pass: Pass, n: usize) -> Option<Pass> {
 
 /// The repos a team file names as its roles: what to read before `load`. It
 /// reports nothing — `load` says what is wrong with the file.
-pub fn role_repos(team: &File) -> Vec<String> {
-    let mut repos: Vec<String> = vec![];
+pub fn role_repos(team: &File) -> Vec<RepoName> {
+    let mut repos: Vec<RepoName> = vec![];
     let Ok(Node::Map(entries)) = &team.yaml else { return repos };
     if let Some(Node::Map(roles)) = get(entries, "roles") {
         for (_, repo) in roles {
             if let Node::Text(repo) = repo
-                && is_repo(repo)
-                && !repos.contains(repo)
+                && let Some(repo) = RepoName::read(repo)
+                && !repos.contains(&repo)
             {
-                repos.push(repo.clone());
+                repos.push(repo);
             }
         }
     }
@@ -670,17 +683,19 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
             continue;
         }
         let repo = match repo {
-            Node::Text(repo) if is_repo(repo) => repo,
-            Node::Text(_) => {
-                report.fault(&key, "must be a repo, as owner/repo".to_string());
-                continue;
-            }
+            Node::Text(repo) => match RepoName::read(repo) {
+                Some(repo) => repo,
+                None => {
+                    report.fault(&key, "must be a repo, as owner/repo".to_string());
+                    continue;
+                }
+            },
             other => {
                 report.fault(&key, format!("must be a repo, as owner/repo, not {}", kind(other)));
                 continue;
             }
         };
-        match sources.repos.iter().find(|(read, _)| read == repo) {
+        match sources.repos.iter().find(|(read, _)| read == repo.as_str()) {
             Some((_, Ok(read))) => roles.loaded.push(Role {
                 name: name.clone(),
                 repo: repo.clone(),
@@ -1128,6 +1143,18 @@ mod rejected {
             pass: Pass::Stage(n),
             reject: None,
         }
+    }
+
+    /// A place read as at the number of stages: one past the last.
+    #[should_fail]
+    fn a_place_at_the_number_of_stages(workflow: &Workflow) -> &Stage {
+        workflow.stage(workflow.stages.len())
+    }
+
+    /// A place read as whatever it is, past the stages or not.
+    #[should_fail]
+    fn a_place_past_the_stages(workflow: &Workflow, at: usize) -> &Stage {
+        workflow.stage(at)
     }
 }
 
@@ -1631,7 +1658,9 @@ stages:
             TEAM_FILE,
             "roles: { dev: acme/dev, qa: acme/dev, ops: nowhere, n: 3, r: acme/r }",
         );
-        assert_eq!(role_repos(&team), ["acme/dev", "acme/r"]);
+        let repos = role_repos(&team);
+        let repos: Vec<&str> = repos.iter().map(RepoName::as_str).collect();
+        assert_eq!(repos, ["acme/dev", "acme/r"]);
         assert!(role_repos(&file(TEAM_FILE, "roles: [a/b]")).is_empty());
         assert!(role_repos(&file(TEAM_FILE, "roles: {")).is_empty());
     }

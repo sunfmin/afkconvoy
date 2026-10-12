@@ -16,6 +16,7 @@ flux-core = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727f
 serde.workspace = true
 
 [dev-dependencies]
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 serde_yaml = "0.9"
 
 # `cargo flux` (through ../../verify.sh) checks every refinement in this crate.

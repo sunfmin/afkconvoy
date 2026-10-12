@@ -259,14 +259,46 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
         // find alone: the stage it is at, while at one, is the workflow's.
         qualifier!(at_stage: bool, of: int, n: int; at_stage => of == n);
         let at = place.position.stage();
-        let named = workflow.stages().iter().find(|stage| stage.name == record.stage);
         let reading = if record.claim().is_some_and(|claim| spent.contains(&claim)) {
             Reading::ClaimSpent
-        } else if let Some(stage) = named.filter(|_| record.stated == Stated::Sent) {
-            place = place.put(stage);
-            rounds.clear();
-            Reading::Sent
-        } else if named.is_none() {
+        } else if let Some(named) = workflow.place_of(&record.stage) {
+            let own = at.filter(|stage| stage.at() == named);
+            if record.stated == Stated::Sent {
+                place = place.put(workflow.stage(named));
+                rounds.clear();
+                Reading::Sent
+            } else if own.is_none() {
+                Reading::OtherStage
+            } else if let Some(stage) = own.filter(|_| record.puts()) {
+                // A human rules wherever the issue stopped: an escalation is not
+                // always one its records show.
+                place = place.put(stage);
+                rounds.clear();
+                Reading::Verdict
+            } else if let Stated::Declared(declared) = record.stated {
+                if let Some(claim) = record.claim() {
+                    spent.push(claim);
+                }
+                let before = place.position;
+                let had = place.rework();
+                place = place.after(declared);
+                // The counts are the one account of what is rework: a round is
+                // what raised the total, or what a breaker refused to count. A
+                // human's ruling starts the rounds over with the counts.
+                let escalated = matches!(place.position, Position::Escalating(..));
+                if matches!(before, Position::Escalating(..)) {
+                    if !escalated {
+                        rounds.clear();
+                    }
+                } else if place.rework() > had || place.position.breaker().is_some() {
+                    rounds.push(nth);
+                }
+                Reading::Verdict
+            } else {
+                // A sending: read above, whatever stage it names.
+                Reading::Sent
+            }
+        } else {
             // An issue already with a human, or past its stages, stays as it is.
             if let Some(stage) = at
                 && !matches!(place.position, Position::Escalating(..))
@@ -274,36 +306,6 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
                 place.position = Position::Escalating(stage, Reason::WorkflowChanged);
             }
             Reading::UnknownStage
-        } else if at.map(|stage| stage.name.as_str()) != Some(record.stage.as_str()) {
-            Reading::OtherStage
-        } else if let Some(stage) = at.filter(|_| record.puts()) {
-            // A human rules wherever the issue stopped: an escalation is not
-            // always one its records show.
-            place = place.put(stage);
-            rounds.clear();
-            Reading::Verdict
-        } else if let Stated::Declared(declared) = record.stated {
-            if let Some(claim) = record.claim() {
-                spent.push(claim);
-            }
-            let before = place.position;
-            let had = place.rework();
-            place = place.after(declared);
-            // The counts are the one account of what is rework: a round is
-            // what raised the total, or what a breaker refused to count. A
-            // human's ruling starts the rounds over with the counts.
-            let escalated = matches!(place.position, Position::Escalating(..));
-            if matches!(before, Position::Escalating(..)) {
-                if !escalated {
-                    rounds.clear();
-                }
-            } else if place.rework() > had || place.position.breaker().is_some() {
-                rounds.push(nth);
-            }
-            Reading::Verdict
-        } else {
-            // A sending: read above, whatever stage it names.
-            Reading::Sent
         };
         readings.push(reading);
     }
