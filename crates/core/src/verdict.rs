@@ -14,21 +14,26 @@ pub enum Phase {
     /// The issue waits on other issues, which the verdict names.
     Blocked,
     /// A human has to step in: the worker is stuck, or the issue cannot be done as written.
-    NeedsHuman,
+    Escalate,
 }
 
 impl Phase {
-    pub const ALL: [Phase; 3] = [Phase::AlreadySatisfied, Phase::Blocked, Phase::NeedsHuman];
+    pub const ALL: [Phase; 3] = [Phase::AlreadySatisfied, Phase::Blocked, Phase::Escalate];
 
     pub fn word(self) -> &'static str {
         match self {
             Phase::AlreadySatisfied => "already-satisfied",
             Phase::Blocked => "blocked",
-            Phase::NeedsHuman => "needs-human",
+            Phase::Escalate => "escalate",
         }
     }
 
+    /// The phase a marker's word names. `needs-human` is what `escalate` was
+    /// called: comments written under that name are still on issues.
     pub fn read(word: &str) -> Option<Phase> {
+        if word == "needs-human" {
+            return Some(Phase::Escalate);
+        }
         Phase::ALL.into_iter().find(|phase| phase.word() == word)
     }
 }
@@ -71,10 +76,11 @@ mod tests {
         for phase in Phase::ALL {
             assert_eq!(Phase::read(phase.word()), Some(phase));
         }
+        assert_eq!(Phase::read("needs-human"), Some(Phase::Escalate));
         assert_eq!(Phase::read("giving-up"), None);
         assert_eq!(
             marker_format(),
-            "<!--convoy:verdict phase=<already-satisfied|blocked|needs-human> [blocked_by=<n,…>]-->"
+            "<!--convoy:verdict phase=<already-satisfied|blocked|escalate> [blocked_by=<n,…>]-->"
         );
     }
 
@@ -83,10 +89,10 @@ mod tests {
         let bodies = [
             "<!--convoy:verdict phase=blocked blocked_by=41, #42-->\nwaiting on the schema",
             "just a comment",
-            "<!--convoy:verdict phase=needs-human-->\nI cannot make the gate pass",
+            "<!--convoy:verdict phase=escalate-->\nI cannot make the gate pass",
         ];
         let verdict = latest_verdict(bodies).unwrap();
-        assert_eq!((verdict.phase, verdict.comment), (Some(Phase::NeedsHuman), 2));
+        assert_eq!((verdict.phase, verdict.comment), (Some(Phase::Escalate), 2));
         let first = latest_verdict(bodies[..2].iter().copied()).unwrap();
         assert_eq!(
             (first.phase, first.blocked_by, first.comment),

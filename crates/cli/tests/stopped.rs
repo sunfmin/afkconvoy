@@ -67,7 +67,7 @@ fn report(world: &World, state: &str, since: u64, output: u64) {
 #[test]
 fn a_busy_worker_is_left_with_no_github_read() {
     let world = fleet(1000);
-    declare(&world, "needs-human");
+    declare(&world, "escalate");
     report(&world, "working", 1000, 1080);
     world.gh_calls();
     assert_eq!(did(&tick(&world, 1090)), ["judge 7 nothing", "heartbeat done"]);
@@ -83,7 +83,7 @@ fn a_busy_worker_is_left_with_no_github_read() {
 #[test]
 fn an_orca_that_cannot_be_asked_is_an_error_never_a_worker_that_is_gone() {
     let world = fleet(1000);
-    declare(&world, "needs-human");
+    declare(&world, "escalate");
     world.with_orca(|orca| orca["ps_truncated"] = json!(true));
     let ticked = tick(&world, 1090);
     assert_eq!(did(&ticked)[0], "judge 7 failed");
@@ -104,7 +104,7 @@ fn an_orca_that_cannot_be_asked_is_an_error_never_a_worker_that_is_gone() {
 fn a_recent_sign_of_life_is_left_whatever_was_declared() {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let world = fleet(now);
-    declare(&world, "needs-human");
+    declare(&world, "escalate");
     // the worktree was touched moments ago
     assert_eq!(did(&tick(&world, now + 90))[0], "judge 7 nothing");
     assert_eq!(did(&tick(&world, now + 400))[0], "judge 7 done");
@@ -116,7 +116,7 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
     world.issue(9, &["ready-for-agent"]);
     world.issue(10, &["ready-for-agent"]);
     assert_eq!(did(&tick(&world, 1090))[1], "dispatch 9 done");
-    declare(&world, "needs-human");
+    declare(&world, "escalate");
     declare(&world, "already-satisfied");
     let dir = worktree(&world);
     world.watch_pushes(None);
@@ -162,8 +162,13 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
 }
 
 #[test]
-fn needs_human_and_an_unknown_phase_escalate() {
-    for (phase, says) in [("needs-human", "declared `needs-human`"), ("giving-up", "cannot read")] {
+fn escalate_and_an_unknown_phase_escalate() {
+    for (phase, says) in [
+        ("escalate", "declared `escalate`"),
+        // what `escalate` was called: comments written under it are still read
+        ("needs-human", "declared `escalate`"),
+        ("giving-up", "cannot read"),
+    ] {
         let world = fleet(1000);
         let dir = worktree(&world);
         let said = declare(&world, phase);
@@ -257,7 +262,7 @@ fn a_verdict_is_never_overridden_by_a_nudge() {
     // declared before any nudge: routed, nothing typed
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
-    declare(&world, "needs-human");
+    declare(&world, "escalate");
     world.orca_calls();
     assert_eq!(did(&tick(&world, 1300)), ["judge 7 done"]);
     assert_eq!(screen_reads(&world), [] as [Vec<String>; 0], "a worker that declared is not read");
@@ -320,7 +325,7 @@ fn nudge_is_sent_once_and_only_to_a_silent_worker_of_mine() {
 
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
-    declare(&world, "needs-human");
+    declare(&world, "escalate");
     let error = nudge(&world, "alpha", "1300").error();
     assert!(error.contains("declared a verdict"), "{error}");
     assert_eq!(typed(&world).len(), 1);
