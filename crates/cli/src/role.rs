@@ -55,17 +55,18 @@ impl Staged {
         let kept = keep(&fleet.gh, &Copies::here()?, &bound.team)?;
         let (records, urls) = records_of(&fleet.gh, issue)?;
         let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
-        let (workflow, work, role) = match due(&kept.team, labels, &records, pr) {
-            Due::Worker(entry) => (entry.workflow, entry.work, entry.role),
-            Due::Lander(lander) => (lander.workflow, lander.work, lander.role),
+        // A landing worker is at no stage: it may commit, to resolve a
+        // conflict on joining, and its workflow names no model for it.
+        let (workflow, work, role, at, joins) = match due(&kept.team, labels, &records, pr) {
+            Due::Worker(entry) => (entry.workflow, entry.work, entry.role, Some(entry.stage), None),
+            Due::Lander(lander) => {
+                (lander.workflow, lander.work, lander.role, None, Some(lander.pr))
+            }
             Due::Human(why) | Due::Nothing(why) => {
                 bail!("issue #{issue} cannot be started: {why}")
             }
         };
         let history = history(workflow, &records);
-        // A landing worker is at no stage: it may commit, to resolve a
-        // conflict on joining, and its workflow names no model for it.
-        let at = history.place.position.stage();
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
         Ok(Staged {
             verdicts: verdicts
@@ -79,7 +80,7 @@ impl Staged {
             skill: work.skill.clone(),
             writes: at.is_none_or(|stage| stage.writes),
             model: at.and_then(|stage| stage.model.clone()),
-            joins: pr.filter(|_| at.is_none()),
+            joins,
             role_copy: kept.role(role)?.clone(),
             team_copy: kept.copy.clone(),
         })

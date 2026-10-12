@@ -39,7 +39,10 @@ WHAT TRIPS YOU UP
   - In a bound repo one tick does not take an issue from one stage to the next. The
     tick that reads a verdict ends the claim its stage was performed under (`advance`);
     the stage that follows is on the frontier of the tick after it, and is started
-    under a claim of its own when a slot is free.
+    under a claim of its own when a slot is free. The same holds for the last stage:
+    the tick after a `pass` that leads to `land` starts a worker in the workflow's
+    landing role, which gates the PR and joins the landing train; a `pass` to `land`
+    with no open PR to join is handed to a human.
   - A step that failed is not a failed command: the exit is 0 and the failure is in
     `errors`. Read `errors`, not the exit code.
   - It does not take the claims stamped with this host: only `run` does that, at its
