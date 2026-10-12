@@ -215,6 +215,20 @@ pub fn dispatch_steps(held: bool, by_hand: bool) -> Vec<DispatchStep> {
     order.steps
 }
 
+/// Is a worktree directory of this name the one created under `name`? orca
+/// adds a `-<k>` when the name was taken. A worktree linked to no issue is
+/// known by the name it was created under.
+pub fn is_worktree_named(directory: &str, name: &str) -> bool {
+    match directory.strip_prefix(name) {
+        Some("") => true,
+        Some(rest) => match rest.strip_prefix('-') {
+            Some(k) => !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()),
+            None => false,
+        },
+        None => false,
+    }
+}
+
 /// How long a worker may be quiet before its silence means anything.
 pub const GRACE: u64 = 300;
 

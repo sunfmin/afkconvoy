@@ -475,12 +475,10 @@ fn a_worker_that_is_gone_is_started_again_in_its_role() {
 
 #[test]
 fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
-    use afkconvoy_core::role::{FLAGS, Facts};
+    use afkconvoy_core::role::{FLAGS, Facts, On};
     let readme = include_str!("../../../README.md");
     let facts = Facts {
-        issue: 7,
-        flow: "f",
-        stage: "s",
+        on: On::Stage { issue: 7, flow: "f", stage: "s" },
         role: "r",
         skill: "k",
         writes: true,

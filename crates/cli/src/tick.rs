@@ -17,6 +17,7 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::judge::judge;
+use crate::patrol;
 use crate::settle::settle;
 use crate::stage::Flows;
 use crate::takeover::{at_start, reclaim, unlock};
@@ -38,6 +39,9 @@ pub struct Ticked {
     bound: usize,
     /// The fleet locks that stood as it ran.
     locks: Vec<u64>,
+    /// The patrols the repo names, by their place in the working set: what a
+    /// step on a patrol names it by.
+    patrols: Vec<String>,
 }
 
 /// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
@@ -48,14 +52,15 @@ pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
     let bound = set.bound(fleet.config.concurrency());
     let mut failures = vec![];
     let read = Read { set: &set, flows: &flows };
-    let pass = run_pass(&set, bound, set.mine.len(), |step| {
+    let pass = run_pass(&set, bound, set.held(), |step| {
         // Whatever a step raised, the rest of the tick is still owed.
         carry_out(fleet, me, agent, &read, step).unwrap_or_else(|error| {
             failures.push(Failure { step, error: format!("{error:#}") });
             Outcome::Failed
         })
     });
-    Ok(Ticked { pass, failures, bound, locks: set.locks })
+    let patrols = set.patrols.iter().map(|patrol| patrol.name.clone()).collect();
+    Ok(Ticked { pass, failures, bound, locks: set.locks, patrols })
 }
 
 /// What the tick's rebuild read: its steps act on this, and read nothing of
@@ -91,6 +96,14 @@ fn carry_out(
                 None => Ok(Outcome::Nothing),
             }
         }
+        TickStep::EndPatrol { patrol } => match read.set.patrols.get(patrol) {
+            Some(row) => patrol::end(fleet, me, read.flows, row),
+            None => Ok(Outcome::Nothing),
+        },
+        TickStep::Patrol { patrol } => match read.set.patrols.get(patrol) {
+            Some(row) => patrol::run(fleet, me, agent, read.flows, row),
+            None => Ok(Outcome::Nothing),
+        },
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
         TickStep::Reclaim { issue } => reclaim(fleet, me, agent, issue),
         TickStep::Dispatch { issue } => {
@@ -114,6 +127,8 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Watch { issue } => ("watch", Some(issue)),
         TickStep::Advance { issue } => ("advance", Some(issue)),
         TickStep::Escalate { issue } => ("escalate", Some(issue)),
+        TickStep::EndPatrol { .. } => ("end_patrol", None),
+        TickStep::Patrol { .. } => ("patrol", None),
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
@@ -124,13 +139,33 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
 }
 
 impl Ticked {
+    /// The patrol `step` is on, when it is on one.
+    fn patrol(&self, step: TickStep) -> Option<&str> {
+        match step {
+            TickStep::EndPatrol { patrol } | TickStep::Patrol { patrol } => {
+                self.patrols.get(patrol).map(String::as_str)
+            }
+            _ => None,
+        }
+    }
+
+    /// One step as an answer names it: what it does, and the issue or the
+    /// patrol it is on.
+    fn named(&self, step: TickStep) -> Value {
+        let (word, issue) = words(step);
+        let mut named = json!({"do": word, "issue": issue});
+        if let Some(patrol) = self.patrol(step) {
+            named["patrol"] = json!(patrol);
+        }
+        named
+    }
+
     pub fn json(&self) -> Value {
         let did: Vec<Value> = self
             .pass
             .did
             .iter()
             .map(|(step, outcome)| {
-                let (word, issue) = words(*step);
                 let outcome = match outcome {
                     Outcome::Done => "done",
                     Outcome::Nudged => "nudged",
@@ -141,15 +176,18 @@ impl Ticked {
                     Outcome::Lost => "lost",
                     Outcome::Failed => "failed",
                 };
-                json!({"do": word, "issue": issue, "outcome": outcome})
+                let mut did = self.named(*step);
+                did["outcome"] = json!(outcome);
+                did
             })
             .collect();
         let errors: Vec<Value> = self
             .failures
             .iter()
             .map(|failure| {
-                let (word, issue) = words(failure.step);
-                json!({"do": word, "issue": issue, "error": failure.error})
+                let mut failed = self.named(failure.step);
+                failed["error"] = json!(failure.error);
+                failed
             })
             .collect();
         json!({"did": did, "errors": errors, "held": self.pass.held,
@@ -201,6 +239,18 @@ impl Ticked {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
         }
+        for (verb, wanted) in [("ran the patrol", "patrol"), ("ended the patrol", "end_patrol")] {
+            let patrols: Vec<&str> = self
+                .pass
+                .did
+                .iter()
+                .filter(|(step, outcome)| words(*step).0 == wanted && *outcome == Outcome::Done)
+                .filter_map(|(step, _)| self.patrol(*step))
+                .collect();
+            if !patrols.is_empty() {
+                parts.push(format!("{verb} {}", patrols.join(", ")));
+            }
+        }
         for (outcome, said) in [
             (Outcome::Done, "tended the train"),
             (Outcome::Nudged, "nudged the train worker"),
@@ -218,7 +268,8 @@ impl Ticked {
         for failure in &self.failures {
             let (word, issue) = words(failure.step);
             let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
-            parts.push(format!("FAILED {word}{issue}: {}", failure.error));
+            let patrol = self.patrol(failure.step).map(|p| format!(" {p}")).unwrap_or_default();
+            parts.push(format!("FAILED {word}{issue}{patrol}: {}", failure.error));
         }
         parts.join(" · ")
     }

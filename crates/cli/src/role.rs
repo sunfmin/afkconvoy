@@ -11,7 +11,7 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
-use afkconvoy_core::role::{Due, Facts, Start, due, in_role, quoted, takes_flags};
+use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role, quoted, takes_flags};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::{LAND, PRECEDENTS};
 use anyhow::{Result, anyhow, bail};
@@ -121,9 +121,7 @@ impl Staged {
             model: self.model.as_deref(),
             guard: &crate::own_command("guard"),
             facts: Facts {
-                issue: self.issue,
-                flow: &self.flow,
-                stage: &self.stage,
+                on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,
                 skill: &self.skill,
                 writes: self.writes,

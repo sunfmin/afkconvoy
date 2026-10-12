@@ -254,6 +254,28 @@ impl GitHub {
         Ok(())
     }
 
+    /// Opens an issue carrying `labels` → its number.
+    pub fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
+        let (title, body) = (format!("title={title}"), format!("body={body}"));
+        let labels: Vec<String> = labels.iter().map(|label| format!("labels[]={label}")).collect();
+        let mut args = vec![
+            "api",
+            "--method",
+            "POST",
+            "repos/{owner}/{repo}/issues",
+            "-f",
+            &title,
+            "-f",
+            &body,
+        ];
+        for label in &labels {
+            args.extend(["-f", label.as_str()]);
+        }
+        args.extend(["--jq", ".number"]);
+        let out = self.gh(&args)?;
+        out.trim().parse().with_context(|| format!("gh api issues: no number in {out:?}"))
+    }
+
     /// Closes one issue as completed.
     pub fn close_issue(&self, number: u64) -> Result<()> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}");

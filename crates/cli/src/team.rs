@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::team::{
-    self, Fault, File, Node, Pass, Performer, RoleRepo, SKILLS, Sources, Stage, TEAM_FILE, Team,
-    WORKFLOWS, Work, Workflow,
+    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RoleRepo, SKILLS, Sources, Stage,
+    TEAM_FILE, Team, WORKFLOWS, Work, Workflow,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -56,6 +56,22 @@ impl Refused {
             |fault: &Fault| json!({"file": fault.file, "key": fault.key, "problem": fault.problem});
         self.faults.iter().map(fault).collect()
     }
+}
+
+/// Why a repo's `patrols` cannot be run: each name among `unknown` that
+/// `team` has no patrol for, as a fault of the repo's config.
+pub fn unknown_patrols(team: &str, has: &Team, unknown: &[String]) -> Refused {
+    let names: Vec<&str> = has.patrols.iter().map(|patrol| patrol.name.as_str()).collect();
+    let has = if names.is_empty() { "none".to_string() } else { names.join(", ") };
+    let fault = |name: &String| Fault {
+        file: config::FILE.to_string(),
+        key: "patrols".to_string(),
+        problem: format!(
+            "`{name}` is no patrol of the team {team}: it has {has}. A repo names patrols its \
+             team has, each a file {PATROLS}/<name>.md there"
+        ),
+    };
+    Refused { team: team.to_string(), faults: unknown.iter().map(fault).collect() }
 }
 
 /// A directory this command clones into, removed when it is done.
@@ -179,6 +195,9 @@ pub struct Loaded {
     pub commit: Option<String>,
     /// The definition files read, the team file first.
     pub files: Vec<String>,
+    /// The patrols the repo of this checkout names, when it is its team that
+    /// was read: the ones that run on it.
+    pub runs: Vec<String>,
     pub team: Team,
 }
 
@@ -193,6 +212,8 @@ pub fn check(from: From) -> Result<Value> {
 pub fn load(from: From) -> Result<Loaded> {
     let scratch = Scratch::new();
     let gh = GitHub { dir: PathBuf::from(".") };
+    // The patrols this checkout's repo names, when it is its team that is read.
+    let mut named: Vec<String> = vec![];
     let (name, tree) = match from {
         From::Dir(dir) => {
             if !dir.is_dir() {
@@ -214,6 +235,7 @@ pub fn load(from: From) -> Result<Loaded> {
             };
             let tree = Tree::head(&gh, &bound.team, &scratch);
             let tree = tree.with_context(|| format!("the team {} cannot be read", bound.team))?;
+            named = bound.patrols;
             (bound.team, tree)
         }
     };
@@ -224,10 +246,15 @@ pub fn load(from: From) -> Result<Loaded> {
     })?;
     let mut files = vec![sources.team.path.clone()];
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
-    match team::load(&sources) {
-        Ok(team) => Ok(Loaded { commit: tree.commit().map(str::to_string), name, files, team }),
-        Err(faults) => Err(Refused { team: name, faults }.into()),
+    files.extend(sources.patrols.iter().map(|file| file.path.clone()));
+    let team = match team::load(&sources) {
+        Ok(team) => team,
+        Err(faults) => return Err(Refused { team: name, faults }.into()),
+    };
+    if let Err(unknown) = team.patrols_named(&named) {
+        return Err(unknown_patrols(&name, &team, &unknown).into());
     }
+    Ok(Loaded { commit: tree.commit().map(str::to_string), name, files, runs: named, team })
 }
 
 /// Everything the core loads a team from: the team's own files out of
@@ -236,12 +263,14 @@ fn read(tree: &Tree, role: impl Fn(&str) -> Result<RoleRepo>) -> Result<Sources>
     let team = tree.file(TEAM_FILE);
     let entries = tree.list(WORKFLOWS)?;
     let workflows = entries.iter().map(|name| tree.file(&format!("{WORKFLOWS}/{name}"))).collect();
+    let entries = tree.list(PATROLS)?;
+    let patrols = entries.iter().map(|name| tree.file(&format!("{PATROLS}/{name}"))).collect();
     let repos = team::role_repos(&team).into_iter();
     let repos = repos.map(|repo| {
         let read = role(&repo).map_err(|error| format!("{error:#}"));
         (repo, read)
     });
-    Ok(Sources { team, workflows, repos: repos.collect() })
+    Ok(Sources { team, workflows, patrols, repos: repos.collect() })
 }
 
 /// A team as a stage starts under it: loaded from the fleet's copies, at the
@@ -299,6 +328,20 @@ fn answer(loaded: &Loaded) -> Value {
         "escalate_label": team.escalate_label,
         "roles": roles,
         "workflows": team.workflows.iter().map(workflow).collect::<Vec<_>>(),
+        "patrols": team.patrols.iter().map(|p| patrol(p, &loaded.runs)).collect::<Vec<_>>(),
+    })
+}
+
+/// One patrol, and whether it is among `runs`: the ones the repo names.
+fn patrol(patrol: &Patrol, runs: &[String]) -> Value {
+    json!({
+        "name": patrol.name,
+        "by": patrol.work.role,
+        "do": patrol.work.skill,
+        "every": patrol.every,
+        "model": patrol.model,
+        "max_open": patrol.max_open,
+        "runs_here": runs.contains(&patrol.name),
     })
 }
 

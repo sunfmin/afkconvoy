@@ -15,6 +15,7 @@ WHAT IT READS AND WRITES
 
       team.md                 the team file
       workflows/<name>.md     one file per workflow; its flow label is `flow:<name>`
+      patrols/<name>.md       one file per patrol; a repo runs the ones its `patrols` names
 
   and of each file only the first ```yaml block is read. The team file:
 
@@ -36,22 +37,37 @@ WHAT IT READS AND WRITES
           on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
       land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
 
+  A patrol file — its name words of lowercase letters and digits, each starting with a
+  letter, joined by `-`, 40 characters at most:
+
+      by: <role>
+      do: <skill>
+      every: 6h                          # required: a whole number from 1 up, then m, h or d
+      model: <model>                     # optional
+      max_open: 5                        # required: it is skipped once this many issues
+                                         # it opened are open
+
   A skill of a role is an entry of `.claude/skills/` in the role's repo.
 
   Without a flag it reads the config of this checkout for `team`, and that repo from
-  GitHub at the head of its default branch. `--team owner/repo` names the repo instead.
+  GitHub at the head of its default branch — and holds the config's `patrols` against
+  the patrols that team has. `--team owner/repo` names the repo instead.
   `--dir <path>` reads a team's files from a directory as they are, committed or not.
   Every role's repo is always read from GitHub, at the head of its default branch:
   through `gh repo clone`, into a temporary directory it removes.
 
 WHAT IT ANSWERS
 
-  {"team", "commit", "files", "escalate_label", "roles", "workflows"} — what it read.
+  {"team", "commit", "files", "escalate_label", "roles", "workflows", "patrols"} — what
+  it read.
   `commit` is the team's commit read, null with `--dir`; `files` the files read. Each of
   `roles` is {"name", "repo", "commit", "skills"}: `commit` is the one the role's repo
   was read at. Each of `workflows` is {"name", "flow_label", "max_rework",
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
-  {"name", "by", "do", "model", "writes", "escalate", "pass", "reject"}.
+  {"name", "by", "do", "model", "writes", "escalate", "pass", "reject"}. Each of
+  `patrols` is {"name", "by", "do", "every", "model", "max_open", "runs_here"}: `every`
+  in seconds, and `runs_here` whether the config of this checkout names it — false
+  with `--team` and `--dir`, which read no config.
 
   A team with a fault: {"error", "faults"} and exit 1. `faults` holds every fault of the
   team, not the first: each {"file", "key", "problem"}. `key` is a path from the top of
@@ -62,7 +78,9 @@ WHAT IT ANSWERS
   from the first reaches; a stage whose passes never come to `land` or `done`; a
   `pass: land` with no `land:`, or a `land:` no pass leads to; a role the team file does
   not name; a role whose repo cannot be read; a skill its role's repo does not hold; a
-  missing `by`, `do` or `on`.
+  missing `by`, `do` or `on`; a patrol file whose name is not a patrol's; an `every`
+  that is no duration; a missing `every` or `max_open`; and — in the config,
+  docs/agents/afkconvoy.md, under `patrols` — a name the team has no patrol for.
 
   Other errors, as {"error": …}: the repo's config names no team and no flag was given;
   the team's repo cannot be read.

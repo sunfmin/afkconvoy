@@ -18,7 +18,7 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
-   "now", "locks"} — and in a bound repo "intake"
+   "now", "locks"} — and in a bound repo "intake", and "patrols" where it names some
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage};
@@ -49,6 +49,22 @@ WHAT IT ANSWERS
                    `intake_limit`. With `open` at `limit`, `afkconvoy intake` refuses.
                    An issue a human labelled is not among them
 
+    patrols        in a bound repo that names patrols: each, in the order the config
+                   names them: {name, standing, every, last_run, open, max_open} —
+                   `every` in seconds, `last_run` when its last recorded run started
+                   (null: it never ran), `open` the open issues it opened. standing
+                   says what a tick does about it:
+                     due           its interval has passed: a tick runs it
+                     not_due       its interval has not passed since `last_run`
+                     locked        a fleet lock stands: no patrol runs
+                     full          `open` has reached `max_open`
+                     failed        its last run failed, and the issue that reports it —
+                                   `failure`, in this case only — is still open
+                     running       a run of `--instance` is still going
+                     peer_running  a live peer's run is still going
+                     stale_run     the run is claimed by a peer presumed dead: a tick
+                                   deletes that claim
+
   The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
   logged out (the error names each, with the line to run; `claude` is among them when
   no custom provider is set, as `run` would then start its workers with it); the repo
@@ -66,6 +82,8 @@ WHAT TRIPS YOU UP
     it would be without the lock: with the ready label in an unbound repo, a flow label
     in a bound one, no epic label, no open blocker, no claim. `excluded` says which
     of these keeps it off — and the lock stands until the issue is closed.
+  - A patrol is due or it is not: one that missed ten intervals runs once. And a run
+    still going takes one slot of `concurrency`, like a claim on an issue.
   - With a lock standing, `free_slots` counts as free the slot of every claim of
     `--instance` the lock leaves alone: a lock issue does not wait for them.
   - "Changes nothing" is about fleet state. It still pushes to the remote, and deletes

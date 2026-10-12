@@ -8,6 +8,7 @@
 use flux_rs::{attrs::*, macros::qualifier};
 
 use crate::board::Stage;
+use crate::patrol::Standing;
 use crate::plan::{Status, WorkingSet};
 
 /// One thing a pass does.
@@ -36,6 +37,13 @@ pub enum TickStep {
     Reclaim { issue: u64 },
     /// Start a worker on a frontier issue, into a free slot.
     Dispatch { issue: u64 },
+    /// End the run of the patrol at this place among the working set's, when
+    /// it is over: ask after the worker of a run of mine, or delete the claim
+    /// of a run whose fleet is presumed dead.
+    EndPatrol { patrol: usize },
+    /// Run the due patrol at this place among the working set's, into a free
+    /// slot.
+    Patrol { patrol: usize },
     /// Show on the issue's status board the stage a claim of mine is at.
     Board { issue: u64, stage: Stage, pr: Option<u64> },
     /// Bring the `stage:` label of an issue that follows a workflow to the
@@ -142,11 +150,14 @@ impl Pass {
 }
 
 /// Runs one pass over `set` under a bound of `concurrency` claims — what
-/// `WorkingSet::bound` makes of the config's: settle the
+/// `WorkingSet::bound` makes of the config's — with `held` slots taken as it
+/// starts (`WorkingSet::held`): settle the
 /// claims whose work landed, tend the landing train, ask after the workers
-/// not on the train yet, delete the stale locks on closed issues, hand to a
+/// not on the train yet, end the patrol runs that are over, delete the stale
+/// locks on closed issues, hand to a
 /// human the unclaimed issues that call for one, take stale
-/// claims and then frontier issues into the free slots, lowest number first,
+/// claims, then the due patrols, then frontier issues into the free slots,
+/// lowest number first,
 /// bring the status boards and the `stage:` labels up to date, then refresh
 /// the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
@@ -155,7 +166,8 @@ impl Pass {
 /// With a fleet lock standing, the pass leaves alone every claim of mine on
 /// another issue whose worker is not on the train yet — what it declared is
 /// acted on once no lock stands — and takes no stale claim but a lock
-/// issue's. The frontier it is handed holds lock issues only.
+/// issue's. The frontier it is handed holds lock issues only, and no patrol
+/// in it is due.
 ///
 /// The claims held afterwards are at most `concurrency`, or no more than
 /// before: a pass never takes a claim past the bound.
@@ -172,6 +184,7 @@ where
         did.push((step, carry_out(step)));
     }
     let held = end_claims(set, Sweep::Stopped, held, &mut did, &mut carry_out);
+    let held = end_patrols(set, held, &mut did, &mut carry_out);
     for lock in &set.stale_closed {
         let step = TickStep::Unlock { issue: lock.number };
         did.push((step, carry_out(step)));
@@ -246,6 +259,37 @@ where
     slots.held()
 }
 
+/// Carries out the step that ends each patrol run that may be over → the
+/// slots still taken. A run of mine that ended frees its slot; a dead
+/// fleet's held none of mine.
+#[spec(fn(set: &WorkingSet, held: usize, did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
+    -> usize{after: after <= held})]
+fn end_patrols<F>(
+    set: &WorkingSet,
+    held: usize,
+    did: &mut Vec<(TickStep, Outcome)>,
+    carry_out: &mut F,
+) -> usize
+where
+    F: FnMut(TickStep) -> Outcome,
+{
+    let mut slots = Slots::new(0, held);
+    for (at, patrol) in set.patrols.iter().enumerate() {
+        let mine = match patrol.standing {
+            Standing::Running => true,
+            Standing::StaleRun => false,
+            _ => continue,
+        };
+        let step = TickStep::EndPatrol { patrol: at };
+        let outcome = carry_out(step);
+        did.push((step, outcome));
+        if mine && outcome == Outcome::Done && slots.held() > 0 {
+            slots.free();
+        }
+    }
+    slots.held()
+}
+
 /// Whether `did` holds a step on `issue` that ended as `outcome`.
 fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
     for (step, how) in did {
@@ -290,8 +334,10 @@ fn boards(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> Vec<TickStep> {
     steps
 }
 
-/// What a pass may take a claim for, in the order it does: the stale claims
-/// ahead of the frontier — work somebody began — each lowest number first.
+/// What a pass may take a slot for, in the order it does: the stale claims —
+/// work somebody began — then the patrols that are due, in the order the repo
+/// names them, then the frontier; issues lowest number first. A patrol runs
+/// once an interval, so it goes ahead of a frontier that is never empty.
 /// Never a stale claim a fleet lock keeps the fleet off.
 fn takes(set: &WorkingSet) -> Vec<TickStep> {
     let mut stale: Vec<u64> = vec![];
@@ -304,6 +350,11 @@ fn takes(set: &WorkingSet) -> Vec<TickStep> {
     let mut steps: Vec<TickStep> = Vec::new();
     for issue in stale {
         steps.push(TickStep::Reclaim { issue });
+    }
+    for (at, patrol) in set.patrols.iter().enumerate() {
+        if patrol.standing == Standing::Due {
+            steps.push(TickStep::Patrol { patrol: at });
+        }
     }
     for issue in &set.frontier {
         steps.push(TickStep::Dispatch { issue: issue.number });
@@ -465,6 +516,7 @@ mod tests {
             now: 0,
             locks: vec![],
             flowing: vec![],
+            patrols: vec![],
         }
     }
 
@@ -474,6 +526,66 @@ mod tests {
     fn peers(numbers: &[u64]) -> Vec<crate::plan::PeerClaim> {
         let claim = |&number| crate::plan::PeerClaim { number, instance: None, sha: String::new() };
         numbers.iter().map(claim).collect()
+    }
+
+    fn patrols(standing: &[Standing]) -> Vec<crate::patrol::Row> {
+        let row = |(at, standing): (usize, &Standing)| crate::patrol::Row {
+            name: format!("p{at}"),
+            standing: *standing,
+            every: 3600,
+            last_run: None,
+            open: 0,
+            max_open: 1,
+            failure: None,
+            claim: None,
+        };
+        standing.iter().enumerate().map(row).collect()
+    }
+
+    #[test]
+    fn a_pass_ends_the_runs_that_may_be_over_and_runs_the_patrols_due() {
+        use Standing::*;
+        let mut set = set(&[7, 8], &[]);
+        set.patrols = patrols(&[NotDue, Running, StaleRun, Due, Locked, Full, Failed, PeerRunning]);
+        // One run of mine is held as it starts; it is over, and its slot is free again.
+        let pass = run_pass(&set, 2, 1, |_| Done);
+        let did: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let on_patrols: Vec<TickStep> = did
+            .iter()
+            .filter(|step| matches!(step, EndPatrol { .. } | TickStep::Patrol { .. }))
+            .copied()
+            .collect();
+        assert_eq!(
+            on_patrols,
+            [EndPatrol { patrol: 1 }, EndPatrol { patrol: 2 }, TickStep::Patrol { patrol: 3 }]
+        );
+        // The patrol due is run before an issue is dispatched, and takes a slot as one does.
+        let dispatched: Vec<&TickStep> =
+            did.iter().filter(|step| matches!(step, Dispatch { .. })).collect();
+        assert_eq!(dispatched, [&Dispatch { issue: 7 }]);
+        assert_eq!(pass.held, 2);
+        assert_eq!(pass.frontier_remaining, 1);
+    }
+
+    #[test]
+    fn a_run_still_going_keeps_its_slot_and_a_patrol_lost_to_a_peer_takes_none() {
+        use Standing::*;
+        let mut set = set(&[7], &[]);
+        set.patrols = patrols(&[Running, Due]);
+        let pass = run_pass(&set, 2, 1, |step| match step {
+            EndPatrol { .. } => Nothing,
+            TickStep::Patrol { .. } => Lost,
+            _ => Done,
+        });
+        assert!(pass.did.contains(&(Dispatch { issue: 7 }, Done)));
+        assert_eq!(pass.held, 2);
+        // With every slot held, a patrol due waits.
+        let pass = run_pass(&set, 1, 1, |step| match step {
+            EndPatrol { .. } => Nothing,
+            _ => Done,
+        });
+        assert!(!pass.did.iter().any(|(step, _)| matches!(step, TickStep::Patrol { .. })));
+        assert_eq!(pass.held, 1);
     }
 
     #[test]

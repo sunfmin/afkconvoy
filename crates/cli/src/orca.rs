@@ -8,8 +8,10 @@ use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::launch::{Waited, until_ready};
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::stopped::Nudged;
-use afkconvoy_core::train::is_train_worktree;
-use afkconvoy_core::worker::{AgentReport, WorkerState, lead, short_branch, worker_state};
+use afkconvoy_core::train::TRAIN_WORKTREE;
+use afkconvoy_core::worker::{
+    AgentReport, WorkerState, is_worktree_named, lead, short_branch, worker_state,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
@@ -24,6 +26,8 @@ const TOLD_FILE: &str = "convoy-train-told";
 const NUDGE_FILE: &str = "convoy-nudged";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
+/// The commit a patrol's checkout was at when its worker was started.
+const STARTED_FILE: &str = "convoy-patrol-started";
 /// The comment of the `blocked` verdict a worker was last started again over.
 const ANSWERED_FILE: &str = "convoy-answered";
 /// More worktrees than one machine runs workers in.
@@ -187,9 +191,14 @@ impl Worktree {
         }))
     }
 
-    /// The landing train's worktree on this machine: linked to no issue, it is
-    /// known by the name its directory was created under.
+    /// The landing train's worktree on this machine.
     pub fn of_train(source: &Source) -> Result<Option<Worktree>> {
+        Worktree::named(source, TRAIN_WORKTREE)
+    }
+
+    /// The worktree created under `name` on this machine: linked to no issue,
+    /// it is known by the name its directory was created under.
+    pub fn named(source: &Source, created_as: &str) -> Result<Option<Worktree>> {
         let listed = orca(&["worktree", "list"])?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
         let mut hits: Vec<&Value> = rows
@@ -197,7 +206,7 @@ impl Worktree {
             .filter(|row| {
                 let path = Path::new(row["path"].as_str().unwrap_or(""));
                 let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-                is_train_worktree(name)
+                is_worktree_named(name, created_as)
                     && path.is_dir()
                     && row["repoId"].as_str() == Some(source.id.as_str())
                     && row["isMainWorktree"] != true
@@ -316,6 +325,26 @@ impl Worktree {
     /// The commit the branch here is at.
     pub fn tip(&self) -> Result<String> {
         Repo { dir: self.path.clone() }.git(&["rev-parse", "HEAD"])
+    }
+
+    /// The branch checked out here now; `None` on a detached HEAD.
+    pub fn branch_now(&self) -> Result<Option<String>> {
+        let named =
+            Repo { dir: self.path.clone() }.try_git(&["symbolic-ref", "--short", "HEAD"])?;
+        Ok(named.ok.then_some(named.stdout))
+    }
+
+    /// The commit a patrol's checkout here was at when its worker was started.
+    pub fn started(&self) -> Result<Option<String>> {
+        let kept = std::fs::read_to_string(self.note(STARTED_FILE)?).ok();
+        Ok(kept.map(|tip| tip.trim().to_string()).filter(|tip| !tip.is_empty()))
+    }
+
+    /// Keeps the commit this checkout is at, as a patrol's worker starts in it.
+    pub fn keep_started(&self) -> Result<()> {
+        let file = self.note(STARTED_FILE)?;
+        std::fs::write(&file, self.tip()?)
+            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// Where the stage that writes nothing started here, when one did.

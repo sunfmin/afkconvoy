@@ -3,6 +3,7 @@
 //! bound repo, and whether the command takes it. What is added is fixed: nothing here is
 //! configurable, and an unbound repo's command never comes this way.
 
+use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::stage_record::{StageRecord, history};
 use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
@@ -185,17 +186,28 @@ pub fn due<'t>(
     }
 }
 
-/// The facts of one stage: what its worker, and the commands it runs, read
+/// What a worker in its role is on.
+#[derive(Debug, Clone, Copy)]
+pub enum On<'a> {
+    /// A stage of an issue — `land` for the join that follows the last.
+    Stage {
+        issue: u64,
+        /// The workflow's name: what follows `flow:` in the issue's flow label.
+        flow: &'a str,
+        stage: &'a str,
+    },
+    /// A run of the patrol of this name: no issue, and no stage.
+    Patrol(&'a str),
+}
+
+/// The facts of one start: what its worker, and the commands it runs, read
 /// from the environment.
 #[derive(Debug, Clone)]
 pub struct Facts<'a> {
-    pub issue: u64,
-    /// The workflow's name: what follows `flow:` in the issue's flow label.
-    pub flow: &'a str,
-    pub stage: &'a str,
+    pub on: On<'a>,
     pub role: &'a str,
     pub skill: &'a str,
-    /// Whether the stage may commit.
+    /// Whether the worker may commit. A patrol's never may.
     pub writes: bool,
     /// Whether the worker is a consult, which writes no code whatever its
     /// stage may.
@@ -214,10 +226,15 @@ pub struct Facts<'a> {
 impl Facts<'_> {
     /// The variables a worker's environment carries them in.
     pub fn env(&self) -> Vec<(&'static str, String)> {
-        vec![
-            (ISSUE_ENV, self.issue.to_string()),
-            ("AFKCONVOY_FLOW", self.flow.to_string()),
-            (STAGE_ENV, self.stage.to_string()),
+        let mut env = match self.on {
+            On::Stage { issue, flow, stage } => vec![
+                (ISSUE_ENV, issue.to_string()),
+                ("AFKCONVOY_FLOW", flow.to_string()),
+                (STAGE_ENV, stage.to_string()),
+            ],
+            On::Patrol(patrol) => vec![(PATROL_ENV, patrol.to_string())],
+        };
+        env.extend([
             (ROLE_ENV, self.role.to_string()),
             ("AFKCONVOY_SKILL", self.skill.to_string()),
             (WRITES_ENV, self.writes.to_string()),
@@ -227,7 +244,8 @@ impl Facts<'_> {
             (LOCK_LABEL_ENV, self.lock_label.to_string()),
             (ROLE_COMMIT_ENV, self.role_commit.to_string()),
             (TEAM_COMMIT_ENV, self.team_commit.to_string()),
-        ]
+        ]);
+        env
     }
 }
 
@@ -236,11 +254,11 @@ impl Facts<'_> {
 pub struct Start<'a> {
     /// The fleet's copy of the role's repo: the worker's working directory.
     pub role_dir: &'a str,
-    /// The issue's worktree.
+    /// The issue's worktree, or a patrol's checkout of the base branch.
     pub worktree: &'a str,
     /// The fleet's copy of the team's repo.
     pub team_dir: &'a str,
-    /// The stage's model, when its workflow names one.
+    /// The stage's model, or the patrol's, when its definition names one.
     pub model: Option<&'a str>,
     /// The shell line that runs the guard: this tool's `guard` subcommand.
     pub guard: &'a str,
@@ -396,6 +414,7 @@ land: { by: boss, do: implement }
                 file("workflows/lands.md", LANDS),
                 file("workflows/asks.md", ASKS),
             ],
+            patrols: vec![],
             repos: vec![repo("acme/dev"), repo("acme/boss")],
         })
         .unwrap()
@@ -577,9 +596,7 @@ land: { by: boss, do: implement }
             model,
             guard: "/bin/afkconvoy guard",
             facts: Facts {
-                issue: 7,
-                flow: "feature",
-                stage: "build",
+                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
                 role: "dev",
                 skill: "implement",
                 writes: false,

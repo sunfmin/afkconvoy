@@ -240,7 +240,7 @@ fn a_bound_repos_config_answers_its_three_keys_more() {
 #[test]
 fn the_help_names_every_key_of_a_definition() {
     use afkconvoy_core::team::{
-        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, STAGE_KEYS, TEAM_KEYS, WORKFLOW_KEYS,
+        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, STAGE_KEYS, TEAM_KEYS, WORKFLOW_KEYS,
     };
     let world = World::new();
     let out = world
@@ -248,7 +248,15 @@ fn the_help_names_every_key_of_a_definition() {
         .args(["check", "--help"])
         .output();
     let help = String::from_utf8(out.unwrap().stdout).unwrap();
-    let keys = [&TEAM_KEYS[..], &WORKFLOW_KEYS, &STAGE_KEYS, &ON_KEYS, &ESCALATE_KEYS, &LAND_KEYS];
+    let keys = [
+        &TEAM_KEYS[..],
+        &WORKFLOW_KEYS,
+        &STAGE_KEYS,
+        &ON_KEYS,
+        &ESCALATE_KEYS,
+        &LAND_KEYS,
+        &PATROL_KEYS,
+    ];
     for key in keys.concat() {
         assert!(help.contains(&format!(" {key}:")), "`check --help` never shows the key {key}");
     }

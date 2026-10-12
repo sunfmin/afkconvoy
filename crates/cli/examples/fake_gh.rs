@@ -149,6 +149,22 @@ fn api(st: &mut State) -> ! {
     let jq = st.opt("--jq").map(str::to_string);
     let jq = jq.as_deref();
     match parts.as_slice() {
+        ["issues"] if method == "POST" => {
+            let field = |name: &str| {
+                let prefix = format!("{name}=");
+                st.argv.iter().find_map(|a| a.strip_prefix(&prefix)).map(str::to_string)
+            };
+            let title = field("title").expect("an issue has a title");
+            let labels: Vec<&str> =
+                st.argv.iter().filter_map(|a| a.strip_prefix("labels[]=")).collect();
+            let rows = st.doc["issues"].as_array().unwrap();
+            let number =
+                rows.iter().filter_map(|row| row["number"].as_u64()).max().unwrap_or(0) + 1;
+            let issue = json!({"number": number, "title": title, "labels": labels,
+                "state": "open", "body": body});
+            st.doc["issues"].as_array_mut().unwrap().push(issue);
+            st.finish(&number.to_string(), 0, "")
+        }
         ["issues"] => {
             assert!(query.contains("state=open") && st.has("--paginate"), "{:?}", st.argv);
             assert_eq!(jq, Some(ISSUES_JQ), "fake gh: unsupported jq");

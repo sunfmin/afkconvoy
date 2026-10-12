@@ -22,7 +22,8 @@ WHAT IT ANSWERS
 
   A repo whose config names a team is a bound repo, and answers three keys more:
   {"team", "patrols", "intake_limit"} — the team's repo as owner/repo, which of its
-  patrols run here (default none) and how many issues taken in by workers may be open
+  patrols run here, by name (default none; `afkconvoy check` holds them against the
+  team's, and `afkconvoy tick --help` says when one runs) and how many issues taken in by workers may be open
   (default 50). A repo that names no team is unbound and answers the seven above only.
 
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or

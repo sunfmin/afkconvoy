@@ -18,11 +18,15 @@ WHAT IT ANSWERS
   {"did", "errors", "held", "frontier_remaining", "locks"}
 
     did                 each step taken: {do, issue, outcome}. do is settle, tend_train,
-                        judge, watch, advance, escalate, unlock, reclaim, dispatch,
-                        board, stage_label or heartbeat; outcome is done, nudged,
-                        continued, restarted, abandoned, nothing, lost or failed
-    errors              each step that failed: {do, issue, error}
-    held                the claims the instance holds after the pass
+                        judge, watch, advance, escalate, end_patrol, patrol, unlock,
+                        reclaim, dispatch, board, stage_label or heartbeat; outcome is
+                        done, nudged, continued, restarted, abandoned, nothing, lost or
+                        failed. A step on a patrol has a null issue and names it:
+                        {do, issue, patrol, outcome}
+    errors              each step that failed: {do, issue, error}, with `patrol` as
+                        in `did`
+    held                the claims the instance holds after the pass, a patrol's run
+                        still going among them
     frontier_remaining  the frontier issues it left undispatched
     locks               the fleet locks that stood as it ran: the open issues carrying
                         the lock label — none: []. `run` opens its line with them:
@@ -64,8 +68,20 @@ WHAT TRIPS YOU UP
     holds for a consult, whatever its stage is marked: it writes no code. The guard
     (`afkconvoy guard --help`) refuses such a commit as it is made; this is the check
     of what a guard missed.
+  - A patrol the repo names (`patrols`, `afkconvoy config --help`) is run by the tick
+    that finds it due: its interval has passed since its last recorded run, and no run
+    of it is still going. The tick claims the run on the remote — of several hosts one
+    wins, and the rest say `lost` — starts a worker in the patrol's role, in a checkout
+    of the base branch as it stands, linked to no issue, and records the run. A run
+    takes one slot of `concurrency`. A patrol is not run while its open issues have
+    reached its `max_open`, nor while a fleet lock stands; one that missed runs is run
+    once. `afkconvoy plan` says how each stands.
+  - A patrol declares nothing. A later tick ends its run (`end_patrol`) once its worker
+    is gone or has stopped. A run that left a commit in its checkout, or opened a PR,
+    has failed: the tick opens an issue that says so, with the team's escalate label,
+    and touches no other issue. The patrol is not run again until a human closes it.
   - With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`).
-    It dispatches nothing else, takes no stale claim of another issue, hands no other
+    It dispatches nothing else, runs no patrol, takes no stale claim of another issue, hands no other
     issue to a human, and leaves alone every claim of its own on another issue whose PR
     is not on the landing train: no judge, no watch, no advance, no nudge. What those
     workers declared is acted on by the first tick after the last lock issue closed.
