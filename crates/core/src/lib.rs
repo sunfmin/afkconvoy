@@ -16,6 +16,7 @@ pub mod launch;
 pub mod layout;
 pub mod lease;
 pub mod lock;
+pub mod patrol;
 pub mod plan;
 pub mod position;
 pub mod prompt;

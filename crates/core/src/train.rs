@@ -8,7 +8,7 @@ use flux_rs::attrs::*;
 use crate::layout::Layout;
 use crate::plan::PullRequest;
 use crate::record::fleet_number;
-use crate::worker::WorkerState;
+use crate::worker::{WorkerState, is_worktree_named};
 
 /// The train's two refs on the remote, for the base branch it lands on.
 pub struct TrainRefs {
@@ -262,14 +262,7 @@ pub const TRAIN_WORKTREE: &str = "convoy-train";
 /// Is a worktree directory of this name the train's? The train's worktree is
 /// linked to no issue, so it is known by the name it was created under.
 pub fn is_train_worktree(directory: &str) -> bool {
-    match directory.strip_prefix(TRAIN_WORKTREE) {
-        Some("") => true,
-        Some(rest) => match rest.strip_prefix('-') {
-            Some(k) => !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()),
-            None => false,
-        },
-        None => false,
-    }
+    is_worktree_named(directory, TRAIN_WORKTREE)
 }
 
 /// What the tick does about the train worker while a PR of its fleet is on

@@ -109,9 +109,7 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         model: Some("haiku"),
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         facts: Facts {
-            issue: 7,
-            flow: "feature",
-            stage: "smoke-stage",
+            on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
             role: "dev",
             skill: ROLE_SKILL,
             writes: false,

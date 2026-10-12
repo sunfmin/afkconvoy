@@ -10,6 +10,7 @@
 use serde::Deserialize;
 
 use crate::intake::INTAKE_RECORD;
+use crate::patrol::PATROL_ENV;
 use crate::role::{
     BASE_BRANCH_ENV, CONSULT_ENV, ESCALATE_LABEL_ENV, LOCK_LABEL_ENV, STAGE_ENV, WRITES_ENV,
 };
@@ -69,11 +70,19 @@ impl Call {
     }
 }
 
-/// What the worker of one stage may not do, read from the stage's facts.
+/// What a worker is on, as far as its limits say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum At {
+    Stage(String),
+    Patrol(String),
+}
+
+/// What the worker of one stage, or of one patrol, may not do, read from the
+/// facts of its start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Limits {
-    stage: String,
-    /// Whether the stage may commit.
+    at: At,
+    /// Whether the worker may commit.
     writes: bool,
     consult: bool,
     base_branch: String,
@@ -95,8 +104,13 @@ impl Limits {
             "false" => Ok(false),
             other => Err(format!("{name} is {other:?}, neither true nor false")),
         };
+        // A patrol's worker is at no stage: its facts name the patrol.
+        let at = match var(PATROL_ENV) {
+            Some(patrol) => At::Patrol(patrol),
+            None => At::Stage(fact(STAGE_ENV)?),
+        };
         Ok(Limits {
-            stage: fact(STAGE_ENV)?,
+            at,
             writes: flag(WRITES_ENV)?,
             consult: flag(CONSULT_ENV)?,
             base_branch: fact(BASE_BRANCH_ENV)?,
@@ -148,13 +162,22 @@ impl Limits {
                      escalation, or let it through"
                 ));
             }
-            if !self.writes {
-                return Some(format!(
-                    "the stage `{}` is marked `writes: false`: `git {subcommand}` is refused. A \
-                     stage that writes nothing leaves no commit and pushes nothing; say what you \
-                     found in the text of your verdict",
-                    self.stage
-                ));
+            match &self.at {
+                At::Patrol(patrol) => {
+                    return Some(format!(
+                        "the patrol `{patrol}` writes no code: `git {subcommand}` is refused. \
+                         Open an issue for what you found and take it in: every change goes \
+                         through a workflow"
+                    ));
+                }
+                At::Stage(stage) if !self.writes => {
+                    return Some(format!(
+                        "the stage `{stage}` is marked `writes: false`: `git {subcommand}` is \
+                         refused. A stage that writes nothing leaves no commit and pushes \
+                         nothing; say what you found in the text of your verdict"
+                    ));
+                }
+                At::Stage(_) => {}
             }
         }
         None
@@ -462,13 +485,11 @@ impl WritesNothing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::role::Facts;
+    use crate::role::{Facts, On};
 
     fn facts(writes: bool, consult: bool) -> Facts<'static> {
         Facts {
-            issue: 7,
-            flow: "feature",
-            stage: "build",
+            on: On::Stage { issue: 7, flow: "feature", stage: "build" },
             role: "dev",
             skill: "implement",
             writes,
@@ -508,8 +529,8 @@ mod tests {
     fn the_limits_are_read_from_what_a_start_puts_in_the_environment() {
         let read = limits(false, true);
         assert_eq!(
-            (read.stage.as_str(), read.writes, read.consult, read.base_branch.as_str()),
-            ("build", false, true, "main")
+            (&read.at, read.writes, read.consult, read.base_branch.as_str()),
+            (&At::Stage("build".to_string()), false, true, "main")
         );
         assert_eq!(
             (read.escalate_label.as_str(), read.lock_label.as_str()),
@@ -519,6 +540,25 @@ mod tests {
         assert!(missing.contains("AFKCONVOY_STAGE is not set"), "{missing}");
         let odd = Limits::read(|name| Some(if name == WRITES_ENV { "yes" } else { "x" }.into()));
         assert!(odd.unwrap_err().contains("AFKCONVOY_WRITES is \"yes\""));
+    }
+
+    #[test]
+    fn a_patrol_s_worker_is_at_no_stage_and_writes_no_code() {
+        let facts = Facts { on: On::Patrol("triage"), ..facts(false, false) };
+        let env = facts.env();
+        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "a patrol has no stage");
+        let limits = Limits::read(|name| {
+            env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
+        })
+        .unwrap();
+        assert_eq!(limits.at, At::Patrol("triage".to_string()));
+        for line in ["git commit -m x", "git push origin HEAD"] {
+            let why = refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("{line}"));
+            assert!(why.contains("the patrol `triage` writes no code"), "{why}");
+        }
+        assert_eq!(refused(&Call::shell("gh issue create --title x --body y"), &limits), None);
+        let labelled = refused(&Call::shell("gh issue create --title x --label flow:fix"), &limits);
+        assert!(labelled.is_some(), "a flow label is put on by `intake` only");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! A team as its files define it, loaded into a value that cannot hold a
-//! malformed workflow (docs/adr/0008, docs/adr/0010). `load` is the only way
+//! malformed workflow or patrol (docs/adr/0008, docs/adr/0010). `load` is the only way
 //! to a `Team`: it yields one, or every fault with the file and key it is in.
 //! Whoever holds a `Team` checks nothing again.
 
@@ -11,6 +11,8 @@ use crate::config::{ESCALATE_LABEL, is_repo};
 pub const TEAM_FILE: &str = "team.md";
 /// The directory of a team's repo that holds one file per workflow.
 pub const WORKFLOWS: &str = "workflows";
+/// The directory of a team's repo that holds one file per patrol.
+pub const PATROLS: &str = "patrols";
 /// The directory of a role's repo that holds one entry per skill.
 pub const SKILLS: &str = ".claude/skills";
 /// The file of a team's repo that holds its precedents.
@@ -36,6 +38,7 @@ pub const STAGE_KEYS: [&str; 7] = ["name", "by", "do", "model", "writes", "escal
 pub const ON_KEYS: [&str; 2] = ["pass", "reject"];
 pub const ESCALATE_KEYS: [&str; 2] = ["to", "do"];
 pub const LAND_KEYS: [&str; 2] = ["by", "do"];
+pub const PATROL_KEYS: [&str; 5] = ["by", "do", "every", "model", "max_open"];
 
 /// One value of a definition file's yaml, as it was parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +152,8 @@ pub struct Sources {
     pub team: File,
     /// Every entry of the workflows directory.
     pub workflows: Vec<File>,
+    /// Every entry of the patrols directory.
+    pub patrols: Vec<File>,
     /// Each repo `role_repos` names, with what was read of it or why it could
     /// not be read.
     pub repos: Vec<(String, Result<RoleRepo, String>)>,
@@ -181,6 +186,7 @@ pub struct Team {
     pub escalate_label: String,
     pub roles: Vec<Role>,
     pub workflows: Vec<Workflow>,
+    pub patrols: Vec<Patrol>,
 }
 
 impl Team {
@@ -190,6 +196,24 @@ impl Team {
 
     pub fn workflow(&self, name: &str) -> Option<&Workflow> {
         self.workflows.iter().find(|workflow| workflow.name == name)
+    }
+
+    pub fn patrol(&self, name: &str) -> Option<&Patrol> {
+        self.patrols.iter().find(|patrol| patrol.name == name)
+    }
+
+    /// The patrols `named` — a repo's `patrols` — are, in that order, or the
+    /// names among them the team has no patrol for.
+    pub fn patrols_named(&self, named: &[String]) -> Result<Vec<&Patrol>, Vec<String>> {
+        let mut found: Vec<&Patrol> = vec![];
+        let mut unknown: Vec<String> = vec![];
+        for name in named {
+            match self.patrol(name) {
+                Some(patrol) => found.push(patrol),
+                None => unknown.push(name.clone()),
+            }
+        }
+        if unknown.is_empty() { Ok(found) } else { Err(unknown) }
     }
 }
 
@@ -210,6 +234,21 @@ pub struct Role {
 pub struct Work {
     pub role: String,
     pub skill: String,
+}
+
+/// One patrol: a skill of a role, run on a schedule and for no issue. Its
+/// name is one a ref and a worktree can carry (`patrol_name`), and its
+/// interval is longer than nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Patrol {
+    /// The name of its file: what a repo's `patrols` names it by.
+    pub name: String,
+    pub work: Work,
+    /// How long after one run the next is due, in seconds.
+    pub every: u64,
+    pub model: Option<String>,
+    /// How many issues it opened may be open before it is skipped.
+    pub max_open: u64,
 }
 
 /// Who performs a stage.
@@ -344,6 +383,35 @@ pub fn workflow_name(path: &str) -> Option<&str> {
     if name.is_empty() || name.contains('/') { None } else { Some(name) }
 }
 
+/// The name of the patrol the file at `path` defines; `None` when the path is
+/// not `patrols/<name>.md` with a name made of words of lowercase letters and
+/// digits, each starting with a letter, joined by `-`. A ref and a worktree
+/// are named for a patrol, and nothing else is let in as one.
+pub fn patrol_name(path: &str) -> Option<&str> {
+    let name = path.strip_prefix(PATROLS)?.strip_prefix('/')?.strip_suffix(".md")?;
+    let word = |word: &str| {
+        word.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+            && word.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    };
+    if name.len() <= 40 && name.split('-').all(word) { Some(name) } else { None }
+}
+
+/// The seconds a duration written as `text` lasts: a whole number from 1 up,
+/// then `m`, `h` or `d` — `30m`, `6h`, `1d`. `None` for anything else.
+pub fn duration(text: &str) -> Option<u64> {
+    let (count, unit) = if let Some(count) = text.strip_suffix('m') {
+        (count, 60)
+    } else if let Some(count) = text.strip_suffix('h') {
+        (count, 3600)
+    } else if let Some(count) = text.strip_suffix('d') {
+        (count, 86400)
+    } else {
+        return None;
+    };
+    let count = crate::record::fleet_number(count)?;
+    if count == 0 { None } else { count.checked_mul(unit) }
+}
+
 /// The team `sources` define, or everything wrong with them.
 pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let mut faults: Vec<Fault> = vec![];
@@ -353,8 +421,13 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
         let mut report = Report { file: &file.path, faults: &mut faults };
         workflows.extend(workflow_file(&mut report, file, &roles));
     }
+    let mut patrols: Vec<Patrol> = vec![];
+    for file in &sources.patrols {
+        let mut report = Report { file: &file.path, faults: &mut faults };
+        patrols.extend(patrol_file(&mut report, file, &roles));
+    }
     if faults.is_empty() {
-        Ok(Team { escalate_label, roles: roles.loaded, workflows })
+        Ok(Team { escalate_label, roles: roles.loaded, workflows, patrols })
     } else {
         Err(faults)
     }
@@ -863,6 +936,55 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
     workflow(name.to_string(), max_rework?, max_consecutive_rework?, stages, land?)
 }
 
+/// Reads one entry of the patrols directory → the patrol it defines, when
+/// nothing is wrong with it.
+fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol> {
+    let Some(name) = patrol_name(&file.path) else {
+        report.fault(
+            "",
+            format!(
+                "a patrol is a file {PATROLS}/<name>.md, its name words of lowercase letters \
+                 and digits, each starting with a letter, joined by `-`; nothing else belongs \
+                 there"
+            ),
+        );
+        return None;
+    };
+    let node = match &file.yaml {
+        Ok(node) => node,
+        Err(why) => {
+            report.fault("", why.clone());
+            return None;
+        }
+    };
+    let entries = map(report, "", node, &PATROL_KEYS)?;
+    let work = work(report, roles, "", entries, ("by", "do"));
+    let every = match get(entries, "every") {
+        None => {
+            report.fault("every", "required, and it is missing".to_string());
+            None
+        }
+        Some(node) => {
+            let read = match node {
+                Node::Text(text) => duration(text),
+                _ => None,
+            };
+            if read.is_none() {
+                let problem = "must be a duration: a whole number from 1 up, then m, h or d — \
+                               30m, 6h, 1d";
+                report.fault("every", problem.to_string());
+            }
+            read
+        }
+    };
+    let model = text(report, "", entries, "model").map(str::to_string);
+    if get(entries, "max_open").is_none() {
+        report.fault("max_open", "required, and it is missing".to_string());
+    }
+    let max_open = count(report, entries, "max_open", 0);
+    Some(Patrol { name: name.to_string(), work: work?, every: every?, model, max_open: max_open? })
+}
+
 /// The stage a draft with nothing wrong in it is.
 #[spec(fn(Draft, at: usize, Pass, Option<usize{v: v < at}>) -> Option<Stage[at]>)]
 fn stage(draft: Draft, at: usize, pass: Pass, reject: Option<usize>) -> Option<Stage> {
@@ -919,6 +1041,7 @@ land: { by: dev, do: land }
         Sources {
             team: file(TEAM_FILE, team),
             workflows: workflows.iter().map(|(path, yaml)| file(path, yaml)).collect(),
+            patrols: vec![],
             repos: vec![
                 repo("acme/dev", &["plan", "implement", "land"]),
                 repo("acme/reviewer", &["review", "rule"]),

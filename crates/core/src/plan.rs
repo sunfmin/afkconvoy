@@ -10,6 +10,7 @@ use crate::closing::issues_closed_by;
 use crate::config::Config;
 use crate::lease::is_stale;
 use crate::lock;
+use crate::patrol::{self, Standing};
 use crate::role::{Due, flows};
 use crate::team::LAND;
 
@@ -184,12 +185,28 @@ pub struct WorkingSet {
     /// position in a workflow, whoever holds them.
     #[serde(skip)]
     pub flowing: Vec<Issue>,
+    /// The patrols a bound repo names, each as it stands now, in the order
+    /// the repo names them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub patrols: Vec<patrol::Row>,
 }
 
 impl WorkingSet {
     /// Whether a fleet lock keeps the fleet off `issue` (`lock::keeps_off`).
     pub fn locked_out(&self, issue: u64) -> bool {
         lock::keeps_off(&self.locks, issue)
+    }
+
+    /// The slots taken as a pass starts: one for each claim of mine, and one
+    /// for each patrol whose run of mine is still going.
+    pub fn held(&self) -> usize {
+        let mut held = self.mine.len();
+        for patrol in &self.patrols {
+            if patrol.standing == Standing::Running {
+                held = held.saturating_add(1);
+            }
+        }
+        held
     }
 
     /// The claims a pass may hold, in a fleet whose config allows
@@ -255,6 +272,9 @@ pub struct Observed<'a> {
     /// The claimed issues of a bound repo whose claim is a landing worker's
     /// (`stage_record::lands`). Empty in an unbound repo.
     pub landing: &'a [u64],
+    /// The patrols the repo names (`patrol::Seen`), in its order. Empty in
+    /// an unbound repo.
+    pub patrols: &'a [patrol::Seen],
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -287,7 +307,12 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         now,
         locks: lock::standing(seen.issues, config),
         flowing: vec![],
+        patrols: vec![],
     };
+    for patrol in seen.patrols {
+        let locked = !set.locks.is_empty();
+        set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
+    }
     for issue in &issues {
         if config.bound.is_some() && !flows(&issue.labels).is_empty() {
             set.flowing.push((*issue).clone());
@@ -371,7 +396,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         }
     }
     hold_back(&mut set);
-    set.free_slots = free_slots(set.bound(config.concurrency()), set.mine.len());
+    set.free_slots = free_slots(set.bound(config.concurrency()), set.held());
     set
 }
 
@@ -466,6 +491,7 @@ mod tests {
             landed: &[],
             due: &[],
             landing: &[],
+            patrols: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -505,6 +531,7 @@ mod tests {
             landed: &[],
             due: &[],
             landing: &[],
+            patrols: &[],
         };
         let claims = [claim(5, "me"), claim(6, "me")];
         let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
@@ -571,6 +598,7 @@ mod tests {
             landed: &[],
             due: &due,
             landing: &[],
+            patrols: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -667,6 +695,7 @@ mod tests {
             landed: &[],
             due: &due,
             landing: &[],
+            patrols: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -726,6 +755,7 @@ mod tests {
             due: &[],
             // #10's PR is gone: its landing worker has nothing to join.
             landing: &[8, 9, 10],
+            patrols: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -772,6 +802,7 @@ mod tests {
             landed: &[9],
             due: &[],
             landing: &[],
+            patrols: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -809,6 +840,7 @@ mod tests {
             landed: &[],
             due: &[],
             landing: &[],
+            patrols: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -839,6 +871,7 @@ mod tests {
                     landed: &[],
                     due: &[],
                     landing: &[],
+                    patrols: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };

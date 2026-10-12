@@ -324,6 +324,87 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     )
 }
 
+/// The brief of a patrol's worker: a fixed form that says what the run is
+/// and nothing of what to look for — that is the role's to say.
+const PATROL: &str = "\
+You are an afkconvoy worker, started in your role to run one **patrol**. You own no issue. Nobody
+reads this terminal: never wait for an answer.
+
+- **Patrol:** `{patrol}`
+- **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
+- **Checkout:** `{worktree_path}`, the base branch `{base_branch}` as it stood when you started.
+  It is read-only to you: commit nothing in it and push nothing
+- **Precedents:** `{precedents}`
+- **Workflows of the team:** {workflows}
+
+## What a patrol does
+
+A patrol finds work; it writes no code. For each thing you find that the fleet should work, open an
+issue for it and take it in to the workflow that fits, with this command — its `--help` says what
+it takes:
+```bash
+{intake_command}
+```
+You may have {room} more such issue(s) open: past that the patrol is not run again until some have
+closed. Open none that an open issue already covers.
+
+If you find the base branch broken for every issue, raise a fleet lock on the issue you opened for
+the fix:
+```bash
+{lock_command}
+```
+
+## Hard rules
+
+- Leave no commit and open no PR: a run that does has failed, and is reported to a human.
+- Put no label on an issue yourself: the commands above do.
+- When you have nothing more to open, stop. There is nothing to declare.
+";
+
+/// What the brief of a patrol's worker is filled with.
+#[derive(Debug, Clone)]
+pub struct PatrolFields<'a> {
+    pub patrol: &'a str,
+    pub role: &'a str,
+    pub skill: &'a str,
+    /// The patrol's checkout of the base branch.
+    pub worktree: &'a str,
+    pub base_branch: &'a str,
+    /// The precedents file, in the fleet's copy of the team.
+    pub precedents: &'a str,
+    /// The names of the team's workflows: what an issue can be taken in to.
+    pub workflows: &'a [&'a str],
+    /// How many more issues the patrol may have open.
+    pub room: u64,
+    /// The lines the worker takes an issue in and raises a fleet lock with.
+    pub intake_command: &'a str,
+    pub lock_command: &'a str,
+}
+
+/// The brief a patrol's worker is given.
+pub fn patrol_prompt(fields: &PatrolFields) -> Result<String, String> {
+    let workflows: Vec<String> = fields.workflows.iter().map(|name| format!("`{name}`")).collect();
+    let workflows = match workflows.as_slice() {
+        [] => "none — there is nothing to take an issue in to".to_string(),
+        named => named.join(", "),
+    };
+    fill(
+        PATROL,
+        &[
+            ("patrol", fields.patrol),
+            ("role", fields.role),
+            ("skill", fields.skill),
+            ("worktree_path", fields.worktree),
+            ("base_branch", fields.base_branch),
+            ("precedents", fields.precedents),
+            ("workflows", &workflows),
+            ("room", &fields.room.to_string()),
+            ("intake_command", fields.intake_command),
+            ("lock_command", fields.lock_command),
+        ],
+    )
+}
+
 const TRAIN: &str = "\
 You are the afkconvoy **train worker**. You own no issue and you write no feature. Finished PRs join
 the **landing train**: a line of commits ahead of `{base_branch}`, one merge commit per PR. Your job
