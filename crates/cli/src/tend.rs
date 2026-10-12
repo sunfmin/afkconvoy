@@ -48,7 +48,7 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     let prompt = train_prompt(&TrainFields {
         worktree: &path,
         base_branch: &fleet.config.base_branch,
-        land_command: &crate::own_command("land --train"),
+        land_command: &crate::own_command().fixed(" land --train").own(),
     })
     .map_err(|e| anyhow!(e))?;
     let brief = worktree.write_brief(&prompt)?;

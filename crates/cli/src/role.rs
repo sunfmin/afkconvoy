@@ -11,7 +11,7 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
-use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role, quoted, takes_flags};
+use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role, takes_flags};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::{LAND, PRECEDENTS};
 use anyhow::{Result, anyhow, bail};
@@ -119,7 +119,7 @@ impl Staged {
             worktree: &worktree.path.display().to_string(),
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
-            guard: &crate::own_command("guard"),
+            guard: &crate::own_command().fixed(" guard").own(),
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,
@@ -185,9 +185,8 @@ impl Staged {
     pub fn write_brief(&self, fleet: &Fleet, worktree: &Worktree, title: &str) -> Result<PathBuf> {
         let path = worktree.path.display().to_string();
         // A worker starts in its role's copy: its commands are run from the worktree.
-        let own =
-            |arguments: &str| format!("cd {} && {}", quoted(&path), crate::own_command(arguments));
-        let gate = own("gate --train");
+        let own = || crate::own_command_in(&path);
+        let gate = own().fixed(" gate --train").own();
         if let Some(pr) = self.joins {
             let fields = WorkerFields {
                 number: self.issue,
@@ -196,14 +195,19 @@ impl Staged {
                 worktree: &path,
                 base_branch: &fleet.config.base_branch,
                 gate_command: &gate,
-                land_command: &own(&format!("land --issue {}", self.issue)),
-                wake_command: &own("wake"),
+                land_command: &own().fixed(" land --issue ").number(self.issue).own(),
+                wake_command: &own().fixed(" wake").own(),
             };
             let landing = Landing { role: &self.role, skill: &self.skill };
             let prompt = landing_prompt(&fields, pr, landing).map_err(|e| anyhow!(e))?;
             return worktree.write_brief(&prompt);
         }
-        let verdict = format!("verdict --issue {} --stage {}", self.issue, quoted(&self.stage));
+        // What a brief tells a worker to declare with: this tool's `subcommand`,
+        // of the worker's issue and stage.
+        let declare = |subcommand: &'static str| {
+            let line = own().fixed(subcommand).fixed(" --issue ").number(self.issue);
+            line.fixed(" --stage ").word(&self.stage).own()
+        };
         let records: Vec<Said> =
             self.verdicts.iter().map(|(record, url)| Said { record, url }).collect();
         let fields = StageFields {
@@ -218,14 +222,13 @@ impl Staged {
             base_branch: &fleet.config.base_branch,
             precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
             records: &records,
-            verdict_command: &own(&verdict),
-            intake_command: &own("intake"),
+            verdict_command: &declare(" verdict"),
+            intake_command: &own().fixed(" intake").own(),
             workflows: &self.workflows,
             gate_command: self.writes.then_some(gate.as_str()),
         };
         let prompt = if self.consult {
-            let rule = format!("rule --issue {} --stage {}", self.issue, quoted(&self.stage));
-            consult_prompt(&fields, &own(&rule))
+            consult_prompt(&fields, &declare(" rule"))
         } else {
             stage_prompt(&fields)
         };

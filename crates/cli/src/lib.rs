@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
+use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
 use afkconvoy_core::role::{CONSULT_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
@@ -482,14 +483,21 @@ impl Who {
     }
 }
 
-/// The command line that runs this very binary with `arguments`, for a prompt:
-/// a worker's shell need not have it on its PATH.
-pub fn own_command(arguments: &str) -> String {
+/// The start of a command line that runs this very binary, for a prompt: a
+/// worker's shell need not have it on its PATH. What follows is its arguments.
+pub fn own_command() -> Line {
+    Line::new().program(&own_program())
+}
+
+/// The same, run from `dir`: a worker that starts in its role's copy runs its
+/// commands from its worktree.
+pub fn own_command_in(dir: &str) -> Line {
+    Line::new().fixed("cd ").word(dir).fixed(" && ").program(&own_program())
+}
+
+fn own_program() -> String {
     let exe = std::env::current_exe().ok().and_then(|path| path.to_str().map(str::to_string));
-    let exe = exe.unwrap_or_else(|| "afkconvoy".to_string());
-    let plain = exe.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+".contains(&b));
-    let exe = if plain { exe } else { format!("'{}'", exe.replace('\'', "'\\''")) };
-    format!("{exe} {arguments}")
+    exe.unwrap_or_else(|| "afkconvoy".to_string())
 }
 
 /// A help text with the files and keys of a team and a role put in where it
