@@ -31,8 +31,6 @@ pub struct Bound {
     pub team: String,
     /// Which of the team's patrols run on this repo.
     pub patrols: Vec<String>,
-    /// An open issue carrying this is a fleet lock.
-    pub lock_label: String,
     /// How many issues taken in by workers may be open at once.
     pub intake_limit: u64,
 }
@@ -49,6 +47,9 @@ pub struct Config {
     #[field(usize[concurrency])]
     concurrency: usize,
     pub escalate_label: String,
+    /// An open issue carrying this is a fleet lock, in a bound repo and an
+    /// unbound one alike.
+    pub lock_label: String,
     /// `None` in an unbound repo, whose config is the keys above and nothing else.
     #[serde(flatten)]
     pub bound: Option<Bound>,
@@ -100,18 +101,15 @@ impl Config {
         if escalate_label == ready_label {
             return Err(ConfigError::EscalatesToReady);
         }
+        let lock_label = label("lock_label", settings.lock_label, "fleet-lock")?;
         let epic_labels = settings.epic_labels.unwrap_or_else(|| vec!["epic".into(), "prd".into()]);
         let bound = match settings.team {
             Some(team) => Some(Bound {
                 team: repo("team", team)?,
                 patrols: settings.patrols.unwrap_or_default(),
-                lock_label: label("lock_label", settings.lock_label, "fleet-lock")?,
                 intake_limit: settings.intake_limit.unwrap_or(50),
             }),
             None if settings.patrols.is_some() => return Err(ConfigError::NeedsTeam("patrols")),
-            None if settings.lock_label.is_some() => {
-                return Err(ConfigError::NeedsTeam("lock_label"));
-            }
             None if settings.intake_limit.is_some() => {
                 return Err(ConfigError::NeedsTeam("intake_limit"));
             }
@@ -124,6 +122,7 @@ impl Config {
             epic_labels,
             settings.concurrency.unwrap_or(3),
             escalate_label,
+            lock_label,
             bound,
         ) {
             Some(config) => Ok(config),
@@ -139,8 +138,9 @@ impl Config {
 }
 
 /// The one place a `Config` is built: a zero concurrency never gets in.
-#[spec(fn(String, String, String, Vec<String>, concurrency: usize, String, Option<Bound>)
+#[spec(fn(String, String, String, Vec<String>, concurrency: usize, String, String, Option<Bound>)
     -> Option<Config[concurrency]>)]
+#[allow(clippy::too_many_arguments)]
 fn checked(
     base_branch: String,
     gate_command: String,
@@ -148,6 +148,7 @@ fn checked(
     epic_labels: Vec<String>,
     concurrency: usize,
     escalate_label: String,
+    lock_label: String,
     bound: Option<Bound>,
 ) -> Option<Config> {
     if concurrency == 0 {
@@ -160,6 +161,7 @@ fn checked(
         epic_labels,
         concurrency,
         escalate_label,
+        lock_label,
         bound,
     })
 }
@@ -219,6 +221,7 @@ mod tests {
         assert_eq!(config.escalate_label, "ready-for-human");
         assert_eq!(config.epic_labels, ["epic", "prd"]);
         assert_eq!(config.concurrency(), 3);
+        assert_eq!(config.lock_label, "fleet-lock", "a fleet lock needs no team");
         assert_eq!(config.bound, None, "a repo that names no team is unbound");
     }
 
@@ -228,20 +231,15 @@ mod tests {
         let bound = Config::new(named).unwrap().bound.unwrap();
         assert_eq!(bound.team, "acme/team");
         assert_eq!(bound.patrols, Vec::<String>::new());
-        assert_eq!(bound.lock_label, "fleet-lock");
         assert_eq!(bound.intake_limit, 50);
         let set = Settings {
             team: Some("acme/team".into()),
             patrols: Some(vec!["triage".into()]),
-            lock_label: Some("stop".into()),
             intake_limit: Some(7),
             ..minimal()
         };
         let bound = Config::new(set).unwrap().bound.unwrap();
-        assert_eq!(
-            (bound.patrols, bound.lock_label, bound.intake_limit),
-            (vec!["triage".to_string()], "stop".to_string(), 7)
-        );
+        assert_eq!((bound.patrols, bound.intake_limit), (vec!["triage".to_string()], 7));
     }
 
     #[test]
@@ -257,12 +255,18 @@ mod tests {
     fn a_key_of_a_bound_repo_is_refused_where_no_team_is_named() {
         let patrols = Settings { patrols: Some(vec![]), ..minimal() };
         assert_eq!(Config::new(patrols), Err(ConfigError::NeedsTeam("patrols")));
-        let lock = Settings { lock_label: Some("stop".into()), ..minimal() };
-        assert_eq!(Config::new(lock), Err(ConfigError::NeedsTeam("lock_label")));
         let limit = Settings { intake_limit: Some(1), ..minimal() };
         assert_eq!(Config::new(limit), Err(ConfigError::NeedsTeam("intake_limit")));
-        let empty =
-            Settings { team: Some("a/b".into()), lock_label: Some(" ".into()), ..minimal() };
+    }
+
+    #[test]
+    fn the_lock_label_is_read_with_a_team_and_without_one() {
+        let unbound = Settings { lock_label: Some("stop".into()), ..minimal() };
+        assert_eq!(Config::new(unbound).unwrap().lock_label, "stop");
+        let bound =
+            Settings { team: Some("a/b".into()), lock_label: Some("stop".into()), ..minimal() };
+        assert_eq!(Config::new(bound).unwrap().lock_label, "stop");
+        let empty = Settings { lock_label: Some(" ".into()), ..minimal() };
         assert_eq!(Config::new(empty), Err(ConfigError::Empty("lock_label")));
     }
 

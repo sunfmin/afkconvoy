@@ -30,6 +30,7 @@ pub mod intake;
 pub mod judge;
 pub mod landing;
 pub mod launch;
+pub mod lock;
 pub mod orca;
 pub mod park;
 pub mod probe;
@@ -222,6 +223,16 @@ enum Command {
         /// The issue that worker is on
         #[arg(long, env = ISSUE_ENV)]
         from: u64,
+    },
+    /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
+    #[command(after_long_help = include_str!("help/lock.txt"))]
+    Lock {
+        /// The issue that carries the fix, and becomes the lock
+        #[arg(long)]
+        issue: u64,
+        /// The role that raises it [default: the one this worker was started in, if any]
+        #[arg(long, env = ROLE_ENV)]
+        role: Option<String>,
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     #[command(after_long_help = include_str!("help/guard.txt"))]
@@ -602,6 +613,13 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Intake { issue, workflow, role, from } => {
             intake::intake(&Repo::here()?, intake::Taking { issue, workflow, role, from })
+        }
+        Command::Lock { issue, role } => {
+            let repo = Repo::here()?;
+            let config = config::load(&repo.dir.join(config::FILE))?;
+            let gh = gh::GitHub { dir: repo.dir.clone() };
+            let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
+            lock::lock(&repo, &config, &gh, issue, role)
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),

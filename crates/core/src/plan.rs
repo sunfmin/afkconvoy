@@ -9,6 +9,7 @@ use crate::claims::{Claim, InstanceId};
 use crate::closing::issues_closed_by;
 use crate::config::Config;
 use crate::lease::is_stale;
+use crate::lock;
 use crate::role::{Due, flows};
 use crate::team::LAND;
 
@@ -175,10 +176,64 @@ pub struct WorkingSet {
     /// How many more claims this fleet may take.
     pub free_slots: usize,
     pub now: u64,
+    /// The fleet locks standing: the open issues carrying the lock label,
+    /// lowest number first. While there is one, the frontier holds lock issues
+    /// only, and every other issue the fleet would have worked is excluded.
+    pub locks: Vec<u64>,
     /// A bound repo's open issues that carry a flow label: those with a
     /// position in a workflow, whoever holds them.
     #[serde(skip)]
     pub flowing: Vec<Issue>,
+}
+
+impl WorkingSet {
+    /// Whether a fleet lock keeps the fleet off `issue` (`lock::keeps_off`).
+    pub fn locked_out(&self, issue: u64) -> bool {
+        lock::keeps_off(&self.locks, issue)
+    }
+
+    /// The claims a pass may hold, in a fleet whose config allows
+    /// `concurrency`: with a fleet lock standing, one more for each claim of
+    /// mine the pass leaves alone. Nothing reads what their workers declare
+    /// until the lock ends, so a lock issue that waited for one of their
+    /// slots would wait for the lock it is there to end.
+    pub fn bound(&self, concurrency: usize) -> usize {
+        let mut bound = concurrency;
+        for mine in &self.mine {
+            let at_work = matches!(mine.status, Status::NoPr | Status::Joining | Status::AtStage);
+            if at_work && self.locked_out(mine.number) {
+                bound = bound.saturating_add(1);
+            }
+        }
+        bound
+    }
+}
+
+/// With a fleet lock standing, takes every issue that is not one off the
+/// frontier and out of what is handed to a human: it is excluded, the lock
+/// being why.
+fn hold_back(set: &mut WorkingSet) {
+    if set.locks.is_empty() {
+        return;
+    }
+    let why = lock::reason(&set.locks);
+    let mut kept_off: Vec<u64> = vec![];
+    for issue in &set.frontier {
+        if lock::keeps_off(&set.locks, issue.number) {
+            kept_off.push(issue.number);
+        }
+    }
+    for issue in &set.escalating {
+        if lock::keeps_off(&set.locks, issue.number) {
+            kept_off.push(issue.number);
+        }
+    }
+    set.frontier.retain(|issue| !kept_off.contains(&issue.number));
+    set.escalating.retain(|issue| !kept_off.contains(&issue.number));
+    for number in kept_off {
+        set.excluded.push(Excluded { number, reason: why.clone() });
+    }
+    set.excluded.sort_by_key(|excluded| excluded.number);
 }
 
 /// What the effect layer read, in whatever order it came.
@@ -230,6 +285,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         stale_closed: vec![],
         free_slots: 0,
         now,
+        locks: lock::standing(seen.issues, config),
         flowing: vec![],
     };
     for issue in &issues {
@@ -314,7 +370,8 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             set.stale.push(row);
         }
     }
-    set.free_slots = free_slots(config.concurrency(), set.mine.len());
+    hold_back(&mut set);
+    set.free_slots = free_slots(set.bound(config.concurrency()), set.mine.len());
     set
 }
 
@@ -424,6 +481,106 @@ mod tests {
                 (5, "has an open linked PR"),
                 (6, "2 open blocker(s)"),
             ]
+        );
+    }
+
+    #[test]
+    fn with_a_lock_standing_the_frontier_is_the_lock_issues_and_nothing_else() {
+        let issues = [
+            issue(1, READY),
+            issue(2, &["ready-for-agent", "fleet-lock"]),
+            issue(3, &["bug"]),
+            // A lock that is not ready is worked by nobody, and still stands.
+            issue(4, &["fleet-lock"]),
+            issue(5, READY),
+            issue(6, READY),
+        ];
+        let seen = |issues, claims| Observed {
+            issues,
+            prs: &[],
+            claims,
+            heartbeats: &[],
+            closed: &[],
+            joined: &[],
+            landed: &[],
+            due: &[],
+            landing: &[],
+        };
+        let claims = [claim(5, "me"), claim(6, "me")];
+        let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
+        assert_eq!(set.locks, [2, 4]);
+        assert_eq!(set.frontier.iter().map(|d| d.number).collect::<Vec<_>>(), [2]);
+        let reasons: Vec<(u64, &str)> =
+            set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
+        assert_eq!(
+            reasons,
+            [
+                (1, "a fleet lock stands (#2, #4)"),
+                (3, "no ready-for-agent label"),
+                (4, "no ready-for-agent label"),
+                (5, "already claimed"),
+                (6, "already claimed"),
+            ]
+        );
+        // Both slots are held by workers the lock leaves alone: the lock
+        // issue does not wait for them.
+        assert_eq!((set.bound(2), set.free_slots), (4, 2));
+        assert!(set.locked_out(5) && !set.locked_out(2));
+        // The last lock closed: everything is as it was.
+        let open = [issues[0].clone(), issues[2].clone(), issues[4].clone(), issues[5].clone()];
+        let after = assemble(&seen(&open, &claims), Some(&me()), 1000, &config(2));
+        assert_eq!(after.locks, Vec::<u64>::new());
+        assert_eq!(after.frontier.iter().map(|d| d.number).collect::<Vec<_>>(), [1]);
+        assert_eq!((after.bound(2), after.free_slots), (2, 0));
+    }
+
+    #[test]
+    fn in_a_bound_repo_a_lock_holds_back_what_a_worker_and_a_human_were_due() {
+        use crate::position::Declared;
+        use crate::role::due;
+        use crate::stage_record::{Author, StageRecord, Stated};
+        use crate::team::tests::{FEATURE, one};
+        let team = one(FEATURE);
+        let escalated = [StageRecord {
+            stage: "plan".to_string(),
+            stated: Stated::Declared(Declared::Escalate),
+            by: Author::Worker {
+                claim: "c1".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            },
+            blocked_by: vec![],
+            text: "stuck".to_string(),
+        }];
+        let issues = [
+            issue(1, &["flow:feature"]),
+            issue(2, &["flow:feature", "fleet-lock"]),
+            issue(3, &["flow:feature"]),
+        ];
+        let of = |number: usize, records: &[StageRecord]| {
+            (number as u64, due(&team, &issues[number - 1].labels, records, None))
+        };
+        let due = [of(1, &[]), of(2, &[]), of(3, &escalated)];
+        let seen = Observed {
+            issues: &issues,
+            prs: &[],
+            claims: &[],
+            heartbeats: &[],
+            closed: &[],
+            joined: &[],
+            landed: &[],
+            due: &due,
+            landing: &[],
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &bound());
+        let frontier: Vec<(u64, Option<&str>)> =
+            set.frontier.iter().map(|d| (d.number, d.stage.as_deref())).collect();
+        assert_eq!(frontier, [(2, Some("plan"))], "the lock follows its workflow like any other");
+        assert_eq!(set.escalating, [], "a hand-over waits for the lock to end, too");
+        let reason = "a fleet lock stands (#2)".to_string();
+        assert_eq!(
+            set.excluded,
+            [Excluded { number: 1, reason: reason.clone() }, Excluded { number: 3, reason }]
         );
     }
 

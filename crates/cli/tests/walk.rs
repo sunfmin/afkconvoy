@@ -313,6 +313,27 @@ fn blocked_parks_the_issue_and_it_returns_at_the_stage_that_parked_it() {
 }
 
 #[test]
+fn with_a_lock_standing_only_the_lock_issue_is_started_at_its_stage() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:feature", "fleet-lock"]);
+    // A lock is a flow's to carry like any issue: with no flow label it
+    // stands, and nobody is started on it.
+    world.issue(9, &["fleet-lock"]);
+    assert_eq!(frontier(&world), [(8, "build".to_string())]);
+    assert_eq!(excluded(&world, 7), "a fleet lock stands (#8, #9)");
+    assert_eq!(excluded(&world, 9), "no flow label");
+    let ticked = tick(&world, 1000);
+    assert_eq!(did(&ticked), ["dispatch 8 done"]);
+    assert_eq!(ticked["locks"], json!([8, 9]));
+
+    world.close_issue(8);
+    world.close_issue(9);
+    let resumed = did(&tick(&world, 1090));
+    assert!(resumed.contains(&"dispatch 7 done".to_string()), "{resumed:?}");
+}
+
+#[test]
 fn already_satisfied_closes_the_issue() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
