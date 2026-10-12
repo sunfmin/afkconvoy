@@ -1,0 +1,63 @@
+WHEN TO RUN IT
+
+  To start a role or a team from files `check` accepts as they are, instead of from an
+  empty repo. A role first, created on GitHub, then the team that names it:
+
+      afkconvoy scaffold role roles/dev --repo acme/dev
+      afkconvoy scaffold team team --role dev=acme/dev
+      afkconvoy check --dir team
+
+  From there on a team is designed by editing its files and running `check`.
+
+WHO RUNS IT
+
+  The operator, or whoever designs the team: anywhere. It needs no checkout and reads no
+  config.
+
+WHAT IT READS AND WRITES
+
+  It writes in the directory named, which must not be there yet or be empty: nothing is
+  ever overwritten.
+
+  `scaffold role <dir>` writes a role's three kinds of file:
+
+      CLAUDE.md                            rules to replace with the role's own
+      .claude/skills/implement/SKILL.md    one example skill, `implement`
+      .claude/settings.json                hooks: none yet
+
+  `scaffold team <dir> --role <name>=<owner/repo>` writes:
+
+      team.md                  the team file, naming that one role
+      workflows/feature.md     one workflow, `feature`: one stage the role performs as
+                               its skill `implement`, then the landing train
+
+  `--role` is required for a team and refused for a role. The role it names is the one
+  `scaffold role` wrote, or any repo that holds a skill `implement`.
+
+  With `--repo <owner/repo>` it then makes the directory a git repo, commits the
+  skeleton, and creates that repo on GitHub with the commit pushed to it:
+  `gh repo create <owner/repo> --private --source . --push`, run there. `--public`
+  creates it public instead. Without `--repo` it runs neither `git` nor `gh`.
+
+  A skill is added to a role afterwards with the skills installer, run in the role's
+  checkout and committed: this command installs none.
+
+WHAT IT ANSWERS
+
+  {"scaffolded", "dir", "files", "repo"} — "team" or "role"; the directory written in,
+  as an absolute path; the files written, as paths in it; and the repo created, null
+  without `--repo`.
+
+  Errors, as {"error": …} with a non-zero exit: the directory is not empty; a team with
+  no `--role`, or a role with one; a `--role` that is not <name>=<owner/repo>; a file
+  that cannot be written; and, with `--repo`, a `git` or `gh` call that failed — the
+  error says the skeleton is written and its repo is not created.
+
+WHAT TRIPS YOU UP
+
+  - A team's skeleton passes `check` only once its role's repo is on GitHub, with the
+    skill pushed to its default branch: scaffold the role with `--repo` first.
+  - After a failed `--repo` the directory is no longer empty. Create the repo yourself
+    from it with the `gh` line above; do not run this again on it.
+  - `--repo` commits as whoever git is set up for on this host, and creates the repo as
+    whoever `gh` is logged in as. Every host of a fleet must be able to read it.

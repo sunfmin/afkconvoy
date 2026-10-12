@@ -5,7 +5,8 @@
 //! blocked_by?, id?}], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail. `repos` {owner/repo: the git repo that
-//! stands in for it}: the other repos GitHub holds, which `repo clone` clones.
+//! stands in for it}: the other repos GitHub holds, which `repo clone` clones and
+//! `repo create` adds to.
 
 mod fake;
 
@@ -56,6 +57,18 @@ fn main() {
                 if cloned { 0 } else { 1 },
                 if cloned { "" } else { "fake gh: clone failed\n" },
             )
+        }
+        // The directory a repo is created from stands in for it from then on.
+        ["repo", "create", repo, "--private" | "--public", "--source", ".", "--push"] => {
+            if !st.doc["repos"][*repo].is_null() {
+                st.finish("", 1, "GraphQL: Name already exists on this account\n")
+            }
+            let (repo, here) = (repo.to_string(), std::env::current_dir().unwrap());
+            if !st.doc["repos"].is_object() {
+                st.doc["repos"] = json!({});
+            }
+            st.doc["repos"][&repo] = json!(here);
+            st.finish(&format!("https://github.com/{repo}"), 0, "")
         }
         _ => unsupported(&st),
     }

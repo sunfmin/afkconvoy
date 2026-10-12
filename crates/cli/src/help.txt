@@ -19,6 +19,7 @@ WHAT TO RUN FIRST, in a checkout of the repo
 
   1. afkconvoy config    Read the config: what the fleet goes by.
      afkconvoy check     Only where the config names a team: does the team load?
+                         A team is designed first: DESIGNING A TEAM, below.
   2. afkconvoy plan      What a tick would act on. It changes nothing.
   3. afkconvoy run       The fleet instance: tick after tick, until stopped.
 
@@ -36,9 +37,10 @@ THE COMMANDS, by who runs them
   The operator — starting, watching or stopping a fleet. Read these first:
       config  check  plan  run  panel  tick  takeover
 
-  Whoever designs a team — once `check` accepts it. Read them to review a workflow, to
-  try one out with no worker started, or to ask where an issue is in its workflow:
-      show  rehearse
+  Whoever designs a team — `scaffold` to start one or a role of it from a skeleton,
+  then, once `check` accepts it, the others: to review a workflow, to try one out with
+  no worker started, or to ask where an issue is in its workflow:
+      scaffold  show  rehearse
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped (`rule`, below, is a consult's too):
@@ -71,3 +73,28 @@ RULES TO KNOW BEFORE YOU START
   - In a bound repo the worker launch command must end in Claude Code taking flags: the
     fleet adds to it what starts each worker in its role and under the guard, and a
     start refuses a command whose `--help` does not name those flags.
+
+DESIGNING A TEAM, for a bound repo
+
+  A repo whose config names a team — `team: owner/repo` — is a bound repo. An issue of
+  it that carries a flow label is walked through that workflow's stages, each performed
+  by a new worker started in the stage's role. A team and a role are each a repo of text
+  files, and designing one is editing them. Nothing else holds any of it.
+
+{files}
+
+  The loop, from nothing:
+
+  1. afkconvoy scaffold role <dir> --repo <owner/repo>
+       A role's skeleton, created on GitHub: `check` reads a role from there only.
+  2. afkconvoy scaffold team <dir> --role <name>=<owner/repo>
+       A team's skeleton, with one workflow which that role performs.
+  3. afkconvoy check --dir <dir>
+       Edit a file, run it, and read the faults: each names its file and key. Repeat
+       until it exits 0. A role's edit counts once it is pushed to its default branch.
+  4. Push the team, name it under `team` in the config, and run `afkconvoy check` in
+     that checkout. Then `show` draws each workflow and `rehearse` tries one out.
+
+  A role's skills are added with the skills installer you already use, run in a checkout
+  of the role's repo and committed there, so that every host runs the same role. The
+  fleet installs no skill and wraps no installer.

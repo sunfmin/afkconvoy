@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A worker starts in its role, with the issue's worktree added to it

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A worker is limited by guards, not by its identity

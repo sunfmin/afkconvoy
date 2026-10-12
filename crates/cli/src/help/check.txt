@@ -11,44 +11,10 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  It writes nothing. A team is a repo that holds:
+  It writes nothing. It reads a team's files, and of each role's repo which skills it
+  holds:
 
-      team.md                 the team file
-      workflows/<name>.md     one file per workflow; its flow label is `flow:<name>`
-      patrols/<name>.md       one file per patrol; a repo runs the ones its `patrols` names
-
-  and of each file only the first ```yaml block is read. The team file:
-
-      escalate_label: ready-for-human    # default
-      roles:
-        <short name>: owner/repo         # a role is a repo
-
-  A workflow file:
-
-      max_rework: 3                      # default
-      max_consecutive_rework: 2          # default
-      stages:
-        - name: <unique; not land, done or human>
-          by: <role> | human
-          do: <skill>                    # required unless by: human
-          model: <model>                 # optional
-          writes: false                  # optional; default true
-          escalate: { to: <role>, do: <skill> }                  # optional
-          on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
-      land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
-
-  A patrol file — its name words of lowercase letters and digits, each starting with a
-  letter, joined by `-`, 40 characters at most:
-
-      by: <role>
-      do: <skill>
-      every: 6h                          # required: a whole number from 1 up, then m, h or d
-      model: <model>                     # optional
-      max_open: 5                        # required: it is skipped once this many issues
-                                         # it opened are open
-
-  A skill of a role is an entry of `.claude/skills/` in the role's repo.
-
+{files}
   Without a flag it reads the config of this checkout for `team`, and that repo from
   GitHub at the head of its default branch — and holds the config's `patrols` against
   the patrols that team has. `--team owner/repo` names the repo instead.
