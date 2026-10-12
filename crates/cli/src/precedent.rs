@@ -125,7 +125,7 @@ pub fn propose(
         worktree: &path,
         team_dir: &kept.copy.dir.display().to_string(),
         model: None,
-        guard: &crate::own_command("guard"),
+        guard: &crate::own_command().fixed(" guard").own(),
         facts: Facts {
             on: On::Proposal { issue: ruling.issue },
             role: &work.role,
