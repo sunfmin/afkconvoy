@@ -216,6 +216,49 @@ fn a_reject_starts_the_stage_the_workflow_names_with_the_reason_in_its_brief() {
 }
 
 #[test]
+fn a_commit_left_by_a_stage_marked_as_writing_nothing_escalates_the_issue() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done", "dispatch 8 done"]);
+    for issue in [7, 8] {
+        let dir = worktree(&world, issue);
+        // A stage that may write leaves commits, and passes.
+        commit(&dir, "work.txt", "built\n");
+        declare(&world, issue, "build", "pass", &["--text", "Built."]);
+    }
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done", "advance 8 done"]);
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done", "dispatch 8 done"]);
+
+    // The reviewer of 7 fixes what it found — past its guard, in a script —
+    // and the reviewer of 8 only reads. Both pass.
+    let fixed = worktree(&world, 7);
+    let before = git(&fixed, &["rev-parse", "HEAD"]);
+    let after = commit(&fixed, "work.txt", "fixed while reviewing\n");
+    // A worker that is started again in the stage answers for the one before it.
+    let again = ["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"];
+    world.afk(&again).ok();
+    declare(&world, 7, "review", "pass", &["--text", "Fixed a typo; it reads well."]);
+    declare(&world, 8, "review", "pass", &["--text", "It reads well."]);
+    assert_eq!(did(&tick(&world, 1270)), ["advance 7 done", "advance 8 done"]);
+
+    // 7 is a human's, with the reason; 8 went where its workflow says.
+    assert_eq!(world.labels(7), ["ready-for-human"]);
+    let said = world.comments(7).join("\n");
+    let why = format!(
+        "The stage `review` is marked `writes: false`, and it left a commit on the branch: it \
+         started at {before} and the branch is now at {after}."
+    );
+    assert!(said.contains(&why), "{said}");
+    assert!(said.contains("Its stage record: https://gh/c/"), "{said}");
+    assert_eq!(world.labels(8), ["flow:feature"]);
+    assert_eq!(excluded(&world, 8), "its workflow has ended");
+    assert_eq!(world.claims(), []);
+    assert!(fixed.join("work.txt").is_file(), "the worktree is kept for the human");
+    assert!(!world.comments(8).join("\n").contains("left a commit"));
+}
+
+#[test]
 fn a_flow_label_that_names_no_workflow_escalates_the_issue_once() {
     let world = bound(2);
     world.issue(9, &["flow:chore", "bug"]);

@@ -129,6 +129,9 @@ pub fn dispatch(
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
                 let launch = agent.command.as_str();
+                if let Some((staged, claim)) = staged.as_ref().zip(fleet.scan.claim_of(number)) {
+                    staged.keep_start(cut, claim)?;
+                }
                 terminal = Some(match &staged {
                     Some(staged) => cut.start(&staged.command(launch, cut))?,
                     None => cut.start(launch)?,

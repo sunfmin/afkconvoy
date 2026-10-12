@@ -78,13 +78,15 @@ Without `--worker-command`, `run` lists your login shell's aliases that start Cl
 
 ```sh
 cd <the role's copy> && export <the stage's facts> && <worker launch command> \
-  --add-dir <the issue's worktree> --add-dir <the team's copy> --setting-sources project [--model <the stage's>]
+  --add-dir <the issue's worktree> --add-dir <the team's copy> --setting-sources project \
+  --settings <the guard, as a hook> [--model <the stage's>]
 ```
 
-- The command must take `--add-dir`, `--setting-sources` and `--model`. A start runs `<worker launch command> --help` in a login shell and refuses, naming what is missing, when the answer does not name all three. An alias or a wrapper is fine as long as what follows it reaches Claude Code: `kim`, not `kim ; true`.
+- The command must take `--add-dir`, `--setting-sources`, `--settings` and `--model`. A start runs `<worker launch command> --help` in a login shell and refuses, naming what is missing, when the answer does not name all four. An alias or a wrapper is fine as long as what follows it reaches Claude Code: `kim`, not `kim ; true`.
 - What is added is fixed, and nothing of it is configurable. The role's rules, skills and hooks load because the worker starts in the role's directory; the repo's own rules (`CLAUDE.md`) load from the added worktree, its hooks do not — what a repo must enforce belongs in its gate; your own Claude Code settings, rules, skills and hooks are not loaded at all.
 - The role's and the team's directories are the fleet's own read-only copies, one per commit, under `~/.cache/afkconvoy/copies/` (or `$XDG_CACHE_HOME`). A stage starts under the commit at the head of each repo's default branch; a copy already there is not fetched again. Pushing is the only way a change to a role reaches a worker.
-- The stage's facts are in the worker's environment: `AFKCONVOY_ISSUE`, `AFKCONVOY_FLOW`, `AFKCONVOY_STAGE`, `AFKCONVOY_ROLE`, `AFKCONVOY_SKILL`, `AFKCONVOY_WRITES`, `AFKCONVOY_ROLE_COMMIT` and `AFKCONVOY_TEAM_COMMIT`.
+- The stage's facts are in the worker's environment: `AFKCONVOY_ISSUE`, `AFKCONVOY_FLOW`, `AFKCONVOY_STAGE`, `AFKCONVOY_ROLE`, `AFKCONVOY_SKILL`, `AFKCONVOY_WRITES`, `AFKCONVOY_CONSULT`, `AFKCONVOY_BASE_BRANCH`, `AFKCONVOY_ESCALATE_LABEL`, `AFKCONVOY_LOCK_LABEL`, `AFKCONVOY_ROLE_COMMIT` and `AFKCONVOY_TEAM_COMMIT`.
+- Every worker is started with the guard: `afkconvoy guard`, added as a hook that Claude Code runs before each tool call, whatever the role's repo holds. It refuses, with a reason the worker is shown, what no worker may do — add or remove a flow, stage, escalate or lock label, write a stage record by hand, merge a PR, push the base branch — and, in a stage marked `writes: false`, committing and pushing. A role's own limits are hooks in its repo; they run beside the guard. A guard recognises commands, so it stops a worker that errs, not one that means to get past it: after a stage marked `writes: false` the fleet checks the branch, and a commit that was not there before escalates the issue. `afkconvoy guard --help` lists what is refused.
 
 An unbound repo's command stays opaque and may start any agent.
 

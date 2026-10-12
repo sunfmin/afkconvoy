@@ -1,7 +1,9 @@
 //! The one test against real Claude Code. Every other test starts workers in
 //! a stand-in orca, which proves the fleet builds the right line — not that
 //! Claude Code answers it as assumed (docs/adr/0009). This one runs that line
-//! for real, in a throwaway role with a throwaway project added to it.
+//! for real, in a throwaway role with a throwaway project added to it, and
+//! has the worker try what its role's hook and the guard refuse
+//! (docs/adr/0012).
 //!
 //! It is off by default and outside the gate: it needs a logged-in Claude
 //! Code, takes seconds and costs a little. Run it by hand when what the fleet
@@ -25,8 +27,14 @@ const PROJECT_WORD: &str = "PROJECT-5528";
 const ROLE_SKILL: &str = "convoy-smoke-role-skill";
 const PROJECT_SKILL: &str = "convoy-smoke-project-skill";
 
-const PROMPT: &str = "Run the Bash command `echo smoke`. Then answer with exactly these three \
-    lines and nothing else: ROLE=<the role word your instructions give, or NONE> / \
+/// What the role's own hook refuses, and what it says when it does.
+const ROLE_REFUSES: &str = "role-forbidden";
+const ROLE_SAYS: &str = "ROLE-SAYS-NO-4417";
+
+const PROMPT: &str = "Run these three Bash commands, each exactly once and in this order, and \
+    carry on when one is refused, without trying it again or another way: `echo smoke`, then \
+    `echo role-forbidden`, then `git commit --allow-empty -m smoke`. Then answer with exactly \
+    these three lines and nothing else: ROLE=<the role word your instructions give, or NONE> / \
     PROJECT=<the project word your instructions give, or NONE> / FILES=<the path of every \
     CLAUDE.md or other instruction file that was loaded into your context, comma-separated>";
 
@@ -42,9 +50,13 @@ fn skill(name: &str) -> String {
     )
 }
 
-/// A hook on every Bash call that appends what `says` expands to to `log`.
+/// A hook on every Bash call that appends what `says` expands to to `log`,
+/// and refuses a call that names `ROLE_REFUSES`.
 fn hook(log: &Path, says: &str) -> String {
-    let command = format!("echo {says} >> '{}'", log.display());
+    let command = format!(
+        "echo {says} >> '{}'; if grep -q {ROLE_REFUSES}; then echo {ROLE_SAYS} >&2; exit 2; fi",
+        log.display()
+    );
     serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash",
         "hooks": [{"type": "command", "command": command}]}]}})
     .to_string()
@@ -95,13 +107,18 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         worktree: &text(&project),
         team_dir: &text(&team),
         model: Some("haiku"),
+        guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         facts: Facts {
             issue: 7,
             flow: "feature",
             stage: "smoke-stage",
             role: "dev",
             skill: ROLE_SKILL,
-            writes: true,
+            writes: false,
+            consult: false,
+            base_branch: "main",
+            escalate_label: "ready-for-human",
+            lock_label: "fleet-lock",
             role_commit: "abc",
             team_commit: "def",
         },
@@ -150,13 +167,34 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
     assert!(!files.contains(&text(&home.join(".claude"))), "the user's rules were loaded: {files}");
     assert!(init["memory_paths"].is_null(), "{}", init["memory_paths"]);
 
-    // The role's hook fired, and read the stage from the environment; the
-    // added directory's did not; and no other hook did — none of the user's.
-    assert_eq!(lines(&role_log), ["smoke-stage"]);
+    // The role's hook fired on every Bash call, and read the stage from the
+    // environment; the added directory's did not; and beside it fired the
+    // guard the fleet added and no other hook — none of the user's.
+    let logged = lines(&role_log);
+    assert!(logged.len() >= 3 && logged.iter().all(|line| line == "smoke-stage"), "{logged:?}");
     assert_eq!(lines(&project_log), [] as [String; 0]);
     let fired: Vec<&str> =
         of("system", "hook_started").iter().filter_map(|e| e["hook_name"].as_str()).collect();
-    assert_eq!(fired, ["PreToolUse:Bash"], "a hook that is not the role's fired");
+    let on_bash = fired.iter().filter(|name| **name == "PreToolUse:Bash").count();
+    assert_eq!(on_bash, logged.len() * 2, "the role's hook and the guard, and no other: {fired:?}");
+
+    // What the worker was shown for each call: the first ran, the role's hook
+    // refused the second, and the guard refused the third — reading from the
+    // environment that the stage writes nothing.
+    let shown: Vec<String> = events
+        .iter()
+        .filter(|event| event["type"] == "user")
+        .flat_map(|event| event["message"]["content"].as_array().cloned().unwrap_or_default())
+        .filter(|part| part["type"] == "tool_result")
+        .map(|part| part["content"].to_string())
+        .collect();
+    let shown_once = |what: &str| shown.iter().filter(|text| text.contains(what)).count() == 1;
+    assert!(shown.iter().any(|text| text.contains("smoke")), "{shown:?}");
+    assert!(shown_once(ROLE_SAYS), "the role's hook refused nothing: {shown:?}");
+    assert!(
+        shown_once("the stage `smoke-stage` is marked `writes: false`: `git commit` is refused"),
+        "the guard refused nothing: {shown:?}"
+    );
 
     // What this run could not show, on this host.
     for (shown, what) in [
