@@ -276,21 +276,28 @@ pub enum Performer {
     Role(Work),
 }
 
-/// Where a `pass` leads.
+/// Where a `pass` leads: `to_stage` when to a stage, the one at the place `to`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[refined_by(to_stage: bool, to: int)]
 pub enum Pass {
     /// The stage at this place among the workflow's stages.
+    #[variant((usize[@to]) -> Pass[true, to])]
     Stage(usize),
     /// The landing train.
+    #[variant(Pass[false, 0])]
     Land,
     /// Nothing more to do.
+    #[variant(Pass[false, 0])]
     Done,
 }
 
-/// One stage of a workflow. Its `reject`, if it may reject, leads to a stage
-/// before it: every way back through a workflow is a counted rejection.
+/// One stage of a workflow of `n` stages. Its place is below `n`, and so is
+/// the place of the stage its `pass` leads to, when it leads to one. Its
+/// `reject`, if it may reject, leads to a stage before it: every way back
+/// through a workflow is a counted rejection.
 #[derive(Debug, PartialEq, Eq)]
-#[refined_by(at: int)]
+#[refined_by(at: int, n: int)]
+#[invariant(at < n)]
 pub struct Stage {
     pub name: String,
     pub by: Performer,
@@ -301,6 +308,10 @@ pub struct Stage {
     pub consult: Option<Work>,
     #[field(usize[at])]
     at: usize,
+    /// How many stages its workflow has.
+    #[field(usize[n])]
+    of: usize,
+    #[field(Pass{v: v.to_stage => v.to < n})]
     pass: Pass,
     #[field(Option<usize{v: v < at}>)]
     reject: Option<usize>,
@@ -313,13 +324,15 @@ impl Stage {
         self.at
     }
 
+    /// Where a `pass` leads: to a stage of its workflow, when to a stage.
+    #[spec(fn(&Stage[@s]) -> Pass{v: v.to_stage => v.to < s.n})]
     pub fn pass(&self) -> Pass {
         self.pass
     }
 
-    /// The place of the stage a `reject` leads to; `None` when this stage may
-    /// not reject.
-    #[spec(fn(&Stage[@s]) -> Option<usize{v: v < s.at}>)]
+    /// The place of the stage a `reject` leads to, a stage of its workflow
+    /// before this one; `None` when this stage may not reject.
+    #[spec(fn(&Stage[@s]) -> Option<usize{v: v < s.at && v < s.n}>)]
     pub fn reject(&self) -> Option<usize> {
         self.reject
     }
@@ -328,6 +341,8 @@ impl Stage {
 /// One workflow. It has a first stage; following `pass` from any of its stages
 /// comes to the landing train or to nothing more to do; every stage can be
 /// reached from the first; and `land` is set exactly when a `pass` leads there.
+/// It has `n` stages, each a stage of a workflow of `n`: where one's `pass` or
+/// `reject` leads, there is a stage.
 #[derive(Debug, PartialEq, Eq)]
 #[refined_by(n: int)]
 #[invariant(n > 0)]
@@ -336,7 +351,7 @@ pub struct Workflow {
     pub name: String,
     pub max_rework: u64,
     pub max_consecutive_rework: u64,
-    #[field(Vec<Stage>[n])]
+    #[field(Vec<Stage{v: v.n == n}>[n])]
     stages: Vec<Stage>,
     /// Who gates the PR and joins the landing train.
     pub land: Option<Work>,
@@ -349,24 +364,36 @@ impl Workflow {
 
     /// The stage an issue entering the workflow is at. There is one, by the
     /// workflow's invariant.
+    #[spec(fn(&Workflow[@w]) -> &Stage{v: v.n == w.n})]
     pub fn first(&self) -> &Stage {
         &self.stages[0]
     }
 
+    /// The stage at the place `at`: where a `pass` or a `reject` of one of
+    /// its stages leads.
+    #[spec(fn(&Workflow[@w], at: usize{at < w.n}) -> &Stage{v: v.n == w.n})]
+    pub fn stage(&self, at: usize) -> &Stage {
+        &self.stages[at]
+    }
+
+    #[spec(fn(&Workflow[@w]) -> &[Stage{v: v.n == w.n}][w.n])]
     pub fn stages(&self) -> &[Stage] {
         &self.stages
     }
 }
 
-/// The one place a `Workflow` is built: one with no stage never gets out.
+/// The one place a `Workflow` is built: one with no stage never gets out, nor
+/// one whose stages were made for a workflow of another number of them.
+#[spec(fn(String, u64, u64, Vec<Stage{v: v.n == n}>, n: usize, Option<Work>) -> Option<Workflow[n]>)]
 fn workflow(
     name: String,
     max_rework: u64,
     max_consecutive_rework: u64,
     stages: Vec<Stage>,
+    n: usize,
     land: Option<Work>,
 ) -> Option<Workflow> {
-    if stages.is_empty() {
+    if n == 0 || stages.len() != n {
         return None;
     }
     Some(Workflow { name, max_rework, max_consecutive_rework, stages, land })
@@ -376,6 +403,18 @@ fn workflow(
 #[spec(fn(target: usize, at: usize) -> Option<usize{v: v < at}>)]
 fn earlier(target: usize, at: usize) -> Option<usize> {
     if target < at { Some(target) } else { None }
+}
+
+/// `pass` as where a stage of a workflow of `n` stages may pass to: a stage
+/// only when it is one of them.
+#[spec(fn(Pass, n: usize) -> Option<Pass{v: v.to_stage => v.to < n}>)]
+fn among(pass: Pass, n: usize) -> Option<Pass> {
+    match pass {
+        Pass::Stage(to) if to < n => Some(Pass::Stage(to)),
+        Pass::Stage(_) => None,
+        Pass::Land => Some(Pass::Land),
+        Pass::Done => Some(Pass::Done),
+    }
 }
 
 /// The repos a team file names as its roles: what to read before `load`. It
@@ -972,6 +1011,7 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
         _ => {}
     }
 
+    let n = drafts.len();
     let mut stages: Vec<Stage> = vec![];
     for (at, (draft, edges)) in drafts.into_iter().zip(edges).enumerate() {
         let draft = draft?;
@@ -984,9 +1024,9 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
         if draft.reject.is_some() && reject.is_none() {
             return None;
         }
-        stages.push(stage(draft, at, edges.pass?, reject)?);
+        stages.push(stage(draft, at, n, among(edges.pass?, n)?, reject)?);
     }
-    workflow(name.to_string(), max_rework?, max_consecutive_rework?, stages, land?)
+    workflow(name.to_string(), max_rework?, max_consecutive_rework?, stages, n, land?)
 }
 
 /// Reads one entry of the patrols directory → the patrol it defines, when
@@ -1035,9 +1075,14 @@ fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol
     Some(Patrol { name: name.to_string(), work: work?, every: every?, model, max_open: max_open? })
 }
 
-/// The stage a draft with nothing wrong in it is.
-#[spec(fn(Draft, at: usize, Pass, Option<usize{v: v < at}>) -> Option<Stage[at]>)]
-fn stage(draft: Draft, at: usize, pass: Pass, reject: Option<usize>) -> Option<Stage> {
+/// The stage a draft with nothing wrong in it is, at the place `at` of a
+/// workflow of `n` stages: `None` when that is no place of such a workflow.
+#[spec(fn(Draft, at: usize, n: usize, Pass{v: v.to_stage => v.to < n}, Option<usize{v: v < at}>)
+    -> Option<Stage[at, n]>)]
+fn stage(draft: Draft, at: usize, n: usize, pass: Pass, reject: Option<usize>) -> Option<Stage> {
+    if at >= n {
+        return None;
+    }
     Some(Stage {
         name: draft.name?.to_string(),
         by: draft.by?,
@@ -1045,6 +1090,7 @@ fn stage(draft: Draft, at: usize, pass: Pass, reject: Option<usize>) -> Option<S
         writes: draft.writes?,
         consult: draft.consult?,
         at,
+        of: n,
         pass,
         reject,
     })
@@ -1065,6 +1111,23 @@ mod rejected {
     #[should_fail]
     fn a_workflow_of_whatever_was_listed(name: String, stages: Vec<Stage>) -> Workflow {
         Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages, land: None }
+    }
+
+    /// A `pass` past the last stage of a workflow.
+    #[should_fail]
+    #[spec(fn(String, n: usize{n > 0}) -> Stage[0, n])]
+    fn a_pass_past_the_last_stage(name: String, n: usize) -> Stage {
+        Stage {
+            name,
+            by: Performer::Human,
+            model: None,
+            writes: false,
+            consult: None,
+            at: 0,
+            of: n,
+            pass: Pass::Stage(n),
+            reject: None,
+        }
     }
 }
 

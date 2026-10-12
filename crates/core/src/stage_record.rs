@@ -4,6 +4,8 @@
 //! The comment's format has this one home: only the fleet's commands write
 //! it, and nothing else reads it.
 
+use flux_rs::macros::qualifier;
+
 use crate::position::{Declared, Place, Position, Reason};
 use crate::prompt::quoted;
 use crate::record;
@@ -253,6 +255,9 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
     let mut readings = vec![];
     let mut rounds = vec![];
     for (nth, record) in records.iter().enumerate() {
+        // What stays true of the place on every turn, which Flux does not
+        // find alone: the stage it is at, while at one, is the workflow's.
+        qualifier!(at_stage: bool, of: int, n: int; at_stage => of == n);
         let at = place.position.stage();
         let named = workflow.stages().iter().find(|stage| stage.name == record.stage);
         let reading = if record.claim().is_some_and(|claim| spent.contains(&claim)) {
