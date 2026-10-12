@@ -986,6 +986,7 @@ mod tests {
             stage: "plan".to_string(),
             stated: Stated::Declared(Declared::Blocked),
             by: Author::Worker {
+                consult: false,
                 claim: "c".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
