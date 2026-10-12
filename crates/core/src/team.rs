@@ -1511,6 +1511,11 @@ land: { by: dev, do: land }
         assert_eq!(build.by, Performer::Role(work(DEV, "implement")));
         assert_eq!(build.model.as_deref(), Some("opus"));
         assert_eq!(build.consult, Some(work(REVIEWER, "rule")));
+        let consulted = team.role_of(build.consult.as_ref().unwrap());
+        assert_eq!(
+            (consulted.name.as_str(), consulted.repo.as_str()),
+            ("reviewer", "acme/reviewer")
+        );
         assert!(build.writes && !review.writes, "a stage writes unless it says not");
         assert_eq!((review.pass(), review.reject()), (Pass::Stage(3), Some(1)));
         assert_eq!(sign_off.by, Performer::Human);
