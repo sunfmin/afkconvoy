@@ -153,6 +153,69 @@ body:
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
 
+/// The brief of a worker started in its role: a fixed form that says what the
+/// stage is and nothing of how to perform it — that is the role's to say.
+const STAGE: &str = "\
+You are an afkconvoy worker, started in your role to perform one stage of one GitHub issue. Nobody
+reads this terminal: never wait for an answer.
+
+- **Issue:** #{n} — {title}
+- **Stage:** `{stage}`, of the workflow `{flow}`
+- **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
+- **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`)
+- **History:** the issue and every comment on it (`gh issue view {n} --comments`), and what the
+  branch holds past `origin/{base_branch}`
+- **Precedents:** `{precedents}`
+
+## Declare a verdict
+
+The stage ends when you declare its verdict with this command, and not before; its `--help` says
+what it takes. Then stop.
+```bash
+{verdict_command}
+```
+";
+
+/// What the brief of a worker started in its role is filled with.
+#[derive(Debug, Clone)]
+pub struct StageFields<'a> {
+    pub number: u64,
+    pub title: &'a str,
+    /// The workflow's name.
+    pub flow: &'a str,
+    pub stage: &'a str,
+    pub role: &'a str,
+    pub skill: &'a str,
+    pub branch: &'a str,
+    pub worktree: &'a str,
+    pub base_branch: &'a str,
+    /// The precedents file, in the fleet's copy of the team.
+    pub precedents: &'a str,
+    /// The line the worker declares its verdict with.
+    pub verdict_command: &'a str,
+}
+
+/// The brief a worker started in its role is given.
+pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
+    let number = fields.number.to_string();
+    fill(
+        STAGE,
+        &[
+            ("n", &number),
+            ("title", fields.title),
+            ("flow", fields.flow),
+            ("stage", fields.stage),
+            ("role", fields.role),
+            ("skill", fields.skill),
+            ("branch", fields.branch),
+            ("worktree_path", fields.worktree),
+            ("base_branch", fields.base_branch),
+            ("precedents", fields.precedents),
+            ("verdict_command", fields.verdict_command),
+        ],
+    )
+}
+
 const TRAIN: &str = "\
 You are the afkconvoy **train worker**. You own no issue and you write no feature. Finished PRs join
 the **landing train**: a line of commits ahead of `{base_branch}`, one merge commit per PR. Your job
@@ -439,6 +502,39 @@ mod tests {
             joiner.contains("Once your outcome is on GitHub — your PR is on the landing train,")
         );
         assert!(!joiner.contains("comment is posted") && !joiner.contains("<wake>"));
+    }
+
+    #[test]
+    fn the_brief_of_a_worker_in_its_role_is_a_fixed_form() {
+        let prompt = stage_prompt(&StageFields {
+            number: 7,
+            title: "Add {branch} support",
+            flow: "feature",
+            stage: "build",
+            role: "dev",
+            skill: "implement",
+            branch: "tester/issue-7-add",
+            worktree: "/wt/issue-7",
+            base_branch: "develop",
+            precedents: "/copies/acme/team/def/precedents.md",
+            verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+        })
+        .unwrap();
+        for said in [
+            "- **Issue:** #7 — Add {branch} support\n",
+            "- **Stage:** `build`, of the workflow `feature`\n",
+            "- **Skill to perform:** `implement`, of the role you were started in (`dev`)\n",
+            "- **Worktree:** `/wt/issue-7`, on the branch `tester/issue-7-add` (the base is `develop`)",
+            "- **History:** the issue and every comment on it (`gh issue view 7 --comments`)",
+            "- **Precedents:** `/copies/acme/team/def/precedents.md`\n",
+            "```bash\n/opt/bin/afkconvoy verdict --issue 7 --stage build\n```",
+        ] {
+            assert!(prompt.contains(said), "{said}\n{prompt}");
+        }
+        // How the work is done is the role's to say: none of the whole brief's steps.
+        for absent in ["Implement", "gh pr create", "Gate", "landing train", "git add", "wake"] {
+            assert!(!prompt.contains(absent), "{absent}");
+        }
     }
 
     #[test]

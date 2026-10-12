@@ -73,7 +73,7 @@ fn alone(named: &Named, config: &Config) -> Standing {
         Some(bar @ LabelBar::Epic(_)) => {
             Standing::Unmet(format!("will never be dispatched: {}", bar.reason()))
         }
-        Some(bar @ LabelBar::NotReady(_)) => {
+        Some(bar @ (LabelBar::NotReady(_) | LabelBar::NoFlow)) => {
             if named.claimed || named.open_pr {
                 Standing::Waiting
             } else {
