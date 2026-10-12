@@ -356,6 +356,26 @@ impl Workflow {
     pub fn stages(&self) -> &[Stage] {
         &self.stages
     }
+
+    /// The place among the workflow's stages of the one `name` names; `None`
+    /// when the workflow has no such stage.
+    #[spec(fn(&Workflow[@n], name: &str) -> Option<usize{v: v < n}>)]
+    pub fn place_of(&self, name: &str) -> Option<usize> {
+        let mut at = 0;
+        while at < self.stages.len() {
+            if self.stages[at].name == name {
+                return Some(at);
+            }
+            at += 1;
+        }
+        None
+    }
+
+    /// The stage at a place the workflow has.
+    #[spec(fn(&Workflow[@n], at: usize{at < n}) -> &Stage)]
+    pub fn stage(&self, at: usize) -> &Stage {
+        &self.stages[at]
+    }
 }
 
 /// The one place a `Workflow` is built: one with no stage never gets out.
@@ -1065,6 +1085,18 @@ mod rejected {
     #[should_fail]
     fn a_workflow_of_whatever_was_listed(name: String, stages: Vec<Stage>) -> Workflow {
         Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages, land: None }
+    }
+
+    /// A place read as at the number of stages: one past the last.
+    #[should_fail]
+    fn a_place_at_the_number_of_stages(workflow: &Workflow) -> &Stage {
+        workflow.stage(workflow.stages.len())
+    }
+
+    /// A place read as whatever it is, past the stages or not.
+    #[should_fail]
+    fn a_place_past_the_stages(workflow: &Workflow, at: usize) -> &Stage {
+        workflow.stage(at)
     }
 }
 
