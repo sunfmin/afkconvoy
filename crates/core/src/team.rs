@@ -70,6 +70,14 @@ impl<'de> serde::de::Visitor<'de> for NodeVisitor {
         Ok(Node::Null)
     }
 
+    fn visit_none<E>(self) -> Result<Node, E> {
+        Ok(Node::Null)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Node, D::Error> {
+        deserializer.deserialize_any(NodeVisitor)
+    }
+
     fn visit_bool<E>(self, value: bool) -> Result<Node, E> {
         Ok(Node::Bool(value))
     }
@@ -1024,6 +1032,7 @@ land: { by: dev, do: land }
         for (line, key) in [
             ("    writes: no thanks\n", "stages[1].writes"),
             ("    model: [opus]\n", "stages[1].model"),
+            ("    model:\n", "stages[1].model"),
             ("    escalate: reviewer\n", "stages[1].escalate"),
         ] {
             assert_eq!(fault(&two("{ pass: b }", &rest(line))).0, key);
