@@ -251,41 +251,26 @@ mod tests {
     }
 
     /// Any URL a remote can have, and any text in place of one: the parts of
-    /// a URL and what does not belong in a host name, in any order.
+    /// a URL and what does not belong in a host name, in any order, alone or
+    /// where one of the three forms of URL has its host.
     fn remote_url() -> impl Strategy<Value = String> {
+        let not_of_a_host = " \n;&|$`'\"\\_()é文．".chars().collect::<Vec<_>>();
         let part = prop_oneof![
-            "[a-z0-9.-]{0,8}",
-            prop::sample::select(vec![
-                "://",
-                ":",
-                "@",
-                "/",
-                ".",
-                "-",
-                "https",
-                "ssh",
-                "git",
-                "github.com",
-                "22",
-                " ",
-                "\n",
-                ";",
-                "&",
-                "|",
-                "$(id)",
-                "`id`",
-                "'",
-                "\"",
-                "\\",
-                "_",
-                "é",
-                "文",
-                "．",
-            ])
-            .prop_map(String::from),
-            any::<char>().prop_map(String::from),
+            4 => "[a0.-]{0,6}",
+            1 => prop::sample::select(vec!["://", ":", "@", "/", "https", "git", "22", "$(id)"])
+                .prop_map(String::from),
+            1 => prop::sample::select(not_of_a_host).prop_map(String::from),
+            1 => any::<char>().prop_map(String::from),
         ];
-        prop::collection::vec(part, 0..10).prop_map(|parts| parts.concat())
+        let parts =
+            |most| prop::collection::vec(part.clone(), 0..most).prop_map(|parts| parts.concat());
+        let before = prop::sample::select(vec!["https://", "https://user@", "ssh://git@", "git@"]);
+        let after = prop::sample::select(vec!["/o/r", ":22/o/r", ":o/r", ""]);
+        prop_oneof![
+            parts(8),
+            (before, parts(3), after)
+                .prop_map(|(before, host, after)| [before, &host, after].concat()),
+        ]
     }
 
     proptest! {
