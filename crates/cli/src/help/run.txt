@@ -29,7 +29,16 @@ WHAT IT ANSWERS
   in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as
   `tick N: FAILED: <why>`; the loop goes on either way.
 
-  Errors, before the first tick, as {"error": …} with a non-zero exit: a command the
+  With `--panel <port>` its first line is the panel's address, and it serves the panel
+  there until it is killed: the fleet as a web page — every workflow as a line of its
+  stages, the issues at work, queued and held back at each, the landing train — brought
+  up to date in the browser after every tick, by itself. `afkconvoy panel --help` says
+  what the page shows.
+
+    panel: http://127.0.0.1:7070/
+
+  Errors, before the first tick, as {"error": …} with a non-zero exit: the panel's port
+  is taken; a command the
   fleet needs is missing or logged out (the error names each, with the line to run);
   the repo fails the startup probe; the config cannot be read; the worker launch
   command resolves to nothing, or — in a bound repo — does not take the flags that
@@ -43,4 +52,6 @@ WHAT TRIPS YOU UP
     never print it. `takeover --list` shows it, for `plan --instance` and the commands
     that make one transition by hand.
   - A second `run` on this host for this repo takes the first one's claims at its start.
+  - The panel is served to this host only, and shows a tick, not this second: between
+    two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
   - With ANTHROPIC_BASE_URL set and no terminal it needs `--worker-command`.

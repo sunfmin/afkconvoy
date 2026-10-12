@@ -647,7 +647,8 @@ mod tests {
     #[test]
     fn an_issue_that_calls_for_a_human_is_handed_over_into_a_free_slot_and_holds_none() {
         let mut calling = set(&[5], &[(1, Status::AtStage)]);
-        let row = |&number| crate::plan::Excluded { number, reason: String::new() };
+        let row =
+            |&number| crate::plan::Excluded { number, title: String::new(), reason: String::new() };
         calling.escalating = [3, 4, 8].iter().map(row).collect();
         let at_work = |step| if matches!(step, Advance { .. }) { Nothing } else { Done };
         let pass = run_pass(&calling, 2, 1, at_work);

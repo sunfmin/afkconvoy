@@ -112,6 +112,7 @@ pub struct Dispatchable {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Excluded {
     pub number: u64,
+    pub title: String,
     pub reason: String,
 }
 
@@ -234,21 +235,21 @@ fn hold_back(set: &mut WorkingSet) {
         return;
     }
     let why = lock::reason(&set.locks);
-    let mut kept_off: Vec<u64> = vec![];
+    let mut kept_off: Vec<(u64, String)> = vec![];
     for issue in &set.frontier {
         if lock::keeps_off(&set.locks, issue.number) {
-            kept_off.push(issue.number);
+            kept_off.push((issue.number, issue.title.clone()));
         }
     }
     for issue in &set.escalating {
         if lock::keeps_off(&set.locks, issue.number) {
-            kept_off.push(issue.number);
+            kept_off.push((issue.number, issue.title.clone()));
         }
     }
-    set.frontier.retain(|issue| !kept_off.contains(&issue.number));
-    set.escalating.retain(|issue| !kept_off.contains(&issue.number));
-    for number in kept_off {
-        set.excluded.push(Excluded { number, reason: why.clone() });
+    set.frontier.retain(|issue| !lock::keeps_off(&set.locks, issue.number));
+    set.escalating.retain(|issue| !lock::keeps_off(&set.locks, issue.number));
+    for (number, title) in kept_off {
+        set.excluded.push(Excluded { number, title, reason: why.clone() });
     }
     set.excluded.sort_by_key(|excluded| excluded.number);
 }
@@ -318,7 +319,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             set.flowing.push((*issue).clone());
         }
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
-        let number = issue.number;
+        let (number, title) = (issue.number, issue.title.clone());
         let reason = if let Some(bar) = label_bar(&issue.labels, config) {
             bar.reason()
         } else if claimed {
@@ -327,7 +328,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             // Where its stage records put it decides. An open PR declares nothing.
             match seen.due.iter().find(|(due, _)| *due == number).map(|(_, due)| due) {
                 Some(Due::Human(reason)) => {
-                    set.escalating.push(Excluded { number, reason: reason.clone() });
+                    set.escalating.push(Excluded { number, title, reason: reason.clone() });
                     continue;
                 }
                 Some(Due::Nothing(why)) => why.clone(),
@@ -337,13 +338,13 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                     format!("{} open blocker(s)", issue.open_blockers)
                 }
                 Some(Due::Lander(_)) => {
-                    let (title, stage) = (issue.title.clone(), Some(LAND.to_string()));
+                    let stage = Some(LAND.to_string());
                     set.frontier.push(Dispatchable { number, title, stage });
                     continue;
                 }
                 // A consult is started at the stage that asked it.
                 Some(Due::Worker(entry) | Due::Consult(entry)) => {
-                    let (title, stage) = (issue.title.clone(), Some(entry.stage.name.clone()));
+                    let stage = Some(entry.stage.name.clone());
                     set.frontier.push(Dispatchable { number, title, stage });
                     continue;
                 }
@@ -354,10 +355,10 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         } else if issue.open_blockers > 0 {
             format!("{} open blocker(s)", issue.open_blockers)
         } else {
-            set.frontier.push(Dispatchable { number, title: issue.title.clone(), stage: None });
+            set.frontier.push(Dispatchable { number, title, stage: None });
             continue;
         };
-        set.excluded.push(Excluded { number, reason });
+        set.excluded.push(Excluded { number, title, reason });
     }
     for claim in claims {
         let closed = seen.closed.contains(&claim.number);
@@ -612,7 +613,11 @@ mod tests {
         let reason = "a fleet lock stands (#2)".to_string();
         assert_eq!(
             set.excluded,
-            [Excluded { number: 1, reason: reason.clone() }, Excluded { number: 3, reason }]
+            [1, 3].map(|number| Excluded {
+                number,
+                title: format!("issue {number}"),
+                reason: reason.clone()
+            })
         );
     }
 

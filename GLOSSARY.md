@@ -192,6 +192,10 @@ _Avoid_: fail, retry, give up
 The single comment on a claimed issue that shows a human how far along it is. It is rendered from fleet state and never read back.
 _Avoid_: progress log, worklog
 
+**Panel**:
+The web page that shows a human where the whole fleet stands: each workflow as the line of its stages, the issues at work, queued and held back at each, and the landing train. A fleet instance serves it on its own host, made anew from what each tick read; it is never read back.
+_Avoid_: dashboard, status page, status board (the comment on one issue), UI
+
 ### Landing
 
 **Gate**:

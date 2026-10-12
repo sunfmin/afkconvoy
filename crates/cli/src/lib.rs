@@ -33,11 +33,13 @@ pub mod landing;
 pub mod launch;
 pub mod lock;
 pub mod orca;
+pub mod panel;
 pub mod park;
 pub mod patrol;
 pub mod probe;
 pub mod recovery;
 pub mod role;
+pub mod serve;
 pub mod settle;
 pub mod stage;
 pub mod steer;
@@ -126,12 +128,24 @@ enum Command {
         host: Option<String>,
         #[command(flatten)]
         agent: AgentArgs,
+        /// Serve the panel — the fleet as a web page, live — on this port of this host
+        #[arg(long, value_name = "PORT")]
+        panel: Option<u16>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
         /// Milliseconds one second of sleep takes
         #[arg(long, hide = true, default_value_t = 1000)]
         second_ms: u64,
+    },
+    /// Print the panel — the fleet as a web page — as one rebuild shows it now
+    #[command(after_long_help = include_str!("help/panel.txt"))]
+    Panel {
+        /// The fleet instance whose claims are its own [default: nobody's]
+        #[arg(long, value_parser = InstanceId::parse)]
+        instance: Option<InstanceId>,
+        #[arg(long)]
+        host: Option<String>,
     },
     /// Run one reconciliation pass and exit
     #[command(after_long_help = include_str!("help/tick.txt"))]
@@ -580,14 +594,22 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             }
             Ok(plan)
         }
-        Command::Run { instance, host, agent, ticks, second_ms } => {
+        Command::Run { instance, host, agent, panel, ticks, second_ms } => {
             let host = host.unwrap_or_else(this_host);
             let salt = clock() as u32 ^ std::process::id();
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
             let pacing = Pacing { ticks, second: Duration::from_millis(second_ms) };
             let agent = agent.start(now)?;
-            tick::run(&mut me, &agent, &pacing, || fixed_now.unwrap_or_else(clock))
+            tick::run(&mut me, &agent, &pacing, panel, || fixed_now.unwrap_or_else(clock))
+        }
+        Command::Panel { instance, host } => {
+            let fleet = Fleet::open(now)?;
+            let host = host.unwrap_or_else(this_host);
+            let me = instance.map(|instance| Me { instance, host, now });
+            let (set, flows) = fleet.rebuild(me.as_ref().map(|me| &me.instance))?;
+            let shown = panel::read(&fleet, me.as_ref(), &set, &flows, &[]);
+            Ok(Value::String(panel::render(&shown)))
         }
         Command::Tick { who, agent } => {
             let agent = agent.start(now)?;

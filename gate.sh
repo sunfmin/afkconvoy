@@ -11,7 +11,15 @@ RUSTUP_TOOLCHAIN=nightly-2026-09-25
 export PATH RUSTUP_TOOLCHAIN
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
-cargo test --workspace --quiet
+# A test of the CLI waits on the processes it starts, and cargo runs one test
+# program at a time: nextest runs them side by side. Without it the gate
+# checks the same and takes about three times as long.
+if cargo nextest --version >/dev/null 2>&1; then
+    cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level fail --show-progress none
+else
+    echo "gate: cargo-nextest is not installed (brew install cargo-nextest): the tests run one program at a time" >&2
+    cargo test --workspace --quiet
+fi
 # Every function of the core crate is checked: none is taken on trust.
 if grep -rnE '#!?\[(flux_rs::)?(trusted|trusted_impl|ignore|opaque)' crates/core/src; then
     echo "gate: the core crate must not exempt anything from Flux" >&2

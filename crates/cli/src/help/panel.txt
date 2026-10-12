@@ -1,0 +1,50 @@
+WHEN TO RUN IT
+
+  To see the whole fleet at a glance, without a `run` to ask: every workflow as a line
+  of its stages, the issues at work, queued and held back at each, the landing train,
+  and what waits for a human. Save it and open it in a browser:
+
+      afkconvoy panel --instance <id> > panel.html
+
+  To watch a running fleet, do not run this in a loop: start the fleet with
+  `afkconvoy run --panel <port>` and open http://127.0.0.1:<port>/ — that page is
+  brought up to date after every tick, by itself.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo.
+
+WHAT IT READS AND WRITES
+
+  It writes nothing, on GitHub or on the remote, and makes no startup probe. It makes
+  the rebuild `plan` makes — the open issues and PRs, the claims and heartbeats, the
+  landing train, and in a bound repo the team and every stage record — then asks orca
+  after the worker of each claim of `--instance` on this host.
+
+WHAT IT ANSWERS
+
+  Not a JSON object: one HTML document on stdout, complete in itself, with no address
+  in it that a browser would fetch. The same fleet state gives the same document.
+
+    Claims held    the claims of `--instance`, of the concurrency
+    a lane         one per workflow; an unbound repo has one, `backlog`, with the two
+                   stages `work` and `land`
+    a stage        the number in its stop is the workers at it; under it the issues at
+                   work — each with its worker's state: busy, stopped and for how
+                   long, or no worker — then the queued, which are the frontier, and
+                   in a bound repo those held back there, with why
+    Landing train  the issues whose PR is on it
+    With a human   the issues a tick hands over, with why
+    left alone     every other open issue, with the reason `plan` gives under `excluded`
+
+  Errors, as {"error": …} with a non-zero exit: the config cannot be read; GitHub or
+  the remote cannot be read.
+
+WHAT TRIPS YOU UP
+
+  - Without `--instance` nobody's claims are its own: a running fleet's claims show as
+    "held by <instance>", with no worker's state. `takeover --list` shows the ids.
+  - A worker's state is this host's orca's to say. A claim whose worker runs on another
+    host shows "no worker" here.
+  - The page `run --panel` serves is not this one made again and again: it is made from
+    what each tick already read, and adds what that tick did. It costs GitHub nothing.
