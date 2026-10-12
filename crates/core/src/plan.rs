@@ -548,6 +548,7 @@ mod tests {
             stage: "plan".to_string(),
             stated: Stated::Declared(Declared::Escalate),
             by: Author::Worker {
+                consult: false,
                 claim: "c1".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
