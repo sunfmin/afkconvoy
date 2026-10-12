@@ -26,7 +26,8 @@ WHAT A COMMAND ANSWERS
 
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
   a non-zero exit. Warnings go to stderr. `run` instead prints one line per tick until
-  it is stopped, and `show` a drawing unless it is asked about an issue.
+  it is stopped, `show` a drawing unless it is asked about an issue, and `guard` answers
+  Claude Code as a hook does: with its exit code.
 
 THE COMMANDS, by who runs them
 
@@ -47,6 +48,10 @@ THE COMMANDS, by who runs them
   to put an issue at a stage of your choosing, or to see what a `by: human` stage asks:
       rule  send
 
+  A worker's hook — Claude Code runs it before each thing a bound repo's worker does.
+  Nobody runs it by hand. Read it to learn what a worker is refused, and why one was:
+      guard
+
   One transition by hand — each is something a tick does on its own. Read one when a
   plan shows a transition the fleet is not making, or you are told to make it yourself:
       dispatch  recovery  close  escalate  park  nudge  restart  abandon
@@ -64,5 +69,5 @@ RULES TO KNOW BEFORE YOU START
   - With a custom provider (ANTHROPIC_BASE_URL set) and no terminal, a command that
     starts a worker needs `--worker-command`: there is nobody to ask.
   - In a bound repo the worker launch command must end in Claude Code taking flags: the
-    fleet adds to it what starts each worker in its role, and a start refuses a command
-    whose `--help` does not name those flags.
+    fleet adds to it what starts each worker in its role and under the guard, and a
+    start refuses a command whose `--help` does not name those flags.

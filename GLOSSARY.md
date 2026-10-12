@@ -39,7 +39,7 @@ The read-only pass at the top of every tick that derives the working set. Any fl
 _Avoid_: refresh, resync
 
 **Frontier**:
-The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs. In an unbound repo: carrying the ready label, with no open linked PR.
+The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR.
 _Avoid_: queue, backlog
 
 **Base branch**:
@@ -125,7 +125,7 @@ _Avoid_: freeze, pause, kill switch
 ### Workers
 
 **Worker**:
-A coding-agent session started in one role to perform one stage of one issue, in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing.
+A coding-agent session started in one role to perform one stage of one issue — or, after its last stage, to join its PR to the landing train — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing.
 _Avoid_: agent, subagent, child
 
 **Worker launch command**:
@@ -145,7 +145,7 @@ The one line the fleet types at a worker that stopped with no outcome, telling i
 _Avoid_: ping, reminder, retry
 
 **Restart**:
-Replacing a silent worker with a new one in the same worktree, with its PR, branch and worktree untouched. Made once, and only for a worker that is joining the landing train.
+Replacing a silent worker with a new one in the same worktree and the same role, with its PR, branch and worktree untouched. Made once, and only for a worker that is joining the landing train.
 _Avoid_: retry, re-dispatch
 
 **Continuation**:
@@ -211,7 +211,7 @@ The one append-only line of merge commits ahead of the base branch that finished
 _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:
-Putting a finished PR on the landing train, done by the worker that wrote it.
+Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed.
 _Avoid_: merge, enqueue
 
 **Train worker**:

@@ -14,8 +14,10 @@ pub const ADD_DIR: &str = "--add-dir";
 pub const SETTING_SOURCES: &str = "--setting-sources";
 /// Claude Code's flag for the model of the session.
 pub const MODEL: &str = "--model";
+/// Claude Code's flag for settings added to those it loads.
+pub const SETTINGS: &str = "--settings";
 /// Every flag the fleet adds: what a bound repo's worker launch command must take.
-pub const FLAGS: [&str; 3] = [ADD_DIR, SETTING_SOURCES, MODEL];
+pub const FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
 
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's.
@@ -31,6 +33,13 @@ const NO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 /// repo and of the team's in: the command that declares a verdict reads them.
 pub const ROLE_COMMIT_ENV: &str = "AFKCONVOY_ROLE_COMMIT";
 pub const TEAM_COMMIT_ENV: &str = "AFKCONVOY_TEAM_COMMIT";
+/// The variables the guard reads its stage's limits from (`guard::Limits`).
+pub const STAGE_ENV: &str = "AFKCONVOY_STAGE";
+pub const WRITES_ENV: &str = "AFKCONVOY_WRITES";
+pub const CONSULT_ENV: &str = "AFKCONVOY_CONSULT";
+pub const BASE_BRANCH_ENV: &str = "AFKCONVOY_BASE_BRANCH";
+pub const ESCALATE_LABEL_ENV: &str = "AFKCONVOY_ESCALATE_LABEL";
+pub const LOCK_LABEL_ENV: &str = "AFKCONVOY_LOCK_LABEL";
 
 /// The stage an issue is dispatched to, and who performs it.
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +48,18 @@ pub struct Entry<'t> {
     pub stage: &'t Stage,
     pub work: &'t Work,
     pub role: &'t Role,
+}
+
+/// The join an issue is dispatched to once its last stage passed to the
+/// landing train, and who performs it.
+#[derive(Debug, Clone, Copy)]
+pub struct Lander<'t> {
+    pub workflow: &'t Workflow,
+    /// The workflow's `land:`: the role, and its landing skill.
+    pub work: &'t Work,
+    pub role: &'t Role,
+    /// The issue's open PR: what is gated and joined.
+    pub pr: u64,
 }
 
 /// The names of the workflows an issue's labels name, in the labels' order.
@@ -92,6 +113,9 @@ pub fn followed<'t, 'a>(
 pub enum Due<'t> {
     /// A worker is to be started on this stage.
     Worker(Entry<'t>),
+    /// A worker is to be started in the workflow's landing role, to gate the
+    /// issue's PR and join the landing train.
+    Lander(Lander<'t>),
     /// The issue is to be handed to a human, for this reason.
     Human(String),
     /// Nothing is to be done with it, for this reason.
@@ -99,21 +123,29 @@ pub enum Due<'t> {
 }
 
 /// What is due on an issue carrying `labels` whose stage records are
-/// `records`, oldest first: the stage its position starts a worker on, in the
-/// workflow of `team` its flow label names. A flow label that names no one
-/// workflow, and a position that is an escalation, hand it to a human; an
+/// `records`, oldest first, and whose open PR is `pr`: the stage its position
+/// starts a worker on, in the workflow of `team` its flow label names, or —
+/// its last stage having passed to the landing train — the join of that PR.
+/// A flow label that names no one workflow, a position that is an
+/// escalation, and a landing with no open PR to join hand it to a human; an
 /// issue with no flow label is not the fleet's.
-pub fn due<'t>(team: &'t Team, labels: &[String], records: &[StageRecord]) -> Due<'t> {
+pub fn due<'t>(
+    team: &'t Team,
+    labels: &[String],
+    records: &[StageRecord],
+    pr: Option<u64>,
+) -> Due<'t> {
     let workflow = match workflow_of(team, labels) {
         Ok(workflow) => workflow,
         Err(why) if flows(labels).is_empty() => return Due::Nothing(why),
         Err(why) => return Due::Human(why),
     };
     let position = history(workflow, records).place.position;
+    let roleless = |work: &Work| Due::Nothing(format!("the team has no role {:?}", work.role));
     if let Some((stage, work)) = position.start() {
         return match team.role(&work.role) {
             Some(role) => Due::Worker(Entry { workflow, stage, work, role }),
-            None => Due::Nothing(format!("the team has no role {:?}", work.role)),
+            None => roleless(work),
         };
     }
     let waits = |stage: &Stage, on: &str| {
@@ -125,7 +157,18 @@ pub fn due<'t>(team: &'t Team, labels: &[String], records: &[StageRecord]) -> Du
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
             waits(stage, "a human: no worker performs it")
         }
-        Position::Landing => Due::Nothing("its last stage passed it to the landing train".into()),
+        Position::Landing => match (&workflow.land, pr) {
+            (Some(work), Some(pr)) => match team.role(&work.role) {
+                Some(role) => Due::Lander(Lander { workflow, work, role, pr }),
+                None => roleless(work),
+            },
+            (Some(_), None) => Due::Human(
+                "its last stage passed it to the landing train, and no open PR closes it: there \
+                 is nothing to join"
+                    .to_string(),
+            ),
+            (None, _) => Due::Human("its workflow names nobody who lands".to_string()),
+        },
         Position::Ended => Due::Nothing("its workflow has ended".to_string()),
     }
 }
@@ -142,6 +185,15 @@ pub struct Facts<'a> {
     pub skill: &'a str,
     /// Whether the stage may commit.
     pub writes: bool,
+    /// Whether the worker is a consult, which writes no code whatever its
+    /// stage may.
+    pub consult: bool,
+    /// The repo's base branch, and the labels that are the fleet's to move
+    /// beside the flow and stage labels: the team's escalate label and the
+    /// repo's lock label.
+    pub base_branch: &'a str,
+    pub escalate_label: &'a str,
+    pub lock_label: &'a str,
     /// The commits of the role's repo and the team's the stage runs under.
     pub role_commit: &'a str,
     pub team_commit: &'a str,
@@ -153,10 +205,14 @@ impl Facts<'_> {
         vec![
             ("AFKCONVOY_ISSUE", self.issue.to_string()),
             ("AFKCONVOY_FLOW", self.flow.to_string()),
-            ("AFKCONVOY_STAGE", self.stage.to_string()),
+            (STAGE_ENV, self.stage.to_string()),
             ("AFKCONVOY_ROLE", self.role.to_string()),
             ("AFKCONVOY_SKILL", self.skill.to_string()),
-            ("AFKCONVOY_WRITES", self.writes.to_string()),
+            (WRITES_ENV, self.writes.to_string()),
+            (CONSULT_ENV, self.consult.to_string()),
+            (BASE_BRANCH_ENV, self.base_branch.to_string()),
+            (ESCALATE_LABEL_ENV, self.escalate_label.to_string()),
+            (LOCK_LABEL_ENV, self.lock_label.to_string()),
             (ROLE_COMMIT_ENV, self.role_commit.to_string()),
             (TEAM_COMMIT_ENV, self.team_commit.to_string()),
         ]
@@ -174,23 +230,48 @@ pub struct Start<'a> {
     pub team_dir: &'a str,
     /// The stage's model, when its workflow names one.
     pub model: Option<&'a str>,
+    /// The shell line that runs the guard: this tool's `guard` subcommand.
+    pub guard: &'a str,
     pub facts: Facts<'a>,
+}
+
+/// The settings that add the guard to a worker: a hook Claude Code runs
+/// before every tool call, with the line `guard`. They are added to the
+/// role's own, so a role's hooks run beside it and no role is without it
+/// (docs/adr/0012).
+fn guard_settings(guard: &str) -> String {
+    let mut line = String::new();
+    for c in guard.chars() {
+        match c {
+            '"' | '\\' => {
+                line.push('\\');
+                line.push(c);
+            }
+            // A path holds no control character worth carrying.
+            c if c.is_control() => line.push(' '),
+            c => line.push(c),
+        }
+    }
+    format!(
+        "{{\"hooks\":{{\"PreToolUse\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{line}\"}}]}}]}}}}"
+    )
 }
 
 /// The line a terminal opened on the issue's worktree runs to start a worker
 /// in its role with the worker launch command `command`: change to the role's
 /// copy, put the stage's facts in the environment, and start the command with
-/// the worktree and the team's copy added, the user's settings left out, and
-/// the stage's model.
+/// the worktree and the team's copy added, the user's settings left out, the
+/// guard added, and the stage's model.
 pub fn in_role(command: &str, start: &Start) -> String {
     let mut line = format!("cd {} && export {ADDED_RULES}=1 {NO_MEMORY}=1", quoted(start.role_dir));
     for (name, value) in start.facts.env() {
         line.push_str(&format!(" {name}={}", quoted(&value)));
     }
     line.push_str(&format!(
-        " && {command} {ADD_DIR} {} {ADD_DIR} {} {SETTING_SOURCES} {SOURCES}",
+        " && {command} {ADD_DIR} {} {ADD_DIR} {} {SETTING_SOURCES} {SOURCES} {SETTINGS} {}",
         quoted(start.worktree),
-        quoted(start.team_dir)
+        quoted(start.team_dir),
+        quoted(&guard_settings(start.guard))
     ));
     if let Some(model) = start.model {
         line.push_str(&format!(" {MODEL} {}", quoted(model)));
@@ -268,6 +349,15 @@ stages:
     on: { pass: done, reject: build }
 ";
 
+    const LANDS: &str = "\
+stages:
+  - name: build
+    by: dev
+    do: implement
+    on: { pass: land }
+land: { by: boss, do: implement }
+";
+
     fn file(path: &str, yaml: &str) -> File {
         File { path: path.to_string(), yaml: serde_yaml::from_str(yaml).map_err(|e| e.to_string()) }
     }
@@ -283,6 +373,7 @@ stages:
                 file("workflows/feature.md", FEATURE),
                 file("workflows/signed.md", SIGNED),
                 file("workflows/review.md", REVIEW),
+                file("workflows/lands.md", LANDS),
             ],
             repos: vec![repo("acme/dev"), repo("acme/boss")],
         })
@@ -310,7 +401,7 @@ stages:
     #[test]
     fn an_issue_enters_at_the_first_stage_of_the_workflow_its_flow_label_names() {
         let team = team();
-        let Due::Worker(entry) = due(&team, &labels(&["bug", "flow:feature"]), &[]) else {
+        let Due::Worker(entry) = due(&team, &labels(&["bug", "flow:feature"]), &[], None) else {
             panic!("a worker is due")
         };
         assert_eq!(entry.workflow.name, "feature");
@@ -327,6 +418,7 @@ stages:
     fn said(due: Due) -> String {
         match due {
             Due::Worker(entry) => format!("{} by {}", entry.stage.name, entry.work.role),
+            Due::Lander(lander) => format!("PR #{} joined by {}", lander.pr, lander.work.role),
             Due::Human(why) => format!("human: {why}"),
             Due::Nothing(why) => format!("nothing: {why}"),
         }
@@ -336,7 +428,7 @@ stages:
     fn the_stage_records_say_which_stage_a_worker_is_due_on() {
         let team = team();
         let flow = labels(&["flow:review"]);
-        let after = |records: &[StageRecord]| said(due(&team, &flow, records));
+        let after = |records: &[StageRecord]| said(due(&team, &flow, records, None));
         assert_eq!(after(&[]), "build by dev");
         let built = [record("build", Declared::Pass)];
         assert_eq!(after(&built), "check by boss");
@@ -353,9 +445,30 @@ stages:
     }
 
     #[test]
+    fn a_pass_that_leads_to_land_makes_the_join_of_the_issue_s_pr_due() {
+        let team = team();
+        let flow = labels(&["flow:lands"]);
+        let built = [record("build", Declared::Pass)];
+        // An open PR declares nothing while a stage is still to be performed.
+        assert_eq!(said(due(&team, &flow, &[], Some(70))), "build by dev");
+        let Due::Lander(lander) = due(&team, &flow, &built, Some(70)) else {
+            panic!("a landing worker is due")
+        };
+        assert_eq!((lander.work.role.as_str(), lander.work.skill.as_str()), ("boss", "implement"));
+        assert_eq!((lander.role.repo.as_str(), lander.pr), ("acme/boss", 70));
+        assert_eq!(lander.workflow.name, "lands");
+        // With no PR there is nothing to join: a human's.
+        assert_eq!(
+            said(due(&team, &flow, &built, None)),
+            "human: its last stage passed it to the landing train, and no open PR closes it: \
+             there is nothing to join"
+        );
+    }
+
+    #[test]
     fn an_issue_no_worker_is_due_on_says_why() {
         let team = team();
-        let why = |carried: &[&str]| said(due(&team, &labels(carried), &[]));
+        let why = |carried: &[&str]| said(due(&team, &labels(carried), &[], None));
         // No flow label: it was never handed to the fleet.
         assert_eq!(why(&["ready-for-agent"]), "nothing: it carries no flow label");
         // A flow label that names no one workflow hands it to a human.
@@ -398,12 +511,16 @@ stages:
         assert!(name(&[], &[left.as_str(), silent.as_str()]).is_err());
     }
 
+    /// The settings that add the guard `/bin/afkconvoy guard`.
+    const GUARD: &str = r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/bin/afkconvoy guard"}]}]}}"#;
+
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
             role_dir: "/copies/acme/dev/abc",
             worktree: "/wt/issue 7",
             team_dir: "/copies/acme/team/def",
             model,
+            guard: "/bin/afkconvoy guard",
             facts: Facts {
                 issue: 7,
                 flow: "feature",
@@ -411,6 +528,10 @@ stages:
                 role: "dev",
                 skill: "implement",
                 writes: false,
+                consult: false,
+                base_branch: "main",
+                escalate_label: "ready-for-human",
+                lock_label: "fleet-lock",
                 role_commit: "abc",
                 team_commit: "def",
             },
@@ -425,16 +546,24 @@ stages:
             "cd '/copies/acme/dev/abc' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
              CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
              AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
-             AFKCONVOY_WRITES='false' AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' && \
+             AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
+             AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
+             AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' && \
              kim --yolo --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' \
-             --setting-sources project --model 'opus'"
+             --setting-sources project --settings '"
+                .to_string()
+                + GUARD
+                + "' --model 'opus'"
         );
     }
 
     #[test]
     fn a_stage_with_no_model_names_none() {
         let line = in_role("claude", &start(None));
-        assert!(line.ends_with("--setting-sources project"), "{line}");
+        assert!(
+            line.ends_with(&format!("--setting-sources project --settings '{GUARD}'")),
+            "{line}"
+        );
         assert!(!line.contains("--model"), "{line}");
     }
 
@@ -444,10 +573,15 @@ stages:
         let line = in_role("claude", &odd);
         assert!(line.starts_with("cd '/it'\\''s here/$HOME' && "), "{line}");
         assert!(line.ends_with("--model 'a b;c'"), "{line}");
+        // Nor by Claude Code, of the line that runs the guard.
+        let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
+        let settings = guard_settings(odd.guard);
+        assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
+        assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
     }
 
     const HELP: &str = "Usage: claude [options]\n  --add-dir <directories...>\n  --model <model>\n  \
-                        --setting-sources <sources>\n";
+                        --setting-sources <sources>\n  --settings <file-or-json>\n";
 
     #[test]
     fn a_command_that_takes_the_flags_is_not_refused() {

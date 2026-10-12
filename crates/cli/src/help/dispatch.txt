@@ -29,6 +29,11 @@ WHAT IT READS AND WRITES
   worker launch command with the worktree and the team's copy added as directories, the
   user's own settings left out, and the stage's model when it names one.
 
+  Once the issue's last stage has passed to `land`, the worker is started in the
+  workflow's landing role instead, on the join-only brief with that role's landing skill
+  named in it: it gates the issue's open PR and joins the landing train. Its stage is
+  `land`, and it declares no verdict.
+
 WHAT IT ANSWERS
 
   {"issue", "started": true, "claim", "tier", "action", "prompt", "reason", "worktree",
@@ -40,10 +45,10 @@ WHAT IT ANSWERS
                — a new worktree at the issue's pushed branch; 3 dispatch_fresh — a new
                worktree at the base branch
     prompt     the brief the worker got: fresh, continue, or join (its PR is open: only
-               the join is left) — in a bound repo, stage
+               the join is left) — in a bound repo, stage, or join for a landing worker
     stage      in a bound repo: {flow, name, role, skill, writes, model, role_commit,
                role_dir, team_commit, team_dir} — the stage the worker performs, and the
-               copies and commits fixed for it
+               copies and commits fixed for it; name is `land` for a landing worker
     reason     why that tier, in words
     discarded  with `--start fresh`: {closed_prs, deleted_branches, removed_worktree}
 
@@ -52,7 +57,7 @@ WHAT IT ANSWERS
 
   Errors: the issue is closed; in a bound repo, the issue carries no flow label, more
   than one, or one that names no workflow of the team, it is at no stage a worker
-  performs (the error says where it is), or the team does not load (the error carries
+  performs (the error says where it is), it passed to `land` and no open PR closes it, or the team does not load (the error carries
   its `faults`) — none of which claims the issue; the instance's claim on it is one a
   stage already declared under; the worker launch
   command resolves to nothing; orca

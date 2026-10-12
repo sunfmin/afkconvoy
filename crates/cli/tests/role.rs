@@ -110,6 +110,43 @@ fn brief(dir: &Path) -> String {
 }
 
 /// The repos `gh` was asked to clone since the last look.
+/// The settings a start adds the guard with: a hook that runs this binary.
+fn guard_settings() -> String {
+    format!(
+        r#"{{"hooks":{{"PreToolUse":[{{"hooks":[{{"type":"command","command":"{} guard"}}]}}]}}}}"#,
+        env!("CARGO_BIN_EXE_afkconvoy")
+    )
+}
+
+/// What the guard a worker was started with by `command` answers the Bash
+/// call `line`: the hook its settings name, run as Claude Code runs one — in
+/// the worker's directory and environment, the call described on stdin →
+/// its exit code and what it said on stderr.
+fn guarded(command: &str, line: &str) -> (i32, String) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut steps = command.split(" && ");
+    let (enter, facts, start) = (steps.next().unwrap(), steps.next().unwrap(), steps.next());
+    let settings = start.unwrap().split(" --settings '").nth(1).unwrap();
+    let settings: Value = serde_json::from_str(settings.split('\'').next().unwrap()).unwrap();
+    let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(hooks.len(), 1, "{settings}");
+    assert!(hooks[0]["matcher"].is_null(), "it is run before every tool: {settings}");
+    let hook = hooks[0]["hooks"][0]["command"].as_str().unwrap();
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", &format!("{enter} && {facts} && {hook}")])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let described = json!({"tool_name": "Bash", "tool_input": {"command": line}});
+    child.stdin.take().unwrap().write_all(described.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out.status.code().unwrap(), String::from_utf8(out.stderr).unwrap())
+}
+
 fn cloned(world: &World) -> Vec<String> {
     let calls = world.gh_calls();
     let clones = calls.iter().filter(|call| call[..2] == ["repo", "clone"]);
@@ -165,9 +202,12 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
         "cd '{role}' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
          CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
          AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
-         AFKCONVOY_WRITES='true' AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' && \
+         AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
+         AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
+         AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' && \
          {STOCK} --add-dir '{worktree}' --add-dir '{team_dir}' --setting-sources project \
-         --model 'opus'",
+         --settings '{guard}' --model 'opus'",
+        guard = guard_settings(),
         role = role_dir.display(),
         worktree = dir.display(),
         team_dir = team_dir.display(),
@@ -192,9 +232,14 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
     ] {
         assert!(brief.contains(&said), "{said}\n{brief}");
     }
-    for how in ["Implement", "gh pr create", "landing train", "git commit"] {
+    for how in ["Implement", "gh pr create", "Join the landing train", "git commit"] {
         assert!(!brief.contains(how), "the brief says nothing of how: {how}");
     }
+    // But for the gate: a stage that may commit hands on no red PR.
+    let gate =
+        format!("   cd '{}' && {} gate --train\n", dir.display(), env!("CARGO_BIN_EXE_afkconvoy"));
+    assert!(brief.contains("## The gate, before a `pass`\n"), "{brief}");
+    assert!(brief.contains(&gate), "{gate}\n{brief}");
     let sent = terminals[0]["sent"].as_array().unwrap();
     assert_eq!(sent.len(), 1);
     assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
@@ -218,9 +263,46 @@ fn a_dispatch_answers_with_the_stage_and_the_commits_fixed_for_it() {
     // A stage that names no model starts with none, and says it writes nothing.
     let command = open_terminals(&world, &worktree(&world, 7))[0]["command"].clone();
     let command = command.as_str().unwrap();
-    assert!(command.ends_with("--setting-sources project"), "{command}");
+    // …but never without the guard: the reviewer's repo holds no hook of its own.
+    let guarded = format!("--setting-sources project --settings '{}'", guard_settings());
+    assert!(command.ends_with(&guarded), "{command}");
     assert!(command.contains(" AFKCONVOY_STAGE='look' AFKCONVOY_ROLE='reviewer' "), "{command}");
     assert!(command.contains(" AFKCONVOY_WRITES='false' "), "{command}");
+}
+
+#[test]
+fn every_worker_is_started_under_the_guard_whatever_its_role_s_repo_holds() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:audit"]);
+    dispatch(&world, 7).ok();
+    dispatch(&world, 8).ok();
+    // Neither role's repo holds a hook: the guard is the fleet's to add.
+    let command = |issue: u64| {
+        let started = open_terminals(&world, &worktree(&world, issue));
+        started[0]["command"].as_str().unwrap().to_string()
+    };
+    let (build, look) = (command(7), command(8));
+    for worker in [&build, &look] {
+        for (line, reason) in [
+            ("gh issue edit 7 --remove-label flow:feature", "is a flow label"),
+            ("gh issue edit 7 --add-label ready-for-human", "is the escalate label"),
+            ("gh issue edit 7 --add-label fleet-lock", "is the lock label"),
+            ("gh pr merge 70", "merging a PR is refused"),
+            ("git push origin HEAD:main", "pushes the base branch `main`"),
+        ] {
+            let (code, said) = guarded(worker, line);
+            assert_eq!(code, 2, "{line}: {said}");
+            assert!(said.contains(reason), "{line}: {said}");
+        }
+        assert_eq!(guarded(worker, "cargo test").0, 0);
+    }
+    // The stage `build` may commit; `look` is marked `writes: false`.
+    let committing = "git commit -am step && git push origin HEAD";
+    assert_eq!(guarded(&build, committing), (0, String::new()));
+    let (code, said) = guarded(&look, committing);
+    assert_eq!(code, 2);
+    assert!(said.contains("the stage `look` is marked `writes: false`"), "{said}");
 }
 
 #[test]
@@ -270,7 +352,8 @@ fn a_start_refuses_a_launch_command_that_does_not_take_the_flags() {
         let refused = world.afk(start).error();
         assert!(refused.contains("bound to a team"), "{refused}");
         assert!(
-            refused.contains(&format!("`{STOCK} --help` names no --setting-sources.")),
+            refused
+                .contains(&format!("`{STOCK} --help` names no --setting-sources, no --settings.")),
             "{refused}"
         );
     }
@@ -401,6 +484,10 @@ fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
         role: "r",
         skill: "k",
         writes: true,
+        consult: false,
+        base_branch: "m",
+        escalate_label: "e",
+        lock_label: "l",
         role_commit: "a",
         team_commit: "b",
     };
