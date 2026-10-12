@@ -24,9 +24,9 @@ WHAT IT ANSWERS
                    — in a bound repo with the stage each is at: {number, title, stage};
                    the stage is `land` once the last one passed to the landing train
                    and the issue's PR waits for a worker to join it
-    excluded       every other open issue, with why: {number, reason}
+    excluded       every other open issue, with why: {number, title, reason}
     escalating     in a bound repo, when there are any: the unclaimed issues a tick
-                   hands to a human, with why: {number, reason}
+                   hands to a human, with why: {number, title, reason}
     mine           the claims of `--instance`: {number, title, status, pr}. status is
                    no_pr, joining, joined, landed or closed — in a bound repo at_stage,
                    whatever PR is open, until a landing worker holds the claim: then

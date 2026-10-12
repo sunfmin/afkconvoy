@@ -565,3 +565,119 @@ pub fn git(cwd: &Path, args: &[&str]) -> String {
 fn read(file: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap()
 }
+
+/// One rendering of the panel: its markup, to assert on, and its picture, to
+/// look at — `None` on a machine with no browser to draw it.
+pub struct Rendered {
+    pub html: String,
+    pub png: Option<PathBuf>,
+}
+
+/// The browsers that can draw a page with no window, most wanted first.
+/// `CONVOY_BROWSER` names another.
+const BROWSERS: [&str; 5] = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+];
+
+impl World {
+    /// Renders the panel this world's fleet shows — the real `afkconvoy panel`
+    /// over the stand-in GitHub and orca — to `<name>.html` and, drawn `width`
+    /// by `height`, to `<name>.png`, both under the target directory.
+    ///
+    /// The page is loaded from the file, so its live script is not found and
+    /// nothing in it moves: the same world gives the same picture.
+    pub fn render_panel(&self, name: &str, args: &[&str], (width, height): (u32, u32)) -> Rendered {
+        let program = env!("CARGO_BIN_EXE_afkconvoy");
+        let out = self.command(program, &self.clone).arg("panel").args(args).output().unwrap();
+        let html = String::from_utf8(out.stdout).unwrap();
+        assert!(out.status.success() && html.starts_with("<!doctype html>"), "{html}");
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("panel");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (page, png) = (dir.join(format!("{name}.html")), dir.join(format!("{name}.png")));
+        std::fs::write(&page, &html).unwrap();
+        let _ = std::fs::remove_file(&png);
+        let named = std::env::var("CONVOY_BROWSER").ok();
+        let drew = named.iter().map(String::as_str).chain(BROWSERS).any(|browser| {
+            let browser = Command::new(browser)
+                .args(["--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run"])
+                .args(["--force-prefers-reduced-motion", "--force-device-scale-factor=2"])
+                .arg(format!("--user-data-dir={}", self.root.join("browser").display()))
+                .arg(format!("--window-size={width},{height}"))
+                .arg(format!("--screenshot={}", png.display()))
+                .arg(format!("file://{}", page.display()))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            let Ok(mut browser) = browser else { return false };
+            // A browser may write its picture and stay: it is waited for only
+            // until the picture stops growing, and then put down.
+            let mut last = 0;
+            for _ in 0..150 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let size = png.metadata().map_or(0, |file| file.len());
+                let exited = browser.try_wait().is_ok_and(|status| status.is_some());
+                if exited || (size > 0 && size == last) {
+                    break;
+                }
+                last = size;
+            }
+            let _ = browser.kill();
+            let _ = browser.wait();
+            png.exists()
+        });
+        if !drew {
+            eprintln!("no browser drew {}: only its markup is checked", page.display());
+        }
+        Rendered { html, png: drew.then_some(png) }
+    }
+}
+
+impl Rendered {
+    /// The markup of the node `stage` of a lane: its stop, and every card at it.
+    pub fn node(&self, stage: &str) -> &str {
+        let from = format!("data-stage=\"{stage}\"");
+        let after = self.html.split(&from).nth(1).unwrap_or_else(|| panic!("no node {stage}"));
+        after.split("<li class=\"node").next().unwrap().split("</ol>").next().unwrap()
+    }
+
+    /// The markup of the part of the page that opens with `<tag class="class"`.
+    pub fn part(&self, tag: &str, class: &str) -> &str {
+        let from = format!("<{tag} class=\"{class}\"");
+        let after = self.html.split(&from).nth(1).unwrap_or_else(|| panic!("no {class}"));
+        after.split(&format!("</{tag}>")).next().unwrap()
+    }
+}
+
+/// The issues carded in `markup` on the list `list`, in the order shown.
+pub fn carded(markup: &str, list: &str) -> Vec<u64> {
+    let Some(cards) = markup.split(&format!("<ul class=\"cards {list}\">")).nth(1) else {
+        return vec![];
+    };
+    let cards = cards.split("</ul>").next().unwrap();
+    let numbers = cards.split("data-issue=\"").skip(1);
+    numbers.map(|rest| rest.split('"').next().unwrap().parse().unwrap()).collect()
+}
+
+/// The card of issue `number` in `markup`, as text: every tag taken out.
+pub fn card(markup: &str, number: u64) -> String {
+    let from = format!("data-issue=\"{number}\">");
+    let after = markup.split(&from).nth(1).unwrap_or_else(|| panic!("no card of #{number}"));
+    let mut text = String::new();
+    let mut in_tag = false;
+    for ch in after.split("</li>").next().unwrap().chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}

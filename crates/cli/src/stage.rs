@@ -12,7 +12,7 @@ use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, advance, history, label_moves, lands, stage_records,
 };
-use afkconvoy_core::team::Team;
+use afkconvoy_core::team::{Team, Workflow};
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
@@ -236,6 +236,22 @@ impl Flows {
             Some(Err(why)) => Err(anyhow!("{why}")),
             None => Err(anyhow!("no issue of this repo follows a workflow")),
         }
+    }
+
+    /// The team's workflows; none where no team was read, or it did not load.
+    pub fn workflows(&self) -> &[Workflow] {
+        self.team().map_or(&[], |team| team.workflows.as_slice())
+    }
+
+    /// Where each issue read is in the workflow it follows, with that
+    /// workflow. An issue that follows no one workflow has no position.
+    pub fn positions(&self) -> Vec<(u64, &Workflow, Position<'_>)> {
+        let Ok(team) = self.team() else { return vec![] };
+        let placed = |issue: &Flowing| {
+            let workflow = workflow_of(team, &issue.labels).ok()?;
+            Some((issue.number, workflow, history(workflow, &issue.records).place.position))
+        };
+        self.issues.iter().filter_map(placed).collect()
     }
 
     /// How many of the issues read — the open ones that follow a workflow — a

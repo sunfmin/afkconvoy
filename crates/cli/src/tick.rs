@@ -17,6 +17,8 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::judge::judge;
+use crate::panel::{self, Panel};
+use crate::serve::Served;
 use crate::settle::settle;
 use crate::stage::Flows;
 use crate::takeover::{at_start, reclaim, unlock};
@@ -36,8 +38,9 @@ pub struct Ticked {
     failures: Vec<Failure>,
     /// The claims the pass could hold (`WorkingSet::bound`).
     bound: usize,
-    /// The fleet locks that stood as it ran.
-    locks: Vec<u64>,
+    /// What its rebuild read: the pass was made over these.
+    set: WorkingSet,
+    flows: Flows,
 }
 
 /// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
@@ -55,7 +58,7 @@ pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
             Outcome::Failed
         })
     });
-    Ok(Ticked { pass, failures, bound, locks: set.locks })
+    Ok(Ticked { pass, failures, bound, set, flows })
 }
 
 /// What the tick's rebuild read: its steps act on this, and read nothing of
@@ -124,6 +127,14 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
 }
 
 impl Ticked {
+    /// The panel of `me` after this tick: what its rebuild read, with what the
+    /// pass did since.
+    pub fn panel(&self, fleet: &Fleet, me: &Me) -> Panel {
+        let mut panel = panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did);
+        panel.held = self.pass.held;
+        panel
+    }
+
     pub fn json(&self) -> Value {
         let did: Vec<Value> = self
             .pass
@@ -153,15 +164,15 @@ impl Ticked {
             })
             .collect();
         json!({"did": did, "errors": errors, "held": self.pass.held,
-            "frontier_remaining": self.pass.frontier_remaining, "locks": self.locks})
+            "frontier_remaining": self.pass.frontier_remaining, "locks": self.set.locks})
     }
 
     /// One line for whoever watches the loop: what the tick did, and where the
     /// fleet stands.
     pub fn line(&self) -> String {
         let mut parts: Vec<String> = vec![];
-        if !self.locks.is_empty() {
-            parts.push(format!("FLEET LOCK {} stands: only it is worked", named(&self.locks)));
+        if !self.set.locks.is_empty() {
+            parts.push(format!("FLEET LOCK {} stands: only it is worked", named(&self.set.locks)));
         }
         let lead = parts.len();
         for (verb, wanted) in [
@@ -252,8 +263,24 @@ fn start_line(took: &Value) -> Option<String> {
 /// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
 /// `afkconvoy wake` ends early. Stopping it is just exiting: no claim is
 /// released on the way out, and the next start on this host takes them back
-/// (docs/adr/0003).
-pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64) -> Result<Value> {
+/// (docs/adr/0003). With a `panel_port` it serves the panel there, a new page
+/// after every tick.
+pub fn run(
+    me: &mut Me,
+    agent: &Agent,
+    pacing: &Pacing,
+    panel_port: Option<u16>,
+    clock: impl Fn() -> u64,
+) -> Result<Value> {
+    let mut shown = Panel::empty(&Fleet::open(me.now)?, Some(me));
+    let served = match panel_port {
+        Some(port) => {
+            let served = Served::open(port, panel::render(&shown))?;
+            println!("panel: http://127.0.0.1:{}/", served.port);
+            Some(served)
+        }
+        None => None,
+    };
     let mut streak = 0;
     let mut count = 0;
     let mut started = false;
@@ -276,10 +303,18 @@ pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64)
         // A tick that could not even rebuild is a line, not the end of the loop.
         let ticked = turn(
             || wakes.forget(),
-            || Fleet::open(me.now).and_then(|mut fleet| tick(&mut fleet, me, agent)),
+            || {
+                let mut fleet = Fleet::open(me.now)?;
+                let ticked = tick(&mut fleet, me, agent)?;
+                let panel = served.as_ref().map(|_| ticked.panel(&fleet, me));
+                Ok::<_, anyhow::Error>((ticked, panel))
+            },
         );
         let (line, sleep) = match ticked {
-            Ok(ticked) => {
+            Ok((ticked, panel)) => {
+                if let Some(panel) = panel {
+                    shown = panel;
+                }
                 let pass = &ticked.pass;
                 streak = empty_streak(streak, pass.did_work(), pass.held, pass.frontier_remaining);
                 (ticked.line(), pace(pass.did_work(), pass.held, streak))
@@ -287,6 +322,11 @@ pub fn run(me: &mut Me, agent: &Agent, pacing: &Pacing, clock: impl Fn() -> u64)
             Err(error) => (format!("FAILED: {error:#}"), pace(true, 0, 0)),
         };
         println!("tick {count}: {line} · next in {sleep}s");
+        if let Some(served) = &served {
+            // A tick that failed leaves the page as the last one found it.
+            shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
+            served.show(panel::render(&shown));
+        }
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
