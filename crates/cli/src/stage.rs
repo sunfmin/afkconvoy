@@ -4,11 +4,12 @@
 //! position it acts on and brings each `stage:` label to it. What a record is and what the records come to is the core's
 //! (`afkconvoy_core::stage_record`).
 
-use afkconvoy_core::plan::Issue;
+use afkconvoy_core::claims::Claim;
+use afkconvoy_core::plan::{Issue, PullRequest, closing_pr};
 use afkconvoy_core::position::Declared;
 use afkconvoy_core::role::{Due, due, workflow_of};
 use afkconvoy_core::stage_record::{
-    Advance, StageRecord, advance, history, label_moves, stage_records,
+    Advance, StageRecord, advance, history, label_moves, lands, stage_records,
 };
 use afkconvoy_core::team::Team;
 use afkconvoy_core::tick::Outcome;
@@ -206,16 +207,35 @@ impl Flows {
         }
     }
 
-    /// What is due on each issue read (`role::due`), for the frontier.
-    pub fn due(&self) -> Vec<(u64, Due<'_>)> {
+    /// What is due on each issue read (`role::due`), for the frontier. `prs`
+    /// are the open PRs: the one that closes an issue is what its landing
+    /// worker joins.
+    pub fn due(&self, prs: &[PullRequest]) -> Vec<(u64, Due<'_>)> {
         let due = |issue: &Flowing| match self.team() {
-            Ok(team) => due(team, &issue.labels, &issue.records),
+            Ok(team) => {
+                let pr = closing_pr(prs, issue.number).map(|pr| pr.number);
+                due(team, &issue.labels, &issue.records, pr)
+            }
             Err(why) => {
                 let first = format!("{why:#}").lines().next().unwrap_or_default().to_string();
                 Due::Nothing(format!("its position cannot be derived: {first}"))
             }
         };
         self.issues.iter().map(|issue| (issue.number, due(issue))).collect()
+    }
+
+    /// The issues read that are among `claims` under a landing worker's
+    /// claim (`stage_record::lands`).
+    pub fn landing(&self, claims: &[Claim]) -> Vec<u64> {
+        let Ok(team) = self.team() else { return vec![] };
+        let lands = |issue: &&Flowing| {
+            let claim = claims.iter().find(|claim| claim.number == issue.number);
+            let workflow = workflow_of(team, &issue.labels).ok();
+            claim.zip(workflow).is_some_and(|(claim, workflow)| {
+                lands(&history(workflow, &issue.records), &issue.records, &claim.sha)
+            })
+        };
+        self.issues.iter().filter(lands).map(|issue| issue.number).collect()
     }
 
     /// What the stage records of issue `number` call for of the claim

@@ -259,6 +259,15 @@ pub fn advance(history: &History, records: &[StageRecord], claim: &str) -> Advan
     }
 }
 
+/// Whether `claim` is one a landing worker holds: the issue `history` — read
+/// from `records` — is of is landing, and no stage declared under the claim.
+/// The claim of the stage whose `pass` led there is not: it is released, and
+/// the join is started under a claim of its own.
+pub fn lands(history: &History, records: &[StageRecord], claim: &str) -> bool {
+    matches!(history.place.position, Position::Landing)
+        && history.verdict_under(records, claim).is_none()
+}
+
 /// The label that shows `position`: the stage the issue is at, `land` while
 /// it is landing, and none once it has ended.
 pub fn stage_label(position: Position) -> Option<String> {
@@ -474,6 +483,26 @@ mod tests {
         let done = [record("a", Pass, "c1")];
         let ended = history(triage.workflow("feature").unwrap(), &done);
         assert_eq!(advance(&ended, &done, "c1"), Advance::End);
+    }
+
+    #[test]
+    fn a_landing_worker_s_claim_is_one_no_stage_declared_under() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let signed = [
+            record("plan", Pass, "c1"),
+            record("build", Pass, "c2"),
+            record("review", Pass, "c3"),
+            record("sign-off", Pass, "c4"),
+        ];
+        let landing = history(workflow, &signed);
+        // The claim whose stage passed to the landing train is released…
+        assert!(!lands(&landing, &signed, "c4"));
+        assert_eq!(advance(&landing, &signed, "c4"), Advance::HandOn);
+        // …and the join is another's.
+        assert!(lands(&landing, &signed, "c5"));
+        let reviewed = &signed[..3];
+        assert!(!lands(&history(workflow, reviewed), reviewed, "c5"), "not landing yet");
     }
 
     #[test]

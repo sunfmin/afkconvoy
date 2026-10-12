@@ -44,6 +44,7 @@ pub enum StartFrom {
 ///
 ///   {"started": true, "claim": "won"|"held", tier, action, prompt, reason,
 ///    worktree, branch, terminal}   and, in a bound repo, the `stage` it performs
+///                                  — `land` for the join that follows the last
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
 ///
 /// A step that fails is an error with the claim still held: the next tick
@@ -61,8 +62,9 @@ pub fn dispatch(
         // before the claim: never lock a closed issue
         bail!("issue #{number} is closed, not open — nothing to dispatch");
     }
-    // In a bound repo the worker performs a stage, in its role. Read before
-    // the claim: an issue no worker can be started on is never locked.
+    // In a bound repo the worker performs a stage, or the join that follows
+    // the last, in its role. Read before the claim: an issue no worker can
+    // be started on is never locked.
     let staged = match &fleet.config.bound {
         Some(bound) => Some(Staged::enter(fleet, bound, number, &issue.labels)?),
         None => None,
@@ -153,7 +155,7 @@ pub fn dispatch(
         "prompt": plan.variant.word(), "reason": plan.reason,
         "worktree": cut.path, "branch": cut.branch, "terminal": terminal});
     if let Some(staged) = &staged {
-        started["prompt"] = json!("stage");
+        started["prompt"] = json!(staged.prompt());
         started["stage"] = staged.json();
     }
     if let Some(discarded) = discarded {
@@ -184,6 +186,25 @@ pub(crate) fn write_brief(
     };
     let prompt = worker_prompt(&fields, variant).map_err(|e| anyhow!(e))?;
     worktree.write_brief(&prompt)
+}
+
+/// Writes into `worktree` the join-only brief of the worker that joins `pr`,
+/// which closes issue `number`, read as `issue` → the file. In a bound repo
+/// that worker is one in the landing role of the issue's workflow.
+pub(crate) fn write_join_brief(
+    fleet: &Fleet,
+    worktree: &Worktree,
+    (number, issue): (u64, &IssueRead),
+    pr: u64,
+) -> Result<PathBuf> {
+    match &fleet.config.bound {
+        Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.write_brief(
+            fleet,
+            worktree,
+            &issue.title,
+        ),
+        None => write_brief(fleet, worktree, number, &issue.title, Variant::Join { pr }),
+    }
 }
 
 /// Has orca cut a worktree for issue `number` at the tip the remote has for

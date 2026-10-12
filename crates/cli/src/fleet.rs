@@ -84,7 +84,8 @@ impl Fleet {
             closed: &closed,
             joined: &joined,
             landed: &landed,
-            due: &stages.due(),
+            due: &stages.due(&prs),
+            landing: &stages.landing(&self.scan.claims),
         };
         let set = assemble(&seen, me, self.now, &self.config);
         Ok((set, stages))

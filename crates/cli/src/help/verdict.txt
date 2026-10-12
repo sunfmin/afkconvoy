@@ -15,7 +15,8 @@ WHEN TO RUN IT
       already-satisfied  the issue needs no change: it is already done
       escalate           the stage cannot decide; the text says what has to be decided
 
-  Opening a PR declares nothing: a stage that wrote one still declares `pass`.
+  Opening a PR declares nothing: a stage that wrote one still declares `pass` — after
+  `afkconvoy gate --train` says green on what it pushed, as its brief tells it.
 
 WHO RUNS IT
 
