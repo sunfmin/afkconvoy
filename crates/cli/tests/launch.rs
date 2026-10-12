@@ -93,7 +93,7 @@ fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
     assert_eq!(ran.ok()["stopped"], true);
     assert_eq!(started(&world), ["claude --dangerously-skip-permissions"]);
     // checked to resolve like any other, and no alias was listed
-    assert_eq!(world.shell_asked(), ["type -- 'claude'"]);
+    assert_eq!(world.shell_asked(), ["type -- 'claude'", "gh auth status", "claude auth status"]);
 }
 
 #[test]
@@ -117,7 +117,11 @@ fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
     ran.ok();
 
     assert_eq!(started(&world), [passed], "not trimmed, not composed, not appended to");
-    assert_eq!(world.shell_asked(), ["type -- 'kim'"], "only its first word was looked at");
+    assert_eq!(
+        world.shell_asked(),
+        ["type -- 'kim'", "gh auth status"],
+        "only its first word was looked at, and what it logs in to is its own business"
+    );
 
     // nothing of the fleet's own environment goes to orca, on any call
     let calls = serde_json::to_string(&world.orca()["calls"]).unwrap();

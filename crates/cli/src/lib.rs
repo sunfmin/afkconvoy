@@ -32,6 +32,7 @@ pub mod takeover;
 pub mod team;
 pub mod tend;
 pub mod tick;
+pub mod tools;
 pub mod train;
 pub mod wake;
 pub mod watch;
@@ -307,6 +308,15 @@ impl AgentArgs {
         let command = launch::settle(self.worker_command.as_deref())?;
         Ok(Agent { command, ready_timeout: self.ready_timeout })
     }
+
+    /// Makes the startup probe of a start that starts workers → what it
+    /// starts them with. The probe is told the command before it is settled:
+    /// what the command needs of this host is the probe's to check.
+    fn start(self, now: u64) -> anyhow::Result<Agent> {
+        let proposed = launch::propose(self.worker_command.as_deref())?;
+        probe::announce(&probe::startup(now, Some(&proposed))?);
+        Ok(Agent { command: proposed.settle()?, ready_timeout: self.ready_timeout })
+    }
 }
 
 /// Runs one command line. Prints exactly one JSON object on stdout: the
@@ -361,7 +371,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             team::check(from)
         }
         Command::Plan { instance } => {
-            probe::announce(&probe::startup(now)?);
+            probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);
             Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?)?)
         }
         Command::Run { instance, host, agent, ticks, second_ms } => {
@@ -370,12 +380,12 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
             let pacing = Pacing { ticks, second: Duration::from_millis(second_ms) };
-            probe::announce(&probe::startup(now)?);
-            tick::run(&mut me, &agent.agent()?, &pacing, || fixed_now.unwrap_or_else(clock))
+            let agent = agent.start(now)?;
+            tick::run(&mut me, &agent, &pacing, || fixed_now.unwrap_or_else(clock))
         }
         Command::Tick { who, agent } => {
-            probe::announce(&probe::startup(now)?);
-            Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?)?.json())
+            let agent = agent.start(now)?;
+            Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent)?.json())
         }
         Command::Gate { gate_timeout, train } => {
             let repo = Repo::here()?;

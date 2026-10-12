@@ -1,7 +1,7 @@
 WHEN TO RUN IT
 
-  To hand a claim to a human by hand. A tick does this on its own for every failure: a
-  `needs-human` verdict, a worker silent past its nudge, a blocker that cannot be parked
+  To hand a claim to a human by hand. A tick does this on its own for every failure: an
+  `escalate` verdict, a worker silent past its nudge, a blocker that cannot be parked
   on. Do it yourself when you can see a claim will not finish and the fleet has not
   given it up yet.
 

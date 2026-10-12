@@ -1,5 +1,5 @@
-//! What `run`, `tick` and `plan` check before anything else: a repo the fleet
-//! cannot work is refused here, not at its first landing.
+//! What `run`, `tick` and `plan` check before anything else: a host or a repo
+//! the fleet cannot work is refused here, not at its first tick or landing.
 
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
@@ -10,18 +10,24 @@ use anyhow::{Result, anyhow, bail};
 use crate::config;
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
+use crate::launch::Proposed;
+use crate::tools;
 
 /// What a probe's commit says it is.
 const PROBE_RECORD: &str = "convoy:probe";
 
-/// Checks the repo this command was run in → what the human should know
-/// before the fleet carries on. An error is a repo the fleet cannot work.
+/// Checks this host and the repo this command was run in → what the human
+/// should know before the fleet carries on. An error is a host or a repo the
+/// fleet cannot work. `launch` is the worker launch command, when the start
+/// knows it.
 ///
-/// In order: the base branch exists (none is ever created); no rule of its
+/// In order: every command the fleet needs is here and logged in
+/// (`tools::check`), before anything is read or written; the base branch exists (none is ever created); no rule of its
 /// protection refuses the train's push; where the remote takes the fleet's
 /// refs — noted for every later command (`Repo::layout`); whether it takes
 /// gate records, and the ones past their day are swept.
-pub fn startup(now: u64) -> Result<Vec<String>> {
+pub fn startup(now: u64, launch: Option<&Proposed>) -> Result<Vec<String>> {
+    tools::check(launch)?;
     let repo = Repo::here()?;
     let config = config::load(&repo.dir.join(config::FILE))?;
     let branch = &config.base_branch;
