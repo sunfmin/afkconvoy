@@ -350,37 +350,42 @@ fn a_worker_in_its_role_is_nudged_and_its_screen_is_read() {
 
     // The nudge is typed at the one terminal of the worktree: the worker's.
     stopped(&world, 1000);
-    assert_eq!(did(&tick(&world, 1400).ok())[0], "judge 7 nudged");
+    assert_eq!(did(&tick(&world, 1400).ok())[0], "advance 7 nudged");
     let terminals = open_terminals(&world, &dir);
     assert_eq!(terminals.len(), 1);
     assert_eq!(terminals[0]["handle"], handle);
     let sent = terminals[0]["sent"].as_array().unwrap();
     assert_eq!(sent.len(), 2, "the brief, then the nudge: {sent:?}");
-    assert!(sent[1]["text"].as_str().unwrap().starts_with("You stopped without an outcome."));
+    assert!(
+        sent[1]["text"].as_str().unwrap().starts_with("You stopped without declaring a verdict.")
+    );
 
     // Silent past the nudge: escalated, with what its screen showed.
-    assert_eq!(did(&tick(&world, 1800).ok())[0], "judge 7 done");
+    assert_eq!(did(&tick(&world, 1800).ok())[0], "advance 7 done");
     let said = world.comments(7).join("\n");
     assert!(said.contains("Shall I go on? [y/n]"), "{said}");
     assert_eq!(world.claims(), []);
 }
 
 #[test]
-fn a_restart_starts_the_new_worker_in_its_role_too() {
+fn a_worker_that_is_gone_is_started_again_in_its_role() {
     let world = bound();
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
     let dir = worktree(&world, 7);
     commit(&dir, "seven.txt", "7\n");
-    git(&dir, &["push", "-q", "origin", "HEAD"]);
-    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
     let first = open_terminals(&world, &dir);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["open"] = json!(false);
+        }
+    });
 
-    assert_eq!(did(&tick(&world, 1090).ok())[0], "watch 7 nudged");
-    assert_eq!(did(&tick(&world, 1390).ok())[0], "watch 7 restarted");
+    assert_eq!(did(&tick(&world, 1090).ok())[0], "advance 7 continued");
     let second = open_terminals(&world, &dir);
-    assert_eq!(second.len(), 1, "the idle session was closed");
+    assert_eq!(second.len(), 1);
     assert_ne!(second[0]["handle"], first[0]["handle"]);
+    assert!(dir.join("seven.txt").is_file(), "where the one before it worked");
     assert_eq!(second[0]["command"], first[0]["command"], "the same role, the same commits");
     assert!(second[0]["command"].as_str().unwrap().starts_with("cd '"));
 }

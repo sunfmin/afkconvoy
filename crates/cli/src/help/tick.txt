@@ -18,9 +18,9 @@ WHAT IT ANSWERS
   {"did", "errors", "held", "frontier_remaining"}
 
     did                 each step taken: {do, issue, outcome}. do is settle, tend_train,
-                        judge, watch, unlock, reclaim, dispatch, board or heartbeat;
-                        outcome is done, nudged, continued, restarted, abandoned,
-                        nothing, lost or failed
+                        judge, watch, advance, escalate, unlock, reclaim, dispatch,
+                        board, stage_label or heartbeat; outcome is done, nudged,
+                        continued, restarted, abandoned, nothing, lost or failed
     errors              each step that failed: {do, issue, error}
     held                the claims the instance holds after the pass
     frontier_remaining  the frontier issues it left undispatched
@@ -36,6 +36,10 @@ WHAT TRIPS YOU UP
   - `--instance` is required: `run` mints an id, a tick has to be given one. Give every
     tick of one fleet the same id — a new id holds no claims, and sees the old id's as
     another instance's.
+  - In a bound repo one tick does not take an issue from one stage to the next. The
+    tick that reads a verdict ends the claim its stage was performed under (`advance`);
+    the stage that follows is on the frontier of the tick after it, and is started
+    under a claim of its own when a slot is free.
   - A step that failed is not a failed command: the exit is 0 and the failure is in
     `errors`. Read `errors`, not the exit code.
   - It does not take the claims stamped with this host: only `run` does that, at its

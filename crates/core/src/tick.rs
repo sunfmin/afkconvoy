@@ -25,6 +25,11 @@ pub enum TickStep {
     /// Ask after the worker of a claim of mine whose PR is open and not on the
     /// train yet.
     Watch { issue: u64 },
+    /// Carry out what the stage of a claim of mine declared, or ask after its
+    /// worker while it has declared nothing.
+    Advance { issue: u64 },
+    /// Hand an unclaimed issue to a human: claim it, escalate it, release it.
+    Escalate { issue: u64 },
     /// Delete a stale claim on a closed issue: a lock on nothing.
     Unlock { issue: u64 },
     /// Take a stale claim into a free slot, and continue it.
@@ -43,8 +48,8 @@ pub enum TickStep {
 /// How a step ended, as the pass reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// It did what it names. For `Settle`, `Judge` and `Watch` that ends the
-    /// claim: its slot is free.
+    /// It did what it names. For `Settle`, `Judge`, `Watch` and `Advance`
+    /// that ends the claim: its slot is free.
     Done,
     /// A silent worker was told to carry on: its claim is still held.
     Nudged,
@@ -138,7 +143,8 @@ impl Pass {
 
 /// Runs one pass over `set` under a bound of `concurrency` claims: settle the
 /// claims whose work landed, tend the landing train, ask after the workers
-/// not on the train yet, delete the stale locks on closed issues, take stale
+/// not on the train yet, delete the stale locks on closed issues, hand to a
+/// human the unclaimed issues that call for one, take stale
 /// claims and then frontier issues into the free slots, lowest number first,
 /// bring the status boards and the `stage:` labels up to date, then refresh
 /// the heartbeat. `carry_out` performs one
@@ -164,6 +170,7 @@ where
         let step = TickStep::Unlock { issue: lock.number };
         did.push((step, carry_out(step)));
     }
+    let held = hand_over(set, concurrency, held, &mut did, &mut carry_out);
     let held = fill_slots(&takes(set), concurrency, held, &mut did, &mut carry_out);
     for step in boards(set, &did) {
         did.push((step, carry_out(step)));
@@ -196,6 +203,7 @@ fn ending_step(sweep: Sweep, issue: u64, status: Status) -> Option<TickStep> {
         (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
         (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue }),
         (Sweep::Stopped, Status::Joining) => Some(TickStep::Watch { issue }),
+        (Sweep::Stopped, Status::AtStage) => Some(TickStep::Advance { issue }),
         _ => None,
     }
 }
@@ -236,6 +244,7 @@ fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
             TickStep::Settle { issue }
             | TickStep::Judge { issue }
             | TickStep::Watch { issue }
+            | TickStep::Advance { issue }
             | TickStep::Dispatch { issue } => Some(*issue),
             _ => None,
         };
@@ -285,6 +294,40 @@ fn takes(set: &WorkingSet) -> Vec<TickStep> {
         steps.push(TickStep::Dispatch { issue: issue.number });
     }
     steps
+}
+
+/// Hands each unclaimed issue that calls for a human to one → the claims
+/// held. The claim an escalation is made under is taken into a free slot and
+/// released as its last step, so only one that failed half way is still held.
+#[spec(fn(set: &WorkingSet, concurrency: usize, held: usize, did: &mut Vec<(TickStep, Outcome)>,
+        carry_out: &mut F)
+    -> usize{after: held <= after && (after <= concurrency || after == held)})]
+fn hand_over<F>(
+    set: &WorkingSet,
+    concurrency: usize,
+    held: usize,
+    did: &mut Vec<(TickStep, Outcome)>,
+    carry_out: &mut F,
+) -> usize
+where
+    F: FnMut(TickStep) -> Outcome,
+{
+    let mut slots = Slots::new(concurrency, held);
+    for issue in &set.escalating {
+        // What stays true on every turn, which Flux does not find alone.
+        qualifier!(now: int, limit: int, before: int; now <= limit || now == before);
+        qualifier!(before: int, now: int; before <= now);
+        if !slots.has_free() {
+            break;
+        }
+        let step = TickStep::Escalate { issue: issue.number };
+        let outcome = carry_out(step);
+        did.push((step, outcome));
+        if outcome == Outcome::Failed {
+            slots.take();
+        }
+    }
+    slots.held()
 }
 
 /// Carries out `takes` while a slot is free → the claims held. A fleet over
@@ -392,8 +435,9 @@ mod tests {
         WorkingSet {
             frontier: frontier
                 .iter()
-                .map(|&number| Dispatchable { number, title: String::new() })
+                .map(|&number| Dispatchable { number, title: String::new(), stage: None })
                 .collect(),
+            escalating: vec![],
             excluded: vec![],
             mine: mine
                 .iter()
@@ -444,6 +488,66 @@ mod tests {
             "after the boards"
         );
         assert!(!pass.did_work(), "a label moved is not work: the fleet may still go quiet");
+    }
+
+    #[test]
+    fn a_claim_at_a_stage_is_advanced_and_its_slot_is_free_once_its_stage_declared() {
+        let set = set(&[5, 6], &[(1, Status::AtStage), (2, Status::AtStage)]);
+        // #1's stage declared; #2's worker is at work
+        let pass = run_pass(&set, 2, 2, |step| match step {
+            Advance { issue: 2 } => Nothing,
+            _ => Done,
+        });
+        assert_eq!(
+            steps(&pass),
+            [Advance { issue: 1 }, Advance { issue: 2 }, Dispatch { issue: 5 }, Heartbeat],
+            "every stage worker takes one slot"
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (2, 1));
+        let boards: Vec<TickStep> =
+            pass.did.iter().map(|(step, _)| *step).filter(|s| matches!(s, Board { .. })).collect();
+        assert_eq!(
+            boards,
+            [
+                Board { issue: 2, stage: Stage::Claimed, pr: None },
+                Board { issue: 5, stage: Stage::Claimed, pr: None }
+            ],
+            "never of the claim the pass ended"
+        );
+    }
+
+    #[test]
+    fn an_issue_that_calls_for_a_human_is_handed_over_into_a_free_slot_and_holds_none() {
+        let mut calling = set(&[5], &[(1, Status::AtStage)]);
+        let row = |&number| crate::plan::Excluded { number, reason: String::new() };
+        calling.escalating = [3, 4, 8].iter().map(row).collect();
+        let at_work = |step| if matches!(step, Advance { .. }) { Nothing } else { Done };
+        let pass = run_pass(&calling, 2, 1, at_work);
+        assert_eq!(
+            steps(&pass),
+            [
+                Advance { issue: 1 },
+                Escalate { issue: 3 },
+                Escalate { issue: 4 },
+                Escalate { issue: 8 },
+                Dispatch { issue: 5 },
+                Heartbeat
+            ],
+            "ahead of what takes a slot for good"
+        );
+        assert_eq!(pass.held, 2);
+        assert!(pass.did_work());
+        // One that failed half way may still hold its claim: it counts.
+        let cut = run_pass(&calling, 2, 1, |step| match step {
+            Advance { .. } => Nothing,
+            Escalate { issue: 3 } => Failed,
+            _ => Done,
+        });
+        assert_eq!(steps(&cut), [Advance { issue: 1 }, Escalate { issue: 3 }, Heartbeat]);
+        assert_eq!((cut.held, cut.frontier_remaining), (2, 1));
+        // A fleet at its bound takes no claim, not even to give it up at once.
+        let full = run_pass(&calling, 1, 1, at_work);
+        assert_eq!(steps(&full), [Advance { issue: 1 }, Heartbeat]);
     }
 
     #[test]

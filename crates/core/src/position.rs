@@ -77,6 +77,9 @@ pub enum Reason {
     NoValidVerdict,
     /// One more rework would have passed this breaker.
     Breaker(Breaker),
+    /// A stage record names a stage the workflow no longer has: the workflow
+    /// changed under the issue, and where that leaves it is not guessed.
+    WorkflowChanged,
 }
 
 impl Reason {
@@ -96,6 +99,11 @@ impl Reason {
             Reason::Breaker(breaker) => format!(
                 "the breaker `{}` tripped: `{name}` would have run again once more than it allows",
                 breaker.key()
+            ),
+            Reason::WorkflowChanged => format!(
+                "the workflow changed under this issue: one of its stage records names a stage \
+                 the workflow no longer has. Where that leaves the issue is not guessed; it was \
+                 at the stage `{name}`"
             ),
         }
     }
@@ -131,6 +139,20 @@ impl<'w> Position<'w> {
             | Position::Parked(stage)
             | Position::Escalating(stage, _) => Some(stage),
             Position::Landing | Position::Ended => None,
+        }
+    }
+
+    /// The stage a worker is to be started on, and as whom: the stage to
+    /// perform, or the one a park ended at — which runs again once nothing
+    /// blocks the issue. `None` where no stage's worker is to be started.
+    pub fn start(self) -> Option<(&'w Stage, &'w Work)> {
+        match self {
+            Position::Perform(stage, work) => Some((stage, work)),
+            Position::Parked(stage) => match &stage.by {
+                Performer::Role(work) => Some((stage, work)),
+                Performer::Human => None,
+            },
+            _ => None,
         }
     }
 
@@ -502,5 +524,23 @@ mod tests {
         let Position::Escalating(stage, reason) = place.position else { panic!("escalating") };
         assert_eq!(reason.said(stage), "no valid verdict was declared at the stage `plan`");
         assert_eq!(place.position.worker(), None);
+    }
+
+    #[test]
+    fn a_worker_is_started_on_the_stage_to_perform_or_the_one_a_park_ended_at() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let start = |declared: &[Declared]| {
+            let started = position(workflow, declared).position.start();
+            started.map(|(stage, work)| format!("{} by {}", stage.name, work.role))
+        };
+        assert_eq!(start(&[]).as_deref(), Some("plan by dev"));
+        assert_eq!(start(&[Pass, Pass, Reject]).as_deref(), Some("build by dev"));
+        assert_eq!(start(&[Pass, Blocked]).as_deref(), Some("build by dev"));
+        // A human's stage, a consult, an escalation and an end start nobody's stage.
+        for none in [&[Pass, Pass, Pass][..], &[Pass, Escalate], &[Escalate], &[AlreadySatisfied]] {
+            assert_eq!(start(none), None, "{none:?}");
+        }
+        assert_eq!(start(&[Pass, Pass, Pass, Blocked]), None, "parked at a human's stage");
     }
 }

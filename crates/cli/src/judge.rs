@@ -15,7 +15,7 @@ use afkconvoy_core::stopped::{
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
 use afkconvoy_core::transition::{
-    CloseStep, EscalateStep, Escalation, Released, escalation_begun, escalation_comment, relabelled,
+    CloseStep, EscalateStep, Escalation, Relabel, Released, escalation_begun, escalation_comment,
 };
 use afkconvoy_core::verdict::{Verdict, latest_verdict};
 use anyhow::{Result, bail};
@@ -23,11 +23,13 @@ use serde_json::{Value, json};
 
 use crate::board::last_word;
 use crate::claims::{Me, delete};
+use crate::copies::Copies;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
 use crate::park::{park_claim, standings};
+use crate::team::keep;
 
 /// A worktree's git progress against the base branch's tip on the remote —
 /// never the local branch of that name, against which a worktree freshly cut
@@ -79,7 +81,8 @@ pub(crate) fn worktree_and_work(
 
 /// `afkconvoy escalate`: hand one of my claims to a human. The steps already
 /// taken are read from GitHub and the rest are done in order — comment the
-/// reason, swap `ready_label` for `escalate_label`, release the claim last —
+/// reason, swap what hands the issue to the fleet for the escalate label
+/// (`transition::Relabel`), release the claim last —
 /// so it can be run again from wherever it was cut, and posts one comment.
 /// The PR, the branch and the worktree are kept, except a worktree whose
 /// branch holds no work.
@@ -106,19 +109,24 @@ pub(crate) fn escalate_claim(
     let labels = fleet.gh.issue(issue)?.labels;
     let comments = fleet.gh.comments(issue)?;
     let said = escalation_begun(comments.iter().map(|c| c.body.as_str()), &claim.sha);
-    let begun = Escalation::read(said, relabelled(&labels, &fleet.config));
+    // A bound repo's escalate label is its team's to name.
+    let team_label = match &fleet.config.bound {
+        Some(bound) => Some(keep(&fleet.gh, &Copies::here()?, &bound.team)?.team.escalate_label),
+        None => None,
+    };
+    let swap = Relabel::of(&labels, &fleet.config, team_label.as_deref());
+    let begun = Escalation::read(said, swap.done());
     transition::escalate(issue, begun, workless, |step| {
         match step {
             EscalateStep::Comment => {
                 fleet.gh.comment(issue, &escalation_comment(&claim.sha, reason))?
             }
             EscalateStep::Relabel => {
-                let config = &fleet.config;
-                if !labels.contains(&config.escalate_label) {
-                    fleet.gh.add_label(issue, &config.escalate_label)?;
+                if let Some(label) = &swap.add {
+                    fleet.gh.add_label(issue, label)?;
                 }
-                if labels.contains(&config.ready_label) {
-                    fleet.gh.remove_label(issue, &config.ready_label)?;
+                for label in &swap.remove {
+                    fleet.gh.remove_label(issue, label)?;
                 }
             }
             EscalateStep::Board => last_word(fleet, claim, Stage::Escalated, pr, &[])?,
@@ -155,7 +163,7 @@ pub fn close(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     Ok(json!({"issue": issue, "action": "closed", "released": true}))
 }
 
-fn close_claim(
+pub(crate) fn close_claim(
     fleet: &mut Fleet,
     claim: &Claim,
     worktree: Option<&Worktree>,

@@ -68,6 +68,9 @@ pub fn dispatch(
         None => None,
     };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
+    if let Some(staged) = staged.as_ref().filter(|_| held) {
+        staged.refuse_spent(fleet.scan.claim_of(number))?;
+    }
     let by_hand = from == StartFrom::Fresh;
     let mut found: Option<Survey> = None;
     let mut plan = Recovery::discarded();
@@ -83,6 +86,9 @@ pub fn dispatch(
                 if claim["won"] != true {
                     return Ok(json!({"issue": number, "started": false, "claim": "lost",
                         "owner": claim["owner"]}));
+                }
+                if let Some(staged) = &staged {
+                    staged.refuse_spent(fleet.scan.claim_of(number))?;
                 }
             }
             DispatchStep::Survey => {

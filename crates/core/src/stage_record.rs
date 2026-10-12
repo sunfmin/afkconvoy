@@ -1,9 +1,9 @@
-//! The stage record: the one comment a stage leaves on its issue, and what an
-//! issue's records say of where it is (docs/adr/0010). The comment's format
-//! has this one home: only the fleet's commands write it, and nothing else
-//! reads it.
+//! The stage record: the one comment a stage leaves on its issue, what an
+//! issue's records say of where it is, and what they call for of the claim a
+//! stage was dispatched under (docs/adr/0010). The comment's format has this
+//! one home: only the fleet's commands write it, and nothing else reads it.
 
-use crate::position::{Declared, Place, Position};
+use crate::position::{Declared, Place, Position, Reason};
 use crate::record;
 use crate::team::{LAND, Workflow};
 
@@ -94,6 +94,9 @@ pub enum Reading {
     /// Its stage is not the one the issue was at: not the stage dispatched
     /// under its claim, so not a verdict.
     OtherStage,
+    /// Its stage is none the workflow has: the workflow changed under the
+    /// issue, which is handed to a human from the stage it was at.
+    UnknownStage,
     /// A verdict was already declared under its claim. A claim is dispatched
     /// to one stage, and that stage has ended.
     ClaimSpent,
@@ -104,6 +107,7 @@ impl Reading {
         match self {
             Reading::Verdict => "verdict",
             Reading::OtherStage => "other-stage",
+            Reading::UnknownStage => "unknown-stage",
             Reading::ClaimSpent => "claim-spent",
         }
     }
@@ -121,16 +125,27 @@ pub struct History<'w> {
 /// Where an issue of `workflow` is, given its stage records, oldest first. A
 /// claim is dispatched to the stage the issue is at when it is taken, so a
 /// record is a verdict only when it names that stage and is the first under
-/// its claim; every other record changes nothing.
+/// its claim. A record naming a stage the workflow does not have escalates
+/// the issue: the workflow changed, and nothing is guessed (docs/adr/0010).
+/// Every other record changes nothing.
 pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'w> {
     let mut place = Place::enter(workflow);
     let mut spent: Vec<&str> = vec![];
     let mut readings = vec![];
     for record in records {
-        let at = place.position.stage().map(|stage| stage.name.as_str());
+        let at = place.position.stage();
+        let known = workflow.stages().iter().any(|stage| stage.name == record.stage);
         let reading = if spent.contains(&record.claim.as_str()) {
             Reading::ClaimSpent
-        } else if at != Some(record.stage.as_str()) {
+        } else if !known {
+            // An issue already with a human, or past its stages, stays as it is.
+            if let Some(stage) = at
+                && !matches!(place.position, Position::Escalating(..))
+            {
+                place.position = Position::Escalating(stage, Reason::WorkflowChanged);
+            }
+            Reading::UnknownStage
+        } else if at.map(|stage| stage.name.as_str()) != Some(record.stage.as_str()) {
             Reading::OtherStage
         } else {
             spent.push(&record.claim);
@@ -140,6 +155,64 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
         readings.push(reading);
     }
     History { place, readings }
+}
+
+impl History<'_> {
+    /// Which of `records` — the ones this was read from — is the verdict of
+    /// the stage dispatched under `claim`; `None` while that stage has
+    /// declared nothing that reads as one.
+    pub fn verdict_under(&self, records: &[StageRecord], claim: &str) -> Option<usize> {
+        for (at, record) in records.iter().enumerate() {
+            let verdict = self.readings.get(at) == Some(&Reading::Verdict);
+            if verdict && record.claim == claim {
+                return Some(at);
+            }
+        }
+        None
+    }
+}
+
+/// What the tick does with a claim a stage was dispatched under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Advance {
+    /// Its stage has declared nothing yet, and is still to be performed: ask
+    /// after its worker.
+    AskAfter,
+    /// The claim has no more to do and the issue stays as its records put
+    /// it: release it. A worker's next stage is the frontier's to start,
+    /// under a claim of its own.
+    HandOn,
+    /// Its stage's `pass` ended the workflow: release it, with nothing more
+    /// to do on the issue.
+    End,
+    /// Its stage declared `already-satisfied`: close the issue, if its
+    /// branch holds no work.
+    Close,
+    /// Its stage declared `blocked` by these issues: where they stand
+    /// decides (`blocked::blocked_route`).
+    Blocked(Vec<u64>),
+    /// The issue is handed to a human, for this reason.
+    Escalate(String),
+}
+
+/// What `history` — read from `records` — calls for of the claim `claim` on
+/// its issue. An escalation is carried out whoever declared what led to it;
+/// anything else is acted on only once the claim's own stage has declared.
+pub fn advance(history: &History, records: &[StageRecord], claim: &str) -> Advance {
+    let position = history.place.position;
+    if let Position::Escalating(stage, reason) = position {
+        return Advance::Escalate(reason.said(stage));
+    }
+    let Some(verdict) = history.verdict_under(records, claim).and_then(|at| records.get(at)) else {
+        // A claim on an issue no worker has a stage to perform on holds nothing.
+        return if position.start().is_some() { Advance::AskAfter } else { Advance::HandOn };
+    };
+    match position {
+        Position::Parked(_) => Advance::Blocked(verdict.blocked_by.clone()),
+        Position::Ended if verdict.declared == Declared::AlreadySatisfied => Advance::Close,
+        Position::Ended => Advance::End,
+        _ => Advance::HandOn,
+    }
 }
 
 /// The label that shows `position`: the stage the issue is at, `land` while
@@ -282,9 +355,8 @@ mod tests {
 
     #[test]
     fn a_record_of_a_stage_that_was_not_dispatched_is_not_a_verdict() {
-        // The issue is at `plan`: a record of `build`, or of no stage of the
-        // workflow, moves nothing.
-        let stray = [record("build", Pass, "c1"), record("deploy", Pass, "c1")];
+        // The issue is at `plan`: a record of `build` or of `review` moves nothing.
+        let stray = [record("build", Pass, "c1"), record("review", Pass, "c1")];
         assert_eq!(after(&stray), ("stage:plan".to_string(), vec!["other-stage", "other-stage"]));
         // …and does not spend the claim: the stage it was dispatched to still declares.
         let then = [&stray[..], &[record("plan", Pass, "c1")]].concat();
@@ -293,6 +365,100 @@ mod tests {
         // claim declares nothing more, not even for the stage that follows.
         let on = [record("plan", Pass, "c1"), record("build", Pass, "c1")];
         assert_eq!(after(&on), ("stage:build".to_string(), vec!["verdict", "claim-spent"]));
+    }
+
+    #[test]
+    fn a_record_of_a_stage_the_workflow_no_longer_has_escalates_the_issue() {
+        // `deploy` was a stage once: the workflow changed under the issue.
+        let changed = [record("plan", Pass, "c1"), record("deploy", Pass, "c2")];
+        assert_eq!(
+            after(&changed),
+            ("escalating at build: WorkflowChanged".to_string(), vec!["verdict", "unknown-stage"])
+        );
+        // Nothing declared after it moves the issue: a human rules first.
+        let on = [&changed[..], &[record("build", Pass, "c3")]].concat();
+        assert_eq!(after(&on).0, "escalating at build: WorkflowChanged");
+        let ruled = [&changed[..], &[record("build", Ruling, "c3")]].concat();
+        assert_eq!(after(&ruled).0, "stage:build");
+        // An issue past its stages has none to be escalated from.
+        let ended = [record("plan", AlreadySatisfied, "c1"), record("deploy", Pass, "c2")];
+        assert_eq!(after(&ended), ("ended".to_string(), vec!["verdict", "unknown-stage"]));
+        let team = one(FEATURE);
+        let place = history(team.workflow("feature").unwrap(), &changed).place;
+        let Position::Escalating(stage, reason) = place.position else { panic!("escalating") };
+        assert!(reason.said(stage).starts_with("the workflow changed under this issue"));
+    }
+
+    /// What the records call for of the claim `claim`, on the `feature` workflow.
+    fn advanced(records: &[StageRecord], claim: &str) -> Advance {
+        let team = one(FEATURE);
+        advance(&history(team.workflow("feature").unwrap(), records), records, claim)
+    }
+
+    #[test]
+    fn a_claim_is_asked_after_until_its_own_stage_declares() {
+        let built = [record("plan", Pass, "c1"), record("build", Pass, "c2")];
+        assert_eq!(advanced(&[], "c1"), Advance::AskAfter);
+        // `review` is still to be performed under c3, whatever earlier claims declared…
+        assert_eq!(advanced(&built, "c3"), Advance::AskAfter);
+        // …and a record that is no verdict — another stage's — declares nothing.
+        let stray = [&built[..], &[record("plan", Pass, "c3")]].concat();
+        assert_eq!(advanced(&stray, "c3"), Advance::AskAfter);
+        assert_eq!(
+            history(one(FEATURE).workflow("feature").unwrap(), &built).verdict_under(&built, "c2"),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_verdict_releases_the_claim_and_says_what_else_is_done() {
+        // pass and reject hand the issue on: its next stage is the frontier's.
+        let passed = [record("plan", Pass, "c1")];
+        assert_eq!(advanced(&passed, "c1"), Advance::HandOn);
+        let rejected =
+            [&passed[..], &[record("build", Pass, "c2"), record("review", Reject, "c3")]].concat();
+        assert_eq!(advanced(&rejected, "c3"), Advance::HandOn);
+        // …as does a pass to a human's stage, which holds no claim.
+        let reviewed =
+            [&passed[..], &[record("build", Pass, "c2"), record("review", Pass, "c3")]].concat();
+        assert_eq!(advanced(&reviewed, "c3"), Advance::HandOn);
+        let mut waiting = record("plan", Blocked, "c1");
+        waiting.blocked_by = vec![41, 42];
+        assert_eq!(advanced(&[waiting], "c1"), Advance::Blocked(vec![41, 42]));
+        assert_eq!(advanced(&[record("plan", AlreadySatisfied, "c1")], "c1"), Advance::Close);
+        let triage = one("stages:\n  - { name: a, by: dev, do: plan, on: { pass: done } }\n");
+        let done = [record("a", Pass, "c1")];
+        let ended = history(triage.workflow("feature").unwrap(), &done);
+        assert_eq!(advance(&ended, &done, "c1"), Advance::End);
+    }
+
+    #[test]
+    fn an_escalation_is_carried_out_whoever_declared_what_led_to_it() {
+        let said = |reason: &str| Advance::Escalate(reason.to_string());
+        let asked = [record("plan", Escalate, "c1")];
+        let verdict = "the stage `plan` declared `escalate`, and it names no consult";
+        assert_eq!(advanced(&asked, "c1"), said(verdict));
+        // A verdict its stage may not declare is no valid verdict.
+        let invalid = [record("plan", Reject, "c1")];
+        assert_eq!(
+            advanced(&invalid, "c1"),
+            said("no valid verdict was declared at the stage `plan`")
+        );
+        // The workflow changed under a stage at work: its claim is escalated too.
+        let changed = [record("deploy", Pass, "c0")];
+        assert!(
+            matches!(advanced(&changed, "c1"), Advance::Escalate(why) if why.contains("changed"))
+        );
+    }
+
+    #[test]
+    fn a_claim_with_no_stage_to_perform_is_released() {
+        // Taken from a dead peer after its stage declared, or by hand: the
+        // issue waits on a human, or has ended.
+        let waiting =
+            [record("plan", Pass, "c1"), record("build", Pass, "c2"), record("review", Pass, "c3")];
+        assert_eq!(advanced(&waiting, "c9"), Advance::HandOn);
+        assert_eq!(advanced(&[record("plan", AlreadySatisfied, "c1")], "c9"), Advance::HandOn);
     }
 
     #[test]

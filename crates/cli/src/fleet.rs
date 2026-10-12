@@ -3,7 +3,8 @@
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::Config;
-use afkconvoy_core::plan::{Observed, WorkingSet, assemble};
+use afkconvoy_core::plan::{Issue, Observed, WorkingSet, assemble};
+use afkconvoy_core::role::flows;
 use afkconvoy_core::train::on_train;
 use anyhow::{Result, anyhow};
 
@@ -12,6 +13,7 @@ use crate::config;
 use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::settle::cut_landing_of;
+use crate::stage::Flows;
 use crate::train::Train;
 
 pub struct Fleet {
@@ -41,9 +43,13 @@ impl Fleet {
     }
 
     /// Rebuilds the working set of `me` from what GitHub and the remote say
-    /// now. Reads only.
-    pub fn rebuild(&self, me: Option<&InstanceId>) -> Result<WorkingSet> {
+    /// now → it, and the read of the issues that follow a workflow it was
+    /// assembled from. Reads only.
+    pub fn rebuild(&self, me: Option<&InstanceId>) -> Result<(WorkingSet, Flows)> {
         let issues = self.gh.open_issues()?;
+        let flowing: Vec<&Issue> =
+            issues.iter().filter(|issue| !flows(&issue.labels).is_empty()).collect();
+        let stages = Flows::read(self, &flowing)?;
         let prs = self.gh.open_prs()?;
         // The list holds only open issues: a claim missing from it is asked about.
         let mut closed = vec![];
@@ -78,7 +84,9 @@ impl Fleet {
             closed: &closed,
             joined: &joined,
             landed: &landed,
+            due: &stages.due(),
         };
-        Ok(assemble(&seen, me, self.now, &self.config))
+        let set = assemble(&seen, me, self.now, &self.config);
+        Ok((set, stages))
     }
 }

@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 pub mod abandon;
+pub mod advance;
 pub mod board;
 pub mod claims;
 pub mod config;
@@ -475,7 +476,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Plan { instance } => {
             probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);
-            Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?)?)
+            Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?.0)?)
         }
         Command::Run { instance, host, agent, ticks, second_ms } => {
             let host = host.unwrap_or_else(this_host);
