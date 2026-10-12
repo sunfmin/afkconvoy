@@ -6,9 +6,9 @@
 use flux_rs::attrs::*;
 use serde::Serialize;
 
-use crate::claims::{CLAIM_KIND, InstanceId, Owner};
+use crate::claims::{Holder, InstanceId, RunClaim};
 use crate::layout::Layout;
-use crate::lease::{SKEW, is_stale, proved, stamp_age};
+use crate::lease::{SKEW, proved, stamp_age};
 use crate::plan::Issue;
 use crate::record;
 use crate::worker::{GRACE, WorkerState};
@@ -16,8 +16,7 @@ use crate::worker::{GRACE, WorkerState};
 /// The kind of ref the record of a patrol's last run is kept under, named for
 /// the patrol.
 pub const RUN_KIND: &str = "patrol/";
-/// What a patrol's claim is named beside the claims on issues: this, then the
-/// patrol's name. No issue's number reads as one.
+/// What the claim on a patrol's run is keyed by: this, then the patrol's name.
 const CLAIM_KEY: &str = "patrol-";
 
 const RUN: &str = "convoy:patrol-run";
@@ -33,16 +32,9 @@ pub fn run_ref(layout: Layout, name: &str) -> String {
     layout.under(&format!("{RUN_KIND}{name}"))
 }
 
-/// The ref that is the claim on a run of the patrol `name`: a claim like an
-/// issue's, under a key for the patrol.
-pub fn claim_ref(layout: Layout, name: &str) -> String {
-    layout.under(&format!("{CLAIM_KIND}{CLAIM_KEY}{name}"))
-}
-
-/// The patrol a claim ref is on, given what follows `CLAIM_KIND` in its name;
-/// `None` for a claim on anything else.
-pub fn claimed(key: &str) -> Option<&str> {
-    key.strip_prefix(CLAIM_KEY).filter(|name| !name.is_empty())
+/// The key of the claim on a run of the patrol `name` (`claims::RunClaim`).
+pub fn claim_key(name: &str) -> String {
+    format!("{CLAIM_KEY}{name}")
 }
 
 /// The record of a run started at `ts`.
@@ -78,16 +70,6 @@ pub fn is_due(every: u64, last_run: Option<u64>, now: u64) -> bool {
 #[spec(fn(every: u64, ran: u64, later: u64) requires ran <= later && later - ran < every)]
 pub fn a_run_is_not_due_within_its_interval(every: u64, ran: u64, later: u64) {
     proved(!interval_passed(every, ran, later));
-}
-
-/// The claim on a run of one patrol, as the remote has it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunClaim {
-    pub patrol: String,
-    /// `None`: the claim's record names nobody.
-    pub owner: Option<Owner>,
-    /// What a delete of the claim is leased to.
-    pub sha: String,
 }
 
 /// What the effect layer read of one patrol the repo names.
@@ -158,19 +140,11 @@ pub fn row(
     locked: bool,
 ) -> Row {
     let standing = match &seen.claim {
-        Some(claim) => {
-            let owner = claim.owner.as_ref().map(|owner| owner.instance.as_str());
-            let beat = owner.and_then(|instance| {
-                heartbeats.iter().find(|(name, _)| name == instance).map(|(_, ts)| *ts)
-            });
-            if me.is_some_and(|me| owner == Some(me.as_str())) {
-                Standing::Running
-            } else if is_stale(beat, now) {
-                Standing::StaleRun
-            } else {
-                Standing::PeerRunning
-            }
-        }
+        Some(claim) => match claim.holder(me, heartbeats, now) {
+            Holder::Mine => Standing::Running,
+            Holder::Dead => Standing::StaleRun,
+            Holder::Peer => Standing::PeerRunning,
+        },
         None if seen.failure.is_some() => Standing::Failed,
         None if !is_due(seen.every, seen.last_run, now) => Standing::NotDue,
         None if locked => Standing::Locked,
@@ -275,6 +249,8 @@ mod rejected {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claims::Owner;
+    use crate::claims::run_ref as claim_ref;
     use crate::lease::LEASE;
 
     fn seen() -> Seen {
@@ -291,7 +267,7 @@ mod tests {
 
     fn claim(instance: &str) -> RunClaim {
         let owner = Owner { instance: instance.into(), host: "h".into(), ts: 0 };
-        RunClaim { patrol: "triage".into(), owner: Some(owner), sha: "c".into() }
+        RunClaim { key: claim_key("triage"), owner: Some(owner), sha: "c".into() }
     }
 
     fn standing(seen: &Seen, now: u64, locked: bool) -> Standing {
@@ -387,9 +363,8 @@ mod tests {
     #[test]
     fn the_refs_of_a_patrol_are_named_for_it() {
         assert_eq!(run_ref(Layout::Hidden, "triage"), "refs/convoy/patrol/triage");
-        assert_eq!(claim_ref(Layout::Hidden, "triage"), "refs/convoy/claim/patrol-triage");
-        assert_eq!(claimed("patrol-triage"), Some("triage"));
-        assert_eq!(claimed("7"), None);
+        let claim = claim_ref(Layout::Hidden, &claim_key("triage"));
+        assert_eq!(claim, "refs/convoy/claim/patrol-triage");
         assert_eq!(read_run(&write_run(77)), Some(77));
         assert_eq!(read_run("convoy:claim ts=77"), None);
     }

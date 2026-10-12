@@ -10,6 +10,7 @@ use flux_rs::{attrs::*, macros::qualifier};
 use crate::board::Stage;
 use crate::patrol::Standing;
 use crate::plan::{Status, WorkingSet};
+use crate::precedent;
 
 /// One thing a pass does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +45,14 @@ pub enum TickStep {
     /// Run the due patrol at this place among the working set's, into a free
     /// slot.
     Patrol { patrol: usize },
+    /// End the proposal at this place among the working set's, when its run
+    /// is over: ask after the worker of a run of mine and close a PR it
+    /// opened that is no proposal, or delete the claim of a run whose fleet
+    /// is presumed dead.
+    EndProposal { proposal: usize },
+    /// Start a worker on the due proposal at this place among the working
+    /// set's, into a free slot.
+    Propose { proposal: usize },
     /// Show on the issue's status board the stage a claim of mine is at.
     Board { issue: u64, stage: Stage, pr: Option<u64> },
     /// Bring the `stage:` label of an issue that follows a workflow to the
@@ -153,11 +162,11 @@ impl Pass {
 /// `WorkingSet::bound` makes of the config's — with `held` slots taken as it
 /// starts (`WorkingSet::held`): settle the
 /// claims whose work landed, tend the landing train, ask after the workers
-/// not on the train yet, end the patrol runs that are over, delete the stale
+/// not on the train yet, end the patrol runs and the proposals that are over, delete the stale
 /// locks on closed issues, hand to a
 /// human the unclaimed issues that call for one, take stale
 /// claims, then the due patrols, then frontier issues into the free slots,
-/// lowest number first,
+/// lowest number first, then the due proposals of precedents,
 /// bring the status boards and the `stage:` labels up to date, then refresh
 /// the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
@@ -167,7 +176,7 @@ impl Pass {
 /// another issue whose worker is not on the train yet — what it declared is
 /// acted on once no lock stands — and takes no stale claim but a lock
 /// issue's. The frontier it is handed holds lock issues only, and no patrol
-/// in it is due.
+/// and no proposal in it is due.
 ///
 /// The claims held afterwards are at most `concurrency`, or no more than
 /// before: a pass never takes a claim past the bound.
@@ -185,6 +194,7 @@ where
     }
     let held = end_claims(set, Sweep::Stopped, held, &mut did, &mut carry_out);
     let held = end_patrols(set, held, &mut did, &mut carry_out);
+    let held = end_proposals(set, held, &mut did, &mut carry_out);
     for lock in &set.stale_closed {
         let step = TickStep::Unlock { issue: lock.number };
         did.push((step, carry_out(step)));
@@ -290,6 +300,37 @@ where
     slots.held()
 }
 
+/// Carries out the step that ends each proposal whose run may be over → the
+/// slots still taken. A run of mine that ended frees its slot; a dead
+/// fleet's held none of mine.
+#[spec(fn(set: &WorkingSet, held: usize, did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
+    -> usize{after: after <= held})]
+fn end_proposals<F>(
+    set: &WorkingSet,
+    held: usize,
+    did: &mut Vec<(TickStep, Outcome)>,
+    carry_out: &mut F,
+) -> usize
+where
+    F: FnMut(TickStep) -> Outcome,
+{
+    let mut slots = Slots::new(0, held);
+    for (at, proposal) in set.proposals.iter().enumerate() {
+        let mine = match proposal.standing {
+            precedent::Standing::Running => true,
+            precedent::Standing::StaleRun => false,
+            _ => continue,
+        };
+        let step = TickStep::EndProposal { proposal: at };
+        let outcome = carry_out(step);
+        did.push((step, outcome));
+        if mine && outcome == Outcome::Done && slots.held() > 0 {
+            slots.free();
+        }
+    }
+    slots.held()
+}
+
 /// Whether `did` holds a step on `issue` that ended as `outcome`.
 fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
     for (step, how) in did {
@@ -337,7 +378,8 @@ fn boards(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> Vec<TickStep> {
 /// What a pass may take a slot for, in the order it does: the stale claims —
 /// work somebody began — then the patrols that are due, in the order the repo
 /// names them, then the frontier; issues lowest number first. A patrol runs
-/// once an interval, so it goes ahead of a frontier that is never empty.
+/// once an interval, so it goes ahead of a frontier that is never empty. The
+/// proposals of precedents that are due come last: no issue waits for one.
 /// Never a stale claim a fleet lock keeps the fleet off.
 fn takes(set: &WorkingSet) -> Vec<TickStep> {
     let mut stale: Vec<u64> = vec![];
@@ -358,6 +400,11 @@ fn takes(set: &WorkingSet) -> Vec<TickStep> {
     }
     for issue in &set.frontier {
         steps.push(TickStep::Dispatch { issue: issue.number });
+    }
+    for (at, proposal) in set.proposals.iter().enumerate() {
+        if proposal.standing == precedent::Standing::Due {
+            steps.push(TickStep::Propose { proposal: at });
+        }
     }
     steps
 }
@@ -517,6 +564,7 @@ mod tests {
             locks: vec![],
             flowing: vec![],
             patrols: vec![],
+            proposals: vec![],
         }
     }
 
@@ -586,6 +634,57 @@ mod tests {
         });
         assert!(!pass.did.iter().any(|(step, _)| matches!(step, TickStep::Patrol { .. })));
         assert_eq!(pass.held, 1);
+    }
+
+    fn proposals(standing: &[precedent::Standing]) -> Vec<precedent::Row> {
+        let row = |(at, standing): (usize, &precedent::Standing)| precedent::Row {
+            ruling: precedent::Ruling { issue: 3, comment: at as u64 },
+            standing: *standing,
+            claim: None,
+        };
+        standing.iter().enumerate().map(row).collect()
+    }
+
+    #[test]
+    fn a_pass_ends_the_proposals_that_may_be_over_and_starts_the_due_after_the_frontier() {
+        use precedent::Standing::*;
+        let mut set = set(&[7], &[]);
+        set.proposals = proposals(&[Running, StaleRun, PeerRunning, Due, Full, Locked, Due]);
+        // One run of mine is held as it starts; it is over, and its slot is free again.
+        let pass = run_pass(&set, 2, 1, |_| Done);
+        let did: Vec<TickStep> = pass.did.iter().map(|(step, _)| *step).collect();
+        let taken: Vec<TickStep> = did
+            .iter()
+            .filter(|step| matches!(step, EndProposal { .. } | Propose { .. } | Dispatch { .. }))
+            .copied()
+            .collect();
+        // No issue waits for a proposal: the frontier is dispatched first, and
+        // the second proposal due finds no slot.
+        assert_eq!(
+            taken,
+            [
+                EndProposal { proposal: 0 },
+                EndProposal { proposal: 1 },
+                Dispatch { issue: 7 },
+                Propose { proposal: 3 }
+            ]
+        );
+        assert_eq!(pass.held, 2);
+        assert!(pass.did_work());
+    }
+
+    #[test]
+    fn a_proposal_still_going_keeps_its_slot_and_one_lost_to_a_peer_takes_none() {
+        use precedent::Standing::*;
+        let mut set = set(&[], &[]);
+        set.proposals = proposals(&[Running, Due, Due]);
+        let pass = run_pass(&set, 2, 1, |step| match step {
+            EndProposal { .. } => Nothing,
+            Propose { proposal: 1 } => Lost,
+            _ => Done,
+        });
+        assert!(pass.did.contains(&(Propose { proposal: 2 }, Done)));
+        assert_eq!(pass.held, 2);
     }
 
     #[test]

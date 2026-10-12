@@ -18,7 +18,8 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
-   "now", "locks"} — and in a bound repo "intake", and "patrols" where it names some
+   "now", "locks"} — and in a bound repo "intake", "patrols" where it names some, and
+   "proposals" while a ruling is proposed as a precedent or waits to be
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage};
@@ -64,6 +65,17 @@ WHAT IT ANSWERS
                      peer_running  a live peer's run is still going
                      stale_run     the run is claimed by a peer presumed dead: a tick
                                    deletes that claim
+    proposals      in a bound repo whose team names who proposes precedents: each
+                   ruling of a human that is being proposed, or is still to be:
+                   {issue, comment, standing} — the issue ruled on and the id of the
+                   comment that is the ruling. standing says what a tick does about it:
+                     due           a tick starts its worker, once the frontier is served
+                     full          the open proposals on the team's repo have reached
+                                   the team's `max_open`
+                     locked        a fleet lock stands: nothing is proposed
+                     running       its worker, started by `--instance`, may still be at it
+                     peer_running  a live peer started its worker
+                     stale_run     it is claimed by a peer presumed dead: a tick ends it
 
   The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
   logged out (the error names each, with the line to run; `claude` is among them when

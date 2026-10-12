@@ -24,8 +24,8 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"team", "commit", "files", "escalate_label", "roles", "workflows", "patrols"} — what
-  it read.
+  {"team", "commit", "files", "escalate_label", "roles", "workflows", "patrols",
+  "precedents"} — what it read.
   `commit` is the team's commit read, null with `--dir`; `files` the files read. Each of
   `roles` is {"name", "repo", "commit", "skills"}: `commit` is the one the role's repo
   was read at. Each of `workflows` is {"name", "flow_label", "max_rework",
@@ -33,7 +33,8 @@ WHAT IT ANSWERS
   {"name", "by", "do", "model", "writes", "escalate", "pass", "reject"}. Each of
   `patrols` is {"name", "by", "do", "every", "model", "max_open", "runs_here"}: `every`
   in seconds, and `runs_here` whether the config of this checkout names it — false
-  with `--team` and `--dir`, which read no config.
+  with `--team` and `--dir`, which read no config. `precedents` is {"by", "do",
+  "max_open"}, or null where the team names nobody to propose them.
 
   A team with a fault: {"error", "faults"} and exit 1. `faults` holds every fault of the
   team, not the first: each {"file", "key", "problem"}. `key` is a path from the top of

@@ -289,6 +289,36 @@ impl GitHub {
         Ok(())
     }
 
+    /// The open PRs of another repo, `repo` (`owner/repo`): the number and
+    /// the head branch of each.
+    pub fn open_prs_of(&self, repo: &str) -> Result<Vec<(u64, String)>> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Row {
+            number: u64,
+            head_ref_name: String,
+        }
+        let fields = "number,headRefName";
+        let out = self.gh(&[
+            "pr", "list", "--repo", repo, "--state", "open", "--limit", "1000", "--json", fields,
+        ])?;
+        let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
+        Ok(rows.into_iter().map(|row| (row.number, row.head_ref_name)).collect())
+    }
+
+    /// What PR `number` of another repo, `repo`, changes, as `git diff`
+    /// writes it.
+    pub fn pr_diff_of(&self, repo: &str, number: u64) -> Result<String> {
+        self.gh(&["pr", "diff", &number.to_string(), "--repo", repo])
+    }
+
+    /// Closes one PR of another repo, `repo`, without merging it, with a
+    /// comment saying why.
+    pub fn close_pr_of(&self, repo: &str, number: u64, comment: &str) -> Result<()> {
+        self.gh(&["pr", "close", &number.to_string(), "--repo", repo, "--comment", comment])?;
+        Ok(())
+    }
+
     /// The issues GitHub records `number` as blocked by, open or closed.
     pub fn blocked_by(&self, number: u64) -> Result<Vec<BlockedBy>> {
         let endpoint = format!(
