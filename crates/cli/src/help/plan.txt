@@ -32,10 +32,12 @@ WHAT IT ANSWERS
     free_slots     how many more claims the instance may take
     now            the time the plan was made at, in epoch seconds
 
-  The probe's warnings go to stderr. Errors: the repo fails the startup probe (the
-  remote has no base branch, its protection refuses the fleet's push, or the remote
-  takes none of the fleet's refs); the config cannot be read; GitHub or the remote
-  cannot be read.
+  The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
+  logged out (the error names each, with the line to run; `claude` is among them when
+  no custom provider is set, as `run` would then start its workers with it); the repo
+  fails the startup probe (the remote has no base branch, its protection refuses the
+  fleet's push, or the remote takes none of the fleet's refs); the config cannot be
+  read; GitHub or the remote cannot be read.
 
 WHAT TRIPS YOU UP
 

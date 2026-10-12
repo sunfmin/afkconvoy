@@ -88,7 +88,11 @@ impl World {
     /// git or GitHub setup leaking in.
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
         let mut cmd = Command::new(program);
-        let path = format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap());
+        let only = self.root.join("path");
+        let path = match only.exists() {
+            true => only.display().to_string(),
+            false => format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
+        };
         cmd.current_dir(cwd)
             .env("PATH", path)
             .env("CONVOY_FAKE_GH", &self.gh_file)
@@ -365,6 +369,34 @@ impl World {
         append(&self.root.join("shell-types"), &line);
     }
 
+    /// Takes a command off the PATH afkconvoy runs under, which from here on
+    /// holds nothing but `git` and the stand-ins not taken off it.
+    pub fn take_off_path(&self, name: &str) {
+        let only = self.root.join("path");
+        if !only.exists() {
+            std::fs::create_dir(&only).unwrap();
+            for stand_in in ["gh", "orca"] {
+                let built = std::fs::read_link(self.bin.join(stand_in)).unwrap();
+                std::os::unix::fs::symlink(built, only.join(stand_in)).unwrap();
+            }
+            let path = std::env::var_os("PATH").unwrap();
+            let git =
+                std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
+            let git = git.expect("git is on PATH");
+            write_script(
+                &only.join("git"),
+                &format!("#!/bin/sh\nexec '{}' \"$@\"\n", git.display()),
+            );
+        }
+        std::fs::remove_file(only.join(name)).unwrap();
+    }
+
+    /// Has the stand-in login shell report `tool` (`gh` or `claude`) as
+    /// logged out.
+    pub fn logged_out(&self, tool: &str) {
+        std::fs::write(self.root.join(format!("logged-out-{tool}")), "").unwrap();
+    }
+
     /// What the stand-in login shell prints for `alias`.
     pub fn shell_aliases(&self, aliases: &str) {
         std::fs::write(self.root.join("shell-aliases"), aliases).unwrap();
@@ -400,12 +432,21 @@ impl World {
 }
 
 /// The login shell a worker would get, as far as the fleet asks it anything:
-/// `shell -lic 'alias'` and `shell -lic "type -- '<word>'"`. Every word is a
-/// program unless `shell-types` beside `bin/` says otherwise.
+/// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, and whether `gh` and
+/// `claude` are logged in. Every word is a program unless `shell-types`
+/// beside `bin/` says otherwise, and both are logged in unless a
+/// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
 const SHELL: &str = r#"#!/bin/sh
-root=$(dirname "$0")/..
+root=${0%/*}/..
 echo "$2" >> "$root/shell-asked"
 case "$2" in
+  "gh auth status"*)
+    if [ -e "$root/logged-out-gh" ]; then echo "not logged in" >&2; exit 1; fi
+    exit 0 ;;
+  "claude auth status")
+    # Its exit status says nothing either way: the field does.
+    if [ -e "$root/logged-out-claude" ]; then echo '{ "loggedIn": false }'; exit 0; fi
+    echo 'a line an rc file printed'; echo '{'; echo '  "loggedIn": true'; echo '}'; exit 1 ;;
   alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
   "type -- "*)
     word=${2#type -- \'}; word=${word%\'}

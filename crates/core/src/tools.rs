@@ -1,0 +1,279 @@
+//! The commands a fleet cannot work without, and what a human runs when one
+//! is missing or logged out. A start that lacks any refuses, naming every
+//! fault with the line that fixes it; the tool itself never installs anything
+//! and logs nobody in.
+
+use crate::launch::first_word;
+
+/// A command the fleet, or a worker it starts, runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Git,
+    Gh,
+    Orca,
+    /// Claude Code: needed only when it is what starts a worker.
+    Claude,
+}
+
+/// What a start found of one tool. A missing one is never also logged out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    Ready,
+    Missing,
+    LoggedOut,
+}
+
+impl Tool {
+    /// The word it is run by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tool::Git => "git",
+            Tool::Gh => "gh",
+            Tool::Orca => "orca",
+            Tool::Claude => "claude",
+        }
+    }
+
+    /// The line that installs it. Homebrew's own `orca` cask is another
+    /// program, so orca's names its tap; Claude Code's is its native
+    /// installer, which keeps itself up to date.
+    pub fn install(self) -> &'static str {
+        match self {
+            Tool::Git => "brew install git",
+            Tool::Gh => "brew install gh",
+            Tool::Orca => "brew install --cask stablyai/orca/orca",
+            Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+        }
+    }
+
+    /// The shell line whose answer says whether it is logged in (`logged_in`
+    /// reads it), `gh` for the `host` the repo's remote is on. `None`: it
+    /// logs in to nothing.
+    pub fn login_question(self, host: Option<&str>) -> Option<String> {
+        match self {
+            Tool::Git | Tool::Orca => None,
+            Tool::Gh => Some(format!("gh auth status{}", hostname(host))),
+            Tool::Claude => Some("claude auth status".to_string()),
+        }
+    }
+
+    /// Whether the answer to `login_question` says it is logged in: `gh` by
+    /// its exit status, Claude Code by the `loggedIn` field of the JSON it
+    /// prints — whatever else the shell printed around it.
+    pub fn logged_in(self, succeeded: bool, printed: &str) -> bool {
+        match self {
+            Tool::Claude => {
+                let dense: String = printed.split_whitespace().collect();
+                dense.contains("\"loggedIn\":true")
+            }
+            Tool::Git | Tool::Gh | Tool::Orca => succeeded,
+        }
+    }
+
+    /// The line that logs it in.
+    fn login(self, host: Option<&str>) -> String {
+        match self {
+            Tool::Claude => "claude auth login".to_string(),
+            // github.com is where `gh auth login` logs in unasked.
+            _ => format!("gh auth login{}", hostname(host.filter(|host| *host != "github.com"))),
+        }
+    }
+}
+
+fn hostname(host: Option<&str>) -> String {
+    host.map(|host| format!(" --hostname {host}")).unwrap_or_default()
+}
+
+/// The tools a start needs. `launch` is the worker launch command, when the
+/// start knows it: Claude Code is needed only as its first word — what a
+/// wrapper or another agent runs and logs in to is its own business.
+pub fn needed(launch: Option<&str>) -> Vec<Tool> {
+    let mut tools = vec![Tool::Git, Tool::Gh, Tool::Orca];
+    if launch.and_then(first_word) == Some(Tool::Claude.name()) {
+        tools.push(Tool::Claude);
+    }
+    tools
+}
+
+/// The host a remote's URL names, for `gh`: of `https://host/o/r`,
+/// `ssh://git@host:22/o/r` and `git@host:o/r`. `None` for a path, and for
+/// anything that is not plainly a host name — it goes into a shell line.
+pub fn remote_host(url: &str) -> Option<&str> {
+    let url = url.trim();
+    let authority = match url.split_once("://") {
+        Some((_, rest)) => rest.split('/').next()?,
+        None => url.split_once(':')?.0,
+    };
+    let host = authority.rsplit('@').next()?;
+    let host = host.split(':').next()?;
+    let plain = host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    (plain && host.contains('.') && !host.starts_with('-')).then_some(host)
+}
+
+/// Why a start refuses, or `None` when it has all it needs: every fault in
+/// `found`, each with the line that fixes it, and `launch_fault` — why the
+/// worker launch command cannot start a worker — unless that only says again
+/// that Claude Code is missing. `host` is the one `gh` was asked about.
+pub fn refusal(
+    found: &[(Tool, Found)],
+    host: Option<&str>,
+    launch_fault: Option<&str>,
+) -> Option<String> {
+    let mut faults: Vec<String> = vec![];
+    let mut claude_missing = false;
+    for (tool, found) in found {
+        let name = tool.name();
+        match found {
+            Found::Ready => {}
+            Found::Missing => {
+                claude_missing = claude_missing || *tool == Tool::Claude;
+                faults.push(format!("  {name} is not installed: {}", tool.install()));
+            }
+            Found::LoggedOut => {
+                faults.push(format!("  {name} is not logged in: {}", tool.login(host)));
+            }
+        }
+    }
+    let launch_fault = launch_fault.filter(|_| !claude_missing);
+    if faults.is_empty() {
+        return launch_fault.map(str::to_string);
+    }
+    let mut text = "this host cannot work a fleet yet: nothing was started. Run each line after \
+                    a colon below, then start again — afkconvoy installs nothing and logs \
+                    nobody in:\n"
+        .to_string();
+    text.push_str(&faults.join("\n"));
+    if let Some(fault) = launch_fault {
+        text.push_str("\nand ");
+        text.push_str(fault);
+    }
+    Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_READY: [(Tool, Found); 4] = [
+        (Tool::Git, Found::Ready),
+        (Tool::Gh, Found::Ready),
+        (Tool::Orca, Found::Ready),
+        (Tool::Claude, Found::Ready),
+    ];
+
+    #[test]
+    fn claude_is_needed_only_as_the_first_word_of_the_launch_command() {
+        let always = [Tool::Git, Tool::Gh, Tool::Orca];
+        assert_eq!(
+            needed(Some("claude --dangerously-skip-permissions")),
+            [Tool::Git, Tool::Gh, Tool::Orca, Tool::Claude]
+        );
+        assert_eq!(needed(Some("  claude")).len(), 4);
+        // a wrapper, an alias that ends in claude, another agent, a path
+        for other in ["kim --yolo", "wrap claude", "codex", "/usr/local/bin/claude", "claudex", ""]
+        {
+            assert_eq!(needed(Some(other)), always, "{other:?}");
+        }
+        assert_eq!(needed(None), always);
+    }
+
+    #[test]
+    fn a_host_with_everything_is_not_refused() {
+        assert_eq!(refusal(&ALL_READY, None, None), None);
+        assert_eq!(refusal(&[], Some("github.com"), None), None);
+    }
+
+    #[test]
+    fn every_fault_is_named_with_the_line_that_fixes_it() {
+        let found = [
+            (Tool::Git, Found::Missing),
+            (Tool::Gh, Found::LoggedOut),
+            (Tool::Orca, Found::Missing),
+            (Tool::Claude, Found::LoggedOut),
+        ];
+        let said = refusal(&found, Some("github.com"), None).unwrap();
+        let lines: Vec<&str> = said.lines().skip(1).collect();
+        assert_eq!(
+            lines,
+            [
+                "  git is not installed: brew install git",
+                "  gh is not logged in: gh auth login",
+                "  orca is not installed: brew install --cask stablyai/orca/orca",
+                "  claude is not logged in: claude auth login",
+            ]
+        );
+        assert!(said.contains("nothing was started"), "{said}");
+
+        let missing = [(Tool::Gh, Found::Missing), (Tool::Claude, Found::Missing)];
+        let said = refusal(&missing, None, None).unwrap();
+        assert!(said.contains("  gh is not installed: brew install gh\n"), "{said}");
+        assert!(
+            said.ends_with(
+                "  claude is not installed: curl -fsSL https://claude.ai/install.sh | bash"
+            ),
+            "{said}"
+        );
+        assert!(!said.contains("logged in:"), "missing is not also logged out: {said}");
+    }
+
+    #[test]
+    fn gh_is_asked_about_and_logged_in_to_the_host_the_remote_is_on() {
+        assert_eq!(Tool::Gh.login_question(None).unwrap(), "gh auth status");
+        assert_eq!(
+            Tool::Gh.login_question(Some("ghe.example.com")).unwrap(),
+            "gh auth status --hostname ghe.example.com"
+        );
+        let out = [(Tool::Gh, Found::LoggedOut)];
+        let said = refusal(&out, Some("ghe.example.com"), None).unwrap();
+        assert!(said.ends_with(": gh auth login --hostname ghe.example.com"), "{said}");
+        assert_eq!(Tool::Git.login_question(None), None);
+        assert_eq!(Tool::Orca.login_question(None), None);
+    }
+
+    #[test]
+    fn a_remote_url_names_its_host() {
+        for (url, host) in [
+            ("https://github.com/o/r.git", Some("github.com")),
+            ("https://user@ghe.example.com:8443/o/r", Some("ghe.example.com")),
+            ("ssh://git@github.com:22/o/r.git", Some("github.com")),
+            ("git@github.com:o/r.git\n", Some("github.com")),
+            ("/srv/git/remote.git", None),
+            ("../remote.git", None),
+            ("C:/repos/r", None),
+            ("git@evil.com;rm -rf:o/r", None),
+            ("https://$(id).example.com/o/r", None),
+            ("https://-flag.example.com/o/r", None),
+            ("", None),
+        ] {
+            assert_eq!(remote_host(url), host, "{url:?}");
+        }
+    }
+
+    #[test]
+    fn claude_is_logged_in_when_the_json_it_prints_says_so() {
+        let claude = Tool::Claude;
+        let json = "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\"\n}\n";
+        assert!(claude.logged_in(true, json));
+        assert!(claude.logged_in(false, json), "the field is read, not the exit status");
+        assert!(claude.logged_in(true, &format!("a banner from the rc file\n{json}")));
+        for out in ["{\"loggedIn\": false, \"authMethod\": \"none\"}", "", "Not logged in"] {
+            assert!(!claude.logged_in(true, out), "{out:?}");
+        }
+        assert!(Tool::Gh.logged_in(true, ""));
+        assert!(!Tool::Gh.logged_in(false, "Logged in to github.com"));
+    }
+
+    #[test]
+    fn a_launch_command_that_cannot_start_a_worker_is_refused_in_its_own_words() {
+        let fault = "the worker launch command \"ckim\" cannot start a worker";
+        assert_eq!(refusal(&ALL_READY[..3], None, Some(fault)).as_deref(), Some(fault));
+        // …beside the other faults, in the one run
+        let said = refusal(&[(Tool::Orca, Found::Missing)], None, Some(fault)).unwrap();
+        assert!(said.contains("orca is not installed") && said.ends_with(fault), "{said}");
+        assert!(!said.contains("ckim is not installed"), "no install line is invented: {said}");
+        // …but not to say a second time that claude is missing
+        let said =
+            refusal(&[(Tool::Claude, Found::Missing)], None, Some("claude resolves to nothing"));
+        assert!(!said.unwrap().contains("resolves to nothing"));
+    }
+}

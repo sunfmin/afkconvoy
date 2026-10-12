@@ -61,7 +61,9 @@ fn the_formula_installs_what_was_packaged_and_depends_on_git_and_gh() {
     assert!(formula.contains(&format!("  version \"{VERSION}\"\n")));
     assert!(formula.contains("  depends_on \"gh\"\n  depends_on \"git\"\n"), "{formula}");
     assert!(formula.contains("bin.install \"afkconvoy\""));
-    assert!(formula.contains("https://github.com/stablyai/orca"), "orca is the user's to install");
+    let orca = afkconvoy_core::tools::Tool::Orca.install();
+    assert!(formula.contains(&format!("\n        {orca}\n")), "orca is the user's to install");
+    assert!(!formula.contains("Homebrew does not"), "…with the line a refusal gives: {formula}");
     assert!(formula.contains("assert_equal \"afkconvoy #{version}\""), "{formula}");
 
     // it is Ruby, where there is a ruby to ask

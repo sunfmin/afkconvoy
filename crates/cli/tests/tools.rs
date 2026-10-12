@@ -1,0 +1,224 @@
+mod common;
+
+use common::{Answer, World};
+use serde_json::json;
+
+const ORCA: &str = "  orca is not installed: brew install --cask stablyai/orca/orca";
+const CLAUDE: &str = "  claude is not installed: curl -fsSL https://claude.ai/install.sh | bash";
+
+/// The three starts → the answer of each.
+fn starts(world: &World) -> Vec<Answer> {
+    let mut answers = vec![world.afk(&["plan", "--now", "1000"])];
+    answers.extend(worker_starts(world, &[]));
+    answers
+}
+
+/// The two starts that start workers, each with `extra` after it → the
+/// answer of each: its last line.
+fn worker_starts(world: &World, extra: &[&str]) -> Vec<Answer> {
+    let run = "run --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
+    let tick = "tick --instance alpha --host h1 --now 1000";
+    let answer = |start: &str| {
+        let out = world
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+            .args(start.split(' '))
+            .args(extra)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let last = stdout.lines().last().unwrap_or_default();
+        Answer {
+            json: serde_json::from_str(last).unwrap_or_else(|e| panic!("{e}: {stdout}")),
+            code: out.status.code().unwrap(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    };
+    vec![answer(run), answer(tick)]
+}
+
+/// A repo with a backlog, whose remote logs every push.
+fn backlog() -> World {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.watch_pushes(None);
+    world
+}
+
+/// The lines of a refusal that each name one fault.
+fn faults(error: &str) -> Vec<&str> {
+    error.lines().skip(1).collect()
+}
+
+fn nothing_was_done(world: &World) {
+    assert_eq!(world.probes(), [] as [String; 0], "no probe was pushed");
+    assert_eq!(world.pushes(), [] as [String; 0], "no ref was written");
+    assert_eq!(world.remote(&["for-each-ref", "--format=%(refname)"]), "refs/heads/main");
+    assert_eq!(world.gh()["calls"], json!([]), "GitHub was not asked a thing");
+    assert_eq!(world.orca()["calls"], json!([]), "and neither was orca");
+    assert!(!world.clone.join(".git/convoy-layout").exists(), "no layout was noted");
+}
+
+#[test]
+fn a_start_with_a_command_missing_refuses_naming_the_line_that_installs_it() {
+    for (name, line) in [
+        ("git", "  git is not installed: brew install git"),
+        ("gh", "  gh is not installed: brew install gh"),
+        ("orca", ORCA),
+    ] {
+        let world = backlog();
+        world.take_off_path(name);
+        for start in starts(&world) {
+            assert_eq!(start.code, 1);
+            let error = start.error();
+            assert_eq!(faults(&error), [line], "{error}");
+            assert!(error.contains("nothing was started"), "{error}");
+        }
+        // the checks below run git, gh and orca themselves
+        std::fs::remove_dir_all(world.root.join("path")).unwrap();
+        nothing_was_done(&world);
+    }
+}
+
+#[test]
+fn a_start_without_claude_names_its_native_installer() {
+    let world = backlog();
+    world.shell_knows("claude", None);
+    world.logged_out("claude");
+    for start in starts(&world) {
+        let error = start.error();
+        assert_eq!(faults(&error), [CLAUDE], "missing, and not also logged out: {error}");
+    }
+    assert!(!world.shell_asked().contains(&"claude auth status".to_string()));
+    nothing_was_done(&world);
+}
+
+#[test]
+fn every_fault_is_named_in_the_one_run() {
+    let world = backlog();
+    for name in ["git", "gh", "orca"] {
+        world.take_off_path(name);
+    }
+    world.shell_knows("claude", None);
+    for start in starts(&world) {
+        let error = start.error();
+        assert_eq!(
+            faults(&error),
+            [
+                "  git is not installed: brew install git",
+                "  gh is not installed: brew install gh",
+                ORCA,
+                CLAUDE
+            ],
+            "{error}"
+        );
+    }
+    assert_eq!(world.shell_asked(), ["type -- 'claude'"; 3], "nothing missing was asked its login");
+    std::fs::remove_dir_all(world.root.join("path")).unwrap();
+    nothing_was_done(&world);
+}
+
+#[test]
+fn a_start_logged_out_refuses_naming_the_line_that_logs_in() {
+    let gh = "  gh is not logged in: gh auth login";
+    let claude = "  claude is not logged in: claude auth login";
+    for (out, lines) in
+        [(&["gh"][..], &[gh][..]), (&["claude"], &[claude]), (&["gh", "claude"], &[gh, claude])]
+    {
+        let world = backlog();
+        for tool in out {
+            world.logged_out(tool);
+        }
+        for start in starts(&world) {
+            assert_eq!(start.code, 1);
+            let error = start.error();
+            assert_eq!(faults(&error), lines, "{error}");
+        }
+        nothing_was_done(&world);
+    }
+}
+
+#[test]
+fn a_missing_command_and_a_logged_out_one_are_named_together() {
+    let world = backlog();
+    world.take_off_path("orca");
+    world.logged_out("gh");
+    for start in starts(&world) {
+        let error = start.error();
+        assert_eq!(faults(&error), ["  gh is not logged in: gh auth login", ORCA], "{error}");
+    }
+}
+
+#[test]
+fn claude_is_checked_only_as_the_first_word_of_the_worker_launch_command() {
+    let world = backlog();
+    world.shell_knows("claude", None);
+    world.logged_out("claude");
+    world.shell_knows("kim", Some("kim is an alias for claude --dangerously-skip-permissions"));
+    for command in ["agent", "kim"] {
+        for start in worker_starts(&world, &["--worker-command", command]) {
+            assert_eq!(start.stderr, "", "{command}");
+            start.ok();
+        }
+    }
+    let asked = world.shell_asked();
+    assert!(!asked.contains(&"claude auth status".to_string()), "{asked:?}");
+    assert_eq!(world.claims(), [(7, "alpha".to_string())], "the fleet went to work");
+}
+
+#[test]
+fn on_a_custom_provider_plan_foresees_no_command_and_checks_claude_for_nothing() {
+    let world = backlog();
+    world.shell_knows("claude", None);
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .env("ANTHROPIC_BASE_URL", "https://provider.example/v1")
+        .args(["plan", "--now", "1000"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(world.shell_asked(), ["gh auth status"]);
+}
+
+#[test]
+fn a_wrapper_that_resolves_to_nothing_is_refused_with_no_install_line_invented() {
+    let world = backlog();
+    world.shell_knows("ckim", None);
+    let passed = ["--worker-command", "ckim --yolo"];
+    for start in worker_starts(&world, &passed) {
+        let error = start.error();
+        assert!(error.starts_with("the worker launch command \"ckim --yolo\" cannot"), "{error}");
+        assert!(!error.contains("install"), "{error}");
+    }
+
+    // …and beside a command that is missing, in the one run
+    world.take_off_path("orca");
+    for start in worker_starts(&world, &passed) {
+        let error = start.error();
+        let said = faults(&error);
+        assert_eq!(said[0], ORCA, "{error}");
+        assert!(said[1].contains("\"ckim\" resolves to nothing in a login shell"), "{error}");
+        assert_eq!(said.len(), 2, "{error}");
+    }
+    std::fs::remove_dir_all(world.root.join("path")).unwrap();
+    nothing_was_done(&world);
+}
+
+#[test]
+fn the_commands_that_make_one_transition_by_hand_check_no_tool() {
+    let world = backlog();
+    world.logged_out("gh");
+    world.afk(&["claim", "--issue", "7", "--instance", "alpha", "--now", "1000"]).ok();
+    world.afk(&["scan"]).ok();
+    assert_eq!(world.shell_asked(), [] as [String; 0]);
+}
+
+/// The install lines are written out where a human reads them before any
+/// start: each must be the line a refusal gives (the formula's: `release.rs`).
+#[test]
+fn the_readme_gives_the_install_lines_a_refusal_gives() {
+    use afkconvoy_core::tools::Tool;
+    let readme = include_str!("../../../README.md");
+    assert!(readme.contains(&format!("`{}`", Tool::Orca.install())));
+    assert!(readme.contains(&format!("`{}`", Tool::Claude.install())));
+    assert!(!readme.contains("Homebrew does not"), "orca has an install line now");
+}

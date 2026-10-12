@@ -95,9 +95,10 @@ class Afkconvoy < Formula
 
   def caveats
     <<~EOS
-      afkconvoy starts its workers through orca, which Homebrew does not
-      install: get it from https://github.com/stablyai/orca and make sure
-      \`orca\` is on your PATH. \`gh\` must be logged in (\`gh auth login\`).
+      afkconvoy starts its workers through orca. Install it by its tap's
+      name (the cask Homebrew itself calls orca is another program):
+        brew install --cask stablyai/orca/orca
+      \`gh\` must be logged in (\`gh auth login\`).
     EOS
   end
 
