@@ -1,0 +1,49 @@
+WHEN TO RUN IT
+
+  After `check` accepts a team, to review a workflow as a whole: where an issue enters,
+  which role performs each stage, and where every `pass` and `reject` leads. Paste it
+  into a GitHub comment inside a code block to have it reviewed there.
+
+WHO RUNS IT
+
+  The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere
+  with `--team` or `--dir`.
+
+WHAT IT READS AND WRITES
+
+  It writes nothing. It reads a team as `check` does, with the same `--team` and `--dir`:
+  the team's files, and every role's repo from GitHub. See `afkconvoy check --help`.
+  With a workflow's name it draws that one; with none, every workflow of the team.
+
+WHAT IT ANSWERS
+
+  Not JSON: a drawing, as plain text. One workflow:
+
+      feature — flow:feature — max_rework 3, max_consecutive_rework 2
+
+      ┌───▶ plan      dev: plan
+      │       ↓ pass → build
+      │ ┌─▶ build     dev: implement · model opus · escalate → reviewer: rule
+      │ │     ↓ pass → review
+      │ └── review    reviewer: review · writes nothing · reject → build
+      │       ↓ pass → sign-off
+      └──── sign-off  human · reject → plan
+              ↓ pass → land
+            land      dev: land
+
+  The first line is the workflow, its flow label and its two breakers. Then one row per
+  stage, in the order its file lists them — an issue enters at the first — with who
+  performs it, as `<role>: <skill>` or `human`, and what else its file sets. Under each
+  stage is where its `pass` leads. A `reject` is said on its stage's row and drawn as
+  the line that leaves that row to the left and comes back in, at the arrow, to the
+  stage it leads to. The last rows are the ends: `land` with who lands, and `done`.
+
+  Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error",
+  "faults"}, as `check` answers it; the team has no workflow of that name, or none at
+  all; and every error of `check`.
+
+WHAT TRIPS YOU UP
+
+  - It draws only a team that loads. Run `check` first: a fault is reported, not drawn.
+  - `blocked`, `already-satisfied` and `escalate` are not drawn: they mean the same at
+    every stage. `afkconvoy rehearse` shows where each leads.

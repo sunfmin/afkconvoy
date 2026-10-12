@@ -221,8 +221,10 @@ fn a_help_names_every_key_its_command_answers_with() {
         |issue: &'static str, instance: &'static str| ["--issue", issue, "--instance", instance];
 
     check(&["config"], &["base_branch"]);
-    world.repo("acme/team", &[("team.md", "```yaml\n{}\n```\n")]);
+    let note = "```yaml\nstages:\n  - { name: draft, by: human, on: { pass: done } }\n```\n";
+    world.repo("acme/team", &[("team.md", "```yaml\n{}\n```\n"), ("workflows/note.md", note)]);
     check(&["check", "--team", "acme/team"], &["workflows"]);
+    check(&["rehearse", "--team", "acme/team", "note", "pass"], &["steps"]);
     check(&["plan"], &["frontier"]);
     check(&["scan"], &["claims"]);
     check(&["takeover", "--list"], &["instances"]);

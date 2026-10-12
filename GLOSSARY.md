@@ -86,6 +86,10 @@ _Avoid_: step, phase, state
 The comment a stage leaves on its issue: what it produced, its verdict, and the versions of the role and team it ran under. The stage an issue is at is derived from these and stored nowhere.
 _Avoid_: handoff note, log, stage label
 
+**Position**:
+Where an issue is in its workflow: at a stage a worker is to perform, waiting on a human, with a consult, parked, landing, ended, or escalating. It is derived from the stage records each tick and stored nowhere.
+_Avoid_: state, status, current stage
+
 **Rework**:
 A stage running again because a later stage rejected its work or a consult ruled on it. It is counted per issue from the stage records.
 _Avoid_: retry, round, attempt
