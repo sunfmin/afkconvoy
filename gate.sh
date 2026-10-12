@@ -3,6 +3,12 @@
 # docs/agents/afkconvoy.md names it as `gate_command`.
 set -e
 cd "$(dirname "$0")"
+# The whole gate runs on rustup's nightly, the one cargo-flux is built for,
+# whatever the shell that started it has on its PATH: a Homebrew `cargo`
+# ahead of rustup's breaks when Homebrew moves a library under it.
+PATH="$HOME/.cargo/bin:$PATH"
+RUSTUP_TOOLCHAIN=nightly-2026-09-25
+export PATH RUSTUP_TOOLCHAIN
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 cargo test --workspace --quiet
