@@ -20,6 +20,8 @@ dependencies = [
 name = "afkconvoy-core"
 version = "0.1.2"
 dependencies = [
+ "flux-alloc",
+ "flux-core",
  "flux-rs",
  "proptest",
  "serde",
@@ -195,6 +197,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "flux-alloc"
+version = "0.1.0"
+source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
+dependencies = [
+ "flux-attrs",
+ "flux-core",
+]
+
+[[package]]
 name = "flux-attrs"
 version = "0.1.0"
 source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
@@ -210,6 +221,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "flux-core"
+version = "0.1.0"
+source = "git+https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9"
+dependencies = [
+ "flux-attrs",
 ]
 
 [[package]]

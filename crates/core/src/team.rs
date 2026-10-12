@@ -31,8 +31,12 @@ pub const LAND: &str = "land";
 /// Where a `pass` leads that ends a workflow in nothing more to do.
 pub const DONE: &str = "done";
 
+/// The key of the team file that says who proposes precedents.
+const PRECEDENTS_KEY: &str = "precedents";
+
 /// The keys of each map a definition holds: what `check`'s help must name.
-pub const TEAM_KEYS: [&str; 2] = ["escalate_label", "roles"];
+pub const TEAM_KEYS: [&str; 3] = ["escalate_label", "roles", PRECEDENTS_KEY];
+pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
 pub const WORKFLOW_KEYS: [&str; 4] = ["max_rework", "max_consecutive_rework", "stages", LAND];
 pub const STAGE_KEYS: [&str; 7] = ["name", "by", "do", "model", "writes", "escalate", "on"];
 pub const ON_KEYS: [&str; 2] = ["pass", "reject"];
@@ -187,6 +191,9 @@ pub struct Team {
     pub roles: Vec<Role>,
     pub workflows: Vec<Workflow>,
     pub patrols: Vec<Patrol>,
+    /// Who proposes a human's ruling as a precedent. `None`: the team names
+    /// nobody, and none is proposed.
+    pub precedents: Option<Precedents>,
 }
 
 impl Team {
@@ -251,6 +258,16 @@ pub struct Patrol {
     pub max_open: u64,
 }
 
+/// Who proposes a human's ruling as a precedent — a skill of a role, started
+/// once for the ruling — and how many proposals may wait for a human at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Precedents {
+    pub work: Work,
+    /// How many proposals may be open on the team's repo before no other is
+    /// started.
+    pub max_open: u64,
+}
+
 /// Who performs a stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Performer {
@@ -312,11 +329,14 @@ impl Stage {
 /// comes to the landing train or to nothing more to do; every stage can be
 /// reached from the first; and `land` is set exactly when a `pass` leads there.
 #[derive(Debug, PartialEq, Eq)]
+#[refined_by(n: int)]
+#[invariant(n > 0)]
 pub struct Workflow {
     /// What follows `flow:` in its flow label.
     pub name: String,
     pub max_rework: u64,
     pub max_consecutive_rework: u64,
+    #[field(Vec<Stage>[n])]
     stages: Vec<Stage>,
     /// Who gates the PR and joins the landing train.
     pub land: Option<Work>,
@@ -327,8 +347,8 @@ impl Workflow {
         format!("{FLOW_LABEL}{}", self.name)
     }
 
-    /// The stage an issue entering the workflow is at. There is one: `workflow`
-    /// builds none without.
+    /// The stage an issue entering the workflow is at. There is one, by the
+    /// workflow's invariant.
     pub fn first(&self) -> &Stage {
         &self.stages[0]
     }
@@ -410,6 +430,7 @@ pub fn duration(text: &str) -> Option<u64> {
 pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let mut faults: Vec<Fault> = vec![];
     let (escalate_label, roles) = team_file(&mut faults, sources);
+    let precedents = precedents_key(&mut faults, sources, &roles);
     let mut workflows: Vec<Workflow> = vec![];
     for file in &sources.workflows {
         let mut report = Report { file: &file.path, faults: &mut faults };
@@ -421,7 +442,13 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
         patrols.extend(patrol_file(&mut report, file, &roles));
     }
     if faults.is_empty() {
-        Ok(Team { escalate_label, roles: roles.loaded, workflows, patrols })
+        Ok(Team {
+            escalate_label,
+            roles: roles.loaded,
+            workflows,
+            patrols,
+            precedents: precedents.flatten(),
+        })
     } else {
         Err(faults)
     }
@@ -520,7 +547,13 @@ fn required<'n>(
 
 /// The count at `key`, or `default` where the map has no such key. `None`,
 /// reported, when it is anything but a whole number from 0 up.
-fn count(report: &mut Report, entries: &[(String, Node)], key: &str, default: u64) -> Option<u64> {
+fn count(
+    report: &mut Report,
+    at: &str,
+    entries: &[(String, Node)],
+    key: &str,
+    default: u64,
+) -> Option<u64> {
     let Some(node) = get(entries, key) else { return Some(default) };
     let read = match node {
         Node::Int(n) => u64::try_from(*n).ok(),
@@ -532,9 +565,18 @@ fn count(report: &mut Report, entries: &[(String, Node)], key: &str, default: u6
             Node::Fraction => "a number with a fraction",
             other => kind(other),
         };
-        report.fault(key, format!("must be a whole number from 0 up, not {was}"));
+        report.fault(&under(at, key), format!("must be a whole number from 0 up, not {was}"));
     }
     read
+}
+
+/// The `max_open` of the map at `at`: a count, its absence reported too.
+fn limit(report: &mut Report, at: &str, entries: &[(String, Node)]) -> Option<u64> {
+    if get(entries, "max_open").is_none() {
+        report.fault(&under(at, "max_open"), "required, and it is missing".to_string());
+        return None;
+    }
+    count(report, at, entries, "max_open", 0)
 }
 
 /// The roles a team file names.
@@ -611,6 +653,23 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
         }
     }
     (escalate_label, roles)
+}
+
+/// Reads the team file's `precedents` → who proposes a ruling as one;
+/// `Some(None)` where the file has no such key, `None` when the key is at
+/// fault. What is wrong with the file itself is `team_file`'s to say.
+fn precedents_key(
+    faults: &mut Vec<Fault>,
+    sources: &Sources,
+    roles: &Roles,
+) -> Option<Option<Precedents>> {
+    let mut report = Report { file: &sources.team.path, faults };
+    let Ok(Node::Map(entries)) = &sources.team.yaml else { return Some(None) };
+    let Some(node) = get(entries, PRECEDENTS_KEY) else { return Some(None) };
+    let entries = map(&mut report, PRECEDENTS_KEY, node, &PRECEDENTS_KEYS)?;
+    let work = work(&mut report, roles, PRECEDENTS_KEY, entries, ("by", "do"));
+    let max_open = limit(&mut report, PRECEDENTS_KEY, entries);
+    Some(Some(Precedents { work: work?, max_open: max_open? }))
 }
 
 /// The skill `skill_key` names of the role `role_key` names, both under `at`.
@@ -801,9 +860,9 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
         }
     };
     let entries = map(report, "", node, &WORKFLOW_KEYS)?;
-    let max_rework = count(report, entries, "max_rework", MAX_REWORK);
+    let max_rework = count(report, "", entries, "max_rework", MAX_REWORK);
     let max_consecutive_rework =
-        count(report, entries, "max_consecutive_rework", MAX_CONSECUTIVE_REWORK);
+        count(report, "", entries, "max_consecutive_rework", MAX_CONSECUTIVE_REWORK);
     let land = match get(entries, LAND) {
         None => Some(None),
         Some(node) => match map(report, LAND, node, &LAND_KEYS) {
@@ -972,10 +1031,7 @@ fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol
         }
     };
     let model = text(report, "", entries, "model").map(str::to_string);
-    if get(entries, "max_open").is_none() {
-        report.fault("max_open", "required, and it is missing".to_string());
-    }
-    let max_open = count(report, entries, "max_open", 0);
+    let max_open = limit(report, "", entries);
     Some(Patrol { name: name.to_string(), work: work?, every: every?, model, max_open: max_open? })
 }
 
@@ -992,6 +1048,24 @@ fn stage(draft: Draft, at: usize, pass: Pass, reject: Option<usize>) -> Option<S
         pass,
         reject,
     })
+}
+
+#[cfg(flux)]
+#[allow(dead_code)]
+mod rejected {
+    use super::*;
+
+    /// A workflow with no stage.
+    #[should_fail]
+    fn a_workflow_with_no_stage(name: String) -> Workflow {
+        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages: Vec::new(), land: None }
+    }
+
+    /// Whatever stages were listed, taken as a workflow without a look.
+    #[should_fail]
+    fn a_workflow_of_whatever_was_listed(name: String, stages: Vec<Stage>) -> Workflow {
+        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages, land: None }
+    }
 }
 
 #[cfg(test)]
@@ -1109,6 +1183,30 @@ land: { by: dev, do: land }
     }
 
     #[test]
+    fn a_team_names_who_proposes_precedents_or_has_none_proposed() {
+        let without = load(&sources(TEAM, &[])).unwrap();
+        assert_eq!(without.precedents, None);
+        let named = format!("{TEAM}precedents: {{ by: reviewer, do: rule, max_open: 4 }}\n");
+        let with = load(&sources(&named, &[])).unwrap();
+        let work = Work { role: "reviewer".to_string(), skill: "rule".to_string() };
+        assert_eq!(with.precedents, Some(Precedents { work, max_open: 4 }));
+
+        let keys = |precedents: &str| -> Vec<String> {
+            let team = format!("{TEAM}precedents: {precedents}\n");
+            let faults = load(&sources(&team, &[])).unwrap_err();
+            faults.into_iter().map(|fault| format!("{} {}", fault.file, fault.key)).collect()
+        };
+        assert_eq!(keys("reviewer"), ["team.md precedents"]);
+        assert_eq!(
+            keys("{ by: ops, do: mop, when: now }"),
+            ["team.md precedents.when", "team.md precedents.by", "team.md precedents.max_open"]
+        );
+        assert_eq!(keys("{ by: reviewer, do: mop, max_open: -1 }").len(), 2);
+        assert_eq!(keys("{ by: human, do: rule, max_open: 1 }"), ["team.md precedents.by"]);
+        assert_eq!(keys("{ by: reviewer, max_open: 1 }"), ["team.md precedents.do"]);
+    }
+
+    #[test]
     fn a_duration_is_a_count_from_one_up_and_a_unit() {
         assert_eq!(duration("30m"), Some(1800));
         assert_eq!(duration("6h"), Some(21600));
@@ -1219,9 +1317,9 @@ land: { by: dev, do: land }
             "    by: dev\n    do: plan\n    escalate: { to: reviewer, do: rule, then: a }\n    on: { pass: done }\n",
         ));
         assert_eq!(key, "stages[1].escalate.then");
-        let faults = faults(&format!("{TEAM}precedents: {{}}\n"), FEATURE);
+        let faults = faults(&format!("{TEAM}mascots: {{}}\n"), FEATURE);
         assert_eq!(faults.len(), 1, "{faults:#?}");
-        assert_eq!((faults[0].0.as_str(), faults[0].1.as_str()), ("team.md", "precedents"));
+        assert_eq!((faults[0].0.as_str(), faults[0].1.as_str()), ("team.md", "mascots"));
     }
 
     #[test]

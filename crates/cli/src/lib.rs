@@ -36,6 +36,7 @@ pub mod orca;
 pub mod panel;
 pub mod park;
 pub mod patrol;
+pub mod precedent;
 pub mod probe;
 pub mod recovery;
 pub mod role;

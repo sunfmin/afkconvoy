@@ -127,6 +127,14 @@ A workflow whose last stage passes to `land` names the role that lands (`land: {
 
 A team's patrols are files too (`patrols/<name>.md`: `by`, `do`, `every`, `model`, `max_open`), and a repo runs the ones its `patrols` names: the tick that finds one due — its interval passed since its last recorded run, no run of it still going, no fleet lock standing, fewer than `max_open` open issues it opened — claims the run on the remote, so of several hosts one runs it, and starts a worker in the patrol's role in a checkout of the base branch that is linked to no issue. That worker has `AFKCONVOY_PATROL` in its environment, opens issues and takes them in with `afkconvoy intake`; a run takes one slot of `concurrency`, a missed run is not made up, and `afkconvoy plan` lists how each patrol stands.
 
+### Precedents
+
+A team may name who proposes precedents (`precedents: { by, do, max_open }` in `team.md`). A human's ruling on an escalated issue then starts one worker in that role, with that skill, in a checkout of the base branch linked to no issue. It opens one PR on the team's repo that appends one entry to `precedents.md` — the ruling in a sentence, when it applies, and the link to the ruling. A human merging that PR is what accepts the precedent: the fleet never merges on the team's repo. Once the worker has stopped, the fleet closes, with the reason, a PR that changes anything but that file or does anything there but append that entry.
+
+A ruling is proposed at most once, and none while the open proposals have reached `max_open`; `afkconvoy plan` lists how each stands. The issue goes on through its workflow without waiting. A verdict a human declares for a `by: human` stage is no ruling, and neither is a consult's. A team without the key has no precedents proposed.
+
+Every worker's brief says where the precedents are, to read them before declaring `escalate`, and to say in that verdict that it did.
+
 How a bound repo's worker is started — in its role, under the guard — is under [Start a fleet](#start-a-fleet).
 
 ## Start a fleet

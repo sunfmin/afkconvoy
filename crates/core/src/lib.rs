@@ -1,6 +1,12 @@
 //! afkconvoy's decisions: pure functions of what the effect layer read, with
 //! the clock passed in. Nothing here reads or writes anything (docs/adr/0007).
 
+// Flux's refinements of the standard library — what gives a `Vec` its length.
+// Naming the crates is what brings them into the check; under a plain build
+// both are empty.
+extern crate flux_alloc;
+extern crate flux_core;
+
 pub mod abandon;
 pub mod blocked;
 pub mod board;
@@ -19,6 +25,7 @@ pub mod lock;
 pub mod patrol;
 pub mod plan;
 pub mod position;
+pub mod precedent;
 pub mod prompt;
 pub mod record;
 pub mod recovery;

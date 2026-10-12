@@ -14,6 +14,18 @@ fn a_config_with_no_slots(config: &Config) -> usize {
     config.concurrency()
 }
 
+/// A `Vec` has a length, so nothing may write to whatever index it is handed.
+#[should_fail]
+fn a_write_to_whatever_index(numbers: &mut Vec<u64>, at: usize) {
+    numbers[at] = 0;
+}
+
+/// Nor read the first of a `Vec` that may be empty.
+#[should_fail]
+fn the_first_of_a_vec_that_may_be_empty(numbers: &Vec<u64>) -> u64 {
+    numbers[0]
+}
+
 mod team {
     use flux_rs::attrs::*;
 
