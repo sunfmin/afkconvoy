@@ -996,6 +996,8 @@ mod tests {
             "- **Worktree:** `/wt/issue-7`, on the branch `tester/issue-7-add` (the base is `develop`)",
             "- **History:** the issue and every comment on it (`gh issue view 7 --comments`)",
             "- **Precedents:** `/copies/acme/team/def/precedents.md`\n",
+            "Read them before you declare `escalate`.",
+            "say in the text of that verdict that you read the precedents.",
             "```bash\n/opt/bin/afkconvoy verdict --issue 7 --stage build\n```",
         ] {
             assert!(prompt.contains(said), "{said}\n{prompt}");
@@ -1288,5 +1290,37 @@ mod tests {
     #[test]
     fn braces_that_are_no_placeholder_are_text() {
         assert_eq!(fill("{ x } ${Y} {n} {", &[("n", "1")]).unwrap(), "{ x } ${Y} 1 {");
+    }
+
+    #[test]
+    fn a_proposal_s_brief_says_what_a_proposal_is_and_nothing_of_how_to_word_one() {
+        let link = "https://github.com/acme/app/issues/7#issuecomment-2001";
+        let fields = ProposalFields {
+            number: 7,
+            link,
+            ruling: "Keep the v1 schema.\nMigrate later.",
+            role: "clerk",
+            skill: "propose",
+            team: "acme/team",
+            branch: "convoy-precedent-7-c2001",
+            precedents: "/copies/acme/team/def/precedents.md",
+            worktree: "/wt/convoy-precedent-7-c2001",
+            base_branch: "develop",
+        };
+        let prompt = proposal_prompt(&fields).unwrap();
+        for said in [
+            "- **Ruling:** what a human ruled on issue #7, which was escalated to them — https://github.com/acme/app/issues/7#issuecomment-2001\n",
+            "- **Skill to perform:** `propose`, of the role you were started in (`clerk`)\n",
+            "`/copies/acme/team/def/precedents.md`, yours to read only\n",
+            "> Keep the v1 schema.\n> Migrate later.\n",
+            "opening one PR on `acme/team`, from the branch `convoy-precedent-7-c2001`",
+            "- <the ruling, in a sentence> **When:** <when it applies> (https://github.com/acme/app/issues/7#issuecomment-2001)\n",
+            "- Never merge it, and push nothing but that branch.\n",
+        ] {
+            assert!(prompt.contains(said), "{said}\n{prompt}");
+        }
+        assert!(!prompt.contains('{'), "every field is filled: {prompt}");
+        // It declares nothing: a proposal is at no stage.
+        assert!(!prompt.contains("afkconvoy verdict"), "{prompt}");
     }
 }

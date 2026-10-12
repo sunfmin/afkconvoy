@@ -6,6 +6,9 @@
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail. `repos` {owner/repo: the git repo that
 //! stands in for it}: the other repos GitHub holds, which `repo clone` clones.
+//! `prs_of` {owner/repo: [{number, headRefName, state, closed_with?}]}: the
+//! PRs of those, each from a branch of the repo that stands in; what one
+//! changes is that branch against the default one.
 
 mod fake;
 
@@ -25,7 +28,12 @@ fn main() {
         st.finish("", 1, "fake gh: injected failure\n");
     }
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
+    let other = st.opt("--repo").map(str::to_string);
     match argv.as_slice() {
+        ["pr", verb, ..] if other.is_some() => {
+            let (verb, repo) = (verb.to_string(), other.unwrap());
+            pr_of(&mut st, &verb, &repo)
+        }
         ["pr", "list", ..] => pr_list(&mut st),
         ["pr", "close", number, ..] => {
             let number = number.to_string();
@@ -114,6 +122,43 @@ fn pr_list(st: &mut State) -> ! {
         })
         .collect();
     st.finish(&Value::from(rows).to_string(), 0, "")
+}
+
+/// `gh pr <verb> … --repo <repo>`: the PRs of another repo.
+fn pr_of(st: &mut State, verb: &str, repo: &str) -> ! {
+    let Some(from) = st.doc["repos"][repo].as_str().map(str::to_string) else {
+        st.finish("", 1, "GraphQL: Could not resolve to a Repository\n")
+    };
+    if verb == "list" {
+        assert_eq!(st.opt("--state"), Some("open"), "{:?}", st.argv);
+        let rows = st.doc["prs_of"][repo].as_array().cloned().unwrap_or_default();
+        let open: Vec<Value> = rows
+            .iter()
+            .filter(|pr| is_open(pr))
+            .map(|pr| json!({"number": pr["number"], "headRefName": pr["headRefName"]}))
+            .collect();
+        st.finish(&Value::from(open).to_string(), 0, "")
+    }
+    let wanted: Option<u64> = st.argv.get(2).and_then(|number| number.parse().ok());
+    let comment = st.opt("--comment").map(str::to_string);
+    let rows = st.doc["prs_of"][repo].as_array_mut();
+    let found = rows.and_then(|rows| rows.iter_mut().find(|pr| wanted == pr["number"].as_u64()));
+    let Some(pr) = found.filter(|pr| is_open(pr)) else {
+        st.finish("", 1, "gh: no open pull request found\n")
+    };
+    match verb {
+        "diff" => {
+            let against = format!("HEAD...{}", pr["headRefName"].as_str().unwrap());
+            let diff = fake::git(&["-C", &from, "diff", &against]);
+            st.finish(&diff, 0, "")
+        }
+        "close" => {
+            pr["state"] = json!("closed");
+            pr["closed_with"] = json!(comment);
+            st.finish("", 0, "")
+        }
+        _ => unsupported(st),
+    }
 }
 
 fn pr_close(st: &mut State, number: &str) -> ! {

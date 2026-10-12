@@ -253,7 +253,8 @@ enum Line<'a> {
 
 /// The lines of the hunks in `part` — one file's part of a diff — in order. A
 /// file that ended in no newline has its last line rewritten by whatever is
-/// appended to it: that line reads as kept.
+/// appended to it: that line reads as kept. A line of a hunk begins with what
+/// it is, so an empty one is none — it is what a diff was handed over with.
 fn hunk_lines(part: &str) -> Vec<Line<'_>> {
     let mut lines: Vec<Line> = vec![];
     let mut in_hunk = false;
@@ -262,7 +263,7 @@ fn hunk_lines(part: &str) -> Vec<Line<'_>> {
     for line in part.lines() {
         if line.starts_with("@@") {
             in_hunk = true;
-        } else if !in_hunk {
+        } else if !in_hunk || line.is_empty() {
             continue;
         } else if line.starts_with('\\') {
             if let Some(Line::Removed(text)) = lines.last().copied() {

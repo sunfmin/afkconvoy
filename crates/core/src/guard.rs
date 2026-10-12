@@ -562,6 +562,25 @@ mod tests {
     }
 
     #[test]
+    fn a_proposal_s_worker_is_at_no_stage_and_merges_nothing() {
+        let facts = Facts { on: On::Proposal { issue: 7 }, ..facts(true, false) };
+        let env = facts.env();
+        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "a proposal has no stage");
+        let limits = Limits::read(|name| {
+            env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
+        })
+        .unwrap();
+        assert_eq!(limits.at, At::Proposal);
+        // It commits in a clone of the team's repo and pushes its own branch from it.
+        for line in ["git commit -m entry", "git push origin convoy-precedent-7-c2001"] {
+            assert_eq!(refused(&Call::shell(line), &limits), None, "{line}");
+        }
+        // The PR is a human's to merge.
+        let merging = Call::shell("gh pr merge 31 --repo acme/team --squash");
+        assert!(refused(&merging, &limits).is_some());
+    }
+
+    #[test]
     fn a_patrol_s_worker_is_at_no_stage_and_writes_no_code() {
         let facts = Facts { on: On::Patrol("triage"), ..facts(false, false) };
         let env = facts.env();
