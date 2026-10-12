@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use afkconvoy_core::config::RepoName;
 use afkconvoy_core::team::{
     self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RoleRepo, SKILLS, Sources, Stage,
     TEAM_FILE, Team, WORKFLOWS, Work, Workflow,
@@ -22,8 +23,8 @@ use crate::git::Repo;
 pub enum From {
     /// The team the config of this checkout names.
     Config,
-    /// A team's repo on GitHub, as `owner/repo`.
-    Repo(String),
+    /// A team's repo on GitHub.
+    Repo(RepoName),
     /// A directory holding a team's files, read as they are, committed or not.
     Dir(PathBuf),
 }
@@ -108,7 +109,7 @@ enum Tree {
 
 impl Tree {
     /// `repo` on GitHub at the head of its default branch.
-    fn head(gh: &GitHub, repo: &str, scratch: &Scratch) -> Result<Tree> {
+    fn head(gh: &GitHub, repo: &RepoName, scratch: &Scratch) -> Result<Tree> {
         let into = scratch.next();
         std::fs::create_dir_all(&scratch.dir)
             .with_context(|| format!("cannot create {}", scratch.dir.display()))?;
@@ -223,7 +224,7 @@ pub fn load(from: From) -> Result<Loaded> {
         }
         From::Repo(repo) => {
             let tree = Tree::head(&gh, &repo, &scratch);
-            (repo.clone(), tree.with_context(|| format!("the team {repo} cannot be read"))?)
+            (repo.to_string(), tree.with_context(|| format!("the team {repo} cannot be read"))?)
         }
         From::Config => {
             let config = config::load(&config::default_file()?)?;
@@ -236,7 +237,7 @@ pub fn load(from: From) -> Result<Loaded> {
             let tree = Tree::head(&gh, &bound.team, &scratch);
             let tree = tree.with_context(|| format!("the team {} cannot be read", bound.team))?;
             named = bound.patrols;
-            (bound.team, tree)
+            (bound.team.to_string(), tree)
         }
     };
     let sources = read(&tree, |repo| {
@@ -259,7 +260,7 @@ pub fn load(from: From) -> Result<Loaded> {
 
 /// Everything the core loads a team from: the team's own files out of
 /// `tree`, and of each role's repo what `role` reads.
-fn read(tree: &Tree, role: impl Fn(&str) -> Result<RoleRepo>) -> Result<Sources> {
+fn read(tree: &Tree, role: impl Fn(&RepoName) -> Result<RoleRepo>) -> Result<Sources> {
     let team = tree.file(TEAM_FILE);
     let entries = tree.list(WORKFLOWS)?;
     let workflows = entries.iter().map(|name| tree.file(&format!("{WORKFLOWS}/{name}"))).collect();
@@ -268,7 +269,7 @@ fn read(tree: &Tree, role: impl Fn(&str) -> Result<RoleRepo>) -> Result<Sources>
     let repos = team::role_repos(&team).into_iter();
     let repos = repos.map(|repo| {
         let read = role(&repo).map_err(|error| format!("{error:#}"));
-        (repo, read)
+        (repo.to_string(), read)
     });
     Ok(Sources { team, workflows, patrols, repos: repos.collect() })
 }
@@ -280,7 +281,7 @@ pub struct Kept {
     /// The copy of the team's own repo.
     pub copy: Copy,
     /// The copy of each role's repo, by the repo's name.
-    roles: Vec<(String, Copy)>,
+    roles: Vec<(RepoName, Copy)>,
 }
 
 impl Kept {
@@ -295,14 +296,14 @@ impl Kept {
 /// Loads the team `repo` names as it stands now: the head of its repo and of
 /// each role's, each read from the fleet's copy of that commit and fetched
 /// only when no copy of it is here. A team with a fault fails with `Refused`.
-pub fn keep(gh: &GitHub, copies: &Copies, repo: &str) -> Result<Kept> {
+pub fn keep(gh: &GitHub, copies: &Copies, repo: &RepoName) -> Result<Kept> {
     let copy = copies.of(gh, repo).with_context(|| format!("the team {repo} cannot be read"))?;
     let roles = std::cell::RefCell::new(vec![]);
     let sources = read(&Tree::Dir(copy.dir.clone()), |role| {
         let kept = copies.of(gh, role)?;
         let skills = Tree::Dir(kept.dir.clone()).list(SKILLS)?;
         let commit = kept.commit.clone();
-        roles.borrow_mut().push((role.to_string(), kept));
+        roles.borrow_mut().push((role.clone(), kept));
         Ok(RoleRepo { commit, skills })
     })?;
     match team::load(&sources) {

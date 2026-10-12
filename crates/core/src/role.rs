@@ -531,7 +531,7 @@ land: { by: boss, do: implement }
         };
         assert_eq!(entry.stage.name, "build");
         assert_eq!((entry.work.role.as_str(), entry.work.skill.as_str()), ("boss", "implement"));
-        assert_eq!(entry.role.repo, "acme/boss");
+        assert_eq!(entry.role.repo.as_str(), "acme/boss");
         let ruled = [&asked[..], &[consult(Declared::Ruling)]].concat();
         assert_eq!(said(due(&team, &flow, &ruled, None)), "build by dev");
         // The chain is one role long: a consult's own `escalate` goes to a human.

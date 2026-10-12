@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use afkconvoy_core::config::is_repo;
+use afkconvoy_core::config::RepoName;
 use afkconvoy_core::team::{HUMAN, SKILLS, TEAM_FILE, WORKFLOWS};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -33,7 +33,7 @@ pub enum What {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Named {
     pub name: String,
-    pub repo: String,
+    pub repo: RepoName,
 }
 
 /// Reads `<name>=<owner/repo>`.
@@ -48,15 +48,13 @@ pub fn named(text: &str) -> Result<Named, String> {
              and `-`, and is not `{HUMAN}`"
         ));
     }
-    if !is_repo(repo) {
-        return Err(format!("{form}: `{repo}` is no owner/repo"));
-    }
-    Ok(Named { name: name.to_string(), repo: repo.to_string() })
+    let repo = RepoName::read(repo).ok_or_else(|| format!("{form}: `{repo}` is no owner/repo"))?;
+    Ok(Named { name: name.to_string(), repo })
 }
 
 /// Where a skeleton's repo is created: its name on GitHub, and who may see it.
 pub struct Create {
-    pub repo: String,
+    pub repo: RepoName,
     pub public: bool,
 }
 
@@ -79,7 +77,7 @@ fn files(what: What, role: Option<&Named>) -> Result<Vec<(String, String)>> {
         (What::Team, Some(role)) => {
             let fill = |text: &str| {
                 text.replace("{role}", &role.name)
-                    .replace("{repo}", &role.repo)
+                    .replace("{repo}", role.repo.as_str())
                     .replace("{skill}", EXAMPLE_SKILL)
                     .replace("{workflow}", EXAMPLE_WORKFLOW)
             };
@@ -147,7 +145,7 @@ fn create(what: What, dir: &Path, create: &Create) -> Result<()> {
     repo.git(&["commit", "--quiet", "-m", message])?;
     let visibility = if create.public { "--public" } else { "--private" };
     let gh = GitHub { dir: dir.to_path_buf() };
-    gh.gh(&["repo", "create", &create.repo, visibility, "--source", ".", "--push"])?;
+    gh.gh(&["repo", "create", create.repo.as_str(), visibility, "--source", ".", "--push"])?;
     Ok(())
 }
 

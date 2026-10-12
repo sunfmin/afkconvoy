@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
+use afkconvoy_core::config::RepoName;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
@@ -103,7 +104,7 @@ enum Command {
         role: Option<scaffold::Named>,
         /// Also commit the skeleton and create this repo on GitHub from it, as owner/repo
         #[arg(long, value_parser = repo)]
-        repo: Option<String>,
+        repo: Option<RepoName>,
         /// Create that repo public [default: private]
         #[arg(long, requires = "repo")]
         public: bool,
@@ -416,7 +417,7 @@ enum Command {
 struct TeamArgs {
     /// The team's repo, as owner/repo [default: the team this checkout's config names]
     #[arg(long, value_parser = team_repo)]
-    team: Option<String>,
+    team: Option<RepoName>,
     /// A directory of a team's files, read as they are instead of from GitHub
     #[arg(long, conflicts_with = "team")]
     dir: Option<PathBuf>,
@@ -506,20 +507,12 @@ fn with_files(help: &str) -> String {
     help.replace("{files}", include_str!("help/files.txt").trim_end())
 }
 
-fn repo(text: &str) -> Result<String, String> {
-    if afkconvoy_core::config::is_repo(text) {
-        Ok(text.to_string())
-    } else {
-        Err("a repo is named as owner/repo".to_string())
-    }
+fn repo(text: &str) -> Result<RepoName, String> {
+    RepoName::read(text).ok_or_else(|| "a repo is named as owner/repo".to_string())
 }
 
-fn team_repo(text: &str) -> Result<String, String> {
-    if afkconvoy_core::config::is_repo(text) {
-        Ok(text.to_string())
-    } else {
-        Err("a team is named as its repo: owner/repo".to_string())
-    }
+fn team_repo(text: &str) -> Result<RepoName, String> {
+    RepoName::read(text).ok_or_else(|| "a team is named as its repo: owner/repo".to_string())
 }
 
 fn declared(text: &str) -> Result<Declared, String> {
