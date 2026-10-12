@@ -158,6 +158,10 @@ pub struct WorkingSet {
     /// How many more claims this fleet may take.
     pub free_slots: usize,
     pub now: u64,
+    /// A bound repo's open issues that carry a flow label: those with a
+    /// position in a workflow, whoever holds them.
+    #[serde(skip)]
+    pub flowing: Vec<Issue>,
 }
 
 /// What the effect layer read, in whatever order it came.
@@ -202,8 +206,12 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         stale_closed: vec![],
         free_slots: 0,
         now,
+        flowing: vec![],
     };
     for issue in &issues {
+        if config.bound.is_some() && !flows(&issue.labels).is_empty() {
+            set.flowing.push((*issue).clone());
+        }
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
         let reason = if let Some(bar) = label_bar(&issue.labels, config) {
             bar.reason()

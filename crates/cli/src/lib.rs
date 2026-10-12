@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::position::Declared;
+use afkconvoy_core::role::{ROLE_COMMIT_ENV, TEAM_COMMIT_ENV};
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
@@ -31,6 +33,7 @@ pub mod probe;
 pub mod recovery;
 pub mod role;
 pub mod settle;
+pub mod stage;
 pub mod takeover;
 pub mod team;
 pub mod tend;
@@ -75,11 +78,15 @@ enum Command {
         #[command(flatten)]
         team: TeamArgs,
     },
-    /// Draw a team's workflows as graphs: every stage, and where its verdicts lead
+    /// Draw a team's workflows as graphs, or say where one issue is in its workflow
     #[command(after_long_help = include_str!("help/show.txt"))]
     Show {
         /// The workflow to draw [default: every workflow of the team]
         workflow: Option<String>,
+        /// Say instead where this issue is, from its stage records: its position, what
+        /// follows, and the rework it has left
+        #[arg(long, conflicts_with = "workflow")]
+        issue: Option<u64>,
         #[command(flatten)]
         team: TeamArgs,
     },
@@ -152,6 +159,33 @@ enum Command {
         /// Seconds GitHub is given to show a landed PR as merged
         #[arg(long, default_value_t = 60)]
         merged_timeout: u64,
+    },
+    /// Declare the verdict that ends a stage, with the text it produced (a worker's command)
+    #[command(after_long_help = include_str!("help/verdict.txt"))]
+    Verdict {
+        /// What the stage declares: pass, reject, blocked, already-satisfied, or escalate
+        #[arg(value_parser = verdict)]
+        verdict: Declared,
+        #[arg(long)]
+        issue: u64,
+        /// The stage that declares it: the one its worker was started on
+        #[arg(long)]
+        stage: String,
+        /// The text the stage produced, as the record's body
+        #[arg(long, required_unless_present = "text_file", conflicts_with = "text_file")]
+        text: Option<String>,
+        /// A file holding that text
+        #[arg(long)]
+        text_file: Option<PathBuf>,
+        /// The issues a `blocked` verdict waits on, as numbers separated by commas
+        #[arg(long, value_delimiter = ',')]
+        blocked_by: Vec<u64>,
+        /// The commit of the role's repo the stage ran under
+        #[arg(long, env = ROLE_COMMIT_ENV)]
+        role_commit: String,
+        /// The commit of the team's repo the stage ran under
+        #[arg(long, env = TEAM_COMMIT_ENV)]
+        team_commit: String,
     },
     /// Start a fresh worker on one issue
     #[command(after_long_help = include_str!("help/dispatch.txt"))]
@@ -346,6 +380,15 @@ fn declared(text: &str) -> Result<Declared, String> {
     })
 }
 
+/// One of the five verdicts. A ruling is not one: it answers an escalation.
+fn verdict(text: &str) -> Result<Declared, String> {
+    let verdicts = || Declared::ALL.into_iter().filter(|declared| *declared != Declared::Ruling);
+    verdicts().find(|declared| declared.word() == text).ok_or_else(|| {
+        let words: Vec<&str> = verdicts().map(Declared::word).collect();
+        format!("a verdict is one of: {}", words.join(", "))
+    })
+}
+
 fn this_host() -> String {
     gethostname::gethostname().to_string_lossy().into()
 }
@@ -417,8 +460,15 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             Ok(serde_json::to_value(config::load(&file)?)?)
         }
         Command::Check { team } => team::check(team.from()),
-        Command::Show { workflow, team } => {
-            Ok(Value::String(workflow::show(&team::load(team.from())?, workflow.as_deref())?))
+        Command::Show { workflow, issue, team } => {
+            let loaded = team::load(team.from())?;
+            match issue {
+                Some(issue) => {
+                    let gh = gh::GitHub { dir: Repo::here()?.dir };
+                    stage::show_issue(&gh, &loaded.team, issue)
+                }
+                None => Ok(Value::String(workflow::show(&loaded, workflow.as_deref())?)),
+            }
         }
         Command::Rehearse { workflow, declared, team } => {
             workflow::rehearse(&team::load(team.from())?, &workflow, &declared)
@@ -459,6 +509,33 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                     landing::land_train(&repo, &config, &gh, now, &limits)
                 }
             }
+        }
+        Command::Verdict {
+            verdict,
+            issue,
+            stage,
+            text,
+            text_file,
+            blocked_by,
+            role_commit,
+            team_commit,
+        } => {
+            let text = match (text, text_file) {
+                (Some(text), _) => text,
+                (None, Some(file)) => std::fs::read_to_string(&file)
+                    .with_context(|| format!("cannot read {}", file.display()))?,
+                (None, None) => String::new(),
+            };
+            let declaring = stage::Declaring {
+                issue,
+                stage,
+                declared: verdict,
+                blocked_by,
+                text,
+                role_commit,
+                team_commit,
+            };
+            stage::verdict(&Repo::here()?, declaring)
         }
         Command::Dispatch { issue, who, agent, start } => {
             dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue, start)

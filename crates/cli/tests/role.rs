@@ -128,7 +128,11 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
     world.orca_calls();
 
     let ticked = tick(&world, 1000).ok();
-    assert_eq!(did(&ticked), ["dispatch 7 done", "heartbeat done"], "{ticked}");
+    assert_eq!(
+        did(&ticked),
+        ["dispatch 7 done", "stage_label 7 done", "heartbeat done"],
+        "{ticked}"
+    );
     assert_eq!(world.claims(), [(7, "alpha".to_string())], "no flow label: left alone");
 
     // The copies: the role's and the team's files at their heads, and no git dir.

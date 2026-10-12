@@ -47,7 +47,7 @@ escalate_label: ready-for-human   # swapped in for ready_label when the fleet gi
 
 `base_branch` and `gate_command` have no default; the rest default to the values shown. `afkconvoy config` prints what was read.
 
-A repo may also name a team — `team: owner/repo` — which makes it a bound repo (see [`GLOSSARY.md`](GLOSSARY.md)); `patrols`, `lock_label` and `intake_limit` are read beside it. `afkconvoy check` reads the team and its workflows and reports every fault with its file and key; `afkconvoy check --help` gives the files and keys of a team. `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started. A repo that names no team is unbound and works as described here.
+A repo may also name a team — `team: owner/repo` — which makes it a bound repo (see [`GLOSSARY.md`](GLOSSARY.md)); `patrols`, `lock_label` and `intake_limit` are read beside it. `afkconvoy check` reads the team and its workflows and reports every fault with its file and key; `afkconvoy check --help` gives the files and keys of a team. `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started. A worker ends its stage with `afkconvoy verdict`, which leaves one stage record on the issue; `afkconvoy show --issue <n>` reads an issue's position, what follows and the rework it has left off those records, and each tick keeps a `stage:<name>` label on the issue for humans to filter by — the fleet never reads it. A repo that names no team is unbound and works as described here.
 
 Then:
 

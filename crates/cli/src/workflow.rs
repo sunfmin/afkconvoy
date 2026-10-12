@@ -76,7 +76,9 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
     }))
 }
 
-fn position(workflow: &Workflow, position: Position) -> Value {
+/// A position as a command answers it: what it is, at which stage, and who
+/// acts on it.
+pub(crate) fn position(workflow: &Workflow, position: Position) -> Value {
     let is = match position {
         Position::Perform(..) => "perform",
         Position::Waiting(_) => "waiting",
