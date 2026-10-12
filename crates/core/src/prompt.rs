@@ -182,6 +182,23 @@ reads this terminal: never wait for an answer.
 
 {records}
 <rework><gate>
+## Splitting the issue
+
+A stage that finds its issue too large for one piece of work may split it, with these commands and
+in this order:
+
+1. Open one issue per piece (`gh issue create`), each saying what it is to deliver. Put no label of
+   a workflow on it yourself.
+2. Take each in to the workflow it is to follow — the team has {workflows} — naming with
+   `--blocked-by` the ones among them it has to wait for; the command's `--help` says what it takes:
+   ```bash
+   {intake_command} --issue <n> --workflow <workflow> [--blocked-by <n,…>]
+   ```
+3. Declare `blocked` with the command below, with every issue you opened in `--blocked-by`.
+
+The issue is then parked on them, and when they have all closed this stage runs again, to judge the
+whole.
+
 ## Declare a verdict
 
 The stage ends when you declare its verdict with this command, and not before; its `--help` says
@@ -197,6 +214,19 @@ const REWORK: &str = "
 ## Rework
 
 This stage runs again: the stage `{rejecter}` rejected the work it was handed. Its reason:
+
+{reason}
+";
+
+/// What a stage running again after a park is told: what it waited on has
+/// closed, and — the park being how an issue is split — the whole is its to
+/// judge.
+const PARKED: &str = "
+## After a park
+
+This stage runs again: it declared `blocked`, and {waited}. If those are the issues this stage
+split its issue into, judge the whole now: declare `already-satisfied` when they left nothing more
+to do, or go on with what is left. What the stage said as it parked:
 
 {reason}
 ";
@@ -311,6 +341,12 @@ pub struct StageFields<'a> {
     pub records: &'a [Said<'a>],
     /// The line the worker declares its verdict with.
     pub verdict_command: &'a str,
+    /// The line the worker takes an issue in with, before what names the
+    /// issue and its workflow: a stage that splits its issue takes each
+    /// child in.
+    pub intake_command: &'a str,
+    /// The team's workflows, by name: what a child may be taken in to.
+    pub workflows: &'a [String],
     /// The line the worker runs the gate with, when its stage may commit: a
     /// stage that writes nothing has no PR of its own to turn green.
     pub gate_command: Option<&'a str>,
@@ -356,8 +392,19 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
         Some(last) if last.stated == Stated::Declared(Declared::Reject) => {
             (REWORK, quoted(&last.text))
         }
+        Some(last) if last.stated == Stated::Declared(Declared::Blocked) => {
+            (PARKED, quoted(&last.text))
+        }
         _ => ("", String::new()),
     };
+    let waited = match last.map_or(&[][..], |last| &last.blocked_by) {
+        [] => "it named no issue to wait on".to_string(),
+        on => {
+            let on: Vec<String> = on.iter().map(|blocker| format!("#{blocker}")).collect();
+            format!("every issue it waited on has closed ({})", on.join(", "))
+        }
+    };
+    let workflows: Vec<String> = fields.workflows.iter().map(|name| format!("`{name}`")).collect();
     let gate = match fields.gate_command {
         Some(_) => GATE_BEFORE_PASS.replace("<gate_step>", &GATE_STEP.replace("<g>", "1")),
         None => String::new(),
@@ -369,6 +416,9 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             ("records", &records),
             ("rejecter", last.map_or("", |last| &last.stage)),
             ("reason", &reason),
+            ("waited", &waited),
+            ("workflows", &workflows.join(", ")),
+            ("intake_command", fields.intake_command),
             ("n", &number),
             ("title", fields.title),
             ("flow", fields.flow),
@@ -750,6 +800,8 @@ mod tests {
             precedents: "/copies/acme/team/def/precedents.md",
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            intake_command: "/opt/bin/afkconvoy intake",
+            workflows: &["feature".to_string(), "small fix".to_string()],
             gate_command: None,
         };
         let prompt = stage_prompt(&fields).unwrap();
@@ -806,7 +858,7 @@ mod tests {
             again.contains(
                 "## Rework\n\nThis stage runs again: the stage `review` rejected the work it was \
                  handed. Its reason:\n\n> ## Not yet\n> \n> The {parser} drops a `-->`.\n\n\
-                 ## Declare a verdict\n"
+                 ## Splitting the issue\n"
             ),
             "{again}"
         );
@@ -822,7 +874,7 @@ mod tests {
             under.contains(
                 "- a human ruled on the stage `build`, which runs again under the ruling — \
                  https://gh/c/3\n\n## Ruling\n\nThis stage runs again under a human's ruling on \
-                 it. Follow it:\n\n> Keep v1.\n\n## Declare a verdict\n"
+                 it. Follow it:\n\n> Keep v1.\n\n## Splitting the issue\n"
             ),
             "{under}"
         );
@@ -894,6 +946,74 @@ mod tests {
     }
 
     #[test]
+    fn a_stage_is_told_how_to_split_its_issue_and_that_it_judges_the_whole_after_the_park() {
+        let fields = StageFields {
+            number: 7,
+            title: "Add support",
+            flow: "feature",
+            stage: "plan",
+            role: "dev",
+            skill: "plan",
+            branch: "tester/issue-7-add",
+            worktree: "/wt/issue-7",
+            base_branch: "develop",
+            precedents: "/copies/acme/team/def/precedents.md",
+            records: &[],
+            verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage plan",
+            intake_command: "cd '/wt/issue-7' && /opt/bin/afkconvoy intake",
+            workflows: &["feature".to_string(), "fix".to_string()],
+            gate_command: None,
+        };
+        let prompt = stage_prompt(&fields).unwrap();
+        for said in [
+            "## Splitting the issue\n",
+            "1. Open one issue per piece (`gh issue create`)",
+            "the team has `feature`, `fix` —",
+            "   cd '/wt/issue-7' && /opt/bin/afkconvoy intake --issue <n> --workflow <workflow> \
+             [--blocked-by <n,…>]\n",
+            "3. Declare `blocked` with the command below, with every issue you opened in \
+             `--blocked-by`.",
+            "when they have all closed this stage runs again, to judge the\nwhole.",
+        ] {
+            assert!(prompt.contains(said), "{said}\n{prompt}");
+        }
+        let split = prompt.find("## Splitting the issue").unwrap();
+        assert!(split < prompt.find("## Declare a verdict").unwrap(), "before the verdict");
+        assert!(!prompt.contains("## After a park"), "{prompt}");
+
+        // The stage that parked runs again once what it waited on closed.
+        let parked = StageRecord {
+            stage: "plan".to_string(),
+            stated: Stated::Declared(Declared::Blocked),
+            by: Author::Worker {
+                claim: "c".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+            },
+            blocked_by: vec![11, 12],
+            text: "Split in two:\n#11 the parser, #12 the printer.".to_string(),
+        };
+        let records = [Said { record: &parked, url: "https://gh/c/1" }];
+        let again = stage_prompt(&StageFields { records: &records, ..fields.clone() }).unwrap();
+        assert!(
+            again.contains(
+                "- `plan` declared `blocked` — https://gh/c/1\n\n## After a park\n\nThis stage \
+                 runs again: it declared `blocked`, and every issue it waited on has closed (#11, \
+                 #12)."
+            ),
+            "{again}"
+        );
+        assert!(again.contains("declare `already-satisfied` when they left nothing more\nto do"));
+        assert!(again.contains("> Split in two:\n> #11 the parser, #12 the printer.\n"), "{again}");
+        assert!(!again.contains("## Rework") && !again.contains("<rework>"), "{again}");
+        // A human's `blocked` names no issue, and parks nothing.
+        let unnamed = StageRecord { blocked_by: vec![], by: Author::Human, ..parked.clone() };
+        let records = [Said { record: &unnamed, url: "https://gh/c/2" }];
+        let human = stage_prompt(&StageFields { records: &records, ..fields }).unwrap();
+        assert!(human.contains("it declared `blocked`, and it named no issue to wait on."));
+    }
+
+    #[test]
     fn a_stage_that_may_commit_is_told_to_turn_the_gate_green_before_it_passes() {
         let fields = StageFields {
             number: 7,
@@ -908,6 +1028,8 @@ mod tests {
             precedents: "/copies/acme/team/def/precedents.md",
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            intake_command: "/opt/bin/afkconvoy intake",
+            workflows: &["feature".to_string()],
             gate_command: Some("cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train"),
         };
         let prompt = stage_prompt(&fields).unwrap();

@@ -49,6 +49,9 @@ pub struct Staged {
     joins: Option<u64>,
     role_copy: Copy,
     team_copy: Copy,
+    /// The team's workflows, by name: what a stage that splits its issue
+    /// may take a child in to.
+    workflows: Vec<String>,
     /// The stage records that counted on the issue so far, oldest first,
     /// each with the URL of its comment: the worker's history.
     verdicts: Vec<(StageRecord, String)>,
@@ -104,6 +107,7 @@ impl Staged {
             joins,
             role_copy: kept.role(role)?.clone(),
             team_copy: kept.copy.clone(),
+            workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
     }
 
@@ -217,6 +221,8 @@ impl Staged {
             precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
             records: &records,
             verdict_command: &own(&verdict),
+            intake_command: &own("intake"),
+            workflows: &self.workflows,
             gate_command: self.writes.then_some(gate.as_str()),
         };
         let prompt = if self.consult {

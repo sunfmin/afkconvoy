@@ -236,6 +236,9 @@ enum Command {
         /// The issue that worker is on
         #[arg(long, env = ISSUE_ENV)]
         from: u64,
+        /// The issues it is to wait for, as numbers separated by commas
+        #[arg(long, value_delimiter = ',')]
+        blocked_by: Vec<u64>,
     },
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
     #[command(after_long_help = include_str!("help/lock.txt"))]
@@ -655,8 +658,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let team = team::load(team::From::Config)?.team;
             steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
         }
-        Command::Intake { issue, workflow, role, from } => {
-            intake::intake(&Repo::here()?, intake::Taking { issue, workflow, role, from })
+        Command::Intake { issue, workflow, role, from, blocked_by } => {
+            let taking = intake::Taking { issue, workflow, role, from, blocked_by };
+            intake::intake(&Repo::here()?, taking)
         }
         Command::Lock { issue, role } => {
             let repo = Repo::here()?;
