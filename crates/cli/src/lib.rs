@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::position::Declared;
-use afkconvoy_core::role::{ROLE_COMMIT_ENV, TEAM_COMMIT_ENV};
+use afkconvoy_core::role::{ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -25,6 +25,7 @@ pub mod fleet;
 pub mod gate;
 pub mod gh;
 pub mod git;
+pub mod intake;
 pub mod judge;
 pub mod landing;
 pub mod launch;
@@ -187,6 +188,22 @@ enum Command {
         /// The commit of the team's repo the stage ran under
         #[arg(long, env = TEAM_COMMIT_ENV)]
         team_commit: String,
+    },
+    /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
+    #[command(after_long_help = include_str!("help/intake.txt"))]
+    Intake {
+        /// The issue to take in
+        #[arg(long)]
+        issue: u64,
+        /// The workflow it is to follow, by name: what follows `flow:` in its flow label
+        #[arg(long)]
+        workflow: String,
+        /// The role of the worker that takes it in
+        #[arg(long, env = ROLE_ENV)]
+        role: String,
+        /// The issue that worker is on
+        #[arg(long, env = ISSUE_ENV)]
+        from: u64,
     },
     /// Start a fresh worker on one issue
     #[command(after_long_help = include_str!("help/dispatch.txt"))]
@@ -476,7 +493,13 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Plan { instance } => {
             probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);
-            Ok(serde_json::to_value(Fleet::open(now)?.rebuild(instance.as_ref())?.0)?)
+            let fleet = Fleet::open(now)?;
+            let (set, flows) = fleet.rebuild(instance.as_ref())?;
+            let mut plan = serde_json::to_value(set)?;
+            if let Some(bound) = &fleet.config.bound {
+                plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
+            }
+            Ok(plan)
         }
         Command::Run { instance, host, agent, ticks, second_ms } => {
             let host = host.unwrap_or_else(this_host);
@@ -537,6 +560,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 team_commit,
             };
             stage::verdict(&Repo::here()?, declaring)
+        }
+        Command::Intake { issue, workflow, role, from } => {
+            intake::intake(&Repo::here()?, intake::Taking { issue, workflow, role, from })
         }
         Command::Dispatch { issue, who, agent, start } => {
             dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue, start)

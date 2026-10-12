@@ -1,0 +1,65 @@
+WHEN TO RUN IT
+
+  When a worker has an issue the fleet is to work with no human labelling it: one a
+  patrol opened, or one a stage split off its own. It is the intake a worker makes — a
+  human takes an issue in by putting its flow label on, on GitHub.
+
+      afkconvoy intake --issue 12 --workflow feature
+
+WHO RUNS IT
+
+  A worker, in its own worktree: it starts in its role's directory, so it changes to
+  the worktree first, as the line its brief gives for `afkconvoy verdict` does. The
+  fleet put its role and the issue it is on in its environment (AFKCONVOY_ROLE,
+  AFKCONVOY_ISSUE), and the command reads them from there; `--role` and `--from` say
+  them by hand.
+
+WHAT IT READS AND WRITES
+
+  It reads the config of the checkout, the team it names, the issue, and — to count —
+  the comments of every open issue that carries a flow label. It writes two things on
+  the issue, in this order: one comment, the intake record, whose marker carries the
+  workflow, the role and the issue the worker was on; then the workflow's flow label,
+  `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the
+  fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick.
+
+  The limit. Before it writes anything it counts the open issues taken in by workers:
+  those that carry a flow label and an intake record for it. With that count at the
+  repo's `intake_limit` (see `afkconvoy config --help`) it refuses and writes nothing.
+  The count is taken from the records each time and stored nowhere, so closing such an
+  issue makes room. An issue a human labelled has no record: it is never counted, and
+  nothing here refuses a human's label.
+
+WHAT IT ANSWERS
+
+  {"issue", "workflow", "taken", "role", "from", "open", "limit", "woke"}
+
+    taken: true   the record and the flow label were written
+    role, from    who took it in: the worker's role, and the issue it was on
+    open          the open issues taken in by workers, this one among them
+    limit         the repo's `intake_limit`
+    woke          whether a `run` on this host was told, as `afkconvoy wake` answers
+
+  {"issue", "workflow", "taken": false, "standing"}
+
+    taken: false  the issue follows that workflow already: nothing was written
+    standing      how it came in: {"by": "worker", "role", "from", "url"} with the
+                  comment of its intake record, or {"by": "human"}
+
+  Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error
+  says the count and the limit; the team has no workflow of that name — the error lists
+  the ones it has; the team has no such role; the repo is unbound; the issue is closed,
+  is a pull request, or already carries the flow label of another workflow; the role or
+  the issue the worker is on is neither in the environment nor given; the team has a
+  fault; "is not in a git checkout".
+
+WHAT TRIPS YOU UP
+
+  - It is the only way a worker's intake is on the record. A flow label a worker puts
+    on by itself reads as a human's and escapes the limit.
+  - The limit bounds the work the fleet gives itself, not a day's work: it is set high,
+    to stop a runaway. `afkconvoy plan` reports the count against it.
+  - The record counts only while the issue carries the flow label it names. A human
+    who moves the issue to another workflow has taken it in themselves.
+  - Two workers taking in at the same moment can both pass the count: the limit can be
+    overshot by as many as ran at once.
