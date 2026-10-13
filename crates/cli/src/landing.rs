@@ -55,7 +55,8 @@ fn await_merged(gh: &GitHub, numbers: &BTreeSet<u64>, timeout: Duration) -> Resu
 ///   base    the base branch, merged in when it moved from outside the train:
 ///           a merge, never a rebase — nothing on a train is rewritten
 ///   push    what that made, as the train's new tip
-///   gate    the gate command on that commit, or the run on record for its tree
+///   gate    the gate command on that commit, timed and recorded as a run on
+///           `host` — or the run on record for its tree, left as it is
 ///   land    the commit pushed to the base branch as a fast-forward
 ///   finish  every PR that commit landed: its issue closed, and its branch
 ///           deleted once GitHub shows it merged
@@ -67,6 +68,7 @@ pub fn land_train(
     repo: &Repo,
     config: &Config,
     gh: &GitHub,
+    host: &str,
     now: u64,
     merged: Duration,
 ) -> Result<Value> {
@@ -145,7 +147,7 @@ pub fn land_train(
     answer["commit"] = json!(head);
     answer["prs"] = json!(prs);
 
-    let (run, source) = match gated(repo, &command, now, Duration::from_secs(limit))? {
+    let (run, source) = match gated(repo, &command, host, now, Duration::from_secs(limit))? {
         Gated::Green { run, source } => (run, source),
         Gated::Red { ran, excerpt } => {
             // Best effort: a red commit not on record only costs a worker's gate a red run.
@@ -167,7 +169,8 @@ pub fn land_train(
                 at_limit(ran, limit)
             );
             let gate = json!({"status": "red", "exit_code": ran.exit_code,
-                "timed_out": ran.timed_out, "command": command.text(), "excerpt": excerpt});
+                "timed_out": ran.timed_out, "seconds": ran.seconds, "command": command.text(),
+                "excerpt": excerpt});
             return Ok(stop(
                 &answer,
                 TrainOutcome::GateRed,
@@ -183,6 +186,11 @@ pub fn land_train(
     };
     answer["gate"] = json!({"status": "green", "source": source, "command": command.text(),
         "at": proven.at()});
+    // A run recorded before records kept a time has none to say.
+    if let Some(took) = run.took() {
+        answer["gate"]["seconds"] = json!(took.seconds());
+        answer["gate"]["host"] = json!(took.host());
+    }
 
     // read before the push: GitHub takes a PR off the open list the moment its head lands
     let open = gh.open_prs()?;
