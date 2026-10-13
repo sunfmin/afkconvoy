@@ -78,13 +78,16 @@
   limits — what the role may never do — are written once for each harness its stages
   run on, in that harness's own form, and a role needs only those of the harnesses it
   runs on. Claude Code loads its three from the directory a worker starts in; none of
-  them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in the directory of the
-  role beside it. A worker is given its role's directory alone, and nothing else of its
+  them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in the
+  directory of the role beside it. A worker is given its role's directory alone, and nothing else of its
   repo: a role that is a whole repo, opened by hand, is the role a worker gets, and one
   in a subdirectory is too unless a directory above it holds a `CLAUDE.md` or a
   `.claude/`, which Claude Code loads for a session opened by hand and a worker never
   sees. A symlink in such a role that leaves its directory would point at nothing: it is
-  a fault.
+  a fault. The team's directory is given to every worker beside its role's, without the
+  directories of its roles and without a `CLAUDE.md` and a `.claude/` at its top: a
+  worker's rules and skills are its role's, not its neighbours' and not the ones a repo
+  holds for whoever edits it.
 
   A role whose stages run on pi keeps the same rules and the same skills: pi reads
   `CLAUDE.md` from the directory it starts in, and the fleet names `.claude/skills/` to

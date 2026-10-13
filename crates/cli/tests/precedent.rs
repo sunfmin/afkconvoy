@@ -8,7 +8,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{World, git, write};
+use common::{World, commit, git, write};
 use serde_json::{Value, json};
 
 const ROLES: &str = "escalate_label: stuck\nroles:\n  dev: acme/dev\n  clerk: acme/clerk\n";
@@ -301,6 +301,39 @@ fn a_humans_ruling_starts_one_worker_in_the_role_the_team_names_and_the_issue_do
     assert_eq!(did(&tick(&world, 1400)), Vec::<String>::new());
     assert!(calls_none(&world), "no worker is started again");
     assert!(!merged(&world));
+}
+
+/// A proposal's worker starts as a stage's does: in its role's directory
+/// alone, where the role is a subdirectory of its repo (docs/adr/0014).
+#[test]
+fn a_proposal_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
+    let world = proposing(3);
+    let repo = team(&world);
+    write(&repo, "CLAUDE.md", "the rules of a human\n");
+    write(&repo, "roles/clerk/CLAUDE.md", "the rules of a clerk\n");
+    write(&repo, "roles/clerk/.claude/skills/propose/SKILL.md", "propose\n");
+    let roles = ROLES.replace("acme/clerk", "./roles/clerk");
+    let file =
+        format!("```yaml\n{roles}precedents: {{ by: clerk, do: propose, max_open: 3 }}\n```\n");
+    let head = commit(&repo, "team.md", &file);
+    ruled(&world, 7, 1000);
+    world.orca_calls();
+
+    assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done", "propose 7 done"]);
+    let started = calls(&world, "terminal create");
+    let commands = started.iter().filter_map(|call| option(call, "--command"));
+    let command = commands.into_iter().find(|command| command.contains("AFKCONVOY_PROPOSAL"));
+    let command = command.expect("one worker proposes");
+    let kept = world.cache().join("afkconvoy/copies/acme/team");
+    let (role_dir, team_dir) =
+        (kept.join(format!("{head}-role-roles%2Fclerk")), kept.join(format!("{head}-team-")));
+    assert!(command.starts_with(&format!("cd '{}' && ", role_dir.display())), "{command}");
+    assert!(command.contains(&format!(" --add-dir '{}' ", team_dir.display())), "{command}");
+    let commits = format!(" AFKCONVOY_ROLE_COMMIT='{head}' AFKCONVOY_TEAM_COMMIT='{head}' ");
+    assert!(command.contains(&commits), "{command}");
+    assert!(role_dir.join("CLAUDE.md").is_file() && !role_dir.join("team.md").exists());
+    assert!(team_dir.join("precedents.md").is_file());
+    assert!(!team_dir.join("roles/clerk").exists() && !team_dir.join("CLAUDE.md").exists());
 }
 
 fn calls_none(world: &World) -> bool {

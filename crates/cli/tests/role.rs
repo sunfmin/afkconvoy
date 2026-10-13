@@ -615,29 +615,165 @@ fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
     }
 }
 
-/// A role that is a subdirectory of its repo loads, and no worker is started
-/// in it: the copy the fleet keeps is of the whole repo, and a worker started
-/// there would be given more than its role (docs/adr/0014).
-#[test]
-fn a_stage_whose_role_is_a_subdirectory_is_refused_and_nothing_is_claimed() {
+/// A team whose repo holds two of its roles, `dev` and `tester`, each in a
+/// directory of its own, beside rules at its root that are a human's.
+fn one_repo() -> World {
     let world = bound();
-    let team = "```yaml\nroles:\n  dev: ./roles/dev\n  reviewer: acme/reviewer\n```\n";
+    let team = "```yaml\nroles:\n  dev: ./roles/dev\n  tester: acme/team/roles/tester\n  \
+                reviewer: acme/reviewer\n```\n";
+    let hook = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command",
+        "command": "sh \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/limit.sh"}]}]}}"#;
     let repo = world.root.join("github/acme/team");
-    write(&repo, "roles/dev/.claude/skills/implement/SKILL.md", "build\n");
+    for (file, text) in [
+        ("CLAUDE.md", "the rules of a human who edits this repo\n"),
+        (".claude/skills/release/SKILL.md", "a human's\n"),
+        ("precedents.md", "# Precedents\n"),
+        ("patrols/sweep.md", "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 2\n```\n"),
+        ("docs/notes.md", "whatever else\n"),
+        ("roles/README.md", "the roles\n"),
+        ("roles/dev/CLAUDE.md", "the rules of a dev\n"),
+        ("roles/dev/.claude/skills/implement/SKILL.md", "build\n"),
+        ("roles/dev/.claude/settings.json", hook),
+        ("roles/dev/.claude/hooks/limit.sh", "echo \"a limit of $(cat CLAUDE.md)\"\n"),
+        ("roles/tester/CLAUDE.md", "the rules of a tester\n"),
+        ("roles/tester/.claude/skills/implement/SKILL.md", "test\n"),
+    ] {
+        write(&repo, file, text);
+    }
     commit(&repo, "team.md", team);
-    assert_eq!(world.afk(&["check"]).ok()["roles"][0]["path"], "roles/dev");
+    world
+}
+
+/// The names of what the directory `dir` holds, sorted.
+fn holds(dir: &Path) -> Vec<String> {
+    let entries = std::fs::read_dir(dir).unwrap();
+    let mut names: Vec<String> =
+        entries.map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    names
+}
+
+/// Where the worker started by `command` starts, and each directory added to it.
+fn started_in(command: &str) -> (PathBuf, Vec<PathBuf>) {
+    let quoted = |after: &str| -> Vec<PathBuf> {
+        let found = command.split(after).skip(1);
+        found.map(|rest| PathBuf::from(rest.split('\'').next().unwrap())).collect()
+    };
+    (quoted("cd '").remove(0), quoted(" --add-dir '"))
+}
+
+/// Every rules file and directory of skills and settings Claude Code loads
+/// for the worker started by `command`: those of the directory it starts in
+/// and of every directory above it, and those of each directory added to it.
+fn loaded(command: &str) -> Vec<PathBuf> {
+    let (starts_in, added) = started_in(command);
+    let mut dirs: Vec<&Path> = starts_in.ancestors().collect();
+    dirs.extend(added.iter().map(PathBuf::as_path));
+    let found = dirs.iter().flat_map(|dir| [dir.join("CLAUDE.md"), dir.join(".claude")]);
+    found.filter(|path| path.exists()).collect()
+}
+
+#[test]
+fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alone() {
+    let world = one_repo();
     world.issue(7, &["flow:feature"]);
-    let error = dispatch(&world, 7).error();
+    let started = dispatch(&world, 7).ok();
+    assert_eq!(started["started"], true, "{started}");
+
+    // Both commits are the repo's: the one a human can check out.
+    let team = head(&world, "acme/team");
+    let stage = &started["stage"];
+    assert_eq!((&stage["role_commit"], &stage["team_commit"]), (&json!(team), &json!(team)));
+    let kept = world.cache().join("afkconvoy/copies/acme/team");
+    let (role_dir, team_dir) =
+        (kept.join(format!("{team}-role-roles%2Fdev")), kept.join(format!("{team}-team-")));
+    assert_eq!((&stage["role_dir"], &stage["team_dir"]), (&json!(role_dir), &json!(team_dir)));
+
+    // The role's copy is its directory and nothing else of its repo…
+    assert_eq!(holds(&role_dir), [".claude", "CLAUDE.md"]);
     assert_eq!(
-        error,
-        "the role `dev` is a subdirectory of its repo (acme/team/roles/dev), and the fleet on \
-         this host cannot start a role in a subdirectory yet: this afkconvoy copies a role's \
-         whole repo, not its directory alone (sunfmin/afkconvoy#174). Until one that does is \
-         installed, only a role that is a whole repo can be started"
+        std::fs::read_to_string(role_dir.join("CLAUDE.md")).unwrap(),
+        "the rules of a dev\n"
     );
-    assert_eq!(world.claims(), []);
-    assert!(world.worktrees().is_empty() && world.open_terminals().is_empty());
-    // A stage of a role that is a whole repo starts as ever.
+    assert_eq!(holds(&role_dir.join(".claude")), ["hooks", "settings.json", "skills"]);
+    assert!(!role_dir.parent().unwrap().join("CLAUDE.md").exists());
+    // …and the team's is its directory without those of its roles, and
+    // without the rules at its top.
+    assert_eq!(
+        holds(&team_dir),
+        ["docs", "patrols", "precedents.md", "roles", "team.md", "workflows"]
+    );
+    assert_eq!(holds(&team_dir.join("roles")), ["README.md"]);
+    for copied in [&role_dir, &role_dir.join(".claude/settings.json"), &team_dir] {
+        assert!(is_read_only(copied), "{}", copied.display());
+    }
+
+    // The launch: the worker starts in the role's copy, with the worktree and
+    // the team's copy added, and loads the role's rules and no others —
+    // neither the repo's root's nor a neighbour's.
+    let dir = worktree(&world, 7);
+    let command = open_terminals(&world, &dir)[0]["command"].as_str().unwrap().to_string();
+    assert_eq!(started_in(&command), (role_dir.clone(), vec![dir.clone(), team_dir.clone()]));
+    assert_eq!(loaded(&command), [role_dir.join("CLAUDE.md"), role_dir.join(".claude")]);
+    let roles = format!(" AFKCONVOY_ROLE_COMMIT='{team}' AFKCONVOY_TEAM_COMMIT='{team}' ");
+    assert!(command.contains(&roles), "{command}");
+    assert!(brief(&dir).contains(&team_dir.join("precedents.md").display().to_string()));
+
+    // A hook of the role runs as Claude Code runs it: from the directory the
+    // worker starts in, which is the project's.
+    let settings = std::fs::read_to_string(role_dir.join(".claude/settings.json")).unwrap();
+    let settings: Value = serde_json::from_str(&settings).unwrap();
+    let hook = settings["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+    let enter = command.split(" && ").next().unwrap();
+    let ran = std::process::Command::new("/bin/sh")
+        .args(["-c", &format!("{enter} && CLAUDE_PROJECT_DIR=\"$PWD\" && {hook}")])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "a limit of the rules of a dev\n");
+
+    // A neighbour starts in its own directory, out of the same fetch.
+    world.gh_calls();
     world.issue(8, &["flow:audit"]);
-    assert_eq!(dispatch(&world, 8).ok()["started"], true);
+    let repo = world.root.join("github/acme/team");
+    let audit = AUDIT.replace("by: reviewer\n    do: review", "by: tester\n    do: implement");
+    let moved = commit(&repo, "workflows/audit.md", &audit);
+    let started = dispatch(&world, 8).ok();
+    assert_eq!(cloned(&world), ["acme/team"], "one fetch of the new commit");
+    let tester = kept.join(format!("{moved}-role-roles%2Ftester"));
+    assert_eq!(started["stage"]["role_dir"], json!(tester));
+    assert_eq!(holds(&tester), [".claude", "CLAUDE.md"]);
+}
+
+/// One repo that holds a team and seven roles is fetched once per commit,
+/// however many of its directories are read and started in.
+#[test]
+fn a_team_and_seven_roles_in_one_repo_are_loaded_with_one_fetch() {
+    let world = bound();
+    let repo = world.root.join("github/acme/team");
+    let mut team = "```yaml\nroles:\n  reviewer: acme/reviewer\n".to_string();
+    for (at, name) in ["dev", "b", "c", "d", "e", "f", "g"].iter().enumerate() {
+        // Each way to name a directory of the team's own repo.
+        let named = if at % 2 == 0 { "./roles" } else { "acme/team/roles" };
+        team.push_str(&format!("  {name}: {named}/{name}\n"));
+        write(&repo, &format!("roles/{name}/.claude/skills/implement/SKILL.md"), "build\n");
+    }
+    commit(&repo, "team.md", &format!("{team}```\n"));
+    world.gh_calls();
+
+    let read = world.afk(&["check"]).ok();
+    assert_eq!(read["roles"].as_array().unwrap().len(), 8, "{read}");
+    let mut first = cloned(&world);
+    first.sort();
+    assert_eq!(first, ["acme/reviewer", "acme/team"], "the team's repo once");
+    // A second load at the same commit fetches nothing, and neither does a start.
+    world.afk(&["check"]).ok();
+    world.issue(7, &["flow:feature"]);
+    let started = dispatch(&world, 7).ok();
+    assert_eq!(cloned(&world), [] as [String; 0]);
+    let commit = head(&world, "acme/team");
+    assert_eq!(started["stage"]["role_commit"], commit);
+    let role_dir = PathBuf::from(started["stage"]["role_dir"].as_str().unwrap());
+    assert_eq!(holds(&role_dir), [".claude"]);
 }

@@ -54,21 +54,23 @@ const ORCA_S: &str = ".pi/agent/extensions/orca-agent-status.ts";
 /// A world whose repo is bound to a team of two roles and two workflows, and
 /// whose own rules are in an `AGENTS.md`.
 fn bound() -> World {
+    bound_to(&[
+        ("team.md", TEAM),
+        ("workflows/feature.md", FEATURE),
+        ("workflows/audit.md", AUDIT),
+        ("patrols/sweep.md", SWEEP),
+    ])
+}
+
+/// A world whose repo is bound to a team of two roles, made of `team`.
+fn bound_to(team: &[(&str, &str)]) -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
         &[("CLAUDE.md", "the rules of a dev\n"), (".claude/skills/implement/SKILL.md", "build\n")],
     );
     world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
-    world.repo(
-        "acme/team",
-        &[
-            ("team.md", TEAM),
-            ("workflows/feature.md", FEATURE),
-            ("workflows/audit.md", AUDIT),
-            ("patrols/sweep.md", SWEEP),
-        ],
-    );
+    world.repo("acme/team", team);
     write(&world.clone, "docs/agents/afkconvoy.md", CONFIG);
     write(&world.clone, "AGENTS.md", "the rules of the project\n");
     git(&world.clone, &["add", "."]);
@@ -165,6 +167,124 @@ fn a_stage_and_a_patrol_name_pi_and_pi_has_a_stock_worker_launch_command() {
     assert!(why.contains("the worker launch command of the harness `pi`"), "{why}");
     assert!(why.contains("the stage `look` of the workflow `audit`"), "{why}");
     assert!(world.worktrees().is_empty());
+}
+
+/// `plan`, a `tick` and a `run` → the answer of each, its last line: the
+/// starts that probe.
+fn starts(world: &World) -> Vec<common::Answer> {
+    let run = "run --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
+    let tick = "tick --instance alpha --host h1 --now 1000";
+    let answer = |start: &str| {
+        let afk = env!("CARGO_BIN_EXE_afkconvoy");
+        let out = world.command(afk, &world.clone).args(start.split(' ')).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let last = stdout.lines().last().unwrap_or_default();
+        common::Answer {
+            json: serde_json::from_str(last).unwrap_or_else(|e| panic!("{e}: {stdout}")),
+            code: out.status.code().unwrap(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    };
+    ["plan --now 1000", tick, run].map(answer).into()
+}
+
+/// What `doctor` finds of pi: each finding's `what`, and the line that fixes it.
+fn doctor_finds(world: &World) -> Vec<(String, String)> {
+    let answer = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
+    let text = |value: &Value| value.as_str().unwrap().to_string();
+    let findings = answer["findings"].as_array().unwrap().iter();
+    let of_pi = findings.filter(|finding| finding.to_string().contains("pi"));
+    of_pi.map(|finding| (text(&finding["what"]), text(&finding["fix"]))).collect()
+}
+
+const CALLED: &str = "called for by the stage `look` of the workflow `audit`, the stage `build` of \
+                      the workflow `feature`";
+
+#[test]
+fn a_host_without_pi_is_refused_with_the_stages_that_call_for_it_and_its_installer() {
+    let world = bound();
+    world.shell_knows("pi", None);
+    world.issue(7, &["flow:feature"]);
+    let install = "curl -fsSL https://pi.dev/install.sh | sh";
+    for start in starts(&world) {
+        let error = start.error();
+        let said: Vec<&str> = error.lines().skip(1).collect();
+        assert_eq!(said, [format!("  pi is not installed, {CALLED}: {install}")], "{error}");
+        assert!(error.contains("nothing was started"), "{error}");
+    }
+    assert!(world.worktrees().is_empty());
+    assert_eq!(world.claims(), []);
+    let asked = world.shell_asked();
+    assert!(
+        !asked.iter().any(|line| line == "pi --list-models"),
+        "missing is not asked: {asked:?}"
+    );
+    // `doctor` finds the one fault, with the same line
+    assert_eq!(
+        doctor_finds(&world),
+        [(
+            "`pi` is not installed: the fleet cannot work without it".to_string(),
+            install.to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_pi_that_holds_no_credentials_is_refused_with_the_line_that_logs_it_in() {
+    let world = bound();
+    world.logged_out("pi");
+    world.issue(7, &["flow:feature"]);
+    let words = "holds credentials for no provider (`/login` at its prompt logs it in)";
+    for start in starts(&world) {
+        let error = start.error();
+        let said: Vec<&str> = error.lines().skip(1).collect();
+        assert_eq!(said, [format!("  pi {words}, {CALLED}: pi")], "{error}");
+    }
+    assert!(world.worktrees().is_empty());
+    assert_eq!(doctor_finds(&world), [(format!("`pi` {words}"), "pi".to_string())]);
+
+    // logged in, the same starts go to work, and `doctor` finds nothing
+    std::fs::remove_file(world.root.join("logged-out-pi")).unwrap();
+    for start in starts(&world) {
+        start.ok();
+    }
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+    assert_eq!(doctor_finds(&world), []);
+}
+
+#[test]
+fn a_host_without_pi_is_told_nothing_of_it_by_a_team_that_names_no_pi_stage() {
+    let on_claude = FEATURE.replace("    harness: pi\n    model: openai/gpt-5.5\n", "");
+    // …nor by a patrol on pi that this repo does not run
+    let world = bound_to(&[
+        ("team.md", TEAM),
+        ("workflows/feature.md", &on_claude),
+        ("patrols/sweep.md", SWEEP),
+    ]);
+    world.shell_knows("pi", None);
+    world.logged_out("pi");
+    world.issue(7, &["flow:feature"]);
+    for start in starts(&world) {
+        let said = start.stderr.clone() + &start.ok().to_string();
+        assert!(!said.contains("pi "), "{said}");
+    }
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+    assert_eq!(doctor_finds(&world), []);
+    let asked = world.shell_asked();
+    assert!(!asked.iter().any(|line| line.contains("pi")), "pi was not looked for: {asked:?}");
+}
+
+#[test]
+fn a_command_that_wraps_pi_is_asked_nothing_of_pi_s_credentials() {
+    let world = bound();
+    world.logged_out("pi");
+    world.issue(7, &["flow:audit"]);
+    world.shell_help(Some(
+        "--approve --no-skills --skill --extension --model\n--add-dir --setting-sources --settings",
+    ));
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    world.afk(&[&args[..], &["--worker-command", "pi=mypi"]].concat()).ok();
+    assert!(!world.shell_asked().contains(&"pi --list-models".to_string()));
 }
 
 #[test]

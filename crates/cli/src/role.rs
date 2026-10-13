@@ -15,6 +15,7 @@ use afkconvoy_core::prompt::{
 use afkconvoy_core::role::{Due, Facts, On, Start, due};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::{BY_DEFAULT, LAND, PRECEDENTS};
+use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -25,6 +26,7 @@ use crate::launch::Launches;
 use crate::orca::{Under, Worktree};
 use crate::stage::records_of;
 use crate::team::keep;
+use crate::tools;
 
 /// One stage of one issue, as its worker is started on it — or its consult,
 /// or the join that follows the last one: the role and the team at the
@@ -117,7 +119,7 @@ impl Staged {
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
             joins,
-            role_copy: kept.role(role)?.clone(),
+            role_copy: kept.role(role)?,
             team_copy: kept.copy.clone(),
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
@@ -279,6 +281,10 @@ pub struct Checked {
     /// repo, which knows of no harness.
     pub callers: Vec<String>,
     pub command: String,
+    /// What this host has of the harness, when the command runs it by its
+    /// own name (`tools::harness`). `None` also of the default harness: it
+    /// is among what every start looks for (`tools::look`).
+    pub tool: Option<(Tool, Found)>,
     /// Why it cannot start a worker, when it cannot.
     pub fault: Option<String>,
     /// Why it does not take what starts a worker in its role, when it does
@@ -301,8 +307,9 @@ pub fn called_for(bound: &Bound) -> Vec<(Harness, Vec<String>)> {
 
 /// Checks the worker launch command of each harness `called` for, as
 /// `launches` has it, asking the login shell a worker gets: that its first
-/// word resolves there and — in a bound repo — that it takes what the fleet
-/// adds to it for that harness. Each fault is said with its harness and what
+/// word resolves there, that a harness it runs by name holds credentials,
+/// and — in a bound repo — that it takes what the fleet adds to it for that
+/// harness. Each fault is said with its harness and what
 /// calls for it. A command only a human could say, in a start that asks
 /// none, is left out.
 pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<Vec<Checked>> {
@@ -315,6 +322,7 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
             harness: *harness,
             callers: callers.clone(),
             command: proposed.as_str().to_string(),
+            tool: tools::harness(proposed).filter(|_| *harness != launches.default()),
             fault: proposed.fault().map(said),
             flags_fault: takes().err().filter(|_| launches.bound()).map(said),
         });
@@ -322,16 +330,33 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
     Ok(checked)
 }
 
+impl Checked {
+    /// Whether the harness itself is not on this host: nothing else is then
+    /// to be said of its command.
+    pub fn missing(&self) -> bool {
+        matches!(self.tool, Some((_, Found::Missing)))
+    }
+}
+
 /// Checks that every harness the fleet of a repo `bound` to a team could be
 /// asked for can be started on this host (`check`). An error names every
-/// fault at once: none is started in another's place, so a start that cannot
-/// start them all starts no worker.
+/// fault at once — a harness that is missing or holds no credentials with
+/// what calls for it and the line that fixes it: none is started in
+/// another's place, so a start that cannot start them all starts no worker.
 pub fn probe(launches: &Launches, bound: &Bound) -> Result<()> {
-    let checked = check(launches, &called_for(bound))?;
-    let faults: Vec<String> = checked
-        .into_iter()
-        .flat_map(|checked| [checked.fault, checked.flags_fault])
-        .flatten()
-        .collect();
-    if faults.is_empty() { Ok(()) } else { bail!(faults.join("\n")) }
+    let (mut lacking, mut faults) = (vec![], vec![]);
+    for checked in check(launches, &called_for(bound))? {
+        let missing = checked.missing();
+        if let Some((tool, found)) = &checked.tool {
+            lacking.extend(fault(*tool, found, None, &checked.callers));
+        }
+        if !missing {
+            faults.extend([checked.fault, checked.flags_fault].into_iter().flatten());
+        }
+    }
+    let faults = (!faults.is_empty()).then(|| faults.join("\n"));
+    match refused(&lacking, faults.as_deref()) {
+        Some(why) => bail!(why),
+        None => Ok(()),
+    }
 }

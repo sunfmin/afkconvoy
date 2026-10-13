@@ -459,8 +459,8 @@ impl World {
         std::fs::remove_file(only.join(name)).unwrap();
     }
 
-    /// Has the stand-in login shell report `tool` (`gh` or `claude`) as
-    /// logged out.
+    /// Has the stand-in login shell report `tool` (`gh`, `claude` or `pi`)
+    /// as logged out.
     pub fn logged_out(&self, tool: &str) {
         std::fs::write(self.root.join(format!("logged-out-{tool}")), "").unwrap();
     }
@@ -531,8 +531,9 @@ impl Drop for World {
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does and every other command as Claude Code —
 /// `shell -lic '… <command> --list-models'`, which fails unless a `shell-models` beside
-/// `bin/` holds what it prints, and whether `gh` and `claude` are logged in. Every word is a program unless `shell-types`
-/// beside `bin/` says otherwise, and both are logged in unless a
+/// `bin/` holds what it prints, and whether `gh`, `claude` and `pi` are logged in. Every
+/// word is a program unless `shell-types`
+/// beside `bin/` says otherwise, and each is logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
 const SHELL: &str = r#"#!/bin/sh
 root=${0%/*}/..
@@ -545,6 +546,12 @@ case "$2" in
     # Its exit status says nothing either way: the field does.
     if [ -e "$root/logged-out-claude" ]; then echo '{ "loggedIn": false }'; exit 0; fi
     echo 'a line an rc file printed'; echo '{'; echo '  "loggedIn": true'; echo '}'; exit 1 ;;
+  "pi --list-models")
+    # Its exit status says nothing either way: what it lists does.
+    if [ -e "$root/logged-out-pi" ]; then
+      echo "No models available. Use /login to log into a provider via OAuth or API key."; exit 0
+    fi
+    echo "provider      model    context"; echo "openai-codex  gpt-5.5  272K"; exit 0 ;;
   alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
   "pi --help")
     echo "Usage:"; echo "  pi [options] [--] [@files...] [messages...]"
