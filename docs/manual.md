@@ -777,7 +777,6 @@ and the lines `run` printed: a step that failed is reported there and nowhere el
 | An issue is not being worked | it is under `excluded` in `plan`, with the reason: no flow label, an epic label, an open blocker, a fleet lock, held by another instance | remove the cause the reason names |
 | `holding 3/3`, a frontier that is not empty, and nothing happening | every slot is taken — a patrol's run holds one for about five minutes after its worker is done ([#122](https://github.com/sunfmin/afkconvoy/issues/122)) | raise `concurrency`, or give patrols a longer `every` |
 | Each stage starts a minute or two after the one before it ended | the tick that reads a verdict and the tick that starts the next stage are two, with a sleep between ([#123](https://github.com/sunfmin/afkconvoy/issues/123)) | nothing yet; it is latency, not a fault |
-| `check`, `show`, `rule` take twenty seconds | each clones every role's repo anew ([#120](https://github.com/sunfmin/afkconvoy/issues/120)) | nothing yet; fewer roles is faster |
 | I changed a role and the worker did not see it | the change is not pushed to the role's default branch, or the stage had already started | push; the next stage starts under the new head |
 | I moved the labels back and it escalated again | a label is not the state: the records still say "escalating" | `afkconvoy rule` or `afkconvoy send` |
 | A stage's verdict "counts for nothing" | the record names another stage than the one its claim was dispatched to | `show --issue` says how each record was read; `send` the issue where it belongs |

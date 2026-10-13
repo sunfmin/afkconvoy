@@ -11,16 +11,22 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  It writes nothing. It reads a team's files, and of each role's repo which skills it
-  holds:
+  It writes nothing but a copy the fleet has not got yet (below). It reads a team's
+  files, and of each role's repo which skills it holds:
 
 {files}
   Without a flag it reads the config of this checkout for `team`, and that repo from
   GitHub at the head of its default branch — and holds the config's `patrols` against
   the patrols that team has. `--team owner/repo` names the repo instead.
   `--dir <path>` reads a team's files from a directory as they are, committed or not.
-  Every role's repo is always read from GitHub, at the head of its default branch:
-  through `gh repo clone`, into a temporary directory it removes.
+  Every role's repo is always read from GitHub, at the head of its default branch.
+
+  A repo on GitHub — the team's, and each role's — is asked for the commit at its head,
+  and read from the fleet's copy of that commit: the one a worker starts in, kept
+  read-only under the user's cache directory (afkconvoy/copies/<owner>/<repo>/<commit>).
+  Only a commit the fleet has no copy of yet is cloned, so a role pushed since the last
+  run is read at its new head, and one that has not moved costs one question. The roles
+  are read at once, not one after another.
 
 WHAT IT ANSWERS
 

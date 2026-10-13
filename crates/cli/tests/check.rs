@@ -95,10 +95,51 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
             "land": {"by": "dev", "do": "land"},
         }])
     );
-    // GitHub was only read: the team's repo and each role's, once.
+    // GitHub was only read: the team's repo and each role's, asked for its
+    // head and cloned once.
+    assert_eq!(clones(&world), ["acme/dev", "acme/reviewer", "acme/team"]);
+}
+
+/// The repos cloned since the last look, sorted — every other `gh` call
+/// since being a read through its API.
+fn clones(world: &World) -> Vec<String> {
     let calls = world.gh_calls();
-    assert!(calls.iter().all(|call| call[..2] == ["repo", "clone"]), "{calls:?}");
-    assert_eq!(calls.len(), 3);
+    let (clones, reads): (Vec<_>, Vec<_>) =
+        calls.iter().partition(|call| call[..2] == ["repo", "clone"]);
+    assert!(reads.iter().all(|call| call[0] == "api" && !call.contains(&"--method".into())));
+    let mut cloned: Vec<String> = clones.iter().map(|call| call[2].clone()).collect();
+    cloned.sort();
+    cloned
+}
+
+/// A repo read once is not cloned again while its head stays where it was: a
+/// command reads it from the fleet's copy of that commit, the one a tick
+/// reads, and a push is noticed because the head is asked for every time.
+#[test]
+fn a_repo_is_cloned_only_when_the_fleet_has_no_copy_of_its_head() {
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let first = world.afk(&["check"]).ok();
+    assert_eq!(clones(&world).len(), 3);
+    let copy = |repo: &str| world.cache().join("afkconvoy/copies").join(repo);
+    let copied = copy("acme/dev").join(head(&world, "acme/dev"));
+    assert!(copied.join(".claude/skills/implement/SKILL.md").is_file());
+    // Every command that reads a team reads the copies, and clones nothing.
+    assert_eq!(world.afk(&["check"]).ok(), first);
+    assert_eq!(world.afk(&["check", "--team", "acme/team"]).ok()["roles"], first["roles"]);
+    let dir = world.root.join("github/acme/team");
+    let read = world.afk(&["check", "--dir", dir.to_str().unwrap()]).ok();
+    assert_eq!(read["roles"], first["roles"]);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(world.afk(&["show", "--issue", "7"]).ok()["position"]["stage"], "build");
+    world.afk(&["rehearse", "feature", "pass", "pass"]).ok();
+    assert_eq!(clones(&world), [] as [&str; 0]);
+    // A role pushed since is read at its new head: that repo alone is cloned.
+    let pushed = commit(&world.root.join("github/acme/dev"), ".claude/skills/plan/SKILL.md", "a\n");
+    let after = world.afk(&["check"]).ok();
+    assert_eq!(after["roles"][0]["commit"], pushed);
+    assert_eq!(after["roles"][0]["skills"], json!(["implement", "land", "plan"]));
+    assert_eq!(clones(&world), ["acme/dev"]);
+    assert!(copy("acme/dev").join(&pushed).is_dir() && copied.is_dir());
 }
 
 #[test]
@@ -137,7 +178,7 @@ fn every_fault_of_a_team_is_reported_in_one_run_with_its_file_and_key() {
     assert!(error.starts_with("the team acme/team has 10 faults"), "{error}");
     for said in [
         "team.md: owner: unknown key",
-        "team.md: roles.ops: acme/ops cannot be read: gh repo clone failed",
+        "team.md: roles.ops: acme/ops cannot be read: gh api repos/acme/ops/commits/HEAD failed",
         "workflows/empty.md: has no ```yaml block",
         "workflows/feature.md: stages[0].do: `deploy` is not a skill of the role `dev`",
         "workflows/feature.md: stages[1].on.reject: `review` is its own stage",
