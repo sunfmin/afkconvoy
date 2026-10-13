@@ -31,6 +31,8 @@ Homebrew installs `git` and `gh` with it. Three things are yours to set up:
 npx skills add sunfmin/afkconvoy
 ```
 
+`afkconvoy skill` prints that same file, for an agent the installer does not know: `afkconvoy skill > ~/.claude/skills/afkconvoy/SKILL.md` for a user, or under a project's own `.claude/skills/afkconvoy/`. `afkconvoy skill --help` says where it goes.
+
 ## Configure a repo
 
 Add `docs/agents/afkconvoy.md` to the repo's base branch. afkconvoy reads the first `yaml` block in it and nothing else; an unknown key or a wrong type is an error.
@@ -77,7 +79,7 @@ afkconvoy scaffold role roles/tester                                      # in t
 
 To read a finished team first, or to start from one: `afkconvoy scaffold team hospital --example hospital --repo acme/hospital` writes a whole team the binary holds — the hospital this project demonstrates itself with: seven roles, three workflows, four patrols, team rules and precedents, the team at the root and each role under `roles/` — and `afkconvoy help example` goes through it file by file. Skills by other authors that its roles load are not written: the topic says which, and how to add them.
 
-From there a team is designed by editing those files: edit, run `afkconvoy check --dir <the team's checkout> --team <owner/repo>`, repeat until it exits 0 — `--team` says the repo a role named `./path` is read from. `afkconvoy --help` lays out every file of a team and of a role and every key; `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started.
+From there a team is designed by editing those files: edit, run `afkconvoy check --dir <the team's checkout> --team <owner/repo>`, repeat until it exits 0 — `--team` says the repo a role named `./path` is read from. `afkconvoy help team`, `afkconvoy help workflows` and `afkconvoy help patrols` lay out every file of a team and of a role and every key; `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started.
 
 **A role's skills** are added with the skills installer, run in the role's directory, in a checkout of its repo, and committed there:
 

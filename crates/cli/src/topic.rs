@@ -27,7 +27,10 @@ macro_rules! topic {
 /// reference last.
 pub const TOPICS: &[Topic] = &[
     topic!("concepts", "one issue from intake to landing, and the four things that carry it"),
+    topic!("team", "a team's directory, its file, how it names a role, binding a repo"),
     topic!("roles", "what a role is, what goes where in one, and the four kinds of text"),
+    topic!("workflows", "stages, verdicts, rework, a consult, a landing: a workflow's file"),
+    topic!("patrols", "a role run on a schedule: a patrol's file, intake, the fleet lock"),
     topic!("example", "the team `scaffold --example hospital` writes, read file by file"),
     topic!("humans", "every way the fleet stops for a human, and the command that answers"),
     topic!("troubleshooting", "a symptom, its cause and its fix: each finding, each refusal"),

@@ -1,7 +1,7 @@
 ROLES
 
   What a role is, what goes where in one, and what makes one good. The files of a
-  role, path by path and harness by harness, are in `afkconvoy check --help`; a
+  role, path by path and harness by harness, are in `afkconvoy help team`; a
   skeleton of one is written by `afkconvoy scaffold role`.
 
 WHAT A ROLE IS

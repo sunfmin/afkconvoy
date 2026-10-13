@@ -100,4 +100,4 @@ WHERE TO READ ON
   `afkconvoy help roles`            what a role is, and how to write a good one
   `afkconvoy help humans`           every way the fleet stops for a human
   `afkconvoy help troubleshooting`  a symptom, its cause and its fix
-  `afkconvoy check --help`          the files of a team and of a role, key by key
+  `afkconvoy help team`             the files of a team and of a role, key by key

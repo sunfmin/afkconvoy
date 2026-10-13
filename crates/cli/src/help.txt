@@ -35,8 +35,9 @@ WHAT A COMMAND ANSWERS
 
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
   a non-zero exit. Warnings go to stderr. `run` instead prints one line per tick until
-  it is stopped, `panel` a web page unless it is asked to open the live one, `show` a drawing unless it is asked about an issue, `help` plain text
-  as `--help` does, and `guard` answers the harness that asks it as a hook does: with
+  it is stopped, `panel` a web page unless it is asked to open the live one, `show` a
+  drawing unless it is asked about an issue, `help` plain text as `--help` does, `skill`
+  the text of a file, and `guard` answers the harness that asks it as a hook does: with
   its exit code.
 
 THE COMMANDS, by who runs them
@@ -58,6 +59,10 @@ THE COMMANDS, by who runs them
   decided on and issues to open for it. Read it before opening the first: it says which
   workflow takes which issue and the line that opens one, and creates the labels:
       flows
+
+  Whoever sets an agent up — a human whose own agent is to learn of afkconvoy. It
+  prints the skill file to install into that agent, and the file sends it to this text:
+      skill
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped (`rule`, below, is a consult's too):
@@ -114,7 +119,9 @@ DESIGNING A TEAM, for a bound repo
   text files — a whole repo, or a subdirectory of one, so that one repo can hold a team
   and every role it names — and designing one is editing them. Nothing else holds any of it.
 
-{files}
+  What those files are, and every key of them, is three topics: `afkconvoy help team`
+  for a team's directory, its file, its rules and a role's directory, then
+  `afkconvoy help workflows` and `afkconvoy help patrols`.
 
   The loop, from nothing:
 
