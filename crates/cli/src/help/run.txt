@@ -78,6 +78,11 @@ WHAT IT ANSWERS
 
     panel: http://127.0.0.1:7070/
 
+  Started without it, it serves the same page once `afkconvoy panel --open` asks it
+  to, from any worktree of the repo on this host — while it sleeps or in the middle
+  of a tick, which goes on — and then prints that line, wherever its ticks have got
+  to. `panel --open` answers the address again later, of a panel opened either way.
+
   Errors, before the first tick, as {"error": …} with a non-zero exit: the panel's port
   is taken; a command the
   fleet needs is missing or logged out, or orca is not running or does not know this

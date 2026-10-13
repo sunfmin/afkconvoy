@@ -1,7 +1,9 @@
 //! Serving the panel: one page, held in memory, on a port of this host only.
 //! `run` shows it a new page after each tick, and every browser that has the
 //! page open is told so and fetches it. Nothing a browser sends is read past
-//! its request line, and nothing here reaches the fleet.
+//! its request line, and nothing here reaches the fleet. A `run` holds the
+//! page from its start; it is served from when it is opened — at the start,
+//! or later (`opening`) — and at one address for as long as that `run` runs.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
@@ -20,6 +22,8 @@ const QUIET: Duration = Duration::from_secs(15);
 struct Shown {
     page: Mutex<(u64, String)>,
     changed: Condvar,
+    /// The port the page is served on, once it is.
+    port: Mutex<Option<u16>>,
 }
 
 impl Shown {
@@ -28,21 +32,40 @@ impl Shown {
     }
 }
 
-/// The serving end, held by `run` for as long as it runs.
-pub struct Served {
-    shown: Arc<Shown>,
-    pub port: u16,
+/// Where a panel served on `port` of this host is read.
+pub fn address(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/")
 }
 
-impl Served {
-    /// Serves `page` on `port` of this host — 0: any free one — to this host
-    /// only: the page names every open issue of the repo.
-    pub fn open(port: u16, page: String) -> Result<Served> {
+/// The panel of one `run`, held for as long as it runs: its page, and the
+/// one port it is served on once it was opened. A clone is the same panel.
+#[derive(Clone)]
+pub struct Live {
+    shown: Arc<Shown>,
+}
+
+impl Live {
+    /// A panel that shows `page`, served nowhere yet.
+    pub fn new(page: String) -> Live {
+        let page = Mutex::new((0, page));
+        Live { shown: Arc::new(Shown { page, changed: Condvar::new(), port: Mutex::new(None) }) }
+    }
+
+    /// Serves the panel on `port` of this host — 0: any free one — to this
+    /// host only: the page names every open issue of the repo → the port it
+    /// is served on, and whether this call began serving it. A panel already
+    /// served stays where it is, whatever `port` asks, and one that could not
+    /// be served is served nowhere: a later call may open it.
+    pub fn open(&self, port: u16) -> Result<(u16, bool)> {
+        // Held until it is served: of two that ask at once, one opens it.
+        let mut served = self.shown.port.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(port) = *served {
+            return Ok((port, false));
+        }
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
             .with_context(|| format!("the panel cannot be served on port {port}"))?;
         let port = listener.local_addr().context("the panel's port cannot be read")?.port();
-        let shown = Arc::new(Shown { page: Mutex::new((0, page)), changed: Condvar::new() });
-        let serving = shown.clone();
+        let serving = self.shown.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let shown = serving.clone();
@@ -50,7 +73,13 @@ impl Served {
                 std::thread::spawn(move || answer(stream, &shown));
             }
         });
-        Ok(Served { shown, port })
+        *served = Some(port);
+        Ok((port, true))
+    }
+
+    /// Whether the panel is served: whether anyone can read a page shown.
+    pub fn served(&self) -> bool {
+        self.shown.port.lock().unwrap_or_else(PoisonError::into_inner).is_some()
     }
 
     /// Shows `page` from here on, and tells every open page there is one.
@@ -133,22 +162,23 @@ mod tests {
 
     #[test]
     fn the_page_shown_last_is_the_page_served_and_nothing_else_is() {
-        let served = Served::open(0, "<p>first</p>".to_string()).unwrap();
-        let first = get(served.port, "/");
+        let served = Live::new("<p>first</p>".to_string());
+        let port = served.open(0).unwrap().0;
+        let first = get(port, "/");
         assert!(first.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/html"), "{first}");
         assert!(first.ends_with("\r\n\r\n<p>first</p>"), "{first}");
         served.show("<p>second — 第二</p>".to_string());
-        let second = get(served.port, "/?again");
+        let second = get(port, "/?again");
         assert!(second.ends_with("<p>second — 第二</p>"), "{second}");
         assert!(second.contains("Content-Length: 24\r\n"), "bytes, not characters: {second}");
-        assert!(get(served.port, "/live.js").contains("new EventSource(\"events\")"));
-        assert!(get(served.port, "/../etc/passwd").starts_with("HTTP/1.1 404 "));
+        assert!(get(port, "/live.js").contains("new EventSource(\"events\")"));
+        assert!(get(port, "/../etc/passwd").starts_with("HTTP/1.1 404 "));
     }
 
     #[test]
     fn an_open_page_is_told_of_every_page_shown_after_it_opened() {
-        let served = Served::open(0, String::new()).unwrap();
-        let mut events = BufReader::new(asked(served.port, "/events"));
+        let served = Live::new(String::new());
+        let mut events = BufReader::new(asked(served.open(0).unwrap().0, "/events"));
         let mut line = String::new();
         while line != "\r\n" {
             line.clear();
@@ -164,9 +194,29 @@ mod tests {
     }
 
     #[test]
-    fn a_port_that_is_taken_is_refused_by_name() {
-        let served = Served::open(0, String::new()).unwrap();
-        let error = Served::open(served.port, String::new()).err().unwrap();
-        assert!(format!("{error:#}").contains(&format!("port {}", served.port)), "{error:#}");
+    fn a_port_that_is_taken_is_refused_by_name_and_the_panel_can_still_be_opened() {
+        let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let live = Live::new("<p>page</p>".to_string());
+        let error = live.open(port).err().unwrap();
+        assert!(format!("{error:#}").contains(&format!("port {port}")), "{error:#}");
+        assert!(!live.served());
+        let (free, began) = live.open(0).unwrap();
+        assert!(began && live.served());
+        assert!(get(free, "/").ends_with("<p>page</p>"));
+    }
+
+    #[test]
+    fn a_panel_opened_again_stays_at_its_one_address() {
+        let live = Live::new("<p>before</p>".to_string());
+        // what was shown before anyone could read it is the page it opens with
+        live.show("<p>shown unserved</p>".to_string());
+        let (port, began) = live.open(0).unwrap();
+        assert!(began);
+        assert_eq!(live.clone().open(0).unwrap(), (port, false));
+        let other = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap();
+        assert_eq!(live.open(other.port()).unwrap(), (port, false), "whatever port is asked");
+        assert!(get(port, "/").ends_with("<p>shown unserved</p>"));
+        assert!(TcpStream::connect(other).is_err(), "nothing is served on the port asked second");
     }
 }
