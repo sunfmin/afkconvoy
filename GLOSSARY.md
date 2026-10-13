@@ -128,16 +128,20 @@ _Avoid_: freeze, pause, kill switch
 
 ### Workers
 
+**Harness**:
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another. A stage names the one its worker runs, or takes the fleet's default.
+_Avoid_: agent, coding agent, CLI, provider
+
 **Worker**:
-A coding-agent session started in one role to perform one stage of one issue — or, after its last stage, to join its PR to the landing train — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
+A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to join its PR to the landing train — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
 _Avoid_: agent, subagent, child
 
 **Worker launch command**:
-The one shell string every worker of a fleet instance is started with. In an unbound repo it is opaque: the fleet never parses it or appends to it. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. In an unbound repo it is opaque: the fleet never parses it or appends to it. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:
-Whether a worker is busy or has stopped, as its agent reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
+Whether a worker is busy or has stopped, as its harness reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
 _Avoid_: liveness, status
 
 **Verdict**:
