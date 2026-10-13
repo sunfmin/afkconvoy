@@ -28,13 +28,6 @@ const TOLD_FILE: &str = "convoy-train-told";
 const NUDGE_FILE: &str = "convoy-nudged";
 /// When the worker here was started (epoch seconds), beside the brief.
 const START_FILE: &str = "convoy-started";
-/// The shell line that tells orca of a worker's state (`role::Start::report`):
-/// the hook orca installs on its host for Claude Code, which reads the event
-/// on standard input and knows its terminal from the environment orca gave
-/// it. orca puts the same line in the user's settings, which a worker in its
-/// role does not load. On a host where orca installed none, nothing is told.
-pub const REPORT_HOOK: &str = "hook=\"${HOME-}/.orca/agent-hooks/claude-hook.sh\"; if [ -x \"$hook\" ]; \
-     then ORCA_HOOK_AGENT_PID=\"$PPID\" /bin/sh \"$hook\"; else cat >/dev/null; fi";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The commit a patrol's checkout was at when its worker was started.

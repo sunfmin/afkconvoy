@@ -7,8 +7,6 @@
 //! a shell line; what a script, a variable or a quoted substitution hides
 //! gets past it. It stops a worker that errs, not one that means to get by.
 
-use serde::Deserialize;
-
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
 use crate::precedent::PROPOSAL_ENV;
@@ -18,8 +16,6 @@ use crate::role::{
 use crate::stage_record::{STAGE_LABEL, STAGE_RECORD};
 use crate::team::FLOW_LABEL;
 
-/// The tool a worker runs shell lines with: the only one a guard judges.
-const SHELL_TOOL: &str = "Bash";
 /// What ends a simple command of a shell line.
 const COMMAND_ENDS: [char; 7] = ['\n', ';', '|', '&', '(', ')', '`'];
 /// What ends a word without ending its command.
@@ -46,28 +42,20 @@ const LABEL_AT_CREATE: [&str; 2] = ["--label", "-l"];
 /// What an option of `gh api` that sends a field starts with.
 const API_FIELDS: [&str; 5] = ["-f", "-F", "--field", "--raw-field", "--input"];
 
-/// One tool call, as Claude Code describes it to a hook before making it.
-#[derive(Debug, Clone, Deserialize)]
-pub struct Call {
-    tool_name: String,
-    #[serde(default)]
-    tool_input: Input,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct Input {
-    /// The shell line, when the tool runs one.
-    #[serde(default)]
-    command: Option<String>,
+/// One tool call a worker is about to make, as far as a guard judges it. How
+/// a harness describes one is the harness's own (`Harness::call`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Call {
+    /// It runs this shell line: the only kind a guard judges.
+    Shell(String),
+    /// It runs none.
+    Other,
 }
 
 impl Call {
     /// The call that runs the shell line `line`.
     pub fn shell(line: &str) -> Call {
-        Call {
-            tool_name: SHELL_TOOL.to_string(),
-            tool_input: Input { command: Some(line.to_string()) },
-        }
+        Call::Shell(line.to_string())
     }
 }
 
@@ -435,10 +423,7 @@ enum Within {
 /// branch. Refused besides in a stage that writes nothing, and for a consult:
 /// committing and pushing. The reason is written for the worker to read.
 pub fn refused(call: &Call, limits: &Limits) -> Option<String> {
-    if call.tool_name != SHELL_TOOL {
-        return None;
-    }
-    let line = call.tool_input.command.as_deref()?;
+    let Call::Shell(line) = call else { return None };
     commands(line).iter().find_map(|words| limits.refuses(words))
 }
 
@@ -635,7 +620,7 @@ mod tests {
             "echo git push origin main",
             "grep -rn 'gh pr merge' docs",
         ]);
-        let reads = Call { tool_name: "Read".into(), tool_input: Input::default() };
+        let reads = Call::Other;
         assert_eq!(refused(&reads, &limits(false, true)), None);
     }
 

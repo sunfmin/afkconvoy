@@ -611,8 +611,9 @@ impl AgentArgs {
 /// Runs one command line. Prints exactly one JSON object on stdout: the
 /// command's answer, or `{"error": …}` with a non-zero exit — `doctor` exits
 /// non-zero with its answer, when that holds a critical finding. An answer that
-/// is text — a drawing — is printed as it is. `guard` answers Claude Code,
-/// in the way a hook does: with its exit code, and a reason on stderr.
+/// is text — a drawing — is printed as it is. `guard` answers the
+/// harness that asks it, in that harness's way: for Claude Code, a hook's,
+/// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,

@@ -16,6 +16,7 @@ pub mod config;
 pub mod gate;
 pub mod graph;
 pub mod guard;
+pub mod harness;
 pub mod intake;
 pub mod joining;
 pub mod launch;
