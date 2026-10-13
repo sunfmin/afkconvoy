@@ -53,7 +53,7 @@ pub fn cut_landing_of(
 /// a branch that diverged, changes in the way, no such local branch — each
 /// leaves everything as it was.
 fn follow_base(fleet: &Fleet) -> Result<()> {
-    let main = Repo { dir: fleet.repo.main_checkout()? };
+    let main = Repo::new(fleet.repo.main_checkout()?);
     let base = &fleet.config.base_branch;
     let local = format!("refs/heads/{base}");
     let before = main.try_git(&["rev-parse", "-q", "--verify", &local])?;

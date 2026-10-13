@@ -18,8 +18,7 @@ use crate::git::Repo;
 /// The directory a repo's wake socket is in: where a `run` keeps every socket
 /// it listens on.
 pub(crate) fn home(repo: &Repo) -> Result<PathBuf> {
-    let common = repo.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-    Ok(PathBuf::from(common))
+    Ok(repo.common_dir()?.to_path_buf())
 }
 
 /// Runs `with` on the socket's name with `dir` as the working directory, and

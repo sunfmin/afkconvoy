@@ -10,6 +10,13 @@ PATH="$HOME/.cargo/bin:$PATH"
 RUSTUP_TOOLCHAIN=nightly-2026-09-25
 export PATH RUSTUP_TOOLCHAIN
 cargo fmt --all --check
+# Flux takes about a minute on one core and builds under a directory of its
+# own, so it checks the core crate while everything below runs: what it came
+# to is read at the end.
+flux_log=$(mktemp)
+./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
+flux_pid=$!
+trap 'kill "$flux_pid" 2>/dev/null; rm -f "$flux_log"' EXIT
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 # The manual is the help topics as one page, and is never edited: a topic
 # changed and the page not written again fails here, with the command to run.
@@ -28,9 +35,7 @@ fi
 # counts however it is written. Flux summarises a dependency too: the core's
 # summary is the one before cargo's last artifact message, the core being the
 # crate checked and so the last one finished.
-flux_log=$(mktemp)
-trap 'rm -f "$flux_log"' EXIT
-./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 && flux_status=0 || flux_status=$?
+wait "$flux_pid" && flux_status=0 || flux_status=$?
 core_summary=$(awk '
     /^\{/ { if (/"reason":"compiler-artifact"/) { core = last; last = "" }; next }
     { print > "/dev/stderr" }
