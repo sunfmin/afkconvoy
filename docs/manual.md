@@ -578,7 +578,7 @@ tick 1: dispatched #1, #3 · holding 3/3 · frontier 0 · next in 30s
 tick 2: nothing to do · holding 3/3 · frontier 0 · next in 60s
 ```
 
-`holding 3/3` is claims held out of `concurrency`; `frontier` is what waits for a free slot. With a fleet lock standing, the claims it leaves alone take no slot and are shown apart: `holding 1/3 · 2 left alone`. A step that failed shows in the line as `FAILED <step> #<issue>: <why>`, and the loop goes on.
+`holding 3/3` is claims held out of `concurrency`; `frontier` is what waits for a free slot. With a fleet lock standing, the claims it leaves alone take no slot and are shown apart: `holding 1/3 · 2 left alone`. A step that failed shows in the line as `FAILED <step> #<issue>: <why>`, and the loop goes on. One cause that stopped several steps is said once, as `FAILED 7 steps: <why>`. A read of GitHub that failed in transit (an answer cut short, a 5xx, a connection reset, a timeout) is made again twice, a second apart, before anything is said; one that still fails reads `GitHub could not be reached: <the call>: …`, and the next tick starts with no sleep.
 
 **Watch it.** With `--panel <port>`, http://127.0.0.1:port/ shows the fleet as a page that brings itself up to date after every tick: each workflow as a line of its stages, the issues at work and queued at each, the landing train, and what waits for a human. Each worker is also a terminal in orca, in the issue's worktree — open it to read what the worker is doing.
 
