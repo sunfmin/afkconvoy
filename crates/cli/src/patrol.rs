@@ -2,6 +2,7 @@
 //! the repo names, the start of a run, and its end. When a patrol runs and
 //! what makes a run a failed one is the core's (`afkconvoy_core::patrol`).
 
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::opened_by;
 use afkconvoy_core::patrol::{
     Row, Seen, Standing, broke, checkout_name, claim_key, failure_of, failure_report,
@@ -18,7 +19,7 @@ use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use crate::git::REMOTE;
-use crate::orca::{REPORT_HOOK, Source, Worktree};
+use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 use crate::team::unknown_patrols;
 
@@ -118,7 +119,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         team_dir: &kept.copy.dir.display().to_string(),
         model: patrol.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
-        report: REPORT_HOOK,
+        report: Harness::DEFAULT.report(),
         facts: Facts {
             on: On::Patrol(name),
             role: &role.name,

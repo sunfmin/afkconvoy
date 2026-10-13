@@ -9,10 +9,10 @@ use std::io::{BufRead, IsTerminal, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::{
     LaunchCommand, Source, candidates, checked, first_word, no_reply, question, replied, source,
 };
-use afkconvoy_core::role::flags_question;
 use anyhow::{Result, anyhow, bail};
 
 /// How long the login shell is given to answer.
@@ -38,9 +38,9 @@ impl Proposed {
     }
 
     /// What the login shell prints when the command is asked which flags it
-    /// takes (`role::flags_question`); `None` when that failed.
+    /// takes (`Harness::flags_question`); `None` when that failed.
     pub fn flags(&self) -> Option<String> {
-        login_shell(&flags_question(&self.command))
+        login_shell(&Harness::DEFAULT.flags_question(&self.command))
     }
 
     /// Why it cannot start a worker, when it cannot.
@@ -70,7 +70,7 @@ pub fn settle(supplied: Option<&str>) -> Result<LaunchCommand> {
 /// The command `settle` would check: `supplied`, the stock one, or a human's
 /// answer, with its first word looked up in a login shell.
 pub fn propose(supplied: Option<&str>) -> Result<Proposed> {
-    let provider = std::env::var("ANTHROPIC_BASE_URL").ok();
+    let provider = std::env::var(Harness::DEFAULT.provider_variable()).ok();
     let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let command = match source(provider.as_deref(), supplied, terminal) {
         Source::Given(command) => command,
@@ -89,7 +89,7 @@ pub fn propose(supplied: Option<&str>) -> Result<Proposed> {
 /// its workers, for a start that starts none (`plan`): the stock one, or —
 /// on a custom provider, where a human would be asked — unknown.
 pub fn foreseen() -> Option<Proposed> {
-    let provider = std::env::var("ANTHROPIC_BASE_URL").ok();
+    let provider = std::env::var(Harness::DEFAULT.provider_variable()).ok();
     match source(provider.as_deref(), None, false) {
         Source::Given(command) => Some(resolved(command)),
         Source::Ask | Source::Refuse(_) => None,

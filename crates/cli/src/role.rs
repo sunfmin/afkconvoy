@@ -7,11 +7,12 @@ use std::path::PathBuf;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::Bound;
 use afkconvoy_core::guard::WritesNothing;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
-use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role, takes_flags};
+use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::{LAND, PRECEDENTS};
 use anyhow::{Result, anyhow, bail};
@@ -20,7 +21,7 @@ use serde_json::{Value, json};
 use crate::copies::{Copies, Copy};
 use crate::fleet::Fleet;
 use crate::launch::Proposed;
-use crate::orca::{REPORT_HOOK, Under, Worktree};
+use crate::orca::{Under, Worktree};
 use crate::stage::records_of;
 use crate::team::keep;
 
@@ -122,7 +123,7 @@ impl Staged {
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
             guard: &crate::own_command().fixed(" guard").own(),
-            report: REPORT_HOOK,
+            report: Harness::DEFAULT.report(),
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,
@@ -257,5 +258,5 @@ impl Staged {
 /// fleet adds to it, asking the login shell a worker gets. An error names
 /// what it does not take.
 pub fn probe(launch: &Proposed) -> Result<()> {
-    takes_flags(launch.as_str(), launch.flags().as_deref()).map_err(|why| anyhow!(why))
+    Harness::DEFAULT.takes(launch.as_str(), launch.flags().as_deref()).map_err(|why| anyhow!(why))
 }

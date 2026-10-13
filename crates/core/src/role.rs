@@ -1,11 +1,12 @@
 //! A worker's start in its role (docs/adr/0009): the stage an issue's worker
-//! is to be started on, what the fleet adds to the worker launch command of a
-//! bound repo, and whether the command takes it. What is added is fixed: nothing here is
-//! configurable, and an unbound repo's command never comes this way.
+//! is to be started on, and where a worker of a bound repo starts and with
+//! which facts. What the fleet adds to the worker launch command to put it
+//! there is its harness's (`harness`). What is added is fixed: nothing here
+//! is configurable, and an unbound repo's command never comes this way.
 
 use flux_rs::attrs::*;
 
-use crate::line::Line;
+use crate::harness::Harness;
 use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::precedent::PROPOSAL_ENV;
@@ -13,46 +14,10 @@ use crate::stage_record::{StageRecord, history};
 use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
 use crate::transition::escalated_from;
 
-/// Claude Code's flag for a directory added to the one it was started in.
-pub const ADD_DIR: &str = "--add-dir";
-/// Claude Code's flag for which settings it loads.
-pub const SETTING_SOURCES: &str = "--setting-sources";
-/// Claude Code's flag for the model of the session.
-pub const MODEL: &str = "--model";
-/// Claude Code's flag for settings added to those it loads.
-pub const SETTINGS: &str = "--settings";
-/// Every flag the fleet adds: what a bound repo's worker launch command must take.
-pub const FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
-
-/// The settings a worker loads: those of the directory it starts in — its
-/// role's — and nothing of the host user's.
-const SOURCES: &str = "project";
-/// The events of Claude Code at which a worker's state changes: what the
-/// worker backend hears of, to report it (`Start::report`). With the user's
-/// settings left out, nothing else tells it.
-const STATE_EVENTS: [&str; 12] = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PermissionRequest",
-    "SubagentStart",
-    "SubagentStop",
-    "TeammateIdle",
-    "PostCompact",
-    "Stop",
-    "StopFailure",
-    "SessionEnd",
-];
-/// How long Claude Code waits on one report, in seconds: a worker backend
-/// that does not answer holds no tool call up.
-const REPORT_TIMEOUT: u64 = 10;
-/// Has Claude Code load the rules of the directories added to it. Their hooks
-/// are not loaded: what a repo must enforce belongs in its gate.
-const ADDED_RULES: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
-/// Keeps Claude Code from carrying what one worker learned to the next on
-/// this host: a role is what its repo says, the same on every host.
-const NO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
+/// Every flag the fleet adds: what a bound repo's worker launch command must
+/// take. They are its harness's own, and no stage names a harness: every
+/// worker's is the default.
+pub const FLAGS: &[&str] = Harness::DEFAULT.flags();
 
 /// The variables a worker's environment carries the commits of its role's
 /// repo and of the team's in: the command that declares a verdict reads them.
@@ -288,125 +253,23 @@ pub struct Start<'a> {
     /// The shell line that runs the guard: this tool's `guard` subcommand.
     pub guard: &'a str,
     /// The shell line that tells the worker backend of the worker's state: it
-    /// is given what Claude Code says of an event on standard input.
+    /// is given what the worker's harness says of an event on standard input
+    /// (`Harness::report`).
     pub report: &'a str,
     pub facts: Facts<'a>,
 }
 
-/// `text` as a JSON string, quotes and all.
-fn json_text(text: &str) -> String {
-    let mut json = String::from("\"");
-    for c in text.chars() {
-        match c {
-            '"' | '\\' => {
-                json.push('\\');
-                json.push(c);
-            }
-            // A shell line holds no control character worth carrying.
-            c if c.is_control() => json.push(' '),
-            c => json.push(c),
-        }
-    }
-    json.push('"');
-    json
-}
-
-/// The settings added to a worker's: the guard, a hook Claude Code runs
-/// before every tool call with the line `guard`, and the report, a hook it
-/// runs with the line `report` wherever the worker's state changes. They are
-/// added to the role's own, so a role's hooks run beside them and no role is
-/// without the guard (docs/adr/0012) — or unheard of by the worker backend,
-/// which would read a worker it has no report of off its terminal alone.
-fn added_settings(guard: &str, report: &str) -> String {
-    let guard = format!("{{\"type\":\"command\",\"command\":{}}}", json_text(guard));
-    let report = format!(
-        "{{\"type\":\"command\",\"command\":{},\"timeout\":{REPORT_TIMEOUT}}}",
-        json_text(report)
-    );
-    let mut settings = format!("{{\"hooks\":{{\"PreToolUse\":[{{\"hooks\":[{guard},{report}]}}]");
-    for event in STATE_EVENTS {
-        settings.push_str(&format!(",\"{event}\":[{{\"hooks\":[{report}]}}]"));
-    }
-    settings.push_str("}}");
-    settings
-}
-
 /// The line a terminal opened on the issue's worktree runs to start a worker
-/// in its role with the worker launch command `command`: change to the role's
-/// copy, put the stage's facts in the environment, and start the command with
-/// the worktree and the team's copy added, the user's settings left out, the
-/// guard and the report added, and the stage's model.
+/// in its role with the worker launch command `command`: what is added to
+/// the command is its harness's own (`Harness::in_role`), and no stage names
+/// a harness: every worker's is the default.
 pub fn in_role(command: &str, start: &Start) -> String {
-    let mut line = Line::new()
-        .fixed("cd ")
-        .word(start.role_dir)
-        .fixed(" && export ")
-        .fixed(ADDED_RULES)
-        .fixed("=1 ")
-        .fixed(NO_MEMORY)
-        .fixed("=1");
-    for (name, value) in start.facts.env() {
-        line = line.fixed(" ").fixed(name).fixed("=").word(&value);
-    }
-    line = line
-        .fixed(" && ")
-        .launch(command)
-        .fixed(" ")
-        .fixed(ADD_DIR)
-        .fixed(" ")
-        .word(start.worktree)
-        .fixed(" ")
-        .fixed(ADD_DIR)
-        .fixed(" ")
-        .word(start.team_dir)
-        .fixed(" ")
-        .fixed(SETTING_SOURCES)
-        .fixed(" ")
-        .fixed(SOURCES)
-        .fixed(" ")
-        .fixed(SETTINGS)
-        .fixed(" ")
-        .word(&added_settings(start.guard, start.report));
-    if let Some(model) = start.model {
-        line = line.fixed(" ").fixed(MODEL).fixed(" ").word(model);
-    }
-    line.done()
-}
-
-/// The shell line whose answer says which flags `command` takes
-/// (`takes_flags` reads it).
-pub fn flags_question(command: &str) -> String {
-    Line::new().launch(command).fixed(" --help").done()
-}
-
-/// Whether the worker launch command `command` takes what a bound repo adds
-/// to it, given what the worker's shell printed for `flags_question` (`None`:
-/// it failed, or printed nothing). An error names the reason: used anyway,
-/// every worker would start outside its role, or not at all.
-pub fn takes_flags(command: &str, answer: Option<&str>) -> Result<(), String> {
-    let refused = |why: String| {
-        Err(format!(
-            "this repo is bound to a team, whose workers are started in their roles, and the \
-             worker launch command {command:?} cannot do that: {why}. A bound repo's worker \
-             launch command must end in Claude Code taking flags"
-        ))
-    };
-    let question = flags_question(command);
-    let Some(answer) = answer.filter(|answer| !answer.trim().is_empty()) else {
-        return refused(format!("`{question}` failed in a login shell, or said nothing"));
-    };
-    let missing: Vec<&str> = FLAGS.iter().copied().filter(|flag| !answer.contains(flag)).collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        refused(format!("`{question}` names no {}", missing.join(", no ")))
-    }
+    Harness::DEFAULT.in_role(command, start)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::line::quoted;
     use crate::position::Declared;
     use crate::stage_record::{Author, Stated};
     use crate::team::{File, RoleRepo, Sources, TEAM_FILE, load};
@@ -647,105 +510,5 @@ land: { by: boss, do: implement }
         // that followed no one workflow — is no answer.
         let silent = escalation_comment("c3", None, "stuck");
         assert!(name(&[], &[left.as_str(), silent.as_str()]).is_err());
-    }
-
-    /// The settings that add the guard `/bin/afkconvoy guard` and the report
-    /// `tell "$HOME"`.
-    fn added() -> String {
-        let report = r#"{"type":"command","command":"tell \"$HOME\"","timeout":10}"#;
-        let mut added = format!(
-            r#"{{"hooks":{{"PreToolUse":[{{"hooks":[{{"type":"command","command":"/bin/afkconvoy guard"}},{report}]}}]"#
-        );
-        for event in STATE_EVENTS {
-            added.push_str(&format!(r#","{event}":[{{"hooks":[{report}]}}]"#));
-        }
-        added + "}}"
-    }
-
-    fn start<'a>(model: Option<&'a str>) -> Start<'a> {
-        Start {
-            role_dir: "/copies/acme/dev/abc",
-            worktree: "/wt/issue 7",
-            team_dir: "/copies/acme/team/def",
-            model,
-            guard: "/bin/afkconvoy guard",
-            report: r#"tell "$HOME""#,
-            facts: Facts {
-                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
-                role: "dev",
-                skill: "implement",
-                writes: false,
-                consult: false,
-                base_branch: "main",
-                escalate_label: "ready-for-human",
-                lock_label: "fleet-lock",
-                role_commit: "abc",
-                team_commit: "def",
-            },
-        }
-    }
-
-    #[test]
-    fn the_line_changes_to_the_role_first_and_adds_a_fixed_set() {
-        let line = in_role("kim --yolo", &start(Some("opus")));
-        assert_eq!(
-            line,
-            "cd '/copies/acme/dev/abc' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
-             CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
-             AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
-             AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
-             AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
-             AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' && \
-             kim --yolo --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' \
-             --setting-sources project --settings '"
-                .to_string()
-                + &added()
-                + "' --model 'opus'"
-        );
-    }
-
-    #[test]
-    fn a_stage_with_no_model_names_none() {
-        let line = in_role("claude", &start(None));
-        assert!(
-            line.ends_with(&format!("--setting-sources project --settings '{}'", added())),
-            "{line}"
-        );
-        assert!(!line.contains("--model"), "{line}");
-    }
-
-    #[test]
-    fn nothing_a_path_or_a_name_holds_is_read_by_the_shell() {
-        let odd = Start { role_dir: "/it's here/$HOME", ..start(Some("a b;c")) };
-        let line = in_role("claude", &odd);
-        assert!(line.starts_with("cd '/it'\\''s here/$HOME' && "), "{line}");
-        assert!(line.ends_with("--model 'a b;c'"), "{line}");
-        // Nor by Claude Code, of the line that runs the guard.
-        let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
-        let settings = added_settings(odd.guard, odd.report);
-        assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
-        assert!(settings.contains(r#""command":"tell \"$HOME\"","timeout":10"#), "{settings}");
-        assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
-    }
-
-    const HELP: &str = "Usage: claude [options]\n  --add-dir <directories...>\n  --model <model>\n  \
-                        --setting-sources <sources>\n  --settings <file-or-json>\n";
-
-    #[test]
-    fn a_command_that_takes_the_flags_is_not_refused() {
-        assert_eq!(flags_question("kim --yolo"), "kim --yolo --help");
-        assert_eq!(takes_flags("kim --yolo", Some(HELP)), Ok(()));
-    }
-
-    #[test]
-    fn a_command_that_does_not_take_the_flags_is_refused_naming_the_reason() {
-        let old = HELP.replace("--setting-sources", "--settings").replace("--add-dir", "--dir");
-        let why = takes_flags("agent", Some(&old)).unwrap_err();
-        assert!(why.contains("`agent --help` names no --add-dir, no --setting-sources."), "{why}");
-        assert!(why.contains("bound to a team") && why.contains("\"agent\""), "{why}");
-        for silent in [None, Some(""), Some(" \n")] {
-            let why = takes_flags("agent ; true", silent).unwrap_err();
-            assert!(why.contains("`agent ; true --help` failed in a login shell"), "{why}");
-        }
     }
 }
