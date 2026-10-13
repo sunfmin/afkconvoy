@@ -781,7 +781,6 @@ afkconvoy takeover --list          # 有哪些 instance id：`run` 从不打印�
 | 某张 issue 没被处理 | 它在 `plan` 的 `excluded` 里，带着原因：没有流程标签、有 epic 标签、有未关闭的阻塞项、有机群锁、被别的实例持有 | 消除原因里说的那件事 |
 | `holding 3/3`，前沿不为空，却什么都没发生 | 每个槽位都被占着——巡查的 worker 干完之后，它的那次运行还会占槽大约五分钟（[#122](https://github.com/sunfmin/afkconvoy/issues/122)） | 调大 `concurrency`，或把巡查的 `every` 调长 |
 | 上一个阶段结束后，要过一两分钟下一个阶段才启动 | 读到裁定的 tick 和启动下一阶段的 tick 是两个，中间隔着一次休眠（[#123](https://github.com/sunfmin/afkconvoy/issues/123)） | 暂时没办法；这只是延迟，不是故障 |
-| `check`、`show`、`rule` 要二十秒 | 每次都把每个角色仓库重新 clone 一遍（[#120](https://github.com/sunfmin/afkconvoy/issues/120)） | 暂时没办法；角色越少越快 |
 | 我改了角色，worker 没看到 | 改动没 push 到角色仓库的默认分支，或者那个阶段已经启动了 | push；下一个阶段会在新的 HEAD 下启动 |
 | 我把标签挪回去了，它又被升级了 | 标签不是状态：记录里仍然写着「升级中」 | `afkconvoy rule` 或 `afkconvoy send` |
 | 某个阶段的裁定「不算数」 | 那条记录写的阶段，不是它的认领被派发到的那个阶段 | `show --issue` 会说明每条记录是怎么被解读的；用 `send` 把 issue 送到该去的地方 |

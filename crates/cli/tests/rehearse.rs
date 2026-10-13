@@ -104,9 +104,12 @@ fn each_verdict_is_answered_with_its_stage_and_the_position_that_follows() {
     // With nothing declared the issue is where it entered.
     let entered = rehearse(&world, "feature", &[]);
     assert_eq!((&entered["ends"], &entered["steps"]), (&entered["enters"], &json!([])));
-    // Nothing was started and nothing written: GitHub was only cloned from.
+    // Nothing was started and nothing written: GitHub was only asked for the
+    // head of each repo, and cloned from.
     assert!(world.orca_calls().is_empty());
-    assert!(world.gh_calls().iter().all(|call| call[..2] == ["repo", "clone"]));
+    let read =
+        |call: &Vec<String>| call[..2] == ["repo", "clone"] || call[1].ends_with("/commits/HEAD");
+    assert!(world.gh_calls().iter().all(read));
 }
 
 #[test]

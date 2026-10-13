@@ -1,9 +1,9 @@
 //! Reads a team — its own files, and the repo of each role it names — for the
 //! core to load (`afkconvoy_core::team`), and answers `check` with what was
-//! read or with every fault. `load` is how any command comes by a team.
+//! read or with every fault. `load` is how a command comes by a team and
+//! `keep` how a tick does: both read every repo from the fleet's copies.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::team::{
@@ -16,10 +16,9 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::copies::{Copies, Copy};
 use crate::gh::GitHub;
-use crate::git::Repo;
 
 /// Where a team's own files are taken from. Its roles' repos are always read
-/// from GitHub.
+/// from the fleet's copies of their heads on GitHub.
 pub enum From {
     /// The team the config of this checkout names.
     Config,
@@ -75,77 +74,22 @@ pub fn unknown_patrols(team: &str, has: &Team, unknown: &[String]) -> Refused {
     Refused { team: team.to_string(), faults: unknown.iter().map(fault).collect() }
 }
 
-/// A directory this command clones into, removed when it is done.
-struct Scratch {
+/// A repo's files, as a directory holds them: a checkout as it is, or the
+/// fleet's copy of one commit.
+struct Tree {
     dir: PathBuf,
-    used: std::cell::Cell<u32>,
-}
-
-impl Scratch {
-    fn new() -> Scratch {
-        let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_nanos());
-        let name = format!("afkconvoy-check-{}-{at}", std::process::id());
-        Scratch { dir: std::env::temp_dir().join(name), used: 0.into() }
-    }
-
-    /// A path in it nothing has been put at.
-    fn next(&self) -> PathBuf {
-        self.used.set(self.used.get() + 1);
-        self.dir.join(self.used.get().to_string())
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// Files to read: a directory as it is, or a repo at one commit.
-enum Tree {
-    Dir(PathBuf),
-    Commit(Repo, String),
 }
 
 impl Tree {
-    /// `repo` on GitHub at the head of its default branch.
-    fn head(gh: &GitHub, repo: &RepoName, scratch: &Scratch) -> Result<Tree> {
-        let into = scratch.next();
-        std::fs::create_dir_all(&scratch.dir)
-            .with_context(|| format!("cannot create {}", scratch.dir.display()))?;
-        gh.clone_head(repo, &into)?;
-        let clone = Repo { dir: into };
-        let head = clone.try_git(&["rev-parse", "--quiet", "--verify", "HEAD^{commit}"])?;
-        if !head.ok {
-            bail!("it has no commit on its default branch");
-        }
-        Ok(Tree::Commit(clone, head.stdout))
-    }
-
-    fn commit(&self) -> Option<&str> {
-        match self {
-            Tree::Dir(_) => None,
-            Tree::Commit(_, commit) => Some(commit),
-        }
-    }
-
     /// The names of the entries of the directory `dir`, sorted; none when
     /// there is no such directory.
     fn list(&self, dir: &str) -> Result<Vec<String>> {
-        let mut names: Vec<String> = match self {
-            Tree::Dir(top) => match std::fs::read_dir(top.join(dir)) {
-                Ok(entries) => entries
-                    .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
-                    .collect::<Result<_>>()?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
-                Err(error) => bail!("cannot list {dir}: {error}"),
-            },
-            Tree::Commit(repo, commit) => {
-                let under = format!("{dir}/");
-                let listed = repo.git_raw(&["ls-tree", "-z", "--name-only", commit, &under])?;
-                let names = listed.split('\0').filter_map(|path| path.strip_prefix(&under));
-                names.map(str::to_string).collect()
-            }
+        let mut names: Vec<String> = match std::fs::read_dir(self.dir.join(dir)) {
+            Ok(entries) => entries
+                .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+                .collect::<Result<_>>()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
+            Err(error) => bail!("cannot list {dir}: {error}"),
         };
         names.sort();
         Ok(names)
@@ -153,23 +97,12 @@ impl Tree {
 
     /// The text of the file at `path`; `None` when no file is there.
     fn read(&self, path: &str) -> Result<Option<String>> {
-        match self {
-            Tree::Dir(top) => {
-                let file = top.join(path);
-                if !file.is_file() {
-                    return Ok(None);
-                }
-                let text = std::fs::read_to_string(&file);
-                Ok(Some(text.with_context(|| format!("cannot read {}", file.display()))?))
-            }
-            Tree::Commit(repo, commit) => {
-                let object = format!("{commit}:{path}");
-                if repo.try_git(&["cat-file", "-t", &object])?.stdout != "blob" {
-                    return Ok(None);
-                }
-                Ok(Some(repo.git_raw(&["show", &object])?))
-            }
+        let file = self.dir.join(path);
+        if !file.is_file() {
+            return Ok(None);
         }
+        let text = std::fs::read_to_string(&file);
+        Ok(Some(text.with_context(|| format!("cannot read {}", file.display()))?))
     }
 
     /// The definition file at `path`: the first yaml block of its markdown.
@@ -211,21 +144,20 @@ pub fn check(from: From) -> Result<Value> {
 /// Reads the team `from` names and every role's repo, and loads it. A team
 /// with a fault fails with `Refused`.
 pub fn load(from: From) -> Result<Loaded> {
-    let scratch = Scratch::new();
     let gh = GitHub { dir: PathBuf::from(".") };
+    let copies = Copies::here()?;
     // The patrols this checkout's repo names, when it is its team that is read.
     let mut named: Vec<String> = vec![];
-    let (name, tree) = match from {
+    let repo = match from {
         From::Dir(dir) => {
             if !dir.is_dir() {
                 bail!("{} is not a directory", dir.display());
             }
-            (dir.display().to_string(), Tree::Dir(dir))
+            let name = dir.display().to_string();
+            let (sources, _) = read(&Tree { dir }, &gh, &copies)?;
+            return loaded(name, None, sources, named);
         }
-        From::Repo(repo) => {
-            let tree = Tree::head(&gh, &repo, &scratch);
-            (repo.to_string(), tree.with_context(|| format!("the team {repo} cannot be read"))?)
-        }
+        From::Repo(repo) => repo,
         From::Config => {
             let config = config::load(&config::default_file()?)?;
             let Some(bound) = config.bound else {
@@ -234,17 +166,22 @@ pub fn load(from: From) -> Result<Loaded> {
                      or a directory of a team's files with --dir"
                 );
             };
-            let tree = Tree::head(&gh, &bound.team, &scratch);
-            let tree = tree.with_context(|| format!("the team {} cannot be read", bound.team))?;
             named = bound.patrols;
-            (bound.team.to_string(), tree)
+            bound.team
         }
     };
-    let sources = read(&tree, |repo| {
-        let tree = Tree::head(&gh, repo, &scratch)?;
-        let commit = tree.commit().unwrap_or_default().to_string();
-        Ok(RoleRepo { commit, skills: tree.list(SKILLS)? })
-    })?;
+    let (copy, sources, _) = read_kept(&gh, &copies, &repo)?;
+    loaded(repo.to_string(), Some(copy.commit), sources, named)
+}
+
+/// The team `name` that `sources` load as, read at `commit`, on a repo whose
+/// config names the patrols `runs`.
+fn loaded(
+    name: String,
+    commit: Option<String>,
+    sources: Sources,
+    runs: Vec<String>,
+) -> Result<Loaded> {
     let mut files = vec![sources.team.path.clone()];
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
     files.extend(sources.patrols.iter().map(|file| file.path.clone()));
@@ -252,26 +189,53 @@ pub fn load(from: From) -> Result<Loaded> {
         Ok(team) => team,
         Err(faults) => return Err(Refused { team: name, faults }.into()),
     };
-    if let Err(unknown) = team.patrols_named(&named) {
+    if let Err(unknown) = team.patrols_named(&runs) {
         return Err(unknown_patrols(&name, &team, &unknown).into());
     }
-    Ok(Loaded { commit: tree.commit().map(str::to_string), name, files, runs: named, team })
+    Ok(Loaded { name, commit, files, runs, team })
 }
 
+/// The copy of each role's repo a team was read from, by the repo's name.
+type RoleCopies = Vec<(RepoName, Copy)>;
+
 /// Everything the core loads a team from: the team's own files out of
-/// `tree`, and of each role's repo what `role` reads.
-fn read(tree: &Tree, role: impl Fn(&RepoName) -> Result<RoleRepo>) -> Result<Sources> {
+/// `tree`, and each role's repo out of the fleet's copy of its head as it
+/// stands now — fetched only when no copy of that commit is here. The roles'
+/// repos are read at once, not one after another → with the copies read.
+fn read(tree: &Tree, gh: &GitHub, copies: &Copies) -> Result<(Sources, RoleCopies)> {
     let team = tree.file(TEAM_FILE);
     let entries = tree.list(WORKFLOWS)?;
     let workflows = entries.iter().map(|name| tree.file(&format!("{WORKFLOWS}/{name}"))).collect();
     let entries = tree.list(PATROLS)?;
     let patrols = entries.iter().map(|name| tree.file(&format!("{PATROLS}/{name}"))).collect();
-    let repos = team::role_repos(&team).into_iter();
-    let repos = repos.map(|repo| {
-        let read = role(&repo).map_err(|error| format!("{error:#}"));
-        (repo.to_string(), read)
+    let role = |repo: &RepoName| {
+        let copy = copies.of(gh, repo)?;
+        let skills = Tree { dir: copy.dir.clone() }.list(SKILLS)?;
+        Ok((copy, skills))
+    };
+    let named = team::role_repos(&team);
+    let reads: Vec<Result<(Copy, Vec<String>)>> = std::thread::scope(|scope| {
+        let reads: Vec<_> = named.iter().map(|repo| scope.spawn(|| role(repo))).collect();
+        let joined = reads.into_iter().map(|read| read.join());
+        joined.map(|read| read.unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
     });
-    Ok(Sources { team, workflows, patrols, repos: repos.collect() })
+    let (mut repos, mut kept) = (vec![], vec![]);
+    for (repo, read) in named.into_iter().zip(reads) {
+        let read = read.map(|(copy, skills)| {
+            kept.push((repo.clone(), copy.clone()));
+            RoleRepo { commit: copy.commit, skills }
+        });
+        repos.push((repo.to_string(), read.map_err(|error| format!("{error:#}"))));
+    }
+    Ok((Sources { team, workflows, patrols, repos }, kept))
+}
+
+/// `read`, of the team `repo` names: its own files out of the fleet's copy of
+/// its head as it stands now → with that copy.
+fn read_kept(gh: &GitHub, copies: &Copies, repo: &RepoName) -> Result<(Copy, Sources, RoleCopies)> {
+    let copy = copies.of(gh, repo).with_context(|| format!("the team {repo} cannot be read"))?;
+    let (sources, roles) = read(&Tree { dir: copy.dir.clone() }, gh, copies)?;
+    Ok((copy, sources, roles))
 }
 
 /// A team as a stage starts under it: loaded from the fleet's copies, at the
@@ -281,7 +245,7 @@ pub struct Kept {
     /// The copy of the team's own repo.
     pub copy: Copy,
     /// The copy of each role's repo, by the repo's name.
-    roles: Vec<(RepoName, Copy)>,
+    roles: RoleCopies,
 }
 
 impl Kept {
@@ -297,17 +261,9 @@ impl Kept {
 /// each role's, each read from the fleet's copy of that commit and fetched
 /// only when no copy of it is here. A team with a fault fails with `Refused`.
 pub fn keep(gh: &GitHub, copies: &Copies, repo: &RepoName) -> Result<Kept> {
-    let copy = copies.of(gh, repo).with_context(|| format!("the team {repo} cannot be read"))?;
-    let roles = std::cell::RefCell::new(vec![]);
-    let sources = read(&Tree::Dir(copy.dir.clone()), |role| {
-        let kept = copies.of(gh, role)?;
-        let skills = Tree::Dir(kept.dir.clone()).list(SKILLS)?;
-        let commit = kept.commit.clone();
-        roles.borrow_mut().push((role.clone(), kept));
-        Ok(RoleRepo { commit, skills })
-    })?;
+    let (copy, sources, roles) = read_kept(gh, copies, repo)?;
     match team::load(&sources) {
-        Ok(team) => Ok(Kept { team, copy, roles: roles.into_inner() }),
+        Ok(team) => Ok(Kept { team, copy, roles }),
         Err(faults) => Err(Refused { team: repo.to_string(), faults }.into()),
     }
 }
