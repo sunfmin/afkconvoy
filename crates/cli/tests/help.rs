@@ -285,6 +285,126 @@ fn no_help_text_holds_a_word_the_glossary_says_to_avoid() {
     );
 }
 
+/// The topics that are files of `help/topics/`, each with its text: every
+/// topic but the glossary, which is the repository's own.
+fn topic_files() -> Vec<(String, String)> {
+    let long = help("--help");
+    let names = topics(&long).into_iter().map(|(name, _)| name);
+    let names = names.filter(|name| *name != "glossary");
+    names.map(|name| (name.to_string(), asked(&["help", name]))).collect()
+}
+
+/// The rows of a topic that heads each with what is seen: the lines indented
+/// as a row's head is, and no deeper.
+fn heads(topic: &str) -> Vec<&str> {
+    let heads = topic.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   "));
+    heads.map(str::trim).collect()
+}
+
+#[test]
+fn troubleshooting_has_a_row_for_every_finding_doctor_can_give() {
+    use afkconvoy::doctor::Kind;
+    let said = asked(&["help", "troubleshooting"]);
+    let heads = heads(&said);
+    assert!(Kind::ALL.len() > 20, "{:?}", Kind::ALL);
+    for kind in Kind::ALL {
+        let symptom = kind.symptom();
+        assert!(
+            heads.contains(&symptom),
+            "`doctor` can give the finding {kind:?}, and `afkconvoy help troubleshooting` has \
+             no row headed with its words: {symptom:?}"
+        );
+    }
+    // What it catches: words that are in the topic, but head no row.
+    assert!(said.contains("a line to run") && !heads.contains(&"a line to run"));
+    // A start's refusals have their rows too, by the words each is made of.
+    let no_branch = afkconvoy_core::layout::no_base_branch("main");
+    for refusal in [
+        "this host cannot work a fleet yet",
+        "cannot read the config file",
+        "that push would be refused",
+        "the remote rejects the fleet's refs under both",
+        "--worker-command was given twice for the harness",
+        "is no harness",
+        "this fleet runs on a custom provider",
+    ] {
+        assert!(heads.contains(&refusal), "no row for the refusal {refusal:?}");
+    }
+    assert!(heads.iter().any(|head| no_branch.starts_with(head)), "{no_branch}");
+}
+
+/// Every flag `text` gives a command of this tool's, with the command: what
+/// stands on a line after `afkconvoy <command>`, up to where the line stops
+/// being the command's.
+fn flagged(text: &str) -> Vec<(&str, &str)> {
+    let mut flagged = vec![];
+    for line in text.lines() {
+        for said in line.split("afkconvoy ").skip(1) {
+            let said = said.split(['`', ';', ':', ',']).next().unwrap();
+            let mut words = said.split_whitespace();
+            let Some(command) = words.next() else { continue };
+            let flags = words.filter(|word| word.starts_with("--"));
+            flagged.extend(flags.map(|flag| (command, flag.split('=').next().unwrap())));
+        }
+    }
+    flagged
+}
+
+/// Each way the fleet stops for a human, by the title `humans` gives it.
+const STOPS: [&str; 6] = [
+    "AN ESCALATION",
+    "A TRIPPED BREAKER",
+    "A STAGE `by: human`",
+    "A PATROL'S FAILED RUN",
+    "A FLEET LOCK",
+    "A PRECEDENT TO ACCEPT",
+];
+
+#[test]
+fn humans_names_for_each_way_the_fleet_stops_a_command_with_the_flags_its_help_gives() {
+    let said = asked(&["help", "humans"]);
+    let short = help("-h");
+    let commands = listed(&short);
+    for stop in STOPS {
+        let part = said.split(&format!("\n{stop}\n")).nth(1);
+        let part = part.unwrap_or_else(|| panic!("`humans` has no part {stop:?}"));
+        let part = part.split("\n\n").take_while(|part| part.starts_with([' ', '\n']));
+        let part = part.collect::<Vec<_>>().join("\n\n");
+        let named = mentioned(&part, "afkconvoy ");
+        assert!(named.iter().any(|name| commands.contains(name)), "{stop} names no command");
+    }
+    // What it catches: a flag the command's help does not give.
+    let made_up = "Run `afkconvoy rule --issue 7 --because x`, then afkconvoy show --issue 7: it";
+    assert_eq!(flagged(made_up), [("rule", "--issue"), ("rule", "--because"), ("show", "--issue")]);
+    let mut seen = 0;
+    for (topic, text) in topic_files() {
+        for (command, flag) in flagged(&text).into_iter().filter(|(_, flag)| *flag != "--help") {
+            let given = asked(&[command, "-h"]);
+            let gives = given.split_whitespace().any(|word| word.trim_end_matches(',') == flag);
+            assert!(gives, "{topic}: `afkconvoy {command} -h` gives no {flag}");
+            seen += 1;
+        }
+    }
+    assert!(seen >= 5, "{seen}");
+}
+
+#[test]
+fn a_topic_is_short_and_refers_to_nothing_outside_the_binary() {
+    let files = topic_files();
+    assert!(files.len() >= 4);
+    for (topic, text) in files {
+        let lines = text.lines().count();
+        assert!(lines <= 125, "{topic} is {lines} lines: a topic is about 120 at most; split it");
+        // No file of this repository, no URL, and not the manual.
+        for outside in ["docs/", "crates/", "GLOSSARY", "README", "manual", "://", "github.com"] {
+            assert!(!text.contains(outside), "{topic} refers to {outside:?}");
+        }
+        // Plain text, as `--help` is.
+        assert!(text.lines().all(|line| line.chars().count() <= 90), "{topic} has a long line");
+        assert!(text.ends_with('\n') && !text.ends_with("\n\n"), "{topic}");
+    }
+}
+
 #[test]
 fn the_guide_groups_every_visible_subcommand_once_and_names_no_other() {
     let (short, long) = (help("-h"), help("--help"));
