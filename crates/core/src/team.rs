@@ -1201,15 +1201,14 @@ directory alone, where such a link points at nothing",
             }
             Some((_, Ok(read))) if !read.in_place.is_empty() => {
                 // A file is one fault, whichever harnesses would load it.
-                let mut files: Vec<&str> = vec![];
-                for (_, file) in &read.in_place {
-                    if !files.contains(&file.as_str()) {
-                        files.push(file);
+                let mut files: Vec<(&str, Vec<&str>)> = vec![];
+                for (harness, file) in &read.in_place {
+                    match files.iter_mut().find(|(held, _)| *held == file.as_str()) {
+                        Some((_, harnesses)) => harnesses.push(harness.name()),
+                        None => files.push((file.as_str(), vec![harness.name()])),
                     }
                 }
-                for file in files {
-                    let of_file = read.in_place.iter().filter(|(_, held)| held == file);
-                    let harnesses: Vec<&str> = of_file.map(|(harness, _)| harness.name()).collect();
+                for (file, harnesses) in files {
                     let load = if harnesses.len() == 1 { "loads" } else { "load" };
                     let problem = format!(
                         "{dir} holds `{file}`: {} {load} that in place of `{RULES}`, the rules \
