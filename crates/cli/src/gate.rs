@@ -8,7 +8,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::Config;
-use afkconvoy_core::gate::{GateCommand, GreenRun, Ran, Recording, Tree, after_run, record_ref};
+use afkconvoy_core::gate::{
+    GateCommand, GreenRun, Ran, Recording, Tree, after_run, at_limit, record_ref,
+};
 use afkconvoy_core::layout::GATE_KIND;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::train::{last_green, train_refs, under_repair};
@@ -42,12 +44,12 @@ const EXCERPT_LINES: usize = 40;
 
 /// Runs the gate command in a worktree, its log going line by line to this
 /// process's stderr → (exit code, timed out, the whole seconds it took, the
-/// end of the log). A run that outlives `timeout` is killed, with everything
-/// it started.
+/// end of the log). A run that reaches the gate limit, `limit`, is killed, with
+/// everything it started.
 fn run_command(
     repo: &Repo,
     command: &str,
-    timeout: Duration,
+    limit: Duration,
 ) -> Result<(i32, bool, u64, Vec<String>)> {
     let mut child = Command::new("sh")
         // one stream, so the log reads in the order it was written
@@ -85,11 +87,11 @@ fn run_command(
         if let Some(status) = child.try_wait()? {
             break (status.code().unwrap_or(-1), false);
         }
-        if started.elapsed() >= timeout {
+        if started.elapsed() >= limit {
             let group = format!("-{}", child.id());
             let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
             let _ = child.wait();
-            eprintln!("[afkconvoy] the gate timed out after {}s", timeout.as_secs());
+            eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());
             break (124, true);
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -125,18 +127,19 @@ pub fn head_tree(repo: &Repo) -> Result<Tree> {
 
 /// Runs the gate in a worktree and settles its tree's record: a green run on
 /// a committed tree is put on record, with how long it took on `host`; a red
-/// one on a committed tree takes the record away.
+/// one on a committed tree takes the record away. A run that reaches the gate
+/// limit, `limit`, is red.
 pub fn run_and_record(
     repo: &Repo,
     command: &GateCommand,
     host: &str,
     now: u64,
-    timeout: Duration,
+    limit: Duration,
 ) -> Result<GateRun> {
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let (exit_code, timed_out, seconds, excerpt) = run_command(repo, command.text(), timeout)?;
+    let (exit_code, timed_out, seconds, excerpt) = run_command(repo, command.text(), limit)?;
     let after = if before.is_empty() { off_commit(repo, Some(&head))? } else { vec![] };
     let ran = Ran {
         exit_code,
@@ -199,15 +202,15 @@ pub enum Gated {
 
 /// Answers from the green run on record for the worktree's tree and the
 /// command — which is left as it is, no new record written — else by a run
-/// made now on `host`, which is put on record in its turn. A run made now
-/// answers only when it was a run of the committed tree: otherwise this is an
-/// error, and nothing lands.
+/// made now on `host` under the gate limit, `limit`, which is put on record in
+/// its turn. A run made now answers only when it was a run of the committed
+/// tree: otherwise this is an error, and nothing lands.
 pub fn gated(
     repo: &Repo,
     command: &GateCommand,
     host: &str,
     now: u64,
-    timeout: Duration,
+    limit: Duration,
 ) -> Result<Gated> {
     let tree = head_tree(repo)?;
     if let Some(run) = recorded(repo, &tree, command, now)? {
@@ -227,7 +230,7 @@ pub fn gated(
     if !strays.is_empty() {
         return Err(not_the_commit("it has uncommitted or untracked files", &strays));
     }
-    let run = run_and_record(repo, command, host, now, timeout)?;
+    let run = run_and_record(repo, command, host, now, limit)?;
     match run.green {
         Some(green) => Ok(Gated::Green { run: green, source: "run" }),
         None if run.ran.green() => {
@@ -281,9 +284,9 @@ fn lands_behind(
 }
 
 /// `afkconvoy gate`: a worker's run of the gate, in the worktree it is called
-/// from, on `host`. The log streams to the worker's terminal; the answer says
-/// how long the run took and whether it is on record as a pass of the commit's
-/// tree.
+/// from, on `host`, under the config's gate limit. The log streams to the
+/// worker's terminal; the answer says how long the run took and whether it is
+/// on record as a pass of the commit's tree.
 ///
 /// `train`: the branch first takes in what its PR will land behind — the
 /// train's tip, or the base branch when there is no train — by a merge, never
@@ -293,14 +296,7 @@ fn lands_behind(
 ///
 /// A red run with a fleet lock standing says which: the base branch may be
 /// what is red, and the worker is to declare nothing of it.
-pub fn gate(
-    repo: &Repo,
-    config: &Config,
-    train: bool,
-    host: &str,
-    now: u64,
-    timeout: Duration,
-) -> Result<Value> {
+pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> Result<Value> {
     let command = GateCommand::new(&config.gate_command);
     let mut merged = None;
     if train {
@@ -317,7 +313,9 @@ pub fn gate(
                     merge, and run this again. No gate ran"}));
         }
     }
-    let run = run_and_record(repo, &command, host, now, timeout)?;
+    let limit = config.gate_seconds();
+    let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit))?;
+    let red = format!("the gate is red{}", at_limit(run.ran, limit));
     let status = if run.ran.green() { "green" } else { "red" };
     let mut answer = json!({"status": status, "exit_code": run.ran.exit_code,
         "timed_out": run.ran.timed_out, "seconds": run.ran.seconds, "command": command.text(),
@@ -335,13 +333,13 @@ pub fn gate(
     let detail = if !locks.is_empty() {
         answer["locks"] = json!(locks);
         format!(
-            "the gate is red — nothing is on record. A fleet lock stands ({}): the base branch \
+            "{red} — nothing is on record. A fleet lock stands ({}): the base branch \
              may be what is red, and not your change — declare nothing of it, stop, and run \
              this again when you are told to carry on",
             named(&locks)
         )
     } else if !run.ran.green() {
-        "the gate is red — nothing is on record; fix it, commit, and run this again".to_string()
+        format!("{red} — nothing is on record; fix it, commit, and run this again")
     } else if run.green.is_none() {
         let why = if run.ran.clean_before {
             "the run left the worktree other than the commit it started on"

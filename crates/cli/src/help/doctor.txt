@@ -84,11 +84,12 @@ WHAT IT ANSWERS
               evidence, fix, see}:
                 severity   critical  the fleet does not work until it is fixed
                            warning   one issue or one patrol is held up, or about to be
-                           info      nothing to fix: said so that a surprise is explained
+                           info      nothing is held up: said so that a surprise is explained
                 what       the fault, in a sentence
                 evidence   what was read that says so
                 fix        one command line to run as it is — or, for a fault in a
-                           team's or a role's file, `<file>: <key>` to edit
+                           team's or a role's file, or a key the repo's config
+                           leaves out, `<file>: <key>` to edit
                 see        the command that prints the help topic explaining it:
                            `afkconvoy help humans` where what it reports waits for
                            a human, else `afkconvoy help troubleshooting`, which
@@ -108,8 +109,10 @@ WHAT IT ANSWERS
   slots are free and the last tick started nobody; a flow label names no workflow of
   the team; an issue has been at a stage longer than any before it took; an issue is
   one rework from a breaker; a patrol is failed or full; an issue has waited for a human
-  for more than an hour, its `fix` being the line that answers it (all warning) — and the
-  role or the team a stage in flight started under has moved since (info).
+  for more than an hour, its `fix` being the line that answers it (all warning) — the
+  role or the team a stage in flight started under has moved since; and the repo's
+  config declares no gate limit, so the gate has the default's 3600 seconds before
+  anything ends it: `fix` is the file and the key, `gate_seconds` (both info).
 
   Moved: the role's directory holds something else at the head of its repo than at the
   commit the stage started under — a file added, removed or changed. A new commit is

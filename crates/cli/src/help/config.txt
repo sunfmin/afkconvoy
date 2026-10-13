@@ -15,8 +15,12 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"base_branch", "gate_command", "ready_label", "epic_labels", "concurrency",
-   "escalate_label", "lock_label"} — every key, the defaults filled in. `lock_label`
+  {"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels",
+   "concurrency", "escalate_label", "lock_label"} — every key, the defaults filled in.
+  `gate_seconds` is the gate limit: how many seconds a run of `gate_command` is given,
+  by `afkconvoy gate` and by `afkconvoy land --train` alike, before it is ended and is
+  red (default 3600). It is written nowhere else: neither command has a flag for it. A
+  config that leaves it out is a finding of `afkconvoy doctor`. `lock_label`
   is the label of a fleet lock (default fleet-lock): while an open issue carries it,
   the fleet works lock issues only (`afkconvoy lock --help`).
 
@@ -28,10 +32,11 @@ WHAT IT ANSWERS
   by workers may be open (default 50), and the default harness: the one every worker
   runs that its stage or its patrol names none for (default claude-code, Claude Code;
   the others are pi and codex, Codex). A repo that names no team is unbound and answers
-  the seven above only.
+  the eight above only.
 
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
-  `gate_command` is missing; a key is unknown or of the wrong type; `team` is neither
+  `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is
+  not a whole number from 1; `team` is neither
   owner/repo nor owner/repo/path; `harness` names no harness; `patrols`, `intake_limit` or `harness` is set
   where no `team` is — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 

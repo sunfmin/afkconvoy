@@ -101,6 +101,18 @@ mod tests {
     }
 
     #[test]
+    fn a_gate_limit_is_a_whole_number_of_seconds_from_1() {
+        let limit =
+            |value: &str| format!("base_branch: main\ngate_command: make\ngate_seconds: {value}");
+        for wrong in ["0", "-5", "1.5", "soon", "[600]", "\"600\""] {
+            let e = error(&limit(wrong));
+            assert!(e.contains("gate_seconds"), "{wrong}: {e}");
+        }
+        let config = parse(&format!("```yaml\n{}\n```\n", limit("1"))).unwrap();
+        assert_eq!(config.gate_seconds(), 1);
+    }
+
+    #[test]
     fn a_missing_required_key_is_named() {
         assert!(error("gate_command: make").contains("base_branch"));
         assert!(error("base_branch: main").contains("gate_command"));

@@ -4,13 +4,17 @@
 #
 #   release.sh version                   the version Cargo builds
 #   release.sh check <tag>               fail unless <tag> is v<version>
-#   release.sh package <target> <arch>   dist/afkconvoy-<version>-macos-<arch>.tar.gz
-#                                        from target/<target>/release/afkconvoy
+#   release.sh build                     both macOS binaries, Apple Silicon and
+#                                        Intel, on rustup's stable toolchain
+#   release.sh package                   what was built, checked, to
+#                                        dist/afkconvoy-<version>-macos-<arch>.tar.gz
 #   release.sh formula                   the Homebrew formula for what is in dist/
 #   release.sh publish                   what is in dist/ to the tap: the archives
 #                                        to its release afkconvoy-v<version>, the formula
 #                                        to Formula/afkconvoy.rb. `gh` and `git`
 #                                        must be allowed to write to the tap.
+#
+# A release by hand is `build`, `package`, `publish`, at the tag's commit.
 #
 # The archives are downloaded from the tap (sunfmin/homebrew-tap), not from
 # this repository: this one is private, and Homebrew downloads with no login.
@@ -26,6 +30,14 @@ DIST=${DIST:-dist}
 
 version() {
     cargo pkgid -p afkconvoy | sed 's/.*[#@]//'
+}
+
+# The Rust target that builds for an arch.
+target() {
+    case "$1" in
+    arm64) echo aarch64-apple-darwin ;;
+    *) echo "$1-apple-darwin" ;;
+    esac
 }
 
 archive() {
@@ -52,28 +64,56 @@ check)
         exit 1
     fi
     ;;
-package)
-    target=${2:?usage: release.sh package <target> <arch>}
-    arch=${3:?usage: release.sh package <target> <arch>}
-    built=target/$target/release/afkconvoy
-    # `afkconvoy --version` must print the released version. A binary this
-    # machine cannot run (Intel, with no Rosetta) is only checked for its arch.
-    lipo -archs "$built" | grep -qx "$arch" || {
-        echo "release: $built is not an $arch binary" >&2
+build)
+    # The toolchain's own bin goes first on PATH. A `cargo` that is ahead of
+    # rustup's there — Homebrew's — has no Intel target, and `rustup run
+    # stable cargo` is not enough: the cargo it starts still finds the
+    # `rustc` that is first on PATH.
+    targets=$(for arch in $ARCHES; do target "$arch"; done)
+    rustup=$(PATH="$PATH:$HOME/.cargo/bin" command -v rustup) || rustup=
+    stable=$([ -n "$rustup" ] && "$rustup" which --toolchain stable cargo 2>/dev/null) || stable=
+    installed=$([ -n "$stable" ] && "$rustup" target list --installed --toolchain stable) || installed=
+    for target in $targets; do
+        echo "$installed" | grep -qx "$target" && continue
+        # shellcheck disable=SC2086
+        cat >&2 <<EOF
+release: build needs rustup's stable toolchain with the target $target, and ${rustup:+that is not installed}${rustup:-no rustup is installed (https://rustup.rs)}. With rustup, get it with:
+    rustup toolchain install stable --profile minimal --target $(echo $targets)
+EOF
         exit 1
-    }
-    if arch "-$arch" /usr/bin/true 2>/dev/null; then
-        said=$(arch "-$arch" "$built" --version)
-        if [ "$said" != "afkconvoy $(version)" ]; then
-            echo "release: $built --version says '$said', not 'afkconvoy $(version)'" >&2
+    done
+    PATH="$(dirname "$stable"):$PATH"
+    export PATH
+    for target in $targets; do
+        cargo build --release --locked -p afkconvoy --target "$target"
+    done
+    ;;
+package)
+    for arch in $ARCHES; do
+        built=target/$(target "$arch")/release/afkconvoy
+        [ -f "$built" ] || {
+            echo "release: $built is missing: build it first" >&2
             exit 1
+        }
+        # `afkconvoy --version` must print the released version. A binary this
+        # machine cannot run (Intel, with no Rosetta) is only checked for its arch.
+        lipo -archs "$built" | grep -qx "$arch" || {
+            echo "release: $built is not an $arch binary" >&2
+            exit 1
+        }
+        if arch "-$arch" /usr/bin/true 2>/dev/null; then
+            said=$(arch "-$arch" "$built" --version)
+            if [ "$said" != "afkconvoy $(version)" ]; then
+                echo "release: $built --version says '$said', not 'afkconvoy $(version)'" >&2
+                exit 1
+            fi
+        else
+            echo "release: this machine cannot run $arch: --version was not checked" >&2
         fi
-    else
-        echo "release: this machine cannot run $arch: --version was not checked" >&2
-    fi
-    mkdir -p "$DIST"
-    tar -czf "$DIST/$(archive "$arch")" -C "target/$target/release" afkconvoy
-    echo "$DIST/$(archive "$arch")"
+        mkdir -p "$DIST"
+        tar -czf "$DIST/$(archive "$arch")" -C "$(dirname "$built")" afkconvoy
+        echo "$DIST/$(archive "$arch")"
+    done
     ;;
 formula)
     for arch in $ARCHES; do
@@ -151,7 +191,7 @@ publish)
     rm -rf "$tap"
     ;;
 *)
-    sed -n '2,18p' "$0" >&2
+    sed -n '2,22p' "$0" >&2
     exit 2
     ;;
 esac

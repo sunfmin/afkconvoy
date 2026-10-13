@@ -58,4 +58,15 @@ The decisions live in `crates/core` as pure functions checked by [Flux](https://
 
 **The manual** is generated, and never edited: after changing a help topic or `GLOSSARY.md`, run `cargo run -p afkconvoy --example manual` and commit what it wrote to [`docs/manual.md`](docs/manual.md). The gate fails while the page is not what that command writes.
 
-**Cutting a release**: set `version` in `Cargo.toml`, merge, then push the tag `v<version>`. The [release workflow](.github/workflows/release.yml) builds both macOS binaries on stable Rust and publishes them to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap): the archives to its release `afkconvoy-v<version>`, the formula to `Formula/afkconvoy.rb`. Homebrew downloads from the tap because this repository is private. The workflow needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may write the tap's contents; without it, build both targets, package them, and run `packaging/release.sh publish` from a shell where `gh` may write to the tap.
+**Cutting a release**: set `version` in `Cargo.toml`, merge, then push the tag `v<version>`. The [release workflow](.github/workflows/release.yml) builds both macOS binaries on stable Rust and publishes them to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap): the archives to its release `afkconvoy-v<version>`, the formula to `Formula/afkconvoy.rb`. Homebrew downloads from the tap because this repository is private. The workflow needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may write the tap's contents, and fails before it builds without it.
+
+By hand it is the same three steps, on a Mac, with the tag's commit checked out and from a shell where `gh` and `git` may write to the tap:
+
+```sh
+packaging/release.sh check "$(git describe --tags --exact-match)"   # the commit checked out is v<version>
+packaging/release.sh build      # both targets, on rustup's stable toolchain
+packaging/release.sh package    # dist/afkconvoy-<version>-macos-<arch>.tar.gz, each checked
+packaging/release.sh publish    # the archives and the formula, to the tap
+```
+
+`build` uses rustup's stable toolchain whatever `cargo` is first on `PATH`, and names the line that installs it when it, or the Intel target, is missing.

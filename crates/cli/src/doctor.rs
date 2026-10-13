@@ -60,7 +60,7 @@ pub enum Severity {
     Critical,
     /// One issue or one patrol is held up, or is about to be.
     Warning,
-    /// Nothing to fix: said so that a surprise is explained.
+    /// Nothing is held up: said so that a surprise is explained.
     Info,
 }
 
@@ -143,6 +143,7 @@ kinds! {
     PatrolFull: Warning, "have reached its `max_open`";
     WaitedLong: Warning, "has waited for a human for";
     Moved: Info, "moved since the stage";
+    NoGateLimit: Info, "declares no gate limit";
 }
 
 fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
@@ -299,6 +300,8 @@ pub struct State {
 pub struct Seen<'a> {
     pub now: u64,
     pub host: &'a Host,
+    /// The repo's config; `None` where it cannot be read.
+    pub config: Option<&'a Config>,
     pub run: &'a Run,
     /// The fleet's state, or why it could not be read.
     pub state: Result<&'a State, &'a str>,
@@ -752,9 +755,28 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
     }
 }
 
+/// A config that declares no gate limit: the gate has the default's hour, and
+/// nothing ends a run that has become many times slower before that.
+fn config_finding(config: &Config) -> Option<Finding> {
+    if config.gate_limit_declared {
+        return None;
+    }
+    let seconds = config.gate_seconds();
+    Some(finding(
+        Kind::NoGateLimit,
+        format!(
+            "this repo's config declares no gate limit: the gate may run for {seconds}s before \
+             anything ends it"
+        ),
+        format!("{} sets no `gate_seconds`, so the gate limit is {seconds}s", config::FILE),
+        format!("{}: gate_seconds", config::FILE),
+    ))
+}
+
 /// Everything that is wrong in what `seen` holds, most severe first.
 pub fn findings(seen: &Seen) -> Vec<Finding> {
     let mut found = host_findings(seen.host);
+    found.extend(seen.config.and_then(config_finding));
     found.extend(log_findings(seen.run));
     match seen.state {
         Ok(state) => {
@@ -1069,8 +1091,13 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
     let config = config::load(&repo.dir.join(config::FILE));
     let seen_host = read_host(config.as_ref().ok(), started_with.as_deref());
     let state = read_state(now, &mut run).map_err(|error| format!("{error:#}"));
-    let seen =
-        Seen { now, host: &seen_host, run: &run, state: state.as_ref().map_err(String::as_str) };
+    let seen = Seen {
+        now,
+        host: &seen_host,
+        config: config.as_ref().ok(),
+        run: &run,
+        state: state.as_ref().map_err(String::as_str),
+    };
     let found = findings(&seen);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1236,7 +1263,7 @@ mod tests {
     }
 
     fn found(host: &Host, run: &Run, state: &State) -> Vec<Finding> {
-        let found = findings(&Seen { now: NOW, host, run, state: Ok(state) });
+        let found = findings(&Seen { now: NOW, host, config: None, run, state: Ok(state) });
         for finding in &found {
             // Never prose alone: one line to run, or a file and the key in it.
             let fix = &finding.fix;
@@ -1701,9 +1728,42 @@ mod tests {
     }
 
     #[test]
+    fn a_config_that_declares_no_gate_limit_is_said_and_one_that_does_is_not() {
+        let found = |yaml: &str| {
+            let config = config::parse(&format!(
+                "```yaml\nbase_branch: main\ngate_command: make\n{yaml}```\n"
+            ));
+            let (host, run, state) = (host(), run(vec![]), state());
+            let seen = Seen {
+                now: NOW,
+                host: &host,
+                config: config.as_ref().ok(),
+                run: &run,
+                state: Ok(&state),
+            };
+            findings(&seen)
+        };
+        let undeclared = found("");
+        assert_eq!(
+            fixes(&undeclared, "declares no gate limit: the gate may run for 3600s"),
+            ["docs/agents/afkconvoy.md: gate_seconds"]
+        );
+        assert_eq!(undeclared[0].severity, Severity::Info);
+        assert!(undeclared[0].evidence.contains("sets no `gate_seconds`"), "{undeclared:?}");
+        assert_eq!(found("gate_seconds: 600\n"), []);
+        assert_eq!(found("gate_seconds: 3600\n"), [], "the default, declared");
+    }
+
+    #[test]
     fn state_that_cannot_be_read_is_critical_and_findings_come_most_severe_first() {
         let why = "gh issue list failed: HTTP 401";
-        let found = findings(&Seen { now: NOW, host: &host(), run: &run(vec![]), state: Err(why) });
+        let found = findings(&Seen {
+            now: NOW,
+            host: &host(),
+            config: None,
+            run: &run(vec![]),
+            state: Err(why),
+        });
         assert_eq!(fixes(&found, "the fleet's state cannot be read"), ["afkconvoy scan"]);
         assert_eq!(found[0].evidence, why);
 
