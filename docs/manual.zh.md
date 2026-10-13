@@ -473,7 +473,7 @@ tick 7: advanced #1 · dispatched #2 · holding 3/3 · frontier 1 · next in 90s
 tick 9: advanced #2 · dispatched #1, #3 · ended the patrol triage, rounds · proposed as a precedent the ruling on #3 · holding 3/3 · frontier 0 · next in 90s
 ```
 
-`dispatched` 是在某个阶段上启动一个 worker；`advanced` 是 fleet 读到了裁定并结束该阶段的认领（claim）。下一个阶段在后一个 tick 被派发，用它自己的认领；只要有空闲的槽位给它，`run` 不休眠就开始那个 tick，这一行以 `next now` 结尾。下面是每张 issue 的经历。
+`dispatched` 是在某个阶段上启动一个 worker；`advanced` 是 fleet 读到了裁定并结束该阶段的认领（claim）。这几行来自较早的构建，那时下一个阶段要到后一个 tick 才被派发；现在读到裁定的那个 tick 就会启动它，用它自己的认领，并且两件事都写在同一行：`advanced #3 → review · dispatched #3`。下面是每张 issue 的经历。
 
 #### Issue 2：由巡查分流，走短工作流落地
 

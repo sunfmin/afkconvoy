@@ -407,6 +407,24 @@ impl Flows {
         self.issues.iter().map(|issue| (issue.number, due(issue))).collect()
     }
 
+    /// The issues read that have a stage record: a worker was started on
+    /// each before.
+    pub fn begun(&self) -> Vec<u64> {
+        let begun = |issue: &&Flowing| !issue.records.is_empty();
+        self.issues.iter().filter(begun).map(|issue| issue.number).collect()
+    }
+
+    /// The stage issue `number` is at — `land` once its last one passed to
+    /// the landing train. `None` once its workflow has ended, and for an
+    /// issue with no position.
+    pub fn at(&self, number: u64) -> Option<String> {
+        let (.., position) = self.positions().into_iter().find(|(at, ..)| *at == number)?;
+        match position {
+            Position::Landing => Some(LAND.to_string()),
+            at => at.stage().map(|stage| stage.name.clone()),
+        }
+    }
+
     /// The issues read that are among `claims` under a landing worker's
     /// claim (`stage_record::lands`).
     pub fn landing(&self, claims: &[Claim]) -> Vec<u64> {

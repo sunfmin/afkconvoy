@@ -217,8 +217,8 @@ fn a_split_parks_the_parent_and_its_children_are_worked_in_the_order_their_block
 
     // It goes on: the park was no rework, and `pass` leads where it ever did.
     declare(&world, 7, "plan", "pass", &["--text", "The pieces add up; the rest is to build."]);
-    assert_eq!(did(&tick(&world, 1810)), ["advance 7 done"]);
-    assert_eq!(frontier(&world), [at(7, "build")]);
+    assert_eq!(did(&tick(&world, 1810)), ["advance 7 done", "dispatch 7 done"]);
+    assert!(brief(&worktree(&world, 7)).contains("- **Stage:** `build`, of the workflow"));
     let shown = world.afk(&["show", "--issue", "7"]).ok();
     assert_eq!(shown["rework"]["had"], 0);
 }

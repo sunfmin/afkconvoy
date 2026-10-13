@@ -36,7 +36,9 @@ pub enum TickStep {
     Unlock { issue: u64 },
     /// Take a stale claim into a free slot, and continue it.
     Reclaim { issue: u64 },
-    /// Start a worker on a frontier issue, into a free slot.
+    /// Start a worker on a frontier issue, into a free slot — or on an issue
+    /// whose claim this pass ended with a worker due on it
+    /// (`Outcome::HandedOn`), into the slot that freed.
     Dispatch { issue: u64 },
     /// End the run of the patrol at this place among the working set's, when
     /// it is over: ask after the worker of a run of mine, or delete the claim
@@ -68,6 +70,11 @@ pub enum Outcome {
     /// It did what it names. For `Settle`, `Judge`, `Watch` and `Advance`
     /// that ends the claim: its slot is free.
     Done,
+    /// `Advance` ended the claim once its stage had declared, and left the
+    /// issue where its stage records put it: its slot is free, and the
+    /// worker due on it there, when one is (`Mine::due`), is this pass's to
+    /// start.
+    HandedOn,
     /// A silent worker was told to carry on: its claim is still held.
     Nudged,
     /// A worker was started on the claim again: it is still held.
@@ -149,6 +156,7 @@ impl Pass {
             ) && matches!(
                 outcome,
                 Outcome::Done
+                    | Outcome::HandedOn
                     | Outcome::Nudged
                     | Outcome::Continued
                     | Outcome::Restarted
@@ -160,23 +168,48 @@ impl Pass {
     /// Whether the pass left the tick after it a worker to start that it
     /// could not start itself: under a bound of `concurrency` claims a slot
     /// is free, and it advanced an issue or settled one. What follows either
-    /// — the stage the verdict leads to, an issue the landing unblocked — is
-    /// on no frontier before the next rebuild. A slot any other step freed
-    /// was the pass's own to fill: it ends claims before it takes any.
+    /// — a consult, the join, an issue the landing unblocked — is on no
+    /// frontier before the next rebuild. Not an issue the pass started the
+    /// next stage's worker on: nothing is left of that. A slot any other
+    /// step freed was the pass's own to fill: it ends claims before it takes
+    /// any.
     pub fn follow_up_due(&self, concurrency: usize) -> bool {
-        self.held < concurrency
-            && self.did.iter().any(|(step, outcome)| {
-                matches!(step, TickStep::Advance { .. } | TickStep::Settle { .. })
-                    && *outcome == Outcome::Done
-            })
+        if self.held >= concurrency {
+            return false;
+        }
+        for (step, outcome) in &self.did {
+            let left = match step {
+                TickStep::Settle { .. } => *outcome == Outcome::Done,
+                TickStep::Advance { issue } => {
+                    *outcome == Outcome::Done
+                        || *outcome == Outcome::HandedOn && !dispatched(&self.did, *issue)
+                }
+                _ => false,
+            };
+            if left {
+                return true;
+            }
+        }
+        false
     }
+}
+
+/// Whether `did` holds a dispatch of `issue`, however it ended.
+fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
+    for (step, _) in did {
+        if *step == (TickStep::Dispatch { issue }) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Runs one pass over `set` under a bound of `concurrency` claims — what
 /// `WorkingSet::bound` makes of the config's — with `held` slots taken as it
 /// starts (`WorkingSet::held`): settle the
 /// claims whose work landed, tend the landing train, ask after the workers
-/// not on the train yet, end the patrol runs and the proposals that are over, delete the stale
+/// not on the train yet — starting, into the slot its claim freed, the worker
+/// of the stage a verdict led to — end the patrol runs and the proposals that are over, delete the stale
 /// locks on closed issues, hand to a
 /// human the unclaimed issues that call for one, take stale
 /// claims, then the due patrols, then frontier issues into the free slots,
@@ -201,12 +234,12 @@ where
     F: FnMut(TickStep) -> Outcome,
 {
     let mut did = Vec::new();
-    let held = end_claims(set, Sweep::Landed, held, &mut did, &mut carry_out);
+    let held = end_claims(set, Sweep::Landed, concurrency, held, &mut did, &mut carry_out);
     if set.mine.iter().any(|mine| mine.status == Status::Joined) {
         let step = TickStep::TendTrain;
         did.push((step, carry_out(step)));
     }
-    let held = end_claims(set, Sweep::Stopped, held, &mut did, &mut carry_out);
+    let held = end_claims(set, Sweep::Stopped, concurrency, held, &mut did, &mut carry_out);
     let held = end_patrols(set, held, &mut did, &mut carry_out);
     let held = end_proposals(set, held, &mut did, &mut carry_out);
     for lock in &set.stale_closed {
@@ -226,8 +259,8 @@ where
         let step = TickStep::Heartbeat;
         did.push((step, carry_out(step)));
     }
-    let tried = did.iter().filter(|(step, _)| matches!(step, TickStep::Dispatch { .. })).count();
-    Pass { did, held, frontier_remaining: set.frontier.len().saturating_sub(tried) }
+    let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
+    Pass { did, held, frontier_remaining: left }
 }
 
 /// Which of my claims one sweep of a pass looks at.
@@ -252,13 +285,17 @@ fn ending_step(sweep: Sweep, issue: u64, status: Status) -> Option<TickStep> {
 }
 
 /// Carries out the step that may end each claim of mine `sweep` looks at →
-/// the claims still held.
-#[spec(fn(set: &WorkingSet, sweep: Sweep, held: usize, did: &mut Vec<(TickStep, Outcome)>,
-        carry_out: &mut F)
+/// the claims still held, under a bound of `concurrency`. A claim handed on
+/// with a worker due on its issue has that worker started into the slot it
+/// freed, when the bound leaves that slot free: ahead of everything else the
+/// pass takes a slot for, and of an issue that was never started.
+#[spec(fn(set: &WorkingSet, sweep: Sweep, concurrency: usize, held: usize,
+        did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
     -> usize{after: after <= held})]
 fn end_claims<F>(
     set: &WorkingSet,
     sweep: Sweep,
+    concurrency: usize,
     held: usize,
     did: &mut Vec<(TickStep, Outcome)>,
     carry_out: &mut F,
@@ -266,7 +303,7 @@ fn end_claims<F>(
 where
     F: FnMut(TickStep) -> Outcome,
 {
-    let mut slots = Slots::new(0, held);
+    let mut slots = Slots::new(concurrency, held);
     for mine in &set.mine {
         if sweep == Sweep::Stopped && set.locked_out(mine.number) {
             continue;
@@ -276,8 +313,19 @@ where
         };
         let outcome = carry_out(step);
         did.push((step, outcome));
-        if outcome == Outcome::Done && slots.held() > 0 {
-            slots.free();
+        let ended = outcome == Outcome::Done || outcome == Outcome::HandedOn;
+        if !ended || slots.held() == 0 {
+            continue;
+        }
+        slots.free();
+        if outcome == Outcome::HandedOn && mine.due.is_some() && slots.has_free() {
+            let step = TickStep::Dispatch { issue: mine.number };
+            let outcome = carry_out(step);
+            did.push((step, outcome));
+            // A start that failed after its claim was won still holds the claim.
+            if outcome != Outcome::Lost {
+                slots.take();
+            }
         }
     }
     slots.held()
@@ -367,17 +415,24 @@ fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
 /// else: of each claim of mine it left held, at the stage the pass found it
 /// at, and of each issue it dispatched. Never of a claim whose step ended it
 /// — or failed, having got who knows how far: its last word may be written
-/// already, and is not written over. A claim taken from a peer is shown by
-/// the next pass, which knows where its PR stands.
+/// already, and is not written over — unless the pass then started the
+/// issue's next worker, under a claim that has a board of its own to show. A
+/// claim taken from a peer is shown by the next pass, which knows where its
+/// PR stands.
 fn boards(set: &WorkingSet, did: &[(TickStep, Outcome)]) -> Vec<TickStep> {
     let mut steps: Vec<TickStep> = Vec::new();
     for mine in &set.mine {
         let Some(stage) = Stage::held(mine.status) else {
             continue;
         };
-        let ending =
-            ended(did, mine.number, Outcome::Done) || ended(did, mine.number, Outcome::Failed);
-        if !ending {
+        let handed_on = ended(did, mine.number, Outcome::HandedOn);
+        let ending = handed_on
+            || ended(did, mine.number, Outcome::Done)
+            || ended(did, mine.number, Outcome::Failed);
+        // Only a dispatch ends as `Done` on an issue handed on.
+        if handed_on && ended(did, mine.number, Outcome::Done) {
+            steps.push(TickStep::Board { issue: mine.number, stage: Stage::Claimed, pr: mine.pr });
+        } else if !ending {
             steps.push(TickStep::Board { issue: mine.number, stage, pr: mine.pr });
         }
     }
@@ -591,7 +646,7 @@ mod tests {
             excluded: vec![],
             mine: mine
                 .iter()
-                .map(|&(number, status)| Mine { number, title: None, status, pr: None })
+                .map(|&(number, status)| Mine { number, title: None, status, pr: None, due: None })
                 .collect(),
             peer_live: vec![],
             stale: vec![],
@@ -778,6 +833,71 @@ mod tests {
             ],
             "never of the claim the pass ended"
         );
+    }
+
+    /// `set`, a worker being due at `stage` on each of `issues` once its
+    /// claim of mine ends.
+    fn due_on(mut set: WorkingSet, issues: &[u64], stage: &str) -> WorkingSet {
+        for mine in set.mine.iter_mut().filter(|mine| issues.contains(&mine.number)) {
+            mine.due = Some(stage.to_string());
+        }
+        set
+    }
+
+    #[test]
+    fn a_claim_handed_on_has_the_worker_due_on_its_issue_started_into_the_slot_it_freed() {
+        let one = due_on(set(&[], &[(4, Status::AtStage), (5, Status::NoPr)]), &[4], "review");
+        let at_stage = [(4, Status::AtStage), (6, Status::AtStage), (9, Status::AtStage)];
+        // A worker performs the stage #4 and #9 were left at; #6 waits for a human.
+        let set = due_on(set(&[2, 5], &at_stage), &[4, 9], "review");
+        let handed_on = |step| if matches!(step, Advance { .. }) { HandedOn } else { Done };
+        let pass = run_pass(&set, 3, 3, handed_on);
+        assert_eq!(
+            steps(&pass),
+            [
+                Advance { issue: 4 },
+                Dispatch { issue: 4 },
+                Advance { issue: 6 },
+                Advance { issue: 9 },
+                Dispatch { issue: 9 },
+                Dispatch { issue: 2 },
+                Heartbeat
+            ],
+            "ahead of the frontier, which gets the slot nothing was due in"
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (3, 1));
+        assert!(pass.did_work());
+        let boards: Vec<TickStep> =
+            pass.did.iter().map(|(step, _)| *step).filter(|s| matches!(s, Board { .. })).collect();
+        assert_eq!(
+            boards,
+            [
+                Board { issue: 4, stage: Stage::Claimed, pr: None },
+                Board { issue: 9, stage: Stage::Claimed, pr: None },
+                Board { issue: 2, stage: Stage::Claimed, pr: None }
+            ],
+            "of the claims its starts made, never of the one #6 was handed on under"
+        );
+
+        // A fleet over its bound starts nothing: the issue waits on the frontier.
+        let full = run_pass(&one, 1, 2, |step| match step {
+            Advance { .. } => HandedOn,
+            _ => Nothing,
+        });
+        assert_eq!(steps(&full), [Advance { issue: 4 }, Judge { issue: 5 }, Heartbeat]);
+        assert_eq!(full.held, 1);
+
+        // A claim that ended any other way leaves nothing to start, whatever was due…
+        let ended = run_pass(&set, 3, 3, |_| Done);
+        assert!(!ended.did.contains(&(Dispatch { issue: 4 }, Done)), "{:?}", ended.did);
+        // …and a start a peer won takes no slot: the frontier has it.
+        let lost = run_pass(&set, 3, 3, |step| match step {
+            Advance { .. } => HandedOn,
+            Dispatch { issue: 4 } => Lost,
+            _ => Done,
+        });
+        assert_eq!(lost.frontier_remaining, 0, "{:?}", lost.did);
+        assert_eq!(lost.held, 3);
     }
 
     #[test]
@@ -1079,6 +1199,20 @@ mod tests {
         };
         assert!(only(Advance { issue: 1 }).follow_up_due(3), "the stage its verdict leads to");
         assert!(only(Settle { issue: 2 }).follow_up_due(3), "what its landing unblocked");
+        // A claim handed on leaves the tick after it whoever is due on the
+        // issue that this pass did not start: a consult, the join…
+        let handed_on = |set: &WorkingSet, bound| {
+            run_pass(set, bound, 1, |step| match step {
+                Advance { .. } => HandedOn,
+                _ => Done,
+            })
+        };
+        let at_stage = set(&[], &[(1, Status::AtStage)]);
+        assert!(handed_on(&at_stage, 1).follow_up_due(1));
+        // …and nothing once it started the next stage's worker itself.
+        let started = handed_on(&due_on(at_stage, &[1], "review"), 2);
+        assert!(started.did.contains(&(Dispatch { issue: 1 }, Done)));
+        assert!(!started.follow_up_due(2), "a slot is free, and nothing is left to start");
         // A claim that ended for good leaves nothing to start…
         assert!(!only(Judge { issue: 3 }).follow_up_due(3));
         // …and neither does a tick that only looked, or whose step failed.

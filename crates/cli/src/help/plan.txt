@@ -35,14 +35,17 @@ WHAT IT ANSWERS
    "proposals" while a ruling is proposed as a precedent or waits to be
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
-                   — in a bound repo with the stage each is at: {number, title, stage};
+                   — in a bound repo with the stage each is at: {number, title, stage},
+                   those a stage has already declared on ahead of those never started;
                    an issue whose stage's `escalate` waits for its consult is here
                    too, at that stage; the stage is `land` once the last one passed to the landing train
                    and the issue's PR waits for a worker to join it
     excluded       every other open issue, with why: {number, title, reason}
     escalating     in a bound repo, when there are any: the unclaimed issues a tick
                    hands to a human, with why: {number, title, reason}
-    mine           the claims of `--instance`: {number, title, status, pr}. status is
+    mine           the claims of `--instance`: {number, title, status, pr} — in a bound
+                   repo with `due`, the stage a worker is to be started on once the
+                   claim's stage has declared, where a role performs one. status is
                    no_pr, joining, joined, landed or closed — in a bound repo at_stage,
                    whatever PR is open, until a landing worker holds the claim: then
                    joining, joined, landed or closed, as in an unbound repo

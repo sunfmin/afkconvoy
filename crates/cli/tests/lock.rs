@@ -331,8 +331,7 @@ fn once_the_lock_closes_a_stage_that_declared_escalate_runs_again_and_a_pass_sta
     assert_eq!(at_work(&world, 1000), ["dispatch 7 done", "dispatch 8 done", "dispatch 9 done"]);
     // #8 is at `review`, which names no consult, before the base branch breaks.
     declare(&world, 1010, 8, "build", "pass");
-    assert_eq!(at_work(&world, 1020), ["advance 8 done"]);
-    assert_eq!(at_work(&world, 1030), ["dispatch 8 done"]);
+    assert_eq!(at_work(&world, 1020), ["advance 8 done", "dispatch 8 done"]);
 
     // The base branch broke, and #20 is the lock. Both stages met the fault
     // and said so; #9 built on, and passed.
@@ -343,7 +342,8 @@ fn once_the_lock_closes_a_stage_that_declared_escalate_runs_again_and_a_pass_sta
     assert_eq!(at_work(&world, 1200), [] as [&str; 0], "left alone while the lock stands");
 
     close_lock(&world, 20, 1300);
-    assert_eq!(at_work(&world, 1400), ["advance 7 done", "advance 8 done", "advance 9 done"]);
+    let closed = ["advance 7 done", "advance 8 done", "advance 9 done", "dispatch 9 done"];
+    assert_eq!(at_work(&world, 1400), closed);
     // Neither is with a consult nor with a human: each is at its stage again,
     // to be performed, and that is no rework.
     assert_eq!(position(&world, 7), ("perform".into(), "build".into(), 0));
@@ -357,11 +357,12 @@ fn once_the_lock_closes_a_stage_that_declared_escalate_runs_again_and_a_pass_sta
         assert!(record.contains(" verdict=lock-closed by=fleet-->"), "{record}");
         assert!(record.contains("A fleet lock stood (#20) and has closed."), "{record}");
     }
-    // A `pass` declared while the lock stood is advanced as ever.
+    // A `pass` declared while the lock stood is advanced as ever, and its
+    // next stage started with it. A stage that runs again is the next tick's.
     assert_eq!(position(&world, 9), ("perform".into(), "review".into(), 0));
-    assert_eq!(world.claims(), []);
+    assert_eq!(world.claims(), [(9, "alpha".to_string())]);
 
-    assert_eq!(at_work(&world, 1410), ["dispatch 7 done", "dispatch 8 done", "dispatch 9 done"]);
+    assert_eq!(at_work(&world, 1410), ["dispatch 7 done", "dispatch 8 done"]);
     for (issue, stage) in [(7, "build"), (8, "review")] {
         let told = brief(&world, issue);
         assert!(told.contains(&format!("- **Stage:** `{stage}`, of the workflow")), "{told}");

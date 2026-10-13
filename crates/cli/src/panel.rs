@@ -190,7 +190,7 @@ fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
         (TickStep::Dispatch { .. }, Outcome::Done) => "started this tick",
         (TickStep::Reclaim { .. }, Outcome::Done) => "taken from a silent peer this tick",
         (TickStep::Escalate { .. }, Outcome::Done) => "handed over this tick",
-        (_, Outcome::Done) => "its claim ended this tick",
+        (_, Outcome::Done | Outcome::HandedOn) => "its claim ended this tick",
         _ => return None,
     };
     Some((issue, says))

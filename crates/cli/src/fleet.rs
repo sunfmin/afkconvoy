@@ -106,6 +106,7 @@ impl Fleet {
             landed: &landed,
             due: &stages.due(prs),
             landing: &stages.landing(&self.scan.claims),
+            begun: &stages.begun(),
             patrols: &patrol::seen(self, &stages, &open.issues)?,
             proposals: &precedent::seen(self, &stages)?,
         };
