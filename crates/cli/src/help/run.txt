@@ -173,7 +173,8 @@ WHAT TRIPS YOU UP
           --config 'project_doc_fallback_filenames=["CLAUDE.md"]'
           --config 'project_root_markers=[]'
           [--config 'developer_instructions="<the repo's own rules, the team rules>"']
-          --config 'hooks={PreToolUse=[<what asks afkconvoy guard>]}'
+          --config 'hooks={PreToolUse=[<what asks afkconvoy guard, and orca's status
+            report>], <each other event a session's state changes at>=[<the report>]}'
           --config features.memories=false
           --config skills.bundled.enabled=false [--model <the stage's>]
     `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex
@@ -187,7 +188,11 @@ WHAT TRIPS YOU UP
     when the worker starts. A repo and a team with none are told none. The hook
     named asks `afkconvoy guard` before every tool call: one the guard refuses, or
     cannot be asked of, is not made. It is on the line and in no file, so no worker
-    starts without it. Codex's user directory is the fleet's own
+    starts without it. The report is the hook orca installed to hear of a Codex
+    session's state (~/.orca/agent-hooks/codex-hook.sh), which orca names in your
+    own hooks and a worker loads none of: it is given ten seconds, and refuses no
+    call, whatever it does; where orca installed none, nothing is told, and a
+    worker's state is read off its terminal. Codex's user directory is the fleet's own
     (~/.cache/afkconvoy/harness/codex), not yours (~/.codex): it holds a link to
     your login (auth.json) and nothing else of yours — no rule, skill, hook or
     configuration, so no provider you defined in config.toml. A login Codex

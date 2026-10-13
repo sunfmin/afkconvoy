@@ -399,9 +399,9 @@ pub struct Held {
     /// Each model named with no harness that the default harness does not
     /// list, with what names it: the team is written for another default.
     pub unknown: Vec<(String, String)>,
-    /// Each model named with no harness, under a default with no way to say
-    /// which models it knows, that another harness lists under that very
-    /// name: the model, what names it, and that harness.
+    /// Each model named with no harness, under a default that listed no
+    /// models, that another harness lists under that very name: the model,
+    /// what names it, and that harness.
     pub elsewhere: Vec<(String, String, Harness)>,
     /// What a human is told and is no fault: each worker whose role holds
     /// skills where its harness finds them by itself, the one it is asked to

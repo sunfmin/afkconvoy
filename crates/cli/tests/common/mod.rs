@@ -484,6 +484,17 @@ impl World {
         std::fs::write(self.root.join("shell-models"), table).unwrap();
     }
 
+    /// What the stand-in login shell prints when a command is asked which
+    /// models it was built with, in place of failing: Codex's JSON of them.
+    pub fn shell_built_with(&self, slugs: &[&str]) {
+        let models: Vec<Value> = slugs
+            .iter()
+            .map(|slug| serde_json::json!({"slug": slug, "display_name": slug, "visibility": "list"}))
+            .collect();
+        let listed = serde_json::json!({ "models": models }).to_string();
+        std::fs::write(self.root.join("shell-built-with"), listed).unwrap();
+    }
+
     /// What the stand-in login shell prints for `alias`.
     pub fn shell_aliases(&self, aliases: &str) {
         std::fs::write(self.root.join("shell-aliases"), aliases).unwrap();
@@ -532,7 +543,8 @@ impl Drop for World {
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does, `codex` as Codex and every other command as Claude Code —
 /// `shell -lic '… <command> --list-models'`, which fails unless a `shell-models` beside
-/// `bin/` holds what it prints, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
+/// `bin/` holds what it prints, `shell -lic '… <command> debug models --bundled'`, which
+/// fails unless a `shell-built-with` there does, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
 /// word is a program unless `shell-types`
 /// beside `bin/` says otherwise, and each is logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
@@ -572,6 +584,9 @@ case "$2" in
     echo "  --approve, -a                  Trust project-local files for this run"; exit 0 ;;
   *" --list-models")
     if [ -f "$root/shell-models" ]; then cat "$root/shell-models"; exit 0; fi
+    echo "command not found" >&2; exit 127 ;;
+  *" debug models --bundled")
+    if [ -f "$root/shell-built-with" ]; then cat "$root/shell-built-with"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
   *" --help")
     if [ -f "$root/shell-help" ]; then

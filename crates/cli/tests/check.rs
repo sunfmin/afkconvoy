@@ -928,6 +928,118 @@ fn a_repo_bound_to_a_team_whose_models_fit_another_default_harness_is_told_so() 
     answer.ok();
 }
 
+#[test]
+fn a_model_named_for_codex_is_held_to_the_ones_codex_lists_on_this_host() {
+    let named = |model: &str| building(&["harness: codex", &format!("model: {model}")]);
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &named("opus"))]);
+    let team = world.root.join("github/acme/team");
+    // Codex could not be asked on this host: the model is passed as written.
+    let answer = world.afk(&["check"]);
+    assert!(
+        answer.stderr.contains("note: Codex could not be asked which models it knows on this host"),
+        "{}",
+        answer.stderr
+    );
+    assert_eq!(answer.ok()["workflows"][0]["stages"][0]["model"], "opus");
+    // Asked, in the shell a worker gets and under the directory the fleet
+    // keeps for it, its worker launch command lists the models it was built
+    // with: `opus` is none of them.
+    world.shell_built_with(&["gpt-5.5", "gpt-6-sol"]);
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 1);
+    assert_eq!(faults(&answer.json), ["workflows/feature.md: stages[0].model"]);
+    let error = answer.error();
+    assert!(
+        error.contains("`opus` is no model Codex knows on this host: it lists gpt-5.5, gpt-6-sol."),
+        "{error}"
+    );
+    let kept = world.cache().join("afkconvoy/harness/codex");
+    let asked = format!(
+        "export CODEX_HOME='{}' && {} debug models --bundled",
+        kept.display(),
+        afkconvoy_core::harness::Harness::Codex.stock()
+    );
+    assert!(world.shell_asked().contains(&asked), "{:?}", world.shell_asked());
+    // One it lists is known by its whole name, and by no part of it.
+    commit(&team, "workflows/feature.md", &named("gpt-6-sol"));
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.stderr, "");
+    answer.ok();
+    commit(&team, "workflows/feature.md", &named("gpt-6"));
+    assert_eq!(faults(&world.afk(&["check"]).json), ["workflows/feature.md: stages[0].model"]);
+    // A Codex that lists nothing has said nothing: the model is passed as
+    // written.
+    world.shell_built_with(&[]);
+    let answer = world.afk(&["check"]);
+    assert!(answer.stderr.contains("or listed none: a model named for it is passed as written"));
+    assert_eq!(answer.ok()["workflows"][0]["stages"][0]["model"], "gpt-6");
+}
+
+#[test]
+fn a_model_of_codex_s_named_with_no_harness_under_another_default_is_told_so() {
+    let world =
+        bound(&[("team.md", TEAM), ("workflows/feature.md", &building(&["model: gpt-6-sol"]))]);
+    world.shell_built_with(&["gpt-5.5", "gpt-6-sol"]);
+    // Claude Code cannot say which models it knows, and the model is passed
+    // as written — with a warning: it is Codex's name for one it lists.
+    let answer = world.afk(&["check"]);
+    assert!(
+        answer.stderr.contains(
+            "warning: the stage `build` of the workflow `feature` names the model `gpt-6-sol` \
+             and no harness, so it runs on the default harness, `claude-code` — and `gpt-6-sol` \
+             is `codex`'s name for a model"
+        ),
+        "{}",
+        answer.stderr
+    );
+    answer.ok();
+    // pi can say, and lists no such model: a fault of the repo's own config.
+    world.shell_models(&["zai/glm-5.2"]);
+    let config = |harness: &str| {
+        format!(
+            "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
+             harness: {harness}\n```\n"
+        )
+    };
+    write(&world.clone, "docs/agents/afkconvoy.md", &config("pi"));
+    let answer = world.afk(&["check"]);
+    assert_eq!(faults(&answer.json), ["docs/agents/afkconvoy.md: harness"]);
+    let error = answer.error();
+    assert!(error.contains("`gpt-6-sol` (the stage `build` of the workflow `feature`)"), "{error}");
+    assert!(error.contains("so each runs on `pi`, this repo's default"), "{error}");
+    // Under Codex it is one Codex lists — and a model of another harness's
+    // is the fault there.
+    write(&world.clone, "docs/agents/afkconvoy.md", &config("codex"));
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.stderr, "");
+    answer.ok();
+    let team = world.root.join("github/acme/team");
+    commit(&team, "workflows/feature.md", &building(&["model: zai/glm-5.2"]));
+    let answer = world.afk(&["check"]);
+    assert_eq!(faults(&answer.json), ["docs/agents/afkconvoy.md: harness"]);
+    let error = answer.error();
+    assert!(error.contains("so each runs on `codex`, this repo's default"), "{error}");
+    assert!(error.contains("it lists gpt-5.5, gpt-6-sol."), "{error}");
+}
+
+/// What a model named for Codex is checked against is said where `check` is
+/// described.
+#[test]
+fn the_help_of_check_says_what_a_model_named_for_codex_is_checked_against() {
+    let world = World::new();
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root)
+        .args(["check", "--help"])
+        .output();
+    let help = String::from_utf8(out.unwrap().stdout).unwrap();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    let asked =
+        format!("{} debug models --bundled", afkconvoy_core::harness::Harness::Codex.stock());
+    for said in [asked.as_str(), "each by its `slug`", "Codex knows a model by the whole `slug`"] {
+        assert!(help.contains(said), "check --help never says {said:?}");
+    }
+}
+
 /// Where a role's limits for each harness go is said wherever a role's files
 /// are: in the topic `team`, in `scaffold`'s help and in the rules a skeleton is
 /// written with — beside what is written once.

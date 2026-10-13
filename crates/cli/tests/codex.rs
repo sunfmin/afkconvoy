@@ -1,10 +1,11 @@
 //! Codex is a harness (docs/adr/0013): a stage that names it gets a worker
 //! that is a Codex session, started in its role's directory under a user
-//! directory of the fleet's own, with the hook that asks the guard said on
-//! the line that starts it. The line is read off a stand-in orca, and then
-//! run with a stand-in Codex, which says what it was started with; the hook
-//! it was given is then run as Codex runs one: what refuses a call is the
-//! guard itself.
+//! directory of the fleet's own, with the hooks that ask the guard and tell
+//! the worker backend said on the line that starts it. The line is read off a
+//! stand-in orca, and then run with a stand-in Codex, which says what it was
+//! started with; the hooks it was given are then run as Codex runs one: what
+//! refuses a call is the guard itself, and what orca hears is what the fleet
+//! then reads off it.
 
 mod common;
 
@@ -296,14 +297,40 @@ fn a_host_without_codex_or_with_no_login_a_worker_can_use_is_refused_before_a_wo
     assert_eq!(doctor_finds(&world), []);
 }
 
-/// The hook that asks the guard `guard`, as the line that starts a worker
-/// says it to Codex.
+/// The line that tells orca of a Codex worker's state: orca's own hook for
+/// Codex, where the host has one, and whatever it does, nothing said and no
+/// failure.
+const REPORT: &str = r#"hook="${HOME-}/.orca/agent-hooks/codex-hook.sh"; if [ -x "$hook" ]; then /bin/sh "$hook"; else cat; fi >/dev/null 2>&1; exit 0"#;
+/// The events at which orca names its hook for Codex, the one before each
+/// tool call apart.
+const STATE_EVENTS: [&str; 7] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "PostToolUse",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+];
+
+/// The hooks that ask the guard `guard` and tell orca, as the line that
+/// starts a worker says them to Codex: the guard before each tool call, and
+/// the report there and at each event at which a worker's state changes,
+/// with a timeout.
 fn hook(guard: &str) -> String {
-    format!(
-        "hooks={{PreToolUse=[{{hooks=[{{type=\"command\",command=\"said=$({guard} 2>&1 \
-         >/dev/null) && exit 0; printf '%s\\\\n' \\\"${{said:-afkconvoy guard: it could not be \
-         asked}}\\\" >&2; exit 2\"}}]}}]}}"
-    )
+    // A TOML string that holds nothing but these escapes is a JSON one too.
+    let text = |line: &str| serde_json::to_string(line).unwrap();
+    let guard = text(&format!(
+        "said=$({guard} 2>&1 >/dev/null) && exit 0; printf '%s\\n' \"${{said:-afkconvoy guard: \
+         it could not be asked}}\" >&2; exit 2"
+    ));
+    let report = format!("{{type=\"command\",command={},timeout=10}}", text(REPORT));
+    let mut hooks =
+        format!("hooks={{PreToolUse=[{{hooks=[{{type=\"command\",command={guard}}},{report}]}}]");
+    for event in STATE_EVENTS {
+        hooks.push_str(&format!(",{event}=[{{hooks=[{report}]}}]"));
+    }
+    hooks + "}"
 }
 
 #[test]
@@ -520,39 +547,99 @@ fn under_codex(world: &World, line: &str) -> Vec<String> {
     printed.split_terminator('\0').map(str::to_string).collect()
 }
 
-/// The shell line of the one hook the stand-in Codex was given in `ran`,
-/// which Codex runs before each tool call: there is no other place it is
-/// kept, and a start that names none has none.
-fn hooked(ran: &[String]) -> String {
+/// The shell lines of the two hooks the stand-in Codex was given in `ran`,
+/// which Codex runs before each tool call — the guard, then the report:
+/// there is no other place they are kept, and a start that names none has
+/// none.
+fn hooked(ran: &[String]) -> (String, String) {
     let said: Vec<&String> = ran.iter().filter(|word| word.starts_with("hooks=")).collect();
     assert_eq!(said.len(), 1, "{ran:?}");
-    let before = "hooks={PreToolUse=[{hooks=[{type=\"command\",command=";
-    let text = said[0].strip_prefix(before).and_then(|rest| rest.strip_suffix("}]}]}"));
     // A TOML string that holds nothing but these escapes is a JSON one too.
-    serde_json::from_str(text.expect("one hook, before each tool call")).unwrap()
+    let text = |rest: &str| -> (String, usize) {
+        let mut read = serde_json::Deserializer::from_str(rest).into_iter::<String>();
+        (read.next().expect("a string").unwrap(), read.byte_offset())
+    };
+    let before = "hooks={PreToolUse=[{hooks=[{type=\"command\",command=";
+    let rest = said[0].strip_prefix(before).expect("the guard, before each tool call");
+    let (guard, read) = text(rest);
+    let beside = "},{type=\"command\",command=";
+    let (report, _) = text(rest[read..].strip_prefix(beside).expect("the report, beside it"));
+    (guard, report)
 }
 
-/// What the hook of the worker `line` started answers Codex for `call`, run
-/// as Codex runs a hook — by a shell, in the worker's environment, with the
-/// call described on standard input: its exit code and what it said.
-fn codex_is_told(world: &World, line: &str, call: &Value) -> (i32, String) {
+/// What the shell line `hook` answers Codex for `event`, run as Codex runs a
+/// hook — by a shell, in the environment of the worker `line` started, with
+/// the event described on standard input: its exit code, and what it said on
+/// stdout and on stderr. Of the host's environment a worker has its PATH,
+/// and the home `home` where one is given.
+fn hook_answers(
+    line: &str,
+    hook: &str,
+    home: Option<&Path>,
+    event: &Value,
+) -> (i32, String, String) {
     use std::io::Write;
-    let hook = hooked(&under_codex(world, line));
     let (worker, _) = line.split_once(" && codex ").expect("the stock command");
-    let mut child = Command::new("/bin/sh")
+    let mut hook_run = Command::new("/bin/sh");
+    hook_run
         .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
-        .env("STAND_IN_HOOK", hook)
+        .env("STAND_IN_HOOK", hook);
+    if let Some(home) = home {
+        hook_run.env("HOME", home);
+    }
+    let mut child = hook_run
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(call.to_string().as_bytes()).unwrap();
+    child.stdin.take().unwrap().write_all(event.to_string().as_bytes()).unwrap();
     let out = child.wait_with_output().unwrap();
-    assert!(out.stdout.is_empty(), "a hook says nothing to Codex but on stderr");
-    (out.status.code().unwrap(), String::from_utf8(out.stderr).unwrap().trim().to_string())
+    let said = |bytes: Vec<u8>| String::from_utf8(bytes).unwrap().trim().to_string();
+    (out.status.code().unwrap(), said(out.stdout), said(out.stderr))
+}
+
+/// What the guard of the worker `line` started answers Codex for `call`: its
+/// exit code and what it said.
+fn codex_is_told(world: &World, line: &str, call: &Value) -> (i32, String) {
+    let (guard, _) = hooked(&under_codex(world, line));
+    let (code, out, said) = hook_answers(line, &guard, None, call);
+    assert!(out.is_empty(), "a hook says nothing to Codex but on stderr");
+    (code, said)
+}
+
+/// What the report of the worker `line` started answers Codex for `event`,
+/// on this world's host.
+fn report_answers(world: &World, line: &str, event: &Value) -> (i32, String, String) {
+    let (_, report) = hooked(&under_codex(world, line));
+    hook_answers(line, &report, Some(&world.home()), event)
+}
+
+/// Installs a stand-in for the hook orca installs for Codex on this world's
+/// host: it keeps each event it is handed, and then does `then`.
+fn orca_installs_its_hook(world: &World, then: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = world.home().join(".orca/agent-hooks/codex-hook.sh");
+    let kept = "#!/bin/sh\n{ cat; echo; } >>\"$HOME/told\"\n";
+    write(&world.home(), ".orca/agent-hooks/codex-hook.sh", &format!("{kept}{then}\n"));
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// The events the stand-in for orca's hook was handed since the last look.
+fn orca_was_told(world: &World) -> Vec<String> {
+    let kept = world.home().join("told");
+    let events = std::fs::read_to_string(&kept).unwrap_or_default();
+    let _ = std::fs::remove_file(kept);
+    let events = events.lines().filter(|event| !event.is_empty());
+    let named = events.map(|event| serde_json::from_str::<Value>(event).unwrap());
+    named.map(|event| event["hook_event_name"].as_str().unwrap().to_string()).collect()
+}
+
+/// One event of a Codex session, as Codex describes it to a hook.
+fn event(name: &str) -> Value {
+    json!({"hook_event_name": name, "session_id": "a-session"})
 }
 
 fn bash(line: &str) -> Value {
@@ -691,7 +778,8 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
     // The guard is said beside it, as configuration of the one run: Codex
     // adds that to the hooks a directory holds, and the fleet writes it into
     // no file — not the role's, and none of the user directory's.
-    assert!(!hooked(&ran).contains("refuse.sh"));
+    let (guard, report) = hooked(&ran);
+    assert!(!guard.contains("refuse.sh") && !report.contains("refuse.sh"));
     assert!(!held.contains("afkconvoy"), "{held}");
     assert!(!kept(&world).join("hooks.json").exists());
     assert!(!kept(&world).join("config.toml").exists());
@@ -757,6 +845,120 @@ fn a_stage_record_of_a_codex_worker_names_codex() {
     assert!(record.contains(" verdict=pass ") && record.contains(" harness=codex-->"), "{record}");
     let shown = world.afk(&["show", "--issue", "7"]).ok();
     assert_eq!(shown["records"][0]["harness"], "codex", "{shown}");
+}
+
+#[test]
+fn a_codex_worker_s_start_names_orca_s_hook_wherever_its_state_changes_and_it_refuses_nothing() {
+    let world = bound();
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 8 done");
+    let line = started(&world, &worktree(&world, 8));
+    let ran = under_codex(&world, &line);
+    let (_, report) = hooked(&ran);
+    assert_eq!(report, REPORT);
+    // At each event orca itself names its hook at, with the timeout orca
+    // gives it; the guard, which must answer, has none.
+    let said = ran.iter().find(|word| word.starts_with("hooks=")).unwrap();
+    let named = format!("command={},timeout=10}}", serde_json::to_string(REPORT).unwrap());
+    for event in [&["PreToolUse"][..], &STATE_EVENTS[..]].concat() {
+        let at = said.split_once(&format!("{event}=[{{hooks=[")).expect(event).1;
+        let hooks = at.split_once("]}]").unwrap().0;
+        assert!(hooks.ends_with(&named), "{event}: {hooks}");
+    }
+    assert_eq!(said.matches("timeout=").count(), 8, "{said}");
+
+    // On a host where orca installed no hook for Codex nothing is told, and
+    // nothing fails: the event is read, and Codex is answered nothing.
+    let events = [&["PreToolUse"][..], &STATE_EVENTS[..]].concat();
+    let nothing = (0, String::new(), String::new());
+    for name in &events {
+        assert_eq!(report_answers(&world, &line, &event(name)), nothing, "{name}");
+    }
+    assert!(!world.home().join(".orca").exists());
+
+    // Where it installed one, the hook is handed each event — and whatever it
+    // says or ends in, the report says nothing and refuses nothing: Codex
+    // would take a hook's exit code, or what it prints, for an answer.
+    for then in ["", "echo '{\"decision\":\"block\"}'; echo refused >&2; exit 2", "kill -9 $$"] {
+        orca_installs_its_hook(&world, then);
+        for name in &events {
+            assert_eq!(report_answers(&world, &line, &event(name)), nothing, "{name}: {then}");
+        }
+        assert_eq!(orca_was_told(&world), events, "{then}");
+    }
+    // The call the report let through is still the guard's to refuse.
+    let (code, why) = codex_is_told(&world, &line, &bash("git push origin main"));
+    assert_eq!(code, 2, "{why}");
+}
+
+/// orca's part of a report: what it has of the worker's terminal once its
+/// hook was handed the event `heard`, at `at` — a session that stopped is
+/// done, and any other event is of one at work.
+fn orca_heard(world: &World, heard: &str, at: u64) {
+    let state = if heard == "Stop" { "done" } else { "working" };
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["open"] == true && !terminal["command"].is_null() {
+                terminal["agent"] = json!({"state": state, "stateStartedAt": at * 1000});
+            }
+        }
+    });
+}
+
+/// The worker's terminal last wrote at `at`.
+fn wrote(world: &World, at: u64) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["open"] == true && !terminal["command"].is_null() {
+                terminal["lastOutputAt"] = json!(at * 1000);
+            }
+        }
+    });
+}
+
+#[test]
+fn a_codex_worker_that_is_working_is_seen_as_busy_and_one_that_has_stopped_as_stopped() {
+    let world = bound();
+    orca_installs_its_hook(&world, "");
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let dir = worktree(&world, 7);
+    let line = started(&world, &dir);
+    let sent = || {
+        let orca = world.orca();
+        let terminals = orca["terminals"].as_array().unwrap();
+        let here = terminals.iter().find(|t| t["worktreePath"] == dir.to_str().unwrap()).unwrap();
+        here["sent"].as_array().unwrap().len()
+    };
+    // What its hooks hand orca's is all orca hears of the session: nothing
+    // else of the worker's start names orca.
+    let heard = |name: &str, at: u64| {
+        assert_eq!(report_answers(&world, &line, &event(name)).0, 0, "{name}");
+        let told = orca_was_told(&world);
+        assert_eq!(told, [name]);
+        orca_heard(&world, &told[0], at);
+    };
+
+    // Handed its brief and at its tools: at work, and left alone.
+    heard("UserPromptSubmit", 1000);
+    heard("PostToolUse", 1395);
+    wrote(&world, 1395);
+    assert_eq!(did(&tick(&world, 1400).ok())[0], "advance 7 nothing");
+    assert_eq!(sent(), 1, "the brief alone");
+
+    // Stopped, with no verdict: seen as stopped though its terminal wrote a
+    // moment ago — which would read as at work, had orca heard nothing — and
+    // nudged, once, as any other worker.
+    heard("Stop", 1400);
+    wrote(&world, 1695);
+    assert_eq!(did(&tick(&world, 1700).ok())[0], "advance 7 nudged");
+    assert_eq!(sent(), 2, "the brief, then the nudge");
+
+    // At work again on the nudge: busy, and left alone.
+    heard("UserPromptSubmit", 1700);
+    wrote(&world, 1780);
+    assert_eq!(did(&tick(&world, 1790).ok())[0], "advance 7 nothing");
+    assert_eq!(sent(), 2);
 }
 
 /// The entries of the directory `dir`, sorted.
