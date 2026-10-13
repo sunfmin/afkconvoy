@@ -83,9 +83,15 @@ RULES TO KNOW BEFORE YOU START
     lines, or use `tick` for one pass that exits.
   - With a custom provider (ANTHROPIC_BASE_URL set) and no terminal, a command that
     starts a worker needs `--worker-command`: there is nobody to ask.
+  - A fleet instance has one worker launch command for each harness its workers run.
+    `--worker-command <command>` says the default harness's, and
+    `--worker-command <harness>=<command>` one harness's, by its key: once for each.
+    A harness nobody said one for is started with its stock command.
   - In a bound repo the worker launch command must end in Claude Code taking flags: the
     fleet adds to it what starts each worker in its role and under the guard, and a
-    start refuses a command whose `--help` does not name those flags.
+    start refuses a command whose `--help` does not name those flags. Every harness
+    the team could ask for is checked before any worker is started, and none is
+    ever started in another's place.
 
 DESIGNING A TEAM, for a bound repo
 

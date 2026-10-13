@@ -76,6 +76,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let role_copy = kept.role(role)?;
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
     let harness = patrol.harness(bound.harness);
+    // Before the claim: a patrol whose harness cannot be started here runs nothing.
+    let launch = agent.command(harness)?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &claim_key(name))? else {
         return Ok(Outcome::Lost);
     };
@@ -134,7 +136,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&harness.in_role(agent.command.as_str(), &start), me.now)?;
+    let terminal = checkout.start(&harness.in_role(launch.as_str(), &start), me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 

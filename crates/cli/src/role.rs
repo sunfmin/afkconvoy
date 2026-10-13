@@ -14,13 +14,14 @@ use afkconvoy_core::prompt::{
 };
 use afkconvoy_core::role::{Due, Facts, On, Start, due};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
-use afkconvoy_core::team::{LAND, PRECEDENTS};
+use afkconvoy_core::team::{BY_DEFAULT, LAND, PRECEDENTS};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::copies::{Copies, Copy};
 use crate::fleet::Fleet;
-use crate::launch::Proposed;
+use crate::gh::GitHub;
+use crate::launch::Launches;
 use crate::orca::{Under, Worktree};
 use crate::stage::records_of;
 use crate::team::keep;
@@ -122,8 +123,13 @@ impl Staged {
         })
     }
 
-    /// The line the terminal on `worktree` runs to start the worker with the
-    /// worker launch command `launch`.
+    /// The harness the worker is a session of.
+    pub fn harness(&self) -> Harness {
+        self.harness
+    }
+
+    /// The line the terminal on `worktree` runs to start the worker with
+    /// `launch`, the worker launch command of its harness.
     pub fn command(&self, launch: &str, worktree: &Worktree) -> String {
         let start = Start {
             role_dir: &self.role_copy.dir.display().to_string(),
@@ -263,9 +269,68 @@ impl Staged {
     }
 }
 
-/// Checks that the worker launch command `launch` takes what a bound repo's
-/// fleet adds to it, asking the login shell a worker gets. An error names
-/// what it does not take.
-pub fn probe(launch: &Proposed) -> Result<()> {
-    Harness::DEFAULT.takes(launch.as_str(), launch.flags().as_deref()).map_err(|why| anyhow!(why))
+/// The worker launch command of one harness, as far as this host can say
+/// what it is and whether it can start that harness's workers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    pub harness: Harness,
+    /// What calls for the harness (`Team::harnesses`); nothing in an unbound
+    /// repo, which knows of no harness.
+    pub callers: Vec<String>,
+    pub command: String,
+    /// Why it cannot start a worker, when it cannot.
+    pub fault: Option<String>,
+    /// Why it does not take what starts a worker in its role, when it does
+    /// not. Asked in a bound repo only.
+    pub flags_fault: Option<String>,
+}
+
+/// Every harness the fleet of a repo `bound` to a team could be asked for,
+/// each with what calls for it (`Team::harnesses`): the repo's default, and
+/// whatever the team's workflows and the patrols the repo runs name, as the
+/// team stands now. A team that cannot be read or does not load calls for
+/// the default alone: no worker is started under it, and each tick says why.
+pub fn called_for(bound: &Bound) -> Vec<(Harness, Vec<String>)> {
+    let gh = GitHub { dir: PathBuf::from(".") };
+    match Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team)) {
+        Ok(kept) => kept.team.harnesses(bound.harness, &bound.patrols),
+        Err(_) => vec![(bound.harness, vec![BY_DEFAULT.to_string()])],
+    }
+}
+
+/// Checks the worker launch command of each harness `called` for, as
+/// `launches` has it, asking the login shell a worker gets: that its first
+/// word resolves there and — in a bound repo — that it takes what the fleet
+/// adds to it for that harness. Each fault is said with its harness and what
+/// calls for it. A command only a human could say, in a start that asks
+/// none, is left out.
+pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<Vec<Checked>> {
+    let mut checked = vec![];
+    for (harness, callers) in called {
+        let Some(proposed) = launches.of(*harness)? else { continue };
+        let said = |fault: String| launches.said(&fault, *harness, callers);
+        let takes = || harness.takes(proposed.as_str(), proposed.flags().as_deref());
+        checked.push(Checked {
+            harness: *harness,
+            callers: callers.clone(),
+            command: proposed.as_str().to_string(),
+            fault: proposed.fault().map(said),
+            flags_fault: takes().err().filter(|_| launches.bound()).map(said),
+        });
+    }
+    Ok(checked)
+}
+
+/// Checks that every harness the fleet of a repo `bound` to a team could be
+/// asked for can be started on this host (`check`). An error names every
+/// fault at once: none is started in another's place, so a start that cannot
+/// start them all starts no worker.
+pub fn probe(launches: &Launches, bound: &Bound) -> Result<()> {
+    let checked = check(launches, &called_for(bound))?;
+    let faults: Vec<String> = checked
+        .into_iter()
+        .flat_map(|checked| [checked.fault, checked.flags_fault])
+        .flatten()
+        .collect();
+    if faults.is_empty() { Ok(()) } else { bail!(faults.join("\n")) }
 }

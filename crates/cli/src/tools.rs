@@ -6,11 +6,12 @@
 
 use std::os::unix::fs::PermissionsExt;
 
+use afkconvoy_core::team::BY_DEFAULT;
 use afkconvoy_core::tools::{Found, Tool, needed, refusal, remote_host};
 use anyhow::{Result, bail};
 
 use crate::git::{REMOTE, Repo};
-use crate::launch::{Proposed, ask_login_shell};
+use crate::launch::{Launches, Proposed, ask_login_shell};
 use crate::orca;
 
 /// What this host has of the commands a start needs.
@@ -61,14 +62,19 @@ pub fn look(launch: Option<&Proposed>) -> Looked {
 
 /// Checks that this host has every command a start needs, each logged in, and
 /// that orca is running and knows this checkout.
-/// `launch` is the worker launch command, when the start knows it. An error
-/// names every fault at once, each with the line a human runs to fix it.
-pub fn check(launch: Option<&Proposed>) -> Result<()> {
+/// Of `launches`, the default harness's worker launch command is checked
+/// here, when the start knows it: every other harness's is `role::probe`'s,
+/// which reads the team that calls for them. An error names every fault at
+/// once, each with the line a human runs to fix it.
+pub fn check(launches: &Launches) -> Result<()> {
+    let default = launches.default();
+    let launch = launches.of(default)?;
     let looked = look(launch);
     if let Some(why) = looked.orca_unasked {
         bail!(why);
     }
     let fault = launch.and_then(Proposed::fault);
+    let fault = fault.map(|fault| launches.said(&fault, default, &[BY_DEFAULT.to_string()]));
     match refusal(&looked.found, looked.host.as_deref(), fault.as_deref()) {
         Some(why) => bail!(why),
         None => Ok(()),

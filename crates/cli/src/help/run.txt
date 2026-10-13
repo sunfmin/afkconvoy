@@ -82,9 +82,10 @@ WHAT IT ANSWERS
   is taken; a command the
   fleet needs is missing or logged out, or orca is not running or does not know this
   checkout (the error names each, with the line to run);
-  the repo fails the startup probe; the config cannot be read; the worker launch
-  command resolves to nothing, or — in a bound repo — does not take the flags that
-  start a worker in its role.
+  the repo fails the startup probe; the config cannot be read; `--worker-command`
+  names no harness, or one harness twice; the worker launch command of a harness the
+  fleet could be asked for resolves to nothing, or — in a bound repo — does not take
+  the flags that start a worker in its role.
 
 WHAT TRIPS YOU UP
 
@@ -106,3 +107,15 @@ WHAT TRIPS YOU UP
   - The panel is served to this host only, and shows a tick, not this second: between
     two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
   - With ANTHROPIC_BASE_URL set and no terminal it needs `--worker-command`.
+  - `--worker-command` has two forms, and is given once for each harness.
+    `--worker-command <command>` is the worker launch command of the default harness:
+    the one the repo's config names, Claude Code where it names none.
+    `--worker-command <harness>=<command>` is that of one harness, by its key
+    (`claude-code`). A value is the second form when its first word holds an `=`.
+    A harness given none is started with its stock command.
+  - In a bound repo, before any worker is started, the command of every harness the
+    fleet could be asked for is checked: the repo's default, each harness a stage of
+    the team's workflows names, and each a patrol the repo runs names. One that
+    cannot be started refuses the start, named with its harness and the stage or
+    patrol that calls for it, and no worker at all is started: no harness is ever
+    started in another's place.

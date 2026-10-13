@@ -1,10 +1,13 @@
-//! The worker launch command: the one opaque shell string every worker is
-//! started with. A worker's shell inherits nothing of the environment the
-//! fleet was started in, so a fleet started through a provider wrapper must be
-//! told the command that wraps its workers the same way — or it would start
-//! them on the stock one, silently. The stock command, and the variable that
-//! names a provider, are the default harness's (`harness`): an unbound repo's
-//! command starts whatever it starts.
+//! The worker launch command: the one opaque shell string every worker of
+//! one harness is started with. A fleet instance has one for each harness its
+//! workers run (docs/adr/0013): `--worker-command` says how one harness is
+//! started on this host (`supplied`), and a harness nobody said one for is
+//! started with its stock command. A worker's shell inherits nothing of the
+//! environment the fleet was started in, so a fleet started through a
+//! provider wrapper must be told the command that wraps its workers the same
+//! way — or it would start them on the stock one, silently. The stock
+//! command, and the variable that names a provider, are each harness's own
+//! (`harness`): an unbound repo's command starts whatever it starts.
 //!
 //! Nothing here reads the command beyond its first word, and nothing builds
 //! one from parts.
@@ -12,9 +15,6 @@
 use flux_rs::attrs::*;
 
 use crate::harness::Harness;
-
-/// What a worker is started with when the fleet is on no custom provider.
-pub const STOCK: &str = Harness::DEFAULT.stock();
 
 /// The flags that let an agent work with nobody at its terminal. Only ever
 /// looked for, to warn: a worker without one stops at its first permission
@@ -46,25 +46,101 @@ pub enum Source {
     Refuse(String),
 }
 
-/// Where a start gets its command: `provider` is the custom provider the
-/// fleet itself runs under (`Harness::provider_variable`), `supplied` what `--worker-command` was given, and
-/// `terminal` whether there is a human to ask.
-pub fn source(provider: Option<&str>, supplied: Option<&str>, terminal: bool) -> Source {
+/// What `--worker-command` said, each time it was given: the command of each
+/// harness it names, no harness twice. `supplied` is the only way to one.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Supplied {
+    commands: Vec<(Harness, String)>,
+}
+
+impl Supplied {
+    /// The command said for `harness`, as it was said; `None` when none was.
+    pub fn of(&self, harness: Harness) -> Option<&str> {
+        let said = self.commands.iter().find(|(named, _)| *named == harness);
+        said.map(|(_, command)| command.as_str())
+    }
+
+    /// Each harness a command was said for, with that command, in the order
+    /// they were given.
+    pub fn each(&self) -> impl Iterator<Item = (Harness, &str)> {
+        self.commands.iter().map(|(harness, command)| (*harness, command.as_str()))
+    }
+}
+
+/// What the values `given` to `--worker-command` say, in a repo whose
+/// default harness is `default`. A value whose first word holds an `=` is
+/// `<harness>=<command>`: what is before the `=` is the harness's key, and
+/// what follows is its command, as it was given. Any other value is the bare
+/// form: the command of `default`. An error is a name that is no harness, or
+/// a harness given a command twice — by name, bare, or once each way.
+pub fn supplied(given: &[String], default: Harness) -> Result<Supplied, String> {
+    let mut commands: Vec<(Harness, String)> = vec![];
+    for value in given {
+        let named = value.split_once('=').filter(|(name, _)| !name.contains(char::is_whitespace));
+        let (harness, command) = match named {
+            Some((name, command)) => match Harness::read(name) {
+                Some(harness) => (harness, command),
+                None => {
+                    return Err(format!(
+                        "--worker-command {value:?}: {}. A harness's command is given as \
+                         <harness>=<command>, and the default harness's as the command alone",
+                        Harness::unknown(name)
+                    ));
+                }
+            },
+            None => (default, value.as_str()),
+        };
+        if commands.iter().any(|(said, _)| *said == harness) {
+            return Err(format!(
+                "--worker-command was given twice for the harness `{}`: a harness has one \
+                 worker launch command — and the bare form is that of the default harness, `{}`",
+                harness.key(),
+                default.key()
+            ));
+        }
+        commands.push((harness, command.to_string()));
+    }
+    Ok(Supplied { commands })
+}
+
+/// Where a start gets the command of `harness`: `provider` is the custom
+/// provider the fleet itself runs under (`Harness::provider_variable`),
+/// `supplied` what `--worker-command` said for it, and `terminal` whether
+/// there is a human to ask.
+pub fn source(
+    harness: Harness,
+    provider: Option<&str>,
+    supplied: Option<&str>,
+    terminal: bool,
+) -> Source {
     if let Some(supplied) = supplied {
         return Source::Given(supplied.to_string());
     }
     let Some(provider) = provider.filter(|url| !url.trim().is_empty()) else {
-        return Source::Given(STOCK.to_string());
+        return Source::Given(harness.stock().to_string());
     };
     if terminal {
         Source::Ask
     } else {
         Source::Refuse(format!(
             "this fleet runs on a custom provider ({provider}) and a worker's shell inherits \
-             none of it: say what starts a worker with --worker-command — there is no \
-             terminal to ask on"
+             none of it: say what starts a {} worker with `--worker-command {}=<command>` — \
+             there is no terminal to ask on",
+            harness.name(),
+            harness.key()
         ))
     }
+}
+
+/// `fault`, of the worker launch command of `harness`, said with the harness
+/// and what calls for it (`Team::harnesses`): the stage or the patrol a human
+/// changes, or the command they give, to be rid of it.
+pub fn of_harness(fault: &str, harness: Harness, callers: &[String]) -> String {
+    format!(
+        "{fault} — it is the worker launch command of the harness `{}`, called for by {}",
+        harness.key(),
+        callers.join(", ")
+    )
 }
 
 /// A command a worker may be started with: its first word resolves in the
@@ -140,7 +216,7 @@ fn unattended(command: &str, word: &str, resolution: &str) -> Option<bool> {
     }
 }
 
-/// A login shell's alias that starts Claude: what a human is offered.
+/// A login shell's alias that starts a harness: what a human is offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub name: String,
@@ -148,9 +224,9 @@ pub struct Candidate {
     pub expansion: String,
 }
 
-/// The aliases a shell's `alias` printed that start Claude, by name. Reads
+/// The aliases a shell's `alias` printed that start `harness`, by name. Reads
 /// zsh's `name='value'` and bash's `alias name='value'`.
-pub fn candidates(aliases: &str) -> Vec<Candidate> {
+pub fn candidates(aliases: &str, harness: Harness) -> Vec<Candidate> {
     let mut found: Vec<Candidate> = vec![];
     for line in aliases.lines() {
         let line = line.trim();
@@ -160,7 +236,7 @@ pub fn candidates(aliases: &str) -> Vec<Candidate> {
             continue;
         }
         let expansion = unquoted(value.trim());
-        if expansion.contains(Harness::DEFAULT.program()) {
+        if expansion.contains(harness.program()) {
             found.push(Candidate { name: name.to_string(), expansion: expansion.to_string() });
         }
     }
@@ -177,16 +253,18 @@ fn unquoted(value: &str) -> &str {
     value
 }
 
-/// What the human is asked, with what they can pick from.
-pub fn question(provider: &str, candidates: &[Candidate]) -> String {
+/// What the human is asked of the command of `harness`, with what they can
+/// pick from.
+pub fn question(provider: &str, harness: Harness, candidates: &[Candidate]) -> String {
+    let name = harness.name();
     let mut text = format!(
         "This fleet runs on a custom provider ({provider}); a worker's shell inherits none of \
          it.\n"
     );
     if candidates.is_empty() {
-        text.push_str("The login shell has no alias that starts Claude.\n");
+        text.push_str(&format!("The login shell has no alias that starts {name}.\n"));
     } else {
-        text.push_str("The login shell's aliases that start Claude:\n");
+        text.push_str(&format!("The login shell's aliases that start {name}:\n"));
         for (index, candidate) in candidates.iter().enumerate() {
             text.push_str(&format!(
                 "  {}. {} = {}\n",
@@ -196,7 +274,7 @@ pub fn question(provider: &str, candidates: &[Candidate]) -> String {
             ));
         }
     }
-    text.push_str("Start every worker with (a number above, or a command): ");
+    text.push_str(&format!("Start every {name} worker with (a number above, or a command): "));
     text
 }
 
@@ -347,14 +425,64 @@ mod tests {
         assert_eq!(waits(vec![Waited::AtTrustPrompt], true), (Err("refused"), 1, 1));
     }
 
+    const CLAUDE: Harness = Harness::ClaudeCode;
+    const STOCK: &str = CLAUDE.stock();
+
+    fn given(values: &[&str]) -> Result<Supplied, String> {
+        let values: Vec<String> = values.iter().map(|value| value.to_string()).collect();
+        supplied(&values, CLAUDE)
+    }
+
+    #[test]
+    fn a_harness_s_command_is_given_by_its_key_and_the_default_s_bare() {
+        assert_eq!(given(&[]).unwrap().of(CLAUDE), None, "nobody said: the stock one");
+        // What follows the `=` is the command, as it was given.
+        let named = given(&["claude-code=kim  --model=k 'big one' "]).unwrap();
+        assert_eq!(named.of(CLAUDE), Some("kim  --model=k 'big one' "));
+        // An `=` past the first word is the command's own.
+        for bare in ["kim", "  kim --yolo ", "kim --model=k", "kim x=y"] {
+            assert_eq!(given(&[bare]).unwrap().of(CLAUDE), Some(bare));
+        }
+        let each: Vec<(Harness, &str)> = named.each().collect();
+        assert_eq!(each, [(CLAUDE, "kim  --model=k 'big one' ")]);
+    }
+
+    #[test]
+    fn a_name_that_is_no_harness_and_a_harness_given_twice_are_errors() {
+        for none in ["pi=pi", "Claude-Code=kim", "=kim", "ANTHROPIC_BASE_URL=x claude"] {
+            let error = given(&[none]).unwrap_err();
+            assert!(error.contains("is no harness; the harnesses are: claude-code"), "{error}");
+            assert!(error.contains("<harness>=<command>"), "{error}");
+        }
+        for twice in [
+            ["claude-code=kim", "claude-code=glm"],
+            ["kim", "glm"],
+            ["kim", "claude-code=kim"],
+            ["claude-code=kim", "kim"],
+        ] {
+            let error = given(&twice).unwrap_err();
+            assert!(error.contains("given twice for the harness `claude-code`"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_fault_is_said_with_its_harness_and_what_calls_for_it() {
+        let callers = ["the repo's default".to_string(), "the patrol `sweep`".to_string()];
+        assert_eq!(
+            of_harness("it resolves to nothing", CLAUDE, &callers),
+            "it resolves to nothing — it is the worker launch command of the harness \
+             `claude-code`, called for by the repo's default, the patrol `sweep`"
+        );
+    }
+
     const KIM: &str = "kim is an alias for ANTHROPIC_BASE_URL=https://kimi claude --yolo";
 
     #[test]
     fn with_no_custom_provider_the_stock_command_is_used_and_nobody_is_asked() {
         let stock = Source::Given(STOCK.to_string());
-        assert_eq!(source(None, None, true), stock);
-        assert_eq!(source(None, None, false), stock);
-        assert_eq!(source(Some("  "), None, true), stock, "a blank url is no provider");
+        assert_eq!(source(CLAUDE, None, None, true), stock);
+        assert_eq!(source(CLAUDE, None, None, false), stock);
+        assert_eq!(source(CLAUDE, Some("  "), None, true), stock, "a blank url is no provider");
     }
 
     #[test]
@@ -363,7 +491,7 @@ mod tests {
         for provider in [None, Some("https://kimi")] {
             for terminal in [true, false] {
                 assert_eq!(
-                    source(provider, Some(passed), terminal),
+                    source(CLAUDE, provider, Some(passed), terminal),
                     Source::Given(passed.to_string())
                 );
             }
@@ -372,10 +500,11 @@ mod tests {
 
     #[test]
     fn a_custom_provider_and_no_answer_is_asked_about_or_is_an_error() {
-        assert_eq!(source(Some("https://kimi"), None, true), Source::Ask);
-        match source(Some("https://kimi"), None, false) {
+        assert_eq!(source(CLAUDE, Some("https://kimi"), None, true), Source::Ask);
+        match source(CLAUDE, Some("https://kimi"), None, false) {
             Source::Refuse(why) => {
                 assert!(why.contains("--worker-command") && why.contains("https://kimi"), "{why}");
+                assert!(why.contains("`--worker-command claude-code=<command>`"), "{why}");
                 assert!(why.contains("no terminal"), "{why}");
             }
             other => panic!("{other:?}"),
@@ -428,22 +557,22 @@ mod tests {
     fn the_aliases_that_start_claude_are_offered_by_name() {
         let zsh = "ll='ls -l'\nkim='ANTHROPIC_BASE_URL=https://kimi claude --yolo'\ncc=claude\n\
                    weird line\n=nothing\n";
-        let found = candidates(zsh);
+        let found = candidates(zsh, CLAUDE);
         let names: Vec<&str> = found.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["cc", "kim"]);
         assert_eq!(found[1].expansion, "ANTHROPIC_BASE_URL=https://kimi claude --yolo");
         let bash = "alias glm=\"claude --model glm\"\nalias g='git'\n";
         assert_eq!(
-            candidates(bash),
+            candidates(bash, CLAUDE),
             [Candidate { name: "glm".into(), expansion: "claude --model glm".into() }]
         );
-        assert_eq!(candidates(""), []);
+        assert_eq!(candidates("", CLAUDE), []);
     }
 
     #[test]
     fn a_reply_is_a_pick_or_the_command_as_typed() {
-        let offered = candidates("kim='claude --yolo'\ncc=claude\n");
-        let asked = question("https://kimi", &offered);
+        let offered = candidates("kim='claude --yolo'\ncc=claude\n", CLAUDE);
+        let asked = question("https://kimi", CLAUDE, &offered);
         assert!(asked.contains("  1. cc = claude\n  2. kim = claude --yolo\n"), "{asked}");
         assert!(asked.contains("https://kimi"), "{asked}");
         assert_eq!(replied("2\n", &offered), Some("kim".to_string()));
@@ -453,6 +582,6 @@ mod tests {
         assert_eq!(replied("0\n", &offered), Some("0".to_string()));
         assert_eq!(replied("\n", &offered), None);
         assert_eq!(replied("", &offered), None);
-        assert!(question("u", &[]).contains("no alias that starts Claude"));
+        assert!(question("u", CLAUDE, &[]).contains("no alias that starts Claude Code"));
     }
 }

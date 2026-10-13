@@ -595,7 +595,7 @@ answers where it is, what a `pass` would lead to, how much rework it has left, a
 **Rules to remember**
 
 - One `run` per machine per repo. A second one takes the first one's claims.
-- Workers start in a fresh login shell that inherits nothing from the shell `run` was started in. The default worker launch command is `claude --dangerously-skip-permissions`; if you start Claude through a wrapper, name it: `afkconvoy run --worker-command <alias>`.
+- Workers start in a fresh login shell that inherits nothing from the shell `run` was started in. The default worker launch command is `claude --dangerously-skip-permissions`; if you start Claude through a wrapper, name it: `afkconvoy run --worker-command <alias>`. That bare form is the command of the repo's default harness; `--worker-command <harness>=<command>` (as in `claude-code=<alias>`) says one harness's, once for each, and a harness given none is started with its stock command. Before any worker is started, the command of every harness the team could ask for is checked, and a start that cannot start one of them starts no worker.
 - A change to a role or to a team reaches a worker only once it is pushed to that repo's default branch. A stage starts under whatever is at the head when it starts.
 - A change to the project's config counts once it is on the base branch.
 
@@ -798,6 +798,8 @@ A step that failed is in the line `run` printed and in its log, which `doctor` r
 | A stage's verdict "counts for nothing" | the record names another stage than the one its claim was dispatched to | `show --issue` says how each record was read; `send` the issue where it belongs |
 | An issue escalated with "a commit that was not there" | a stage marked `writes: false`, or a consult, committed | decide whether the commit should stay; `rule` to run the stage again |
 | `the worker launch command … does not take the flags` | in a bound repo the command must end in Claude Code | name a command or alias that reaches `claude`: `--worker-command <alias>` |
+| `… it is the worker launch command of the harness …, called for by …` | a harness a stage or a patrol names cannot be started on this machine | give that harness a command that can: `--worker-command <harness>=<command>`; or change the stage or patrol the message names |
+| `--worker-command was given twice for the harness …` | one harness was given two commands — the bare form is the default harness's | give each harness one |
 | A warning that the base branch's protection could not be read | a private repo on a free plan does not expose it | fine if the branch is unprotected; otherwise landings will be refused |
 | `run` was killed | nothing is lost | start it again on the same machine: it takes its claims back |
 | Another machine's fleet died | its claims go stale by themselves | wait, or `afkconvoy takeover --from <instance> --instance <yours>` |

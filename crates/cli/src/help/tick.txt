@@ -13,8 +13,9 @@ WHAT IT READS AND WRITES
   working set calls for — on the remote, on GitHub and in orca. It does not wait for the
   workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it
   makes no probe while one that passed on this host in the last hour stands, and says
-  so on stderr (`afkconvoy plan --help`) — one that checked the worker launch command
-  this tick starts its workers with: another command is probed for.
+  so on stderr (`afkconvoy plan --help`) — one that checked the worker launch commands
+  this tick starts its workers with: another `--worker-command` is probed for. The
+  flag's two forms, and what is checked of each harness's command: `afkconvoy run --help`.
 
 WHAT IT ANSWERS
 
@@ -43,8 +44,9 @@ WHAT IT ANSWERS
 
   Errors: a command the fleet needs is missing or logged out, or orca is not running
   or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config, GitHub or the
-  remote cannot be read; the worker launch command resolves to nothing, or — in a bound
-  repo — does not take the flags that start a worker in its role; `--instance` is
+  remote cannot be read; `--worker-command` names no harness, or one harness twice; the
+  worker launch command of a harness the fleet could be asked for resolves to nothing,
+  or — in a bound repo — does not take the flags that start a worker in its role; `--instance` is
   not an instance id ([a-z0-9][a-z0-9-]{0,39}).
 
 WHAT TRIPS YOU UP

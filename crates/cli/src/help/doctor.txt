@@ -29,11 +29,17 @@ WHAT IT ANSWERS
                                  missing or logged_out; of orca also not_running,
                                  knows_no_checkout (the checkout worktrees are cut
                                  from was never added to it) or unasked
-                worker_command   {command, from, starts_a_worker, takes_role_flags} —
-                                 from is `run`, when this host's `run` logged the first
-                                 word of what it started with (all it logs of it), else
-                                 `default`: what a `run` started now would use. null on
-                                 a custom provider with no `run` to say
+                worker_commands  one for each harness the fleet could be asked for:
+                                 {harness, called_for_by, command, from,
+                                 starts_a_worker, takes_role_flags} — called_for_by is
+                                 the repo's default, and each stage and each patrol the
+                                 repo runs that names the harness; from is `run`, when
+                                 this host's `run` logged the first word of what it
+                                 started that harness with (all it logs of it), else
+                                 `default`: what a `run` started now would use. In an
+                                 unbound repo it is the one command, of no harness:
+                                 harness is null and called_for_by empty. A harness is
+                                 left out on a custom provider with no `run` to say
     fleet     the `run` of this host for this repo:
                 alive            whether one is running now
                 instance, host   its fleet instance id: the one its log names, else the
@@ -87,8 +93,9 @@ WHAT IT ANSWERS
   checkout". Whatever else cannot be read is itself a finding.
 
   The findings: a command the fleet needs is missing or logged out; orca cannot be
-  asked, or does not know the checkout; the worker launch command cannot start a
-  worker; no `run` is alive and claims are held; the same step failed in each of the
+  asked, or does not know the checkout; the worker launch command of a harness the
+  fleet could be asked for cannot start a worker — said with the harness and what
+  calls for it; no `run` is alive and claims are held; the same step failed in each of the
   last three ticks; the team has a fault at its head; a fleet lock stands on an issue
   that cannot be worked (all critical) — a claim has no worker; a worker has been
   stopped for half an hour with its claim still at work; the frontier is not empty,

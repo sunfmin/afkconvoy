@@ -255,6 +255,42 @@ impl Team {
         }
         if unknown.is_empty() { Ok(found) } else { Err(unknown) }
     }
+
+    /// Every harness a fleet could be asked for, in a repo whose default is
+    /// `default` and which runs the patrols `runs`, each with what calls for
+    /// it. The default comes first, called for by the repo (`BY_DEFAULT`):
+    /// every consult, landing and proposal runs on it, and so does whatever
+    /// names none. Any other caller is a stage, or a patrol that runs here,
+    /// that names its harness.
+    pub fn harnesses(&self, default: Harness, runs: &[String]) -> Vec<(Harness, Vec<String>)> {
+        let mut called = vec![(default, vec![BY_DEFAULT.to_string()])];
+        for workflow in &self.workflows {
+            for stage in workflow.stages() {
+                if let Some(harness) = stage.harness {
+                    let by =
+                        format!("the stage `{}` of the workflow `{}`", stage.name, workflow.name);
+                    call(&mut called, harness, by);
+                }
+            }
+        }
+        for patrol in &self.patrols {
+            if let Some(harness) = patrol.harness.filter(|_| runs.contains(&patrol.name)) {
+                call(&mut called, harness, format!("the patrol `{}`", patrol.name));
+            }
+        }
+        called
+    }
+}
+
+/// What calls for a repo's default harness, where nothing names one.
+pub const BY_DEFAULT: &str = "the repo's default";
+
+/// Adds `by` to what calls for `harness` in `called`.
+fn call(called: &mut Vec<(Harness, Vec<String>)>, harness: Harness, by: String) {
+    match called.iter_mut().find(|(named, _)| *named == harness) {
+        Some((_, callers)) => callers.push(by),
+        None => called.push((harness, vec![by])),
+    }
 }
 
 /// One role of a team, as its repo stood when the team was loaded.
@@ -1678,6 +1714,39 @@ land: { by: dev, do: land }
         for patrol in &team.patrols {
             assert_eq!(patrol.harness(Harness::DEFAULT), Harness::ClaudeCode, "{}", patrol.name);
         }
+    }
+
+    #[test]
+    fn a_fleet_could_be_asked_for_the_default_and_for_each_harness_named() {
+        let runs = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        // Nothing names one: the default alone, called for by the repo.
+        let by_default = vec![(Harness::ClaudeCode, vec![BY_DEFAULT.to_string()])];
+        assert_eq!(one(FEATURE).harnesses(Harness::DEFAULT, &[]), by_default);
+
+        let named = "by: dev\ndo: plan\nevery: 6h\nharness: claude-code\nmax_open: 3\n";
+        let unnamed = "by: dev\ndo: plan\nevery: 6h\nmax_open: 3\n";
+        let workflow = landed("    harness: claude-code\n", "{ by: dev, do: land }");
+        let mut sources = sources(TEAM, &[("workflows/feature.md", &workflow)]);
+        sources.patrols =
+            [("patrols/a.md", named), ("patrols/b.md", unnamed), ("patrols/c.md", named)]
+                .iter()
+                .map(|(path, yaml)| file(path, yaml))
+                .collect();
+        let team = load(&sources).unwrap();
+        // A stage that names one calls for it, and so does a patrol that
+        // names one and runs here: `c` does not run, and `b` names none.
+        let called = team.harnesses(Harness::DEFAULT, &runs(&["b", "a"]));
+        assert_eq!(
+            called,
+            [(
+                Harness::ClaudeCode,
+                vec![
+                    BY_DEFAULT.to_string(),
+                    "the stage `b` of the workflow `feature`".to_string(),
+                    "the patrol `a`".to_string(),
+                ]
+            )]
+        );
     }
 
     #[test]

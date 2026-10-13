@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
 use afkconvoy_core::prompt::{WorkerFields, worker_prompt};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
@@ -15,18 +16,29 @@ use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::gh::IssueRead;
 use crate::git::REMOTE;
+use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
 use crate::role::Staged;
 
 /// How a worker is started on this machine.
 pub struct Agent {
-    /// The worker launch command. In an unbound repo it is opaque, handed to
-    /// orca as it was given; in a bound repo what starts the worker in its
-    /// role is added to it (`role::Staged::command`).
-    pub command: LaunchCommand,
+    /// The worker launch command of each harness. In an unbound repo the
+    /// default's is the one opaque command, handed to orca as it was given;
+    /// in a bound repo what starts the worker in its role is added to its
+    /// harness's (`role::Staged::command`).
+    pub launches: Launches,
     /// How long an agent is given to be ready for its prompt, in seconds.
     pub ready_timeout: u64,
+}
+
+impl Agent {
+    /// The worker launch command a worker of `harness` is started with. An
+    /// error is a harness that cannot be started on this host: no other is
+    /// ever started in its place.
+    pub fn command(&self, harness: Harness) -> Result<LaunchCommand> {
+        self.launches.command(harness)
+    }
 }
 
 /// Where a dispatch starts from.
@@ -69,6 +81,12 @@ pub fn dispatch(
         Some(bound) => Some(Staged::enter(fleet, bound, number, &issue.labels)?),
         None => None,
     };
+    // Before the claim too: an issue whose harness cannot be started here is
+    // never locked.
+    let launch = agent.command(match &staged {
+        Some(staged) => staged.harness(),
+        None => fleet.config.harness(),
+    })?;
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
     if let Some(staged) = staged.as_ref().filter(|_| held) {
         staged.refuse_spent(fleet.scan.claim_of(number))?;
@@ -130,7 +148,7 @@ pub fn dispatch(
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                let launch = agent.command.as_str();
+                let launch = launch.as_str();
                 if let Some((staged, claim)) = staged.as_ref().zip(fleet.scan.claim_of(number)) {
                     staged.keep_start(cut, claim)?;
                 }

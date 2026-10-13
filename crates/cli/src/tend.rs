@@ -58,7 +58,10 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     match terminal {
         Some(terminal) => worktree.tell(&terminal, &train_pointer(&brief))?,
         None => {
-            let terminal = worktree.start(agent.command.as_str(), fleet.now)?;
+            // The train worker has no role, and no stage to name its
+            // harness: it is a session of the default one.
+            let launch = agent.command(fleet.config.harness())?;
+            let terminal = worktree.start(launch.as_str(), fleet.now)?;
             worktree.await_ready(&terminal, agent.ready_timeout)?;
             worktree.tell(&terminal, &brief_pointer(&brief))?;
         }
