@@ -21,7 +21,7 @@ WHAT IT NEEDS
 
 WHAT TO RUN FIRST, in a checkout of the repo
 
-  1. afkconvoy config    Read the config: what the fleet goes by.
+  1. afkconvoy config    Read the config: what the fleet goes by. Its `--help` shows one whole.
      afkconvoy check     Only where the config names a team: does the team load?
                          A team is designed first: DESIGNING A TEAM, below.
   2. afkconvoy plan      What a tick would act on. It changes nothing.
