@@ -73,8 +73,8 @@ THE FLEET LOCK
 
   While one stands the fleet works lock issues only: nothing else is dispatched, no
   patrol runs, no PR of another issue joins the landing train, and workers already
-  running are left alone. The lock issue is worked as any issue is, so it needs a flow
-  label too. Closing the last lock issue ends the lock; a stage that declared
+  running are left alone. The lock issue is worked as any issue is: in a bound repo
+  it needs a flow label too. Closing the last lock issue ends the lock; a stage that declared
   `escalate` or stayed silent before it closed then runs again, which is no rework.
   What trips you up: `afkconvoy lock --help`.
 
