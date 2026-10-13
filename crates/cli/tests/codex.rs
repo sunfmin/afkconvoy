@@ -680,7 +680,8 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
     // The guard is said beside it, as configuration of the one run: Codex
     // adds that to the hooks a directory holds, and the fleet writes it into
     // no file — not the role's, and none of the user directory's.
-    assert!(!hooked(&ran).contains("refuse.sh"));
+    let (guard, report) = hooked(&ran);
+    assert!(!guard.contains("refuse.sh") && !report.contains("refuse.sh"));
     assert!(!held.contains("afkconvoy"), "{held}");
     assert!(!kept(&world).join("hooks.json").exists());
     assert!(!kept(&world).join("config.toml").exists());
