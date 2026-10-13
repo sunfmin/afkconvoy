@@ -112,7 +112,8 @@ fn brief(dir: &Path) -> String {
 /// The repos `gh` was asked to clone since the last look.
 /// The settings a start adds the guard with: a hook that runs this binary.
 /// The settings the worker started by `command` was given beside its role's:
-/// the guard before every tool call, and orca told wherever its state changes.
+/// the guard before every tool call, orca told wherever its state changes, and
+/// the warning Claude Code would stop at answered.
 fn added_settings(command: &str) -> String {
     let added = command.split(" --settings '").nth(1).unwrap().split('\'').next().unwrap();
     let settings: Value = serde_json::from_str(added).unwrap();
@@ -126,6 +127,7 @@ fn added_settings(command: &str) -> String {
         assert!(line.contains("/.orca/agent-hooks/claude-hook.sh"), "{event}: {settings}");
         assert_eq!(report["timeout"], 10, "{event}: {settings}");
     }
+    assert_eq!(settings["skipDangerousModePermissionPrompt"], true, "{settings}");
     added.to_string()
 }
 

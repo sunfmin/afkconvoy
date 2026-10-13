@@ -80,6 +80,12 @@ pub(super) const ENVIRONMENT: [&str; 2] = [ADDED_RULES, NO_MEMORY];
 const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/claude-hook.sh\"; if [ -x \"$hook\" ]; \
      then ORCA_HOOK_AGENT_PID=\"$PPID\" /bin/sh \"$hook\"; else cat >/dev/null; fi";
 
+/// The setting that answers the warning Claude Code opens with when it is
+/// started to work with nobody at its terminal (`STOCK`'s flag): a worker has
+/// nobody to accept it, and stops there. On a host whose user accepted it
+/// once, their settings say the same.
+const WARNING_ACCEPTED: &str = "skipDangerousModePermissionPrompt";
+
 /// The tool Claude Code runs shell lines with.
 const SHELL_TOOL: &str = "Bash";
 /// The exit code that tells Claude Code a hook refuses the call.
@@ -140,8 +146,9 @@ fn json_text(text: &str) -> String {
 }
 
 /// The settings added to a worker's: the guard, a hook Claude Code runs
-/// before every tool call with the line `guard`, and the report, a hook it
-/// runs with the line `report` wherever the worker's state changes. They are
+/// before every tool call with the line `guard`, the report, a hook it
+/// runs with the line `report` wherever the worker's state changes, and the
+/// answer to the warning it would stop at. They are
 /// added to the role's own, so a role's hooks run beside them and no role is
 /// without the guard (docs/adr/0012) — or unheard of by the worker backend,
 /// which would read a worker it has no report of off its terminal alone.
@@ -156,7 +163,7 @@ fn added_settings(guard: &str, report: &str) -> String {
     for event in STATE_EVENTS {
         settings.push_str(&format!(",\"{event}\":[{{\"hooks\":[{report}]}}]"));
     }
-    settings.push_str("}}");
+    settings.push_str(&format!("}},\"{WARNING_ACCEPTED}\":true}}"));
     settings
 }
 
@@ -249,7 +256,7 @@ mod tests {
         for event in STATE_EVENTS {
             added.push_str(&format!(r#","{event}":[{{"hooks":[{report}]}}]"#));
         }
-        added + "}}"
+        added + r#"},"skipDangerousModePermissionPrompt":true}"#
     }
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
