@@ -158,10 +158,10 @@ pub fn end(fleet: &mut Fleet, me: &Me, row: &Row) -> Result<Outcome> {
         Standing::StaleRun => None,
         _ => return Ok(Outcome::Nothing),
     };
-    if let Some(checkout) = &checkout {
-        if !run_over(claim, checkout.state(me.now)?, me.now) {
-            return Ok(Outcome::Nothing);
-        }
+    if let Some(checkout) = &checkout
+        && !run_over(claim, checkout.state(me.now)?, me.now)
+    {
+        return Ok(Outcome::Nothing);
     }
     let team = &fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?.team;
     let comments = fleet.gh.comments(ruling.issue)?;
