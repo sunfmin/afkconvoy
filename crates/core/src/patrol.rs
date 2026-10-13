@@ -163,10 +163,15 @@ pub fn row(
     }
 }
 
-/// Whether the run of a patrol started at `started` is over, its worker being
-/// in `worker`: it is gone, or stopped for a grace period. A patrol declares
-/// nothing, so a worker that stopped is one that is done.
-pub fn run_over(worker: WorkerState, started: Option<u64>, now: u64) -> bool {
+/// Whether the run `claim` is of — a patrol's, a proposal's — is over, its
+/// worker being in `worker`: the worker declared it over, or is gone, or
+/// stopped for a grace period. A worker that never declares is one that is
+/// done once it has stopped that long.
+pub fn run_over(claim: &RunClaim, worker: WorkerState, now: u64) -> bool {
+    if claim.over {
+        return true;
+    }
+    let started = claim.owner.as_ref().map(|owner| owner.ts);
     match worker {
         WorkerState::Gone => true,
         WorkerState::Busy => false,
@@ -250,7 +255,7 @@ mod rejected {
 mod tests {
     use super::*;
     use crate::claims::Owner;
-    use crate::claims::run_ref as claim_ref;
+    use crate::claims::{over_ref, read_over, run_ref as claim_ref, write_over};
     use crate::lease::LEASE;
 
     fn seen() -> Seen {
@@ -267,7 +272,7 @@ mod tests {
 
     fn claim(instance: &str) -> RunClaim {
         let owner = Owner { instance: instance.into(), host: "h".into(), ts: 0 };
-        RunClaim { key: claim_key("triage"), owner: Some(owner), sha: "c".into() }
+        RunClaim { key: claim_key("triage"), owner: Some(owner), sha: "c".into(), over: false }
     }
 
     fn standing(seen: &Seen, now: u64, locked: bool) -> Standing {
@@ -320,13 +325,32 @@ mod tests {
 
     #[test]
     fn a_run_is_over_when_its_worker_is_gone_or_stopped_for_a_grace_period() {
-        assert!(run_over(WorkerState::Gone, Some(0), 10));
-        assert!(!run_over(WorkerState::Busy, Some(0), 99_999));
-        assert!(!run_over(WorkerState::Idle { quiet: Some(GRACE - 1) }, Some(0), 99_999));
-        assert!(run_over(WorkerState::Idle { quiet: Some(GRACE) }, Some(0), 99_999));
-        assert!(!run_over(WorkerState::Idle { quiet: None }, Some(1000), 1000 + GRACE - 1));
-        assert!(run_over(WorkerState::Idle { quiet: None }, Some(1000), 1000 + GRACE));
-        assert!(run_over(WorkerState::Idle { quiet: None }, None, 5));
+        let started = |ts: u64| {
+            let owner = Owner { instance: "me".into(), host: "h".into(), ts };
+            RunClaim { owner: Some(owner), ..claim("me") }
+        };
+        assert!(run_over(&started(0), WorkerState::Gone, 10));
+        assert!(!run_over(&started(0), WorkerState::Busy, 99_999));
+        assert!(!run_over(&started(0), WorkerState::Idle { quiet: Some(GRACE - 1) }, 99_999));
+        assert!(run_over(&started(0), WorkerState::Idle { quiet: Some(GRACE) }, 99_999));
+        let silent = WorkerState::Idle { quiet: None };
+        assert!(!run_over(&started(1000), silent, 1000 + GRACE - 1));
+        assert!(run_over(&started(1000), silent, 1000 + GRACE));
+        assert!(run_over(&RunClaim { owner: None, ..claim("me") }, silent, 5));
+    }
+
+    #[test]
+    fn a_run_its_worker_declared_over_is_over_whatever_the_worker_is_doing() {
+        let declared = RunClaim { over: true, ..claim("me") };
+        assert!(run_over(&declared, WorkerState::Busy, 1));
+        assert!(run_over(&declared, WorkerState::Idle { quiet: Some(0) }, 1));
+        // The record names the claim it is of, under the name the claim has.
+        assert_eq!(
+            over_ref(Layout::Hidden, &claim_key("triage")),
+            "refs/convoy/over/patrol-triage"
+        );
+        assert_eq!(read_over(&write_over("abc")), Some("abc".to_string()));
+        assert_eq!(read_over("convoy:claim ts=77"), None);
     }
 
     #[test]

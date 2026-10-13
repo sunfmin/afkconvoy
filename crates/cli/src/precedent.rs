@@ -115,6 +115,8 @@ pub fn propose(
         precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
         worktree: &path,
         base_branch: &fleet.config.base_branch,
+        // The worker works in a clone of its own: the line is run from the checkout.
+        over_command: &crate::own_command_in(&path).fixed(" over --run ").word(&claim.key).own(),
     };
     let brief = checkout.write_brief(&proposal_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let start = Start {
@@ -143,8 +145,8 @@ pub fn propose(
     Ok(Outcome::Done)
 }
 
-/// Ends the proposal `row` once its run is over — its worker gone or
-/// stopped, or its fleet presumed dead: closes, with the reason, a PR opened
+/// Ends the proposal `row` once its run is over — declared over, its worker
+/// gone or stopped, or its fleet presumed dead: closes, with the reason, a PR opened
 /// from its branch on the team's repo that is no proposal of its ruling,
 /// removes the worker's checkout, and unclaims it. A PR that is one is left
 /// for a human to merge. `Nothing` while the worker is still at it.
@@ -156,11 +158,10 @@ pub fn end(fleet: &mut Fleet, me: &Me, row: &Row) -> Result<Outcome> {
         Standing::StaleRun => None,
         _ => return Ok(Outcome::Nothing),
     };
-    if let Some(checkout) = &checkout {
-        let started = claim.owner.as_ref().map(|owner| owner.ts);
-        if !run_over(checkout.state(me.now)?, started, me.now) {
-            return Ok(Outcome::Nothing);
-        }
+    if let Some(checkout) = &checkout
+        && !run_over(claim, checkout.state(me.now)?, me.now)
+    {
+        return Ok(Outcome::Nothing);
     }
     let team = &fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?.team;
     let comments = fleet.gh.comments(ruling.issue)?;

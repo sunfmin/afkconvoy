@@ -456,6 +456,78 @@ fn a_patrol_takes_one_slot_of_concurrency() {
     assert_eq!(patrolled(&tick(&world, 13_700)), Vec::<String>::new());
 }
 
+/// The line the brief of the patrol `sweep` ends with: what declares its run over.
+fn over_line(world: &World) -> String {
+    let git_dir = git(&checkout(world), &["rev-parse", "--absolute-git-dir"]);
+    let brief = PathBuf::from(git_dir).join("convoy-worker-prompt.md");
+    let brief = std::fs::read_to_string(brief).unwrap();
+    let fence = brief.trim_end().strip_suffix("\n```").expect("the brief ends with a line to run");
+    fence.rsplit_once("```bash\n").unwrap().1.to_string()
+}
+
+#[test]
+fn a_patrol_s_worker_declares_its_run_over_and_the_next_tick_ends_it() {
+    let world = bound("[sweep]");
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:feature"]);
+    tick(&world, 10_000);
+    assert_eq!(world.claims().len(), 1, "the run holds one of the two slots");
+
+    // The brief ends with the line, the run named in it.
+    let line = over_line(&world);
+    assert!(line.ends_with(" over --run 'patrol-sweep'"), "{line}");
+    assert!(line.starts_with(&format!("cd '{}' && ", checkout(&world).display())), "{line}");
+
+    // A worker that has not run it still holds the slot…
+    workers_work(&world, 10_010);
+    assert_eq!(patrolled(&tick(&world, 10_010)), ["end_patrol sweep nothing"]);
+    // …and once it has, the next tick ends the run, a minute into it, and
+    // gives the slot to an issue.
+    let said = world.afk_in(&checkout(&world), &["over", "--run", "patrol-sweep"]).ok();
+    assert_eq!(said["over"], true, "{said}");
+    assert_eq!(said["ref"], "refs/convoy/over/patrol-sweep");
+    assert_eq!(said["woke"], false, "no `run` listens here: {said}");
+    let ended = tick(&world, 10_060);
+    assert_eq!(patrolled(&ended), ["end_patrol sweep done"]);
+    assert_eq!(world.claims().len(), 2);
+    assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"], "nothing of the run is left");
+    assert_eq!(world.gh()["issues"].as_array().unwrap().len(), 2, "no failure is reported");
+
+    // With no run going there is nothing to declare over, and what was
+    // declared of one run says nothing of the next.
+    let refused = world.afk_in(&checkout(&world), &["over", "--run", "patrol-sweep"]).error();
+    assert!(refused.contains("no run \"patrol-sweep\" is going"), "{refused}");
+}
+
+#[test]
+fn a_run_declared_over_is_still_checked_for_what_a_patrol_never_leaves() {
+    let world = bound("[sweep]");
+    tick(&world, 10_000);
+    commit(&checkout(&world), "fix.txt", "a patrol that fixed it itself");
+    world.afk_in(&checkout(&world), &["over", "--run", "patrol-sweep"]).ok();
+    assert_eq!(patrolled(&tick(&world, 10_060)), ["end_patrol sweep done"]);
+    let report = report(&world).expect("the failed run is reported");
+    assert!(report["body"].as_str().unwrap().contains("it left a commit"), "{report}");
+}
+
+#[test]
+fn a_worker_on_an_issue_declares_no_run_over() {
+    let world = bound("[sweep]");
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 10_000);
+    // Its stage ends with a verdict: neither its claim nor a run's is its to end.
+    for run in ["7", "patrol-sweep"] {
+        let mut on_issue = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+        let out = on_issue.args(["over", "--run", run]).env("AFKCONVOY_ISSUE", "7").output();
+        let said = String::from_utf8(out.unwrap().stdout).unwrap();
+        assert!(said.contains("\"error\"") && said.contains("`afkconvoy verdict`"), "{said}");
+    }
+    let an_issue = world.afk(&["over", "--run", "7"]).error();
+    assert!(an_issue.contains("7 is an issue, and no run"), "{an_issue}");
+    workers_work(&world, 10_010);
+    assert_eq!(patrolled(&tick(&world, 10_010)), ["end_patrol sweep nothing"]);
+}
+
 /// The issue that reports a failed run, when there is one open.
 fn report(world: &World) -> Option<Value> {
     let gh = world.gh();
