@@ -26,7 +26,8 @@ WHAT IT READS AND WRITES
   read from that repo.
 
   A repo on GitHub — the team's, and each role's — is asked for the commit at its head,
-  and read from the fleet's copy of that commit: the one a worker starts in, kept
+  and read from the fleet's copy of that commit: the one a worker's directory is taken
+  out of, kept
   read-only under the user's cache directory (afkconvoy/copies/<owner>/<repo>/<commit>).
   Only a commit the fleet has no copy of yet is cloned, so a role pushed since the last
   run is read at its new head, and one that has not moved costs one question. A repo is
@@ -94,9 +95,6 @@ WHAT TRIPS YOU UP
   - From GitHub it reads what is pushed to the default branch. An edit in a checkout
     of the team is checked with `--dir`; a role's is checked only once it is pushed,
     wherever the role is — in the team's own repo too.
-  - A team that loads is not yet a team every stage of which can be started: a role in a
-    subdirectory is read and checked here, and `dispatch` refuses to start a worker in
-    one (`afkconvoy dispatch --help`). Only a role that is a whole repo is started.
   - Following `pass` alone from any stage must end. A loop back is made with `reject`,
     which the breakers count; a round of passes nothing would ever stop.
   - A stage nothing leads to is reported only once every `pass` and `reject` names a

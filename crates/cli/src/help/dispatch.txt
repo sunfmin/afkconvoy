@@ -23,7 +23,12 @@ WHAT IT READS AND WRITES
   rejection, in its brief. The team's repo and each role's are
   asked for the commit at their head; one the fleet has no copy of yet is cloned and
   kept, read-only, under the user's cache directory (afkconvoy/copies/<owner>/<repo>/
-  <commit>). The terminal is opened on the worktree as ever, and the line it runs
+  <commit>), once however many roles it holds. A role that is a subdirectory of its repo
+  is copied out of that on its own (<commit>-role-<path>), and so is the team's
+  directory, without the directories of its roles and without a `CLAUDE.md` and a
+  `.claude/` at its top (<commit>-team-<path>): a worker is given its role's directory
+  and nothing else of that repo — nothing above it, and no neighbour's.
+  The terminal is opened on the worktree as ever, and the line it runs
   changes to the role's copy, puts the stage's facts in the environment (AFKCONVOY_ISSUE,
   _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT, _HARNESS), and
   starts the worker launch command with the worktree and the team's copy added as
@@ -70,7 +75,7 @@ WHAT IT ANSWERS
   Errors: the issue is closed; in a bound repo, the issue carries no flow label, more
   than one, or one that names no workflow of the team, it is at no stage a worker
   performs (the error says where it is), it passed to `land` and no open PR closes it, the team does not load (the error carries
-  its `faults`), or the role the worker would start in is a subdirectory of its repo —
+  its `faults`) —
   none of which claims the issue; the instance's claim on it is one a
   stage already declared under; the worker launch
   command resolves to nothing; orca
@@ -86,9 +91,8 @@ WHAT TRIPS YOU UP
   - It checks that the issue is open, and nothing else of the frontier: an issue without
     the ready label, with an open blocker, or past the concurrency is started all the
     same.
-  - A role named as owner/repo/path or ./path loads, and `check` passes on it, but no
-    worker is started in one: the fleet's copy is of the role's whole repo, and a worker
-    started there would be given more than its role. The error says so, and nothing is
-    claimed. Only a role that is a whole repo is started.
+  - A role in a subdirectory is not the directory a human opens in a checkout: a
+    `CLAUDE.md` or a `.claude/` above it there is not in the worker's copy, nor above it.
+    `afkconvoy check` notes each role that has one above it.
   - It does not ask after a worker already there. On a claim whose worker is at work it
     starts another in the same worktree.

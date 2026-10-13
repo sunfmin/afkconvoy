@@ -19,6 +19,7 @@ The fleet's copy of a role holds that role's directory and nothing else of its r
 ## Consequences
 
 - A repo is fetched once per commit, and each role's directory and each team's is taken out of it on its own.
+- The copy of a team also leaves out a `CLAUDE.md` and a `.claude/` at its top. It is added to every worker, and Claude Code loads those from an added directory as it does from one above the worker's: in a repo that holds a team at its root and its roles under it, the rules at the root would otherwise be every role's after all.
 - A role opened by hand in its subdirectory is not quite the role a worker gets: Claude Code also loads what is above it. `check` says so when a directory above a role holds a `CLAUDE.md` or a `.claude/`.
 - A role's directory holds no symlink that leaves it: in the worker's copy it would point at nothing. Two roles that need the same hook each hold it.
 - The directory of a role and that of a team, or of another role, never contain one another; `check` refuses a team's file that says otherwise. Two names may still be given to one directory.
