@@ -42,7 +42,8 @@ WHAT IT ANSWERS
   lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left
   alone`), as are those a start took past the bound (`holding 3/3 · 1 past the bound`). A step that failed is
   in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as
-  `tick N: FAILED: <why>`; the loop goes on either way.
+  `tick N: FAILED: <why>`; the loop goes on either way. One cause that stopped several
+  steps is said once: `FAILED 7 steps: <why>`.
 
   `advanced #12 → review`: the tick read a verdict that left #12 at `review`. Where a
   role performs that stage the same tick starts its worker, and says so: `dispatched
@@ -53,6 +54,8 @@ WHAT IT ANSWERS
   without starting what follows, and left a slot free, so what follows — a consult, the
   join of a PR, an issue the landing unblocked — is the next tick's to start, and that
   tick starts with no sleep.
+  So does the tick after one that failed on a read GitHub could not be reached for
+  (`GitHub could not be reached: …`): nothing says the next read fails too.
   At most 4 ticks run back to back; then it sleeps, whatever the last one left.
 
   With `--panel <port>` its first line is the panel's address, and it serves the panel

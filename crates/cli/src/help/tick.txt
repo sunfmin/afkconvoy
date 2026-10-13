@@ -156,6 +156,13 @@ WHAT TRIPS YOU UP
     rework. A `pass`, a `blocked` and an `already-satisfied` stand as they are. What landed is still settled, and the train still tended.
   - A step that failed is not a failed command: the exit is 0 and the failure is in
     `errors`. Read `errors`, not the exit code.
+  - A read of GitHub that failed in transit — an answer cut short, a 5xx, a connection
+    reset, a timeout — is made again, twice more and a second apart, before anything is
+    said. One that still fails is `GitHub could not be reached: <the call>: <what gh
+    said>`. A 404 or a 403 is GitHub's answer, and is not asked for again.
+  - A role whose repo GitHub could not be reached for is no fault of the team, and stops
+    only the step that would start a worker in it: an issue at a stage another role
+    performs is advanced, started and labelled as ever.
   - It does not take the claims stamped with this host: only `run` does that, at its
     start. A tick takes another instance's claims only once they are stale.
   - Do not tick as an instance whose `run` is alive: both would act on the same claims.
