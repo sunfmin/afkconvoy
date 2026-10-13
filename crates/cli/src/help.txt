@@ -2,7 +2,6 @@ afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance
 `afkconvoy run` — dispatches one worker per issue, a coding agent isolated in its own git
 worktree, and lands each finished PR on the base branch through the landing train, behind
 the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
-
 This text is the way in. The rest is in each command's own help and in THE TOPICS, below.
 
 WHAT IT NEEDS

@@ -39,6 +39,7 @@ pub const TOPICS: &[Topic] = &[
     topic!("patrols", "a role run on a schedule: a patrol's file, intake, the fleet lock"),
     topic!("example", "the team `scaffold --example hospital` writes, read file by file"),
     topic!("example-run", "that team at work: what a host needs, and one issue's run"),
+    topic!("cache", "the cache directory: where it is on this host, what moves it, what it holds"),
     topic!("humans", "every way the fleet stops for a human, and the command that answers"),
     topic!("troubleshooting", "a symptom, its cause and its fix: each finding, each refusal"),
     Topic {

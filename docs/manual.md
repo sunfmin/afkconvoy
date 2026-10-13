@@ -12,6 +12,7 @@
 - [`afkconvoy help patrols`](#afkconvoy-help-patrols) — a role run on a schedule: a patrol's file, intake, the fleet lock
 - [`afkconvoy help example`](#afkconvoy-help-example) — the team `scaffold --example hospital` writes, read file by file
 - [`afkconvoy help example-run`](#afkconvoy-help-example-run) — that team at work: what a host needs, and one issue's run
+- [`afkconvoy help cache`](#afkconvoy-help-cache) — the cache directory: where it is on this host, what moves it, what it holds
 - [`afkconvoy help humans`](#afkconvoy-help-humans) — every way the fleet stops for a human, and the command that answers
 - [`afkconvoy help troubleshooting`](#afkconvoy-help-troubleshooting) — a symptom, its cause and its fix: each finding, each refusal
 - [`afkconvoy help glossary`](#afkconvoy-help-glossary) — every term the help uses, each with its one definition
@@ -944,6 +945,59 @@ before it declared `pass`.
 `afkconvoy help example`    the team's files, each with the decision it holds
 `afkconvoy help workflows`  `harness` and `model`, and every other key of a stage
 `afkconvoy help team`       where a role's limits for each harness go
+````
+
+
+## afkconvoy help cache
+
+````text
+The one directory of its own the fleet keeps on a host: where it is, what moves it,
+and what it holds. The helps that speak of a file under "the cache directory" mean
+this one.
+````
+
+### WHERE IT IS
+
+````text
+    $XDG_CACHE_HOME/afkconvoy    where XDG_CACHE_HOME is set and not empty
+    $HOME/.cache/afkconvoy       otherwise — on macOS too: never ~/Library/Caches
+
+It is made when something is first kept in it. With neither variable set, a command
+that needs it fails and says so.
+````
+
+### WHAT MOVES IT
+
+````text
+Setting XDG_CACHE_HOME, and nothing else: there is no flag and no config key for it.
+To keep everything under a directory of your choosing:
+
+    XDG_CACHE_HOME="$PWD/.cache" afkconvoy check
+
+Each command reads the variable for itself, so two commands find the same copies and
+the same log only under the same value: a `doctor` run without the one a `run` was
+started with reads another directory, and finds no log there.
+````
+
+### WHAT IT HOLDS
+
+````text
+    copies/     the fleet's copy of a team's repo and of each role's, one per commit,
+                read-only: copies/<owner>/<repo>/<commit>. A worker of a bound repo
+                starts in one; an unbound repo has none.
+    harness/    the user directory the fleet keeps for pi and for Codex, a worker's
+                in place of yours: harness/pi, harness/codex.
+    runs/       the log of each repo's `run`, one file per repo: what `doctor` reads.
+
+None of it is fleet state: that is in GitHub and on the repo's remote.
+````
+
+### SEE ALSO
+
+````text
+`afkconvoy check --help`     when a copy is cloned, and what is read from it
+`afkconvoy run --help`       the log, and what each harness's user directory holds
+`afkconvoy doctor --help`    what is read back from the log and the copies
 ````
 
 
