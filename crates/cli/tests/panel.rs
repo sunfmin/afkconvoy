@@ -440,6 +440,21 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
     assert_eq!(answer["instance"], "alpha", "{answer}");
     let port = port_of(&answer);
     assert_eq!(running.line(), format!("panel: http://127.0.0.1:{port}/"));
+    // every key of the answer is one the help names, as is each way it fails
+    let help = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    let help = { help }.args(["panel", "--help"]).output().unwrap().stdout;
+    let help = String::from_utf8(help).unwrap();
+    for key in answer.as_object().unwrap().keys() {
+        assert!(help.contains(&format!("\n    {key} ")), "`panel --help` never names {key:?}");
+    }
+    for said in [
+        "afkconvoy panel --open --port 7070",
+        "no afkconvoy run is running for this repo on this host",
+        "the panel cannot be served on port <port>",
+        "did not answer",
+    ] {
+        assert!(help.contains(said), "`panel --help` never says {said:?}");
+    }
 
     // the sleep ends for it, and the tick that follows fills the page
     let second = running.line();

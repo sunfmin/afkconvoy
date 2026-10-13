@@ -6,13 +6,20 @@ WHEN TO RUN IT
 
       afkconvoy panel --instance <id> > panel.html
 
-  To watch a running fleet, do not run this in a loop: start the fleet with
-  `afkconvoy run --panel <port>` and open http://127.0.0.1:<port>/ — that page is
-  brought up to date after every tick, by itself.
+  To watch a running fleet, do not run this in a loop: have the fleet serve its own
+  panel, live — a page brought up to date after every tick, by itself. Start it with
+  `afkconvoy run --panel <port>`, or ask one that is already running, which is not
+  restarted for it:
+
+      afkconvoy panel --open                any free port
+      afkconvoy panel --open --port 7070
+
+  and open the address it answers. Run it again whenever you want that address back.
 
 WHO RUNS IT
 
-  The operator, in a checkout of the repo.
+  The operator, in a checkout of the repo. `--open` reaches this host's `run` for the
+  repo from any of its worktrees, and no other repo's.
 
 WHAT IT READS AND WRITES
 
@@ -20,6 +27,13 @@ WHAT IT READS AND WRITES
   the rebuild `plan` makes — the open issues and PRs, the claims and heartbeats, the
   landing train, and in a bound repo the team and every stage record — then asks orca
   after the worker of each claim of `--instance` on this host.
+
+  With `--open` it reads nothing itself and takes no `--instance`: it asks the `run`
+  of this host for this repo, over a socket in the repo's git dir, to serve the panel
+  that `run` holds. That `run` goes on as the fleet instance it is — its claims, its
+  workers and the tick it is in are untouched, and it answers whether it sleeps or
+  ticks. A panel newly opened ends its sleep, as a `wake` does: the page is filled by
+  the tick that follows, then by every tick after it. It is served to this host only.
 
 WHAT IT ANSWERS
 
@@ -41,11 +55,36 @@ WHAT IT ANSWERS
   Errors, as {"error": …} with a non-zero exit: the config cannot be read; GitHub or
   the remote cannot be read.
 
+  With `--open`, one JSON object:
+
+    panel     the address to open in a browser of this host: http://127.0.0.1:<port>/
+    port      the port in it
+    opened    true: this call had the `run` begin serving it. false: it was served
+              already — since its start, or an earlier `--open` — and this is where
+    instance  the fleet instance that serves it
+
+  Its errors, as {"error": …} with a non-zero exit, none of which changes anything of a
+  `run`, which works on as it was:
+
+    no afkconvoy run is running for this repo on this host
+        start one with `afkconvoy run`, or print the page once, without `--open`
+    the panel was not opened …: the panel cannot be served on port <port>: …
+        the port is taken, or not yours to take: name another, or none
+    the run of this repo on this host did not answer …
+        ask again: one that opened it says so, with `opened` false
+
 WHAT TRIPS YOU UP
 
   - Without `--instance` nobody's claims are its own: a running fleet's claims show as
     "held by <instance>", with no worker's state. `takeover --list` shows the ids.
   - A worker's state is this host's orca's to say. A claim whose worker runs on another
     host shows "no worker" here.
-  - The page `run --panel` serves is not this one made again and again: it is made from
+  - A panel is served at one address for as long as its `run` runs. `--open --port` on
+    one already served answers the address it has, not the port asked: `opened` is
+    false. To move it, stop that `run` and start it again.
+  - A page just opened shows nothing of the fleet until the tick it asked for ends: a
+    moment, or as long as the tick the `run` was in takes, and then one more.
+  - `--port` is `--open`'s, and `--open` takes neither `--instance` nor `--host`: the
+    page is the running fleet instance's own.
+  - The page a `run` serves is not this one made again and again: it is made from
     what each tick already read, and adds what that tick did. It costs GitHub nothing.

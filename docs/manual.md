@@ -580,7 +580,7 @@ tick 2: nothing to do · holding 3/3 · frontier 0 · next in 60s
 
 `holding 3/3` is claims held out of `concurrency`; `frontier` is what waits for a free slot. With a fleet lock standing, the claims it leaves alone take no slot and are shown apart: `holding 1/3 · 2 left alone`. A step that failed shows in the line as `FAILED <step> #<issue>: <why>`, and the loop goes on. One cause that stopped several steps is said once, as `FAILED 7 steps: <why>`. A read of GitHub that failed in transit (an answer cut short, a 5xx, a connection reset, a timeout) is made again twice, a second apart, before anything is said; one that still fails reads `GitHub could not be reached: <the call>: …`, and the next tick starts with no sleep.
 
-**Watch it.** With `--panel <port>`, http://127.0.0.1:port/ shows the fleet as a page that brings itself up to date after every tick: each workflow as a line of its stages, the issues at work and queued at each, the landing train, and what waits for a human. Each worker is also a terminal in orca, in the issue's worktree — open it to read what the worker is doing.
+**Watch it.** With `--panel <port>`, http://127.0.0.1:port/ shows the fleet as a page that brings itself up to date after every tick: each workflow as a line of its stages, the issues at work and queued at each, the landing train, and what waits for a human. A fleet started without it serves the same page once you ask it to, with no restart: `afkconvoy panel --open` (or `--open --port 7070`), from any worktree of the repo, answers the address — and answers it again whenever you ask. Each worker is also a terminal in orca, in the issue's worktree — open it to read what the worker is doing.
 
 **Ask about one issue**:
 
@@ -755,7 +755,7 @@ CLAUDE.md                          rules
 | One transition by hand | `dispatch` `recovery` `close` `escalate` `park` `nudge` `restart` `abandon` |
 | The claim plumbing | `scan` `claim` `release` `heartbeat` |
 
-Every command prints one JSON object, and `{"error": …}` with a non-zero exit on failure. The exceptions: `run` prints a line per tick, `show` a drawing, `panel` a page, and `guard` answers with its exit code.
+Every command prints one JSON object, and `{"error": …}` with a non-zero exit on failure. The exceptions: `run` prints a line per tick, `show` a drawing, `panel` a page (with `--open`, a JSON object), and `guard` answers with its exit code.
 
 ### What a worker of a bound repo has in its environment
 
