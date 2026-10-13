@@ -599,7 +599,7 @@ afkconvoy show --issue 7
 **要记住的规则**
 
 - 每台机器每个仓库只跑一个 `run`。第二个会抢走第一个的认领。
-- worker 在一个全新的登录 shell 里启动，不继承启动 `run` 的那个 shell 的任何东西。默认的 worker 启动命令是 `claude --dangerously-skip-permissions`；如果你是通过包装命令启动 Claude 的，要指明：`afkconvoy run --worker-command <别名>`。
+- worker 在一个全新的登录 shell 里启动，不继承启动 `run` 的那个 shell 的任何东西。默认的 worker 启动命令是 `claude --dangerously-skip-permissions`；如果你是通过包装命令启动 Claude 的，要指明：`afkconvoy run --worker-command <别名>`。这种不带名字的写法指定的是仓库默认 harness 的启动命令；`--worker-command <harness>=<命令>`（例如 `claude-code=<别名>`）指定某一个 harness 的，每个 harness 写一次，没指定的 harness 用它自带的默认命令。在启动任何 worker 之前，团队可能用到的每个 harness 的命令都会被检查；只要有一个启动不了，就一个 worker 也不启动。
 - 对角色或团队的修改，只有 push 到该仓库的默认分支才会到达 worker。一个阶段在启动的那一刻，用的是当时 HEAD 上的版本。
 - 对项目配置的修改，进了主干才算数。
 
@@ -802,6 +802,8 @@ afkconvoy takeover --list          # 远端记得的每一个 instance id，不�
 | 某个阶段的裁定「不算数」 | 那条记录写的阶段，不是它的认领被派发到的那个阶段 | `show --issue` 会说明每条记录是怎么被解读的；用 `send` 把 issue 送到该去的地方 |
 | issue 因为「一个之前不存在的提交」被升级 | 标记了 `writes: false` 的阶段，或者会诊，提交了代码 | 决定那个提交留不留；`rule` 让该阶段重跑 |
 | `the worker launch command … does not take the flags` | 在绑定仓库里，启动命令必须以 Claude Code 结尾 | 指定一个能到达 `claude` 的命令或别名：`--worker-command <别名>` |
+| `… it is the worker launch command of the harness …, called for by …` | 某个阶段或巡查指定的 harness 在这台机器上启动不了 | 给这个 harness 一个能用的命令：`--worker-command <harness>=<命令>`；或者改掉报错里点名的那个阶段或巡查 |
+| `--worker-command was given twice for the harness …` | 同一个 harness 给了两条命令——不带名字的写法就是默认 harness 的 | 每个 harness 只给一条 |
 | 警告说读不到主干的分支保护 | 免费套餐下的私有仓库不暴露这项信息 | 主干没设保护就没事；否则落地会被拒绝 |
 | `run` 被杀掉了 | 什么都没丢 | 在同一台机器上重新启动：它会把认领接回来 |
 | 另一台机器的 fleet 挂了 | 它的认领会自己过期 | 等，或者 `afkconvoy takeover --from <对方实例> --instance <你的>` |

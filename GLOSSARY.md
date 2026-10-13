@@ -137,7 +137,7 @@ A session of one harness, started in one role to perform one stage of one issue 
 _Avoid_: agent, subagent, child
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. In an unbound repo it is opaque: the fleet never parses it or appends to it. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host says it, per harness, and a harness it says none for has a stock one; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:

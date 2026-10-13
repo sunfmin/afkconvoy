@@ -9,7 +9,9 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  It makes the startup probe, then the rebuild: the open issues and PRs on GitHub, the
+  It makes the startup probe — which checks, as a start does, the worker launch command
+  a `run` started now would give every harness the fleet could be asked for
+  (`afkconvoy run --help`) — then the rebuild: the open issues and PRs on GitHub, the
   claims and heartbeats on the remote, and the landing train. It changes nothing on
   GitHub. On the remote it pushes its startup probe and deletes it again, together with
   what the probe sweeps: a probe an earlier start left behind, and recorded gate runs

@@ -157,6 +157,14 @@ afkconvoy run --worker-command kim
 
 Without `--worker-command`, `run` lists your login shell's aliases that start Claude and asks. The command is handed to orca exactly as given; it must resolve in a login shell, or nothing is started.
 
+A fleet instance has one worker launch command for each harness its workers run, and the flag has two forms. The bare one above says the command of the repo's default harness. `--worker-command <harness>=<command>` says the command of one harness by its key, and is given once for each:
+
+```sh
+afkconvoy run --worker-command claude-code=kim
+```
+
+A harness nobody said a command for is started with its stock one. A command given twice for one harness, or for a name that is no harness, is an error. A value is read as `<harness>=<command>` when its first word holds an `=`.
+
 **In a bound repo** a worker starts in its role, so the worker launch command is no longer opaque: it must end in Claude Code taking flags, because the fleet appends to it. The terminal is opened on the issue's worktree as ever, and the line it runs is:
 
 ```sh
@@ -165,7 +173,8 @@ cd <the role's copy> && export <the stage's facts> && <worker launch command> \
   --settings <the guard and orca's status report, as hooks> [--model <the stage's>]
 ```
 
-- The command must take `--add-dir`, `--setting-sources`, `--settings` and `--model`. A start runs `<worker launch command> --help` in a login shell and refuses, naming what is missing, when the answer does not name all four. An alias or a wrapper is fine as long as what follows it reaches Claude Code: `kim`, not `kim ; true`.
+- The command must take `--add-dir`, `--setting-sources`, `--settings` and `--model`. A start runs `<worker launch command> --help` in a login shell and refuses, naming what is missing, when the answer does not name all four.
+- Which harness a worker runs is the team's to say: a stage or a patrol names one, or takes the repo's default. Before any worker is started, a start, `plan` and `doctor` check the command of every harness the repo's default, the team's workflows and the patrols the repo runs call for. A fault is said with its harness and the stage or patrol that calls for it, and a start with one harness that cannot be started starts no worker: none is ever started in another's place. An alias or a wrapper is fine as long as what follows it reaches Claude Code: `kim`, not `kim ; true`.
 - What is added is fixed, and nothing of it is configurable. The role's rules, skills and hooks load because the worker starts in the role's directory; the repo's own rules (`CLAUDE.md`) load from the added worktree, its hooks do not — what a repo must enforce belongs in its gate; your own Claude Code settings, rules, skills and hooks are not loaded at all.
 - The role's and the team's directories are the fleet's own read-only copies, one per commit, under `~/.cache/afkconvoy/copies/` (or `$XDG_CACHE_HOME`). A stage starts under the commit at the head of each repo's default branch; a copy already there is not fetched again. Pushing is the only way a change to a role reaches a worker.
 - The stage's facts are in the worker's environment: `AFKCONVOY_ISSUE`, `AFKCONVOY_FLOW`, `AFKCONVOY_STAGE`, `AFKCONVOY_ROLE`, `AFKCONVOY_SKILL`, `AFKCONVOY_WRITES`, `AFKCONVOY_CONSULT`, `AFKCONVOY_BASE_BRANCH`, `AFKCONVOY_ESCALATE_LABEL`, `AFKCONVOY_LOCK_LABEL`, `AFKCONVOY_ROLE_COMMIT` and `AFKCONVOY_TEAM_COMMIT`.
