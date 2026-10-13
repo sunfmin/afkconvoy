@@ -58,20 +58,6 @@ pub fn heartbeat_due(last_beat: Option<u64>, now: u64) -> bool {
     }
 }
 
-/// A heartbeat that is not due is live to every peer, and stays live for two
-/// thirds of a lease: an owner that beats when due is never read as dead.
-#[spec(fn(stamp: u64, now: u64, later: u64)
-    requires now <= later && later - now <= LEASE - BEAT_EVERY)]
-pub fn a_beat_not_due_outlives_the_wait(stamp: u64, now: u64, later: u64) {
-    if !stamp_due(stamp, now) && stamp <= now {
-        proved(!stamp_stale(stamp, later));
-    }
-}
-
-/// A fact Flux has proved where this is called.
-#[spec(fn(bool[true]))]
-pub fn proved(_: bool) {}
-
 /// How old a stamp another clock wrote is, in seconds; `None` when it is no
 /// evidence of anything: further ahead of `now` than `SKEW`. A stamp ahead by
 /// no more than that is ordinary skew between two hosts and reads as "just

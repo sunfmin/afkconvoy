@@ -89,13 +89,13 @@ impl Escalation {
         self.relabelled
     }
 
-    #[spec(fn(self: &mut Self[@e]) ensures self: Self[true, e.relabelled])]
+    #[spec(fn(self: &mut Self[@e]) ensures self: Self[{ commented: true, ..e }])]
     fn comment(&mut self) {
         self.commented = true;
     }
 
     /// The reason first: an issue is never handed over with nothing said.
-    #[spec(fn(self: &mut Self[@e]) requires e.commented ensures self: Self[e.commented, true])]
+    #[spec(fn(self: &mut Self[@e]) requires e.commented ensures self: Self[{ relabelled: true, ..e }])]
     fn relabel(&mut self) {
         self.relabelled = true;
     }

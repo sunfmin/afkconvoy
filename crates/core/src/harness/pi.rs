@@ -263,7 +263,7 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
 mod tests {
     use super::*;
     use crate::harness::Harness;
-    use crate::role::{Facts, On};
+    use crate::role::{Facts, On, Told};
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
@@ -273,6 +273,7 @@ mod tests {
             model,
             guard: "/bin/afkconvoy guard",
             kept: "/cache/harness/pi",
+            told: Told::default(),
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },
                 role: "dev",

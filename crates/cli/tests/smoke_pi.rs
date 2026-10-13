@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use afkconvoy::kept::keep_under;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::role::{Facts, On, Start};
+use afkconvoy_core::role::{Facts, On, Start, Told};
 use serde_json::{Value, json};
 
 const ROLE_WORD: &str = "ROLE-7391";
@@ -183,6 +183,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
         model: Some("fake/fake-1"),
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         kept: &text(&kept),
+        told: Told::default(),
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
             role: "dev",

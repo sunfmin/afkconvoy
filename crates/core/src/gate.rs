@@ -240,15 +240,20 @@ pub fn red_comment(command: &GateCommand, ran: Ran, excerpt: &[String]) -> Strin
     )
 }
 
-/// What a run of the gate does to its tree's record on the remote.
+/// What a run of the gate does to its tree's record on the remote: `written`
+/// when it puts a run on record, the one of `command` on `tree` finished at `at`.
 #[derive(Debug, PartialEq, Eq)]
+#[refined_by(written: bool, tree: int, command: int, at: int)]
 pub enum Recording {
     /// Green, on a committed tree: put the run on record.
+    #[variant((GreenRun[@g]) -> Recording[true, g.tree, g.command, g.at])]
     Write(GreenRun),
     /// Red, on a committed tree: the tree's record goes — the latest run of a
     /// tree is the one believed.
+    #[variant(Recording[false, 0, 0, 0])]
     Drop,
     /// The run was not of a committed tree: it proves nothing about one.
+    #[variant(Recording[false, 0, 0, 0])]
     Leave,
 }
 
@@ -257,9 +262,10 @@ pub enum Recording {
 ///
 /// A run is of the committed tree only when the worktree was exactly its
 /// commit before and after: a command that rewrites a tracked file passes on
-/// what it wrote, not on what is committed.
+/// what it wrote, not on what is committed. The run it puts on record is of
+/// this command on this tree, finished at `now`.
 #[spec(fn(tree: &Tree[@t], command: &GateCommand[@c], ran: Ran, now: u64)
-    -> Recording)]
+    -> Recording{r: r.written => r.tree == t && r.command == c && r.at == now})]
 pub fn after_run(tree: &Tree, command: &GateCommand, ran: Ran, now: u64) -> Recording {
     if !ran.clean_before {
         Recording::Leave
@@ -283,64 +289,64 @@ mod rejected {
     fn a_run_landed_on_without_asking_whether_it_stands(run: &GreenRun, now: u64) -> Proven {
         Proven { name: String::new(), tree: run.tree, command: run.command, at: run.at, now }
     }
+}
 
-    /// A green run of one tree offered as the proof of the tree that lands.
-    #[should_fail]
-    #[spec(fn(tested: &Tree, landing: &Tree[@l], command: &GateCommand, run: &GreenRun, now: u64)
-        -> Option<Proven{p: p.tree == l}>)]
-    fn a_run_of_one_tree_proving_another(
-        tested: &Tree,
-        landing: &Tree,
-        command: &GateCommand,
-        run: &GreenRun,
-        now: u64,
-    ) -> Option<Proven> {
-        let _ = landing;
-        Proven::by(tested, command, run, now)
-    }
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
+#[cfg(flux)]
+#[allow(dead_code)]
+mod relied_on {
+    use super::*;
 
-    /// A record an hour old swept as one past its day.
-    #[should_fail]
-    #[spec(fn(at: u64, now: u64) requires at <= now && now - at <= 3600)]
-    fn a_record_an_hour_old_swept(at: u64, now: u64) {
-        crate::lease::proved(!believed(at, now));
-    }
-
-    /// A proof read at one time used as one that holds at another.
-    #[should_fail]
-    #[spec(fn(tree: &Tree, command: &GateCommand, run: &GreenRun, then: u64, now: u64)
-        -> Option<Proven{p: p.now == now}>)]
-    fn a_proof_of_an_earlier_time(
+    /// A proof is of the tree, the command and the time it was asked about.
+    #[spec(fn(tree: &Tree[@t], command: &GateCommand[@c], run: &GreenRun, now: u64)
+        -> Option<Proven{p: p.tree == t && p.command == c && p.now == now}>)]
+    fn a_proof_is_of_what_was_asked(
         tree: &Tree,
         command: &GateCommand,
         run: &GreenRun,
-        then: u64,
         now: u64,
     ) -> Option<Proven> {
-        let _ = now;
-        Proven::by(tree, command, run, then)
+        Proven::by(tree, command, run, now)
     }
 
-    /// A record of one tree offered as a run of another.
-    #[should_fail]
-    #[spec(fn(subject: &str, tested: &Tree, landing: &Tree[@l], command: &GateCommand)
-        -> Option<GreenRun{g: g.tree == l}>)]
-    fn a_record_of_another_tree(
+    /// A record read is a run of the tree and the command it was read for.
+    #[spec(fn(subject: &str, tree: &Tree[@t], command: &GateCommand[@c])
+        -> Option<GreenRun{g: g.tree == t && g.command == c}>)]
+    fn a_record_is_of_what_it_was_read_for(
         subject: &str,
-        tested: &Tree,
-        landing: &Tree,
+        tree: &Tree,
         command: &GateCommand,
     ) -> Option<GreenRun> {
-        let _ = landing;
-        GreenRun::recorded(subject, tested, command)
+        GreenRun::recorded(subject, tree, command)
     }
 
-    /// A record believed without a look at its age.
-    #[should_fail]
+    /// The run a gate run puts on record is of its tree and its command,
+    /// finished when the run did.
+    #[spec(fn(tree: &Tree[@t], command: &GateCommand[@c], ran: Ran, now: u64)
+        -> Option<GreenRun[t, c, now]>)]
+    fn a_run_on_record_is_of_its_tree(
+        tree: &Tree,
+        command: &GateCommand,
+        ran: Ran,
+        now: u64,
+    ) -> Option<GreenRun> {
+        match after_run(tree, command, ran, now) {
+            Recording::Write(run) => Some(run),
+            Recording::Drop | Recording::Leave => None,
+        }
+    }
+
+    /// A record an hour old is believed, not swept.
+    #[spec(fn(at: u64, now: u64) requires at <= now && now - at <= 3600)]
+    fn a_record_an_hour_old_is_believed(at: u64, now: u64) {
+        flux_rs::assert(believed(at, now));
+    }
+
+    /// A run stands exactly while it is fresh.
     #[spec(fn(run: &GreenRun[@g], now: u64) -> bool[super::fresh(g.at, now)])]
-    fn a_record_believed_whatever_its_age(run: &GreenRun, now: u64) -> bool {
-        let _ = (run, now);
-        true
+    fn a_run_stands_while_fresh(run: &GreenRun, now: u64) -> bool {
+        run.stands(now)
     }
 }
 

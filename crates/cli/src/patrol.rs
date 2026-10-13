@@ -119,6 +119,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         over_command: &own().fixed(" over --run ").word(&claim.key).own(),
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
+    let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;
     let start = Start {
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
@@ -126,6 +127,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         model: patrol.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &crate::kept::keep(harness)?.display().to_string(),
+        told: told.told(),
         facts: Facts {
             on: On::Patrol(name),
             role: &role.name,

@@ -361,6 +361,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
              AFKCONVOY_HARNESS='codex' && codex --dangerously-bypass-approvals-and-sandbox \
              --add-dir '{worktree}' --dangerously-bypass-hook-trust \
              --config 'projects={{\"{role}\"={{trust_level=\"trusted\"}}}}' \
+             --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
+             --config 'project_root_markers=[]' \
              --config '{hook}' --config features.memories=false --model 'gpt-5.5'",
             role = role.display(),
             kept = kept.display(),
@@ -381,7 +383,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     assert!(sent[0].iter().any(|word| word.starts_with("Your task brief is the file ")));
 
     // The fleet's own user directory for Codex: the user's login, as a link
-    // to theirs, and nothing else of the user's.
+    // to theirs, and nothing else of the user's — and no `AGENTS.md`, which
+    // Codex would load from there as every worker's rules.
     let held = |kept: &Path| -> Vec<String> {
         let entries = std::fs::read_dir(kept).unwrap().flatten();
         entries.map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()
@@ -404,6 +407,10 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
             "--config",
             &format!("projects={{\"{}\"={{trust_level=\"trusted\"}}}}", role.display()),
             "--config",
+            "project_doc_fallback_filenames=[\"CLAUDE.md\"]",
+            "--config",
+            "project_root_markers=[]",
+            "--config",
             &hook(&guard),
             "--config",
             "features.memories=false",
@@ -422,6 +429,87 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     assert_eq!(held(&kept), [] as [&str; 0], "a link to no login is left");
     let line = started(&world, &worktree(&world, 8));
     assert!(line.ends_with(" --config features.memories=false"), "{line}");
+}
+
+/// What the stand-in Codex was told in `ran` as a developer's: the rules the
+/// fleet gives it from outside its role's directory. `None`: it was told none.
+fn told(ran: &[String]) -> Option<String> {
+    let said: Vec<&String> =
+        ran.iter().filter(|word| word.starts_with("developer_instructions=")).collect();
+    assert!(said.len() <= 1, "{ran:?}");
+    // A TOML string that holds nothing but these escapes is a JSON one too.
+    said.first().map(|said| serde_json::from_str(&said["developer_instructions=".len()..]).unwrap())
+}
+
+const TOLD_OPENS: &str = "afkconvoy started you, and gives you the rules below. You work under \
+                          them as you do under your role's, which are those of the directory you \
+                          started in.";
+
+#[test]
+fn a_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rules() {
+    // A repo with no rules of its own, and a team with none: the worker is
+    // told none, and starts all the same.
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let ran = under_codex(&world, &started(&world, &worktree(&world, 7)));
+    assert_eq!(told(&ran), None);
+    // Its role's rules are the `CLAUDE.md` of the directory it starts in,
+    // which Codex is told to load — and nothing of a directory above it.
+    let role = copy(&world, "acme/dev");
+    assert_eq!(ran[0], role.to_str().unwrap());
+    assert_eq!(std::fs::read_to_string(role.join("CLAUDE.md")).unwrap(), "the rules of a dev\n");
+    for said in ["project_doc_fallback_filenames=[\"CLAUDE.md\"]", "project_root_markers=[]"] {
+        assert!(ran.contains(&said.to_string()), "{said}: {ran:?}");
+    }
+
+    // The team gets rules, and the repo its own, in a `CLAUDE.md`: Codex
+    // loads neither from a directory added to it, so each is said on the
+    // line, as what it is.
+    let team = world.root.join("github/acme/team");
+    write(&team, "CLAUDE.md", "the rules of the team\n");
+    git(&team, &["add", "."]);
+    git(&team, &["commit", "-q", "-m", "team rules"]);
+    write(&world.clone, "CLAUDE.md", "the rules of the project\n\nIt's \"ours\".\n");
+    git(&world.clone, &["add", "."]);
+    git(&world.clone, &["commit", "-q", "-m", "the repo's own rules"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.issue(8, &["flow:audit"]);
+    let ticked = did(&tick(&world, 1100).ok());
+    assert!(ticked.contains(&"dispatch 8 done".to_string()), "{ticked:?}");
+    let dir = worktree(&world, 8);
+    let team_rules = copy(&world, "acme/team").join("CLAUDE.md");
+    let ran = under_codex(&world, &started(&world, &dir));
+    assert_eq!(
+        told(&ran).unwrap(),
+        format!(
+            "{TOLD_OPENS}\n\n# The repo's own rules: {}\n\n<rules>\nthe rules of the \
+             project\n\nIt's \"ours\".\n</rules>\n\n# The team rules: {}\n\n<rules>\nthe rules \
+             of the team\n</rules>",
+            dir.join("CLAUDE.md").display(),
+            team_rules.display()
+        )
+    );
+
+    // A repo that holds an `AGENTS.md` has its own rules there, as for pi.
+    write(&world.clone, "AGENTS.md", "the rules of the project, for agents\n");
+    git(&world.clone, &["add", "."]);
+    git(&world.clone, &["commit", "-q", "-m", "an AGENTS.md"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.issue(9, &["flow:audit"]);
+    let ticked = did(&tick(&world, 1200).ok());
+    assert!(ticked.contains(&"dispatch 9 done".to_string()), "{ticked:?}");
+    let dir = worktree(&world, 9);
+    let said = told(&under_codex(&world, &started(&world, &dir))).unwrap();
+    let own = format!(
+        "# The repo's own rules: {}\n\n<rules>\nthe rules of the project, for agents\n</rules>",
+        dir.join("AGENTS.md").display()
+    );
+    assert!(said.contains(&own), "{said}");
+    assert!(!said.contains("It's \"ours\""), "{said}");
+    assert!(said.contains("# The team rules: "), "{said}");
+    // None of it is kept in a file Codex would load as every worker's.
+    assert!(!kept(&world).join("AGENTS.md").exists());
 }
 
 /// A stand-in Codex: it prints the directory it was started in, the user
@@ -530,7 +618,7 @@ fn orca_installs_its_hook(world: &World, then: &str) {
 }
 
 /// The events the stand-in for orca's hook was handed since the last look.
-fn told(world: &World) -> Vec<String> {
+fn orca_was_told(world: &World) -> Vec<String> {
     let kept = world.home().join("told");
     let events = std::fs::read_to_string(&kept).unwrap_or_default();
     let _ = std::fs::remove_file(kept);
@@ -786,7 +874,7 @@ fn a_codex_worker_s_start_names_orca_s_hook_wherever_its_state_changes_and_it_re
         for name in &events {
             assert_eq!(report_answers(&world, &line, &event(name)), nothing, "{name}: {then}");
         }
-        assert_eq!(told(&world), events, "{then}");
+        assert_eq!(orca_was_told(&world), events, "{then}");
     }
     // The call the report let through is still the guard's to refuse.
     let (code, why) = codex_is_told(&world, &line, &bash("git push origin main"));
@@ -836,7 +924,7 @@ fn a_codex_worker_that_is_working_is_seen_as_busy_and_one_that_has_stopped_as_st
     // else of the worker's start names orca.
     let heard = |name: &str, at: u64| {
         assert_eq!(report_answers(&world, &line, &event(name)).0, 0, "{name}");
-        let told = told(&world);
+        let told = orca_was_told(&world);
         assert_eq!(told, [name]);
         orca_heard(&world, &told[0], at);
     };
