@@ -6,6 +6,7 @@
 use flux_rs::attrs::*;
 
 use crate::config::{ESCALATE_LABEL, RepoName};
+use crate::harness::Harness;
 
 /// The team file, at the top of a team's repo.
 pub const TEAM_FILE: &str = "team.md";
@@ -33,16 +34,20 @@ pub const DONE: &str = "done";
 
 /// The key of the team file that says who proposes precedents.
 const PRECEDENTS_KEY: &str = "precedents";
+/// The key of a stage and of a patrol that names the harness its worker
+/// runs: a key wherever `model` is one, and nowhere else.
+const HARNESS_KEY: &str = "harness";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
 pub const TEAM_KEYS: [&str; 3] = ["escalate_label", "roles", PRECEDENTS_KEY];
 pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
 pub const WORKFLOW_KEYS: [&str; 4] = ["max_rework", "max_consecutive_rework", "stages", LAND];
-pub const STAGE_KEYS: [&str; 7] = ["name", "by", "do", "model", "writes", "escalate", "on"];
+pub const STAGE_KEYS: [&str; 8] =
+    ["name", "by", "do", HARNESS_KEY, "model", "writes", "escalate", "on"];
 pub const ON_KEYS: [&str; 2] = ["pass", "reject"];
 pub const ESCALATE_KEYS: [&str; 2] = ["to", "do"];
 pub const LAND_KEYS: [&str; 2] = ["by", "do"];
-pub const PATROL_KEYS: [&str; 5] = ["by", "do", "every", "model", "max_open"];
+pub const PATROL_KEYS: [&str; 6] = ["by", "do", "every", HARNESS_KEY, "model", "max_open"];
 
 /// One value of a definition file's yaml, as it was parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,9 +306,20 @@ pub struct Patrol {
     pub work: Work,
     /// How long after one run the next is due, in seconds.
     pub every: u64,
+    /// The harness it names. `None`: it names none, and takes the default.
+    harness: Option<Harness>,
+    /// Its harness's own name for the model, passed as written.
     pub model: Option<String>,
     /// How many issues it opened may be open before it is skipped.
     pub max_open: u64,
+}
+
+impl Patrol {
+    /// The harness its worker runs in a repo whose default is `default`:
+    /// the one it names, or that.
+    pub fn harness(&self, default: Harness) -> Harness {
+        self.harness.unwrap_or(default)
+    }
 }
 
 /// Who proposes a human's ruling as a precedent — a skill of a role, started
@@ -356,6 +372,10 @@ pub struct Stage {
     pub name: String,
     #[field(Performer{v: v.by_role => v.roles == roles})]
     pub by: Performer,
+    /// The harness it names. `None`: it names none, and takes the default —
+    /// or a human performs it, and it has none.
+    harness: Option<Harness>,
+    /// Its harness's own name for the model, passed as written.
     pub model: Option<String>,
     /// Whether it may commit. A stage that reviews does not.
     pub writes: bool,
@@ -377,6 +397,16 @@ pub struct Stage {
 }
 
 impl Stage {
+    /// The harness its worker runs in a repo whose default is `default`:
+    /// the one it names, or that. `None` of a stage a human performs.
+    /// Its consult's is the default whatever it names.
+    pub fn harness(&self, default: Harness) -> Option<Harness> {
+        match self.by {
+            Performer::Human => None,
+            Performer::Role(_) => Some(self.harness.unwrap_or(default)),
+        }
+    }
+
     /// Its place among its workflow's stages, the first being 0.
     #[spec(fn(&Stage[@s]) -> usize[s.at])]
     pub fn at(&self) -> usize {
@@ -670,6 +700,17 @@ fn text<'n>(
     }
 }
 
+/// The harness the map at `at` names, when it has the key. A name that is
+/// no harness is reported.
+fn harness(report: &mut Report, at: &str, entries: &[(String, Node)]) -> Option<Harness> {
+    let named = text(report, at, entries, HARNESS_KEY)?;
+    let read = Harness::read(named);
+    if read.is_none() {
+        report.fault(&under(at, HARNESS_KEY), Harness::unknown(named));
+    }
+    read
+}
+
 /// The text at `key`, its absence reported too.
 fn required<'n>(
     report: &mut Report,
@@ -888,6 +929,7 @@ struct Draft<'n> {
     key: String,
     name: Option<&'n str>,
     by: Option<Performer>,
+    harness: Option<Harness>,
     model: Option<String>,
     writes: Option<bool>,
     /// `None` when its `escalate` is at fault; `Some(None)` when it has none.
@@ -909,7 +951,7 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
     }
     let human = matches!(get(entries, "by"), Some(Node::Text(by)) if by == HUMAN);
     let by = if human {
-        for worker_key in ["do", "model", "escalate"] {
+        for worker_key in ["do", HARNESS_KEY, "model", "escalate"] {
             if get(entries, worker_key).is_some() {
                 let problem = format!(
                     "a stage `by: {HUMAN}` starts no worker, so it takes no `{worker_key}`"
@@ -921,6 +963,7 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
     } else {
         work(report, roles, &key, entries, ("by", "do")).map(Performer::Role)
     };
+    let harness = if human { None } else { harness(report, &key, entries) };
     let model = if human { None } else { text(report, &key, entries, "model") };
     let writes = match get(entries, "writes") {
         None => Some(true),
@@ -954,7 +997,7 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
         }
     }
     let model = model.map(str::to_string);
-    Some(Draft { key, name, by, model, writes, consult, pass, reject })
+    Some(Draft { key, name, by, harness, model, writes, consult, pass, reject })
 }
 
 /// Where the verdicts of one stage lead, as far as its file could be read.
@@ -1234,9 +1277,17 @@ fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol
             read
         }
     };
+    let harness = harness(report, "", entries);
     let model = text(report, "", entries, "model").map(str::to_string);
     let max_open = limit(report, "", entries);
-    Some(Patrol { name: name.to_string(), work: work?, every: every?, model, max_open: max_open? })
+    Some(Patrol {
+        name: name.to_string(),
+        work: work?,
+        every: every?,
+        harness,
+        model,
+        max_open: max_open?,
+    })
 }
 
 /// The stage a draft with nothing wrong in it is, at the place `at` of a
@@ -1266,6 +1317,7 @@ fn stage(
     Some(Stage {
         name: draft.name?.to_string(),
         by,
+        harness: draft.harness,
         model: draft.model,
         writes: draft.writes?,
         consult,
@@ -1317,6 +1369,7 @@ mod rejected {
         Stage {
             name,
             by: Performer::Human,
+            harness: None,
             model: None,
             writes: false,
             consult: None,
@@ -1464,6 +1517,7 @@ land: { by: dev, do: land }
                 name: "sweep".to_string(),
                 work,
                 every: 6 * 3600,
+                harness: None,
                 model: Some("opus".to_string()),
                 max_open: 3,
             })
@@ -1597,6 +1651,62 @@ land: { by: dev, do: land }
         assert_eq!(team.escalate_label, "stuck");
         assert!(team.roles.is_empty());
         assert!(load(&sources("{}", &[])).unwrap().workflows.is_empty());
+    }
+
+    /// A workflow whose second stage, by `dev`, has `rest` as the rest of it,
+    /// and whose `land` is `land`.
+    fn landed(rest: &str, land: &str) -> String {
+        let second = format!("    by: dev\n    do: plan\n{rest}    on: {{ pass: land }}\n");
+        format!("{}land: {land}\n", two("{ pass: b }", &second))
+    }
+
+    #[test]
+    fn a_stage_and_a_patrol_name_a_harness_or_take_the_default() {
+        let team = one(&landed("    harness: claude-code\n", "{ by: dev, do: land }"));
+        let workflow = team.workflow("feature").unwrap();
+        let (unnamed, named) = (workflow.stage(0), &workflow.stages()[1]);
+        assert_eq!(named.harness(Harness::DEFAULT), Some(Harness::ClaudeCode));
+        assert_eq!(unnamed.harness(Harness::ClaudeCode), Some(Harness::ClaudeCode));
+        // A human runs none.
+        let team = one(FEATURE);
+        let sign_off = &team.workflow("feature").unwrap().stages()[3];
+        assert_eq!(sign_off.harness(Harness::DEFAULT), None);
+
+        let named = "by: dev\ndo: plan\nevery: 6h\nharness: claude-code\nmax_open: 3\n";
+        let unnamed = "by: dev\ndo: plan\nevery: 6h\nmax_open: 3\n";
+        let team = patrolled(&[("patrols/a.md", named), ("patrols/b.md", unnamed)]).unwrap();
+        for patrol in &team.patrols {
+            assert_eq!(patrol.harness(Harness::DEFAULT), Harness::ClaudeCode, "{}", patrol.name);
+        }
+    }
+
+    #[test]
+    fn a_harness_is_named_only_where_a_model_is_and_only_by_its_key() {
+        let usual = "{ by: dev, do: land }";
+        for none in ["pi", "Claude Code", "claude"] {
+            let (key, problem) = fault(&landed(&format!("    harness: {none}\n"), usual));
+            assert_eq!(key, "stages[1].harness");
+            assert!(problem.contains(none) && problem.contains("claude-code"), "{problem}");
+        }
+        assert_eq!(fault(&landed("    harness: [claude-code]\n", usual)).0, "stages[1].harness");
+        // On a consult and on `land:` it is no key.
+        let consulted = "    escalate: { to: reviewer, do: rule, harness: claude-code }\n";
+        assert_eq!(fault(&landed(consulted, usual)).0, "stages[1].escalate.harness");
+        let land = "{ by: dev, do: land, harness: claude-code }";
+        assert_eq!(fault(&landed("", land)).0, "land.harness");
+        // Nor of a workflow, nor on `precedents:`.
+        assert_eq!(fault(&format!("harness: claude-code\n{FEATURE}")).0, "harness");
+        let precedents = "precedents: { by: dev, do: plan, max_open: 1, harness: claude-code }\n";
+        let faults = faults(&format!("{TEAM}{precedents}"), FEATURE);
+        assert_eq!(faults.len(), 1, "{faults:#?}");
+        assert_eq!((faults[0].0.as_str(), faults[0].1.as_str()), ("team.md", "precedents.harness"));
+        // A stage a human performs starts no worker.
+        let human =
+            two("{ pass: b }", "    by: human\n    harness: claude-code\n    on: { pass: done }\n");
+        assert_eq!(fault(&human).0, "stages[1].harness");
+        let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: pi\nmax_open: 3\n";
+        let faults = patrolled(&[("patrols/a.md", patrol)]).unwrap_err();
+        assert_eq!(faults, [("patrols/a.md".to_string(), "harness".to_string())]);
     }
 
     #[test]

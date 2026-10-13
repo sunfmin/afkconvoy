@@ -109,7 +109,7 @@ fn a_verdict_leaves_one_stage_record_carrying_the_stage_the_claim_and_the_commit
         world.comments(7),
         [format!(
             "<!--convoy:stage stage=build verdict=pass claim={claim} role_commit=r1 \
-             team_commit=t1-->\n**afkconvoy** — the stage `build` declared `pass`.\n\n{text}"
+             team_commit=t1 harness=claude-code-->\n**afkconvoy** — the stage `build` declared `pass`.\n\n{text}"
         )]
     );
     // It moved nothing: no label, and the claim is the fleet's to end.
@@ -160,13 +160,16 @@ fn the_brief_s_line_declares_from_the_role_s_directory_with_the_commits_of_the_e
         .args(["-c", &format!("{line} pass --text built")])
         .env("AFKCONVOY_ROLE_COMMIT", "role-abc")
         .env("AFKCONVOY_TEAM_COMMIT", "team-def")
+        .env("AFKCONVOY_HARNESS", "claude-code")
         .output()
         .unwrap();
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stdout));
     let record = &world.comments(7)[1];
     assert!(record.contains(" stage=build verdict=pass "), "{record}");
-    assert!(record.contains(" role_commit=role-abc team_commit=team-def-->"), "{record}");
-    assert_eq!(show(&world)["records"][0]["reads"], "verdict");
+    let ran = " role_commit=role-abc team_commit=team-def harness=claude-code-->";
+    assert!(record.contains(ran), "{record}");
+    let shown = &show(&world)["records"][0];
+    assert_eq!((&shown["reads"], &shown["harness"]), (&json!("verdict"), &json!("claude-code")));
 }
 
 #[test]
@@ -236,7 +239,8 @@ fn show_says_where_an_issue_is_what_follows_and_the_rework_it_has_left() {
     assert_eq!(entered["workflow"], "feature");
     assert_eq!(
         entered["position"],
-        json!({"is": "perform", "stage": "build", "by": "dev", "do": "implement", "reason": null})
+        json!({"is": "perform", "stage": "build", "by": "dev", "do": "implement",
+            "harness": "claude-code", "reason": null})
     );
     assert_eq!(entered["follows"]["stage"], "review");
     assert_eq!(entered["rework"], json!({"had": 0, "left": 3}));

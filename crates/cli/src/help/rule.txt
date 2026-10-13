@@ -30,7 +30,8 @@ WHO RUNS IT
   repo, with no commit named and none in the environment.
 
   Or a consult, in the issue's worktree: the fleet put the commits of its role and of
-  its team in its environment, and those are what make the ruling a consult's. No
+  its team in its environment, and those are what make the ruling a consult's; the
+  harness it is a session of is there too, and its record names it. No
   other worker runs it: a stage does not rule on itself.
 
 WHAT IT READS AND WRITES

@@ -18,8 +18,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::STOCK;
-use afkconvoy_core::role::{Facts, On, Start, in_role};
+use afkconvoy_core::role::{Facts, On, Start};
 use serde_json::Value;
 
 const ROLE_WORD: &str = "ROLE-7391";
@@ -124,7 +125,7 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
     };
     let line = format!(
         "{} -p '{PROMPT}' --output-format stream-json --verbose --include-hook-events",
-        in_role(&launch, &start)
+        Harness::ClaudeCode.in_role(&launch, &start)
     );
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let out = Command::new(shell).args(["-lic", &line]).stdin(Stdio::null()).output().unwrap();

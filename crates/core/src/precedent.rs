@@ -363,6 +363,7 @@ pub fn closing_comment(reason: &str) -> String {
 mod tests {
     use super::*;
     use crate::claims::Owner;
+    use crate::harness::Harness;
     use crate::lease::LEASE;
     use crate::position::Declared;
 
@@ -416,6 +417,7 @@ mod tests {
             claim: "c".into(),
             role_commit: "r".into(),
             team_commit: "t".into(),
+            harness: Harness::ClaudeCode,
         };
         let records = [
             record(Author::Human, Declared::Ruling),

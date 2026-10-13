@@ -21,7 +21,8 @@
         - name: <unique; not land, done or human>
           by: <role> | human
           do: <skill>                    # required unless by: human
-          model: <model>                 # optional
+          harness: claude-code           # optional; see below
+          model: <model>                 # optional; its harness's own name for it
           writes: false                  # optional; default true
           escalate: { to: <role>, do: <skill> }                  # optional
           on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
@@ -33,9 +34,17 @@
       by: <role>
       do: <skill>
       every: 6h                          # required: a whole number from 1 up, then m, h or d
-      model: <model>                     # optional
+      harness: claude-code               # optional; see below
+      model: <model>                     # optional; its harness's own name for it
       max_open: 5                        # required: it is skipped once this many issues
                                          # it opened are open
+
+  `harness` names the harness the stage's worker, or the patrol's, is a session of. It
+  is a key of a stage a role performs and of a patrol — wherever `model` is one — and
+  nowhere else: a consult, a landing and the proposal of a precedent run on the
+  default. One that names none takes the default too, which is the `harness` of the
+  repo's config, and claude-code where that names none. claude-code, Claude Code, is the
+  only harness there is.
 
   `precedents` names who proposes a human's ruling as a precedent: the fleet starts one
   worker in that role, with that skill, for each ruling a human gives an escalated issue

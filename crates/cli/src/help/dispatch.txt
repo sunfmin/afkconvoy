@@ -25,9 +25,11 @@ WHAT IT READS AND WRITES
   kept, read-only, under the user's cache directory (afkconvoy/copies/<owner>/<repo>/
   <commit>). The terminal is opened on the worktree as ever, and the line it runs
   changes to the role's copy, puts the stage's facts in the environment (AFKCONVOY_ISSUE,
-  _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT), and starts the
-  worker launch command with the worktree and the team's copy added as directories, the
-  user's own settings left out, and the stage's model when it names one.
+  _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT, _HARNESS), and
+  starts the worker launch command with the worktree and the team's copy added as
+  directories, the user's own settings left out, and the stage's model when it names
+  one. The worker's harness is the one the stage names, or the default of the repo's
+  config; a consult's and a landing worker's is the default.
 
   Where the stage declared `escalate` and names a consult, the worker is started as
   that consult instead: in the consult's role, on a brief that names the skill, the
@@ -54,7 +56,7 @@ WHAT IT ANSWERS
     prompt     the brief the worker got: fresh, continue, or join (its PR is open: only
                the join is left) — in a bound repo, stage, consult, or join for a
                landing worker
-    stage      in a bound repo: {flow, name, role, skill, writes, consult, model,
+    stage      in a bound repo: {flow, name, role, skill, writes, consult, harness, model,
                role_commit, role_dir, team_commit, team_dir} — the stage the worker
                performs, and the copies and commits fixed for it; name is `land` for a
                landing worker. For a consult (`consult: true`), name is the stage that

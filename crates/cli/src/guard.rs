@@ -16,7 +16,7 @@ use afkconvoy_core::harness::Harness;
 /// reason on stderr and the exit code that refuses it. A call or a stage it
 /// cannot read is refused: nothing is allowed unread.
 pub fn guard() -> ExitCode {
-    // Every worker's harness is the default: no stage names another.
+    // There is one harness, and so one that asks: whichever a stage names.
     let harness = Harness::DEFAULT;
     let mut described = String::new();
     let decided = match std::io::stdin().read_to_string(&mut described) {

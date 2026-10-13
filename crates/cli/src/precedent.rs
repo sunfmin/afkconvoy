@@ -7,13 +7,12 @@
 //! worker opens the PR, a human merges it, and all the fleet does is close
 //! one that is no proposal.
 
-use afkconvoy_core::harness::Harness;
 use afkconvoy_core::patrol::run_over;
 use afkconvoy_core::precedent::{
     Row, Ruling, Seen, Standing, closing_comment, is_proposal, proposed, proposed_comment, refused,
 };
 use afkconvoy_core::prompt::{ProposalFields, proposal_prompt};
-use afkconvoy_core::role::{Facts, On, Start, in_role};
+use afkconvoy_core::role::{Facts, On, Start};
 use afkconvoy_core::stage_record::stage_records;
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
@@ -71,7 +70,9 @@ pub fn propose(
 ) -> Result<Outcome> {
     let ruling = row.ruling;
     let kept = read.kept()?;
-    let team = &fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?.team;
+    let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
+    // The proposal of a precedent runs on the default: a team names no harness for it.
+    let (team, harness) = (&bound.team, bound.harness);
     let work = &kept
         .team
         .precedents
@@ -126,7 +127,7 @@ pub fn propose(
         team_dir: &kept.copy.dir.display().to_string(),
         model: None,
         guard: &crate::own_command().fixed(" guard").own(),
-        report: Harness::DEFAULT.report(),
+        report: harness.report(),
         facts: Facts {
             on: On::Proposal { issue: ruling.issue },
             role: &role.name,
@@ -141,7 +142,7 @@ pub fn propose(
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&in_role(agent.command.as_str(), &start), me.now)?;
+    let terminal = checkout.start(&harness.in_role(agent.command.as_str(), &start), me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
     Ok(Outcome::Done)

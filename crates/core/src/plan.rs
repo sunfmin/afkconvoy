@@ -527,6 +527,7 @@ mod tests {
     use super::*;
     use crate::claims::Owner;
     use crate::config::Settings;
+    use crate::harness::Harness;
     use crate::lease::LEASE;
 
     fn config(concurrency: usize) -> Config {
@@ -731,6 +732,7 @@ mod tests {
                 claim: "c1".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
             },
             blocked_by: vec![],
             text: "stuck".to_string(),
@@ -800,6 +802,7 @@ mod tests {
                 claim: claim.to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
             },
             blocked_by: vec![],
             text: "done".to_string(),

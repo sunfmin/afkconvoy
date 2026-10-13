@@ -161,10 +161,10 @@ fn check_reads_patrol_files_and_holds_the_repos_patrols_against_them() {
     assert_eq!(
         read["patrols"],
         json!([
-            {"name": "audit", "by": "dev", "do": "sweep", "every": 172_800, "model": "opus",
-                "max_open": 1, "runs_here": false},
-            {"name": "sweep", "by": "dev", "do": "sweep", "every": 3600, "model": null,
-                "max_open": 2, "runs_here": true},
+            {"name": "audit", "by": "dev", "do": "sweep", "every": 172_800,
+                "harness": "claude-code", "model": "opus", "max_open": 1, "runs_here": false},
+            {"name": "sweep", "by": "dev", "do": "sweep", "every": 3600,
+                "harness": "claude-code", "model": null, "max_open": 2, "runs_here": true},
         ])
     );
     let files: Vec<&str> =

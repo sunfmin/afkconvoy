@@ -17,7 +17,8 @@ WHAT IT READS AND WRITES
 {files}
   Without a flag it reads the config of this checkout for `team`, and that repo from
   GitHub at the head of its default branch — and holds the config's `patrols` against
-  the patrols that team has. `--team owner/repo` names the repo instead.
+  the patrols that team has, and takes its `harness` as the default.
+  `--team owner/repo` names the repo instead.
   `--dir <path>` reads a team's files from a directory as they are, committed or not.
   Every role's repo is always read from GitHub, at the head of its default branch.
 
@@ -30,15 +31,20 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"team", "commit", "files", "escalate_label", "roles", "workflows", "patrols",
-  "precedents"} — what it read.
-  `commit` is the team's commit read, null with `--dir`; `files` the files read. Each of
+  {"team", "commit", "files", "escalate_label", "harness", "roles", "workflows",
+  "patrols", "precedents"} — what it read.
+  `commit` is the team's commit read, null with `--dir`; `files` the files read.
+  `harness` is the default harness: the one the config of this checkout names, and
+  claude-code where it names none — and with `--team` and `--dir`, which read no
+  config. Each of
   `roles` is {"name", "repo", "commit", "skills"}: `commit` is the one the role's repo
   was read at. Each of `workflows` is {"name", "flow_label", "max_rework",
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
-  {"name", "by", "do", "model", "writes", "escalate", "pass", "reject"}. Each of
-  `patrols` is {"name", "by", "do", "every", "model", "max_open", "runs_here"}: `every`
-  in seconds, and `runs_here` whether the config of this checkout names it — false
+  {"name", "by", "do", "harness", "model", "writes", "escalate", "pass", "reject"}.
+  Each of `patrols` is {"name", "by", "do", "every", "harness", "model", "max_open",
+  "runs_here"}: `every` in seconds. A `harness` is the one the stage's worker, or the
+  patrol's, runs: the one it names, or the default — and null of a stage a human
+  performs. `runs_here` is whether the config of this checkout names the patrol — false
   with `--team` and `--dir`, which read no config. `precedents` is {"by", "do",
   "max_open"}, or null where the team names nobody to propose them.
 
@@ -51,7 +57,8 @@ WHAT IT ANSWERS
   from the first reaches; a stage whose passes never come to `land` or `done`; a
   `pass: land` with no `land:`, or a `land:` no pass leads to; a role the team file does
   not name; a role whose repo cannot be read; a skill its role's repo does not hold; a
-  missing `by`, `do` or `on`; a patrol file whose name is not a patrol's; an `every`
+  missing `by`, `do` or `on`; a `harness` that names no harness, or one on a stage a
+  human performs; a patrol file whose name is not a patrol's; an `every`
   that is no duration; a missing `every` or `max_open`; and — in the config,
   docs/agents/afkconvoy.md, under `patrols` — a name the team has no patrol for.
 
@@ -60,7 +67,8 @@ WHAT IT ANSWERS
   hands the fleet work chooses a workflow by it. The team loads all the same.
 
   Other errors, as {"error": …}: the repo's config names no team and no flag was given;
-  the team's repo cannot be read.
+  the config cannot be read, the error naming its file and the key — a `harness` there
+  that names no harness is one; the team's repo cannot be read.
 
 WHAT TRIPS YOU UP
 

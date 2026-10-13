@@ -86,17 +86,18 @@ When the team loads, push it, name it in the repo's config on the base branch, a
 
 ### The keys
 
-A bound repo's config keeps the keys only the repo knows — `base_branch`, `gate_command`, `epic_labels`, `concurrency`, `lock_label` — and reads three more:
+A bound repo's config keeps the keys only the repo knows — `base_branch`, `gate_command`, `epic_labels`, `concurrency`, `lock_label` — and reads four more:
 
 ````markdown
 ```yaml
 team: owner/repo                  # the team's repo: naming it is what binds this repo
 patrols: [triage]                 # which of the team's patrols run here, by name (default: none)
 intake_limit: 50                  # open issues taken in by workers, at most (default: 50)
+harness: claude-code              # the harness of a worker whose stage or patrol names none (default: claude-code)
 ```
 ````
 
-`ready_label` means nothing in a bound repo: its issues carry a flow label instead. The escalate label is the team's (`escalate_label` in `team.md`, default `ready-for-human`). `patrols` and `intake_limit` are errors where no `team` is.
+`ready_label` means nothing in a bound repo: its issues carry a flow label instead. The escalate label is the team's (`escalate_label` in `team.md`, default `ready-for-human`). `patrols`, `intake_limit` and `harness` are errors where no `team` is. A stage a role performs and a patrol may name a `harness` of their own beside their `model`; a consult, a landing and the proposal of a precedent run on the config's. Claude Code, `claude-code`, is the only harness there is.
 
 ### The flow label
 
@@ -125,7 +126,7 @@ A stage that finds its issue too large splits it: it opens child issues, takes e
 
 A workflow whose last stage passes to `land` names the role that lands (`land: { by, do }`): the tick after that `pass` starts a worker in it, which gates the issue's PR and joins the landing train, and the train lands it as it lands any PR.
 
-A team's patrols are files too (`patrols/<name>.md`: `by`, `do`, `every`, `model`, `max_open`), and a repo runs the ones its `patrols` names: the tick that finds one due — its interval passed since its last recorded run, no run of it still going, no fleet lock standing, fewer than `max_open` open issues it opened — claims the run on the remote, so of several hosts one runs it, and starts a worker in the patrol's role in a checkout of the base branch that is linked to no issue. That worker has `AFKCONVOY_PATROL` in its environment, opens issues and takes them in with `afkconvoy intake`; a run takes one slot of `concurrency` until its worker declares it over with `afkconvoy over` — the last line of its brief — or, where it never does, until it is gone or has been stopped for five minutes; a missed run is not made up, and `afkconvoy plan` lists how each patrol stands. The tick that ends a run closes its worker's terminal and removes its checkout — the next run starts in a new one — unless the run failed: then the checkout is kept for the human its report is opened for.
+A team's patrols are files too (`patrols/<name>.md`: `by`, `do`, `every`, `harness`, `model`, `max_open`), and a repo runs the ones its `patrols` names: the tick that finds one due — its interval passed since its last recorded run, no run of it still going, no fleet lock standing, fewer than `max_open` open issues it opened — claims the run on the remote, so of several hosts one runs it, and starts a worker in the patrol's role in a checkout of the base branch that is linked to no issue. That worker has `AFKCONVOY_PATROL` in its environment, opens issues and takes them in with `afkconvoy intake`; a run takes one slot of `concurrency` until its worker declares it over with `afkconvoy over` — the last line of its brief — or, where it never does, until it is gone or has been stopped for five minutes; a missed run is not made up, and `afkconvoy plan` lists how each patrol stands. The tick that ends a run closes its worker's terminal and removes its checkout — the next run starts in a new one — unless the run failed: then the checkout is kept for the human its report is opened for.
 
 ### Precedents
 

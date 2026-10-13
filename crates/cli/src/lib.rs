@@ -8,10 +8,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::RepoName;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
-use afkconvoy_core::role::{CONSULT_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV};
+use afkconvoy_core::role::{
+    CONSULT_ENV, HARNESS_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV,
+};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -249,6 +252,9 @@ enum Command {
         /// The commit of the team's repo a worker's stage ran under [a human names none]
         #[arg(long, env = TEAM_COMMIT_ENV, requires = "role_commit")]
         team_commit: Option<String>,
+        /// The harness a worker's stage ran on [a human names none]
+        #[arg(long, env = HARNESS_ENV, value_parser = harness, requires = "role_commit")]
+        harness: Option<Harness>,
         /// The worker is the stage's consult, letting its `escalate` through [a human is none]
         #[arg(long, env = CONSULT_ENV)]
         consult: bool,
@@ -270,6 +276,9 @@ enum Command {
         /// The commit of the team's repo a consult ran under [a human names none]
         #[arg(long, env = TEAM_COMMIT_ENV, requires = "role_commit")]
         team_commit: Option<String>,
+        /// The harness a consult ran on [a human names none]
+        #[arg(long, env = HARNESS_ENV, value_parser = harness, requires = "role_commit")]
+        harness: Option<Harness>,
     },
     /// Send an issue to a named stage of its workflow (a human's command)
     #[command(after_long_help = include_str!("help/send.txt"))]
@@ -579,6 +588,22 @@ fn verdict(text: &str) -> Result<Declared, String> {
     })
 }
 
+fn harness(text: &str) -> Result<Harness, String> {
+    Harness::read(text).ok_or_else(|| Harness::unknown(text))
+}
+
+/// What a worker that declares ran under, when the commits say one does: a
+/// human names none. A worker started before its environment named a harness
+/// names none either (`Harness::UNNAMED`).
+fn ran(
+    role_commit: Option<String>,
+    team_commit: Option<String>,
+    harness: Option<Harness>,
+) -> Option<stage::Ran> {
+    let (role_commit, team_commit) = role_commit.zip(team_commit)?;
+    Some(stage::Ran { role_commit, team_commit, harness: harness.unwrap_or(Harness::UNNAMED) })
+}
+
 fn this_host() -> String {
     gethostname::gethostname().to_string_lossy().into()
 }
@@ -679,7 +704,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             match issue.or(numbered) {
                 Some(issue) => {
                     let gh = gh::GitHub { dir: Repo::here()?.dir };
-                    stage::show_issue(&gh, &loaded.team, issue)
+                    stage::show_issue(&gh, &loaded.team, loaded.harness, issue)
                 }
                 None => Ok(Value::String(workflow::show(&loaded, workflow.as_deref())?)),
             }
@@ -751,6 +776,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             blocked_by,
             role_commit,
             team_commit,
+            harness,
             consult,
         } => {
             let declaring = stage::Declaring {
@@ -759,16 +785,16 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 declared: verdict,
                 blocked_by,
                 text: text.read()?,
-                commits: role_commit.zip(team_commit),
+                ran: ran(role_commit, team_commit, harness),
                 consult,
             };
             stage::verdict(&Repo::here()?, declaring)
         }
-        Command::Rule { issue, text, stage, role_commit, team_commit } => {
+        Command::Rule { issue, text, stage, role_commit, team_commit, harness } => {
             let issue = issue.number();
             // With the commits it ran under, the ruling is a consult's: a
             // stage record under its claim, as a verdict is.
-            if let Some(commits) = role_commit.zip(team_commit) {
+            if let Some(ran) = ran(role_commit, team_commit, harness) {
                 let Some(stage) = stage else {
                     anyhow::bail!(
                         "a consult rules with `--stage`, the stage that asked it: its brief \
@@ -782,7 +808,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                     declared: Declared::Ruling,
                     blocked_by: vec![],
                     text: text.read()?,
-                    commits: Some(commits),
+                    ran: Some(ran),
                     consult: true,
                 };
                 return stage::verdict(&Repo::here()?, declaring);

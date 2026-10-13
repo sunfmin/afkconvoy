@@ -34,7 +34,8 @@ WHO RUNS IT
 
   A worker, in its own worktree: it starts in its role's directory, so the line its
   brief gives changes to the worktree first. The fleet put the commits of its role and
-  of its team in its environment, and the command reads them from there.
+  of its team, and the harness it is a session of, in its environment, and the command
+  reads them from there.
 
   Or a human, in a checkout of the bound repo, with neither commit named and none in
   the environment: that is what makes the record a human's.
@@ -43,8 +44,9 @@ WHAT IT READS AND WRITES
 
   It reads the claim on the issue off the remote and the issue's comments, and writes
   one comment on the issue: the stage record. The record opens with a marker that
-  carries the stage, the verdict, the claim it was declared under and the commits of the
-  role and of the team, and the text follows it. Nothing but this command writes that
+  carries the stage, the verdict, the claim it was declared under, the commits of the
+  role and of the team and the harness the worker ran on — and nothing of how it was
+  started — and the text follows it. Nothing but this command writes that
   format.
 
   A human's record is written under no claim, and only on an issue nobody holds. It
@@ -72,7 +74,8 @@ WHAT IT ANSWERS
   verdicts; no text, or an empty one; `--blocked-by` with another verdict than
   `blocked`; a worker's on an issue that is not claimed; one of `--role-commit` and
   `--team-commit` (or AFKCONVOY_ROLE_COMMIT and AFKCONVOY_TEAM_COMMIT) without the
-  other; "is not in a git checkout".
+  other; a `--harness` (or AFKCONVOY_HARNESS) that names no harness, or one with no
+  commit; "is not in a git checkout".
 
   A human's is refused, with nothing written, when the issue "is claimed" — its stage
   is its worker's, and a worker's record names both commits; when it is at another

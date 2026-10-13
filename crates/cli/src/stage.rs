@@ -6,6 +6,7 @@
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::Bound;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::{opened_by, taken_in};
 use afkconvoy_core::plan::{Issue, PullRequest, closing_pr, label_bar};
 use afkconvoy_core::position::{Declared, Position};
@@ -39,11 +40,19 @@ pub struct Declaring {
     pub blocked_by: Vec<u64>,
     /// What the stage produced.
     pub text: String,
-    /// The commits of the role's repo and of the team's a worker ran under;
-    /// `None` of a human, who declares under neither.
-    pub commits: Option<(String, String)>,
+    /// What a worker ran under; `None` of a human, who declares under nothing.
+    pub ran: Option<Ran>,
     /// Whether the worker is the stage's consult.
     pub consult: bool,
+}
+
+/// What the worker that declares ran under, as its environment carries it.
+pub struct Ran {
+    /// The commits of the role's repo and of the team's.
+    pub role_commit: String,
+    pub team_commit: String,
+    /// The harness it is a session of.
+    pub harness: Harness,
 }
 
 /// `afkconvoy verdict`, and a consult's `afkconvoy rule`: write the stage
@@ -59,7 +68,7 @@ pub struct Declaring {
 /// reads it against the stage it dispatched under that claim. A human's — one
 /// that names no commits — is `steer::declare`'s.
 pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
-    let Declaring { issue, stage, declared, blocked_by, text, commits, consult } = declaring;
+    let Declaring { issue, stage, declared, blocked_by, text, ran, consult } = declaring;
     if stage.trim().is_empty() {
         bail!("--stage names no stage");
     }
@@ -69,7 +78,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     if !blocked_by.is_empty() && declared != Declared::Blocked {
         bail!("--blocked-by goes with `blocked` only, not with `{}`", declared.word());
     }
-    let Some((role_commit, team_commit)) = commits else {
+    let Some(Ran { role_commit, team_commit, harness }) = ran else {
         if !blocked_by.is_empty() {
             bail!("--blocked-by is a worker's: nobody parks an issue no fleet instance holds");
         }
@@ -86,7 +95,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     let record = StageRecord {
         stage,
         stated: Stated::Declared(declared),
-        by: Author::Worker { consult, claim: claim.id.clone(), role_commit, team_commit },
+        by: Author::Worker { consult, claim: claim.id.clone(), role_commit, team_commit, harness },
         blocked_by,
         text,
     };
@@ -134,13 +143,13 @@ pub(crate) fn records_of(gh: &GitHub, number: u64) -> Result<(Vec<StageRecord>, 
 ///   {"issue", "workflow", "intake": {"by", "role", "from", "url"}, "position",
 ///    "follows", "rework": {"had", "left"}, "consecutive_rework": {<stage>:
 ///    {"had", "left"}}, "records": [{"stage", "verdict", "reads", "by", "claim",
-///    "role_commit", "team_commit", "url"}]}
+///    "role_commit", "team_commit", "harness", "url"}]}
 ///
 /// `intake` is how the issue came in: by a `worker`, with the role, the issue
 /// it was on and the intake record's comment, or by a `human`. `follows` is
 /// the position a `pass` declared now leads to; null where none can be
 /// declared.
-pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
+pub fn show_issue(gh: &GitHub, team: &Team, default: Harness, number: u64) -> Result<Value> {
     let issue = gh.issue(number)?;
     let comments = gh.comments(number)?;
     let workflow = followed(team, &issue.labels, comments.iter().map(|c| c.body.as_str()))
@@ -150,7 +159,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
     let place = &history.place;
     let follows = place
         .takes(Declared::Pass)
-        .then(|| position(team, workflow, place.clone().after(Declared::Pass).position));
+        .then(|| position(team, workflow, default, place.clone().after(Declared::Pass).position));
     let mut in_a_row = Map::new();
     for stage in workflow.stages().iter().filter(|stage| stage.reject().is_some()) {
         let had = place.consecutive_rework(stage);
@@ -162,22 +171,23 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
         .zip(&urls)
         .zip(&history.readings)
         .map(|((record, url), reading)| {
-            let (role_commit, team_commit) = match &record.by {
-                Author::Worker { role_commit, team_commit, .. } => {
-                    (Some(role_commit), Some(team_commit))
+            let (role_commit, team_commit, harness) = match &record.by {
+                Author::Worker { role_commit, team_commit, harness, .. } => {
+                    (Some(role_commit), Some(team_commit), Some(harness))
                 }
-                Author::Human | Author::Fleet => (None, None),
+                Author::Human | Author::Fleet => (None, None, None),
             };
             json!({"stage": record.stage, "verdict": record.stated.word(),
                 "reads": reading.word(), "by": record.by.word(), "claim": record.claim(),
-                "role_commit": role_commit, "team_commit": team_commit, "url": url})
+                "role_commit": role_commit, "team_commit": team_commit, "harness": harness,
+                "url": url})
         })
         .collect();
     Ok(json!({
         "issue": number,
         "workflow": workflow.name,
         "intake": came_in(&issue.labels, &comments),
-        "position": position(team, workflow, place.position),
+        "position": position(team, workflow, default, place.position),
         "follows": follows,
         "rework": {"had": place.rework(), "left": place.rework_left()},
         "consecutive_rework": in_a_row,

@@ -15,14 +15,16 @@ use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
 use crate::transition::escalated_from;
 
 /// Every flag the fleet adds: what a bound repo's worker launch command must
-/// take. They are its harness's own, and no stage names a harness: every
-/// worker's is the default.
+/// take. They are the default harness's own.
 pub const FLAGS: &[&str] = Harness::DEFAULT.flags();
 
 /// The variables a worker's environment carries the commits of its role's
 /// repo and of the team's in: the command that declares a verdict reads them.
 pub const ROLE_COMMIT_ENV: &str = "AFKCONVOY_ROLE_COMMIT";
 pub const TEAM_COMMIT_ENV: &str = "AFKCONVOY_TEAM_COMMIT";
+/// The variable it carries the harness the worker is a session of in: the
+/// command that declares a verdict reads it too.
+pub const HARNESS_ENV: &str = "AFKCONVOY_HARNESS";
 /// The variables it carries the issue its worker is on and the worker's role
 /// in: the command that takes an issue in reads them.
 pub const ISSUE_ENV: &str = "AFKCONVOY_ISSUE";
@@ -259,14 +261,6 @@ pub struct Start<'a> {
     pub facts: Facts<'a>,
 }
 
-/// The line a terminal opened on the issue's worktree runs to start a worker
-/// in its role with the worker launch command `command`: what is added to
-/// the command is its harness's own (`Harness::in_role`), and no stage names
-/// a harness: every worker's is the default.
-pub fn in_role(command: &str, start: &Start) -> String {
-    Harness::DEFAULT.in_role(command, start)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +354,7 @@ land: { by: boss, do: implement }
                 claim: format!("claim of {stage}"),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
             },
             blocked_by: vec![],
             text: "done".to_string(),
@@ -425,6 +420,7 @@ land: { by: boss, do: implement }
                 claim: "claim of the consult".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
             },
             ..record("build", declared)
         };

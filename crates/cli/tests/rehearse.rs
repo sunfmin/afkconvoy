@@ -101,6 +101,14 @@ fn each_verdict_is_answered_with_its_stage_and_the_position_that_follows() {
     let landed = rehearse(&world, "feature", &["pass", "pass", "pass", "pass"]);
     assert_eq!(at(&landed["ends"]), "landing - by dev: land");
     assert_eq!(at(&rehearse(&world, "triage", &["pass"])["ends"]), "ended - by -: -");
+    // Where a worker acts, the position says its harness: the default, in a
+    // team and a config that name none. A human is a session of none.
+    let harness = |rehearsed: &Value| rehearsed["ends"]["harness"].clone();
+    assert_eq!(harness(&rehearse(&world, "feature", &[])), "claude-code");
+    assert_eq!(harness(&rehearse(&world, "feature", &["pass", "escalate"])), "claude-code");
+    assert_eq!(harness(&landed), "claude-code");
+    assert_eq!(harness(&rehearse(&world, "feature", &["pass", "pass", "pass"])), Value::Null);
+    assert_eq!(harness(&rehearse(&world, "triage", &["pass"])), Value::Null);
     // With nothing declared the issue is where it entered.
     let entered = rehearse(&world, "feature", &[]);
     assert_eq!((&entered["ends"], &entered["steps"]), (&entered["enters"], &json!([])));
@@ -267,11 +275,11 @@ fn show_draws_every_stage_its_role_and_skill_and_every_pass_and_reject() {
     let feature = "\
 feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-┌───▶ plan      dev: plan
+┌───▶ plan      dev: plan · harness claude-code
 │       ↓ pass → build
-│ ┌─▶ build     dev: implement · escalate → reviewer: rule
+│ ┌─▶ build     dev: implement · harness claude-code · escalate → reviewer: rule
 │ │     ↓ pass → review
-│ └── review    reviewer: review · writes nothing · reject → build
+│ └── review    reviewer: review · harness claude-code · writes nothing · reject → build
 │       ↓ pass → sign-off
 └──── sign-off  human · reject → plan
         ↓ pass → land
@@ -281,7 +289,7 @@ feature — flow:feature — max_rework 3, max_consecutive_rework 2
     let triage = "\
 triage — flow:triage — max_rework 3, max_consecutive_rework 2
 
-  sort  reviewer: review
+  sort  reviewer: review · harness claude-code
     ↓ pass → done
   done
 ";

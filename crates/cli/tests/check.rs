@@ -87,10 +87,11 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
             "max_rework": 3,
             "max_consecutive_rework": 2,
             "stages": [
-                {"name": "build", "by": "dev", "do": "implement", "model": null, "writes": true,
+                {"name": "build", "by": "dev", "do": "implement", "harness": "claude-code",
+                 "model": null, "writes": true,
                  "escalate": {"to": "reviewer", "do": "rule"}, "pass": "review", "reject": null},
-                {"name": "review", "by": "reviewer", "do": "review", "model": null,
-                 "writes": false, "escalate": null, "pass": "land", "reject": "build"},
+                {"name": "review", "by": "reviewer", "do": "review", "harness": "claude-code",
+                 "model": null, "writes": false, "escalate": null, "pass": "land", "reject": "build"},
             ],
             "land": {"by": "dev", "do": "land"},
         }])
@@ -188,6 +189,66 @@ fn every_fault_of_a_team_is_reported_in_one_run_with_its_file_and_key() {
 }
 
 #[test]
+fn a_stage_and_a_patrol_answer_their_harness_and_a_name_that_is_none_is_a_fault() {
+    // Named or not, each stage and each patrol answers the harness it runs.
+    let named = FEATURE.replace("do: implement\n", "do: implement\n    harness: claude-code\n");
+    let sweep = "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 1\n```\n";
+    let world =
+        bound(&[("team.md", TEAM), ("workflows/feature.md", &named), ("patrols/sweep.md", sweep)]);
+    let read = world.afk(&["check"]).ok();
+    assert_eq!(read["harness"], "claude-code");
+    let stages = read["workflows"][0]["stages"].as_array().unwrap();
+    assert_eq!(stages.len(), 2);
+    for stage in stages {
+        assert_eq!(stage["harness"], "claude-code", "{stage}");
+    }
+    assert_eq!(read["patrols"][0]["harness"], "claude-code");
+
+    // It is a key where `model` is one, and nowhere else.
+    let feature = FEATURE
+        .replace("do: implement\n", "do: implement\n    harness: pi\n")
+        .replace("do: rule }", "do: rule, harness: claude-code }")
+        .replace("do: land }", "do: land, harness: claude-code }");
+    let signed = "```yaml\nstages:\n  - { name: sign, by: human, harness: claude-code, on: { pass: done } }\n```\n";
+    let team = TEAM.replace(
+        "```\n",
+        "precedents: { by: dev, do: implement, max_open: 1, harness: claude-code }\n```\n",
+    );
+    let world = bound(&[
+        ("team.md", &team),
+        ("workflows/feature.md", &feature),
+        ("workflows/signed.md", signed),
+        ("patrols/sweep.md", &sweep.replace("every", "harness: Claude Code\nevery")),
+    ]);
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 1);
+    assert_eq!(
+        faults(&answer.json),
+        [
+            "team.md: precedents.harness",
+            "workflows/feature.md: land.harness",
+            "workflows/feature.md: stages[0].harness",
+            "workflows/feature.md: stages[0].escalate.harness",
+            "workflows/signed.md: stages[0].harness",
+            "patrols/sweep.md: harness",
+        ]
+    );
+    let error = answer.error();
+    let said = "workflows/feature.md: stages[0].harness: `pi` is no harness; the harnesses are: \
+                claude-code";
+    assert!(error.contains(said), "{error}");
+
+    // The config's is a fault with its file and key.
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let config =
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\nharness: pi\n```\n";
+    write(&world.clone, "docs/agents/afkconvoy.md", config);
+    let error = world.afk(&["check"]).error();
+    assert!(error.contains("docs/agents/afkconvoy.md"), "{error}");
+    assert!(error.contains("harness: `pi` is no harness"), "{error}");
+}
+
+#[test]
 fn a_role_is_read_at_the_head_of_its_default_branch() {
     let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     let dev = world.root.join("github/acme/dev");
@@ -243,7 +304,7 @@ fn a_team_that_cannot_be_read_and_an_unbound_repo_are_errors() {
 }
 
 #[test]
-fn a_bound_repos_config_answers_its_three_keys_more() {
+fn a_bound_repos_config_answers_its_four_keys_more() {
     let world = World::new();
     let config = |yaml: &str| {
         let text = format!("```yaml\nbase_branch: main\ngate_command: make\n{yaml}\n```\n");
@@ -255,6 +316,8 @@ fn a_bound_repos_config_answers_its_three_keys_more() {
     assert_eq!(bound["patrols"], json!([]));
     assert_eq!(bound["lock_label"], "fleet-lock", "a key every repo has");
     assert_eq!(bound["intake_limit"], 50);
+    assert_eq!(bound["harness"], "claude-code", "a config that names none means Claude Code");
+    assert_eq!(config("team: acme/team\nharness: claude-code").ok()["harness"], "claude-code");
     assert_eq!(bound["concurrency"], 3, "the keys every repo has are read as before");
     let set = config("team: acme/team\npatrols: [triage]\nlock_label: stop\nintake_limit: 9").ok();
     assert_eq!(set["patrols"], json!(["triage"]));
@@ -266,6 +329,9 @@ fn a_bound_repos_config_answers_its_three_keys_more() {
         ("team: acme/team\npatrols: triage", "patrols"),
         ("patrols: [triage]", "patrols"),
         ("intake_limit: 5", "intake_limit"),
+        ("harness: claude-code", "harness: is read only in a bound repo"),
+        ("team: acme/team\nharness: pi", "harness: `pi` is no harness"),
+        ("team: acme/team\nharness: [claude-code]", "harness"),
     ] {
         let error = config(yaml).error();
         assert!(error.contains(key), "{yaml:?} → {error}");

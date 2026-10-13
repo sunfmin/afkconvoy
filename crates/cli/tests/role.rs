@@ -215,7 +215,8 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
          AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
          AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
          AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
-         AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' && \
+         AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
+         AFKCONVOY_HARNESS='claude-code' && \
          {STOCK} --add-dir '{worktree}' --add-dir '{team_dir}' --setting-sources project \
          --settings '{guard}' --model 'opus'",
         guard = added_settings(terminals[0]["command"].as_str().unwrap()),
@@ -267,7 +268,7 @@ fn a_dispatch_answers_with_the_stage_and_the_commits_fixed_for_it() {
     assert_eq!(
         started["stage"],
         json!({"flow": "audit", "name": "look", "role": "reviewer", "skill": "review",
-            "writes": false, "consult": false, "model": null,
+            "writes": false, "consult": false, "harness": "claude-code", "model": null,
             "role_commit": reviewer, "role_dir": copy(&world, "acme/reviewer", &reviewer),
             "team_commit": team, "team_dir": copy(&world, "acme/team", &team)})
     );
