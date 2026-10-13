@@ -501,15 +501,16 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     set
 }
 
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
 #[cfg(flux)]
 #[allow(dead_code)]
-mod rejected {
+mod relied_on {
     use super::*;
 
     /// A fleet at its bound has no slot, whatever it would like.
-    #[should_fail]
-    #[spec(fn(concurrency: usize, held: usize{held >= concurrency}) -> usize{free: free > 0})]
-    fn a_slot_past_the_bound(concurrency: usize, held: usize) -> usize {
+    #[spec(fn(concurrency: usize, held: usize{held >= concurrency}) -> usize[0])]
+    fn a_fleet_at_its_bound_has_no_slot(concurrency: usize, held: usize) -> usize {
         free_slots(concurrency, held)
     }
 
