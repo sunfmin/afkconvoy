@@ -100,7 +100,7 @@ intake_limit: 50                  # open issues taken in by workers, at most (de
 
 ### The flow label
 
-A workflow is a file of the team, `workflows/<name>.md`, and its flow label is `flow:<name>`. An issue is the fleet's to work only while it carries one: put `flow:feature` on an issue and it enters the workflow `feature` at its first stage; an issue with no flow label is left alone. Putting it there is intake. A human does it on GitHub, outside any limit. A worker does it with `afkconvoy intake`, which leaves a record of the role that did and the issue it was on; the open issues taken in that way are held under `intake_limit`, and `afkconvoy plan` reports the count.
+A workflow is a file of the team, `workflows/<name>.md`, and its flow label is `flow:<name>`. An issue is the fleet's to work only while it carries one: put `flow:feature` on an issue and it enters the workflow `feature` at its first stage; an issue with no flow label is left alone. `afkconvoy flows`, run in a checkout of the repo, says what each workflow is for — the prose of its file above the yaml — and the line that opens an issue into it, and creates the flow labels the repo lacks: `gh issue create --label` refuses a label that is not there. Putting it there is intake. A human does it on GitHub, outside any limit. A worker does it with `afkconvoy intake`, which leaves a record of the role that did and the issue it was on; the open issues taken in that way are held under `intake_limit`, and `afkconvoy plan` reports the count.
 
 ### What a human is asked, and when
 

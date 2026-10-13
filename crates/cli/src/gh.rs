@@ -20,6 +20,8 @@ pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].
 pub const COMMENTS_JQ: &str = ".[] | {id, body, url: .html_url}";
 /// What is read of each issue another is blocked by.
 pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
+/// What is read of each label a repo has.
+pub const LABELS_JQ: &str = ".[].name";
 pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences";
 
 pub struct GitHub {
@@ -363,6 +365,34 @@ impl GitHub {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by");
         let field = format!("issue_id={blocker_id}");
         self.gh(&["api", "--method", "POST", &endpoint, "-F", &field, "--silent"])?;
+        Ok(())
+    }
+
+    /// Every label the repo has, by name.
+    pub fn labels(&self) -> Result<Vec<String>> {
+        let endpoint = "repos/{owner}/{repo}/labels?per_page=100";
+        let out = self.gh(&["api", "--paginate", endpoint, "--jq", LABELS_JQ])?;
+        Ok(out.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
+    }
+
+    /// Creates the label `name` on the repo, which has none of that name, to
+    /// be shown with `description`.
+    pub fn create_label(&self, name: &str, description: &str) -> Result<()> {
+        let (name, description) = (format!("name={name}"), format!("description={description}"));
+        let endpoint = "repos/{owner}/{repo}/labels";
+        self.gh(&[
+            "api",
+            "--method",
+            "POST",
+            endpoint,
+            "-f",
+            &name,
+            "-f",
+            &description,
+            "-f",
+            "color=1d76db",
+            "--silent",
+        ])?;
         Ok(())
     }
 

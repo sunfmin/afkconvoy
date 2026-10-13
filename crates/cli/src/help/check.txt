@@ -55,6 +55,10 @@ WHAT IT ANSWERS
   that is no duration; a missing `every` or `max_open`; and — in the config,
   docs/agents/afkconvoy.md, under `patrols` — a name the team has no patrol for.
 
+  A warning, on stderr, for each workflow whose file says nothing above its yaml block:
+  that prose is what `afkconvoy flows` answers as what the workflow is for, and whoever
+  hands the fleet work chooses a workflow by it. The team loads all the same.
+
   Other errors, as {"error": …}: the repo's config names no team and no flag was given;
   the team's repo cannot be read.
 

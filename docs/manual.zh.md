@@ -418,10 +418,9 @@ patrols: [triage, rounds]
 ```sh
 afkconvoy check                                   # 按这个仓库指向的团队来检查
 orca repo add --path "$(pwd)"                     # 每个 checkout 一次：orca 必须认识它
-gh label create flow:fix && gh label create flow:chore   # 每个仓库一次
 ```
 
-后两步很容易漏，而 fleet 目前既不会替你做，也不会替你检查（[#119](https://github.com/sunfmin/afkconvoy/issues/119)、[#118](https://github.com/sunfmin/afkconvoy/issues/118)）。
+第二步很容易漏，而 fleet 目前既不会替你做，也不会替你检查（[#119](https://github.com/sunfmin/afkconvoy/issues/119)）。
 
 ### 第 6 步：开 issue
 
@@ -433,8 +432,11 @@ gh label create flow:fix && gh label create flow:chore   # 每个仓库一次
 | 2 | README：列出支持的间隔写法 | 不打标签 | 留给 triage 巡查去分流 |
 | 3 | 支持 `"prn"` 处方 | 打了 `flow:fix` 标签 | issue 里明说有一个答案「尚未决定」 |
 
+开第一个 issue 之前先问 `afkconvoy flows`。它对团队的每个工作流回答：这个工作流是做什么的（工作流文件里 yaml 之上的那段文字）、issue 进入的第一个阶段、以及把 issue 开进这个工作流的那行命令；仓库上缺的流程标签它会顺手建好——否则 `gh issue create --label` 会拒绝一个不存在的标签：
+
 ```sh
-gh issue create --title 'DosesPerDay panics on "q0h"' --body-file i1.md --label flow:fix
+afkconvoy flows          # 每个仓库一次；团队新增工作流后再跑一次
+gh issue create --label 'flow:fix' --title 'DosesPerDay panics on "q0h"' --body-file i1.md
 ```
 
 ```sh
@@ -704,6 +706,8 @@ precedents: { by: <角色>, do: <技能>, max_open: 10 }      # 可选
 
 ### 工作流——`workflows/<名称>.md`
 
+在 yaml 之上写清这个工作流是做什么的、它的 issue 该包含什么：`afkconvoy flows` 会把这段文字回答给开 issue 的人，文件里这里什么都没写时 `afkconvoy check` 会给出警告。
+
 ```yaml
 max_rework: 3                      # 默认
 max_consecutive_rework: 2          # 默认
@@ -776,7 +780,7 @@ afkconvoy takeover --list          # 有哪些 instance id：`run` 从不打印�
 
 | 你看到的 | 原因 | 怎么办 |
 |---|---|---|
-| `could not add label: 'flow:fix' not found` | 这个仓库上还没人创建过这个流程标签 | `gh label create flow:fix`——每个仓库每个工作流一次（[#118](https://github.com/sunfmin/afkconvoy/issues/118)） |
+| `could not add label: 'flow:fix' not found` | 这个仓库上还没人创建过这个流程标签 | `afkconvoy flows`——仓库上缺的流程标签它都会建好 |
 | `FAILED dispatch #1: orca knows no repo at …` | 从没告诉过 orca 这个 checkout | `orca repo add --path <checkout 路径>`；下一个 tick 会自己恢复（[#119](https://github.com/sunfmin/afkconvoy/issues/119)） |
 | 某张 issue 没被处理 | 它在 `plan` 的 `excluded` 里，带着原因：没有流程标签、有 epic 标签、有未关闭的阻塞项、有机群锁、被别的实例持有 | 消除原因里说的那件事 |
 | `holding 3/3`，前沿不为空，却什么都没发生 | 每个槽位都被占着——巡查的 worker 干完之后，它的那次运行还会占槽大约五分钟（[#122](https://github.com/sunfmin/afkconvoy/issues/122)） | 调大 `concurrency`，或把巡查的 `every` 调长 |

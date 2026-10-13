@@ -4,7 +4,9 @@
       workflows/<name>.md     one file per workflow; its flow label is `flow:<name>`
       patrols/<name>.md       one file per patrol; a repo runs the ones its `patrols` names
 
-  and of each file only the first ```yaml block is read. The team file:
+  and of each file only the first ```yaml block is read — and, of a workflow's, the prose
+  above it: what the workflow is for and what an issue of it holds, which
+  `afkconvoy flows` answers to whoever opens one. The team file:
 
       escalate_label: ready-for-human    # default
       roles:

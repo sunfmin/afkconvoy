@@ -55,7 +55,7 @@ pub(crate) fn came_in(labels: &[String], comments: &[Comment]) -> Value {
 
 /// How many of `issues` — the open ones — a worker took in, counted from
 /// their intake records.
-fn open_taken_in(gh: &GitHub, issues: &[Issue]) -> Result<usize> {
+pub(crate) fn open_taken_in(gh: &GitHub, issues: &[Issue]) -> Result<usize> {
     let mut open = 0;
     for issue in issues.iter().filter(|issue| !flows(&issue.labels).is_empty()) {
         let comments = gh.comments(issue.number)?;

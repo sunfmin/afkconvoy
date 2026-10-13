@@ -42,6 +42,11 @@ THE COMMANDS, by who runs them
   no worker started, or to ask where an issue is in its workflow:
       scaffold  show  rehearse
 
+  Whoever hands the fleet work — a human, or the agent a human is talking to, with work
+  decided on and issues to open for it. Read it before opening the first: it says which
+  workflow takes which issue and the line that opens one, and creates the labels:
+      flows
+
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped (`rule`, below, is a consult's too):
       gate  land  verdict  intake  lock  wake

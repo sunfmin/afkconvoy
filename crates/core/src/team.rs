@@ -137,6 +137,9 @@ impl<'de> serde::de::Visitor<'de> for NodeVisitor {
 pub struct File {
     /// Its path from the top of the repo.
     pub path: String,
+    /// What its markdown says above its first yaml block, with no space
+    /// around it: empty when it says nothing there, or has no such block.
+    pub prose: String,
     /// Its yaml, or why it has none that can be read.
     pub yaml: Result<Node, String>,
 }
@@ -391,6 +394,9 @@ impl Stage {
 pub struct Workflow {
     /// What follows `flow:` in its flow label.
     pub name: String,
+    /// What it is for, as whoever hands the fleet work reads it: the prose of
+    /// its file. Empty when the file says nothing.
+    pub description: String,
     pub max_rework: u64,
     pub max_consecutive_rework: u64,
     #[field(Vec<Stage{v: v.n == n && v.roles == roles}>[n])]
@@ -458,7 +464,15 @@ fn workflow(
     if n == 0 || stages.len() != n {
         return None;
     }
-    Some(Workflow { name, max_rework, max_consecutive_rework, stages, land, roles })
+    Some(Workflow {
+        name,
+        description: String::new(),
+        max_rework,
+        max_consecutive_rework,
+        stages,
+        land,
+        roles,
+    })
 }
 
 /// `target` as where the stage at `at` may reject to: only a stage before it.
@@ -1115,7 +1129,9 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
     }
 
     let roles = roles.loaded.len();
-    built(name, max_rework?, max_consecutive_rework?, drafts, edges, land?, roles)
+    let mut read = built(name, max_rework?, max_consecutive_rework?, drafts, edges, land?, roles)?;
+    read.description = file.prose.clone();
+    Some(read)
 }
 
 /// The workflow `name` of a team of `roles` roles that the drafts of its
@@ -1245,6 +1261,7 @@ mod rejected {
     fn a_workflow_with_no_stage(name: String) -> Workflow {
         Workflow {
             name,
+            description: String::new(),
             max_rework: 0,
             max_consecutive_rework: 0,
             stages: Vec::new(),
@@ -1256,7 +1273,15 @@ mod rejected {
     /// Whatever stages were listed, taken as a workflow without a look.
     #[should_fail]
     fn a_workflow_of_whatever_was_listed(name: String, stages: Vec<Stage>) -> Workflow {
-        Workflow { name, max_rework: 0, max_consecutive_rework: 0, stages, land: None, roles: 0 }
+        Workflow {
+            name,
+            description: String::new(),
+            max_rework: 0,
+            max_consecutive_rework: 0,
+            stages,
+            land: None,
+            roles: 0,
+        }
     }
 
     /// A `pass` past the last stage of a workflow.
@@ -1332,7 +1357,11 @@ land: { by: dev, do: land }
 ";
 
     fn file(path: &str, yaml: &str) -> File {
-        File { path: path.to_string(), yaml: serde_yaml::from_str(yaml).map_err(|e| e.to_string()) }
+        File {
+            path: path.to_string(),
+            prose: String::new(),
+            yaml: serde_yaml::from_str(yaml).map_err(|e| e.to_string()),
+        }
     }
 
     fn repo(name: &str, skills: &[&str]) -> (String, Result<RoleRepo, String>) {
@@ -1769,6 +1798,7 @@ stages:
         );
         sources.workflows.push(File {
             path: "workflows/bad.md".into(),
+            prose: String::new(),
             yaml: Err("has no ```yaml block".into()),
         });
         let found = load(&sources).unwrap_err();
