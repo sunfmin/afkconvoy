@@ -39,7 +39,13 @@ WHAT IT READS AND WRITES
 
       CLAUDE.md                            rules to replace with the role's own
       .claude/skills/implement/SKILL.md    one example skill, `implement`
-      .claude/settings.json                hooks: none yet
+      .claude/settings.json                its limits for claude-code — hooks: none yet
+
+  The rules and the skills are written once, whatever harness a stage runs the role on.
+  The role's limits are written once for each harness, in that harness's own form:
+  for claude-code, hooks and denied permissions in `.claude/settings.json`; for pi,
+  extensions in `.pi/extensions/`, which this command does not write. `check` refuses
+  a stage on a harness its role holds no limits for while it holds some for another.
 
   The role's name is the directory's. Run in a checkout, it writes there and creates
   nothing on GitHub: commit and push it with the team.

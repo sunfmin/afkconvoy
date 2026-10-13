@@ -6,10 +6,10 @@
 use std::path::{Component, Path, PathBuf};
 
 use afkconvoy_core::config::{RepoDir, RepoName};
-use afkconvoy_core::harness::Harness;
+use afkconvoy_core::harness::{Harness, Held};
 use afkconvoy_core::team::{
-    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RoleDir, SKILLS, Sources, Stage,
-    TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
+    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RULES, RoleDir, SKILLS, Sources,
+    Stage, TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::copies::{self, Copies, Copy};
 use crate::gh::{GitHub, Unreached, unreached};
+use crate::launch;
 
 /// Where a team's own files are taken from. Its roles' directories are
 /// always read from the fleet's copies of their repos' heads on GitHub.
@@ -130,6 +131,9 @@ pub struct Loaded {
     /// What the team's files were read from: its repo, or a directory of
     /// this host.
     pub name: String,
+    /// What a fault of the team calls it: its directory on GitHub, where it
+    /// was read from one.
+    pub called: String,
     /// Its path in that repo, empty for a whole repo; `None` for a directory
     /// of this host.
     pub path: Option<String>,
@@ -191,13 +195,17 @@ fn changed(copies: &Copies, dir: &RepoDir, since: &str, head: &str, without: &[P
     !copies::alike(&then, &now, dir, without).unwrap_or(false)
 }
 
-/// Reads the team `from` names and every role's directory, and loads it →
-/// what was read, with a warning for each workflow whose file says nothing of
-/// what it is for, and a note for each role a directory above which holds
-/// rules a worker in it is not given. A team with a fault fails with
-/// `Refused`.
+/// Reads the team `from` names and every role's directory, loads it, and
+/// holds it to the harnesses its workers would run on (`held`) → what was
+/// read, with a warning for each workflow whose file says nothing of what it
+/// is for, and a note for each role a directory above which holds rules a
+/// worker in it is not given. A team with a fault fails with `Refused`.
 pub fn check(from: From) -> Result<Value> {
     let loaded = load(from)?;
+    let faults = held(&loaded);
+    if !faults.is_empty() {
+        return Err(Refused { team: loaded.called, faults }.into());
+    }
     for role in loaded.team.roles.iter().filter(|role| !role.above.is_empty()) {
         eprintln!(
             "note: above the role `{}` ({}), its repo holds {}: a session opened by hand in the \
@@ -216,6 +224,70 @@ pub fn check(from: From) -> Result<Value> {
         );
     }
     Ok(answer(&loaded))
+}
+
+/// Holds the team `loaded` to the harnesses its workers would run on, on this
+/// host (`Team::held`) → every fault that finds, each harness that can say
+/// which models it knows being asked where the team names a model. A model
+/// named with no harness that the default harness does not know is a fault of
+/// what set that default: the repo's config. What may be wrong and cannot be
+/// known is said on stderr: a model named for a harness that could not be
+/// asked, and one that reads as another harness's under a default with no
+/// way to say.
+fn held(loaded: &Loaded) -> Vec<Fault> {
+    let (team, default) = (&loaded.team, loaded.harness);
+    let stages = team.workflows.iter().flat_map(|workflow| workflow.stages());
+    let stages = stages.filter(|stage| stage.model.is_some());
+    let mut models_on: Vec<Harness> = stages.filter_map(|stage| stage.harness(default)).collect();
+    let patrols = team.patrols.iter().filter(|patrol| patrol.model.is_some());
+    models_on.extend(patrols.map(|patrol| patrol.harness(default)));
+    let mut listed = vec![];
+    for harness in Harness::ALL.into_iter().filter(|_| !models_on.is_empty()) {
+        match launch::models(harness) {
+            Some(Ok(models)) => listed.push((harness, models)),
+            Some(Err(question)) if models_on.contains(&harness) => eprintln!(
+                "note: {} could not be asked which models it knows on this host — `{question}` \
+                 failed in a login shell, or listed none: a model named for it is passed as \
+                 written",
+                harness.name()
+            ),
+            _ => {}
+        }
+    }
+    let held = team.held(default, &listed);
+    let mut faults = held.faults;
+    for (model, by, other) in &held.elsewhere {
+        eprintln!(
+            "warning: {by} names the model `{model}` and no harness, so it runs on the default \
+             harness, `{}` — and `{model}` is `{}`'s name for a model: the team may be written \
+             for another default. Name the harness beside the model, or set `harness` in {}. \
+             {} cannot say which models it knows: the model is passed to it as written",
+            default.key(),
+            other.key(),
+            config::FILE,
+            default.name()
+        );
+    }
+    if !held.unknown.is_empty() {
+        let named: Vec<String> =
+            held.unknown.iter().map(|(model, by)| format!("`{model}` ({by})")).collect();
+        let lists = listed.iter().find(|(lists, _)| *lists == default);
+        let lists = lists.map(|(_, models)| team::some(models)).unwrap_or_default();
+        faults.push(Fault {
+            file: config::FILE.to_string(),
+            key: "harness".to_string(),
+            problem: format!(
+                "the team {} names models and no harness for them — {} — so each runs on `{}`, \
+                 this repo's default, which knows no such model on this host: it lists {lists}. \
+                 The team is written for another default harness: set `harness` to that one \
+                 here, or name each one's harness in the team, beside its model",
+                loaded.called,
+                named.join(", "),
+                default.key()
+            ),
+        });
+    }
+    faults
 }
 
 /// Reads the team `from` names and every role's directory, and loads it. A
@@ -283,7 +355,7 @@ fn loaded(
     }
     let (dir, commit) = at.unzip();
     let path = dir.as_ref().map(|dir: &RepoDir| dir.path().to_string());
-    Ok(Loaded { name, path, commit, files, runs, harness, team, dir, copies })
+    Ok(Loaded { name, called, path, commit, files, runs, harness, team, dir, copies })
 }
 
 /// What reading the repo of each role of a team came to, by the repo's name.
@@ -393,15 +465,53 @@ fn role_dir(copy: &Copy, dir: &RepoDir) -> Result<RoleDir, Unread> {
             leaving_links(&root, Path::new(""), &mut links)?;
             links.sort();
         }
-        Ok(RoleDir { commit: copy.commit.clone(), skills, links, above: above(copy, dir) })
+        let held = Tree { dir: root.clone() }.list("")?;
+        let in_place = Harness::ALL.into_iter().flat_map(|harness| {
+            let before = harness.before_the_rules().iter();
+            let held = before.filter(|file| held.iter().any(|name| name == *file));
+            held.map(move |file| (harness, file.to_string()))
+        });
+        Ok(RoleDir {
+            commit: copy.commit.clone(),
+            skills,
+            links,
+            above: above(copy, dir),
+            limits: limits(&root)?,
+            in_place: in_place.collect(),
+        })
     };
     read().map_err(|error: anyhow::Error| Unread::Refused(format!("{error:#}")))
 }
 
-/// What Claude Code loads from a directory a session is started in or under,
-/// and from one added to it: its rules, and the directory of its skills and
-/// settings.
-const RULES: &str = "CLAUDE.md";
+/// The harnesses the role whose directory is `root` holds limits for: what
+/// each says of what the directory holds where its limits go
+/// (`Harness::limited`). An error is one whose limits cannot be read.
+fn limits(root: &Path) -> Result<Vec<Harness>> {
+    let mut limited = vec![];
+    for harness in Harness::ALL {
+        let at = root.join(harness.limits());
+        let text = if at.is_file() { std::fs::read_to_string(&at)? } else { String::new() };
+        let mut json = serde_json::Deserializer::from_str(&text);
+        let held = if at.is_file() {
+            Held::File(&mut json)
+        } else if at.is_dir() {
+            // A file kept only to have git keep the directory is no limit.
+            let entries = Tree { dir: at.clone() }.list("")?;
+            Held::Entries(entries.iter().filter(|name| !name.starts_with('.')).count())
+        } else {
+            Held::Nothing
+        };
+        let held = harness.limited(held).with_context(|| {
+            format!("its limits for {}, in {}, cannot be read", harness.name(), harness.limits())
+        })?;
+        if held {
+            limited.push(harness);
+        }
+    }
+    Ok(limited)
+}
+/// The directory Claude Code loads its skills and settings from, in a
+/// directory a session is started in or under, and in one added to it.
 const SETTINGS: &str = ".claude";
 
 /// Each `CLAUDE.md` and `.claude/` a directory above `dir` holds in `copy`,
@@ -545,7 +655,8 @@ fn answer(loaded: &Loaded) -> Value {
         .iter()
         .map(|role| {
             json!({"name": role.name, "repo": role.dir.repo, "path": role.dir.path(),
-                "commit": role.commit, "skills": role.skills, "above": role.above})
+                "commit": role.commit, "skills": role.skills, "above": role.above,
+                "limits": role.limits})
         })
         .collect();
     json!({
