@@ -107,16 +107,19 @@ DESIGNING A TEAM, for a bound repo
 
   The loop, from nothing:
 
-  1. afkconvoy scaffold role <dir> --repo <owner/repo>
-       A role's skeleton, created on GitHub: `check` reads a role from there only.
-  2. afkconvoy scaffold team <dir> --role <name>=<owner/repo>
-       A team's skeleton, with one workflow which that role performs.
-  3. afkconvoy check --dir <dir>
+  1. afkconvoy scaffold team <dir> --role <name> --repo <owner/repo>
+       A team's skeleton and, under roles/<name>/, each role's — `--role` once for each
+       — in one repo created on GitHub, with one workflow which the first role performs.
+  2. afkconvoy scaffold role <dir>/roles/<name>
+       One more role's skeleton, in that checkout: it answers the line to add to
+       team.md. A role several teams share is a repo of its own instead: `--repo`.
+  3. afkconvoy check --dir <dir> --team <owner/repo>
        Edit a file, run it, and read the faults: each names its file and key. Repeat
-       until it exits 0. A role's edit counts once it is pushed to its default branch.
-  4. Push the team, name it under `team` in the config, and run `afkconvoy check` in
-     that checkout. Then `show` draws each workflow and `rehearse` tries one out.
+       until it exits 0. `check` reads a role from GitHub only: a role's edit counts
+       once it is pushed to its default branch.
+  4. Push the team, name it under `team` in the config of the repo it is to work, and
+     run `afkconvoy check` in that checkout. Then `show` draws each workflow and `rehearse` tries one out.
 
-  A role's skills are added with the skills installer you already use, run in a checkout
-  of the role's repo and committed there, so that every host runs the same role. The
+  A role's skills are added with the skills installer you already use, run in the role's
+  directory, in a checkout of its repo, and committed there, so that every host runs the same role. The
   fleet installs no skill and wraps no installer.
