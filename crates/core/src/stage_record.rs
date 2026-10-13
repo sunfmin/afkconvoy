@@ -7,6 +7,7 @@
 use flux_rs::attrs::*;
 use flux_rs::macros::qualifier;
 
+use crate::harness::Harness;
 use crate::lock;
 use crate::position::{Declared, Place, Position, Reason};
 use crate::prompt::quoted;
@@ -67,6 +68,9 @@ pub enum Author {
         /// The commits of the role's repo and of the team's the stage ran under.
         role_commit: String,
         team_commit: String,
+        /// The harness it was a session of. The commits do not say: the
+        /// default is the project's.
+        harness: Harness,
     },
     /// A human, through the fleet, on an issue nobody held.
     Human,
@@ -164,13 +168,13 @@ impl StageRecord {
     /// then the text.
     pub fn comment(&self) -> String {
         let blocked_by: Vec<String> = self.blocked_by.iter().map(u64::to_string).collect();
-        let (claim, role_commit, team_commit, by) = match &self.by {
-            Author::Worker { consult, claim, role_commit, team_commit } => {
+        let (claim, role_commit, team_commit, harness, by) = match &self.by {
+            Author::Worker { consult, claim, role_commit, team_commit, harness } => {
                 let by = if *consult { CONSULT } else { "" };
-                (claim.as_str(), role_commit.as_str(), team_commit.as_str(), by)
+                (claim.as_str(), role_commit.as_str(), team_commit.as_str(), harness.key(), by)
             }
-            Author::Human => ("", "", "", HUMAN),
-            Author::Fleet => ("", "", "", FLEET),
+            Author::Human => ("", "", "", "", HUMAN),
+            Author::Fleet => ("", "", "", "", FLEET),
         };
         let marker = record::marker(
             STAGE_RECORD,
@@ -181,6 +185,7 @@ impl StageRecord {
                 ("claim", claim),
                 ("role_commit", role_commit),
                 ("team_commit", team_commit),
+                ("harness", harness),
                 ("blocked_by", &blocked_by.join(",")),
             ],
         );
@@ -189,7 +194,8 @@ impl StageRecord {
 
     /// The record a comment carries; `None` when it is no stage record: it
     /// does not open with the marker, or the marker leaves out what every
-    /// record states.
+    /// record states. A worker's that names no harness was written before
+    /// one was named (`Harness::UNNAMED`).
     pub fn read(body: &str) -> Option<StageRecord> {
         let (marker, rest) = body.strip_prefix("<!--")?.split_once("-->")?;
         let fields = record::read(STAGE_RECORD, marker)?;
@@ -203,6 +209,10 @@ impl StageRecord {
                 claim: fields.get("claim")?.to_string(),
                 role_commit: fields.get("role_commit")?.to_string(),
                 team_commit: fields.get("team_commit")?.to_string(),
+                harness: match fields.get("harness") {
+                    Some(harness) => Harness::read(harness)?,
+                    None => Harness::UNNAMED,
+                },
             },
         };
         Some(StageRecord {
@@ -526,6 +536,7 @@ mod tests {
                 claim: claim.to_string(),
                 role_commit: "r1".to_string(),
                 team_commit: "t1".to_string(),
+                harness: Harness::ClaudeCode,
             },
             blocked_by: vec![],
             text: format!("{stage} is done"),
@@ -549,12 +560,14 @@ mod tests {
             claim: "c0ffee".to_string(),
             role_commit: "abc".to_string(),
             team_commit: "def".to_string(),
+            harness: Harness::ClaudeCode,
         };
         let consult = Author::Worker {
             consult: true,
             claim: "c0ffee".to_string(),
             role_commit: "abc".to_string(),
             team_commit: "def".to_string(),
+            harness: Harness::ClaudeCode,
         };
         let stated = Declared::ALL.into_iter().map(Stated::Declared).chain([Stated::Sent]);
         let by = [worker, consult, Human];
@@ -595,9 +608,25 @@ mod tests {
         let comment = record("build", Pass, "c1").comment();
         assert_eq!(
             comment,
-            "<!--convoy:stage stage=build verdict=pass claim=c1 role_commit=r1 team_commit=t1-->\n\
-             **afkconvoy** — the stage `build` declared `pass`.\n\nbuild is done"
+            "<!--convoy:stage stage=build verdict=pass claim=c1 role_commit=r1 team_commit=t1 \
+             harness=claude-code-->\n**afkconvoy** — the stage `build` declared `pass`.\n\nbuild \
+             is done"
         );
+    }
+
+    #[test]
+    fn a_worker_s_record_names_its_harness_and_one_written_before_it_did_is_still_read() {
+        let written = record("build", Pass, "c1");
+        let comment = written.comment();
+        // The record of a worker started before any named a harness.
+        let before = comment.replace(" harness=claude-code", "");
+        assert_ne!(before, comment);
+        assert_eq!(StageRecord::read(&before), Some(written));
+        // A name that is no harness is nothing the fleet wrote.
+        assert_eq!(StageRecord::read(&comment.replace("=claude-code", "=vim")), None);
+        // A human, and the fleet, are a session of none.
+        assert!(!human("build", Stated::Declared(Pass)).comment().contains("harness"));
+        assert!(!StageRecord::lock_closed("build", 3).comment().contains("harness"));
     }
 
     #[test]
@@ -739,7 +768,7 @@ mod tests {
         assert_eq!(
             consult("build", Ruling, "c3").comment(),
             "<!--convoy:stage stage=build verdict=ruling by=consult claim=c3 role_commit=r1 \
-             team_commit=t1-->\n**afkconvoy** — the consult of the stage `build` ruled on its \
+             team_commit=t1 harness=claude-code-->\n**afkconvoy** — the consult of the stage `build` ruled on its \
              `escalate`: the stage runs again under the ruling.\n\nbuild is done"
         );
         assert_eq!(

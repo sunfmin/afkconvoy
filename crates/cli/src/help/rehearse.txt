@@ -41,7 +41,7 @@ WHAT IT ANSWERS
 
   Of a step, `stage` is the stage it was declared in, null once the issue is landing
   or ended, and `position` where the issue is after it. A position is {"is", "stage",
-  "by", "do", "reason"}:
+  "by", "do", "harness", "reason"}:
 
     is: perform     a worker is to perform `stage`, as the skill `do` of the role `by`
     is: waiting     `stage` is a human's (`by: human`): it waits for their verdict
@@ -51,6 +51,10 @@ WHAT IT ANSWERS
     is: ended       nothing more to do
     is: escalating  handed to a human, with the `reason`; under their `ruling` the
                     `stage` runs again
+
+  `harness` is the harness the worker of the position is a session of, null where no
+  worker acts: the stage's — the one it names, or the default of this checkout's
+  config — for a worker that performs it, and the default for a consult and a landing.
 
   `valid` is false for what may not be declared where the issue is: a `reject` from a
   stage with no `on.reject`, a `ruling` nobody asked for, anything but `ruling` or

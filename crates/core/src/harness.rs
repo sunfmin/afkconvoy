@@ -10,7 +10,7 @@ use serde::Deserializer;
 
 use crate::guard::Call;
 use crate::line::Line;
-use crate::role::Start;
+use crate::role::{HARNESS_ENV, Start};
 
 mod claude_code;
 
@@ -20,9 +20,41 @@ pub enum Harness {
     ClaudeCode,
 }
 
+/// A harness is written, wherever the fleet answers with one, as its key.
+impl serde::Serialize for Harness {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
 impl Harness {
     /// The harness of a worker nothing names one for.
     pub const DEFAULT: Harness = Harness::ClaudeCode;
+
+    /// The harness of a worker started, and of a stage record written,
+    /// before either named one: there was one harness then.
+    pub const UNNAMED: Harness = Harness::ClaudeCode;
+
+    /// Every harness there is.
+    pub const ALL: [Harness; 1] = [Harness::ClaudeCode];
+
+    /// What a team, a config and a stage record write it as.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => claude_code::KEY,
+        }
+    }
+
+    /// The harness written as `key`; `None` when that is none.
+    pub fn read(key: &str) -> Option<Harness> {
+        Harness::ALL.into_iter().find(|harness| harness.key() == key)
+    }
+
+    /// Why `key` is no harness, with the ones there are.
+    pub fn unknown(key: &str) -> String {
+        let keys: Vec<&str> = Harness::ALL.iter().map(|harness| harness.key()).collect();
+        format!("`{key}` is no harness; the harnesses are: {}", keys.join(", "))
+    }
 
     /// What a human calls it.
     pub const fn name(self) -> &'static str {
@@ -74,8 +106,8 @@ impl Harness {
 
     /// The line a terminal opened on the issue's worktree runs to start a
     /// worker of this harness in its role with the worker launch command
-    /// `command`: change to the role's copy, put the stage's facts in the
-    /// environment, and start the command with the worktree and the team's
+    /// `command`: change to the role's copy, put the stage's facts and this
+    /// harness in the environment, and start the command with the worktree and the team's
     /// copy added, the user's configuration left out, the guard and the
     /// report added, and the stage's model — each in this harness's way.
     pub fn in_role(self, command: &str, start: &Start) -> String {
@@ -86,6 +118,7 @@ impl Harness {
         for (name, value) in start.facts.env() {
             line = line.fixed(" ").fixed(name).fixed("=").word(&value);
         }
+        line = line.fixed(" ").fixed(HARNESS_ENV).fixed("=").word(self.key());
         let line = line.fixed(" && ").launch(command);
         match self {
             Harness::ClaudeCode => claude_code::added(line, start),

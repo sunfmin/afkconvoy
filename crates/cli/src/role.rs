@@ -12,7 +12,7 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
-use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role};
+use afkconvoy_core::role::{Due, Facts, On, Start, due};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::{LAND, PRECEDENTS};
 use anyhow::{Result, anyhow, bail};
@@ -40,6 +40,10 @@ pub struct Staged {
     /// Whether the worker is the stage's consult: it rules on the stage's
     /// `escalate`, and writes no code whatever the stage may.
     consult: bool,
+    /// The harness the worker is a session of: the stage's own worker's is
+    /// the one the stage names; a consult's, a landing worker's and that of
+    /// a stage naming none is the default the repo's config names.
+    harness: Harness,
     model: Option<String>,
     /// What the guard holds every worker to: the repo's base branch, the
     /// team's escalate label and the repo's lock label.
@@ -101,8 +105,12 @@ impl Staged {
             skill: work.skill.clone(),
             writes: at.is_none_or(|stage| stage.writes),
             consult,
-            // The stage's model is its own worker's: a workflow names none
-            // for a consult.
+            // The stage's harness and its model are its own worker's: a
+            // workflow names none for a consult.
+            harness: at
+                .filter(|_| !consult)
+                .and_then(|stage| stage.harness(bound.harness))
+                .unwrap_or(bound.harness),
             model: at.filter(|_| !consult).and_then(|stage| stage.model.clone()),
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
@@ -123,7 +131,7 @@ impl Staged {
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
             guard: &crate::own_command().fixed(" guard").own(),
-            report: Harness::DEFAULT.report(),
+            report: self.harness.report(),
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,
@@ -137,7 +145,7 @@ impl Staged {
                 team_commit: &self.team_copy.commit,
             },
         };
-        in_role(launch, &start)
+        self.harness.in_role(launch, &start)
     }
 
     /// Keeps, for a stage that writes nothing and for a consult, where the
@@ -248,7 +256,8 @@ impl Staged {
 
     pub fn json(&self) -> Value {
         json!({"flow": self.flow, "name": self.stage, "role": self.role, "skill": self.skill,
-            "writes": self.writes, "consult": self.consult, "model": self.model,
+            "writes": self.writes, "consult": self.consult, "harness": self.harness,
+            "model": self.model,
             "role_commit": self.role_copy.commit, "role_dir": self.role_copy.dir,
             "team_commit": self.team_copy.commit, "team_dir": self.team_copy.dir})
     }

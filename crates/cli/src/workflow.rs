@@ -3,6 +3,7 @@
 //! the core decides (`afkconvoy_core::graph`, `afkconvoy_core::position`).
 
 use afkconvoy_core::graph;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::position::{Declared, Place, Position};
 use afkconvoy_core::team::{HUMAN, Team, Workflow};
 use anyhow::{Result, bail};
@@ -25,9 +26,10 @@ fn named<'t>(loaded: &'t Loaded, name: &str) -> Result<&'t Workflow> {
 /// The drawing of the workflow named `name`, or of every workflow of the
 /// team, a blank line between two.
 pub fn show(loaded: &Loaded, name: Option<&str>) -> Result<String> {
+    let draw = |flow: &Workflow| graph::draw(&loaded.team, flow, loaded.harness);
     let drawn: Vec<String> = match name {
-        Some(name) => vec![graph::draw(&loaded.team, named(loaded, name)?)],
-        None => loaded.team.workflows.iter().map(|flow| graph::draw(&loaded.team, flow)).collect(),
+        Some(name) => vec![draw(named(loaded, name)?)],
+        None => loaded.team.workflows.iter().map(draw).collect(),
     };
     if drawn.is_empty() {
         bail!("the team {} has no workflow to draw", loaded.name);
@@ -40,7 +42,7 @@ pub fn show(loaded: &Loaded, name: Option<&str>) -> Result<String> {
 pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Value> {
     let workflow = named(loaded, name)?;
     let mut place = Place::enter(workflow);
-    let enters = position(&loaded.team, workflow, place.position);
+    let enters = position(&loaded.team, workflow, loaded.harness, place.position);
     let mut steps: Vec<Value> = vec![];
     for declared in declared {
         let stage = place.position.stage().map(|stage| stage.name.as_str());
@@ -60,7 +62,7 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
             "stage": stage,
             "valid": valid,
             "breaker": breaker,
-            "position": position(&loaded.team, workflow, next.position),
+            "position": position(&loaded.team, workflow, loaded.harness, next.position),
             "rework": next.rework(),
             "consecutive_rework": in_a_row,
         }));
@@ -72,13 +74,20 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
         "max_consecutive_rework": workflow.max_consecutive_rework,
         "enters": enters,
         "steps": steps,
-        "ends": position(&loaded.team, workflow, place.position),
+        "ends": position(&loaded.team, workflow, loaded.harness, place.position),
     }))
 }
 
-/// A position as a command answers it: what it is, at which stage, and who
-/// acts on it.
-pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> Value {
+/// A position as a command answers it: what it is, at which stage, who acts
+/// on it, and — where a worker does — on which harness, in a repo whose
+/// default is `default`: a stage's own worker on the stage's, a consult and a
+/// landing worker on the default.
+pub(crate) fn position(
+    team: &Team,
+    workflow: &Workflow,
+    default: Harness,
+    position: Position,
+) -> Value {
     let is = match position {
         Position::Perform(..) => "perform",
         Position::Waiting(_) => "waiting",
@@ -96,6 +105,10 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
         Position::Waiting(_) | Position::Escalating(..) => Some(HUMAN),
         _ => worker.map(|work| team.role_of(work).name.as_str()),
     };
+    let harness = match position {
+        Position::Perform(stage, ..) => stage.harness(default),
+        _ => worker.map(|_| default),
+    };
     let reason = match position {
         Position::Escalating(stage, reason) => Some(reason.said(stage)),
         _ => None,
@@ -105,6 +118,7 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
         "stage": position.stage().map(|stage| stage.name.as_str()),
         "by": by,
         "do": worker.map(|work| work.skill.as_str()),
+        "harness": harness,
         "reason": reason,
     })
 }

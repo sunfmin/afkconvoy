@@ -364,15 +364,15 @@ afkconvoy show --dir team
 ```
 fix — flow:fix — max_rework 3, max_consecutive_rework 2
 
-    ┌─▶ workup       fellow: diagnose · model fable · writes nothing · escalate → attending: consult
+    ┌─▶ workup       fellow: diagnose · harness claude-code · model fable · writes nothing · escalate → attending: consult
     │     ↓ pass → plan-review
-    └── plan-review  attending: review-plan · model opus · writes nothing · reject → workup
+    └── plan-review  attending: review-plan · harness claude-code · model opus · writes nothing · reject → workup
           ↓ pass → treatment
-┌─┬───▶ treatment    fellow: treat · model opus · escalate → attending: consult
+┌─┬───▶ treatment    fellow: treat · harness claude-code · model opus · escalate → attending: consult
 │ │       ↓ pass → code-review
-│ └──── code-review  attending: review-code · model opus · writes nothing · reject → treatment
+│ └──── code-review  attending: review-code · harness claude-code · model opus · writes nothing · reject → treatment
 │         ↓ pass → discharge
-└────── discharge    discharge-nurse: audit · model sonnet · writes nothing · reject → treatment
+└────── discharge    discharge-nurse: audit · harness claude-code · model sonnet · writes nothing · reject → treatment
           ↓ pass → land
         land         discharge-nurse: land
 ```
@@ -690,6 +690,7 @@ afkconvoy rehearse fix escalate ruling pass                   # who is asked, an
 | `team` | — | `owner/repo` of the team; naming it binds the repo |
 | `patrols` | `[]` | bound only: which of the team's patrols run here |
 | `intake_limit` | `50` | bound only: open issues taken in by workers, at most |
+| `harness` | `claude-code` | bound only: the harness of every worker whose stage or patrol names none |
 
 ### The team file — `team.md`
 
@@ -711,7 +712,8 @@ stages:
   - name: <unique; not land, done or human>
     by: <role> | human
     do: <skill>                    # required unless by: human
-    model: <model>                 # optional; passed to Claude Code as --model
+    harness: claude-code           # optional; default: the config's `harness`
+    model: <model>                 # optional; passed to its harness as written
     writes: false                  # optional; default true
     escalate: { to: <role>, do: <skill> }                        # optional: the consult
     on: { pass: <stage> | land | done, reject: <earlier stage> } # reject optional
@@ -720,12 +722,15 @@ land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
 
 `check` refuses a workflow in which a stage cannot be reached, a stage cannot reach an end, a `reject` leads forward, or a role or skill does not exist.
 
+`harness` names the harness the stage's worker is a session of. It is a key of a stage a role performs and of a patrol — wherever `model` is one — and nowhere else: on a stage `by: human`, on `escalate:`, on `land:` and on the team file's `precedents:` it is a fault. A consult, a landing and the proposal of a precedent run on the default, which is the `harness` of the project's config; a config that names none means `claude-code`, Claude Code, the only harness there is. `check`, `show` and `rehearse` say each stage's harness, and a worker's stage record names the one it ran on.
+
 ### A patrol — `patrols/<name>.md`
 
 ```yaml
 by: <role>
 do: <skill>
 every: 6h          # a whole number, then m, h or d
+harness: claude-code   # optional; default: the config's `harness`
 model: <model>     # optional
 max_open: 5        # not run while this many issues it opened are open
 ```

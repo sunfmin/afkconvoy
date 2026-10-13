@@ -36,11 +36,11 @@ WHAT IT ANSWERS
 
       feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-      ┌───▶ plan      dev: plan
+      ┌───▶ plan      dev: plan · harness claude-code
       │       ↓ pass → build
-      │ ┌─▶ build     dev: implement · model opus · escalate → reviewer: rule
+      │ ┌─▶ build     dev: implement · harness claude-code · model opus · escalate → reviewer: rule
       │ │     ↓ pass → review
-      │ └── review    reviewer: review · writes nothing · reject → build
+      │ └── review    reviewer: review · harness claude-code · writes nothing · reject → build
       │       ↓ pass → sign-off
       └──── sign-off  human · reject → plan
               ↓ pass → land
@@ -48,9 +48,10 @@ WHAT IT ANSWERS
 
   The first line is the workflow, its flow label and its two breakers. Then one row per
   stage, in the order its file lists them — an issue enters at the first — with who
-  performs it, as `<role>: <skill>` or `human`, and what else its file sets. Under each
-  stage is where its `pass` leads. A `reject` is said on its stage's row and drawn as
-  the line that leaves that row to the left and comes back in, at the arrow, to the
+  performs it, as `<role>: <skill>` or `human`, the harness its worker runs — the one
+  it names, or the default of this checkout's config — and what else its file sets.
+  Under each stage is where its `pass` leads. A `reject` is said on its stage's row and
+  drawn as the line that leaves that row to the left and comes back in, at the arrow, to the
   stage it leads to. The last rows are the ends: `land` with who lands, and `done`.
 
   With `--issue`, JSON:
@@ -63,7 +64,8 @@ WHAT IT ANSWERS
                         `afkconvoy intake`, and `url` is the comment that records it;
                         `patrol` in place of `from` where a patrol's worker did.
                         {"by": "human"}: its flow label has no intake record for it
-    position            where the issue is: {"is", "stage", "by", "do", "reason"}, as
+    position            where the issue is: {"is", "stage", "by", "do", "harness",
+                        "reason"}, as
                         `afkconvoy rehearse --help` spells out
     follows             the position a `pass` declared now would lead to; null where
                         none can be declared: the issue is landing, ended, escalating
@@ -73,11 +75,11 @@ WHAT IT ANSWERS
     consecutive_rework  for each stage that may reject, {"had", "left"}: its rejections
                         in a row, and what `max_consecutive_rework` still allows
     records             its stage records, oldest first: {"stage", "verdict", "reads",
-                        "by", "claim", "role_commit", "team_commit", "url"}
+                        "by", "claim", "role_commit", "team_commit", "harness", "url"}
 
   Of a record, `by` says who left it: `worker` or — asked to rule on the stage's
-  `escalate` — `consult`, under the `claim` and the two commits it names, or `human`,
-  for whom all three are null. `verdict` is what it states: one
+  `escalate` — `consult`, under the `claim` and the two commits it names, as a session
+  of the `harness` it names, or `human`, for whom all four are null. `verdict` is what it states: one
   of the five verdicts, `ruling`, or `sent`. And `reads` says how it counted:
 
     verdict        it is the verdict of the stage its claim was dispatched to, or what

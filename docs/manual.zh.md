@@ -368,15 +368,15 @@ afkconvoy show --dir team
 ```
 fix — flow:fix — max_rework 3, max_consecutive_rework 2
 
-    ┌─▶ workup       fellow: diagnose · model fable · writes nothing · escalate → attending: consult
+    ┌─▶ workup       fellow: diagnose · harness claude-code · model fable · writes nothing · escalate → attending: consult
     │     ↓ pass → plan-review
-    └── plan-review  attending: review-plan · model opus · writes nothing · reject → workup
+    └── plan-review  attending: review-plan · harness claude-code · model opus · writes nothing · reject → workup
           ↓ pass → treatment
-┌─┬───▶ treatment    fellow: treat · model opus · escalate → attending: consult
+┌─┬───▶ treatment    fellow: treat · harness claude-code · model opus · escalate → attending: consult
 │ │       ↓ pass → code-review
-│ └──── code-review  attending: review-code · model opus · writes nothing · reject → treatment
+│ └──── code-review  attending: review-code · harness claude-code · model opus · writes nothing · reject → treatment
 │         ↓ pass → discharge
-└────── discharge    discharge-nurse: audit · model sonnet · writes nothing · reject → treatment
+└────── discharge    discharge-nurse: audit · harness claude-code · model sonnet · writes nothing · reject → treatment
           ↓ pass → land
         land         discharge-nurse: land
 ```
@@ -694,6 +694,7 @@ afkconvoy rehearse fix escalate ruling pass                   # 会问谁？之�
 | `team` | — | 团队仓库的 `owner/repo`；写了它就是绑定 |
 | `patrols` | `[]` | 仅绑定：团队的哪些巡查在这里运行 |
 | `intake_limit` | `50` | 仅绑定：由 worker 收入、尚未关闭的 issue 上限 |
+| `harness` | `claude-code` | 仅绑定：阶段或巡查没写 harness 时，worker 用的 harness |
 
 ### 团队文件——`team.md`
 
@@ -715,7 +716,8 @@ stages:
   - name: <唯一；不能是 land、done、human>
     by: <角色> | human
     do: <技能>                     # 必填，除非 by: human
-    model: <模型>                  # 可选；作为 --model 传给 Claude Code
+    harness: claude-code           # 可选；默认取配置里的 `harness`
+    model: <模型>                  # 可选；原样传给它的 harness
     writes: false                  # 可选；默认 true
     escalate: { to: <角色>, do: <技能> }                         # 可选：会诊
     on: { pass: <阶段> | land | done, reject: <更早的阶段> }      # reject 可选
@@ -724,12 +726,15 @@ land: { by: <角色>, do: <技能> }   # 当且仅当有 pass 指向 land 时必
 
 `check` 会拒绝这样的工作流：有阶段到达不了、有阶段走不到终点、`reject` 指向后面的阶段、或者角色或技能不存在。
 
+`harness` 写的是这个阶段的 worker 运行在哪个 harness 上。只有由角色执行的阶段和巡查可以写它——也就是能写 `model` 的地方——别处都不行：写在 `by: human` 的阶段、`escalate:`、`land:` 或团队文件的 `precedents:` 上都是错误。会诊、落地和先例提案一律用默认值，也就是项目配置里的 `harness`；配置没写时就是 `claude-code`（Claude Code），目前唯一的 harness。`check`、`show` 和 `rehearse` 都会给出每个阶段的 harness，worker 的阶段记录里也写着它实际运行的那个。
+
 ### 巡查——`patrols/<名称>.md`
 
 ```yaml
 by: <角色>
 do: <技能>
 every: 6h          # 一个整数，后跟 m、h 或 d
+harness: claude-code   # 可选；默认取配置里的 `harness`
 model: <模型>      # 可选
 max_open: 5        # 它开的 issue 还有这么多未关闭时，不再运行
 ```

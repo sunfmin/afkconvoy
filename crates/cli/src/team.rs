@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use afkconvoy_core::config::RepoName;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::team::{
     self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RoleRepo, SKILLS, Sources, Stage,
     TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
@@ -133,6 +134,9 @@ pub struct Loaded {
     /// The patrols the repo of this checkout names, when it is its team that
     /// was read: the ones that run on it.
     pub runs: Vec<String>,
+    /// The default harness: the one the config of this checkout names, when
+    /// it is its team that was read, and Claude Code where no config was.
+    pub harness: Harness,
     pub team: Team,
 }
 
@@ -156,8 +160,9 @@ pub fn check(from: From) -> Result<Value> {
 pub fn load(from: From) -> Result<Loaded> {
     let gh = GitHub { dir: PathBuf::from(".") };
     let copies = Copies::here()?;
-    // The patrols this checkout's repo names, when it is its team that is read.
-    let mut named: Vec<String> = vec![];
+    // The patrols this checkout's repo names and its default harness, when
+    // it is its team that is read.
+    let (mut named, mut harness) = (vec![], Harness::DEFAULT);
     let repo = match from {
         From::Dir(dir) => {
             if !dir.is_dir() {
@@ -166,7 +171,7 @@ pub fn load(from: From) -> Result<Loaded> {
             let name = dir.display().to_string();
             let (sources, roles) = read(&Tree { dir }, &gh, &copies)?;
             roles.reached()?;
-            return loaded(name, None, sources, named);
+            return loaded(name, None, sources, named, harness);
         }
         From::Repo(repo) => repo,
         From::Config => {
@@ -177,22 +182,23 @@ pub fn load(from: From) -> Result<Loaded> {
                      or a directory of a team's files with --dir"
                 );
             };
-            named = bound.patrols;
+            (named, harness) = (bound.patrols, bound.harness);
             bound.team
         }
     };
     let (copy, sources, roles) = read_kept(&gh, &copies, &repo)?;
     roles.reached()?;
-    loaded(repo.to_string(), Some(copy.commit), sources, named)
+    loaded(repo.to_string(), Some(copy.commit), sources, named, harness)
 }
 
 /// The team `name` that `sources` load as, read at `commit`, on a repo whose
-/// config names the patrols `runs`.
+/// config names the patrols `runs` and the default harness `harness`.
 fn loaded(
     name: String,
     commit: Option<String>,
     sources: Sources,
     runs: Vec<String>,
+    harness: Harness,
 ) -> Result<Loaded> {
     let mut files = vec![sources.team.path.clone()];
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
@@ -204,7 +210,7 @@ fn loaded(
     if let Err(unknown) = team.patrols_named(&runs) {
         return Err(unknown_patrols(&name, &team, &unknown).into());
     }
-    Ok(Loaded { name, commit, files, runs, team })
+    Ok(Loaded { name, commit, files, runs, harness, team })
 }
 
 /// What reading the repo of each role of a team came to, by the repo's name.
@@ -332,9 +338,10 @@ fn answer(loaded: &Loaded) -> Value {
         "commit": loaded.commit,
         "files": loaded.files,
         "escalate_label": team.escalate_label,
+        "harness": loaded.harness,
         "roles": roles,
-        "workflows": team.workflows.iter().map(|w| workflow(team, w)).collect::<Vec<_>>(),
-        "patrols": team.patrols.iter().map(|p| patrol(team, p, &loaded.runs)).collect::<Vec<_>>(),
+        "workflows": team.workflows.iter().map(|w| workflow(loaded, w)).collect::<Vec<_>>(),
+        "patrols": team.patrols.iter().map(|p| patrol(loaded, p)).collect::<Vec<_>>(),
         "precedents": team.precedents.as_ref().map(|precedents| {
             json!({"by": team.role_of(&precedents.work).name, "do": precedents.work.skill,
                 "max_open": precedents.max_open})
@@ -342,20 +349,25 @@ fn answer(loaded: &Loaded) -> Value {
     })
 }
 
-/// One patrol of `team`, and whether it is among `runs`: the ones the repo names.
-fn patrol(team: &Team, patrol: &Patrol, runs: &[String]) -> Value {
+/// One patrol of the team `loaded`, with the harness it runs — its own or
+/// the default — and whether it is among the ones the repo names.
+fn patrol(loaded: &Loaded, patrol: &Patrol) -> Value {
     json!({
         "name": patrol.name,
-        "by": team.role_of(&patrol.work).name,
+        "by": loaded.team.role_of(&patrol.work).name,
         "do": patrol.work.skill,
         "every": patrol.every,
+        "harness": patrol.harness(loaded.harness),
         "model": patrol.model,
         "max_open": patrol.max_open,
-        "runs_here": runs.contains(&patrol.name),
+        "runs_here": loaded.runs.contains(&patrol.name),
     })
 }
 
-fn workflow(team: &Team, workflow: &Workflow) -> Value {
+/// One workflow of the team `loaded`, each stage a worker performs with the
+/// harness it runs: its own or the default.
+fn workflow(loaded: &Loaded, workflow: &Workflow) -> Value {
+    let team = &loaded.team;
     let name = |at: usize| workflow.stage(at).name.clone();
     let role = |work: &Work| team.role_of(work).name.as_str();
     let stage = |stage: &Stage| {
@@ -372,6 +384,7 @@ fn workflow(team: &Team, workflow: &Workflow) -> Value {
             "name": stage.name,
             "by": by,
             "do": skill,
+            "harness": stage.harness(loaded.harness),
             "model": stage.model,
             "writes": stage.writes,
             "escalate": stage.consult.as_ref().map(|consult| json!({"to": role(consult), "do": consult.skill})),

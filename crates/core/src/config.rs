@@ -4,6 +4,8 @@
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
+use crate::harness::Harness;
+
 /// The escalate label where nothing names one: a repo's, and a team's.
 pub const ESCALATE_LABEL: &str = "ready-for-human";
 
@@ -22,6 +24,7 @@ pub struct Settings {
     pub patrols: Option<Vec<String>>,
     pub lock_label: Option<String>,
     pub intake_limit: Option<u64>,
+    pub harness: Option<String>,
 }
 
 /// What a bound repo's config says beside the keys every repo has.
@@ -33,6 +36,10 @@ pub struct Bound {
     pub patrols: Vec<String>,
     /// How many issues taken in by workers may be open at once.
     pub intake_limit: u64,
+    /// The harness of every worker nothing of the team names one for: a
+    /// stage's or a patrol's that names none, a consult, a landing and the
+    /// proposal of a precedent.
+    pub harness: Harness,
 }
 
 /// A config a fleet can run on: every key present, defaults filled.
@@ -69,6 +76,8 @@ pub enum ConfigError {
     NotARepo(&'static str),
     /// A key that means something only in a bound repo, in a repo naming no team.
     NeedsTeam(&'static str),
+    /// `harness` names none: what it was set to.
+    NotAHarness(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -84,6 +93,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::NeedsTeam(key) => {
                 write!(f, "{key}: is read only in a bound repo, and this one names no team")
             }
+            ConfigError::NotAHarness(named) => write!(f, "harness: {}", Harness::unknown(named)),
         }
     }
 }
@@ -108,11 +118,16 @@ impl Config {
                 team: repo("team", team)?,
                 patrols: settings.patrols.unwrap_or_default(),
                 intake_limit: settings.intake_limit.unwrap_or(50),
+                harness: match settings.harness {
+                    Some(named) => Harness::read(&named).ok_or(ConfigError::NotAHarness(named))?,
+                    None => Harness::DEFAULT,
+                },
             }),
             None if settings.patrols.is_some() => return Err(ConfigError::NeedsTeam("patrols")),
             None if settings.intake_limit.is_some() => {
                 return Err(ConfigError::NeedsTeam("intake_limit"));
             }
+            None if settings.harness.is_some() => return Err(ConfigError::NeedsTeam("harness")),
             None => None,
         };
         match checked(
@@ -249,6 +264,11 @@ mod tests {
         assert_eq!(bound.team.as_str(), "acme/team");
         assert_eq!(bound.patrols, Vec::<String>::new());
         assert_eq!(bound.intake_limit, 50);
+        assert_eq!(
+            bound.harness,
+            Harness::ClaudeCode,
+            "a config that names none means Claude Code"
+        );
         let set = Settings {
             team: Some("acme/team".into()),
             patrols: Some(vec!["triage".into()]),
@@ -274,6 +294,25 @@ mod tests {
         assert_eq!(Config::new(patrols), Err(ConfigError::NeedsTeam("patrols")));
         let limit = Settings { intake_limit: Some(1), ..minimal() };
         assert_eq!(Config::new(limit), Err(ConfigError::NeedsTeam("intake_limit")));
+        let harness = Settings { harness: Some("claude-code".into()), ..minimal() };
+        assert_eq!(Config::new(harness), Err(ConfigError::NeedsTeam("harness")));
+    }
+
+    #[test]
+    fn a_bound_repo_names_the_default_harness_by_its_key() {
+        let named = |harness: &str| Settings {
+            team: Some("acme/team".into()),
+            harness: Some(harness.into()),
+            ..minimal()
+        };
+        let bound = Config::new(named("claude-code")).unwrap().bound.unwrap();
+        assert_eq!(bound.harness, Harness::ClaudeCode);
+        for none in ["pi", "Claude Code", "claude", ""] {
+            let refused = Config::new(named(none)).unwrap_err();
+            assert_eq!(refused, ConfigError::NotAHarness(none.to_string()));
+            let said = refused.to_string();
+            assert!(said.starts_with("harness: ") && said.contains("claude-code"), "{said}");
+        }
     }
 
     #[test]

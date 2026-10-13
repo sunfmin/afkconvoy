@@ -5,6 +5,7 @@
 
 use flux_rs::attrs::*;
 
+use crate::harness::Harness;
 use crate::position::Breaker;
 use crate::team::{DONE, HUMAN, LAND, Pass, Performer, Stage, Team, Work, Workflow};
 
@@ -14,9 +15,11 @@ struct Back {
     to: usize,
 }
 
-/// The drawing of `workflow`, one of `team`: lines, each ended by a newline.
-#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}) -> String)]
-pub fn draw(team: &Team, workflow: &Workflow) -> String {
+/// The drawing of `workflow`, one of `team`, in a repo whose default harness
+/// is `default`: lines, each ended by a newline. A stage a worker performs
+/// says its harness, named by it or not.
+#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}, Harness) -> String)]
+pub fn draw(team: &Team, workflow: &Workflow, default: Harness) -> String {
     let stages = workflow.stages();
     // The reject of a later stage is drawn further out, so one that spans
     // another goes round it.
@@ -53,6 +56,9 @@ pub fn draw(team: &Team, workflow: &Workflow) -> String {
             Performer::Human => HUMAN.to_string(),
             Performer::Role(work) => work_said(team, work),
         }];
+        if let Some(harness) = stage.harness(default) {
+            said.push(format!("harness {}", harness.key()));
+        }
         if let Some(model) = &stage.model {
             said.push(format!("model {model}"));
         }
@@ -140,15 +146,15 @@ mod tests {
     #[test]
     fn every_stage_its_role_and_skill_and_every_edge_is_drawn() {
         let team = one(FEATURE);
-        let drawn = draw(&team, team.workflow("feature").unwrap());
+        let drawn = draw(&team, team.workflow("feature").unwrap(), Harness::DEFAULT);
         let expected = "\
 feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-┌───▶ plan      dev: plan
+┌───▶ plan      dev: plan · harness claude-code
 │       ↓ pass → build
-│ ┌─▶ build     dev: implement · model opus · escalate → reviewer: rule
+│ ┌─▶ build     dev: implement · harness claude-code · model opus · escalate → reviewer: rule
 │ │     ↓ pass → review
-│ └── review    reviewer: review · writes nothing · reject → build
+│ └── review    reviewer: review · harness claude-code · writes nothing · reject → build
 │       ↓ pass → sign-off
 └──── sign-off  human · reject → plan
         ↓ pass → land
@@ -167,17 +173,17 @@ stages:
   - { name: c, by: dev, do: plan, on: { pass: d, reject: a } }
   - { name: d, by: dev, do: plan, on: { pass: done, reject: c } }
 ");
-        let drawn = draw(&team, team.workflow("feature").unwrap());
+        let drawn = draw(&team, team.workflow("feature").unwrap(), Harness::DEFAULT);
         let expected = "\
 feature — flow:feature — max_rework 5, max_consecutive_rework 2
 
-  ┌─┬─▶ a     dev: plan
+  ┌─┬─▶ a     dev: plan · harness claude-code
   │ │     ↓ pass → b
-  │ └── b     dev: plan · reject → a
+  │ └── b     dev: plan · harness claude-code · reject → a
   │       ↓ pass → c
-┌─┴───▶ c     dev: plan · reject → a
+┌─┴───▶ c     dev: plan · harness claude-code · reject → a
 │         ↓ pass → d
-└────── d     dev: plan · reject → c
+└────── d     dev: plan · harness claude-code · reject → c
           ↓ pass → done
         done
 ";

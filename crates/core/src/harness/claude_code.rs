@@ -12,6 +12,7 @@ use crate::line::Line;
 use crate::role::Start;
 
 pub(super) const NAME: &str = "Claude Code";
+pub(super) const KEY: &str = "claude-code";
 pub(super) const PROGRAM: &str = "claude";
 /// Claude Code with the flag that lets it work with nobody at its terminal.
 pub(super) const STOCK: &str = "claude --dangerously-skip-permissions";
@@ -243,7 +244,8 @@ mod tests {
              AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
-             AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' && \
+             AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' \
+             AFKCONVOY_HARNESS='claude-code' && \
              kim --yolo --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' \
              --setting-sources project --settings '"
                 .to_string()

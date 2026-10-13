@@ -919,6 +919,7 @@ pub fn fill(template: &str, fields: &[(&str, &str)]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::Harness;
 
     fn fields() -> WorkerFields<'static> {
         WorkerFields {
@@ -1062,6 +1063,7 @@ mod tests {
                 claim: "c".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
             };
             left(stage, Stated::Declared(declared), by, text)
         };
@@ -1126,6 +1128,7 @@ mod tests {
                 claim: "c".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
             };
             left("build", Stated::Declared(declared), by, text)
         };
@@ -1215,6 +1218,7 @@ mod tests {
                 claim: "c".to_string(),
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
             },
             blocked_by: vec![11, 12],
             text: "Split in two:\n#11 the parser, #12 the printer.".to_string(),

@@ -2,14 +2,13 @@
 //! the repo names, the start of a run, and its end. When a patrol runs and
 //! what makes a run a failed one is the core's (`afkconvoy_core::patrol`).
 
-use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::opened_by;
 use afkconvoy_core::patrol::{
     Row, Seen, Standing, broke, checkout_name, claim_key, failure_of, failure_report,
     failure_title, is_due, read_run, run_over, run_ref, write_run,
 };
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
-use afkconvoy_core::role::{Facts, On, Start, flows, in_role};
+use afkconvoy_core::role::{Facts, On, Start, flows};
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, anyhow};
@@ -75,6 +74,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         kept.team.patrol(name).ok_or_else(|| anyhow!("the team has no patrol {name:?}"))?;
     let role = kept.team.role_of(&patrol.work);
     let role_copy = kept.role(role)?;
+    let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
+    let harness = patrol.harness(bound.harness);
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &claim_key(name))? else {
         return Ok(Outcome::Lost);
     };
@@ -119,7 +120,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         team_dir: &kept.copy.dir.display().to_string(),
         model: patrol.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
-        report: Harness::DEFAULT.report(),
+        report: harness.report(),
         facts: Facts {
             on: On::Patrol(name),
             role: &role.name,
@@ -133,7 +134,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&in_role(agent.command.as_str(), &start), me.now)?;
+    let terminal = checkout.start(&harness.in_role(agent.command.as_str(), &start), me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 

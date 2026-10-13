@@ -83,7 +83,7 @@ One step of a workflow: one skill of one role, performed by one new worker — o
 _Avoid_: step, phase, state
 
 **Stage record**:
-The comment a stage leaves on its issue: what it produced, its verdict, and the versions of the role and team it ran under. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
+The comment a stage leaves on its issue: what it produced, its verdict, the versions of the role and team it ran under, and the harness its worker ran on. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
 _Avoid_: handoff note, log, stage label
 
 **Position**:
