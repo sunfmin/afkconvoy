@@ -1,0 +1,115 @@
+TROUBLESHOOTING
+
+  Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads everything
+  and changes nothing. Each finding has a `fix` — a line to run, or a file and key to
+  edit — and `evidence`. Below, a row for each: the words its `what` holds, why, and
+  what to do. Then what a start refuses with, and what neither says.
+
+WHAT `doctor` FINDS — critical: the fleet does not work until it is fixed
+
+  is not installed
+      A command the fleet needs is not on this host. Run `fix`: the line that installs it.
+  is not logged in
+      `gh` or `claude` is logged out, as a login shell sees it. Run `fix`.
+  holds credentials for no provider
+      A stage or a patrol runs on pi, logged in nowhere. Start `pi` and type `/login`.
+  is not running
+      orca is not running, and every worker is started through it. Run `fix`.
+  cannot be asked about this checkout
+      orca runs but did not say which repos it knows; `evidence` says why. Run `fix`.
+  does not know this checkout
+      orca was never given the checkout worktrees are cut from. Run `fix`, once.
+  cannot start a worker
+      The first word of a worker launch command resolves to nothing in a login shell: an
+      alias your own shell has and a login shell lacks. Name one that resolves with
+      `--worker-command`: `afkconvoy run --help`.
+  cannot start a worker in its role
+      In a bound repo the worker launch command must end in its harness, taking flags:
+      the fleet adds what puts the worker in its role. `afkconvoy run --help`.
+  no `afkconvoy run` is alive
+      The `run` of this host was stopped or killed while it held claims. Start it
+      again, on the same host: it takes its claims back, and the workers worked on.
+  failed in each of the last
+      One step of a tick fails tick after tick; `evidence` is its error. Run `fix`, and
+      read the error: it names what refused, GitHub or the remote or orca.
+  the team this repo names cannot be read
+      The team's repo, or a role's, could not be read. `afkconvoy check` says which.
+  has a fault at its head
+      A team's or a role's file is wrong on its default branch. `fix` is the file and
+      key; `afkconvoy check` gives every fault. Push the edit: no stage starts until then.
+  stands and cannot be worked
+      A fleet lock is on an issue no worker can be started on, so the fleet works
+      nothing. `fix` gives the issue what it lacks; `afkconvoy help humans`.
+  the fleet's state cannot be read
+      GitHub, the remote or the config failed to answer; `evidence` says which.
+
+WHAT `doctor` FINDS — warning: one issue or one patrol is held up. A warning may be the
+fleet mid-step: run `doctor` again after a tick before you act on one.
+
+  has no worker
+      A claim's worker is gone. A tick starts one on its own; `fix` is for a claim the
+      next tick leaves so.
+  has been stopped for
+      A worker stopped half an hour ago and declared nothing. Read its terminal, in
+      the worktree `evidence` names; `fix` nudges it.
+  the last tick started no worker
+      Slots are free, the frontier is not empty, and nothing was dispatched: `evidence`
+      is the tick's line, and `fix` the step that failed or the dispatch by hand.
+  follows no workflow of the team
+      An issue's flow label names no workflow, or it has two. `afkconvoy flows` lists all.
+  longer than any stage before it took
+      Nothing is wrong yet: an issue has been at one stage for long. `fix` shows it.
+  is one rework from a breaker
+      The next `reject` escalates the issue. Nothing to do yet: `afkconvoy help humans`.
+  does not run: its last run failed
+      The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
+  have reached its `max_open`
+      A patrol is not run while that many issues it opened are open. Close some, or
+      raise `max_open` in the patrol's file.
+  has waited for a human for
+      Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
+
+WHAT `doctor` FINDS — info: nothing to fix
+
+  moved since the stage
+      A role or the team was pushed after a stage started: that worker goes by the
+      older one, the next stage by the head. `afkconvoy doctor --help` says what moved is.
+
+WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start nothing
+
+  this host cannot work a fleet yet
+      What `doctor` finds on a host, said at once: run each line after a colon.
+  cannot read the config file
+      The repo has no config on the branch checked out. `afkconvoy config --help`.
+  the remote has no branch
+      The config's `base_branch` is not on the remote. Push it: the fleet creates none.
+  that push would be refused
+      The base branch's protection requires a PR, checks or a named pusher, and the
+      landing train lands by pushing. Lift the rule, or pick another base branch.
+  the remote rejects the fleet's refs under both
+      The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be
+      kept. A push rule of the remote's is what refuses: lift it for one of the two.
+  --worker-command was given twice for the harness
+      The bare form is the default harness's. Give each harness one command.
+  is no harness
+      `--worker-command <name>=<command>` named a harness there is none of.
+  this fleet runs on a custom provider
+      A worker's shell inherits nothing of yours, and no terminal is here to ask on
+      what starts one. Say it: `--worker-command <harness>=<command>`.
+
+WHAT NEITHER SAYS
+
+  An issue is not worked
+      `afkconvoy plan` has it under `excluded`, with why. Remove what the reason names.
+  A changed role or team did not reach a worker
+      It is not pushed to its default branch, or the stage had already started.
+  The labels were moved back, and the issue escalated again
+      A label is not where an issue is: `afkconvoy help humans`.
+  A stage's verdict counted for nothing
+      Its record names another stage than its claim was for. `afkconvoy show --issue <n>`
+      says how each record was read; `afkconvoy send` puts the issue where it belongs.
+  Another host's fleet died
+      Its claims go stale by themselves and are taken. Or: `afkconvoy takeover --help`.
+  Everything must stop now
+      Kill `run`, then close the workers' terminals in orca. Every issue keeps its
+      labels and stage records: a later `run` goes on from where each one was.

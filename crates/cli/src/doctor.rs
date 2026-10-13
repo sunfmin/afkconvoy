@@ -74,8 +74,67 @@ pub struct Finding {
     pub fix: String,
 }
 
-fn finding(severity: Severity, what: String, evidence: String, fix: String) -> Finding {
-    Finding { severity, what, evidence, fix }
+/// Names each kind of finding there is, with how much it matters and its
+/// symptom: the words its `what` always holds.
+macro_rules! kinds {
+    ($($kind:ident: $severity:ident, $symptom:literal;)+) => {
+        /// One kind of thing `doctor` finds wrong: what a finding is made as.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Kind {
+            $($kind,)+
+        }
+
+        impl Kind {
+            /// Every kind there is.
+            pub const ALL: &[Kind] = &[$(Kind::$kind,)+];
+
+            /// The words the `what` of every finding of this kind holds: what
+            /// the help topic `troubleshooting` heads its row with.
+            pub fn symptom(self) -> &'static str {
+                match self {
+                    $(Kind::$kind => $symptom,)+
+                }
+            }
+
+            fn severity(self) -> Severity {
+                match self {
+                    $(Kind::$kind => Severity::$severity,)+
+                }
+            }
+        }
+    };
+}
+
+kinds! {
+    ToolMissing: Critical, "is not installed";
+    ToolLoggedOut: Critical, "is not logged in";
+    NoProvider: Critical, "holds credentials for no provider";
+    OrcaUnasked: Critical, "cannot be asked about this checkout";
+    OrcaNotRunning: Critical, "is not running";
+    NoCheckout: Critical, "does not know this checkout";
+    LaunchStartsNone: Critical, "cannot start a worker";
+    LaunchTakesNoRole: Critical, "cannot start a worker in its role";
+    NoRun: Critical, "no `afkconvoy run` is alive";
+    StepFailed: Critical, "failed in each of the last";
+    TeamUnread: Critical, "the team this repo names cannot be read";
+    TeamFaulty: Critical, "has a fault at its head";
+    LockUnworked: Critical, "stands and cannot be worked";
+    StateUnread: Critical, "the fleet's state cannot be read";
+    NoWorker: Warning, "has no worker";
+    WorkerStopped: Warning, "has been stopped for";
+    NothingStarted: Warning, "the last tick started no worker";
+    NoWorkflow: Warning, "follows no workflow of the team";
+    LongAtStage: Warning, "longer than any stage before it took";
+    NearBreaker: Warning, "is one rework from a breaker";
+    PatrolFailed: Warning, "does not run: its last run failed";
+    PatrolFull: Warning, "have reached its `max_open`";
+    WaitedLong: Warning, "has waited for a human for";
+    Moved: Info, "moved since the stage";
+}
+
+fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
+    debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
+    Finding { severity: kind.severity(), what, evidence, fix }
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
@@ -268,14 +327,16 @@ fn host_findings(host: &Host) -> Vec<Finding> {
             [] => String::new(),
             callers => format!("; it is called for by {}", callers.join(", ")),
         };
-        let (what, evidence, fix) = match state {
+        let (kind, what, evidence, fix) = match state {
             Found::Ready => continue,
             Found::Missing => (
+                Kind::ToolMissing,
                 format!("`{name}` is not installed: the fleet cannot work without it"),
                 format!("no `{name}` was found on this host{called}"),
                 tool.install().to_string(),
             ),
             Found::LoggedOut => (
+                if *tool == Tool::Pi { Kind::NoProvider } else { Kind::ToolLoggedOut },
                 format!("`{name}` {}", tool.logged_out()),
                 format!(
                     "`{}` says so, in a login shell{called}",
@@ -285,6 +346,7 @@ fn host_findings(host: &Host) -> Vec<Finding> {
             ),
             Found::NotRunning => match &host.orca_unasked {
                 Some(why) => (
+                    Kind::OrcaUnasked,
                     format!(
                         "`{name}` cannot be asked about this checkout: no worker can be started"
                     ),
@@ -292,18 +354,20 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                     "orca repo list".to_string(),
                 ),
                 None => (
+                    Kind::OrcaNotRunning,
                     format!("`{name}` is not running: no worker can be started or asked after"),
                     "`orca status` does not say its runtime is ready".to_string(),
                     START_ORCA.to_string(),
                 ),
             },
             Found::KnowsNoCheckout(path) => (
+                Kind::NoCheckout,
                 format!("`{name}` does not know this checkout: no worker can be started"),
                 format!("`orca repo list` names no repo at {path}"),
                 add_checkout(path),
             ),
         };
-        found.push(finding(Severity::Critical, what, evidence, fix));
+        found.push(finding(kind, what, evidence, fix));
     }
     for Launch { checked, .. } in &host.launches {
         // A harness that is missing is one finding: its command's are the same.
@@ -312,14 +376,14 @@ fn host_findings(host: &Host) -> Vec<Finding> {
         }
         let default_missing = harness_missing(&host.tools);
         let faults = [
-            (checked.fault.as_ref().filter(|_| !default_missing), "cannot start a worker"),
-            (checked.flags_fault.as_ref(), "cannot start a worker in its role"),
+            (checked.fault.as_ref().filter(|_| !default_missing), Kind::LaunchStartsNone),
+            (checked.flags_fault.as_ref(), Kind::LaunchTakesNoRole),
         ];
-        for (why, what) in faults {
+        for (why, kind) in faults {
             let Some(why) = why else { continue };
             found.push(finding(
-                Severity::Critical,
-                format!("the worker launch command `{}` {what}", checked.command),
+                kind,
+                format!("the worker launch command `{}` {}", checked.command, kind.symptom()),
                 why.clone(),
                 "afkconvoy run --help".to_string(),
             ));
@@ -341,7 +405,7 @@ fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
         None => "it has no heartbeat on the remote".to_string(),
     };
     vec![finding(
-        Severity::Critical,
+        Kind::NoRun,
         format!(
             "no `afkconvoy run` is alive on {} for this repo, and its fleet instance {instance} \
              holds {}: nothing works them",
@@ -377,7 +441,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                 let held_for =
                     claim.held_for.map(lasted).unwrap_or_else(|| "an unknown time".into());
                 found.push(finding(
-                    Severity::Warning,
+                    Kind::NoWorker,
                     format!("the claim on #{issue} has no worker"),
                     format!(
                         "{evidence}; the claim was stamped {held_for} ago. A tick starts one on \
@@ -388,7 +452,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
             }
             Some(WorkerState::Idle { quiet: Some(quiet) }) if quiet >= STOPPED_LONG => {
                 found.push(finding(
-                    Severity::Warning,
+                    Kind::WorkerStopped,
                     format!(
                         "the worker of #{issue} has been stopped for {}, and its claim is still \
                          at work: it declared nothing that ends it",
@@ -403,7 +467,7 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
         let Some(under) = &claim.under else { continue };
         for Moved { which, started, head } in &claim.moved {
             found.push(finding(
-                Severity::Info,
+                Kind::Moved,
                 format!(
                     "{which} moved since the stage `{}` of #{issue} started: its worker goes by \
                      the older one, and the next stage by the head",
@@ -444,7 +508,7 @@ fn log_findings(run: &Run) -> Vec<Finding> {
         .filter(|failed| again(failed))
         .map(|failed| {
             finding(
-                Severity::Critical,
+                Kind::StepFailed,
                 format!(
                     "`{}` failed in each of the last {FAILED_TICKS} ticks ({first} to {latest})",
                     failed.named()
@@ -469,7 +533,7 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
                 _ => String::new(),
             };
             found.push(finding(
-                Severity::Warning,
+                Kind::NoWorkflow,
                 format!("#{number} follows no workflow of the team: {why}"),
                 format!(
                     "it carries {}; the team's workflows take {has}",
@@ -487,7 +551,7 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
             took.zip(here).filter(|(took, here)| here > took && *here >= STAGE_LONG)
         {
             found.push(finding(
-                Severity::Warning,
+                Kind::LongAtStage,
                 format!(
                     "#{number} has been at the stage `{stage}` for {}, longer than any stage \
                      before it took",
@@ -517,7 +581,7 @@ fn issue_findings(stood: &[Stood], team: &TeamRead, now: u64) -> Vec<Finding> {
         }
         if !near.is_empty() {
             found.push(finding(
-                Severity::Warning,
+                Kind::NearBreaker,
                 format!("#{number} is one rework from a breaker: the next one escalates it"),
                 near.join("; "),
                 show,
@@ -546,7 +610,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             .is_some_and(|((held, frontier), bound)| frontier > 0 && held < bound as u64);
         if start.is_some() || left {
             found.push(finding(
-                Severity::Warning,
+                Kind::NothingStarted,
                 format!(
                     "the frontier holds {}, {} slot(s) are free, and the last tick started no worker",
                     numbered(&set.frontier.iter().map(|issue| issue.number).collect::<Vec<_>>()),
@@ -584,7 +648,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             format!("gh issue view {lock}")
         };
         found.push(finding(
-            Severity::Critical,
+            Kind::LockUnworked,
             format!(
                 "the fleet lock #{lock} stands and cannot be worked: the fleet works nothing \
                  until it closes"
@@ -601,13 +665,15 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             .filter(|issue| issue.opened_by.as_deref() == Some(name))
             .map(|issue| issue.number)
             .collect();
-        let (why, evidence, fix) = match (patrol.standing, patrol.failure, opened.first()) {
+        let (kind, why, evidence, fix) = match (patrol.standing, patrol.failure, opened.first()) {
             (Standing::Failed, Some(failure), _) => (
+                Kind::PatrolFailed,
                 "its last run failed",
                 format!("#{failure} reports the failure and is still open"),
                 format!("gh issue close {failure}"),
             ),
             (Standing::Full, _, Some(oldest)) => (
+                Kind::PatrolFull,
                 "the open issues it opened have reached its `max_open`",
                 format!("{} open of {}: {}", patrol.open, patrol.max_open, numbered(&opened)),
                 format!("afkconvoy show --issue {oldest}"),
@@ -615,7 +681,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             _ => continue,
         };
         found.push(finding(
-            Severity::Warning,
+            kind,
             format!("the patrol `{name}` does not run: {why}"),
             evidence,
             fix,
@@ -629,7 +695,7 @@ fn waiting_findings(set: &WorkingSet, now: u64) -> Vec<Finding> {
     let long = |waiting: &Waiting| {
         let waited = waiting.waited_long(now)?;
         Some(finding(
-            Severity::Warning,
+            Kind::WaitedLong,
             format!(
                 "#{} has waited for a human for {}: {}",
                 waiting.issue,
@@ -652,7 +718,7 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
     match team {
         TeamRead::Unbound | TeamRead::Loaded { .. } => vec![],
         TeamRead::Unread(why) => vec![finding(
-            Severity::Critical,
+            Kind::TeamUnread,
             "the team this repo names cannot be read: no stage can be started".to_string(),
             why.clone(),
             "afkconvoy check".to_string(),
@@ -663,7 +729,7 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
                 let key =
                     if fault.key.is_empty() { String::new() } else { format!(": {}", fault.key) };
                 finding(
-                    Severity::Critical,
+                    Kind::TeamFaulty,
                     format!("the team {name} has a fault at its head: no stage can be started"),
                     fault.problem.clone(),
                     format!("{}{key}", fault.file),
@@ -687,7 +753,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(waiting_findings(&state.set, seen.now));
         }
         Err(why) => found.push(finding(
-            Severity::Critical,
+            Kind::StateUnread,
             "the fleet's state cannot be read: GitHub, the remote or the config".to_string(),
             why.to_string(),
             named_line(why).unwrap_or_else(|| "afkconvoy scan".to_string()),
