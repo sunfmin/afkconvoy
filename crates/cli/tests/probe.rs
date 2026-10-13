@@ -295,6 +295,8 @@ fn a_remote_that_rejects_both_layouts_is_an_error() {
     let error = plan(&world).error();
     assert!(error.contains("under both refs/convoy/*"), "{error}");
     assert!(error.contains("refs/heads/convoy-*"), "{error}");
+    // A start's refusal names the topic that has a row for it.
+    assert_eq!(plan(&world).json["see"], "afkconvoy help troubleshooting");
 }
 
 #[test]

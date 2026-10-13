@@ -27,6 +27,7 @@ use crate::orca::{Under, Worktree};
 use crate::stage::records_of;
 use crate::team::keep;
 use crate::tools;
+use crate::topic::See;
 
 /// One stage of one issue, as its worker is started on it — or its consult,
 /// or the join that follows the last one: the role and the team at the
@@ -90,8 +91,15 @@ impl Staged {
             Due::Lander(lander) => {
                 (lander.workflow, lander.work, lander.role, None, Some(lander.pr))
             }
-            Due::Human(why) | Due::Nothing(why) => {
-                bail!("issue #{issue} cannot be started: {why}")
+            // What waits for a human is answered by one; anything else is
+            // where the issue is in its workflow.
+            Due::Human(why) => {
+                let why = format!("issue #{issue} cannot be started: {why}");
+                return Err(See::Humans.refusal(why));
+            }
+            Due::Nothing(why) => {
+                let why = format!("issue #{issue} cannot be started: {why}");
+                return Err(See::Workflows.refusal(why));
             }
         };
         let history = history(workflow, &records);

@@ -81,7 +81,7 @@ WHAT IT ANSWERS
               since, answer}: `answer` is the line that answers it. null when the
               issues could not be read
     findings  what is wrong, most severe first — none: []. Each is {severity, what,
-              evidence, fix}:
+              evidence, fix, see}:
                 severity   critical  the fleet does not work until it is fixed
                            warning   one issue or one patrol is held up, or about to be
                            info      nothing to fix: said so that a surprise is explained
@@ -89,6 +89,10 @@ WHAT IT ANSWERS
                 evidence   what was read that says so
                 fix        one command line to run as it is — or, for a fault in a
                            team's or a role's file, `<file>: <key>` to edit
+                see        the command that prints the help topic explaining it:
+                           `afkconvoy help humans` where what it reports waits for
+                           a human, else `afkconvoy help troubleshooting`, which
+                           has a row for each finding
 
   It exits 0 with no critical finding, and non-zero with one — printing the same
   object, not {"error"} — so that a script can gate on it. Errors: "is not in a git
