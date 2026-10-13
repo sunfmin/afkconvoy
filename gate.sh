@@ -16,7 +16,9 @@ cargo fmt --all --check
 flux_log=$(mktemp)
 ./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
 flux_pid=$!
-trap 'kill "$flux_pid" 2>/dev/null; rm -f "$flux_log"' EXIT
+# Flux has usually ended by then, and a kill that finds nothing fails: under
+# `set -e` that would be the gate's exit, whatever passed.
+trap 'kill "$flux_pid" 2>/dev/null || true; rm -f "$flux_log"' EXIT
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 # The manual is the help topics as one page, and is never edited: a topic
 # changed and the page not written again fails here, with the command to run.
