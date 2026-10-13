@@ -12,7 +12,6 @@ use serde::Serialize;
 use crate::claims::{Holder, InstanceId, RunClaim};
 use crate::record::{self, fleet_number};
 use crate::stage_record::{Author, Reading, StageRecord, Stated};
-use crate::team::PRECEDENTS;
 
 /// The kind of record the comment carries that says a ruling was proposed.
 pub const PROPOSED: &str = "convoy:precedent-proposed";
@@ -97,11 +96,14 @@ pub fn rulings(
 /// The comment that says `ruling` was proposed: a worker in the role `role`
 /// was started for it. It is written before the worker is, and is what keeps
 /// a ruling to one proposal.
-pub fn proposed_comment(ruling: Ruling, role: &str, team: &str) -> String {
+///
+/// `team` is the team's repo and `file` its precedents file there, from the
+/// repo's root.
+pub fn proposed_comment(ruling: Ruling, role: &str, team: &str, file: &str) -> String {
     let marker = record::marker(PROPOSED, &[("ruling", &ruling.comment.to_string())]);
     format!(
         "{marker}\n**afkconvoy** — a worker in the role `{role}` is started to propose this \
-         ruling as a precedent: a PR on {team} that appends one entry to `{PRECEDENTS}`, from the \
+         ruling as a precedent: a PR on {team} that appends one entry to `{file}`, from the \
          branch `{}`. Merging it is what accepts the precedent; the issue does not wait for it.",
         ruling.branch()
     )
@@ -288,12 +290,12 @@ fn hunk_lines(part: &str) -> Vec<Line<'_>> {
 
 /// Why the PR whose diff is `diff` — as `git diff` writes one — is no
 /// proposal of the ruling at `link`, when it is none: it changes anything but
-/// the precedents file, or does anything there but append one entry that
-/// links to the ruling.
-pub fn refused(diff: &str, link: &str) -> Option<String> {
+/// the precedents file — `file`, from the root of the team's repo — or does
+/// anything there but append one entry that links to the ruling.
+pub fn refused(diff: &str, link: &str, file: &str) -> Option<String> {
     let form = format!("an entry is one line, `{}`", entry_form(link));
     // A header names the file twice: once is a rename, or another file.
-    let precedents = format!("a/{PRECEDENTS} b/{PRECEDENTS}");
+    let precedents = format!("a/{file} b/{file}");
     let mut own: Option<&str> = None;
     let mut others: Vec<String> = vec![];
     for part in diff.split("diff --git ").skip(1) {
@@ -301,18 +303,18 @@ pub fn refused(diff: &str, link: &str) -> Option<String> {
         if header == precedents {
             own = Some(part);
         } else {
-            let file = header.rsplit_once(" b/").map_or(header, |(_, to)| to);
-            others.push(format!("`{file}`"));
+            let other = header.rsplit_once(" b/").map_or(header, |(_, to)| to);
+            others.push(format!("`{other}`"));
         }
     }
     if !others.is_empty() {
         return Some(format!(
-            "it changes {}: a proposal changes `{PRECEDENTS}` and nothing else",
+            "it changes {}: a proposal changes `{file}` and nothing else",
             others.join(", ")
         ));
     }
     let Some(part) = own else {
-        return Some(format!("it changes nothing: a proposal appends one entry to `{PRECEDENTS}`"));
+        return Some(format!("it changes nothing: a proposal appends one entry to `{file}`"));
     };
     let lines = hunk_lines(part);
     let mut added: Vec<&str> = vec![];
@@ -320,7 +322,7 @@ pub fn refused(diff: &str, link: &str) -> Option<String> {
         match line {
             Line::Removed(text) => {
                 return Some(format!(
-                    "it removes or rewrites a line of `{PRECEDENTS}` (`{}`): a proposal only \
+                    "it removes or rewrites a line of `{file}` (`{}`): a proposal only \
                      appends",
                     text.trim()
                 ));
@@ -331,13 +333,13 @@ pub fn refused(diff: &str, link: &str) -> Option<String> {
     }
     let [entry] = added.as_slice() else {
         return Some(format!(
-            "it adds {} lines to `{PRECEDENTS}`: a proposal appends one entry, and {form}",
+            "it adds {} lines to `{file}`: a proposal appends one entry, and {form}",
             added.len()
         ));
     };
     if lines.last() != Some(&Line::Added(entry)) {
         return Some(format!(
-            "it adds its line above the end of `{PRECEDENTS}`: a proposal appends its entry"
+            "it adds its line above the end of `{file}`: a proposal appends its entry"
         ));
     }
     match Entry::read(entry) {
@@ -366,6 +368,7 @@ mod tests {
     use crate::harness::Harness;
     use crate::lease::LEASE;
     use crate::position::Declared;
+    use crate::team::PRECEDENTS;
 
     const LINK: &str = "https://github.com/acme/app/issues/7#issuecomment-2001";
 
@@ -436,10 +439,10 @@ mod tests {
 
     #[test]
     fn a_ruling_proposed_is_marked_on_its_issue() {
-        let comment = proposed_comment(ruling(7, 2001), "lead", "acme/team");
+        let comment = proposed_comment(ruling(7, 2001), "lead", "acme/team", PRECEDENTS);
         assert!(comment.starts_with("<!--convoy:precedent-proposed ruling=2001-->\n"), "{comment}");
         assert!(comment.contains("the branch `convoy-precedent-7-c2001`"), "{comment}");
-        let other = proposed_comment(ruling(7, 2009), "lead", "acme/team");
+        let other = proposed_comment(ruling(7, 2009), "lead", "acme/team", PRECEDENTS);
         let bodies = [comment.as_str(), "chat", "<!--convoy:stage stage=x-->", other.as_str()];
         assert_eq!(proposed(bodies), [2001, 2009]);
         // A marker quoted further down a comment marks nothing.
@@ -531,26 +534,33 @@ mod tests {
             "@@ -1,2 +1,3 @@\n # Precedents\n - Old. **When:** x. (u)\n+{}\n",
             entry()
         ));
-        assert_eq!(refused(&appended, LINK), None);
+        assert_eq!(refused(&appended, LINK, PRECEDENTS), None);
         // To a file that ended in no newline: its last line is rewritten, and reads as kept.
         let unended = diff(&format!(
             "@@ -1 +1,2 @@\n-# Precedents\n\\ No newline at end of file\n+# Precedents\n+{}\n",
             entry()
         ));
-        assert_eq!(refused(&unended, LINK), None);
+        assert_eq!(refused(&unended, LINK, PRECEDENTS), None);
         // The file's first line: the team kept none before.
         let created = format!(
             "diff --git a/precedents.md b/precedents.md\nnew file mode 100644\nindex \
              0000000..5d6e7f8\n--- /dev/null\n+++ b/precedents.md\n@@ -0,0 +1 @@\n+{}\n",
             entry()
         );
-        assert_eq!(refused(&created, LINK), None);
+        assert_eq!(refused(&created, LINK, PRECEDENTS), None);
+        // A team in a subdirectory of its repo keeps its precedents there,
+        // and the file at the repo's root is not its own.
+        let under = appended.replace("precedents.md", "teams/night/precedents.md");
+        assert_eq!(refused(&under, LINK, "teams/night/precedents.md"), None);
+        let why = refused(&appended, LINK, "teams/night/precedents.md").expect("refused");
+        assert!(why.starts_with("it changes `precedents.md`: a proposal changes"), "{why}");
+        assert!(why.contains("`teams/night/precedents.md` and nothing else"), "{why}");
     }
 
     #[test]
     fn a_pr_that_changes_anything_else_or_does_anything_but_append_one_entry_is_refused() {
         let entry = entry();
-        let why = |diff: &str| refused(diff, LINK).expect("refused");
+        let why = |diff: &str| refused(diff, LINK, PRECEDENTS).expect("refused");
         let beside = format!(
             "{}diff --git a/team.md b/team.md\nindex 1..2 100644\n--- a/team.md\n+++ \
              b/team.md\n@@ -1 +1,2 @@\n roles:\n+  x: a/b\n",

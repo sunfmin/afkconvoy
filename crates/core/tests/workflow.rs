@@ -5,9 +5,10 @@
 
 use std::fmt::Write as _;
 
+use afkconvoy_core::config::RepoDir;
 use afkconvoy_core::position::{Breaker, Declared, Place, Position};
 use afkconvoy_core::team::{
-    DONE, Fault, File, LAND, Pass, RoleRepo, Sources, TEAM_FILE, Team, Workflow, load,
+    DONE, Fault, File, LAND, Pass, RoleDir, Sources, TEAM_FILE, Team, Workflow, load,
 };
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
@@ -253,13 +254,17 @@ fn team_of(definition: &Definition) -> Result<Team, Vec<Fault>> {
     };
     let repo = |name: &str, skills: &[&str]| {
         let skills = skills.iter().map(|skill| skill.to_string()).collect();
-        (name.to_string(), Ok(RoleRepo { commit: format!("{name}@1"), skills }))
+        (
+            RepoDir::read(name).unwrap(),
+            Ok(RoleDir { commit: format!("{name}@1"), skills, ..RoleDir::default() }),
+        )
     };
     load(&Sources {
         team: file(TEAM_FILE, "roles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n"),
         workflows: vec![file(&format!("workflows/{NAME}.md"), &definition.yaml())],
         patrols: vec![],
-        repos: vec![
+        at: None,
+        roles: vec![
             repo("acme/dev", &["plan", "implement", "land"]),
             repo("acme/reviewer", &["review", "rule"]),
         ],
