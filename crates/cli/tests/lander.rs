@@ -51,10 +51,22 @@ const STAGES: [(&str, &str); 4] =
 /// four stages, the last of which passes to the landing train.
 fn bound() -> World {
     let world = World::new();
-    world.repo("acme/planner", &[(".claude/skills/plan/SKILL.md", "plan\n")]);
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
-    world.repo("acme/lander", &[(".claude/skills/join/SKILL.md", "join\n")]);
+    world.repo(
+        "acme/planner",
+        &[(".claude/skills/plan/SKILL.md", "---\nname: plan\ndescription: plan\n---\n")],
+    );
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
+    world.repo(
+        "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
+    world.repo(
+        "acme/lander",
+        &[(".claude/skills/join/SKILL.md", "---\nname: join\ndescription: join\n---\n")],
+    );
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     let config = "```yaml\nbase_branch: main\ngate_command: \"true\"\nteam: acme/team\n\
                   concurrency: 2\n```\n";

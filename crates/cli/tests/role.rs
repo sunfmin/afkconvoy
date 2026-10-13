@@ -42,13 +42,25 @@ const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam:
 const STOCK: &str = r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}'"#;
 
 /// A world whose repo is bound to a team of two roles and two workflows.
+/// The file of the skill `implement`.
+const IMPLEMENT: &str = "---\nname: implement\ndescription: build\n---\n";
+
 fn bound() -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
-        &[("CLAUDE.md", "the rules of a dev\n"), (".claude/skills/implement/SKILL.md", "build\n")],
+        &[
+            ("CLAUDE.md", "the rules of a dev\n"),
+            (
+                ".claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+        ],
     );
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
     world.repo(
         "acme/team",
         &[("team.md", TEAM), ("workflows/feature.md", FEATURE), ("workflows/audit.md", AUDIT)],
@@ -642,17 +654,23 @@ fn one_repo() -> World {
     let repo = world.root.join("github/acme/team");
     for (file, text) in [
         ("CLAUDE.md", "the rules of the team\n"),
-        (".claude/skills/release/SKILL.md", "a human's\n"),
+        (".claude/skills/release/SKILL.md", "---\nname: release\ndescription: a human's\n---\n"),
         ("precedents.md", "# Precedents\n"),
         ("patrols/sweep.md", "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 2\n```\n"),
         ("docs/notes.md", "whatever else\n"),
         ("roles/README.md", "the roles\n"),
         ("roles/dev/CLAUDE.md", "the rules of a dev\n"),
-        ("roles/dev/.claude/skills/implement/SKILL.md", "build\n"),
+        (
+            "roles/dev/.claude/skills/implement/SKILL.md",
+            "---\nname: implement\ndescription: build\n---\n",
+        ),
         ("roles/dev/.claude/settings.json", hook),
         ("roles/dev/.claude/hooks/limit.sh", "echo \"a limit of $(cat CLAUDE.md)\"\n"),
         ("roles/tester/CLAUDE.md", "the rules of a tester\n"),
-        ("roles/tester/.claude/skills/implement/SKILL.md", "test\n"),
+        (
+            "roles/tester/.claude/skills/implement/SKILL.md",
+            "---\nname: implement\ndescription: test\n---\n",
+        ),
     ] {
         write(&repo, file, text);
     }
@@ -786,7 +804,7 @@ fn a_team_and_seven_roles_in_one_repo_are_loaded_with_one_fetch() {
         // Each way to name a directory of the team's own repo.
         let named = if at % 2 == 0 { "./roles" } else { "acme/team/roles" };
         team.push_str(&format!("  {name}: {named}/{name}\n"));
-        write(&repo, &format!("roles/{name}/.claude/skills/implement/SKILL.md"), "build\n");
+        write(&repo, &format!("roles/{name}/.claude/skills/implement/SKILL.md"), IMPLEMENT);
     }
     commit(&repo, "team.md", &format!("{team}```\n"));
     world.gh_calls();

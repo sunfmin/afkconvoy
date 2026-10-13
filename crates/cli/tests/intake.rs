@@ -23,7 +23,10 @@ stages:
 /// `fix`, and may hold `limit` open issues taken in by workers.
 fn bound(limit: u64) -> World {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
     let workflows = [("workflows/feature.md", FEATURE), ("workflows/fix.md", FEATURE)];
     world.repo("acme/team", &[&[("team.md", TEAM)][..], &workflows].concat());
     let config = format!(

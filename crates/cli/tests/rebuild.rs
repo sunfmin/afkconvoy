@@ -27,8 +27,14 @@ const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam:
 /// and whose startup probe passed at 1000.
 fn bound() -> World {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
+    world.repo(
+        "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     write(&world.clone, "docs/agents/afkconvoy.md", CONFIG);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);

@@ -31,8 +31,14 @@ const KEPT: &str = "# Precedents\n\n- Keep v1 schemas. **When:** a migration is 
 /// its `team.md` — and runs four workers at once.
 fn bound(precedents: &str) -> World {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
-    world.repo("acme/clerk", &[(".claude/skills/propose/SKILL.md", "propose\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
+    world.repo(
+        "acme/clerk",
+        &[(".claude/skills/propose/SKILL.md", "---\nname: propose\ndescription: propose\n---\n")],
+    );
     let team = format!("```yaml\n{ROLES}{precedents}```\n");
     world.repo(
         "acme/team",
@@ -311,9 +317,17 @@ fn a_proposal_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let world = proposing(3);
     let repo = team(&world);
     write(&repo, "CLAUDE.md", "the rules of the team\n");
-    write(&repo, ".claude/skills/release/SKILL.md", "a human's\n");
+    write(
+        &repo,
+        ".claude/skills/release/SKILL.md",
+        "---\nname: release\ndescription: a human's\n---\n",
+    );
     write(&repo, "roles/clerk/CLAUDE.md", "the rules of a clerk\n");
-    write(&repo, "roles/clerk/.claude/skills/propose/SKILL.md", "propose\n");
+    write(
+        &repo,
+        "roles/clerk/.claude/skills/propose/SKILL.md",
+        "---\nname: propose\ndescription: propose\n---\n",
+    );
     let roles = ROLES.replace("acme/clerk", "./roles/clerk");
     let file =
         format!("```yaml\n{roles}precedents: {{ by: clerk, do: propose, max_open: 3 }}\n```\n");

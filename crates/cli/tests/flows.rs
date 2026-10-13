@@ -38,7 +38,10 @@ land: { by: dev, do: implement }
 /// A world whose repo is bound to a team with the workflows `fix` and `note`.
 fn bound() -> World {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
     let files = [("team.md", TEAM), ("workflows/fix.md", FIX), ("workflows/note.md", NOTE)];
     world.repo("acme/team", &files);
     let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\

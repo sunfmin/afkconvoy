@@ -28,8 +28,8 @@ const AUDIT: &str = "```yaml\nby: dev\ndo: sweep\nevery: 2d\nmodel: opus\nmax_op
 fn bound(patrols: &str) -> World {
     let world = World::new();
     let skills = [
-        (".claude/skills/implement/SKILL.md", "build\n"),
-        (".claude/skills/sweep/SKILL.md", "s\n"),
+        (".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n"),
+        (".claude/skills/sweep/SKILL.md", "---\nname: sweep\ndescription: s\n---\n"),
     ];
     world.repo("acme/dev", &skills);
     world.repo(
@@ -195,7 +195,10 @@ fn check_reads_patrol_files_and_holds_the_repos_patrols_against_them() {
 #[test]
 fn check_reports_every_fault_of_a_patrol_file() {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/sweep/SKILL.md", "s\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/sweep/SKILL.md", "---\nname: sweep\ndescription: s\n---\n")],
+    );
     let dir = world.repo(
         "acme/team",
         &[
@@ -294,10 +297,22 @@ fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let world = bound("[sweep]");
     let repo = world.root.join("github/acme/team");
     write(&repo, "CLAUDE.md", "the rules of the team\n");
-    write(&repo, ".claude/skills/release/SKILL.md", "a human's\n");
+    write(
+        &repo,
+        ".claude/skills/release/SKILL.md",
+        "---\nname: release\ndescription: a human's\n---\n",
+    );
     write(&repo, "roles/dev/CLAUDE.md", "the rules of a dev\n");
-    write(&repo, "roles/dev/.claude/skills/sweep/SKILL.md", "s\n");
-    write(&repo, "roles/dev/.claude/skills/implement/SKILL.md", "build\n");
+    write(
+        &repo,
+        "roles/dev/.claude/skills/sweep/SKILL.md",
+        "---\nname: sweep\ndescription: s\n---\n",
+    );
+    write(
+        &repo,
+        "roles/dev/.claude/skills/implement/SKILL.md",
+        "---\nname: implement\ndescription: build\n---\n",
+    );
     let head = commit(&repo, "team.md", "```yaml\nroles:\n  dev: ./roles/dev\n```\n");
     world.orca_calls();
 

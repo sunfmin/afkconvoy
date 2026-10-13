@@ -488,6 +488,40 @@ fn every_key_the_loader_knows_is_described_in_the_topic_of_its_file_and_in_no_ot
     }
 }
 
+/// The form of a skill's file is said in one topic, which the texts an agent
+/// reads on its way to writing a skill name: its path, the keys `check` holds
+/// it to, and an example `check` accepts.
+#[test]
+fn the_skill_file_topic_says_the_form_check_holds_a_skill_s_file_to() {
+    use afkconvoy_core::team::{Node, SKILL_FILE, SKILL_KEYS, SKILLS, malformed};
+    let topic = asked(&["help", "skill-file"]);
+    assert!(topic.contains(&format!("{SKILLS}/review/{SKILL_FILE}")), "{topic}");
+    for key in SKILL_KEYS {
+        let row = format!("      {key}  ");
+        assert!(topic.lines().any(|line| line.starts_with(&row)), "no row for the key {key}");
+    }
+    // The example it shows is a skill's file: the one of the skill `review`.
+    let shown = "      ---";
+    let example: Vec<&str> = topic
+        .lines()
+        .skip_while(|line| *line != shown)
+        .skip(1)
+        .take_while(|l| *l != shown)
+        .collect();
+    assert!(example.len() >= SKILL_KEYS.len(), "{topic}");
+    let read: Node = serde_yaml::from_str(&example.join("\n")).unwrap();
+    assert_eq!(malformed("review", &Ok(read.clone())), None);
+    assert!(malformed("rule", &Ok(read)).is_some());
+    // Whoever is about to write a skill is sent to it.
+    let named = "`afkconvoy help skill-file`";
+    for from in
+        [&["help", "roles"][..], &["help", "team"], &["scaffold", "--help"], &["check", "--help"]]
+    {
+        assert!(asked(from).contains(named), "{from:?} does not name {named}");
+    }
+    assert!(guide(&help("--help")).contains(named));
+}
+
 /// `--help` and `check --help` name the topics where they held the
 /// description of a team's files, and hold none of it.
 #[test]

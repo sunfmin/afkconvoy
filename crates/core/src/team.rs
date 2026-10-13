@@ -16,6 +16,11 @@ pub const WORKFLOWS: &str = "workflows";
 pub const PATROLS: &str = "patrols";
 /// The directory of a role's repo that holds one entry per skill.
 pub const SKILLS: &str = ".claude/skills";
+/// The file of a skill's directory that says what the skill is.
+pub const SKILL_FILE: &str = "SKILL.md";
+/// The keys of a skill's frontmatter every harness reads: what `skill-file`,
+/// the help topic, must name.
+pub const SKILL_KEYS: [&str; 2] = ["name", "description"];
 /// The file of a team's repo that holds its precedents.
 pub const PRECEDENTS: &str = "precedents.md";
 /// A directory's rules: the file every harness loads them from, so that they
@@ -175,6 +180,35 @@ pub struct RoleDir {
     /// The skills it holds where a harness finds them by itself
     /// (`Harness::skills`), for each harness it holds such a directory for.
     pub own_skills: Vec<(Harness, Vec<String>)>,
+    /// Each of its skills whose file is not in the form of a skill's file,
+    /// with why (`malformed`).
+    pub malformed: Vec<(String, String)>,
+}
+
+/// Why the file of the skill `skill` is not in the form every harness reads
+/// a skill in, `frontmatter` being the yaml it opens with, or why it has
+/// none that can be read. `None`: it holds a `name` that is the skill's — its
+/// directory's, and what a `do` says — and a `description`. Any other key is
+/// a harness's own.
+pub fn malformed(skill: &str, frontmatter: &Result<Node, String>) -> Option<String> {
+    let entries = match frontmatter {
+        Ok(Node::Map(entries)) => entries,
+        Ok(other) => return Some(format!("opens with frontmatter that is {}", kind(other))),
+        Err(why) => return Some(why.clone()),
+    };
+    match get(entries, "name") {
+        Some(Node::Text(name)) if name == skill => {}
+        Some(Node::Text(name)) => {
+            return Some(format!("says its `name` is `{name}`, which its directory's is not"));
+        }
+        Some(other) => return Some(format!("says its `name` is {}", kind(other))),
+        None => return Some("says no `name`".to_string()),
+    }
+    match get(entries, "description") {
+        Some(Node::Text(description)) if !description.trim().is_empty() => None,
+        Some(Node::Text(_)) | None => Some("says no `description`".to_string()),
+        Some(other) => Some(format!("says its `description` is {}", kind(other))),
+    }
 }
 
 /// Everything read of a team, and nothing yet checked.
@@ -315,7 +349,8 @@ impl Team {
     /// which models it knows `listed` them (`Harness::models`). A worker on
     /// a harness its role holds no limits for, while the role holds limits
     /// for another, is a fault: a harness is never changed into fewer limits
-    /// unseen (docs/adr/0013). So is a model its harness does not list,
+    /// unseen (docs/adr/0013). So is a skill a worker is asked to perform
+    /// whose file is not in the form every harness reads one in, and a model its harness does not list,
     /// where the stage or the patrol names that harness; one that takes the
     /// default is the repo's to answer for, and is handed back.
     pub fn held(&self, default: Harness, listed: &[(Harness, Vec<String>)]) -> Held {
@@ -324,6 +359,13 @@ impl Team {
             let harness = run.named.unwrap_or(default);
             if let Some(note) = run.unfound(harness) {
                 held.notes.push(note);
+            }
+            if let Some(problem) = run.malformed() {
+                held.faults.push(Fault {
+                    file: run.file.clone(),
+                    key: run.skill_key.clone(),
+                    problem,
+                });
             }
             if let Some(problem) = run.unlimited(harness) {
                 held.faults.push(Fault { file: run.file.clone(), key: run.harness_key, problem });
@@ -368,6 +410,7 @@ passed as written, and is its harness's own name for it",
                 file: format!("{PATROLS}/{}.md", patrol.name),
                 harness_key: HARNESS_KEY.to_string(),
                 model_key: MODEL_KEY.to_string(),
+                skill_key: "do".to_string(),
                 by: format!("the patrol `{}`", patrol.name),
                 role: self.role_of(&patrol.work).clone(),
                 skill: patrol.work.skill.clone(),
@@ -380,6 +423,7 @@ passed as written, and is its harness's own name for it",
                 file: TEAM_FILE.to_string(),
                 harness_key: under(PRECEDENTS_KEY, "by"),
                 model_key: String::new(),
+                skill_key: under(PRECEDENTS_KEY, "do"),
                 by: "the proposal of a precedent".to_string(),
                 role: self.role_of(&precedents.work).clone(),
                 skill: precedents.work.skill.clone(),
@@ -417,6 +461,8 @@ struct Run {
     /// that always runs on the default, the key that names its role.
     harness_key: String,
     model_key: String,
+    /// The key its skill is written at.
+    skill_key: String,
     /// What calls for it, in words.
     by: String,
     role: Role,
@@ -459,6 +505,20 @@ that harness's own form, or run this on a harness the role holds limits for",
 }
 
 impl Run {
+    /// Why the skill it is asked to perform is not sure to be shown to a
+    /// worker: its file is not in the form every harness reads a skill in
+    /// (`malformed`).
+    fn malformed(&self) -> Option<String> {
+        let role = &self.role;
+        let (_, why) = role.malformed.iter().find(|(skill, _)| *skill == self.skill)?;
+        Some(format!(
+            "`{}`, the skill {} has the role `{}` perform, has a file no harness is sure to show \
+a worker: {}/{SKILLS}/{}/{SKILL_FILE} {why}. A skill's file opens with frontmatter that holds \
+`{}`, the name of its directory, and `{}`: `afkconvoy help skill-file` says its form",
+            self.skill, self.by, role.name, role.dir, self.skill, SKILL_KEYS[0], SKILL_KEYS[1]
+        ))
+    }
+
     /// Why a worker of it on `harness` would not be shown the skill it is
     /// asked to perform: its role holds a directory `harness` finds skills
     /// in by itself, which the fleet leaves as it is, and the skill is not
@@ -515,6 +575,7 @@ fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
                 file: file.clone(),
                 harness_key: under(&at, HARNESS_KEY),
                 model_key: under(&at, MODEL_KEY),
+                skill_key: under(&at, "do"),
                 by: by.clone(),
                 role: team.role_of(work).clone(),
                 skill: work.skill.clone(),
@@ -527,6 +588,7 @@ fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
                 file: file.clone(),
                 harness_key: under(&under(&at, "escalate"), "to"),
                 model_key: String::new(),
+                skill_key: under(&under(&at, "escalate"), "do"),
                 by: format!("the consult of {by}"),
                 role: team.role_of(consult).clone(),
                 skill: consult.skill.clone(),
@@ -540,6 +602,7 @@ fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
             file,
             harness_key: under(LAND, "by"),
             model_key: String::new(),
+            skill_key: under(LAND, "do"),
             by: format!("the landing of the workflow `{}`", workflow.name),
             role: team.role_of(land).clone(),
             skill: land.skill.clone(),
@@ -582,6 +645,9 @@ pub struct Role {
     /// harness it holds such a directory for (`RoleDir::own_skills`): what a
     /// worker on that harness is shown, in place of the role's skills.
     pub own_skills: Vec<(Harness, Vec<String>)>,
+    /// Each of its skills whose file is not in the form of a skill's file,
+    /// with why (`RoleDir::malformed`).
+    pub malformed: Vec<(String, String)>,
     /// Why its repo was not read, when the read got no answer
     /// (`Unread::Unreached`): it then has no commit, and every skill a
     /// workflow or a patrol names of it is taken as it is written. No worker
@@ -1278,6 +1344,7 @@ of its own is added to them, and never stands in their place",
                 above: read.above.clone(),
                 limits: read.limits.clone(),
                 own_skills: read.own_skills.clone(),
+                malformed: read.malformed.clone(),
                 unreached: None,
             }),
             Some((_, Err(Unread::Refused(why)))) => {
@@ -1291,6 +1358,7 @@ of its own is added to them, and never stands in their place",
                 above: vec![],
                 limits: vec![],
                 own_skills: vec![],
+                malformed: vec![],
                 unreached: Some(why.clone()),
             }),
             None => report.fault(&key, format!("{dir} was not read")),
@@ -2243,6 +2311,50 @@ land: { by: dev, do: land }
         assert_eq!(noted.len(), 3, "{noted:?}");
         assert!(noted[0].starts_with("the stage `a` of the workflow `feature` runs on"));
         assert!(noted[2].starts_with("the patrol `sweep` runs on `codex`"), "{}", noted[2]);
+    }
+
+    #[test]
+    fn a_skill_s_file_holds_its_directory_s_name_and_a_description() {
+        let why =
+            |yaml: &str| malformed("plan", &serde_yaml::from_str(yaml).map_err(|_| "no".into()));
+        assert_eq!(why("name: plan\ndescription: Plan it.\nallowed-tools: Read\n"), None);
+        for (yaml, said) in [
+            ("description: Plan it.\n", "says no `name`"),
+            (
+                "name: draft\ndescription: Plan it.\n",
+                "says its `name` is `draft`, which its directory's is not",
+            ),
+            ("name: 7\ndescription: Plan it.\n", "says its `name` is a number"),
+            ("name: plan\n", "says no `description`"),
+            ("name: plan\ndescription: ' '\n", "says no `description`"),
+            ("name: plan\ndescription: [a]\n", "says its `description` is a list"),
+            ("- plan\n", "opens with frontmatter that is a list"),
+        ] {
+            assert_eq!(why(yaml).as_deref(), Some(said), "{yaml}");
+        }
+        assert_eq!(malformed("plan", &Err("is not there".into())).as_deref(), Some("is not there"));
+    }
+
+    #[test]
+    fn a_skill_whose_file_is_malformed_is_a_fault_of_each_do_that_names_it() {
+        let workflow = landed("", "{ by: reviewer, do: rule }");
+        let patrol = "by: dev\ndo: plan\nevery: 6h\nmax_open: 3\n";
+        let mut sources = sources(TEAM, &[("workflows/feature.md", &workflow)]);
+        sources.patrols = vec![file("patrols/sweep.md", patrol)];
+        // One no `do` names is nobody's fault.
+        let malformed = [("plan", "says no `name`"), ("unused", "says no `name`")];
+        sources.roles[DEV].1.as_mut().unwrap().malformed =
+            malformed.iter().map(|(skill, why)| (skill.to_string(), why.to_string())).collect();
+        let faults = load(&sources).unwrap().held(Harness::ClaudeCode, &[]).faults;
+        let stages = ["workflows/feature.md: stages[0].do", "workflows/feature.md: stages[1].do"];
+        assert_eq!(places(&faults), [stages[0], stages[1], "patrols/sweep.md: do"]);
+        assert_eq!(
+            faults[2].problem,
+            "`plan`, the skill the patrol `sweep` has the role `dev` perform, has a file no \
+             harness is sure to show a worker: acme/dev/.claude/skills/plan/SKILL.md says no \
+             `name`. A skill's file opens with frontmatter that holds `name`, the name of its \
+             directory, and `description`: `afkconvoy help skill-file` says its form"
+        );
     }
 
     #[test]

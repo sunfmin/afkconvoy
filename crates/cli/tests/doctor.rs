@@ -368,8 +368,14 @@ stages:
 /// it, and the checkouts of the team's repo and of the role `dev`'s.
 fn bound() -> (World, PathBuf, PathBuf) {
     let world = World::new();
-    let dev = world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    let dev = world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
+    world.repo(
+        "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
     let team = world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
     write(&world.clone, "docs/agents/afkconvoy.md", config);
@@ -421,8 +427,14 @@ fn in_a_repo_of_several_roles_a_role_moved_only_when_its_own_directory_changed()
         &[
             ("team.md", roles),
             ("workflows/fix.md", &fix),
-            ("roles/fellow/.claude/skills/implement/SKILL.md", "build\n"),
-            ("roles/attending/.claude/skills/review/SKILL.md", "review\n"),
+            (
+                "roles/fellow/.claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+            (
+                "roles/attending/.claude/skills/review/SKILL.md",
+                "---\nname: review\ndescription: review\n---\n",
+            ),
         ],
     );
     let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/hospital\n```\n";

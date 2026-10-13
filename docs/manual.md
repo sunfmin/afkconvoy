@@ -7,6 +7,7 @@
 - [`afkconvoy help concepts`](#afkconvoy-help-concepts) — one issue from intake to landing, and the four things that carry it
 - [`afkconvoy help team`](#afkconvoy-help-team) — a team's directory, its file, how it names a role, binding a repo
 - [`afkconvoy help roles`](#afkconvoy-help-roles) — what a role is, what goes where in one, and the four kinds of text
+- [`afkconvoy help skill-file`](#afkconvoy-help-skill-file) — a skill's file: where it is, its frontmatter, what `check` holds it to
 - [`afkconvoy help workflows`](#afkconvoy-help-workflows) — stages, verdicts, rework, a consult, a landing: a workflow's file
 - [`afkconvoy help patrols`](#afkconvoy-help-patrols) — a role run on a schedule: a patrol's file, intake, the fleet lock
 - [`afkconvoy help example`](#afkconvoy-help-example) — the team `scaffold --example hospital` writes, read file by file
@@ -200,13 +201,13 @@ another role's nor is inside one. It holds:
     .pi/extensions/                    its limits for pi: extensions
     .codex/hooks.json                  its limits for codex: hooks
 
-None of them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in
-the directory of the role beside it. The rules and the skills are written once, and
-every harness works under them: pi reads `CLAUDE.md` from the directory it starts in,
-Codex does once the fleet tells it to, the fleet names `.claude/skills/` to pi and links
-them where Codex looks (`afkconvoy run --help`). The limits — what the role may never do
-— are written once for each harness the role runs on, in that harness's own form: pi and
-Codex run no hook of `.claude/settings.json`.
+Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
+an entry of `.claude/skills/` in the directory of the role beside it. The rules and the
+skills are written once, and every harness works under them: pi reads `CLAUDE.md` from
+the directory it starts in, Codex does once the fleet tells it to, the fleet names
+`.claude/skills/` to pi and links them where Codex looks (`afkconvoy run --help`). The
+limits — what the role may never do — are written once for each harness the role runs
+on, in that harness's own form: pi and Codex run no hook of `.claude/settings.json`.
 
 A worker is given its role's directory alone, and nothing else of its repo: a
 `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
@@ -285,7 +286,8 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 ````text
 What a role is, what goes where in one, and what makes one good. The files of a
 role, path by path and harness by harness, are in `afkconvoy help team`; a
-skeleton of one is written by `afkconvoy scaffold role`.
+skeleton of one is written by `afkconvoy scaffold role`. What a skill's file holds —
+its path, its frontmatter, its keys — is in `afkconvoy help skill-file`.
 ````
 
 ### WHAT A ROLE IS
@@ -299,6 +301,7 @@ host. The directory holds three things:
 
     its rules     what a worker in it always works under, whatever it is asked
     its skills    each one thing it can be asked to perform; a stage's `do` names one
+                  (`afkconvoy help skill-file`)
     its limits    what it may never do, in the form its harness enforces: hooks for
                   Claude Code and for Codex, extensions for pi
 
@@ -393,6 +396,82 @@ each other are a defect of the files, and nothing says which holds.
   once you have read what the first role produces. `afkconvoy rehearse` tries a
   workflow out with no worker started, and `afkconvoy check` holds every edit to
   what the fleet will accept.
+````
+
+
+## afkconvoy help skill-file
+
+````text
+What a skill's file holds: where it is, what it opens with, and what `afkconvoy check`
+holds it to. What belongs in a skill and what in a role's rules or its limits is in
+`afkconvoy help roles`; the other files of a role are in `afkconvoy help team`.
+````
+
+### WHERE IT IS
+
+````text
+A skill is a directory of its role's `.claude/skills/`, and its file is the `SKILL.md`
+there. The directory's name is the skill's: it is what a `do` says — a stage's, a
+consult's, a landing's, a patrol's — and what the file's `name` says. A role with
+the skills `review` and `rule` holds:
+
+    .claude/skills/review/SKILL.md
+    .claude/skills/rule/SKILL.md
+
+The skills are written once, there, whatever harness a stage runs the role on.
+````
+
+### WHAT IT HOLDS
+
+````text
+    ---
+    name: review
+    description: Review the code an issue's PR holds, and pass or reject it. Use
+      when the brief you were started with names `review` as the skill to perform.
+    ---
+
+    # review
+
+    1. Read the issue, every comment on it, and the diff of its PR.
+    2. Reject what blocks; say what is only a note, and pass on notes alone.
+    3. End as the brief you were started with says to.
+
+The file opens with frontmatter: a first line `---`, yaml, and a line `---`. Every
+harness reads two keys of it, and both must be there:
+
+    name           the skill's name: the name of its directory, letter for letter
+    description    what the skill does and when to use it, in a sentence or two. A
+                   harness shows a worker this and not the file, until the worker
+                   loads the skill: say there that the brief names it
+
+Any other key is one harness's own, and the fleet reads none. What stands under the
+frontmatter is the skill: markdown, in whatever form says how the work is done
+well. Other files of the directory are the skill's to name and a worker's to open.
+````
+
+### WHAT CHECK HOLDS IT TO
+
+````text
+`afkconvoy check` reads the `SKILL.md` of every skill a `do` names, and a fault at
+that `do` is one of:
+
+    the skill's directory holds no `SKILL.md`
+    the file does not open with frontmatter, or its yaml cannot be read
+    its `name` is missing, or is not the name of its directory
+    its `description` is missing or empty
+
+A skill no `do` names is not read: a role may hold skills by other authors, which a
+worker loads when its own skill says to. What the file says under its frontmatter
+is nobody's to check but yours: `afkconvoy help roles` says what makes it good.
+````
+
+### SEE ALSO
+
+````text
+`afkconvoy help roles`        what goes in a skill, and what in rules and limits
+`afkconvoy help team`         every file of a role, path by path
+`afkconvoy scaffold --help`   a role's skeleton, with one example skill
+`afkconvoy check --help`      every fault, and its key
 ````
 
 

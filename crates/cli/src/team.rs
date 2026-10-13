@@ -8,8 +8,8 @@ use std::path::{Component, Path, PathBuf};
 use afkconvoy_core::config::{RepoDir, RepoName};
 use afkconvoy_core::harness::{Harness, Held};
 use afkconvoy_core::team::{
-    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RULES, RoleDir, SKILLS, Sources,
-    Stage, TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
+    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RULES, RoleDir, SKILL_FILE, SKILLS,
+    Sources, Stage, TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -126,6 +126,30 @@ impl Tree {
         };
         File { path: path.to_string(), prose, yaml }
     }
+}
+
+/// The yaml a skill's file `markdown` opens with: what stands between a
+/// first line `---` and the next such line.
+fn frontmatter(markdown: &str) -> Result<Node, String> {
+    let mut lines = markdown.lines();
+    let mut block = String::new();
+    let mut closed = false;
+    if lines.next().map(str::trim_end) == Some("---") {
+        for line in lines {
+            if line.trim_end() == "---" {
+                closed = true;
+                break;
+            }
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    if !closed {
+        return Err("does not open with frontmatter: a first line `---`, yaml, and a line `---`"
+            .to_string());
+    }
+    serde_yaml::from_str(&block)
+        .map_err(|error| format!("opens with frontmatter that cannot be read: {error}"))
 }
 
 fn yaml(markdown: &str) -> Result<Node, String> {
@@ -493,6 +517,18 @@ fn role_dir(copy: &Copy, dir: &RepoDir, team: Option<&RepoDir>) -> Result<RoleDi
             leaving_links(&root, Path::new(""), &mut links)?;
             links.sort();
         }
+        let mut malformed = vec![];
+        for skill in &skills {
+            let file =
+                Tree { dir: root.clone() }.read(&format!("{SKILLS}/{skill}/{SKILL_FILE}"))?;
+            let opens = match &file {
+                Some(markdown) => frontmatter(markdown),
+                None => Err("is not there, or is no file".to_string()),
+            };
+            if let Some(why) = team::malformed(skill, &opens) {
+                malformed.push((skill.clone(), why));
+            }
+        }
         let held = Tree { dir: root.clone() }.list("")?;
         let in_place = Harness::ALL.into_iter().flat_map(|harness| {
             let before = harness.before_the_rules().iter();
@@ -507,6 +543,7 @@ fn role_dir(copy: &Copy, dir: &RepoDir, team: Option<&RepoDir>) -> Result<RoleDi
             limits: limits(&root)?,
             in_place: in_place.collect(),
             own_skills: own_skills(&root)?,
+            malformed,
         })
     };
     read().map_err(|error: anyhow::Error| Unread::Refused(format!("{error:#}")))
@@ -805,5 +842,16 @@ mod tests {
         assert_eq!(yaml("stages: []").unwrap_err(), "has no ```yaml block");
         assert!(yaml("```yaml\nstages: [\n```\n").unwrap_err().contains("its yaml cannot be read"));
         assert_eq!(yaml("```yaml\n```\n"), Ok(Node::Null));
+    }
+
+    #[test]
+    fn a_skill_s_file_opens_with_its_frontmatter() {
+        let read = frontmatter("---\nname: plan\ndescription: a: b\n---\n\n# plan\n---\n");
+        assert!(read.unwrap_err().starts_with("opens with frontmatter that cannot be read: "));
+        let read = frontmatter("---\nname: plan\n---\n\n# plan\n---\nname: no\n").unwrap();
+        assert_eq!(read, Node::Map(vec![("name".into(), Node::Text("plan".into()))]));
+        for none in ["", "# plan\n---\nname: plan\n---\n", "---\nname: plan\n"] {
+            assert!(frontmatter(none).unwrap_err().starts_with("does not open with frontmatter"));
+        }
     }
 }

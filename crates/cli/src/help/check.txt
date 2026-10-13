@@ -14,8 +14,9 @@ WHAT IT READS AND WRITES
   It writes nothing but a copy the fleet has not got yet (below), and what this host
   keeps for pi and for Codex before each is asked a question (`afkconvoy run --help`).
   It reads a
-  team's files, and of each role's directory which skills it holds, which harnesses it
-  holds limits for, and whether a file of it would have a harness load other rules.
+  team's files, and of each role's directory which skills it holds and what each one's
+  `SKILL.md` opens with, which harnesses it holds limits for, and whether a file of it
+  would have a harness load other rules.
   What those files are, and every key of each: `afkconvoy help team`,
   `afkconvoy help workflows` and `afkconvoy help patrols`.
 
@@ -110,6 +111,13 @@ WHAT IT ANSWERS
   A team that loads is then held to its harnesses, and these are faults too, each with
   its file and key, all at once:
 
+  - A skill a worker is asked to perform whose file is not in the form every harness
+    reads a skill in: its directory holds no `SKILL.md`, or one that opens with no
+    frontmatter, or whose frontmatter says another `name` than the directory's, or no
+    `description`. The key is the `do` that names the skill — `stages[1].do`,
+    `stages[1].escalate.do`, `land.do`, a patrol's `do`, and `precedents.do` in
+    team.md — and each `do` that names it has the fault. The form is in
+    `afkconvoy help skill-file`. A skill no `do` names is not held to it.
   - A worker on a harness its role holds no limits for, while the role holds limits for
     another: the fault names what runs it, the role and both harnesses. Its key is the
     `harness` of the stage (`stages[1].harness`) or of the patrol, written there or
@@ -167,8 +175,8 @@ WHAT TRIPS YOU UP
     asked of the stock command `pi`. Which Codex knows is this host's too: the ones the
     Codex installed here was built with, whatever it has a login for. Run `check` on
     the host the fleet runs on.
-  - Only `check` holds a team to its harnesses: a tick loads the team and starts its
-    workers without asking again.
+  - Only `check` holds a team to its harnesses, and a skill's file to its form: a tick
+    loads the team and starts its workers without asking again.
   - Following `pass` alone from any stage must end. A loop back is made with `reject`,
     which the breakers count; a loop of passes nothing would ever stop.
   - A stage nothing leads to is reported only once every `pass` and `reject` names a
