@@ -177,6 +177,12 @@ pub fn escalated_from<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<S
     fields.get("flow").map(str::to_string)
 }
 
+/// Which of an issue's comments (oldest first) is its latest escalation's;
+/// `None` of an issue the fleet never escalated.
+pub fn escalated_at<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<usize> {
+    record::latest_marker(ESCALATION, bodies).map(|(at, _)| at)
+}
+
 /// Do an issue's comments (oldest first) already carry the escalation of the
 /// claim `claim`? An issue's earlier escalations were of other claims: each
 /// ended in a release, and the issue was claimed anew.

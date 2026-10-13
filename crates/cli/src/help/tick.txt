@@ -29,7 +29,9 @@ WHAT IT ANSWERS
                         outcome}. A step on the proposal of a precedent names the
                         issue that was ruled on. An `advance` that read a verdict and
                         left the issue at a stage names it: {do, issue, outcome,
-                        stage} — `land` once the last stage passed to the landing train
+                        stage} — `land` once the last stage passed to the landing train.
+                        A step that escalated its issue says why, in a few words:
+                        {do, issue, outcome, escalated}
     errors              each step that failed: {do, issue, error}, with `patrol` as
                         in `did`
     held                the claims the instance holds after the pass, a patrol's run

@@ -30,8 +30,8 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
-   "now", "locks"} — and in a bound repo "intake", "patrols" where it names some, and
+  {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale",
+   "stale_closed", "free_slots", "now", "locks"} — and in a bound repo "intake", "patrols" where it names some, and
    "proposals" while a ruling is proposed as a precedent or waits to be
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
@@ -40,7 +40,17 @@ WHAT IT ANSWERS
                    an issue whose stage's `escalate` waits for its consult is here
                    too, at that stage; the stage is `land` once the last one passed to the landing train
                    and the issue's PR waits for a worker to join it
-    excluded       every other open issue, with why: {number, title, reason}
+    excluded       every other open issue, with why: {number, title, reason}. An
+                   escalated issue says so — "escalated: waits for a ruling" — and
+                   not that it lacks the label its escalation took off
+    waiting_on_human
+                   every open issue nobody holds that waits for a human, lowest number
+                   first: {issue, title, why, since, answer} — why in a few words,
+                   since when in epoch seconds where GitHub said, and the line that
+                   answers it, to run as it is but for what stands between < and >.
+                   They are: an escalated issue, one whose records call for a human,
+                   one at a stage that is a human's, one whose workflow ended and
+                   that is still open, and the report of a patrol's failed run
     escalating     in a bound repo, when there are any: the unclaimed issues a tick
                    hands to a human, with why: {number, title, reason}
     mine           the claims of `--instance`: {number, title, status, pr} — in a bound

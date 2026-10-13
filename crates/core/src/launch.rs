@@ -2,15 +2,19 @@
 //! started with. A worker's shell inherits nothing of the environment the
 //! fleet was started in, so a fleet started through a provider wrapper must be
 //! told the command that wraps its workers the same way — or it would start
-//! them on stock Claude, silently.
+//! them on the stock one, silently. The stock command, and the variable that
+//! names a provider, are the default harness's (`harness`): an unbound repo's
+//! command starts whatever it starts.
 //!
 //! Nothing here reads the command beyond its first word, and nothing builds
 //! one from parts.
 
 use flux_rs::attrs::*;
 
+use crate::harness::Harness;
+
 /// What a worker is started with when the fleet is on no custom provider.
-pub const STOCK: &str = "claude --dangerously-skip-permissions";
+pub const STOCK: &str = Harness::DEFAULT.stock();
 
 /// The flags that let an agent work with nobody at its terminal. Only ever
 /// looked for, to warn: a worker without one stops at its first permission
@@ -42,8 +46,8 @@ pub enum Source {
     Refuse(String),
 }
 
-/// Where a start gets its command: `provider` is the `ANTHROPIC_BASE_URL` the
-/// fleet itself runs under, `supplied` what `--worker-command` was given, and
+/// Where a start gets its command: `provider` is the custom provider the
+/// fleet itself runs under (`Harness::provider_variable`), `supplied` what `--worker-command` was given, and
 /// `terminal` whether there is a human to ask.
 pub fn source(provider: Option<&str>, supplied: Option<&str>, terminal: bool) -> Source {
     if let Some(supplied) = supplied {
@@ -126,7 +130,7 @@ fn unattended(command: &str, word: &str, resolution: &str) -> Option<bool> {
     }
     let whole = resolution.contains(" is an alias for ")
         || resolution.contains(" is aliased to ")
-        || word == "claude";
+        || word == Harness::DEFAULT.program();
     if visible {
         Some(true)
     } else if whole {
@@ -156,7 +160,7 @@ pub fn candidates(aliases: &str) -> Vec<Candidate> {
             continue;
         }
         let expansion = unquoted(value.trim());
-        if expansion.contains("claude") {
+        if expansion.contains(Harness::DEFAULT.program()) {
             found.push(Candidate { name: name.to_string(), expansion: expansion.to_string() });
         }
     }

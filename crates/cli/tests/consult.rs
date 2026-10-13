@@ -478,3 +478,94 @@ fn a_silent_stage_whose_claim_was_taken_over_is_not_called_a_consult() {
     );
     assert!(!said.contains("The consult of the stage"), "{said}");
 }
+
+/// An escalation is noticed and answered where a human looks (issue #149):
+/// the tick that hands the issue over says so, the comment and the status
+/// board end with the line that answers it, and `plan`, `doctor` and the
+/// panel list it as waiting for a human — the same list.
+#[test]
+fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it() {
+    let world = bound(FEATURE, 2);
+    asked(&world);
+    tick(&world, 1180);
+    let_through(&world, "Not mine to rule: the schema is a product decision.");
+    world.with_gh(|gh| gh["now"] = json!(1270));
+    let run = ["run", "--instance", "alpha", "--host", "h1", "--ticks", "1", "--now", "1270"];
+    let (lines, _) = world.afk_lines(&[&run[..], &["--second-ms", "0"]].concat());
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let said = "tick 1: escalated #7 (build: consult let it through) · holding 0/2 · frontier 0";
+    assert!(lines[0].starts_with(said) && !lines[0].contains("advanced"), "{lines:?}");
+
+    // The comment and the status board end with each way out, the number filled in.
+    let answer = "afkconvoy rule --issue 7 --text-file <file>";
+    let ways_out = format!(
+        "**To answer it**, in a checkout of this repo:\n- rule on it: the stage `build` runs \
+         again under your ruling — `{answer}`\n- close it: the fleet leaves a closed issue \
+         alone — `gh issue close 7`"
+    );
+    let comment = world.comments(7).pop().unwrap();
+    assert!(comment.starts_with("<!--convoy:escalation "), "{comment}");
+    assert!(comment.trim_end().ends_with(&ways_out), "{comment}");
+    let board = world.boards(7).pop().unwrap();
+    assert!(board.contains("**Escalated to a human**") && board.ends_with(&ways_out), "{board}");
+
+    // `plan` excludes it as escalated, not as an issue nobody labelled…
+    let plan = world.afk(&["plan", "--now", "1300"]).ok();
+    let excluded = plan["excluded"].as_array().unwrap();
+    let reason = excluded.iter().find(|issue| issue["number"] == 7).map(|issue| &issue["reason"]);
+    assert_eq!(reason, Some(&json!("escalated: waits for a ruling")), "{plan}");
+    // …and lists it as waiting for a human, with the line that answers it.
+    let waiting = json!([{"issue": 7, "title": "issue 7", "why": "escalated at build",
+        "since": 1270, "answer": answer}]);
+    assert_eq!(plan["waiting_on_human"], waiting);
+
+    // `doctor` gives the same list, and counts it a finding past the hour.
+    let doctor = |now: &str| world.afk(&["doctor", "--host", "h1", "--now", now]).json;
+    let waited = |answer: &Value| -> Vec<Value> {
+        let findings = answer["findings"].as_array().unwrap().iter();
+        let waits = |found: &&Value| found["what"].as_str().unwrap().contains("has waited");
+        findings.filter(waits).cloned().collect()
+    };
+    let soon = doctor("4870");
+    assert_eq!(soon["waiting_on_human"], waiting);
+    assert_eq!(waited(&soon), [] as [Value; 0], "an hour is not more than an hour");
+    let late = doctor("8571");
+    assert_eq!(late["waiting_on_human"], waiting);
+    assert_eq!(
+        waited(&late),
+        [json!({"severity": "warning",
+            "what": "#7 has waited for a human for 2h 1m: escalated at build",
+            "evidence": "nobody holds it and no tick moves it; it is the fleet's again once \
+                         it is answered, and it has waited longer than 1h 0m",
+            "fix": answer})]
+    );
+
+    // The panel's "With a human" is that list.
+    let panel = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["panel", "--instance", "alpha", "--host", "h1", "--now", "1300"])
+        .output()
+        .unwrap();
+    let page = String::from_utf8(panel.stdout).unwrap();
+    let with_a_human = page.split("<h2>With a human</h2>").nth(1).expect("a list");
+    let with_a_human = with_a_human.split("</section>").next().unwrap();
+    assert_eq!(with_a_human.matches("<li class=\"card").count(), 1, "{with_a_human}");
+    let card = "data-issue=\"7\"><span class=\"num\">#7</span> <span class=\"title\">issue 7\
+                </span><span class=\"meta\"><span class=\"note\">escalated at build — afkconvoy \
+                rule --issue 7 --text-file &lt;file&gt;</span>";
+    assert!(with_a_human.contains(card), "{with_a_human}");
+    assert!(page.contains("With a human</dt><dd>1<"), "{page}");
+    assert!(!page.contains("the fleet leaves alone"), "it is listed once: {page}");
+
+    // The number is an argument or `--issue`, never both: the ruling answers it.
+    let both = world.afk(&["rule", "7", "--issue", "7", "--text", "Keep the v1 schema."]);
+    assert!(both.error().contains("cannot be used with"));
+    assert_eq!(world.afk(&["show", "7"]).ok()["position"]["is"], "escalating");
+    let ruling = world.clone.join("ruling.md");
+    std::fs::write(&ruling, "Keep the v1 schema.\n").unwrap();
+    let ruled = world.afk(&["rule", "7", "--text-file", ruling.to_str().unwrap()]).ok();
+    assert_eq!((&ruled["ruled"], &ruled["stage"]), (&json!(true), &json!("build")), "{ruled}");
+    assert!(world.labels(7).contains(&"flow:feature".to_string()));
+    let plan = world.afk(&["plan", "--now", "1400"]).ok();
+    assert_eq!(plan["waiting_on_human"], json!([]), "answered: it waits for nobody");
+}

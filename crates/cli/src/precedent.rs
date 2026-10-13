@@ -7,6 +7,7 @@
 //! worker opens the PR, a human merges it, and all the fleet does is close
 //! one that is no proposal.
 
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::patrol::run_over;
 use afkconvoy_core::precedent::{
     Row, Ruling, Seen, Standing, closing_comment, is_proposal, proposed, proposed_comment, refused,
@@ -21,7 +22,7 @@ use anyhow::{Result, anyhow};
 use crate::claims::{Me, drop_run, take_run};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
-use crate::orca::{REPORT_HOOK, Source, Worktree};
+use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 
 /// What the remote and GitHub say of the proposals of a bound repo: the
@@ -125,7 +126,7 @@ pub fn propose(
         team_dir: &kept.copy.dir.display().to_string(),
         model: None,
         guard: &crate::own_command().fixed(" guard").own(),
-        report: REPORT_HOOK,
+        report: Harness::DEFAULT.report(),
         facts: Facts {
             on: On::Proposal { issue: ruling.issue },
             role: &role.name,

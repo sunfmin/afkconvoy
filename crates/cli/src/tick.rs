@@ -44,6 +44,9 @@ struct Failure {
 pub struct Ticked {
     pub pass: Pass,
     failures: Vec<Failure>,
+    /// The issues the pass escalated, each with why in a few words
+    /// (`Fleet::escalated`): whichever step did.
+    escalated: Vec<(u64, String)>,
     /// The claims the pass could hold (`WorkingSet::bound`).
     bound: usize,
     /// What its rebuild read: the pass was made over these.
@@ -73,7 +76,8 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
             Outcome::Failed
         })
     });
-    let ticked = Ticked { pass, failures, bound, set, flows };
+    let escalated = std::mem::take(&mut fleet.escalated);
+    let ticked = Ticked { pass, failures, escalated, bound, set, flows };
     Ok((ticked, fleet))
 }
 
@@ -107,7 +111,8 @@ fn carry_out(
                 Some(_) if run_again_unclaimed(fleet, read.flows, issue)? => Ok(Outcome::Nothing),
                 Some(calling) => {
                     let rounds = read.flows.rounds(issue);
-                    hand_to_human(fleet, me, issue, &calling.reason, rounds.as_deref())
+                    let why = (read.flows.brief(issue), calling.reason.as_str());
+                    hand_to_human(fleet, me, issue, (&why.0, why.1), rounds.as_deref())
                 }
                 None => Ok(Outcome::Nothing),
             }
@@ -196,6 +201,20 @@ impl Ticked {
         self.pass.did.contains(&handed_on).then(|| self.flows.at(issue)).flatten()
     }
 
+    /// Why `step`, which ended in `outcome`, escalated the issue it is on, in
+    /// a few words; `None` of a step that escalated none.
+    fn escalated_by(&self, step: TickStep, outcome: Outcome) -> Option<&str> {
+        let ends = matches!(
+            step,
+            TickStep::Judge { .. }
+                | TickStep::Watch { .. }
+                | TickStep::Advance { .. }
+                | TickStep::Escalate { .. }
+        );
+        let issue = words(step).1.filter(|_| ends && outcome == Outcome::Done)?;
+        self.escalated.iter().find(|(number, _)| *number == issue).map(|(_, why)| why.as_str())
+    }
+
     fn named(&self, step: TickStep) -> Value {
         let (word, issue) = words(step);
         let mut named = json!({"do": word, "issue": issue.or(self.proposal(step))});
@@ -244,7 +263,7 @@ impl Ticked {
             .did
             .iter()
             .map(|(step, outcome)| {
-                let outcome = match outcome {
+                let ended = match outcome {
                     Outcome::Done | Outcome::HandedOn => "done",
                     Outcome::Nudged => "nudged",
                     Outcome::Continued => "continued",
@@ -255,11 +274,14 @@ impl Ticked {
                     Outcome::Failed => "failed",
                 };
                 let mut did = self.named(*step);
-                did["outcome"] = json!(outcome);
+                did["outcome"] = json!(ended);
                 if let TickStep::Advance { issue } = step
                     && let Some(stage) = self.advanced_to(*issue)
                 {
                     did["stage"] = json!(stage);
+                }
+                if let Some(why) = self.escalated_by(*step, *outcome) {
+                    did["escalated"] = json!(why);
                 }
                 did
             })
@@ -285,12 +307,17 @@ impl Ticked {
             parts.push(format!("FLEET LOCK {} stands: only it is worked", named(&self.set.locks)));
         }
         let lead = parts.len();
+        // An issue that left the fleet for a human says so, whichever step
+        // handed it over: none of them names it as anything else.
+        let escalated: Vec<String> =
+            self.escalated.iter().map(|(issue, why)| format!("#{issue} ({why})")).collect();
+        if !escalated.is_empty() {
+            parts.push(format!("escalated {}", escalated.join(", ")));
+        }
         for (verb, wanted) in [
             ("settled", "settle"),
             ("ended", "judge"),
-            ("escalated", "watch"),
             ("advanced", "advance"),
-            ("handed to a human", "escalate"),
             ("unlocked", "unlock"),
             ("reclaimed", "reclaim"),
             ("dispatched", "dispatch"),
@@ -300,7 +327,9 @@ impl Ticked {
                 .did
                 .iter()
                 .filter(|(step, outcome)| {
-                    words(*step).0 == wanted && matches!(outcome, Outcome::Done | Outcome::HandedOn)
+                    words(*step).0 == wanted
+                        && matches!(outcome, Outcome::Done | Outcome::HandedOn)
+                        && self.escalated_by(*step, *outcome).is_none()
                 })
                 .filter_map(|(step, _)| words(*step).1)
                 .map(|issue| match self.advanced_to(issue) {

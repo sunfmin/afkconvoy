@@ -248,7 +248,21 @@ fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
     let said = comments.last().unwrap();
     assert!(said.contains("stayed silent after one nudge"), "{said}");
     let screen = "```\nRan the tests.\nShall I open the PR? [y/n]\n```";
-    assert!(said.trim_end().ends_with(screen), "{said}");
+    // …and ending with the line that answers it, the issue's number filled in
+    let answer = "- fix what the comment names, and put the ready label back — `gh issue edit 7 \
+                  --add-label ready-for-agent --remove-label ready-for-human`\n- close it: the \
+                  fleet leaves a closed issue alone — `gh issue close 7`";
+    assert!(said.contains(&format!("{screen}\n\n**To answer it**")), "{said}");
+    assert!(said.trim_end().ends_with(answer), "{said}");
+    // An unbound repo's escalated issue is excluded as escalated, and waits for a human.
+    let plan = world.afk(&["plan", "--now", "1700"]).ok();
+    assert_eq!(plan["excluded"][0]["reason"], "escalated: waits for the ready label", "{plan}");
+    let waiting = &plan["waiting_on_human"];
+    assert_eq!((&waiting[0]["issue"], &waiting[0]["why"]), (&json!(7), &json!("escalated")));
+    assert_eq!(
+        waiting[0]["answer"],
+        "gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human"
+    );
     let reads = screen_reads(&world);
     assert_eq!(reads.len(), 1, "{reads:?}");
     let limit = reads[0].iter().position(|arg| arg == "--limit").unwrap();
@@ -295,7 +309,7 @@ fn a_nudge_the_worker_did_not_take_is_not_recorded() {
     // a terminal that cannot be read does not hold the escalation back
     world.with_orca(|orca| orca["read_fails"] = json!(true));
     assert_eq!(did(&tick(&world, 1700)), ["judge 7 done"]);
-    assert!(world.comments(7).last().unwrap().trim_end().ends_with("after one nudge."));
+    assert!(world.comments(7).last().unwrap().contains("after one nudge.\n\n**To answer it**"));
 }
 
 #[test]
