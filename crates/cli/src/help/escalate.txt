@@ -16,7 +16,8 @@ WHAT IT READS AND WRITES
   the issue's flow label for the `escalate_label` of the team instead, and the comment
   records which workflow the issue left: `afkconvoy rule` puts that label back. On the remote it releases
   the claim. The PR and the branch are kept, and so is the worktree, unless its branch
-  holds no work.
+  holds no work. In orca it closes the terminal of the issue's worker: a worktree that
+  is kept has no worker left in it.
 
 WHAT IT ANSWERS
 

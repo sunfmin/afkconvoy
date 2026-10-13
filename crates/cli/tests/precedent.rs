@@ -345,6 +345,8 @@ fn a_proposal_s_worker_declares_its_run_over_and_the_next_tick_ends_it() {
     assert_eq!(claimed(&world).len(), 2, "the claim, and what was declared of it");
     assert_eq!(did(&tick(&world, 1160)), ["end_proposal 7 done"]);
     assert!(!dir.exists(), "its checkout is removed");
+    let left = world.open_terminals();
+    assert!(!left.iter().any(|at| at == dir.to_str().unwrap()), "and its worker ended: {left:?}");
     assert_eq!(claimed(&world), Vec::<String>::new());
 }
 

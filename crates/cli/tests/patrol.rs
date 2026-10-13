@@ -93,9 +93,15 @@ fn refs(world: &World) -> Vec<String> {
     listed.lines().filter(|name| name.contains("patrol")).map(str::to_string).collect()
 }
 
-/// The checkout of the patrol `sweep`.
+/// The checkout of the patrol `sweep`: the one its last run was started in.
 fn checkout(world: &World) -> PathBuf {
-    world.root.join("wt/convoy-patrol-sweep")
+    checkouts(world).pop().expect("the patrol has a checkout")
+}
+
+/// Every checkout orca lists for the patrol `sweep`, oldest first.
+fn checkouts(world: &World) -> Vec<PathBuf> {
+    let listed = world.worktrees().into_iter();
+    listed.filter(|path| path.to_str().unwrap().contains("/convoy-patrol-sweep")).collect()
 }
 
 /// The worker in every terminal is gone.
@@ -301,12 +307,18 @@ fn a_patrol_due_while_its_run_is_still_going_is_skipped_and_a_missed_run_is_not_
     assert_eq!(ended["held"], 0);
     assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"]);
     assert_eq!(world.gh()["issues"], json!([]), "a run that left nothing is no failure");
-    // …and the next runs it once, in the same checkout, at the base branch as it is now.
+    // …its checkout with it: nothing will use it again…
+    assert_eq!(checkouts(&world), Vec::<PathBuf>::new());
+    assert_eq!(world.open_terminals(), Vec::<String>::new());
+    // …and the next runs it once, in a new one, at the base branch as it is now.
     world.orca_calls();
     assert_eq!(patrolled(&tick(&world, 21_200)), ["patrol sweep done"]);
     let calls = world.orca_calls();
-    assert!(!calls.iter().any(|call| common::asked(call) == "worktree create"), "{calls:?}");
+    let created = calls.iter().filter(|call| common::asked(call) == "worktree create");
+    assert_eq!(created.count(), 1, "{calls:?}");
+    assert_eq!(checkouts(&world).len(), 1);
     assert_eq!(git(&checkout(&world), &["rev-parse", "HEAD"]), base);
+    assert_eq!(world.open_terminals().len(), 1, "its worker's, and no other");
     workers_leave(&world);
     assert_eq!(patrolled(&tick(&world, 21_300)), ["end_patrol sweep done"]);
     // Three were missed and one was run: it is not due again for an interval.
@@ -492,10 +504,14 @@ fn a_patrol_s_worker_declares_its_run_over_and_the_next_tick_ends_it() {
     assert_eq!(world.claims().len(), 2);
     assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"], "nothing of the run is left");
     assert_eq!(world.gh()["issues"].as_array().unwrap().len(), 2, "no failure is reported");
+    // Its worker is ended with it, whatever it was doing: the checkout is
+    // gone, and the terminals left are those of the two issues' workers.
+    assert_eq!(checkouts(&world), Vec::<PathBuf>::new());
+    assert_eq!(world.open_terminals().len(), 2);
 
     // With no run going there is nothing to declare over, and what was
     // declared of one run says nothing of the next.
-    let refused = world.afk_in(&checkout(&world), &["over", "--run", "patrol-sweep"]).error();
+    let refused = world.afk(&["over", "--run", "patrol-sweep"]).error();
     assert!(refused.contains("no run \"patrol-sweep\" is going"), "{refused}");
 }
 
@@ -507,7 +523,13 @@ fn a_run_declared_over_is_still_checked_for_what_a_patrol_never_leaves() {
     world.afk_in(&checkout(&world), &["over", "--run", "patrol-sweep"]).ok();
     assert_eq!(patrolled(&tick(&world, 10_060)), ["end_patrol sweep done"]);
     let report = report(&world).expect("the failed run is reported");
-    assert!(report["body"].as_str().unwrap().contains("it left a commit"), "{report}");
+    let body = report["body"].as_str().unwrap();
+    assert!(body.contains("it left a commit"), "{report}");
+    // The checkout it names is kept for the human, and the worker that sat at
+    // its prompt there is ended.
+    let kept = checkout(&world);
+    assert!(kept.is_dir() && body.contains(kept.to_str().unwrap()), "{report}");
+    assert_eq!(world.open_terminals(), Vec::<String>::new());
 }
 
 #[test]
@@ -554,11 +576,13 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
     let body = failed["body"].as_str().unwrap();
     assert!(body.starts_with("<!--convoy:patrol-failed patrol=sweep-->"), "{body}");
     assert!(body.contains(&format!("it left a commit in its checkout ({started} → {left})")));
-    assert!(body.contains(checkout(&world).to_str().unwrap()) && body.contains("`h1`"), "{body}");
-    // No issue is touched, and nothing is undone.
+    let kept = checkout(&world);
+    assert!(body.contains(kept.to_str().unwrap()) && body.contains("`h1`"), "{body}");
+    // No issue is touched, and nothing is undone: the checkout the report
+    // names is kept, with no worker in it.
     assert_eq!(world.labels(5), ["bug"]);
     assert_eq!(world.comments(5), Vec::<String>::new());
-    assert_eq!(git(&checkout(&world), &["rev-parse", "HEAD"]), left);
+    assert_eq!(git(&kept, &["rev-parse", "HEAD"]), left);
     assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"]);
 
     // It is not run again while the report is open, however long that is…
@@ -568,9 +592,12 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
     assert_eq!(plan["patrols"][0]["failure"], number);
     assert_eq!(patrolled(&tick(&world, 90_000)), Vec::<String>::new());
     assert_eq!(world.gh()["issues"].as_array().unwrap().len(), 2, "one report, not one a tick");
-    // …and is once a human closed it.
+    // …and is once a human closed it, in a new checkout: the one that was
+    // kept for them goes then.
     world.close_issue(number);
     assert_eq!(patrolled(&tick(&world, 90_100)), ["patrol sweep done"]);
+    assert_eq!(checkouts(&world).len(), 1);
+    assert!(!kept.exists() && checkout(&world) != kept, "{kept:?}");
     assert_eq!(git(&checkout(&world), &["rev-parse", "HEAD"]), started);
 }
 

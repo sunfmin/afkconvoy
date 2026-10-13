@@ -13,7 +13,8 @@ WHAT IT READS AND WRITES
   It reads the worker's latest verdict on the issue and where each issue it names
   stands. On GitHub it records each blocker as a blocked-by edge of the issue and writes
   the status board's last word. On the remote it releases the claim. It removes the
-  worktree only when its branch holds no work.
+  worktree only when its branch holds no work; in one that is kept it closes the
+  terminal of the issue's worker.
 
 WHAT IT ANSWERS
 

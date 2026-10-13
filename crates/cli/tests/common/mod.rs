@@ -309,6 +309,22 @@ impl World {
         self.write_orca(&state);
     }
 
+    /// The worktrees the stand-in orca lists, oldest first.
+    pub fn worktrees(&self) -> Vec<PathBuf> {
+        let orca = self.orca();
+        let rows = orca["worktrees"].as_array().unwrap().iter();
+        rows.map(|row| PathBuf::from(row["path"].as_str().unwrap())).collect()
+    }
+
+    /// Where each terminal the stand-in orca has open is: one path a terminal.
+    pub fn open_terminals(&self) -> Vec<String> {
+        let orca = self.orca();
+        let rows = orca["terminals"].as_array().unwrap().iter();
+        rows.filter(|terminal| terminal["open"] == true)
+            .map(|terminal| terminal["worktreePath"].as_str().unwrap().to_string())
+            .collect()
+    }
+
     /// Every `orca` call made since the last look, without the trailing `--json`.
     pub fn orca_calls(&self) -> Vec<Vec<String>> {
         let mut calls: Vec<Vec<String>> =
