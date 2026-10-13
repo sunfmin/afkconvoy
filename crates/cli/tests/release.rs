@@ -51,7 +51,10 @@ fn the_formula_installs_what_was_packaged_and_depends_on_git_and_gh() {
 
     std::fs::write(archive("x86_64"), "the x86_64 build").unwrap();
     let formula = stdout(&release(dist.path(), &["formula"]));
-    let base = format!("https://github.com/sunfmin/afkconvoy/releases/download/v{VERSION}");
+    // from the tap: this repository is private, and Homebrew downloads with no login
+    let base = format!(
+        "https://github.com/sunfmin/homebrew-tap/releases/download/afkconvoy-v{VERSION}"
+    );
     for arch in ["arm64", "x86_64"] {
         let block = format!(
             "    url \"{base}/afkconvoy-{VERSION}-macos-{arch}.tar.gz\"\n    sha256 \"{}\"\n",

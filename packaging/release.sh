@@ -7,12 +7,20 @@
 #   release.sh package <target> <arch>   dist/afkconvoy-<version>-macos-<arch>.tar.gz
 #                                        from target/<target>/release/afkconvoy
 #   release.sh formula                   the Homebrew formula for what is in dist/
+#   release.sh publish                   what is in dist/ to the tap: the archives
+#                                        to its release afkconvoy-v<version>, the formula
+#                                        to Formula/afkconvoy.rb. `gh` and `git`
+#                                        must be allowed to write to the tap.
+#
+# The archives are downloaded from the tap (sunfmin/homebrew-tap), not from
+# this repository: this one is private, and Homebrew downloads with no login.
 #
 # DIST names another directory than dist/.
 set -eu
 cd "$(dirname "$0")/.."
 
 REPO=https://github.com/sunfmin/afkconvoy
+TAP=sunfmin/homebrew-tap
 ARCHES="arm64 x86_64"
 DIST=${DIST:-dist}
 
@@ -22,6 +30,11 @@ version() {
 
 archive() {
     echo "afkconvoy-$(version)-macos-$1.tar.gz"
+}
+
+# The tap's release that holds this version's archives.
+tap_tag() {
+    echo "afkconvoy-v$(version)"
 }
 
 sha() {
@@ -69,7 +82,7 @@ formula)
             exit 1
         }
     done
-    base=$REPO/releases/download/v$(version)
+    base=https://github.com/$TAP/releases/download/$(tap_tag)
     cat <<FORMULA
 class Afkconvoy < Formula
   desc "Fleet of AFK coding agents that works a GitHub backlog"
@@ -108,8 +121,37 @@ class Afkconvoy < Formula
 end
 FORMULA
     ;;
+publish)
+    formula=$DIST/afkconvoy.rb
+    "$0" formula > "$formula"
+    ruby -c "$formula" >/dev/null
+    archives=""
+    for arch in $ARCHES; do
+        archives="$archives $DIST/$(archive "$arch")"
+    done
+    # A release that is there already takes the archives again: a publish
+    # that failed half way is run a second time.
+    if gh release view "$(tap_tag)" -R "$TAP" >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        gh release upload "$(tap_tag)" -R "$TAP" --clobber $archives
+    else
+        # shellcheck disable=SC2086
+        gh release create "$(tap_tag)" -R "$TAP" --title "afkconvoy $(version)" \
+            --notes "The binaries the formula \`afkconvoy\` installs." $archives
+    fi
+    tap=$(mktemp -d)
+    gh repo clone "$TAP" "$tap" -- --quiet --depth 1
+    cp "$formula" "$tap/Formula/afkconvoy.rb"
+    if git -C "$tap" diff --quiet; then
+        echo "release: the tap's formula is afkconvoy $(version) already"
+    else
+        git -C "$tap" commit --quiet -am "afkconvoy $(version)"
+        git -C "$tap" push --quiet origin HEAD
+    fi
+    rm -rf "$tap"
+    ;;
 *)
-    sed -n '2,11p' "$0" >&2
+    sed -n '2,18p' "$0" >&2
     exit 2
     ;;
 esac
