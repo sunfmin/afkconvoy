@@ -153,12 +153,12 @@ Only `pass` and `reject` are written in a workflow. The other three mean the sam
 
 ## 5. Worked example: a hospital for code
 
-This section builds a whole team and runs it, start to finish. Every command and every output below is from a real run. The repos it made are these (they are private demo repos of the author's):
+This section builds a whole team and runs it, start to finish. Every command and every output below is from a real run, and the repos it made are public: read the roles, the workflows, and the issues with every stage's record on them.
 
 | | Repo |
 |---|---|
 | The team | [`sunfmin/hospital-team`](https://github.com/sunfmin/hospital-team) |
-| The roles | `sunfmin/hospital-fellow`, `-attending`, `-discharge-nurse`, `-triage-nurse`, `-infection-control`, `-research`, `-safety` |
+| The roles, each `sunfmin/hospital-<name>` | [`fellow`](https://github.com/sunfmin/hospital-fellow), [`attending`](https://github.com/sunfmin/hospital-attending), [`discharge-nurse`](https://github.com/sunfmin/hospital-discharge-nurse), [`triage-nurse`](https://github.com/sunfmin/hospital-triage-nurse), [`infection-control`](https://github.com/sunfmin/hospital-infection-control), [`research`](https://github.com/sunfmin/hospital-research), [`safety`](https://github.com/sunfmin/hospital-safety) |
 | The project | [`sunfmin/hospital-demo`](https://github.com/sunfmin/hospital-demo) |
 
 The team is modelled on the one Cockroach Labs describes in [An experiment in running a hospital for code](https://www.cockroachlabs.com/blog/experiment-running-hospital-code/): an issue is a patient, and each role does one job on it.
