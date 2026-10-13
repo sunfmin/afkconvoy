@@ -384,6 +384,72 @@ fn a_bound_repos_claim_says_its_stage_and_role_and_a_head_that_moved_since_is_sa
     assert!(moved[1]["evidence"].as_str().unwrap().ends_with(&format!("the head is {head}")));
 }
 
+/// What `answer` says moved since the stage `stage` of #3 started, each
+/// with its evidence.
+fn moved(answer: &Value, stage: &str) -> Vec<(String, String)> {
+    let said = found(answer, &format!("moved since the stage `{stage}` of #3 started"));
+    let text = |finding: &Value, key: &str| finding[key].as_str().unwrap().to_string();
+    let which = |finding: &Value| text(finding, "what").split(" moved").next().unwrap().to_string();
+    said.iter().map(|finding| (which(finding), text(finding, "evidence"))).collect()
+}
+
+#[test]
+fn in_a_repo_of_several_roles_a_role_moved_only_when_its_own_directory_changed() {
+    let world = World::new();
+    let roles = "```yaml\nroles:\n  fellow: ./roles/fellow\n  attending: ./roles/attending\n```\n";
+    let fix = FEATURE.replace("by: dev", "by: fellow").replace("by: reviewer", "by: attending");
+    let hospital = world.repo(
+        "acme/hospital",
+        &[
+            ("team.md", roles),
+            ("workflows/fix.md", &fix),
+            ("roles/fellow/.claude/skills/implement/SKILL.md", "build\n"),
+            ("roles/attending/.claude/skills/review/SKILL.md", "review\n"),
+        ],
+    );
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/hospital\n```\n";
+    write(&world.clone, "docs/agents/afkconvoy.md", config);
+    git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.issue(3, &["flow:fix"]);
+    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+    let started = git(&hospital, &["rev-parse", "HEAD"]);
+    let said = |head: &str| format!("it started under {started}; the head is {head}");
+    let answer = doctor(&world, "1100").json;
+    assert_eq!(answer["claims"][0]["role"], "fellow", "{answer}");
+
+    // another role's directory, and what is neither a role's nor the team's
+    commit(&hospital, "roles/attending/CLAUDE.md", "be strict\n");
+    commit(&hospital, "CLAUDE.md", "for whoever reads the repo\n");
+    assert_eq!(moved(&doctor(&world, "1100").json, "build"), []);
+
+    // its own: the role moved, and the team did not
+    let head = commit(&hospital, "roles/fellow/CLAUDE.md", "be careful\n");
+    let role = ("the role `fellow`".to_string(), said(&head));
+    assert_eq!(moved(&doctor(&world, "1100").json, "build"), std::slice::from_ref(&role));
+
+    // a workflow: the team moved too
+    let head = commit(&hospital, "workflows/fix.md", &format!("{fix}\nSaid again.\n"));
+    let role = (role.0, said(&head));
+    assert_eq!(
+        moved(&doctor(&world, "1100").json, "build"),
+        [("the team".to_string(), said(&head)), role.clone()]
+    );
+
+    // put back as the stage started under them, both are where they were
+    git(&hospital, &["rm", "-q", "roles/fellow/CLAUDE.md"]);
+    let head = commit(&hospital, "workflows/fix.md", &fix);
+    assert_ne!(head, started);
+    assert_eq!(moved(&doctor(&world, "1100").json, "build"), []);
+
+    // with no copy of the commit the stage started under, the commits are all there is
+    let copies = world.cache().join("afkconvoy/copies/acme/hospital");
+    std::fs::rename(copies.join(&started), copies.join("gone")).unwrap();
+    let both: Vec<String> =
+        moved(&doctor(&world, "1100").json, "build").into_iter().map(|(which, _)| which).collect();
+    assert_eq!(both, ["the team", "the role `fellow`"]);
+}
+
 #[test]
 fn a_team_with_a_fault_and_a_flow_label_that_names_no_workflow_are_findings() {
     let (world, team, _) = bound();

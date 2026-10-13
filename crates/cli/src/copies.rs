@@ -64,6 +64,12 @@ impl Copies {
         Copy { dir: self.root.join(repo.as_str()).join(commit), commit: commit.to_string() }
     }
 
+    /// The copy of `repo` at `commit`, where this host keeps one: nothing is
+    /// asked of GitHub, and nothing fetched.
+    pub fn kept(&self, repo: &RepoName, commit: &str) -> Option<Copy> {
+        Some(self.at(repo, commit)).filter(|kept| kept.dir.is_dir())
+    }
+
     /// The copy of the role's directory `dir` alone, taken out of `fetched`,
     /// the copy of its repo: what a worker in the role starts in. Nothing
     /// above the directory in its repo is in it or above it, and no
@@ -141,6 +147,65 @@ impl Copies {
         let _ = std::fs::remove_dir_all(&scratch);
         copied
     }
+}
+
+/// Whether `dir` holds the same in `this` copy of its repo as in `that` one,
+/// each of `without` — a path from `dir` — left out of both: the same files,
+/// each with the same text and as much a program, and the same symlinks. A
+/// `dir` that is no directory of one of them is not the same.
+pub fn alike(this: &Copy, that: &Copy, dir: &RepoDir, without: &[PathBuf]) -> Result<bool> {
+    let (this, that) = (this.dir.join(dir.path()), that.dir.join(dir.path()));
+    Ok(this.is_dir() && that.is_dir() && alike_dir(&this, &that, Path::new(""), without)?)
+}
+
+/// `alike`, of what is at `under` of the directories `this` and `that`.
+fn alike_dir(this: &Path, that: &Path, under: &Path, without: &[PathBuf]) -> Result<bool> {
+    let names = |root: &Path| -> Result<Vec<std::ffi::OsString>> {
+        let dir = root.join(under);
+        let mut names = vec![];
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("cannot list {}", dir.display()))?
+        {
+            let name = entry?.file_name();
+            if !without.contains(&under.join(&name)) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    };
+    let held = names(this)?;
+    if held != names(that)? {
+        return Ok(false);
+    }
+    for name in held {
+        let path = under.join(name);
+        let (one, other) = (this.join(&path), that.join(&path));
+        // A file's kind, and whether it is a program: a copy is read-only
+        // whatever else its mode was.
+        let found = |file: &Path| {
+            let found = std::fs::symlink_metadata(file)
+                .with_context(|| format!("cannot read {}", file.display()))?;
+            anyhow::Ok((found.file_type(), found.permissions().mode() & 0o111))
+        };
+        let (kind, other_kind) = (found(&one)?, found(&other)?);
+        let same = if kind != other_kind {
+            false
+        } else if kind.0.is_dir() {
+            alike_dir(this, that, &path, without)?
+        } else if kind.0.is_symlink() {
+            std::fs::read_link(&one)? == std::fs::read_link(&other)?
+        } else {
+            let text = |file: &Path| {
+                std::fs::read(file).with_context(|| format!("cannot read {}", file.display()))
+            };
+            text(&one)? == text(&other)?
+        };
+        if !same {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Keeps the directory `files` as `kept`, whole or not there: moved into place
