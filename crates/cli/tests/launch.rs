@@ -104,6 +104,34 @@ fn on_stock_claude_a_command_that_was_passed_is_still_the_answer() {
 }
 
 #[test]
+fn a_command_given_for_a_harness_by_its_key_is_that_harness_s() {
+    let world = backlog();
+    let passed = "claude-code=agent  --model=fast ";
+    answer(&world, &with(&TICK, &["--worker-command", passed]), false).ok();
+    assert_eq!(started(&world), ["agent  --model=fast "], "what follows the `=`, as given");
+}
+
+#[test]
+fn a_command_given_twice_for_one_harness_or_for_no_harness_is_an_error() {
+    let world = backlog();
+    let dispatch =
+        ["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    let flag = "--worker-command";
+    for start in [&RUN[..], &TICK[..], &dispatch[..]] {
+        for twice in [["agent", "agent --fast"], ["agent", "claude-code=agent"]] {
+            let error = answer(&world, &with(start, &[flag, twice[0], flag, twice[1]]), false);
+            let error = error.error();
+            assert!(error.contains("given twice for the harness `claude-code`"), "{error}");
+        }
+        let error = answer(&world, &with(start, &[flag, "codex=agent"]), false).error();
+        assert!(error.contains("`codex` is no harness; the harnesses are: claude-code"), "{error}");
+    }
+    assert_eq!(world.shell_asked(), [] as [String; 0], "refused before anything was asked");
+    assert_eq!(started(&world), [] as [String; 0]);
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
 fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
     let world = backlog();
     // Everything past the first word is the human's business.

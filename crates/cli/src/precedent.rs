@@ -73,6 +73,7 @@ pub fn propose(
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
     // The proposal of a precedent runs on the default: a team names no harness for it.
     let (team, harness) = (&bound.team, bound.harness);
+    let launch = agent.command(harness)?;
     let work = &kept
         .team
         .precedents
@@ -142,7 +143,7 @@ pub fn propose(
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&harness.in_role(agent.command.as_str(), &start), me.now)?;
+    let terminal = checkout.start(&harness.in_role(launch.as_str(), &start), me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
     Ok(Outcome::Done)

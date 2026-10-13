@@ -383,6 +383,77 @@ fn a_start_refuses_a_launch_command_that_does_not_take_the_flags() {
 }
 
 #[test]
+fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_each() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    // A stage and a patrol name their harness; the repo runs one patrol of the two.
+    let named = FEATURE.replace("model: opus\n", "harness: claude-code\n");
+    let patrol =
+        "```yaml\nby: reviewer\ndo: review\nevery: 1d\nharness: claude-code\nmax_open: 1\n```\n";
+    let team = world.root.join("github/acme/team");
+    write(&team, "workflows/feature.md", &named);
+    write(&team, "patrols/sweep.md", patrol);
+    write(&team, "patrols/idle.md", patrol);
+    git(&team, &["add", "-A"]);
+    git(&team, &["commit", "-q", "-m", "name the harnesses"]);
+    let config = CONFIG.replace("team: acme/team\n", "team: acme/team\npatrols: [sweep]\n");
+    write(&world.clone, "docs/agents/afkconvoy.md", &config);
+    git(&world.clone, &["commit", "-q", "-am", "run a patrol"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    let called = "it is the worker launch command of the harness `claude-code`, called for by the \
+                  repo's default, the stage `build` of the workflow `feature`, the patrol `sweep`";
+
+    // One that takes no role flags: a start, `plan` and `doctor` each say so.
+    world.shell_help(Some("Usage: agent [options]\n  --model <model>\n"));
+    let tick = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    for start in [&tick[..], &["plan", "--now", "1000"]] {
+        let refused = world.afk(start).error();
+        assert!(refused.contains("names no --add-dir"), "{refused}");
+        assert!(refused.ends_with(called), "{refused}");
+    }
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
+    let commands = doctor["host"]["worker_commands"].as_array().unwrap();
+    assert_eq!(commands.len(), 1, "one for each harness: {commands:?}");
+    assert_eq!(
+        (&commands[0]["harness"], &commands[0]["command"], &commands[0]["takes_role_flags"]),
+        (&json!("claude-code"), &json!(STOCK), &json!(false))
+    );
+    assert_eq!(
+        commands[0]["called_for_by"],
+        json!([
+            "the repo's default",
+            "the stage `build` of the workflow `feature`",
+            "the patrol `sweep`"
+        ])
+    );
+    let findings = doctor["findings"].as_array().unwrap();
+    let finding = findings.iter().find(|finding| {
+        finding["what"].as_str().unwrap().contains("cannot start a worker in its role")
+    });
+    assert!(finding.unwrap()["evidence"].as_str().unwrap().ends_with(called), "{findings:?}");
+
+    // One that resolves to nothing, given for the harness by its key.
+    world.shell_help(Some("--add-dir --setting-sources --settings --model"));
+    world.shell_knows("ckim", None);
+    let refused =
+        world.afk(&[&tick[..], &["--worker-command", "claude-code=ckim --yolo"]].concat());
+    let refused = refused.error();
+    assert!(refused.contains("\"ckim\" resolves to nothing in a login shell"), "{refused}");
+    assert!(
+        refused.contains("of the harness `claude-code`, called for by the repo's default"),
+        "{refused}"
+    );
+
+    // A start with a harness that cannot be started starts no worker at all.
+    assert_eq!(world.claims(), []);
+    assert_eq!(world.orca()["terminals"], json!([]));
+    // …and with one that can, the worker of the stage is started with it.
+    world.afk(&[&tick[..], &["--worker-command", "claude-code=agent --fast"]].concat()).ok();
+    let command = open_terminals(&world, &worktree(&world, 7))[0]["command"].clone();
+    assert!(command.as_str().unwrap().contains(" && agent --fast --add-dir "), "{command}");
+}
+
+#[test]
 fn an_unbound_repo_s_launch_command_is_still_passed_to_orca_exactly_as_given() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);

@@ -92,10 +92,12 @@ fn a_read_that_fails_three_times_is_one_line_for_the_tick_and_the_next_tick_star
     let world = bound("[]");
     world.issue(7, &["flow:fix", "stage:check"]);
     world.issue(8, &["flow:fix", "stage:check"]);
-    // the team's own repo: no issue of the tick has a position without it
-    cut_short(&world, &head_of("acme/team"), 3);
+    // the team's own repo: no issue of the tick has a position without it.
+    // The start reads it first, for the harnesses it calls for, and goes on
+    // without: three tries are the start's, and three the first tick's.
+    cut_short(&world, &head_of("acme/team"), 6);
     let lines = run(&world, "2");
-    assert_eq!(left_to_cut(&world), 0, "three tries, and no more");
+    assert_eq!(left_to_cut(&world), 0, "three tries a read, and no more");
     let cause = "GitHub could not be reached: gh api repos/acme/team/commits/HEAD: unexpected \
                  end of JSON input";
     assert!(lines[0].contains(&format!("FAILED 2 steps: {cause}")), "{lines:?}");

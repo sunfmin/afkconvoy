@@ -6,7 +6,6 @@
 //! (`standing`) and probe only without one.
 
 use afkconvoy_core::config::Config;
-use afkconvoy_core::gate::key;
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
     Answer, BaseCheck, GATE_KIND, PROBE_STANDS, answer, base_check, choose, no_base_branch,
@@ -18,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::config;
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
-use crate::launch::Proposed;
+use crate::launch::Launches;
 use crate::role;
 use crate::tools;
 
@@ -50,20 +49,21 @@ struct Asked {
     team: Option<String>,
     /// The ref layout it settled on, as the repo has it noted.
     layout: String,
-    /// The worker launch command it checked, when the start knew one — as
-    /// its key (`gate::key`): the command itself is written to no file.
+    /// The worker launch commands it checked, when the start knew the
+    /// default harness's — as their key (`Launches::key`): a command itself
+    /// is written to no file.
     launch: Option<u64>,
 }
 
 impl Asked {
     /// What a probe of `repo` under `config` is asked about now.
-    fn now(repo: &Repo, config: &Config, launch: Option<&Proposed>) -> Result<Asked> {
+    fn now(repo: &Repo, config: &Config, launch: Option<u64>) -> Result<Asked> {
         Ok(Asked {
             base_branch: config.base_branch.clone(),
             remote: repo.git(&["remote", "get-url", REMOTE])?,
             team: config.bound.as_ref().map(|bound| bound.team.as_str().to_string()),
             layout: repo.layout().name().to_string(),
-            launch: launch.map(|launch| key(launch.as_str())),
+            launch,
         })
     }
 }
@@ -73,21 +73,20 @@ impl Asked {
 /// be made. One stands for an hour (`probe_stands`) on the host that made it,
 /// while the config's base branch and team, the remote, and the noted ref
 /// layout are what it was asked about — and, for a command that starts
-/// workers, `launch` is the worker launch command it checked. Says on stderr
+/// workers, `launches` are the worker launch commands it checked. Says on stderr
 /// that no probe was made. Whatever keeps the note from being read or
 /// compared is the probe's to report: none stands.
-pub fn standing(now: u64, launch: Option<&Proposed>) -> Option<Vec<String>> {
+pub fn standing(now: u64, launches: &Launches) -> Option<Vec<String>> {
     let read = || -> Result<(Passed, Asked)> {
         let repo = Repo::here()?;
         let config = config::load(&repo.dir.join(config::FILE))?;
-        let passed = serde_json::from_str(&std::fs::read_to_string(repo.note(PASSED_NOTE)?)?)?;
+        let passed: Passed =
+            serde_json::from_str(&std::fs::read_to_string(repo.note(PASSED_NOTE)?)?)?;
+        // A command that starts no worker asks nothing of the launch commands.
+        let launch = if launches.starts() { launches.key()? } else { passed.asked.launch };
         Ok((passed, Asked::now(&repo, &config, launch)?))
     };
-    let (passed, mut asked) = read().ok()?;
-    // A command that starts no worker asks nothing of the launch command.
-    if launch.is_none() {
-        asked.launch = passed.asked.launch;
-    }
+    let (passed, asked) = read().ok()?;
     if !probe_stands(passed.at, now) || passed.asked != asked {
         return None;
     }
@@ -102,24 +101,25 @@ pub fn standing(now: u64, launch: Option<&Proposed>) -> Option<Vec<String>> {
 
 /// Checks this host and the repo this command was run in → what the human
 /// should know before the fleet carries on. An error is a host or a repo the
-/// fleet cannot work. `launch` is the worker launch command, when the start
-/// knows it.
+/// fleet cannot work. `launches` are the worker launch commands of the start.
 ///
 /// In order: every command the fleet needs is here and logged in
-/// (`tools::check`), before anything is read or written; in a bound repo, the
-/// worker launch command takes what starts a worker in its role
+/// (`tools::check`), before anything is read or written; in a bound repo,
+/// every harness the fleet could be asked for can be started, its worker
+/// launch command taking what starts a worker in its role
 /// (`role::probe`); the base branch exists (none is ever created); no rule of its
 /// protection refuses the train's push; where the remote takes the fleet's
 /// refs — noted for every later command (`Repo::layout`); whether it takes
 /// gate records, and the ones past their day are swept. A probe that passed is
 /// noted for `standing`.
-pub fn startup(now: u64, launch: Option<&Proposed>) -> Result<Vec<String>> {
-    tools::check(launch)?;
+pub fn startup(now: u64, launches: &Launches) -> Result<Vec<String>> {
+    tools::check(launches)?;
     let repo = Repo::here()?;
     let config = config::load(&repo.dir.join(config::FILE))?;
-    // A bound repo's workers start in their roles: the command must take that.
-    if let (Some(_), Some(launch)) = (&config.bound, launch) {
-        role::probe(launch)?;
+    // A bound repo's workers start in their roles, each on the harness its
+    // stage names: every one's command must be there, and take that.
+    if let Some(bound) = &config.bound {
+        role::probe(launches, bound)?;
     }
     let branch = &config.base_branch;
     let mut warnings = vec![];
@@ -174,7 +174,7 @@ pub fn startup(now: u64, launch: Option<&Proposed>) -> Result<Vec<String>> {
         // Soft: a ref that stays is litter the next start deletes.
         let _ = repo.try_git(&args);
     }
-    let passed = Passed { at: now, asked: Asked::now(&repo, &config, launch)?, warnings };
+    let passed = Passed { at: now, asked: Asked::now(&repo, &config, launches.key()?)?, warnings };
     let note = repo.note(PASSED_NOTE)?;
     std::fs::write(&note, serde_json::to_string(&passed)?)
         .with_context(|| format!("cannot write {}", note.display()))?;

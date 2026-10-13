@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::launch::STOCK;
+
 use afkconvoy_core::role::{Facts, On, Start};
 use serde_json::Value;
 
@@ -101,7 +101,8 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
 
     // The very line a bound repo's dispatch hands orca, and what makes it one
     // answer instead of a session.
-    let launch = std::env::var("AFKCONVOY_SMOKE_COMMAND").unwrap_or_else(|_| STOCK.to_string());
+    let launch = std::env::var("AFKCONVOY_SMOKE_COMMAND")
+        .unwrap_or_else(|_| Harness::ClaudeCode.stock().to_string());
     let text = |path: &Path| path.display().to_string();
     let start = Start {
         role_dir: &text(&role),

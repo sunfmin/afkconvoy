@@ -101,6 +101,13 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Config {
+    /// The harness of every worker nothing names one for: the one a bound
+    /// repo's config names. An unbound repo knows of no harness, and its one
+    /// worker launch command is kept as the default's.
+    pub fn harness(&self) -> Harness {
+        self.bound.as_ref().map_or(Harness::DEFAULT, |bound| bound.harness)
+    }
+
     /// The config `settings` asks for, defaults filled — or the first key that
     /// is missing or cannot be run on.
     pub fn new(settings: Settings) -> Result<Config, ConfigError> {

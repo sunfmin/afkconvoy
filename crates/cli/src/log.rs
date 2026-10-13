@@ -5,6 +5,7 @@
 //! (fleet state lives on GitHub and the remote), and a host with none loses
 //! only what `doctor` could have said of the ticks before.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -35,9 +36,15 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum What {
-    /// A `run` started, its worker launch command beginning with this word:
-    /// the word a login shell is asked about, and never what follows it.
-    Start { worker_command: String },
+    /// A `run` started, the worker launch command of its default harness
+    /// beginning with this word: the word a login shell is asked about, and
+    /// never what follows it. `harness_commands` is the same word of each
+    /// other harness `--worker-command` said one for, by the harness's key.
+    Start {
+        worker_command: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        harness_commands: BTreeMap<String, String>,
+    },
     /// One tick ended.
     Tick(Tick),
 }
@@ -225,7 +232,10 @@ mod tests {
             at: 1000,
             instance: "alpha".into(),
             host: "h1".into(),
-            what: What::Start { worker_command: "claude".into() },
+            what: What::Start {
+                worker_command: "claude".into(),
+                harness_commands: BTreeMap::new(),
+            },
         };
         log.append(&start).unwrap();
         log.append(&tick(1)).unwrap();

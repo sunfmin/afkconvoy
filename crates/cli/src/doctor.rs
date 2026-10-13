@@ -23,18 +23,19 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::config;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
 use crate::git::Repo;
-use crate::launch;
+use crate::launch::Launches;
 use crate::log::{Entry, Failed, Log, Tick, What, by_cause};
 use crate::orca::{Source, Under, Worktree};
 use crate::panel::lasted;
+use crate::role::{self, Checked};
 use crate::stage::Stood;
 use crate::team::{self, Refused};
 use crate::tools;
 use crate::wake::listening;
-use crate::{config, role};
 
 /// How many ticks in a row a step fails in before it is a finding.
 const FAILED_TICKS: usize = 3;
@@ -90,18 +91,16 @@ impl std::fmt::Display for Unwell {
 
 impl std::error::Error for Unwell {}
 
-/// The worker launch command, as far as this host can say what it is.
+/// The worker launch command of one harness the fleet could be asked for,
+/// as far as this host can say what it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
-    pub command: String,
+    /// The harness, what calls for it, its command and that command's
+    /// faults, each said with the harness and what calls for it.
+    pub checked: Checked,
     /// Whether the `run` on this host said so in its log; else it is the one
-    /// a `run` started now with no `--worker-command` would use.
+    /// a `run` started now with no `--worker-command` for it would use.
     pub of_run: bool,
-    /// Why it cannot start a worker, when it cannot.
-    pub fault: Option<String>,
-    /// Why it does not take what starts a worker in its role, when it does
-    /// not. Asked in a bound repo only.
-    pub flags_fault: Option<String>,
 }
 
 /// What this host has of what the fleet needs.
@@ -113,8 +112,10 @@ pub struct Host {
     /// Why an orca that is running could not be asked about this checkout
     /// (`tools::Looked`).
     pub orca_unasked: Option<String>,
-    /// `None` on a custom provider with no `run` to say: a start would ask.
-    pub launch: Option<Launch>,
+    /// One for each harness the fleet could be asked for — in an unbound
+    /// repo, its one command's. A harness is left out on a custom provider
+    /// with no `run` to say its command: a start would ask.
+    pub launches: Vec<Launch>,
 }
 
 /// The heartbeats found on the remote: a start sweeps the dead ones that hold
@@ -277,17 +278,17 @@ fn host_findings(host: &Host) -> Vec<Finding> {
         };
         found.push(finding(Severity::Critical, what, evidence, fix));
     }
-    if let Some(launch) = &host.launch {
+    for Launch { checked, .. } in &host.launches {
         let claude_missing = host.tools.contains(&(Tool::Claude, Found::Missing));
         let faults = [
-            (launch.fault.as_ref().filter(|_| !claude_missing), "cannot start a worker"),
-            (launch.flags_fault.as_ref(), "cannot start a worker in its role"),
+            (checked.fault.as_ref().filter(|_| !claude_missing), "cannot start a worker"),
+            (checked.flags_fault.as_ref(), "cannot start a worker in its role"),
         ];
         for (why, what) in faults {
             let Some(why) = why else { continue };
             found.push(finding(
                 Severity::Critical,
-                format!("the worker launch command `{}` {what}", launch.command),
+                format!("the worker launch command `{}` {what}", checked.command),
                 why.clone(),
                 "afkconvoy run --help".to_string(),
             ));
@@ -675,31 +676,54 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found
 }
 
-fn read_host(config: Option<&Config>, started_with: Option<&str>) -> Host {
-    let proposed = match started_with {
-        Some(command) => launch::propose(Some(command)).ok(),
-        None => launch::foreseen(),
+/// What this host has of what the fleet needs. `started_with` is what the
+/// `run` here was given as its worker launch commands, as its log has them
+/// (`read_log`); with none to say, each is the one a `run` started now would
+/// use. No human is asked.
+fn read_host(config: Option<&Config>, started_with: Option<&[String]>) -> Host {
+    let said = started_with.and_then(|given| Launches::new(given, false).ok());
+    let of_run = said.is_some();
+    let launches = said.unwrap_or_else(Launches::foreseen);
+    let default = launches.default();
+    let looked = tools::look(launches.of(default).ok().flatten());
+    // An unbound repo knows of no harness: nothing calls for its one command's.
+    let called = match config.and_then(|config| config.bound.as_ref()) {
+        Some(bound) => role::called_for(bound),
+        None => vec![(default, vec![])],
     };
-    let looked = tools::look(proposed.as_ref());
-    let bound = config.is_some_and(|config| config.bound.is_some());
-    let launch = proposed.map(|proposed| Launch {
-        command: proposed.as_str().to_string(),
-        of_run: started_with.is_some(),
-        fault: proposed.fault(),
-        flags_fault: role::probe(&proposed).err().filter(|_| bound).map(|why| format!("{why:#}")),
-    });
-    Host { tools: looked.found, gh_host: looked.host, orca_unasked: looked.orca_unasked, launch }
+    let checked = role::check(&launches, &called).unwrap_or_default();
+    let launch = |checked: Checked| Launch {
+        // A `run` says its default harness's command, and each other it was given.
+        of_run: of_run && (checked.harness == default || launches.says(checked.harness)),
+        checked,
+    };
+    Host {
+        tools: looked.found,
+        gh_host: looked.host,
+        orca_unasked: looked.orca_unasked,
+        launches: checked.into_iter().map(launch).collect(),
+    }
 }
 
+/// The worker launch commands a `run` said it started with: the first word
+/// of each, as `--worker-command` would be given them.
+type StartedWith = Vec<String>;
+
 /// What the log says of the `run` of `host`: its fleet instance, the worker
-/// launch command it started with — its first word — and that instance's ticks.
-fn read_log(entries: &[Entry], host: &str) -> (Option<String>, Option<String>, Vec<(u64, Tick)>) {
+/// launch commands it started with, and that instance's ticks.
+fn read_log(
+    entries: &[Entry],
+    host: &str,
+) -> (Option<String>, Option<StartedWith>, Vec<(u64, Tick)>) {
     let Some(newest) = entries.iter().rev().find(|entry| entry.host == host) else {
         return (None, None, vec![]);
     };
     let own = || entries.iter().filter(|entry| entry.instance == newest.instance);
     let command = own().rev().find_map(|entry| match &entry.what {
-        What::Start { worker_command } => Some(worker_command.clone()),
+        What::Start { worker_command, harness_commands } => {
+            let named = harness_commands.iter().map(|(harness, word)| format!("{harness}={word}"));
+            Some(std::iter::once(worker_command.clone()).chain(named).collect())
+        }
         What::Tick(_) => None,
     });
     let ticks = own().filter_map(|entry| match &entry.what {
@@ -825,12 +849,15 @@ fn host_json(host: &Host) -> Value {
     };
     json!({
         "tools": host.tools.iter().map(tool).collect::<Vec<_>>(),
-        "worker_command": host.launch.as_ref().map(|launch| json!({
-            "command": launch.command,
-            "from": if launch.of_run { "run" } else { "default" },
-            "starts_a_worker": launch.fault.is_none(),
-            "takes_role_flags": launch.flags_fault.is_none(),
-        })),
+        "worker_commands": host.launches.iter().map(|Launch { checked, of_run }| json!({
+            // An unbound repo knows of no harness: nothing calls for one.
+            "harness": (!checked.callers.is_empty()).then_some(checked.harness),
+            "called_for_by": checked.callers,
+            "command": checked.command,
+            "from": if *of_run { "run" } else { "default" },
+            "starts_a_worker": checked.fault.is_none(),
+            "takes_role_flags": checked.flags_fault.is_none(),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -960,12 +987,16 @@ mod tests {
             ],
             gh_host: Some("github.com".into()),
             orca_unasked: None,
-            launch: Some(Launch {
-                command: "claude".into(),
+            launches: vec![Launch {
+                checked: Checked {
+                    harness: afkconvoy_core::harness::Harness::ClaudeCode,
+                    callers: vec![],
+                    command: "claude".into(),
+                    fault: None,
+                    flags_fault: None,
+                },
                 of_run: true,
-                fault: None,
-                flags_fault: None,
-            }),
+            }],
         }
     }
 
@@ -1144,7 +1175,7 @@ mod tests {
         assert_eq!(fixes(&found, "`orca` cannot be asked about this checkout"), ["orca repo list"]);
 
         let mut flagless = host();
-        flagless.launch.as_mut().unwrap().flags_fault = Some("it takes no --settings".into());
+        flagless.launches[0].checked.flags_fault = Some("it takes no --settings".into());
         let found = self::found(&flagless, &run(vec![]), &state());
         assert_eq!(fixes(&found, "cannot start a worker in its role"), ["afkconvoy run --help"]);
     }
@@ -1531,7 +1562,10 @@ mod tests {
             host: host.into(),
             what,
         };
-        let start = |command: &str| What::Start { worker_command: command.into() };
+        let start = |command: &str| What::Start {
+            worker_command: command.into(),
+            harness_commands: [("pi".to_string(), "pi".to_string())].into(),
+        };
         let ticked = |count| What::Tick(tick(count, json!([])).1);
         let entries = [
             entry(10, "old", "h1", start("agent")),
@@ -1542,7 +1576,8 @@ mod tests {
         ];
         let (instance, command, ticks) = read_log(&entries, "h1");
         assert_eq!(instance.as_deref(), Some("alpha"));
-        assert_eq!(command.as_deref(), Some("claude --yolo"));
+        // as `--worker-command` would be given them: the default harness's bare
+        assert_eq!(command.unwrap(), ["claude --yolo", "pi=pi"]);
         let counts: Vec<(u64, u64)> = ticks.iter().map(|(at, tick)| (*at, tick.count)).collect();
         assert_eq!(counts, [(40, 1), (50, 2)], "its own ticks only");
         assert_eq!(read_log(&entries, "h2"), (None, None, vec![]));

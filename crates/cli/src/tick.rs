@@ -488,11 +488,9 @@ impl Said {
     fn open(me: &Me, agent: &Agent) -> Said {
         let log = Repo::here().and_then(|repo| Log::of(&repo));
         let mut said = Said { log: log.ok() };
-        // Its first word alone: what follows may name what a human keeps to
-        // themselves, and the command is written to no file.
-        let first = agent.command.as_str().split_whitespace().next();
-        let worker_command = first.unwrap_or_default().to_string();
-        said.keep(me, me.now, log::What::Start { worker_command });
+        // First words alone (`Launches::logged`): a command is written to no file.
+        let (worker_command, harness_commands) = agent.launches.logged();
+        said.keep(me, me.now, log::What::Start { worker_command, harness_commands });
         said.log = said.log.filter(|log| log.file.exists());
         if said.log.is_none() {
             eprintln!(

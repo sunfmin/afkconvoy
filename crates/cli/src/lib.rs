@@ -68,6 +68,7 @@ use claims::{Me, Scan, Take};
 use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
+use launch::Launches;
 use tick::Pacing;
 
 /// What this binary was built from, as `--version` says it: stamped by
@@ -515,11 +516,13 @@ impl TextArgs {
 /// How a command that starts a worker starts it.
 #[derive(clap::Args)]
 struct AgentArgs {
-    /// The worker launch command, handed to orca as it is — in a bound repo, with what
-    /// starts a worker in its role added [default: with no ANTHROPIC_BASE_URL,
-    /// `claude --dangerously-skip-permissions`; with one, asked for]
-    #[arg(long)]
-    worker_command: Option<String>,
+    /// The worker launch command of the default harness, handed to orca as it is — in a
+    /// bound repo, with what starts a worker in its role added — or, as
+    /// `<harness>=<command>`, that of one harness; once for each [default: each harness's
+    /// stock one — with no ANTHROPIC_BASE_URL, `claude --dangerously-skip-permissions`;
+    /// with one, asked for]
+    #[arg(long, value_name = "[HARNESS=]COMMAND")]
+    worker_command: Vec<String>,
     /// Seconds an agent is given to be ready for its prompt
     #[arg(long, default_value_t = 120, hide = true)]
     ready_timeout: u64,
@@ -609,27 +612,31 @@ fn this_host() -> String {
 }
 
 impl AgentArgs {
-    /// Settles the worker launch command (`launch::settle`): nothing is
-    /// started on one that resolves to nothing.
+    /// Reads what `--worker-command` said (`Launches::new`), with no probe:
+    /// the one worker a command started this way starts is refused where its
+    /// harness's command resolves to nothing (`Agent::command`).
     fn agent(self) -> anyhow::Result<Agent> {
-        let command = launch::settle(self.worker_command.as_deref())?;
-        Ok(Agent { command, ready_timeout: self.ready_timeout })
+        let launches = Launches::new(&self.worker_command, true)?;
+        Ok(Agent { launches, ready_timeout: self.ready_timeout })
     }
 
     /// Makes the startup probe of a start that starts workers → what it
-    /// starts them with. The probe is told the command before it is settled:
-    /// what the command needs of this host is the probe's to check. A start
-    /// that is `trusting` makes none while one that checked this command
-    /// stands (`probe::standing`).
+    /// starts them with. What each command needs of this host is the probe's
+    /// to check: for every harness the fleet could be asked for, before any
+    /// worker is started. A start that is `trusting` makes none while one
+    /// that checked these commands stands (`probe::standing`).
     fn start(self, now: u64, trusting: bool) -> anyhow::Result<Agent> {
-        let proposed = launch::propose(self.worker_command.as_deref())?;
-        let stands = if trusting { probe::standing(now, Some(&proposed)) } else { None };
+        let agent = self.agent()?;
+        // The default harness's is settled whatever stands: a human is
+        // asked, where one must be, before anything else is.
+        agent.launches.key()?;
+        let stands = if trusting { probe::standing(now, &agent.launches) } else { None };
         let warnings = match stands {
             Some(warnings) => warnings,
-            None => probe::startup(now, Some(&proposed))?,
+            None => probe::startup(now, &agent.launches)?,
         };
         probe::announce(&warnings);
-        Ok(Agent { command: proposed.settle()?, ready_timeout: self.ready_timeout })
+        Ok(agent)
     }
 }
 
@@ -714,9 +721,10 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Doctor { host } => doctor::doctor(now, &host.unwrap_or_else(this_host)),
         Command::Plan { instance } => {
-            let warnings = match probe::standing(now, None) {
+            let launches = Launches::foreseen();
+            let warnings = match probe::standing(now, &launches) {
                 Some(warnings) => warnings,
-                None => probe::startup(now, launch::foreseen().as_ref())?,
+                None => probe::startup(now, &launches)?,
             };
             probe::announce(&warnings);
             let (fleet, open) = Fleet::read(now)?;
