@@ -340,6 +340,7 @@ land: { by: boss, do: implement }
             ],
             patrols: vec![],
             at: None,
+            rules: false,
             roles: vec![repo("acme/dev"), repo("acme/boss")],
         })
         .unwrap()

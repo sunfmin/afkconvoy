@@ -5,6 +5,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use afkconvoy_core::config::{RepoDir, RepoName};
+pub use afkconvoy_core::team::RULES;
 use afkconvoy_core::team::{HUMAN, SKILLS, TEAM_FILE, WORKFLOWS};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -17,9 +18,9 @@ use crate::git::Repo;
 pub const EXAMPLE_SKILL: &str = "implement";
 /// The example workflow of a team's skeleton.
 pub const EXAMPLE_WORKFLOW: &str = "feature";
-/// A role's rules, and its hooks: where Claude Code reads each from in the
-/// directory a worker starts in.
-pub const RULES: &str = "CLAUDE.md";
+/// A role's hooks: where Claude Code reads them from in the directory a
+/// worker starts in. Its rules are beside them (`RULES`), and a team's are in
+/// the file of that name in the team's directory.
 pub const HOOKS: &str = ".claude/settings.json";
 /// Where a team's skeleton writes the roles it holds, in the team's directory.
 pub const ROLES: &str = "roles";
@@ -129,6 +130,7 @@ fn team_files(
     };
     let mut files = vec![
         (TEAM_FILE.to_string(), fill(include_str!("scaffold/team.md"))),
+        (RULES.to_string(), include_str!("scaffold/team_rules.md").to_string()),
         (format!("{WORKFLOWS}/{EXAMPLE_WORKFLOW}.md"), fill(include_str!("scaffold/workflow.md"))),
     ];
     for role in roles.iter().filter(|role| role.at.is_none()) {

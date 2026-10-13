@@ -7,9 +7,9 @@
 //     call as pi describes it. It is decided in `afkconvoy guard`, for every
 //     harness: nothing is judged here. A call the guard did not allow is
 //     refused, with what the guard said; so is one it could not be asked of.
-//   - The rules of the issue's worktree are loaded as pi loads a rules file.
-//     pi finds the role's own, in the directory it starts in; the worktree is
-//     another directory.
+//   - The rules of the issue's worktree, and the team rules, are loaded as pi
+//     loads a rules file. pi finds the role's own, in the directory it starts
+//     in; the worktree and the team's directory are others.
 //
 // It is plain JavaScript and imports nothing of pi's: only what Node has.
 import { spawnSync } from "node:child_process"
@@ -19,6 +19,7 @@ import { join } from "node:path"
 // The variables the start puts these in (`afkconvoy_core::harness::pi`).
 const GUARD_ENV = "AFKCONVOY_GUARD"
 const WORKTREE_ENV = "AFKCONVOY_WORKTREE"
+const TEAM_ENV = "AFKCONVOY_TEAM_DIR"
 // Where a directory keeps its rules: the first of these it has, as pi reads
 // the directory it starts in.
 const RULES = ["AGENTS.md", "CLAUDE.md"]
@@ -50,15 +51,16 @@ export default function (pi) {
   })
 
   pi.on("before_agent_start", (event) => {
-    const worktree = fact(WORKTREE_ENV)
     const loaded = event.systemPromptOptions.contextFiles
-    for (const name of RULES) {
-      const path = join(worktree, name)
-      if (!existsSync(path)) continue
-      if (!loaded.some((file) => file.path === path)) {
-        loaded.push({ path, content: readFileSync(path, "utf8") })
+    for (const dir of [fact(WORKTREE_ENV), fact(TEAM_ENV)]) {
+      for (const name of RULES) {
+        const path = join(dir, name)
+        if (!existsSync(path)) continue
+        if (!loaded.some((file) => file.path === path)) {
+          loaded.push({ path, content: readFileSync(path, "utf8") })
+        }
+        break
       }
-      break
     }
   })
 }

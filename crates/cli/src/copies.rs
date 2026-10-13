@@ -75,9 +75,10 @@ impl Copies {
     /// The copy of the team's directory `dir`, taken out of `fetched`, the
     /// copy of its repo, without what is at each of `without`, a path from
     /// `dir`. A team that is a whole repo holding none of them is `fetched`
-    /// itself.
+    /// itself. It is kept as a team with its rules: a copy an older afkconvoy
+    /// kept, which left those out, is not taken for one.
     pub fn team(&self, fetched: &Copy, dir: &RepoDir, without: &[PathBuf]) -> Result<Copy> {
-        self.take(fetched, dir, "team", without)
+        self.take(fetched, dir, "team+rules", without)
     }
 
     /// The copy of `dir` out of `fetched`, leaving out each of `without`, a

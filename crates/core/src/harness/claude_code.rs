@@ -58,7 +58,8 @@ const STATE_EVENTS: [&str; 12] = [
 /// How long Claude Code waits on one report, in seconds: a worker backend
 /// that does not answer holds no tool call up.
 const REPORT_TIMEOUT: u64 = 10;
-/// Has Claude Code load the rules of the directories added to it. Their hooks
+/// Has Claude Code load the rules of the directories added to it: the repo's
+/// own, in the worktree, and the team rules, in the team's copy. Their hooks
 /// are not loaded: what a repo must enforce belongs in its gate.
 const ADDED_RULES: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
 /// Keeps Claude Code from carrying what one worker learned to the next on
@@ -252,6 +253,25 @@ mod tests {
                 + &added()
                 + "' --model 'opus'"
         );
+    }
+
+    #[test]
+    fn the_line_has_claude_code_load_the_team_rules() {
+        // They are the `CLAUDE.md` of the team's copy: the directory is
+        // added, and the rules of added directories are on — for every
+        // worker, whatever it is on.
+        for on in [
+            On::Stage { issue: 7, flow: "feature", stage: "land" },
+            On::Patrol("sweep"),
+            On::Proposal { issue: 7 },
+        ] {
+            let mut start = start(None);
+            start.facts.on = on;
+            let line = in_role("claude", &start);
+            let (environment, started) = line.split_once(" && claude ").unwrap();
+            assert!(environment.contains(&format!(" export {ADDED_RULES}=1 ")), "{line}");
+            assert!(started.contains(&format!("{ADD_DIR} '{}' ", start.team_dir)), "{line}");
+        }
     }
 
     #[test]

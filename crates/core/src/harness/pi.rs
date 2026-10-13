@@ -5,7 +5,7 @@
 //! question pi asks before it loads a role's own files; a user directory of
 //! the fleet's own, since pi has no way to be told to leave the host user's
 //! out; and an extension the tool carries, which asks the guard and loads the
-//! rules of the issue's worktree.
+//! rules of the issue's worktree and the team rules.
 
 use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
@@ -48,9 +48,10 @@ const HELP: &str = " --help";
 /// the host user's.
 const USER_DIR: &str = "PI_CODING_AGENT_DIR";
 /// The variables the fleet's extension reads the line that runs the guard,
-/// and the issue's worktree, from.
+/// the issue's worktree, and the fleet's copy of the team's directory, from.
 const GUARD_ENV: &str = "AFKCONVOY_GUARD";
 const WORKTREE_ENV: &str = "AFKCONVOY_WORKTREE";
+const TEAM_ENV: &str = "AFKCONVOY_TEAM_DIR";
 
 /// The fleet's extension, as the directory the host keeps for pi holds it.
 /// It is named on the line that starts a worker and is not among those pi
@@ -85,7 +86,8 @@ pub(super) const REFUSED: u8 = 2;
 
 /// `line`, which exports a worker's environment, with what pi and the
 /// fleet's extension read from it: the user directory the host keeps, the
-/// line that runs the guard, and the issue's worktree.
+/// line that runs the guard, the issue's worktree, and the team's directory,
+/// whose rules a pi worker is given as it is its worktree's.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn environment(line: Line, start: &Start) -> Line {
     line.fixed(" ")
@@ -100,6 +102,10 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
         .fixed(WORKTREE_ENV)
         .fixed("=")
         .word(start.worktree)
+        .fixed(" ")
+        .fixed(TEAM_ENV)
+        .fixed("=")
+        .word(start.team_dir)
 }
 
 /// `line`, which starts the worker launch command, with what pi is given to
@@ -195,6 +201,7 @@ mod tests {
             Harness::Pi.in_role("pi", &start(Some("openai/gpt-5.5"))),
             "cd '/copies/acme/dev/abc' && export PI_CODING_AGENT_DIR='/cache/harness/pi' \
              AFKCONVOY_GUARD='/bin/afkconvoy guard' AFKCONVOY_WORKTREE='/wt/issue 7' \
+             AFKCONVOY_TEAM_DIR='/copies/acme/team/def' \
              AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
              AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
@@ -225,7 +232,7 @@ mod tests {
     fn the_extension_reads_its_facts_where_a_start_puts_them_and_is_kept_where_one_names_it() {
         let [(name, extension)] = KEPT.files else { panic!("one file is carried") };
         assert_eq!(*name, EXTENSION_FILE);
-        for variable in [GUARD_ENV, WORKTREE_ENV] {
+        for variable in [GUARD_ENV, WORKTREE_ENV, TEAM_ENV] {
             assert!(extension.contains(&format!("\"{variable}\"")), "it reads no {variable}");
         }
         // None of what is linked to is where pi would find the guard itself.
