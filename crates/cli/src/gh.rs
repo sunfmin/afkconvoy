@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
+use std::time::Duration;
 
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::layout::{Guard, Protection};
@@ -106,6 +107,51 @@ pub struct Open {
     pub prs: Vec<PullRequest>,
 }
 
+/// How many times a read is made before it is said that GitHub could not be
+/// reached, and how long is waited between two of them.
+const TRIES: u32 = 3;
+const BETWEEN_TRIES: Duration = Duration::from_secs(1);
+
+/// A read GitHub gave no answer to, each of the `TRIES` times it was made: it
+/// failed in transit. Nothing is known of what was asked about, and nothing
+/// is wrong with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreached {
+    /// The call that was made: `gh api repos/acme/dev/commits/HEAD`.
+    pub call: String,
+    /// What `gh` said of the last try.
+    pub said: String,
+}
+
+impl std::fmt::Display for Unreached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GitHub could not be reached: {}: {}", self.call, self.said)
+    }
+}
+
+impl std::error::Error for Unreached {}
+
+/// The read `error` says got no answer, when that is why it was raised,
+/// whatever was said around it since.
+pub fn unreached(error: &anyhow::Error) -> Option<&Unreached> {
+    error.chain().find_map(|cause| cause.downcast_ref())
+}
+
+/// Whether what `gh` said of a call that failed says it failed in transit:
+/// an answer cut short, a 5xx, a connection reset or a timeout. Any other
+/// status — a 404, a 403 — is GitHub's answer, and asking again gets the same.
+fn in_transit(said: &str) -> bool {
+    let said = said.to_ascii_lowercase();
+    if let Some((_, status)) = said.split_once("http ")
+        && status.bytes().take(3).all(|b| b.is_ascii_digit())
+    {
+        return status.starts_with('5');
+    }
+    let cut_short = ["unexpected end of json input", "unexpected eof", ": eof"];
+    let unanswered = ["connection reset", "timeout", "timed out"];
+    cut_short.iter().chain(&unanswered).any(|mark| said.contains(mark))
+}
+
 /// What a read made beside another came to: a panic in it is this thread's.
 pub fn beside<T>(read: thread::ScopedJoinHandle<'_, T>) -> T {
     read.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
@@ -118,8 +164,9 @@ impl IssueRead {
 }
 
 impl GitHub {
-    /// One `gh` call that must succeed → its stdout.
-    pub fn gh(&self, args: &[&str]) -> Result<String> {
+    /// One `gh` call → its stdout, or what it is named by and what `gh` said
+    /// of its failing.
+    fn call(&self, args: &[&str]) -> Result<Result<String, (String, String)>> {
         let out = Command::new("gh")
             .current_dir(&self.dir)
             .args(args)
@@ -127,14 +174,40 @@ impl GitHub {
             .context("gh could not run")?;
         if !out.status.success() {
             let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-            bail!("gh {what} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+            let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Ok(Err((format!("gh {what}"), said)));
         }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        Ok(Ok(String::from_utf8_lossy(&out.stdout).into_owned()))
+    }
+
+    /// One `gh` call that must succeed → its stdout. It is made once: what
+    /// writes is not made again on a failure that may have written.
+    pub fn gh(&self, args: &[&str]) -> Result<String> {
+        match self.call(args)? {
+            Ok(out) => Ok(out),
+            Err((call, said)) => bail!("{call} failed: {said}"),
+        }
+    }
+
+    /// One `gh` call that only reads → its stdout. One that fails in transit
+    /// (`in_transit`) is made again, `TRIES` times in all; none of them
+    /// answered is `Unreached`. A failure GitHub answered with is as `gh`'s.
+    pub fn read(&self, args: &[&str]) -> Result<String> {
+        let mut tries = 1;
+        loop {
+            match self.call(args)? {
+                Ok(out) => return Ok(out),
+                Err((call, said)) if !in_transit(&said) => bail!("{call} failed: {said}"),
+                Err((call, said)) if tries == TRIES => return Err(Unreached { call, said }.into()),
+                Err(_) => thread::sleep(BETWEEN_TRIES),
+            }
+            tries += 1;
+        }
     }
 
     /// The commit at the head of the default branch of `repo`.
     pub fn head_commit(&self, repo: &RepoName) -> Result<String> {
-        let out = self.gh(&["api", &format!("repos/{repo}/commits/HEAD"), "--jq", ".sha"])?;
+        let out = self.read(&["api", &format!("repos/{repo}/commits/HEAD"), "--jq", ".sha"])?;
         let commit = out.trim();
         let plain = !commit.is_empty() && commit.bytes().all(|b| b.is_ascii_hexdigit());
         if !plain {
@@ -234,7 +307,7 @@ impl GitHub {
             comments: Vec<Comment>,
         }
         let query = format!("query={OPEN_ISSUES_QUERY}");
-        let out = self.gh(&[
+        let out = self.read(&[
             "api",
             "graphql",
             "--paginate",
@@ -283,7 +356,7 @@ impl GitHub {
         let label = crate::judge::label_segment(label);
         let endpoint =
             format!("repos/{{owner}}/{{repo}}/issues?state=closed&labels={label}&per_page=100");
-        let out = self.gh(&["api", "--paginate", &endpoint, "--jq", CLOSED_JQ])?;
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", CLOSED_JQ])?;
         let mut closed = vec![];
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row =
@@ -310,7 +383,7 @@ impl GitHub {
             number: u64,
         }
         let out =
-            self.gh(&["pr", "list", "--state", "open", "--limit", "1000", "--json", PR_FIELDS])?;
+            self.read(&["pr", "list", "--state", "open", "--limit", "1000", "--json", PR_FIELDS])?;
         let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
         Ok(rows
             .into_iter()
@@ -335,7 +408,7 @@ impl GitHub {
     /// One issue, open or closed. An error when it cannot be read.
     pub fn issue(&self, number: u64) -> Result<IssueRead> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}");
-        let out = self.gh(&["api", &endpoint, "--jq", ISSUE_JQ])?;
+        let out = self.read(&["api", &endpoint, "--jq", ISSUE_JQ])?;
         serde_json::from_str(&out)
             .with_context(|| format!("gh api issue {number}: unexpected answer"))
     }
@@ -343,7 +416,7 @@ impl GitHub {
     /// Every comment on an issue or a PR, oldest first.
     pub fn comments(&self, number: u64) -> Result<Vec<Comment>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100");
-        let out = self.gh(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ])?;
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ])?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api comments: unexpected answer"))
@@ -417,7 +490,7 @@ impl GitHub {
             head_ref_name: String,
         }
         let fields = "number,headRefName";
-        let out = self.gh(&[
+        let out = self.read(&[
             "pr",
             "list",
             "--repo",
@@ -436,7 +509,7 @@ impl GitHub {
     /// What PR `number` of another repo, `repo`, changes, as `git diff`
     /// writes it.
     pub fn pr_diff_of(&self, repo: &RepoName, number: u64) -> Result<String> {
-        self.gh(&["pr", "diff", &number.to_string(), "--repo", repo.as_str()])
+        self.read(&["pr", "diff", &number.to_string(), "--repo", repo.as_str()])
     }
 
     /// Closes one PR of another repo, `repo`, without merging it, with a
@@ -452,7 +525,7 @@ impl GitHub {
         let endpoint = format!(
             "repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by?per_page=100"
         );
-        let out = self.gh(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ])?;
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ])?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api blocked_by: unexpected answer"))
@@ -476,7 +549,7 @@ impl GitHub {
     /// Every label the repo has, by name.
     pub fn labels(&self) -> Result<Vec<String>> {
         let endpoint = "repos/{owner}/{repo}/labels?per_page=100";
-        let out = self.gh(&["api", "--paginate", endpoint, "--jq", LABELS_JQ])?;
+        let out = self.read(&["api", "--paginate", endpoint, "--jq", LABELS_JQ])?;
         Ok(out.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
     }
 
@@ -515,5 +588,50 @@ impl GitHub {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/labels/{label}");
         self.gh(&["api", "--method", "DELETE", &endpoint, "--silent"])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_failed_in_transit_when_it_got_no_answer() {
+        for said in [
+            "unexpected end of JSON input",
+            "gh: Server Error (HTTP 502)",
+            "HTTP 503: Service Unavailable (https://api.github.com/graphql)",
+            "Get \"https://api.github.com/repos/a/b\": read tcp: connection reset by peer",
+            "Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout",
+            "Get \"https://api.github.com/repos/a/b\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
+            "Post \"https://api.github.com/graphql\": unexpected EOF",
+            "Post \"https://api.github.com/graphql\": EOF",
+        ] {
+            assert!(in_transit(said), "{said}");
+        }
+        for said in [
+            "gh: Not Found (HTTP 404)",
+            "gh: Resource not accessible by integration (HTTP 403)",
+            "HTTP 404: Not Found (https://api.github.com/repos/a/timeout)",
+            "GraphQL: Could not resolve to a Repository with the name 'a/b'.",
+            "fake gh: injected failure",
+        ] {
+            assert!(!in_transit(said), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_read_that_got_no_answer_is_found_under_what_was_said_around_it() {
+        let call = "gh api repos/acme/dev/commits/HEAD".to_string();
+        let raised = Unreached { call, said: "unexpected end of JSON input".to_string() };
+        let error =
+            anyhow::Error::from(raised.clone()).context("the team acme/team cannot be read");
+        assert_eq!(unreached(&error), Some(&raised));
+        assert_eq!(unreached(&anyhow::anyhow!("gh pr list failed: no")), None);
+        assert_eq!(
+            raised.to_string(),
+            "GitHub could not be reached: gh api repos/acme/dev/commits/HEAD: unexpected end of \
+             JSON input"
+        );
     }
 }

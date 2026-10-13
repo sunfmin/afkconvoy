@@ -4,7 +4,9 @@
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?, closed_at?,
 //! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url, at?}]}, `now` the time a comment posted here is written at, when there is one, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
-//! command line that make the call fail. `repos` {owner/repo: the git repo that
+//! command line that make the call fail. `cut_short` {a substring of a command
+//! line: how many more calls it cuts short}: each such call fails as one whose
+//! answer was cut short in transit. `repos` {owner/repo: the git repo that
 //! stands in for it}: the other repos GitHub holds, which `repo clone` clones and
 //! `repo create` adds to.
 //! `prs_of` {owner/repo: [{number, headRefName, state, closed_with?}]}: the
@@ -30,6 +32,13 @@ fn main() {
         .is_some_and(|parts| parts.iter().filter_map(|p| p.as_str()).any(|p| line.contains(p)));
     if injected {
         st.finish("", 1, "fake gh: injected failure\n");
+    }
+    let cut_short = st.doc.get_mut("cut_short").and_then(Value::as_object_mut).and_then(|cuts| {
+        cuts.iter_mut().find(|(part, left)| line.contains(part.as_str()) && left.as_u64() > Some(0))
+    });
+    if let Some((_, left)) = cut_short {
+        *left = json!(left.as_u64().unwrap() - 1);
+        st.finish("", 1, "unexpected end of JSON input\n");
     }
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     let other = st.opt("--repo").map(str::to_string);

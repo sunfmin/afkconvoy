@@ -84,6 +84,19 @@ impl Failed {
     }
 }
 
+/// `failed` with every failure of one cause told once: the first of each
+/// `error`, in the order they failed, with how many failed of it.
+pub fn by_cause<T>(failed: &[T], error: impl Fn(&T) -> &str) -> Vec<(&T, usize)> {
+    let mut causes: Vec<(&T, usize)> = vec![];
+    for failure in failed {
+        match causes.iter_mut().find(|(first, _)| error(first) == error(failure)) {
+            Some((_, count)) => *count += 1,
+            None => causes.push((failure, 1)),
+        }
+    }
+    causes
+}
+
 impl Tick {
     /// The steps of this tick that failed.
     pub fn failed(&self) -> Vec<Failed> {
@@ -251,6 +264,12 @@ mod tests {
     }
 
     #[test]
+    fn one_cause_is_told_once_with_the_steps_it_stopped() {
+        let causes = by_cause(&["reset", "no", "reset", "reset"], |error| error);
+        assert_eq!(causes, [(&"reset", 3), (&"no", 1)]);
+    }
+
+    #[test]
     fn a_tick_says_which_of_its_steps_failed() {
         let mut failed = tick(1);
         let What::Tick(tick) = &mut failed.what else { unreachable!() };
@@ -260,6 +279,9 @@ mod tests {
             "held": 2, "frontier_remaining": 1}));
         let steps: Vec<String> = tick.failed().iter().map(Failed::named).collect();
         assert_eq!(steps, ["dispatch #3", "patrol triage"]);
+        let failed = tick.failed();
+        let causes = by_cause(&failed, |failed| &failed.error);
+        assert_eq!(causes.len(), 2, "two causes: {causes:?}");
         assert!(tick.dispatched());
         assert_eq!(tick.stood(), Some((2, 1)));
         // a tick that could not rebuild failed whole

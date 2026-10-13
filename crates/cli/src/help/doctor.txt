@@ -46,8 +46,10 @@ WHAT IT ANSWERS
                                  last tick ended and the next is due, in epoch seconds,
                                  the line `run` printed, and what `tick` answers as `did`;
                                  error, when the tick failed whole. null with no log
-                failed_steps     the last ten steps that failed, newest first: {tick,
-                                 ended, do, issue, patrol, error}
+                failed_steps     the last ten failures, newest first: {tick, ended,
+                                 do, issue, patrol, error, count}. One cause that
+                                 stopped several steps of a tick is one failure: count
+                                 is how many, and do, issue and patrol the first's
     claims    each claim of that instance: {issue, title, status, pr, stage, role,
               held_for, worker, worktree, gate} — status as `plan` gives it; stage and
               role in a bound repo; held_for in seconds; worker is {state, quiet}, state
