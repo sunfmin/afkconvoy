@@ -18,8 +18,21 @@ use crate::role::Start;
 pub(super) const NAME: &str = "Claude Code";
 pub(super) const KEY: &str = "claude-code";
 pub(super) const PROGRAM: &str = "claude";
-/// Claude Code with the flag that lets it work with nobody at its terminal.
-pub(super) const STOCK: &str = "claude --dangerously-skip-permissions";
+/// The setting that answers the warning Claude Code opens with when it is
+/// started to work with nobody at its terminal: a worker has nobody to accept
+/// it, and stops there. On a host whose user accepted it once, their settings
+/// say the same. Written as a member of a JSON object.
+macro_rules! warning_accepted {
+    () => {
+        "\"skipDangerousModePermissionPrompt\":true"
+    };
+}
+/// Claude Code with the flag that lets it work with nobody at its terminal,
+/// and the warning it opens with under that flag answered: an unbound repo's
+/// worker is started with this alone. Of two `--settings` Claude Code takes
+/// the last, whole: a worker in its role is started on the fleet's (`added`).
+pub(super) const STOCK: &str =
+    concat!("claude --dangerously-skip-permissions --settings '{", warning_accepted!(), "}'");
 /// The variable Claude Code reads a custom provider's address from.
 pub(super) const PROVIDER: &str = "ANTHROPIC_BASE_URL";
 
@@ -140,8 +153,9 @@ fn json_text(text: &str) -> String {
 }
 
 /// The settings added to a worker's: the guard, a hook Claude Code runs
-/// before every tool call with the line `guard`, and the report, a hook it
-/// runs with the line `report` wherever the worker's state changes. They are
+/// before every tool call with the line `guard`, the report, a hook it
+/// runs with the line `report` wherever the worker's state changes, and the
+/// answer to the warning it would stop at, whatever command starts it. They are
 /// added to the role's own, so a role's hooks run beside them and no role is
 /// without the guard (docs/adr/0012) — or unheard of by the worker backend,
 /// which would read a worker it has no report of off its terminal alone.
@@ -156,7 +170,7 @@ fn added_settings(guard: &str, report: &str) -> String {
     for event in STATE_EVENTS {
         settings.push_str(&format!(",\"{event}\":[{{\"hooks\":[{report}]}}]"));
     }
-    settings.push_str("}}");
+    settings.push_str(concat!("},", warning_accepted!(), "}"));
     settings
 }
 
@@ -249,7 +263,7 @@ mod tests {
         for event in STATE_EVENTS {
             added.push_str(&format!(r#","{event}":[{{"hooks":[{report}]}}]"#));
         }
-        added + "}}"
+        added + r#"},"skipDangerousModePermissionPrompt":true}"#
     }
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {

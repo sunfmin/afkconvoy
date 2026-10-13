@@ -532,8 +532,8 @@ struct AgentArgs {
     /// The worker launch command of the default harness, handed to orca as it is — in a
     /// bound repo, with what starts a worker in its role added — or, as
     /// `<harness>=<command>`, that of one harness; once for each [default: each harness's
-    /// stock one — with no ANTHROPIC_BASE_URL, `claude --dangerously-skip-permissions`;
-    /// with one, asked for]
+    /// stock one — with no ANTHROPIC_BASE_URL, `claude --dangerously-skip-permissions`
+    /// with the warning of that mode answered; with one, asked for]
     #[arg(long, value_name = "[HARNESS=]COMMAND")]
     worker_command: Vec<String>,
     /// Seconds an agent is given to be ready for its prompt
