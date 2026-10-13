@@ -16,11 +16,11 @@ brew install sunfmin/tap/afkconvoy
 
 Homebrew installs `git` and `gh` with it. Three things are yours to set up:
 
-- **orca** — afkconvoy starts every worker through [orca](https://github.com/stablyai/orca): `brew install --cask stablyai/orca/orca`. Give the tap's name: the cask Homebrew itself calls `orca` is another program.
+- **orca** — afkconvoy starts every worker through [orca](https://github.com/stablyai/orca): `brew install --cask stablyai/orca/orca`. Give the tap's name: the cask Homebrew itself calls `orca` is another program. Then start it — `orca open` — and, in each checkout a fleet is to work, give it the repo once: `orca repo add --path "$PWD"`.
 - **GitHub** — `gh auth login`, as a user who may push to the repo.
 - **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`.
 
-`run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing or logged out. afkconvoy installs nothing and logs nobody in.
+`run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing, logged out, not running or not given the checkout. afkconvoy installs nothing, starts and adds nothing, and logs nobody in.
 
 `afkconvoy --version` prints the release you have.
 

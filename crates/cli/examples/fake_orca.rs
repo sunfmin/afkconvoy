@@ -4,9 +4,10 @@
 //! State: `repos` [{id, path}], `root` (where worktrees are made), `worktrees`
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
 //! worktreePath, command, sent, open, agent?, lastOutputAt?, screen?}], `calls`.
-//! Knobs: `down` (every call fails), `create_fails` [issue…], `rm_fails`,
-//! `never_ready`, `send_refused`, `stale_base` (a ref worktrees are cut at
-//! instead of the one asked for), `ps_truncated`.
+//! Knobs: `stopped` (it is not running: it says so, and every other call
+//! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
+//! `stale_base` (a ref worktrees are cut at instead of the one asked for),
+//! `ps_truncated`, `ps_fails`.
 
 mod fake;
 
@@ -18,7 +19,10 @@ use serde_json::{Value, json};
 fn main() {
     let mut st = State::open("CONVOY_FAKE_ORCA");
     assert_eq!(st.argv.last().map(String::as_str), Some("--json"), "{:?}", st.argv);
-    if st.doc["down"] == true {
+    if st.argv[0] == "status" {
+        status(&st);
+    }
+    if st.doc["stopped"] == true {
         fail(&st, "runtime_unreachable");
     }
     let argv: Vec<String> = st.argv.clone();
@@ -41,6 +45,16 @@ fn main() {
 
 fn done(st: &State, result: Value) -> ! {
     st.finish(&json!({"id": "x", "ok": true, "result": result}).to_string(), 0, "")
+}
+
+/// As real orca: asked while it is not running, it answers, and not `ready`.
+fn status(st: &State) -> ! {
+    let running = st.doc["stopped"] != true;
+    let state = if running { "ready" } else { "stopped" };
+    done(
+        st,
+        json!({"app": {"running": running}, "runtime": {"state": state, "reachable": running}}),
+    )
 }
 
 fn fail(st: &State, code: &str) -> ! {
@@ -130,6 +144,9 @@ fn worktree_list(st: &State) -> ! {
 
 fn worktree_ps(st: &State) -> ! {
     assert!(st.opt("--limit").is_some(), "{:?}", st.argv);
+    if st.doc["ps_fails"] == true {
+        fail(st, "runtime_unreachable");
+    }
     let rows = st.doc["worktrees"].as_array().cloned().unwrap_or_default();
     let out: Vec<Value> = rows
         .iter()

@@ -164,7 +164,7 @@ fn a_train_worker_is_left_at_work_told_what_joined_and_started_again_when_gone()
     let sent = open[0]["sent"].as_array().unwrap();
     assert_eq!(sent.len(), 2);
     assert!(sent[1]["text"].as_str().unwrap().starts_with("PRs have joined the landing train"));
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(!calls.contains(&"terminal create".to_string()), "{calls:?}");
     assert_eq!(world.remote(&["rev-parse", LINE]), second);
     assert_eq!(did(&tick(&world, "1450"))[0], "tend_train nothing", "told once per tip");

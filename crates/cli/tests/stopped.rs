@@ -92,7 +92,7 @@ fn an_orca_that_cannot_be_asked_is_an_error_never_a_worker_that_is_gone() {
 
     world.with_orca(|orca| {
         orca["ps_truncated"] = json!(false);
-        orca["down"] = json!(true);
+        orca["ps_fails"] = json!(true);
     });
     let ticked = tick(&world, 1180);
     assert_eq!(did(&ticked)[0], "judge 7 failed");
@@ -195,7 +195,7 @@ fn typed(world: &World) -> Vec<String> {
 /// Every `orca terminal read` since the last look.
 fn screen_reads(world: &World) -> Vec<Vec<String>> {
     let calls = world.orca_calls();
-    calls.into_iter().filter(|call| call[..2] == ["terminal", "read"]).collect()
+    calls.into_iter().filter(|call| common::asked(call) == "terminal read").collect()
 }
 
 fn nudge_record(world: &World) -> PathBuf {

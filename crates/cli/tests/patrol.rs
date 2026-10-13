@@ -118,12 +118,34 @@ fn workers_work(world: &World, now: u64) {
 }
 
 fn calls(world: &World, what: &str) -> Vec<Vec<String>> {
-    world.orca_calls().into_iter().filter(|call| call[..2].join(" ") == what).collect()
+    world.orca_calls().into_iter().filter(|call| common::asked(call) == what).collect()
 }
 
 fn option<'a>(call: &'a [String], name: &str) -> Option<&'a str> {
     let at = call.iter().position(|arg| arg == name)?;
     call.get(at + 1).map(String::as_str)
+}
+
+/// #119: the first tick of a fresh bound repo held a slot for each patrol it
+/// could not run. The startup probe refuses before any is taken.
+#[test]
+fn in_a_checkout_orca_does_not_know_no_patrol_is_run_and_no_slot_held() {
+    let world = bound("[sweep, audit]");
+    world.issue(7, &["feature"]);
+    world.with_orca(|orca| orca["repos"] = json!([]));
+    let now = "1000";
+    for start in [
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", now]),
+        world.afk(&["plan", "--now", now]),
+    ] {
+        let error = start.error();
+        assert!(
+            error.contains("orca does not know this checkout: orca repo add --path '"),
+            "{error}"
+        );
+    }
+    assert_eq!(refs(&world), [] as [String; 0], "no patrol's run");
+    assert_eq!(world.claims(), [], "and no claim");
 }
 
 #[test]
@@ -223,7 +245,7 @@ fn a_patrol_the_repo_names_runs_when_due_and_one_it_does_not_name_never_runs() {
     // Its worker is in a checkout of the base branch that is no issue's…
     let calls = world.orca_calls();
     let of = |what: &str| -> Vec<&Vec<String>> {
-        calls.iter().filter(|call| call[..2].join(" ") == what).collect()
+        calls.iter().filter(|call| common::asked(call) == what).collect()
     };
     let created = of("worktree create");
     assert_eq!(created.len(), 1, "{created:?}");
@@ -283,7 +305,7 @@ fn a_patrol_due_while_its_run_is_still_going_is_skipped_and_a_missed_run_is_not_
     world.orca_calls();
     assert_eq!(patrolled(&tick(&world, 21_200)), ["patrol sweep done"]);
     let calls = world.orca_calls();
-    assert!(!calls.iter().any(|call| call[..2].join(" ") == "worktree create"), "{calls:?}");
+    assert!(!calls.iter().any(|call| common::asked(call) == "worktree create"), "{calls:?}");
     assert_eq!(git(&checkout(&world), &["rev-parse", "HEAD"]), base);
     workers_leave(&world);
     assert_eq!(patrolled(&tick(&world, 21_300)), ["end_patrol sweep done"]);
