@@ -141,6 +141,13 @@ pub struct Remembered {
     pub is_me: bool,
 }
 
+impl Remembered {
+    /// How many claims it holds, on issues and on runs.
+    pub fn claim_count(&self) -> usize {
+        self.claims.len().saturating_add(self.runs.len())
+    }
+}
+
 /// Every instance the remote remembers — by a claim or by a heartbeat — the
 /// ones holding most claims first, on issues and on runs alike, then by id. One with a heartbeat and no
 /// claim is listed too: that is a fleet that is idle, and seeing it is how a
@@ -177,7 +184,7 @@ pub fn remembered(
         }
     }
     rows.sort_by(|a, b| {
-        let by_claims = (b.claims.len() + b.runs.len()).cmp(&(a.claims.len() + a.runs.len()));
+        let by_claims = b.claim_count().cmp(&a.claim_count());
         by_claims
             .then(a.instance.is_none().cmp(&b.instance.is_none()))
             .then(a.instance.cmp(&b.instance))

@@ -112,7 +112,7 @@ fn row(remembered: &Remembered) -> Value {
         "host": remembered.host,
         "claims": remembered.claims,
         "runs": remembered.runs,
-        "claim_count": remembered.claims.len() + remembered.runs.len(),
+        "claim_count": remembered.claim_count(),
         "heartbeat_ts": remembered.heartbeat,
         "heartbeat_age": remembered.heartbeat_age,
         "fresh": remembered.fresh,
