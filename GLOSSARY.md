@@ -119,7 +119,7 @@ Parking an issue on issues its own stage opened. When they have all closed, that
 _Avoid_: decompose, epic, fan out
 
 **Patrol**:
-A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code.
+A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period.
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:

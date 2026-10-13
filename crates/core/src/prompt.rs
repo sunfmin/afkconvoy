@@ -480,7 +480,14 @@ the fix:
 
 - Leave no commit and open no PR: a run that does has failed, and is reported to a human.
 - Put no label on an issue yourself: the commands above do.
-- When you have nothing more to open, stop. There is nothing to declare.
+
+## Declare the run over
+
+When you have nothing more to open, run this once, exactly as written, and then stop. It tells the
+fleet that the run is over; until it does, the run holds a slot no issue can be worked in:
+```bash
+{over_command}
+```
 ";
 
 /// What the brief of a patrol's worker is filled with.
@@ -501,6 +508,8 @@ pub struct PatrolFields<'a> {
     /// The lines the worker takes an issue in and raises a fleet lock with.
     pub intake_command: &'a str,
     pub lock_command: &'a str,
+    /// The line the worker declares the run over with.
+    pub over_command: &'a str,
 }
 
 /// The brief a patrol's worker is given.
@@ -523,6 +532,7 @@ pub fn patrol_prompt(fields: &PatrolFields) -> Result<String, String> {
             ("room", &fields.room.to_string()),
             ("intake_command", fields.intake_command),
             ("lock_command", fields.lock_command),
+            ("over_command", fields.over_command),
         ],
     )
 }
@@ -574,7 +584,15 @@ If a precedent already kept covers the case, there is nothing to propose: open n
 - At most one PR, on `{team}`, from the branch `{branch}`. The fleet closes one that changes
   anything but `{file}`, or does anything there but append that one line.
 - Never merge it, and push nothing but that branch.
-- When the PR is open, or there is nothing to propose, stop. There is nothing to declare.
+
+## Declare the run over
+
+When the PR is open, or there is nothing to propose, run this once, exactly as written, and then
+stop. It tells the fleet that the run is over; until it does, the run holds a slot no issue can be
+worked in:
+```bash
+{over_command}
+```
 ";
 
 /// What the brief of a proposal's worker is filled with.
@@ -596,6 +614,8 @@ pub struct ProposalFields<'a> {
     /// The worker's checkout of the base branch.
     pub worktree: &'a str,
     pub base_branch: &'a str,
+    /// The line the worker declares the run over with.
+    pub over_command: &'a str,
 }
 
 /// The brief a proposal's worker is given.
@@ -615,6 +635,7 @@ pub fn proposal_prompt(fields: &ProposalFields) -> Result<String, String> {
             ("precedents", fields.precedents),
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
+            ("over_command", fields.over_command),
         ],
     )
 }
@@ -1306,6 +1327,7 @@ mod tests {
             precedents: "/copies/acme/team/def/precedents.md",
             worktree: "/wt/convoy-precedent-7-c2001",
             base_branch: "develop",
+            over_command: "/opt/bin/afkconvoy over --run precedent-7-c2001",
         };
         let prompt = proposal_prompt(&fields).unwrap();
         for said in [
@@ -1320,7 +1342,10 @@ mod tests {
             assert!(prompt.contains(said), "{said}\n{prompt}");
         }
         assert!(!prompt.contains('{'), "every field is filled: {prompt}");
-        // It declares nothing: a proposal is at no stage.
+        // It declares no verdict — a proposal is at no stage — and ends with
+        // the line that declares the run over.
         assert!(!prompt.contains("afkconvoy verdict"), "{prompt}");
+        let last = "```bash\n/opt/bin/afkconvoy over --run precedent-7-c2001\n```\n";
+        assert!(prompt.ends_with(last), "{prompt}");
     }
 }

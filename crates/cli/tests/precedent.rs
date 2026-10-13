@@ -276,6 +276,9 @@ fn a_humans_ruling_starts_one_worker_in_the_role_the_team_names_and_the_issue_do
         "{brief}"
     );
     assert!(brief.contains("/acme/team/") && brief.contains("/precedents.md`"), "{brief}");
+    // It ends with the line that declares the run over, run from the checkout.
+    let over = format!(" over --run 'precedent-7-c{comment}'\n```\n");
+    assert!(brief.ends_with(&over) && brief.contains(&format!("cd '{}' && ", dir.display())));
 
     // The issue says it was proposed, and the proposal is claimed.
     let said = world.comments(7).join("\n");
@@ -324,6 +327,25 @@ fn a_verdict_a_human_declares_for_their_own_stage_is_no_ruling_to_propose() {
     assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done"]);
     assert_eq!(claimed(&world), Vec::<String>::new());
     assert!(!world.comments(7).join("\n").contains("convoy:precedent-proposed"));
+}
+
+#[test]
+fn a_proposal_s_worker_declares_its_run_over_and_the_next_tick_ends_it() {
+    let world = proposing(3);
+    let (comment, _) = ruled(&world, 7, 1000);
+    assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done", "propose 7 done"]);
+    let dir = checkout(&world, 7, comment);
+    let run = format!("precedent-7-c{comment}");
+
+    // Its worker still at it, the proposal goes on…
+    assert_eq!(did(&tick(&world, 1110)), Vec::<String>::new());
+    // …until it declares the run over: the next tick ends it, PR or none.
+    let said = world.afk_in(&dir, &["over", "--run", &run]).ok();
+    assert_eq!(said["ref"], format!("refs/convoy/over/{run}"));
+    assert_eq!(claimed(&world).len(), 2, "the claim, and what was declared of it");
+    assert_eq!(did(&tick(&world, 1160)), ["end_proposal 7 done"]);
+    assert!(!dir.exists(), "its checkout is removed");
+    assert_eq!(claimed(&world), Vec::<String>::new());
 }
 
 /// A ruling on issue 7 is proposed, its worker opens PR 31 on the team's
