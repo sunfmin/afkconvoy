@@ -52,33 +52,7 @@ pub fn draw(team: &Team, workflow: &Workflow, default: Harness) -> String {
         workflow.max_consecutive_rework,
     );
     for stage in stages {
-        let mut said = vec![match &stage.by {
-            Performer::Human => HUMAN.to_string(),
-            Performer::Role(work) => work_said(team, work),
-        }];
-        if let Some(harness) = stage.harness(default) {
-            said.push(format!("harness {}", harness.key()));
-        }
-        if let Some(model) = &stage.model {
-            said.push(format!("model {model}"));
-        }
-        if !stage.writes {
-            said.push("writes nothing".to_string());
-        }
-        if let Some(consult) = &stage.consult {
-            said.push(format!("escalate → {}", work_said(team, consult)));
-        }
-        if let Some(to) = stage.reject() {
-            said.push(format!("reject → {}", workflow.stage(to).name));
-        }
-        let said = said.join(" · ");
-        out.push_str(&format!("{}{:<width$}  {said}\n", margin(&backs, stage), stage.name));
-        let pass = match stage.pass() {
-            Pass::Stage(to) => workflow.stage(to).name.as_str(),
-            Pass::Land => LAND,
-            Pass::Done => DONE,
-        };
-        out.push_str(&format!("{}  ↓ pass → {pass}\n", between(&backs, stage)));
+        out.push_str(&rows(team, workflow, stage, &backs, width, default));
     }
     let blank = "  ".repeat(backs.len());
     if let Some(land) = &workflow.land {
@@ -87,6 +61,48 @@ pub fn draw(team: &Team, workflow: &Workflow, default: Harness) -> String {
     if ends_in_nothing {
         out.push_str(&format!("{blank}  {DONE}\n"));
     }
+    out
+}
+
+/// The two rows of one stage of `workflow`, one of `team`: the stage with
+/// what is said of it, and its `pass` under it.
+#[spec(fn(&Team[@roles], &Workflow[@w], &Stage{v: v.n == w.n && v.roles == roles}, &[Back], usize, Harness)
+    -> String requires w.roles == roles)]
+fn rows(
+    team: &Team,
+    workflow: &Workflow,
+    stage: &Stage,
+    backs: &[Back],
+    width: usize,
+    default: Harness,
+) -> String {
+    let mut said = vec![match &stage.by {
+        Performer::Human => HUMAN.to_string(),
+        Performer::Role(work) => work_said(team, work),
+    }];
+    if let Some(harness) = stage.harness(default) {
+        said.push(format!("harness {}", harness.key()));
+    }
+    if let Some(model) = &stage.model {
+        said.push(format!("model {model}"));
+    }
+    if !stage.writes {
+        said.push("writes nothing".to_string());
+    }
+    if let Some(consult) = &stage.consult {
+        said.push(format!("escalate → {}", work_said(team, consult)));
+    }
+    if let Some(to) = stage.reject() {
+        said.push(format!("reject → {}", workflow.stage(to).name));
+    }
+    let said = said.join(" · ");
+    let mut out = format!("{}{:<width$}  {said}\n", margin(backs, stage), stage.name);
+    let pass = match stage.pass() {
+        Pass::Stage(to) => workflow.stage(to).name.as_str(),
+        Pass::Land => LAND,
+        Pass::Done => DONE,
+    };
+    out.push_str(&format!("{}  ↓ pass → {pass}\n", between(backs, stage)));
     out
 }
 
