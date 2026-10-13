@@ -3,7 +3,8 @@ afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance
 worktree, and lands each finished PR on the base branch through the landing train, behind
 the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
 
-This text is the way in. What it leaves out is in each command's own help.
+This text is the way in. What it leaves out is in each command's own help, and in the
+topics: THE TOPICS, below.
 
 WHAT IT NEEDS
 
@@ -34,8 +35,9 @@ WHAT A COMMAND ANSWERS
 
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
   a non-zero exit. Warnings go to stderr. `run` instead prints one line per tick until
-  it is stopped, `show` a drawing unless it is asked about an issue, and `guard` answers
-  the harness that asks it as a hook does: with its exit code.
+  it is stopped, `show` a drawing unless it is asked about an issue, `help` plain text
+  as `--help` does, and `guard` answers the harness that asks it as a hook does: with
+  its exit code.
 
 THE COMMANDS, by who runs them
 
@@ -76,6 +78,13 @@ THE COMMANDS, by who runs them
   The claim plumbing — what the transitions are built on. Read these only to inspect or
   repair claims and heartbeats on the remote:
       scan  claim  release  heartbeat
+
+THE TOPICS
+
+  What belongs to no one command. `afkconvoy help <topic>` prints one: plain text, as
+  `--help` itself is, and no JSON object.
+
+{topics}
 
 RULES TO KNOW BEFORE YOU START
 

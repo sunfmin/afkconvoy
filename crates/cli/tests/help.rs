@@ -5,6 +5,8 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::World;
@@ -45,15 +47,242 @@ fn guide(long: &str) -> &str {
 
 /// The subcommands the guide sorts into groups: its lines of bare names.
 fn grouped(guide: &str) -> Vec<&str> {
-    let lines = between(guide, "THE COMMANDS", "RULES").into_iter();
+    let lines = between(guide, "THE COMMANDS", "THE TOPICS").into_iter();
     lines.filter(|line| line.starts_with("      ")).flat_map(str::split_whitespace).collect()
 }
 
-/// Every word the guide puts after `afkconvoy ` as a command to run.
-fn mentioned(guide: &str) -> BTreeSet<&str> {
-    let after = guide.split("afkconvoy ").skip(1);
+/// Every word `text` puts after `before` as a name to run or to ask for: a
+/// placeholder, a flag or a path is none.
+fn mentioned<'a>(text: &'a str, before: &str) -> BTreeSet<&'a str> {
+    let after = text.split(before).skip(1);
     let words = after.filter_map(|rest| rest.split([' ', '`', '\n']).next());
     words.filter(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase())).collect()
+}
+
+/// The topics `--help` lists, each with its line.
+fn topics(long: &str) -> Vec<(&str, &str)> {
+    let rows = between(long, "THE TOPICS", "RULES").into_iter();
+    let rows = rows.filter(|row| row.starts_with("      "));
+    rows.map(|row| row.trim().split_once("  ").expect("a name and its line")).collect()
+}
+
+/// Where this repository is checked out.
+fn repository() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The file a topic's text is, from the repository's root: the glossary is the
+/// repository's own, and any other topic a file of `help/topics/`.
+fn topic_file(name: &str) -> String {
+    match name {
+        "glossary" => "GLOSSARY.md".to_string(),
+        name => format!("crates/cli/src/help/topics/{name}.txt"),
+    }
+}
+
+/// Every help text the binary prints, each under the file it is written in:
+/// `--help`, each command's, each topic.
+fn help_texts() -> Vec<(String, String)> {
+    let long = help("--help");
+    let mut texts = vec![("crates/cli/src/help.txt".to_string(), long.clone())];
+    for command in listed(&help("-h")) {
+        let file = format!("crates/cli/src/help/{command}.txt");
+        texts.push((file, asked(&[command, "--help"])));
+    }
+    for (topic, _) in topics(&long) {
+        texts.push((topic_file(topic), asked(&["help", topic])));
+    }
+    texts
+}
+
+/// The glossary is a topic, and the file itself: nothing else is edited for
+/// what `help glossary` prints to change.
+#[test]
+fn help_prints_a_topic_as_the_file_it_is_and_a_commands_help_as_before() {
+    let glossary = fs::read_to_string(repository().join("GLOSSARY.md")).unwrap();
+    assert_eq!(asked(&["help", "glossary"]), glossary);
+    assert!(glossary.contains("**Fleet instance**:"));
+    assert_eq!(asked(&["help", "wake"]), asked(&["wake", "--help"]));
+    assert_eq!(asked(&["help"]), help("--help"));
+}
+
+#[test]
+fn the_guide_lists_the_topics_there_are_and_no_other() {
+    let long = help("--help");
+    let listed: BTreeSet<_> = topics(&long).into_iter().map(|(name, _)| name).collect();
+    let mut there = BTreeSet::from(["glossary".to_string()]);
+    if let Ok(files) = fs::read_dir(repository().join("crates/cli/src/help/topics")) {
+        let names = files.map(|file| file.unwrap().path());
+        there.extend(names.map(|file| file.file_stem().unwrap().to_str().unwrap().to_string()));
+    }
+    assert_eq!(listed, there.iter().map(String::as_str).collect());
+    // Each is printed as the file it is, and has a line that says something.
+    for (name, line) in topics(&long) {
+        let file = fs::read_to_string(repository().join(topic_file(name))).unwrap();
+        assert_eq!(asked(&["help", name]), file, "{name}");
+        assert!(line.len() > 20, "{name}: {line}");
+    }
+    let said = guide(&long).split("\nTHE TOPICS\n").nth(1).unwrap();
+    assert!(said.contains("`afkconvoy help <topic>` prints one: plain text, as"), "{said}");
+}
+
+#[test]
+fn help_refuses_a_name_that_is_neither_a_command_nor_a_topic() {
+    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(["help", "nosuch"]).output();
+    let out = out.unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let error = answer["error"].as_str().unwrap();
+    assert!(error.contains("`nosuch` is neither a command nor a help topic"), "{error}");
+    let named = error.split("The topics: ").nth(1).unwrap().split('.').next().unwrap();
+    let long = help("--help");
+    let topics: Vec<_> = topics(&long).into_iter().map(|(name, _)| name).collect();
+    assert_eq!(named.split(", ").collect::<Vec<_>>(), topics);
+    assert!(error.contains("The commands: `afkconvoy -h` lists them."), "{error}");
+}
+
+/// Where the help says `afkconvoy` and then a word that is no command: the
+/// tool is the subject of a sentence there, and nothing is to be run.
+const SUBJECT_OF: [&str; 2] = ["works", "that"];
+
+/// What `text` tells its reader to run or to ask for that does not exist.
+fn missing(text: &str, commands: &BTreeSet<&str>, topics: &BTreeSet<&str>) -> Vec<String> {
+    let run = mentioned(text, "afkconvoy ").into_iter();
+    let run = run.filter(|word| !commands.contains(word) && !SUBJECT_OF.contains(word));
+    let asked = mentioned(text, "afkconvoy help ").into_iter();
+    let asked = asked.filter(|word| !commands.contains(word) && !topics.contains(word));
+    let run = run.map(|word| format!("afkconvoy {word}"));
+    run.chain(asked.map(|word| format!("afkconvoy help {word}"))).collect()
+}
+
+#[test]
+fn no_help_text_names_a_command_or_a_topic_that_does_not_exist() {
+    let (short, long) = (help("-h"), help("--help"));
+    let mut commands = listed(&short);
+    commands.insert("help");
+    let topics: BTreeSet<_> = topics(&long).into_iter().map(|(name, _)| name).collect();
+    // What it catches: a command and a topic there is none of, and nothing else.
+    let made_up = "Run `afkconvoy plan`, then afkconvoy frobnicate <dir> <dir>; `afkconvoy help \
+                   glossary`, afkconvoy <command> --help and afkconvoy --help say more.";
+    assert_eq!(missing(made_up, &commands, &topics), ["afkconvoy frobnicate"]);
+    let caught = missing("see `afkconvoy help nosuch`", &commands, &topics);
+    assert_eq!(caught, ["afkconvoy help nosuch"]);
+    let texts = help_texts();
+    assert!(texts.len() > 30);
+    for (file, text) in texts {
+        let missing = missing(&text, &commands, &topics);
+        assert!(missing.is_empty(), "{file} names what does not exist: {missing:?}");
+    }
+}
+
+/// How many single-letter edits — one put in, taken out or changed — turn `a`
+/// into `b`.
+fn edits(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, from) in a.iter().enumerate() {
+        let mut last = row[0];
+        row[0] = i + 1;
+        for (j, to) in b.iter().enumerate() {
+            let changed = last + usize::from(from != to);
+            last = row[j + 1];
+            row[j + 1] = changed.min(row[j] + 1).min(last + 1);
+        }
+    }
+    row[b.len()]
+}
+
+/// `help <name>` is one namespace: a topic a typo away from a command would
+/// be printed for it.
+#[test]
+fn no_topic_is_named_as_a_command_is_or_within_one_edit_of_one() {
+    assert_eq!([edits("rule", "rule"), edits("rules", "rule"), edits("role", "rule")], [0, 1, 1]);
+    assert_eq!([edits("ruel", "rule"), edits("roles", "rule"), edits("", "help")], [2, 2, 4]);
+    let (short, long) = (help("-h"), help("--help"));
+    let mut commands = listed(&short);
+    commands.insert("help");
+    for (topic, _) in topics(&long) {
+        for command in &commands {
+            assert!(
+                edits(topic, command) > 1,
+                "the topic {topic} is read as the command {command}"
+            );
+        }
+    }
+}
+
+/// The words the glossary's entries list under _Avoid_, each with its entry.
+/// One the entry gives a note in brackets is rightly used for something else,
+/// which no test can tell from the use avoided: it is left out.
+fn avoided(glossary: &str) -> Vec<(String, &str)> {
+    let mut avoided = Vec::new();
+    let mut entry = "";
+    for line in glossary.lines() {
+        if let Some(term) = line.strip_prefix("**").and_then(|rest| rest.strip_suffix("**:")) {
+            entry = term;
+        }
+        // A note may hold a comma of its own: a word ends where the next one starts.
+        let words = line.strip_prefix("_Avoid_: ").unwrap_or_default().split(", ");
+        let mut noted = false;
+        for word in words {
+            let whole = !noted && !word.contains('(');
+            noted = (noted || word.contains('(')) && !word.ends_with(')');
+            if whole && !word.is_empty() {
+                avoided.push((word.to_lowercase(), entry));
+            }
+        }
+    }
+    avoided
+}
+
+/// Each avoided word `text` holds — as a whole word, one or several — with
+/// the file, the word, the entry that avoids it and the line it is on. A word
+/// that is quoted, or is part of a key, a flag or a path, names something of
+/// the tool's and is no use of the word.
+fn offences(file: &str, text: &str, avoided: &[(String, &str)]) -> Vec<String> {
+    let mut offences = Vec::new();
+    // The glossary's own lists of them are no use of them.
+    for line in text.lines().filter(|line| !line.starts_with("_Avoid_: ")) {
+        let lower = line.to_lowercase();
+        for (word, entry) in avoided {
+            let held = lower.match_indices(word.as_str()).any(|(at, _)| {
+                let after = &lower[at + word.len()..];
+                let after = after.strip_prefix('s').unwrap_or(after);
+                let named = |c: char| c.is_alphanumeric() || "_-/`\"".contains(c);
+                let suffix = after.strip_prefix('.').is_some_and(|rest| rest.starts_with(named));
+                !lower[..at].ends_with(named) && !after.starts_with(named) && !suffix
+            });
+            if held {
+                let line = line.trim();
+                offences.push(format!("{file}: `{word}`, which **{entry}** avoids, in: {line}"));
+            }
+        }
+    }
+    offences
+}
+
+#[test]
+fn no_help_text_holds_a_word_the_glossary_says_to_avoid() {
+    let glossary = fs::read_to_string(repository().join("GLOSSARY.md")).unwrap();
+    let avoided = avoided(&glossary);
+    assert!(avoided.len() > 80, "{avoided:?}");
+    assert!(avoided.contains(&("merge queue".to_string(), "Landing train")));
+    assert!(!avoided.iter().any(|(word, _)| word.contains('(')), "{avoided:?}");
+    // What it catches, and how it names it.
+    let made_up = "  The Dashboards are slow.\n_Avoid_: launcher\n  A relauncher is none.";
+    assert_eq!(
+        offences("help/x.txt", made_up, &avoided),
+        ["help/x.txt: `dashboard`, which **Panel** avoids, in: The Dashboards are slow."]
+    );
+    let offences: Vec<_> =
+        help_texts().iter().flat_map(|(file, text)| offences(file, text, &avoided)).collect();
+    assert!(
+        offences.is_empty(),
+        "a help text holds a word the glossary says to avoid. Say the entry's own term — or, \
+         where the word is rightly used for something else, say for what in brackets after it \
+         in the entry's _Avoid_:\n{}",
+        offences.join("\n")
+    );
 }
 
 #[test]
@@ -63,10 +292,6 @@ fn the_guide_groups_every_visible_subcommand_once_and_names_no_other() {
     assert!(listed.len() > 10, "{short}");
     assert_eq!(grouped.iter().copied().collect::<BTreeSet<_>>(), listed);
     assert_eq!(grouped.len(), listed.len(), "a subcommand is in two groups: {grouped:?}");
-    // Nor does its prose tell anyone to run a command that does not exist.
-    let prose: BTreeSet<_> =
-        mentioned(guide(&long)).into_iter().filter(|w| *w != "works").collect();
-    assert!(!prose.is_empty() && prose.is_subset(&listed), "{prose:?}");
 }
 
 #[test]

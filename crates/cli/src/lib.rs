@@ -17,7 +17,7 @@ use afkconvoy_core::role::{
 };
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::{Value, json};
 
 pub mod abandon;
@@ -60,6 +60,7 @@ pub mod team;
 pub mod tend;
 pub mod tick;
 pub mod tools;
+pub mod topic;
 pub mod train;
 pub mod wake;
 pub mod watch;
@@ -79,8 +80,9 @@ pub const VERSION: &str = env!("AFKCONVOY_VERSION");
 /// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
 /// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
 /// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
+/// `help` is this crate's own, not clap's: it prints a topic too.
 #[derive(Parser)]
-#[command(name = "afkconvoy", version = VERSION, about, long_about = with_files(include_str!("help.txt")))]
+#[command(name = "afkconvoy", version = VERSION, about, long_about = guide(), disable_help_subcommand = true)]
 struct Cli {
     /// The time to act at, in epoch seconds [default: the clock's]
     #[arg(long, global = true, hide = true)]
@@ -452,6 +454,11 @@ enum Command {
         #[command(flatten)]
         who: Who,
     },
+    /// Print this message, the help of the given command, or a help topic
+    Help {
+        /// A command, or a topic: `--help` lists both
+        name: Option<String>,
+    },
 }
 
 /// The one issue a command is about: its number, as an argument or as
@@ -573,6 +580,27 @@ fn with_files(help: &str) -> String {
     help.replace("{files}", include_str!("help/files.txt").trim_end())
 }
 
+/// What `--help` opens with: `help.txt`, with the topics listed where it says
+/// `{topics}`.
+fn guide() -> String {
+    with_files(include_str!("help.txt")).replace("{topics}", &topic::listing())
+}
+
+/// What `help` prints: the guide with no name, the long help of the command
+/// called `name`, or the topic called that. `None` for any other name.
+fn help(name: Option<&str>) -> Option<String> {
+    let mut cli = Cli::command();
+    // Built, so that a command's usage line names the whole command line.
+    cli.build();
+    let Some(name) = name else {
+        return Some(cli.render_long_help().to_string());
+    };
+    match cli.find_subcommand_mut(name) {
+        Some(command) => Some(command.render_long_help().to_string()),
+        None => topic::text(name).map(str::to_string),
+    }
+}
+
 fn repo(text: &str) -> Result<RepoName, String> {
     RepoName::read(text).ok_or_else(|| "a repo is named as owner/repo".to_string())
 }
@@ -664,6 +692,13 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     };
     if matches!(cli.command, Command::Guard) {
         return guard::guard();
+    }
+    if let Command::Help { name } = &cli.command {
+        let Some(text) = help(name.as_deref()) else {
+            return fail(2, &topic::unknown(name.as_deref().unwrap_or_default()));
+        };
+        print!("{text}");
+        return ExitCode::SUCCESS;
     }
     match run(cli.command, cli.now) {
         Ok(Value::String(drawing)) => {
@@ -868,6 +903,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
+        Command::Help { .. } => anyhow::bail!("help answers with plain text"),
         Command::Dispatch { issue, who, agent, start } => dispatch::dispatch(
             &mut Fleet::open(now)?,
             &who.me(now),
