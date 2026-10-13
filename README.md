@@ -4,7 +4,7 @@ A fleet of AFK coding agents that works a GitHub backlog. `afkconvoy run` takes 
 
 Everything the fleet knows lives on GitHub and the repo's remote: no process holds state, so a fleet can be stopped and started at will, and several hosts can work one repo.
 
-The vocabulary is in [`GLOSSARY.md`](GLOSSARY.md); the decisions behind it are in [`docs/adr/`](docs/adr/).
+The [user manual](docs/manual.md) ([中文](docs/manual.zh.md)) goes from nothing to a repo worked by a team of roles, with one worked example. The vocabulary is in [`GLOSSARY.md`](GLOSSARY.md); the decisions behind it are in [`docs/adr/`](docs/adr/).
 
 ## Install
 
