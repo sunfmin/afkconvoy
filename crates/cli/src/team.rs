@@ -250,8 +250,8 @@ pub fn check(from: From) -> Result<Value> {
 /// named with no harness that the default harness does not know is a fault of
 /// what set that default: the repo's config. What may be wrong and cannot be
 /// known is said on stderr: a model named for a harness that could not be
-/// asked, and one that reads as another harness's under a default with no
-/// way to say.
+/// asked, and one that reads as another harness's under a default that said
+/// nothing of which models it knows.
 fn held(loaded: &Loaded) -> Vec<Fault> {
     let (team, default) = (&loaded.team, loaded.harness);
     let stages = team.workflows.iter().flat_map(|workflow| workflow.stages());
@@ -279,7 +279,8 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
             "warning: {by} names the model `{model}` and no harness, so it runs on the default \
              harness, `{}` — and `{model}` is `{}`'s name for a model: the team may be written \
              for another default. Name the harness beside the model, or set `harness` in {}. \
-             {} cannot say which models it knows: the model is passed to it as written",
+             {} said nothing of which models it knows here: the model is passed to it as \
+             written",
             default.key(),
             other.key(),
             config::FILE,
