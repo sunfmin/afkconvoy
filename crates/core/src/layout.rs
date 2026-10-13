@@ -73,6 +73,18 @@ impl Layout {
     }
 }
 
+/// How long a startup probe that passed stands on the host that made it, in
+/// seconds: what it asked — the ref layout, whether gate runs can be recorded
+/// — does not change from one minute to the next.
+pub const PROBE_STANDS: u64 = 3600;
+
+/// Whether a startup probe that passed at `made` still stands at `now`: it is
+/// younger than `PROBE_STANDS`, and not from a clock ahead of this one.
+#[spec(fn(made: u64, now: u64) -> bool[made <= now && now - made < PROBE_STANDS])]
+pub fn probe_stands(made: u64, now: u64) -> bool {
+    made <= now && now - made < PROBE_STANDS
+}
+
 const PROBE: &str = "probe-";
 /// The kind gate records are kept under.
 pub const GATE_KIND: &str = "gate/";

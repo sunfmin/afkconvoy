@@ -15,11 +15,11 @@ One reconciliation pass: rebuild the working set from fleet state, then perform 
 _Avoid_: cycle, poll, batch
 
 **Plan**:
-A tick stopped after its rebuild, which reports what an acting tick would do and leaves nothing written: its startup probe is the only thing it pushes, and it deletes that.
+A tick stopped after its rebuild, which reports what an acting tick would do and leaves nothing written: its startup probe, when it makes one, is the only thing it pushes, and it deletes that.
 _Avoid_: dry run, preview
 
 **Startup probe**:
-What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing.
+What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, and `tick` and `plan` make none while it does.
 _Avoid_: bootstrap, preflight, health check
 
 **Ref layout**:
@@ -35,7 +35,7 @@ A tick's view of the fleet at one moment, derived from fleet state and dropped w
 _Avoid_: session state
 
 **Rebuild**:
-The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub.
+The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open.
 _Avoid_: refresh, resync
 
 **Frontier**:

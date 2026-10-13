@@ -96,7 +96,7 @@ pub fn flows(repo: &Repo) -> Result<Value> {
             "keep_off": keep_off(&config, &config.escalate_label), "created": created}));
     };
     let team = team::load(team::From::Config)?.team;
-    let open = open_taken_in(&gh, &gh.open_issues()?)?;
+    let open = open_taken_in(&gh.open_issues()?);
     let flow_labels: Vec<String> = team.workflows.iter().map(Workflow::flow_label).collect();
     let created = create_missing(&gh, &flow_labels, FLOW_LABEL_SAYS)?;
     Ok(json!({

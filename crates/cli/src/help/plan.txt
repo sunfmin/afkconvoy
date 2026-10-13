@@ -15,6 +15,19 @@ WHAT IT READS AND WRITES
   what the probe sweeps: a probe an earlier start left behind, and recorded gate runs
   too old for a landing to believe.
 
+  WHEN IT PROBES. Not every time: a startup probe that passed on this host in the last
+  hour stands, and `plan` then makes none — it says so on stderr, repeats that probe's
+  warnings, and pushes nothing. It probes when no probe stands: none passed on this
+  host within the hour — `run` makes one at every start, `tick` and `plan` when they
+  find none — or the config's `base_branch` or `team` changed since, or the remote's
+  URL did, or the note of where the remote keeps the fleet's refs. The probe is noted
+  in the repo's git dir (`convoy-probe`); delete that file to have the next `plan`
+  probe.
+
+  The rebuild asks GitHub twice, side by side with one listing of the remote, however
+  many issues are open: one query for the open issues with their comments (an issue
+  with more than a hundred comments is asked about once more), one for the open PRs.
+
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "mine", "peer_live", "stale", "stale_closed", "free_slots",
@@ -99,5 +112,8 @@ WHAT TRIPS YOU UP
     still going takes one slot of `concurrency`, like a claim on an issue.
   - With a lock standing, `free_slots` counts as free the slot of every claim of
     `--instance` the lock leaves alone: a lock issue does not wait for them.
-  - "Changes nothing" is about fleet state. It still pushes to the remote, and deletes
-    there: it needs push access, and it is not a read-only command.
+  - "Changes nothing" is about fleet state. When it probes it still pushes to the
+    remote, and deletes there: it needs push access, and it is not a read-only command.
+  - A probe that stands is trusted, not checked: a command uninstalled or logged out
+    since, or a rule the remote gained, shows as the error of whatever runs into it —
+    or, for the ref layout, not until the next probe. `run` probes at every start.

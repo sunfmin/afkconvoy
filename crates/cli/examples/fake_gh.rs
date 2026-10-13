@@ -14,7 +14,8 @@
 mod fake;
 
 use afkconvoy::gh::{
-    BLOCKED_BY_JQ, CLOSED_JQ, COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, LABELS_JQ, PR_FIELDS,
+    BLOCKED_BY_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ, OPEN_ISSUES_JQ,
+    OPEN_ISSUES_QUERY, PR_FIELDS,
 };
 use fake::State;
 use serde_json::{Value, json};
@@ -50,6 +51,7 @@ fn main() {
             let head = fake::git(&["-C", from, "rev-parse", "HEAD"]);
             st.finish(&head, 0, "")
         }
+        ["api", "graphql", ..] => open_issues(&st),
         ["api", ..] => api(&mut st),
         ["issue", "create", ..] => issue_create(&mut st),
         ["repo", "clone", repo, into, "--", flags @ ..] => {
@@ -287,27 +289,6 @@ fn api(st: &mut State) -> ! {
                 .collect();
             st.finish(&rows.join("\n"), 0, "")
         }
-        ["issues"] => {
-            assert!(query.contains("state=open") && st.has("--paginate"), "{:?}", st.argv);
-            assert_eq!(jq, Some(ISSUES_JQ), "fake gh: unsupported jq");
-            let rows: Vec<String> = st.doc["issues"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|issue| is_open(issue))
-                .map(|issue| {
-                    let open_blockers = blockers(st, &issue["number"].to_string())
-                        .iter()
-                        .filter(|blocker| is_open(blocker))
-                        .count() as u64;
-                    json!({"number": issue["number"], "title": issue["title"],
-                        "labels": issue["labels"],
-                        "blocked_by": issue["blocked_by"].as_u64().unwrap_or(open_blockers)})
-                    .to_string()
-                })
-                .collect();
-            st.finish(&rows.join("\n"), 0, "")
-        }
         ["issues", "comments", id] if method == "PATCH" => {
             let body = body.expect("an edit has a body");
             let id: u64 = id.parse().unwrap();
@@ -446,18 +427,51 @@ fn api(st: &mut State) -> ! {
         }
         ["issues", number, "comments"] => {
             assert_eq!(jq, Some(COMMENTS_JQ), "fake gh: unsupported jq");
-            let rows = st.doc["comments"][*number].as_array().cloned().unwrap_or_default();
-            let lines: Vec<String> = rows
-                .iter()
-                .map(|c| {
-                    json!({"id": c["id"], "body": c["body"], "url": c["html_url"], "at": c["at"]})
-                        .to_string()
-                })
-                .collect();
+            let lines: Vec<String> = comments(st, number).iter().map(Value::to_string).collect();
             st.finish(&lines.join("\n"), 0, "")
         }
         _ => unsupported(st),
     }
+}
+
+/// The comments on an issue or a PR, oldest first, as a read answers them.
+fn comments(st: &State, number: &str) -> Vec<Value> {
+    let rows = st.doc["comments"][number].as_array().cloned().unwrap_or_default();
+    let read =
+        |c: &Value| json!({"id": c["id"], "body": c["body"], "url": c["html_url"], "at": c["at"]});
+    rows.iter().map(read).collect()
+}
+
+/// `gh api graphql`: the one query the fleet makes — every open issue, each
+/// with the first `COMMENTS_WITH` of its comments.
+fn open_issues(st: &State) -> ! {
+    let query = format!("query={OPEN_ISSUES_QUERY}");
+    assert!(st.argv.contains(&query), "fake gh: unsupported query {:?}", st.argv);
+    assert_eq!(st.opt("--jq"), Some(OPEN_ISSUES_JQ), "fake gh: unsupported jq");
+    assert!(st.has("--paginate"), "{:?}", st.argv);
+    for filled in ["owner={owner}", "repo={repo}"] {
+        assert!(st.argv.iter().any(|arg| arg == filled), "{:?}", st.argv);
+    }
+    let rows: Vec<String> = st.doc["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|issue| is_open(issue))
+        .map(|issue| {
+            let number = issue["number"].to_string();
+            let open_blockers =
+                blockers(st, &number).iter().filter(|blocker| is_open(blocker)).count() as u64;
+            let mut with = comments(st, &number);
+            let more = with.len() > COMMENTS_WITH;
+            with.truncate(COMMENTS_WITH);
+            json!({"number": issue["number"], "title": issue["title"],
+                "labels": issue["labels"],
+                "blocked_by": issue["blocked_by"].as_u64().unwrap_or(open_blockers),
+                "more": more, "comments": with})
+            .to_string()
+        })
+        .collect();
+    st.finish(&rows.join("\n"), 0, "")
 }
 
 /// A path segment with its `%XX` escapes read, as GitHub reads one.

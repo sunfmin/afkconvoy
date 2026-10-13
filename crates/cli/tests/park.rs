@@ -90,7 +90,7 @@ fn a_claim_waiting_on_open_blockers_is_parked_edges_first() {
     world.watch_pushes(None);
     world.gh_calls();
     assert_eq!(did(&tick(&world, 1180)), ["judge 7 done"]);
-    let posts = world.gh_calls().iter().filter(|call| call.contains(&"-F".to_string())).count();
+    let posts = world.gh_calls().iter().filter(|call| call.contains(&"POST".to_string())).count();
     assert_eq!(posts, 0);
     assert_eq!(world.edges(7), [41, 43]);
     assert_eq!(world.claims(), []);

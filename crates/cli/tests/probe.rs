@@ -19,11 +19,15 @@ fn tick_at(world: &World, now: &str) -> Answer {
 
 /// One tick of `run` → its last line, the answer.
 fn run_once(world: &World) -> Answer {
-    let args = "run --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
+    run_once_at(world, "1000")
+}
+
+fn run_once_at(world: &World, now: &str) -> Answer {
+    let args = "run --instance alpha --host h1 --ticks 1 --second-ms 0";
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args.split(' '))
-        .args(["--worker-command", "agent"])
+        .args(["--now", now, "--worker-command", "agent"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -92,6 +96,118 @@ fn only_run_tick_and_plan_probe() {
     assert_eq!(world.probes().len(), 8);
 }
 
+fn plan_at(world: &World, now: &str) -> Answer {
+    world.afk(&["plan", "--now", now])
+}
+
+fn stands(answer: &Answer) -> bool {
+    answer.stderr.lines().any(|line| line.starts_with("note: no startup probe was made"))
+}
+
+#[test]
+fn plan_trusts_a_probe_that_passed_on_this_host_in_the_last_hour_and_says_so() {
+    let world = World::new();
+    world.protect(json!("Resource not accessible by integration (HTTP 403)"));
+    world.watch_pushes(None);
+
+    let first = plan_at(&world, "1000");
+    assert!(!stands(&first), "{}", first.stderr);
+    assert_eq!(warnings(&first).len(), 1, "{}", first.stderr);
+    assert_eq!(world.probes().len(), 4);
+    let asked = world.shell_asked().len();
+
+    // within the hour: no probe, and what the probe warned of is said again
+    let again = plan_at(&world, "4599");
+    assert!(stands(&again), "{}", again.stderr);
+    assert!(again.stderr.contains("59 min ago"), "{}", again.stderr);
+    assert_eq!(warnings(&again), warnings(&first));
+    assert_eq!(world.probes().len(), 4);
+    assert_eq!(
+        world.shell_asked().len(),
+        asked,
+        "nobody is asked again whether they are logged in"
+    );
+    let (mut first, mut again) = (first.ok(), again.ok());
+    assert_eq!((first["now"].take(), again["now"].take()), (json!(1000), json!(4599)));
+    assert_eq!(again, first, "and the answer is the one a probe leads to");
+
+    // the hour is over
+    let later = plan_at(&world, "4600");
+    assert!(!stands(&later), "{}", later.stderr);
+    assert_eq!(world.probes().len(), 8);
+    // …and a probe from a clock ahead of this one is nobody's to trust
+    assert!(!stands(&plan_at(&world, "4000")));
+    assert_eq!(world.probes().len(), 12);
+}
+
+#[test]
+fn a_probe_is_made_again_when_the_base_branch_or_the_remote_changed() {
+    let world = World::new();
+    world.watch_pushes(None);
+    plan_at(&world, "1000").ok();
+    assert!(stands(&plan_at(&world, "1001")));
+    assert_eq!(world.probes().len(), 4);
+
+    // the remote: the same repo, reached another way
+    let elsewhere = format!("{}/.", world.bare.display());
+    git(&world.clone, &["remote", "set-url", "origin", &elsewhere]);
+    assert!(!stands(&plan_at(&world, "1002")));
+    assert_eq!(world.probes().len(), 8);
+    assert!(stands(&plan_at(&world, "1003")));
+
+    // the base branch
+    git(&world.clone, &["push", "-q", "origin", "main:release"]);
+    let config = "```yaml\nbase_branch: release\ngate_command: ./gate.sh\n```\n";
+    commit(&world.clone, "docs/agents/afkconvoy.md", config);
+    assert!(!stands(&plan_at(&world, "1004")));
+    assert_eq!(world.probes().len(), 12);
+    assert!(stands(&plan_at(&world, "1005")));
+}
+
+#[test]
+fn a_tick_trusts_only_a_probe_that_checked_its_worker_launch_command() {
+    let world = World::new();
+    world.watch_pushes(None);
+    // `plan` starts no worker: its probe checked no command of a tick's
+    plan_at(&world, "1000").ok();
+    let ticked = tick_at(&world, "1001");
+    assert!(!stands(&ticked), "{}", ticked.stderr);
+    assert_eq!(world.probes().len(), 8);
+
+    let again = tick_at(&world, "1002");
+    assert!(stands(&again), "{}", again.stderr);
+    again.ok();
+    assert_eq!(world.probes().len(), 8);
+    // …and a plan asks nothing of the command: a tick's probe stands for it
+    assert!(stands(&plan_at(&world, "1003")));
+
+    let other = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1004"];
+    let other = world.afk(&[&other[..], &["--worker-command", "other"]].concat());
+    assert!(!stands(&other), "{}", other.stderr);
+    assert_eq!(world.probes().len(), 12);
+
+    // `run` probes at every start
+    let run = run_once_at(&world, "1005");
+    assert!(!stands(&run), "{}", run.stderr);
+    assert_eq!(world.probes().len(), 16);
+}
+
+#[test]
+fn plan_help_says_when_it_probes() {
+    let world = World::new();
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["plan", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    for said in
+        ["WHEN IT PROBES", "in the last\n  hour stands", "`base_branch`", "the remote's\n  URL"]
+    {
+        assert!(help.contains(said), "plan --help lost {said:?}:\n{help}");
+    }
+}
+
 #[test]
 fn a_remote_that_rejects_hidden_refs_has_every_ref_kept_as_a_branch() {
     let world = World::new();
@@ -145,8 +261,9 @@ fn a_remote_that_takes_hidden_refs_again_is_gone_back_to() {
     world.afk(&["claim", "--issue", "7", "--instance", "alpha", "--now", "1000"]).ok();
     assert_eq!(world.pushes().last().unwrap(), "refs/heads/convoy-claim/7");
 
-    // the rule is lifted (the watching hook replaced the rejecting one)
-    let planned = plan(&world);
+    // the rule is lifted (the watching hook replaced the rejecting one), and
+    // the probe that found it no longer stands
+    let planned = world.afk(&["plan", "--now", "4600"]);
     assert_eq!(warnings(&planned), [] as [&str; 0]);
     world.afk(&["claim", "--issue", "8", "--instance", "alpha", "--now", "1000"]).ok();
     assert_eq!(world.pushes().last().unwrap(), "refs/convoy/claim/8");
@@ -302,8 +419,8 @@ fn a_start_sweeps_gate_records_past_their_day_and_probes_left_behind() {
     assert_eq!(records().len(), 2, "{:?}", records());
     assert_eq!(refs(&world, "refs/convoy/probe-1-1"), [] as [String; 0]);
 
-    // one second on, it is not
-    world.afk(&["plan", "--now", "91401"]).ok();
+    // one second on, it is not: `run` probes at every start
+    run_once_at(&world, "91401").ok();
     let kept = records();
     assert_eq!(kept.len(), 1, "{kept:?}");
     assert_ne!(kept, old, "the record of the second run stays");

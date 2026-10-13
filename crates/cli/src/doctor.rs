@@ -755,14 +755,14 @@ fn stamped_instance(fleet: &Fleet, host: &str) -> Option<String> {
 }
 
 fn read_state(now: u64, run: &mut Run) -> Result<State> {
-    let fleet = Fleet::open(now)?;
+    let (fleet, open) = Fleet::read(now)?;
     if run.instance.is_none() {
         run.instance = stamped_instance(&fleet, &run.host);
     }
     let instance = run.instance.as_deref().and_then(|instance| InstanceId::parse(instance).ok());
     let beat = run.instance.as_ref().and_then(|instance| fleet.scan.heartbeats.get(instance));
     run.heartbeat_age = beat.and_then(|beat| stamp_age(*beat, now));
-    let (set, flows) = fleet.rebuild(instance.as_ref())?;
+    let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
     let stood = flows.stood();
     let held = read_held(&fleet, &set, &stood);
     let team = read_team(fleet.config.bound.is_some());

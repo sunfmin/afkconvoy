@@ -569,10 +569,17 @@ impl AgentArgs {
 
     /// Makes the startup probe of a start that starts workers → what it
     /// starts them with. The probe is told the command before it is settled:
-    /// what the command needs of this host is the probe's to check.
-    fn start(self, now: u64) -> anyhow::Result<Agent> {
+    /// what the command needs of this host is the probe's to check. A start
+    /// that is `trusting` makes none while one that checked this command
+    /// stands (`probe::standing`).
+    fn start(self, now: u64, trusting: bool) -> anyhow::Result<Agent> {
         let proposed = launch::propose(self.worker_command.as_deref())?;
-        probe::announce(&probe::startup(now, Some(&proposed))?);
+        let stands = if trusting { probe::standing(now, Some(&proposed)) } else { None };
+        let warnings = match stands {
+            Some(warnings) => warnings,
+            None => probe::startup(now, Some(&proposed))?,
+        };
+        probe::announce(&warnings);
         Ok(Agent { command: proposed.settle()?, ready_timeout: self.ready_timeout })
     }
 }
@@ -655,9 +662,13 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Doctor { host } => doctor::doctor(now, &host.unwrap_or_else(this_host)),
         Command::Plan { instance } => {
-            probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);
-            let fleet = Fleet::open(now)?;
-            let (set, flows) = fleet.rebuild(instance.as_ref())?;
+            let warnings = match probe::standing(now, None) {
+                Some(warnings) => warnings,
+                None => probe::startup(now, launch::foreseen().as_ref())?,
+            };
+            probe::announce(&warnings);
+            let (fleet, open) = Fleet::read(now)?;
+            let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
             let mut plan = serde_json::to_value(set)?;
             if let Some(bound) = &fleet.config.bound {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
@@ -670,20 +681,20 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
             let pacing = Pacing { ticks, second: Duration::from_millis(second_ms) };
-            let agent = agent.start(now)?;
+            let agent = agent.start(now, false)?;
             tick::run(&mut me, &agent, &pacing, panel, || fixed_now.unwrap_or_else(clock))
         }
         Command::Panel { instance, host } => {
-            let fleet = Fleet::open(now)?;
+            let (fleet, open) = Fleet::read(now)?;
             let host = host.unwrap_or_else(this_host);
             let me = instance.map(|instance| Me { instance, host, now });
-            let (set, flows) = fleet.rebuild(me.as_ref().map(|me| &me.instance))?;
+            let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
             let shown = panel::read(&fleet, me.as_ref(), &set, &flows, &[]);
             Ok(Value::String(panel::render(&shown)))
         }
         Command::Tick { who, agent } => {
-            let agent = agent.start(now)?;
-            Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent)?.json())
+            let agent = agent.start(now, true)?;
+            Ok(tick::tick(&who.me(now), &agent)?.0.json())
         }
         Command::Gate { gate_timeout, train } => {
             let repo = Repo::here()?;
