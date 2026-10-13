@@ -29,6 +29,7 @@ use crate::stage::Flows;
 use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
+use crate::topic::{self, See};
 use crate::wake::Listener;
 use crate::watch::watch;
 
@@ -36,6 +37,8 @@ use crate::watch::watch;
 struct Failure {
     step: TickStep,
     error: String,
+    /// The topic that explains it, where one does.
+    see: Option<See>,
     /// Whether it failed on a read GitHub could not be reached for.
     unreached: bool,
 }
@@ -72,7 +75,8 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
             let unreached = unreached(&error).is_some();
-            failures.push(Failure { step, error: format!("{error:#}"), unreached });
+            let see = topic::explains(&error);
+            failures.push(Failure { step, error: format!("{error:#}"), see, unreached });
             Outcome::Failed
         })
     });
@@ -292,6 +296,9 @@ impl Ticked {
             .map(|failure| {
                 let mut failed = self.named(failure.step);
                 failed["error"] = json!(failure.error);
+                if let Some(see) = failure.see {
+                    failed["see"] = json!(see);
+                }
                 failed
             })
             .collect();

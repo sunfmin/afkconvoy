@@ -27,13 +27,13 @@ WHAT TO RUN FIRST, in a checkout of the repo
   2. afkconvoy plan      What a tick would act on. It changes nothing.
   3. afkconvoy run       The fleet instance: tick after tick, until stopped.
 
-  And whenever something looks wrong: afkconvoy doctor — it reads everything, changes
-  nothing, and names the fix of each thing it finds.
+  And whenever something looks wrong: afkconvoy doctor — it changes nothing, and names each fix.
 
 WHAT A COMMAND ANSWERS
 
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
-  a non-zero exit. Warnings go to stderr. `run` instead prints one line per tick until
+  a non-zero exit — and "see" beside it, where a topic explains it: the command that
+  prints that topic. Warnings go to stderr. `run` instead prints one line per tick until
   it is stopped, `show` a drawing unless it is asked about an issue, `help` plain text
   as `--help` does, `skill` the text of a file, and `guard` answers the harness that
   asks it as a hook does: with its exit code.

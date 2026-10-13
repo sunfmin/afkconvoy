@@ -54,6 +54,16 @@ fn head(world: &World, repo: &str) -> String {
     git(&world.root.join("github").join(repo), &["rev-parse", "HEAD"])
 }
 
+/// The `see` of a fault: the command that prints a topic, which must print one.
+fn see(fault: &Value) -> &str {
+    let see = fault["see"].as_str().unwrap_or_else(|| panic!("no `see`: {fault}"));
+    let topic = see.strip_prefix("afkconvoy help ").unwrap_or_else(|| panic!("{see}"));
+    let mut help = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let printed = help.args(["help", topic]).output().unwrap();
+    assert!(printed.status.success(), "`{see}` prints nothing");
+    see
+}
+
 /// The faults of a refused team, each as "file: key".
 fn faults(refused: &Value) -> Vec<String> {
     let faults = refused["faults"].as_array().unwrap().iter();
@@ -177,6 +187,11 @@ fn every_fault_of_a_team_is_reported_in_one_run_with_its_file_and_key() {
             "workflows/small.md: stages[0].on.pass",
         ]
     );
+    // Each names the topic that describes the file it is in.
+    let sees: Vec<&str> = answer.json["faults"].as_array().unwrap().iter().map(see).collect();
+    let (team, workflows) = ("afkconvoy help team", "afkconvoy help workflows");
+    assert_eq!(sees[..2], [team, team]);
+    assert!(sees[2..].iter().all(|see| *see == workflows), "{sees:?}");
     let error = answer.error();
     assert!(error.starts_with("the team acme/team has 10 faults"), "{error}");
     for said in [
@@ -292,6 +307,9 @@ fn a_team_is_checked_from_a_directory_as_it_is_or_by_name() {
 fn a_team_that_cannot_be_read_and_an_unbound_repo_are_errors() {
     let world = World::new();
     assert!(world.afk(&["check"]).error().contains("this repo is unbound"));
+    // No topic explains that, so it names none: no `see`, not an empty one.
+    let unbound = world.afk(&["check"]).json;
+    assert_eq!(unbound.as_object().unwrap().keys().collect::<Vec<_>>(), ["error"]);
     let error = world.afk(&["check", "--team", "acme/gone"]).error();
     assert!(error.contains("the team acme/gone cannot be read"), "{error}");
     // A repo with nothing in it is a team with no team file.
@@ -756,6 +774,7 @@ fn a_model_its_harness_does_not_know_is_a_fault_where_the_harness_can_say() {
     commit(&team, "patrols/sweep.md", &sweep.replace("model:", "harness: pi\nmodel:"));
     let answer = world.afk(&["check"]);
     assert_eq!(faults(&answer.json), ["patrols/sweep.md: model"]);
+    assert_eq!(see(&answer.json["faults"][0]), "afkconvoy help patrols");
 }
 
 #[test]
@@ -773,6 +792,8 @@ fn a_repo_bound_to_a_team_whose_models_fit_another_default_harness_is_told_so() 
     let answer = world.afk(&["check"]);
     assert_eq!(answer.code, 1);
     assert_eq!(faults(&answer.json), ["docs/agents/afkconvoy.md: harness"]);
+    // The topic of the team says which keys of a config bind a repo to one.
+    assert_eq!(see(&answer.json["faults"][0]), "afkconvoy help team");
     let error = answer.error();
     for said in [
         "the team acme/team names models and no harness for them — `opus` (the stage `build` of \

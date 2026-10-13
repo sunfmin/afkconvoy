@@ -130,6 +130,7 @@ fn a_critical_finding_exits_non_zero_with_the_same_answer() {
     assert!(finding["what"].as_str().unwrap().contains("alpha holds #3"), "{finding}");
     assert!(finding["evidence"].as_str().unwrap().contains("its heartbeat is 1m old"));
     assert_eq!(finding["fix"], "afkconvoy run");
+    assert_eq!(finding["see"], "afkconvoy help troubleshooting");
 }
 
 #[test]
@@ -516,6 +517,7 @@ fn a_lock_that_cannot_be_worked_is_critical() {
     assert_eq!(unwell.code, 1);
     let lock = found(&unwell.json, "the fleet lock #9 stands and cannot be worked");
     assert_eq!(lock[0]["fix"], "gh issue edit 9 --add-label ready-for-agent");
+    assert_eq!(lock[0]["see"], "afkconvoy help humans", "a human gives it what it lacks");
     assert_eq!(unwell.json["issues"]["locks"], json!([9]));
     // with the label on it, it is on the frontier and nothing is wrong
     world.with_gh(|gh| gh["issues"][1]["labels"] = json!(["fleet-lock", "ready-for-agent"]));

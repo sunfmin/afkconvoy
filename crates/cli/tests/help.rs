@@ -874,3 +874,23 @@ fn the_help_of_doctor_says_what_moved_means() {
         assert!(moved.contains(part), "{part:?} is not in:\n{moved}");
     }
 }
+
+#[test]
+fn the_help_of_check_and_of_doctor_describe_the_key_that_names_a_topic() {
+    let check = asked(&["check", "--help"]);
+    for part in [
+        r#"each {"file", "key", "problem", "see"}"#,
+        "`see` is the command that prints the help topic describing that file",
+        "A fault in a file no topic describes has no `see`.",
+    ] {
+        assert!(check.contains(part), "{part:?} is not in `check --help`");
+    }
+    let doctor = asked(&["doctor", "--help"]);
+    for part in [
+        "evidence, fix, see}",
+        "see        the command that prints the help topic explaining it",
+        "`afkconvoy help humans` where what it reports waits for",
+    ] {
+        assert!(doctor.contains(part), "{part:?} is not in `doctor --help`");
+    }
+}

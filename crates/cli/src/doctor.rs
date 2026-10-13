@@ -35,6 +35,7 @@ use crate::role::{self, Checked};
 use crate::stage::Stood;
 use crate::team::{self, Refused};
 use crate::tools;
+use crate::topic::See;
 use crate::wake::listening;
 
 /// How many ticks in a row a step fails in before it is a finding.
@@ -72,6 +73,8 @@ pub struct Finding {
     pub evidence: String,
     /// A line to run, or a file and the key in it to edit: never prose alone.
     pub fix: String,
+    /// The command that prints the topic explaining it.
+    pub see: See,
 }
 
 /// Names each kind of finding there is, with how much it matters and its
@@ -99,6 +102,16 @@ macro_rules! kinds {
             fn severity(self) -> Severity {
                 match self {
                     $(Kind::$kind => Severity::$severity,)+
+                }
+            }
+
+            /// The topic that explains a finding of this kind: `humans`
+            /// where what it reports waits for a human, else the one that
+            /// has a row for each.
+            fn see(self) -> See {
+                match self {
+                    Kind::LockUnworked | Kind::PatrolFailed | Kind::WaitedLong => See::Humans,
+                    _ => See::Troubleshooting,
                 }
             }
         }
@@ -134,7 +147,7 @@ kinds! {
 
 fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
-    Finding { severity: kind.severity(), what, evidence, fix }
+    Finding { severity: kind.severity(), what, evidence, fix, see: kind.see() }
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
