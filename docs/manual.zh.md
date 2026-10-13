@@ -155,12 +155,12 @@ land: { by: dev, do: land }
 
 ## 5. 完整示例：一家给代码看病的医院
 
-这一节从头到尾搭一整个团队并把它跑起来。下面每条命令、每段输出都来自一次真实运行。它建出的仓库如下（是作者的私有演示仓库）：
+这一节从头到尾搭一整个团队并把它跑起来。下面每条命令、每段输出都来自一次真实运行。它建出的仓库都是公开的，可以直接去读角色、工作流，以及带着每个阶段记录的 issue：
 
 | | 仓库 |
 |---|---|
 | 团队 | [`sunfmin/hospital-team`](https://github.com/sunfmin/hospital-team) |
-| 角色 | `sunfmin/hospital-fellow`、`-attending`、`-discharge-nurse`、`-triage-nurse`、`-infection-control`、`-research`、`-safety` |
+| 角色，各为 `sunfmin/hospital-<名称>` | [`fellow`](https://github.com/sunfmin/hospital-fellow)、[`attending`](https://github.com/sunfmin/hospital-attending)、[`discharge-nurse`](https://github.com/sunfmin/hospital-discharge-nurse)、[`triage-nurse`](https://github.com/sunfmin/hospital-triage-nurse)、[`infection-control`](https://github.com/sunfmin/hospital-infection-control)、[`research`](https://github.com/sunfmin/hospital-research)、[`safety`](https://github.com/sunfmin/hospital-safety) |
 | 项目 | [`sunfmin/hospital-demo`](https://github.com/sunfmin/hospital-demo) |
 
 这个团队仿照 Cockroach Labs 在 [An experiment in running a hospital for code](https://www.cockroachlabs.com/blog/experiment-running-hospital-code/) 里描述的那个：一张 issue 是一位病人，每个角色只对它做一件事。
