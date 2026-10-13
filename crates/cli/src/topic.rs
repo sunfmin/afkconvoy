@@ -13,11 +13,18 @@ pub struct Topic {
 
 /// A topic that is not the repository's own glossary is a file of
 /// `help/topics/`, named `<name>.txt`.
-pub const TOPICS: &[Topic] = &[Topic {
-    name: "glossary",
-    line: "every term the help uses, each with its one definition",
-    text: include_str!("../../../GLOSSARY.md"),
-}];
+pub const TOPICS: &[Topic] = &[
+    Topic {
+        name: "glossary",
+        line: "every term the help uses, each with its one definition",
+        text: include_str!("../../../GLOSSARY.md"),
+    },
+    Topic {
+        name: "example",
+        line: "the team `scaffold --example hospital` writes, read file by file",
+        text: include_str!("help/topics/example.txt"),
+    },
+];
 
 /// The text of the topic called `name`.
 pub fn text(name: &str) -> Option<&'static str> {

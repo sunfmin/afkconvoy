@@ -1,0 +1,201 @@
+THE HOSPITAL: A WHOLE TEAM, READ FILE BY FILE
+
+  The binary holds one team whole, and writes it where you say:
+
+      afkconvoy scaffold team hospital --example hospital --repo <owner/repo>
+      afkconvoy check --team <owner/repo>
+
+  It is the team this project demonstrates itself with: seven roles, three workflows,
+  four patrols, team rules and precedents, in one repo — the team at the root, each role
+  under `roles/`. Read it to see what a finished team looks like before you design your
+  own, or start yours from it and edit. This text goes through it with you: which file
+  holds which decision, and which of afkconvoy's rules each choice shows. Every file the
+  command writes is named below, on a line of its own, and nothing else is written.
+
+WHAT THE TEAM IS FOR
+
+  It is modelled on the team Cockroach Labs describes in "An experiment in running a
+  hospital for code". An issue is a patient: it is routed to a workflow, worked up into
+  a plan, the plan is reviewed, it is treated under the plan, the code is reviewed, its
+  record is audited, and it is discharged — its PR joins the landing train. Each of
+  those is a stage, and a new worker in one role performs it. No worker reviews what it
+  wrote itself, and none writes code before somebody else has passed the plan.
+
+  The Chief is a human, and stands in no stage of the two workflows that land code. An
+  issue reaches the Chief only by escalating: a stage could not decide, and the consult
+  asked first could not either, or a breaker tripped.
+
+THE TEAM
+
+      team.md
+          The team file. Its `roles` names the seven, each as `./roles/<name>`: a path
+          from the root of the repo the team itself is in, so that the team names no
+          repo and can be pushed anywhere, forked or renamed with no edit. Written in a
+          subdirectory of a checkout, the paths are written from that checkout's root.
+          `precedents: { by: safety, do: record-precedent, max_open: 10 }` is the
+          decision that a human's ruling is never given twice: for each one, the fleet
+          starts a worker in the role `safety` to put it forward as a precedent. The
+          table below the yaml block is for whoever reads the file: the fleet reads the
+          block alone.
+
+      CLAUDE.md
+          The team rules: three, which every worker of the team is given, whatever its
+          role and whatever it was started for. They say how this team works — each role
+          does its own part, what is said was looked at just now, and what nobody
+          decided is the Chief's — and nothing about one codebase or one role.
+
+      precedents.md
+          Two precedents, each a ruling a human gave the demonstration's project and
+          then accepted by merging the proposal. Each says when it applies, so that a
+          later stage can tell from the entry alone whether its case is the same. The
+          first is about that project's code: take it out when the team works yours.
+
+THE WORKFLOWS
+
+  The prose above each yaml block is what `afkconvoy flows` answers to whoever opens an
+  issue, and what the role `triage-nurse` routes by: it says what the workflow is for.
+
+      workflows/fix.md
+          Five stages: `workup`, `plan-review`, `treatment`, `code-review`, `discharge`,
+          then the landing. It shows most of what a workflow can say.
+          A reviewer that writes nothing: `plan-review` and `code-review` are marked
+          `writes: false`, and the guard refuses their workers a commit and a push. So
+          are `workup`, which ends in a plan and changes no file, and `discharge`.
+          A stage with a consult: `workup` and `treatment` carry
+          `escalate: { to: attending, do: consult }`. Their `escalate` goes to a worker
+          in the role `attending` first, which rules on how to build what was decided
+          and lets through to a human what nobody decided.
+          Rework: a `reject` of `plan-review` leads back to `workup`, one of
+          `code-review` or of `discharge` to `treatment`. The breakers are
+          `max_rework: 3` and `max_consecutive_rework: 2`: past either, the issue
+          escalates.
+          A model for each stage: the workup and the reviews run on the stronger ones,
+          the audit of the record on a cheaper one.
+          `land: { by: discharge-nurse, do: land }`: the join is made by a new worker
+          in the role that audited the record, not by the one that wrote the code.
+
+      workflows/chore.md
+          Two stages, `treatment` and `code-review`, then the landing: for a change
+          that needs no workup, where the issue is its own plan. It is the workflow
+          with the fewest stages that ends in a landing, which is where the patrol
+          `rounds` takes in the fix of a broken base branch.
+
+      workflows/design.md
+          A workflow that ends with a human: `proposal`, then `sign-off`, a stage
+          `by: human` whose `pass` leads to `done`. Nothing lands and it has no `land`.
+          No human stands in a workflow unless its file says so, and this is the one
+          place this team says so: the fleet stops at `sign-off` and waits for
+          `afkconvoy rule`.
+
+THE PATROLS
+
+  Each names a role, a skill, how often it runs and `max_open`: it is skipped once that
+  many issues it opened are open. A repo runs the ones its config names under `patrols`.
+
+      patrols/triage.md
+          Every ten minutes, the role `triage-nurse` takes each open issue that is in no
+          workflow in to the one that fits it. It is how an issue somebody opened with
+          no flow label is worked at all; a human can still put the label on.
+
+      patrols/rounds.md
+          A patrol that locks the fleet. Every half hour the role `infection-control`
+          runs the gate on the base branch. Red twice, it opens an issue, takes it in to
+          `chore` and raises a fleet lock on it: the fleet then works that issue only,
+          until it closes. `max_open: 1` is one lock at a time.
+
+      patrols/research.md
+          Once a day, the role `research` proposes work it can show the need for, three
+          issues a run at most. What it opens is worked with no human reading it first,
+          which is why its rules ask for evidence.
+
+      patrols/safety-review.md
+          Once a week, the role `safety` reads the stage records of the issues that went
+          badly and opens issues for what would have caught each a stage earlier.
+
+THE ROLES
+
+  A role is three kinds of file: its rules, its skills, its limits. Each stage's `do`,
+  each patrol's, the consult's, the landing's and the proposal's names a skill below.
+
+      roles/fellow/CLAUDE.md
+      roles/fellow/.claude/skills/diagnose/SKILL.md
+      roles/fellow/.claude/skills/treat/SKILL.md
+          The fellow works an issue up and treats it. Its rules say when to stop and
+          declare `escalate`, and the form of the hand-off it writes then — read by a
+          consult or a human who has none of its context. `diagnose` ends in a plan as
+          the text of a `pass`; `treat` finds that plan among the stage records.
+
+      roles/fellow/.claude/settings.json
+      roles/fellow/.claude/hooks/refuse.sh
+      roles/fellow/.claude/hooks/skills-loaded.sh
+          Its limits for claude-code: two hooks, written executable. `refuse.sh` refuses
+          what its rules say a fellow never does — a commit with `--no-verify`, a forced
+          push, `git rebase`. `skills-loaded.sh` refuses a `pass` or a `reject` declared
+          before the skills its skill says to load were loaded in the session.
+
+      roles/attending/CLAUDE.md
+      roles/attending/.claude/skills/review-plan/SKILL.md
+      roles/attending/.claude/skills/review-code/SKILL.md
+      roles/attending/.claude/skills/consult/SKILL.md
+          The attending reviews, and is the consult. Its rules sort every finding into
+          blocking or note, and a `reject` needs a blocking one: that is what keeps
+          rework from running to the breaker over a name.
+
+      roles/attending/.claude/settings.json
+      roles/attending/.claude/hooks/refuse.sh
+      roles/attending/.claude/hooks/skills-loaded.sh
+          Its limits. `refuse.sh` refuses a commit and a push, in any stage: the role
+          itself writes no code, whatever a workflow forgot to mark `writes: false`.
+
+      roles/fellow/skills-lock.json
+      roles/attending/skills-lock.json
+          What the skills installer recorded of three skills these two roles' own skills
+          say to load: `codebase-design`, `complexity-review`, `single-source-of-truth`.
+          They are other authors' and are not written here: the example holds what the
+          hospital's own authors wrote. Each file says where its three are from.
+
+      roles/discharge-nurse/CLAUDE.md
+      roles/discharge-nurse/.claude/skills/audit/SKILL.md
+      roles/discharge-nurse/.claude/skills/land/SKILL.md
+      roles/discharge-nurse/.claude/settings.json
+          The last check, and the landing role. `audit` is a checklist of the record,
+          not a second look at the code. `land` adds only how a conflict is resolved:
+          the steps of a join are in the worker's brief.
+
+      roles/triage-nurse/CLAUDE.md
+      roles/triage-nurse/.claude/skills/triage/SKILL.md
+      roles/triage-nurse/.claude/settings.json
+      roles/infection-control/CLAUDE.md
+      roles/infection-control/.claude/skills/rounds/SKILL.md
+      roles/infection-control/.claude/settings.json
+      roles/research/CLAUDE.md
+      roles/research/.claude/skills/propose/SKILL.md
+      roles/research/.claude/settings.json
+          The three roles that only patrol. A patrol's worker is refused a commit and a
+          push by the guard, so none needs a limit of its own: each `settings.json` holds
+          `"hooks": {}`, as the discharge nurse's does.
+
+      roles/safety/CLAUDE.md
+      roles/safety/.claude/skills/record-precedent/SKILL.md
+      roles/safety/.claude/skills/review/SKILL.md
+      roles/safety/.claude/settings.json
+          One role, asked for two skills: `record-precedent` is what the team file's
+          `precedents` asks of it, `review` what the patrol `safety-review` does.
+
+BEFORE A FLEET WORKS WITH IT
+
+  - `check` accepts the team as written, once it is pushed: it reads every role from
+    GitHub. `afkconvoy rehearse --team <owner/repo> fix pass pass pass pass pass` then
+    walks an issue through `fix` with no worker started.
+  - Add the three skills left out to `roles/fellow` and to `roles/attending`, with the
+    skills installer, run in each of the two directories, and commit them:
+
+      npx skills add <source> --skill <name> --agent claude-code
+
+    for each entry of that role's `skills-lock.json`. Until then `skills-loaded.sh`
+    refuses the `pass` and the `reject` of every stage those two roles perform, and
+    each such stage can only declare `escalate`. To run without the three instead,
+    take the hook out of `settings.json` and the step that loads them out of each skill.
+  - The hooks are shell scripts that call `jq`: every host of the fleet needs it.
+  - Name the team under `team` in the config of the repo it is to work, and the patrols
+    that repo is to run under `patrols`: `afkconvoy config --help`.
