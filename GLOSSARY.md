@@ -56,6 +56,10 @@ _Avoid_: agent, persona, profile
 A directory that names a set of roles and holds the workflows, patrols and precedents they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
 _Avoid_: org, crew, squad
 
+**Team rules**:
+The rules every role of a team works under, whatever its own rules add. They say how the team works, and hold in any repo bound to it; what one codebase asks is that repo's to say, and what one kind of worker does is its role's.
+_Avoid_: global rules, shared rules
+
 **Bound repo**:
 A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then the landing train.
 _Avoid_: team mode, managed repo
