@@ -329,3 +329,14 @@ fn a_help_names_every_key_its_command_answers_with() {
     check(&["land", "--train"], &["outcome"]);
     assert!(seen.len() >= 15, "{seen:?}");
 }
+
+#[test]
+fn the_help_of_tick_and_of_run_say_what_run_does_about_the_hop_between_two_stages() {
+    let most = afkconvoy_core::tick::BACK_TO_BACK;
+    let tick = asked(&["tick", "--help"]);
+    assert!(tick.contains("`run` does not sleep across that hop"), "{tick}");
+    assert!(tick.contains(&format!("at most {most} ticks back to back")), "{tick}");
+    let run = asked(&["run", "--help"]);
+    assert!(run.contains("· next now\n"), "{run}");
+    assert!(run.contains(&format!("At most {most} ticks run back to back")), "{run}");
+}

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::WorkingSet;
-use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass};
+use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::wake::turn;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -349,7 +349,8 @@ fn start_line(took: &Value) -> Option<String> {
 }
 
 /// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
-/// `afkconvoy wake` ends early. Stopping it is just exiting: no claim is
+/// `afkconvoy wake` ends early, and that is skipped after a tick that left the
+/// next one a worker to start (`Pass::follow_up_due`). Stopping it is just exiting: no claim is
 /// released on the way out, and the next start on this host takes them back
 /// (docs/adr/0003). With a `panel_port` it serves the panel there, a new page
 /// after every tick.
@@ -370,6 +371,7 @@ pub fn run(
         None => None,
     };
     let mut streak = 0;
+    let mut skipped = 0;
     let mut count = 0;
     let mut started = false;
     let wakes = Listener::open(&Repo::here()?);
@@ -405,11 +407,19 @@ pub fn run(
                 }
                 let pass = &ticked.pass;
                 streak = empty_streak(streak, pass.did_work(), pass.held, pass.frontier_remaining);
-                (ticked.line(), pace(pass.did_work(), pass.held, streak))
+                skipped = sleeps_skipped(skipped, pass.follow_up_due(ticked.bound));
+                let sleep = if skipped > 0 { 0 } else { pace(pass.did_work(), pass.held, streak) };
+                (ticked.line(), sleep)
             }
-            Err(error) => (format!("FAILED: {error:#}"), pace(true, 0, 0)),
+            Err(error) => {
+                skipped = 0;
+                (format!("FAILED: {error:#}"), pace(true, 0, 0))
+            }
         };
-        println!("tick {count}: {line} · next in {sleep}s");
+        match sleep {
+            0 => println!("tick {count}: {line} · next now"),
+            _ => println!("tick {count}: {line} · next in {sleep}s"),
+        }
         if let Some(served) = &served {
             // A tick that failed leaves the page as the last one found it.
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
