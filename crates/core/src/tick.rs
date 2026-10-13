@@ -566,7 +566,6 @@ pub fn pace(did_work: bool, held: usize, empty_streak: u32) -> u64 {
 
 /// The streak of empty ticks after one more tick: a tick is empty when it did
 /// no work, holds nothing, and left nothing on the frontier.
-#[spec(fn(streak: u32, did_work: bool, held: usize, frontier_remaining: usize) -> u32)]
 pub fn empty_streak(streak: u32, did_work: bool, held: usize, frontier_remaining: usize) -> u32 {
     if did_work || held > 0 || frontier_remaining > 0 {
         0

@@ -686,7 +686,7 @@ impl Stage {
 
     /// The place of the stage a `reject` leads to, a stage of its workflow
     /// before this one; `None` when this stage may not reject.
-    #[spec(fn(&Stage[@s]) -> Option<usize{v: v < s.at && v < s.n}>)]
+    #[spec(fn(&Stage[@s]) -> Option<usize{v: v < s.at}>)]
     pub fn reject(&self) -> Option<usize> {
         self.reject
     }

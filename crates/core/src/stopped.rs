@@ -158,29 +158,27 @@ const SCREEN_LINE_CHARS: usize = 200;
 /// The end of a worker's screen, small enough to carry in a comment.
 #[derive(Debug, PartialEq, Eq)]
 #[refined_by(len: int)]
-#[invariant(len <= 30)]
+#[invariant(len <= SCREEN_LINES)]
 pub struct Tail {
-    #[field(usize[len])]
-    len: usize,
     /// Last line first.
+    #[field(Vec<String>[len])]
     lines: Vec<String>,
 }
 
 impl Tail {
     #[spec(fn() -> Tail[0])]
     fn empty() -> Tail {
-        Tail { len: 0, lines: Vec::new() }
+        Tail { lines: Vec::new() }
     }
 
-    #[spec(fn(&Tail[@t]) -> bool[t.len >= 30])]
+    #[spec(fn(&Tail[@t]) -> bool[t.len >= SCREEN_LINES])]
     fn full(&self) -> bool {
-        self.len >= SCREEN_LINES
+        self.lines.len() >= SCREEN_LINES
     }
 
-    #[spec(fn(self: &mut Self[@t], line: String) requires t.len < 30 ensures self: Self[t.len + 1])]
+    #[spec(fn(self: &mut Self[@t], line: String) requires t.len < SCREEN_LINES ensures self: Self[t.len + 1])]
     fn push(&mut self, line: String) {
         self.lines.push(line);
-        self.len += 1;
     }
 
     /// The last `SCREEN_LINES` lines of `screen` with anything on them, each
