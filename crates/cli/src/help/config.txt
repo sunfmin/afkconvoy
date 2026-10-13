@@ -27,8 +27,8 @@ WHAT IT ANSWERS
   the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in
   by workers may be open (default 50), and the default harness: the one every worker
   runs that its stage or its patrol names none for (default claude-code, Claude Code;
-  the other is pi). A repo that names no team is unbound and answers the seven
-  above only.
+  the others are pi and codex, Codex). A repo that names no team is unbound and answers
+  the seven above only.
 
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
   `gate_command` is missing; a key is unknown or of the wrong type; `team` is neither

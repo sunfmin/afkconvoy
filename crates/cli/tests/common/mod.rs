@@ -459,14 +459,15 @@ impl World {
         std::fs::remove_file(only.join(name)).unwrap();
     }
 
-    /// Has the stand-in login shell report `tool` (`gh`, `claude` or `pi`)
+    /// Has the stand-in login shell report `tool` (`gh`, `claude`, `pi` or `codex`)
     /// as logged out.
     pub fn logged_out(&self, tool: &str) {
         std::fs::write(self.root.join(format!("logged-out-{tool}")), "").unwrap();
     }
 
     /// What the stand-in login shell prints when a command is asked for its
-    /// `--help`, in place of a help that names every flag Claude Code takes.
+    /// `--help`, in place of a help that names every flag Claude Code takes —
+    /// and, of Codex's stock command, every flag Codex does.
     /// `None`: the command fails.
     pub fn shell_help(&self, help: Option<&str>) {
         std::fs::write(self.root.join("shell-help"), help.unwrap_or("-")).unwrap();
@@ -529,9 +530,9 @@ impl Drop for World {
 
 /// The login shell a worker would get, as far as the fleet asks it anything:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
-/// where `pi` answers as pi does and every other command as Claude Code —
+/// where `pi` answers as pi does, `codex` as Codex and every other command as Claude Code —
 /// `shell -lic '… <command> --list-models'`, which fails unless a `shell-models` beside
-/// `bin/` holds what it prints, and whether `gh`, `claude` and `pi` are logged in. Every
+/// `bin/` holds what it prints, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
 /// word is a program unless `shell-types`
 /// beside `bin/` says otherwise, and each is logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
@@ -552,7 +553,16 @@ case "$2" in
       echo "No models available. Use /login to log into a provider via OAuth or API key."; exit 0
     fi
     echo "provider      model    context"; echo "openai-codex  gpt-5.5  272K"; exit 0 ;;
+  'test -f "$HOME/.codex/auth.json" && codex login status')
+    if [ -e "$root/logged-out-codex" ]; then exit 1; fi
+    echo "Logged in using ChatGPT"; exit 0 ;;
   alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
+  "codex "*" --help")
+    if [ -f "$root/shell-help" ]; then cat "$root/shell-help"; exit 0; fi
+    echo "Usage: codex [OPTIONS] [PROMPT]"
+    echo "  -c, --config <key=value>"; echo "  -m, --model <MODEL>"
+    echo "      --dangerously-bypass-approvals-and-sandbox"
+    echo "      --dangerously-bypass-hook-trust"; echo "      --add-dir <DIR>"; exit 0 ;;
   "pi --help")
     echo "Usage:"; echo "  pi [options] [--] [@files...] [messages...]"
     echo "  --model <pattern>              Model pattern or ID"

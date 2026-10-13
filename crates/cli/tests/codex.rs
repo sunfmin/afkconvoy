@@ -1,0 +1,570 @@
+//! Codex is a harness (docs/adr/0013): a stage that names it gets a worker
+//! that is a Codex session, started in its role's directory under a user
+//! directory of the fleet's own, with the hook that asks the guard said on
+//! the line that starts it. The line is read off a stand-in orca, and then
+//! run with a stand-in Codex, which says what it was started with; the hook
+//! it was given is then run as Codex runs one: what refuses a call is the
+//! guard itself.
+
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use common::{World, git, write};
+use serde_json::{Value, json};
+
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+/// A workflow whose first stage is on Codex and whose second names no harness.
+const FEATURE: &str = "\
+```yaml
+stages:
+  - name: build
+    by: dev
+    do: implement
+    harness: codex
+    model: gpt-5.5
+    on: { pass: review }
+  - name: review
+    by: reviewer
+    do: review
+    writes: false
+    on: { pass: done, reject: build }
+```
+";
+/// A workflow whose one stage reviews, on Codex: no model, and nothing written.
+const AUDIT: &str = "\
+```yaml
+stages:
+  - name: look
+    by: reviewer
+    do: review
+    harness: codex
+    writes: false
+    on: { pass: done }
+```
+";
+const SWEEP: &str =
+    "```yaml\nby: dev\ndo: implement\nharness: codex\nevery: 1h\nmax_open: 1\n```\n";
+const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
+
+/// A world whose repo is bound to a team of two roles and two workflows.
+fn bound() -> World {
+    let world = World::new();
+    world.repo(
+        "acme/dev",
+        &[("CLAUDE.md", "the rules of a dev\n"), (".claude/skills/implement/SKILL.md", "build\n")],
+    );
+    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/team",
+        &[
+            ("team.md", TEAM),
+            ("workflows/feature.md", FEATURE),
+            ("workflows/audit.md", AUDIT),
+            ("patrols/sweep.md", SWEEP),
+        ],
+    );
+    configure(&world, CONFIG);
+    world
+}
+
+/// Has the repo's config be `config`, on its base branch.
+fn configure(world: &World, config: &str) {
+    write(&world.clone, "docs/agents/afkconvoy.md", config);
+    git(&world.clone, &["add", "."]);
+    git(&world.clone, &["commit", "-q", "-m", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+}
+
+const TICK: [&str; 7] = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+
+fn tick(world: &World, now: u64) -> common::Answer {
+    let now = now.to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now])
+}
+
+fn did(ticked: &Value) -> Vec<String> {
+    let steps = ticked["did"].as_array().unwrap();
+    steps
+        .iter()
+        .filter(|step| step["do"] != "board")
+        .map(|step| {
+            let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
+            format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())
+        })
+        .collect()
+}
+
+fn head(world: &World, repo: &str) -> String {
+    git(&world.root.join("github").join(repo), &["rev-parse", "HEAD"])
+}
+
+/// Where the fleet keeps its copy of `repo` at its head.
+fn copy(world: &World, repo: &str) -> PathBuf {
+    world.cache().join("afkconvoy/copies").join(repo).join(head(world, repo))
+}
+
+/// The directory the fleet keeps for Codex on this world's host.
+fn kept(world: &World) -> PathBuf {
+    world.cache().join("afkconvoy/harness/codex")
+}
+
+fn worktree(world: &World, issue: u64) -> PathBuf {
+    let orca = world.orca();
+    let rows = orca["worktrees"].as_array().unwrap();
+    let row = rows.iter().rev().find(|row| row["linkedIssue"] == issue).expect("a worktree");
+    PathBuf::from(row["path"].as_str().unwrap())
+}
+
+/// The line the one terminal open in `dir` was started with.
+fn started(world: &World, dir: &Path) -> String {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
+    let open: Vec<&Value> = here.filter(|t| t["open"] == true).collect();
+    assert_eq!(open.len(), 1, "{open:?}");
+    open[0]["command"].as_str().unwrap().to_string()
+}
+
+/// Each stage `check` reads, as "workflow/stage on harness", and the harness
+/// of the one patrol.
+fn harnesses(world: &World) -> (Vec<String>, Value) {
+    let read = world.afk(&["check"]).ok();
+    let stages = read["workflows"].as_array().unwrap().iter().flat_map(|workflow| {
+        let name = workflow["name"].as_str().unwrap().to_string();
+        let stages = workflow["stages"].as_array().unwrap().clone();
+        stages.into_iter().map(move |stage| {
+            format!("{name}/{}", stage["name"].as_str().unwrap())
+                + " on "
+                + stage["harness"].as_str().unwrap()
+        })
+    });
+    let mut stages: Vec<String> = stages.collect();
+    stages.sort();
+    (stages, read["patrols"][0]["harness"].clone())
+}
+
+#[test]
+fn a_stage_a_patrol_and_a_config_name_codex_and_codex_has_a_stock_worker_launch_command() {
+    let world = bound();
+    let (stages, patrol) = harnesses(&world);
+    assert_eq!(
+        stages,
+        ["audit/look on codex", "feature/build on codex", "feature/review on claude-code"]
+    );
+    assert_eq!(patrol, "codex");
+    let afk = env!("CARGO_BIN_EXE_afkconvoy");
+    let shown = world.command(afk, &world.clone).args(["show", "feature"]).output().unwrap();
+    let shown = String::from_utf8(shown.stdout).unwrap();
+    assert!(shown.contains("build   dev: implement · harness codex · model gpt-5.5"), "{shown}");
+
+    // Nobody said what starts a Codex worker: its stock command does, checked
+    // by the start beside Claude Code's — each asked for its own flags.
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let asked = world.shell_asked();
+    for question in [
+        "type -- 'codex'",
+        "codex --dangerously-bypass-approvals-and-sandbox --help",
+        r#"test -f "$HOME/.codex/auth.json" && codex login status"#,
+        r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}' --help"#,
+    ] {
+        assert!(asked.contains(&question.to_string()), "{question:?} is not in {asked:?}");
+    }
+    let line = started(&world, &worktree(&world, 7));
+    assert!(
+        line.contains(" && codex --dangerously-bypass-approvals-and-sandbox --add-dir "),
+        "{line}"
+    );
+
+    // A repo's config names it as its default: a stage that names none is on it.
+    let world = bound();
+    configure(&world, &CONFIG.replace("team: acme/team\n", "team: acme/team\nharness: codex\n"));
+    let (stages, _) = harnesses(&world);
+    assert_eq!(stages[2], "feature/review on codex");
+}
+
+#[test]
+fn a_command_that_does_not_take_what_the_fleet_adds_for_codex_starts_nothing() {
+    let world = bound();
+    world.issue(7, &["flow:audit"]);
+    let given = ["--worker-command", "codex=agent"];
+    let named = "`agent --help` names no --dangerously-bypass-hook-trust, no --config.";
+    // …nor does the stock command of a Codex that is older than those flags,
+    // which `plan` and `doctor` check as a start does.
+    let stock = "codex --dangerously-bypass-approvals-and-sandbox";
+    let old = format!("`{stock} --help` names no --dangerously-bypass-hook-trust, no --config.");
+    let said = world.afk(&[&TICK[..], &given].concat()).error();
+    assert!(said.contains(named), "{said}");
+    world.shell_help(Some("--add-dir --setting-sources --settings --model"));
+    let refusals = [
+        (named, said),
+        (&old[..], tick(&world, 1000).error()),
+        (&old[..], world.afk(&["plan", "--now", "1000"]).error()),
+    ];
+    for (named, why) in refusals {
+        assert!(why.contains(named), "{why}");
+        assert!(why.contains("must end in Codex taking flags"), "{why}");
+        assert!(why.contains("the worker launch command of the harness `codex`"), "{why}");
+        assert!(why.contains("the stage `look` of the workflow `audit`"), "{why}");
+    }
+    assert!(world.worktrees().is_empty());
+    let found = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json.to_string();
+    assert!(found.contains("names no --dangerously-bypass-hook-trust, no --config"), "{found}");
+    assert!(found.contains("must end in Codex taking flags"), "{found}");
+}
+
+/// `plan`, a `tick` and a `run` → the answer of each, its last line: the
+/// starts that probe.
+fn starts(world: &World) -> Vec<common::Answer> {
+    let run = "run --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
+    let tick = "tick --instance alpha --host h1 --now 1000";
+    let answer = |start: &str| {
+        let afk = env!("CARGO_BIN_EXE_afkconvoy");
+        let out = world.command(afk, &world.clone).args(start.split(' ')).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let last = stdout.lines().last().unwrap_or_default();
+        common::Answer {
+            json: serde_json::from_str(last).unwrap_or_else(|e| panic!("{e}: {stdout}")),
+            code: out.status.code().unwrap(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    };
+    ["plan --now 1000", tick, run].map(answer).into()
+}
+
+/// What `doctor` finds of Codex: each finding's `what`, and the line that fixes it.
+fn doctor_finds(world: &World) -> Vec<(String, String)> {
+    let answer = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
+    let text = |value: &Value| value.as_str().unwrap().to_string();
+    let findings = answer["findings"].as_array().unwrap().iter();
+    let of_codex = findings.filter(|finding| finding.to_string().contains("codex"));
+    of_codex.map(|finding| (text(&finding["what"]), text(&finding["fix"]))).collect()
+}
+
+const CALLED: &str = "called for by the stage `look` of the workflow `audit`, the stage `build` of \
+                      the workflow `feature`";
+
+#[test]
+fn a_host_without_codex_or_with_no_login_a_worker_can_use_is_refused_before_a_worker_is_started() {
+    let world = bound();
+    world.shell_knows("codex", None);
+    world.issue(7, &["flow:feature"]);
+    let install = "brew install --cask codex";
+    for start in starts(&world) {
+        let error = start.error();
+        let said: Vec<&str> = error.lines().skip(1).collect();
+        assert_eq!(said, [format!("  codex is not installed, {CALLED}: {install}")], "{error}");
+    }
+    assert_eq!(
+        doctor_finds(&world),
+        [(
+            "`codex` is not installed: the fleet cannot work without it".to_string(),
+            install.to_string()
+        )]
+    );
+
+    // A user with no login in the file a worker is linked to is told so.
+    let world = bound();
+    world.logged_out("codex");
+    world.issue(7, &["flow:feature"]);
+    let words = "is not logged in where a worker reads its login, `~/.codex/auth.json` (a login \
+                 kept in a keyring is in no file)";
+    for start in starts(&world) {
+        let error = start.error();
+        let said: Vec<&str> = error.lines().skip(1).collect();
+        assert_eq!(said, [format!("  codex {words}, {CALLED}: codex login")], "{error}");
+    }
+    assert!(world.worktrees().is_empty());
+    assert_eq!(world.claims(), []);
+    assert_eq!(doctor_finds(&world), [(format!("`codex` {words}"), "codex login".to_string())]);
+
+    // Logged in, the same starts go to work, and `doctor` finds nothing.
+    std::fs::remove_file(world.root.join("logged-out-codex")).unwrap();
+    for start in starts(&world) {
+        start.ok();
+    }
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+    assert_eq!(doctor_finds(&world), []);
+}
+
+/// The hook that asks the guard `guard`, as the line that starts a worker
+/// says it to Codex.
+fn hook(guard: &str) -> String {
+    format!(
+        "hooks={{PreToolUse=[{{hooks=[{{type=\"command\",command=\"said=$({guard} 2>&1 \
+         >/dev/null) && exit 0; printf '%s\\\\n' \\\"${{said:-afkconvoy guard: it could not be \
+         asked}}\\\" >&2; exit 2\"}}]}}]}}"
+    )
+}
+
+#[test]
+fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own() {
+    let world = bound();
+    // What this host's user has of Codex's: a login, rules, a configuration,
+    // hooks, a skill and memories.
+    let home = world.home();
+    for (file, text) in [
+        (".codex/auth.json", "{\"a\": \"login\"}\n"),
+        (".codex/AGENTS.md", "the user's rules\n"),
+        (".codex/config.toml", "model = \"theirs\"\n"),
+        (".codex/hooks.json", "{\"hooks\": {}}\n"),
+        (".codex/skills/theirs/SKILL.md", "theirs\n"),
+        (".codex/memories/theirs.md", "theirs\n"),
+    ] {
+        write(&home, file, text);
+    }
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+
+    let (role, dir, kept) = (copy(&world, "acme/dev"), worktree(&world, 7), kept(&world));
+    let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
+    let line = started(&world, &dir);
+    assert_eq!(
+        line,
+        format!(
+            "cd '{role}' && export CODEX_HOME='{kept}' \
+             AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+             AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
+             AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
+             AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
+             AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
+             AFKCONVOY_HARNESS='codex' && codex --dangerously-bypass-approvals-and-sandbox \
+             --add-dir '{worktree}' --dangerously-bypass-hook-trust \
+             --config 'projects={{\"{role}\"={{trust_level=\"trusted\"}}}}' \
+             --config '{hook}' --config features.memories=false --model 'gpt-5.5'",
+            role = role.display(),
+            kept = kept.display(),
+            worktree = dir.display(),
+            dev = head(&world, "acme/dev"),
+            team = head(&world, "acme/team"),
+            hook = hook(&guard).replace('\'', "'\\''"),
+        )
+    );
+    // Nothing was asked at its terminal: both of its questions are answered
+    // on the line, and the worker backend was sent the brief's pointer alone.
+    let sent: Vec<Vec<String>> = world
+        .orca_calls()
+        .into_iter()
+        .filter(|call| call.starts_with(&["terminal".to_string(), "send".to_string()]))
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].iter().any(|word| word.starts_with("Your task brief is the file ")));
+
+    // The fleet's own user directory for Codex: the user's login, as a link
+    // to theirs, and nothing else of the user's.
+    let held = |kept: &Path| -> Vec<String> {
+        let entries = std::fs::read_dir(kept).unwrap().flatten();
+        entries.map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()
+    };
+    assert_eq!(held(&kept), ["auth.json"]);
+    assert_eq!(std::fs::read_link(kept.join("auth.json")).unwrap(), home.join(".codex/auth.json"));
+
+    // The stand-in is started as Codex is: in the role's directory, under
+    // that user directory, with each thing the fleet adds as one word.
+    let ran = under_codex(&world, &line);
+    let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+    assert_eq!(ran[..2], words(&[role.to_str().unwrap(), kept.to_str().unwrap()]));
+    assert_eq!(
+        ran[2..],
+        words(&[
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--add-dir",
+            dir.to_str().unwrap(),
+            "--dangerously-bypass-hook-trust",
+            "--config",
+            &format!("projects={{\"{}\"={{trust_level=\"trusted\"}}}}", role.display()),
+            "--config",
+            &hook(&guard),
+            "--config",
+            "features.memories=false",
+            "--model",
+            "gpt-5.5",
+        ])
+    );
+
+    // The next start follows what the user has by then: a login gone. The
+    // directory is there all the same, and a stage that names no model names
+    // none to Codex.
+    std::fs::remove_file(home.join(".codex/auth.json")).unwrap();
+    world.issue(8, &["flow:audit"]);
+    let ticked = did(&tick(&world, 1100).ok());
+    assert!(ticked.contains(&"dispatch 8 done".to_string()), "{ticked:?}");
+    assert_eq!(held(&kept), [] as [&str; 0], "a link to no login is left");
+    let line = started(&world, &worktree(&world, 8));
+    assert!(line.ends_with(" --config features.memories=false"), "{line}");
+}
+
+/// A stand-in Codex: it prints the directory it was started in, the user
+/// directory it was given and each of its arguments, a NUL after each.
+const STAND_IN_CODEX: &str = "#!/bin/sh\nprintf '%s\\0' \"$PWD\" \"$CODEX_HOME\" \"$@\"\n";
+
+/// Runs `line`, the line a Codex worker was started with, with the stand-in
+/// Codex for `codex` → what the stand-in printed. Nothing of this process's
+/// environment is the worker's but its PATH.
+fn under_codex(world: &World, line: &str) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = world.root.join("stand-in");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("codex"), STAND_IN_CODEX).unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new("/bin/sh")
+        .args(["-c", line])
+        .env_clear()
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{line}\n{}", String::from_utf8_lossy(&out.stderr));
+    let printed = String::from_utf8(out.stdout).unwrap();
+    printed.split_terminator('\0').map(str::to_string).collect()
+}
+
+/// The shell line of the one hook the stand-in Codex was given in `ran`,
+/// which Codex runs before each tool call: there is no other place it is
+/// kept, and a start that names none has none.
+fn hooked(ran: &[String]) -> String {
+    let said: Vec<&String> = ran.iter().filter(|word| word.starts_with("hooks=")).collect();
+    assert_eq!(said.len(), 1, "{ran:?}");
+    let before = "hooks={PreToolUse=[{hooks=[{type=\"command\",command=";
+    let text = said[0].strip_prefix(before).and_then(|rest| rest.strip_suffix("}]}]}"));
+    // A TOML string that holds nothing but these escapes is a JSON one too.
+    serde_json::from_str(text.expect("one hook, before each tool call")).unwrap()
+}
+
+/// What the hook of the worker `line` started answers Codex for `call`, run
+/// as Codex runs a hook — by a shell, in the worker's environment, with the
+/// call described on standard input: its exit code and what it said.
+fn codex_is_told(world: &World, line: &str, call: &Value) -> (i32, String) {
+    use std::io::Write;
+    let hook = hooked(&under_codex(world, line));
+    let (worker, _) = line.split_once(" && codex ").expect("the stock command");
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("STAND_IN_HOOK", hook)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(call.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.stdout.is_empty(), "a hook says nothing to Codex but on stderr");
+    (out.status.code().unwrap(), String::from_utf8(out.stderr).unwrap().trim().to_string())
+}
+
+fn bash(line: &str) -> Value {
+    json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": line}})
+}
+
+#[test]
+fn every_tool_call_of_a_codex_worker_is_put_to_the_guard_and_one_it_refuses_is_not_made() {
+    let world = bound();
+    world.issue(7, &["flow:audit"]);
+    world.issue(8, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[..2], ["dispatch 7 done", "dispatch 8 done"], "{ticked}");
+    let (reviews, writes) =
+        (started(&world, &worktree(&world, 7)), started(&world, &worktree(&world, 8)));
+    // The hook is on the line and in no file: no worker starts without it,
+    // whatever its role's repo and the fleet's directory hold.
+    assert!(!kept(&world).join("hooks.json").exists());
+
+    // What every worker is refused, and — in a stage that writes nothing — a
+    // commit: each refused as Codex takes a refusal, with the guard's reason.
+    let every = [
+        "gh pr merge 70 --squash",
+        "git push origin main",
+        "gh issue edit 7 --add-label flow:feature",
+        "gh issue edit 7 --remove-label flow:audit",
+    ];
+    let commit = "git add -A && git commit -m step";
+    for (line, refused) in
+        [(&writes, &every[..]), (&reviews, &[&every[..], &[commit]].concat()[..])]
+    {
+        for shell in refused {
+            let (code, said) = codex_is_told(&world, line, &bash(shell));
+            assert_eq!(code, 2, "{shell}: {said}");
+            assert!(said.starts_with("afkconvoy guard: "), "{shell}: {said}");
+            assert_eq!(said.lines().count(), 1, "{shell}: {said}");
+        }
+        for shell in ["ls", "git status"] {
+            assert_eq!(codex_is_told(&world, line, &bash(shell)), (0, String::new()), "{shell}");
+        }
+    }
+    assert_eq!(codex_is_told(&world, &writes, &bash(commit)), (0, String::new()));
+    let (_, said) = codex_is_told(&world, &reviews, &bash(commit));
+    assert!(said.contains("the stage `look` is marked `writes: false`: `git commit`"), "{said}");
+
+    // A patch's text is no shell line, whatever it holds; nor is what any
+    // other tool is handed.
+    let patch = "*** Begin Patch\n*** Add File: a.sh\n+git push origin main\n*** End Patch\n";
+    for other in [
+        json!({"tool_name": "apply_patch", "tool_input": {"command": patch}}),
+        json!({"tool_name": "mcp__shell__run", "tool_input": {"command": "git push origin main"}}),
+        json!({"tool_name": "update_plan", "tool_input": {"plan": []}}),
+    ] {
+        assert_eq!(codex_is_told(&world, &reviews, &other), (0, String::new()), "{other}");
+    }
+}
+
+#[test]
+fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
+    let world = bound();
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 8 done");
+    let line = started(&world, &worktree(&world, 8));
+    let guard = format!("$({} guard ", env!("CARGO_BIN_EXE_afkconvoy"));
+    assert!(line.contains(&guard), "{line}");
+    // Codex makes a call whose hook fails in any way but one: each of these
+    // ends in that one — the exit code that refuses, and a reason.
+    let refused = |(from, with): (&str, &str), why: &str| {
+        assert!(line.contains(from), "{from}: {line}");
+        for call in [bash("ls"), json!({"tool_name": "apply_patch", "tool_input": {}})] {
+            let (code, said) = codex_is_told(&world, &line.replace(from, with), &call);
+            assert_eq!(code, 2, "{with}: {said}");
+            assert!(said.contains(why), "{with}: {said}");
+        }
+    };
+    // A guard that is not there, one that fails saying nothing, one that
+    // cannot read the stage, and one that never answers its name.
+    refused((&guard, "$(/nowhere/afkconvoy guard "), "/nowhere/afkconvoy");
+    refused((&guard, "$(exit 1 "), "afkconvoy guard: it could not be asked");
+    refused((&guard, "$(exit 2 "), "afkconvoy guard: it could not be asked");
+    refused(("AFKCONVOY_STAGE='build' ", ""), "AFKCONVOY_STAGE is not set");
+    refused(("AFKCONVOY_HARNESS='codex'", "AFKCONVOY_HARNESS='aider'"), "`aider` is no harness");
+    // What is no description of a tool call is refused too.
+    let (code, said) = codex_is_told(&world, &line, &json!({"toolName": "bash"}));
+    assert_eq!(code, 2, "{said}");
+    assert!(said.contains("describes no tool call"), "{said}");
+}
+
+#[test]
+fn a_stage_record_of_a_codex_worker_names_codex() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let dir = worktree(&world, 7);
+    let line = started(&world, &dir);
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let brief = std::fs::read_to_string(git_dir.join("convoy-worker-prompt.md")).unwrap();
+    let declare = brief.lines().find(|line| line.contains(" verdict --issue 7")).unwrap();
+    // The worker declares with the line its brief gives it, in the
+    // environment the start gave it.
+    let (worker, _) = line.split_once(" && codex ").unwrap();
+    let ran = world
+        .command("sh", &world.root)
+        .args(["-c", &format!("{worker} && {declare} pass --text built")])
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    let comments = world.comments(7);
+    let record = comments.iter().find(|comment| comment.contains(" stage=build ")).unwrap();
+    assert!(record.contains(" verdict=pass ") && record.contains(" harness=codex-->"), "{record}");
+    let shown = world.afk(&["show", "--issue", "7"]).ok();
+    assert_eq!(shown["records"][0]["harness"], "codex", "{shown}");
+}

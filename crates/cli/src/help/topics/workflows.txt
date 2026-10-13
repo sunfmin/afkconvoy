@@ -32,10 +32,11 @@ STAGES
   judges never inherits the reasoning of the one that wrote.
 
   `harness` names the harness the stage's worker is a session of: claude-code, Claude
-  Code, or pi. It is a key of a stage a role performs and of a patrol — wherever `model`
-  is one — and nowhere else. One that names none takes the default, which is the
-  `harness` of the repo's config, and claude-code where that names none. `model` is
-  passed to the harness; `afkconvoy check` holds it against the models pi lists.
+  Code, pi, or codex, Codex. It is a key of a stage a role performs and of a patrol —
+  wherever `model` is one — and nowhere else. One that names none takes the default,
+  which is the `harness` of the repo's config, and claude-code where that names none.
+  `model` is passed to the harness; `afkconvoy check` holds it against the models pi
+  lists.
 
   `writes: false` has the guard refuse the stage's worker a commit and a push
   (`afkconvoy guard --help`): mark every stage that judges so.

@@ -66,7 +66,7 @@ _Avoid_: team mode, managed repo
 
 **Guard**:
 The check made before each thing a worker does, refusing what its role or its stage may not do. It stops a worker that errs, not one that means to get past it.
-_Avoid_: permission (what a harness's own settings deny), sandbox
+_Avoid_: permission (what a harness's own settings deny), sandbox (what a harness may shut a worker's commands in)
 
 ### Workflows
 
@@ -133,7 +133,7 @@ _Avoid_: freeze, pause, kill switch
 ### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another. A stage names the one its worker runs, or takes the fleet's default.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third. A stage names the one its worker runs, or takes the fleet's default.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Worker**:

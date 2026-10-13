@@ -449,7 +449,8 @@ mod tests {
         let bound = Config::new(named("claude-code")).unwrap().bound.unwrap();
         assert_eq!(bound.harness, Harness::ClaudeCode);
         assert_eq!(Config::new(named("pi")).unwrap().bound.unwrap().harness, Harness::Pi);
-        for none in ["codex", "Claude Code", "claude", ""] {
+        assert_eq!(Config::new(named("codex")).unwrap().bound.unwrap().harness, Harness::Codex);
+        for none in ["aider", "Claude Code", "claude", ""] {
             let refused = Config::new(named(none)).unwrap_err();
             assert_eq!(refused, ConfigError::NotAHarness(none.to_string()));
             let said = refused.to_string();

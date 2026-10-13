@@ -111,10 +111,11 @@ WHAT TRIPS YOU UP
     `--worker-command <command>` is the worker launch command of the default harness:
     the one the repo's config names, Claude Code where it names none.
     `--worker-command <harness>=<command>` is that of one harness, by its key
-    (`claude-code`, `pi`). A value is the second form when its first word holds an
+    (`claude-code`, `pi`, `codex`). A value is the second form when its first word holds an
     `=`. A harness given none is started with its stock command: Claude Code with
     `claude --dangerously-skip-permissions --settings
-    '{"skipDangerousModePermissionPrompt":true}'`, pi with `pi`. The setting answers the
+    '{"skipDangerousModePermissionPrompt":true}'`, pi with `pi`, Codex with
+    `codex --dangerously-bypass-approvals-and-sandbox`. The setting answers the
     warning Claude Code opens with in that mode: nobody is at a worker's terminal to.
   - In a bound repo, before any worker is started, the command of every harness the
     fleet could be asked for is checked: the repo's default, each harness a stage of
@@ -140,6 +141,29 @@ WHAT TRIPS YOU UP
     worktree (its AGENTS.md, or CLAUDE.md) and the team rules (the team's CLAUDE.md). A
     command you give for pi must take `--approve`, `--no-skills`, `--skill`,
     `--extension` and `--model`.
+  - A Codex worker — of a stage or a patrol that says `harness: codex` — is the
+    session you would have at a terminal, not `codex exec`: the fleet sends to a
+    worker after it starts. It starts in its role's directory like any other:
+        cd <the role's copy> && export CODEX_HOME=<the fleet's own>
+          <the stage's facts> && <worker launch command> --add-dir <the worktree>
+          --dangerously-bypass-hook-trust
+          --config 'projects={"<the role's copy>"={trust_level="trusted"}}'
+          --config 'hooks={PreToolUse=[<what asks afkconvoy guard>]}'
+          --config features.memories=false [--model <the stage's>]
+    `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex
+    would ask at its terminal — whether it trusts the folder, and a review of its
+    hooks — and have it load the role's own limits (`.codex/hooks.json`). The hook
+    named asks `afkconvoy guard` before every tool call: one the guard refuses, or
+    cannot be asked of, is not made. It is on the line and in no file, so no worker
+    starts without it. Codex's user directory is the fleet's own
+    (~/.cache/afkconvoy/harness/codex), not yours (~/.codex): it holds a link to
+    your login (auth.json) and nothing else of yours — no rule, skill, hook or
+    configuration, so no provider you defined in config.toml. A login Codex
+    keeps in a keyring is in no file, and is no worker's: the start refuses, and
+    `doctor` says so. Its memories are off. The stock command runs Codex in no
+    sandbox: a worker is limited by the guard, and a host that wants a sandbox says
+    a command of its own. A command you give for Codex must take `--add-dir`,
+    `--dangerously-bypass-hook-trust`, `--config` and `--model`.
   - A stage's model is its harness's own name for it: pi's is `<provider>/<id>`. A
     stage on pi that names none gets whichever model pi picks for itself. A provider
     whose key is in your login shell's environment is reached too, and a rules file

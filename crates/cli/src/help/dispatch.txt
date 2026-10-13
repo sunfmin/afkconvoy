@@ -34,8 +34,8 @@ WHAT IT READS AND WRITES
   _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT, _HARNESS), and
   starts the worker launch command with the worktree and the team's copy added as
   directories, the user's own settings left out, and the stage's model when it names
-  one — as Claude Code takes them; what a pi worker is started with is in `afkconvoy
-  run --help`. The worker's harness is the one the stage names, or the default of the repo's
+  one — as Claude Code takes them; what a pi worker and a Codex worker are started
+  with is in `afkconvoy run --help`. The worker's harness is the one the stage names, or the default of the repo's
   config; a consult's and a landing worker's is the default.
 
   Where the stage declared `escalate` and names a consult, the worker is started as

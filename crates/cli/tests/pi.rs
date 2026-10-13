@@ -668,7 +668,7 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     refused((&guard, "AFKCONVOY_GUARD='/nowhere/afkconvoy guard'"), "/nowhere/afkconvoy");
     refused((&guard, "AFKCONVOY_GUARD='exit 1'"), "afkconvoy guard: it could not be asked");
     refused(("AFKCONVOY_STAGE='build' ", ""), "AFKCONVOY_STAGE is not set");
-    refused(("AFKCONVOY_HARNESS='pi'", "AFKCONVOY_HARNESS='codex'"), "`codex` is no harness");
+    refused(("AFKCONVOY_HARNESS='pi'", "AFKCONVOY_HARNESS='aider'"), "`aider` is no harness");
     // With no line to ask it by, the extension refuses by throwing.
     let unset = refused((&guard, "AFKCONVOY_NO_GUARD=''"), "AFKCONVOY_GUARD is not set");
     assert_eq!(unset[0]["threw"], true);
