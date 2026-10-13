@@ -24,7 +24,9 @@ WHAT IT READS AND WRITES
   asked for the commit at their head; one the fleet has no copy of yet is cloned and
   kept, read-only, under the user's cache directory (afkconvoy/copies/<owner>/<repo>/
   <commit>), once however many roles it holds. A role that is a subdirectory of its repo
-  is copied out of that on its own (<commit>-role-<path>), and so is the team's
+  is copied out of that on its own (<commit>-role-<path>; <commit>-role+codex-<path>,
+  with a link to the role's skills where Codex finds them, for a Codex worker), and so
+  is the team's
   directory, without the directories of its roles and without a `.claude/` at its top
   (<commit>-team+rules-<path>): a worker is given its role's directory and, of the
   team's, the team rules (its `CLAUDE.md`) — nothing else above its role, and no

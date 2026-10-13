@@ -74,9 +74,9 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
-    let role_copy = kept.role(role)?;
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
     let harness = patrol.harness(bound.harness);
+    let role_copy = kept.role(role, harness)?;
     // Before the claim: a patrol whose harness cannot be started here runs nothing.
     let launch = agent.command(harness)?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &claim_key(name))? else {
