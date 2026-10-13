@@ -19,6 +19,7 @@ fn config_prints_every_key_with_defaults_filled() {
         serde_json::json!({
             "base_branch": "main",
             "gate_command": "make test",
+            "gate_seconds": 3600,
             "ready_label": "ready-for-agent",
             "epic_labels": ["epic", "prd"],
             "concurrency": 5,
@@ -45,6 +46,10 @@ fn a_bad_config_is_an_error_naming_the_key() {
         ("base_branch: main\ngate_command: make\nretry: 2", "retry"),
         ("base_branch: main\ngate_command: make\nconcurrency: lots", "concurrency"),
         ("base_branch: main\ngate_command: make\nconcurrency: 0", "concurrency"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: 0", "gate_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: 1.5", "gate_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: -1", "gate_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: an hour", "gate_seconds"),
         (
             "base_branch: main\ngate_command: make\nescalate_label: ready-for-agent",
             "escalate_label",
@@ -66,9 +71,10 @@ fn a_failure_is_one_json_object_and_a_non_zero_exit() {
 }
 
 #[test]
-fn this_repos_own_config_names_the_gate() {
+fn this_repos_own_config_names_the_gate_and_declares_its_limit() {
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/agents/afkconvoy.md");
     let world = World::new();
     let config = world.afk(&["config", "--file", file]).ok();
     assert_eq!(config["gate_command"], "./gate.sh");
+    assert_eq!(config["gate_seconds"], 600);
 }

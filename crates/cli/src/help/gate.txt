@@ -10,7 +10,9 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  It runs the config's `gate_command` in this worktree, its log streaming to stderr.
+  It runs the config's `gate_command` in this worktree, its log streaming to stderr,
+  for no longer than the gate limit: the config's `gate_seconds` (default 3600). A run
+  that reaches it is ended, with everything it started, and is red.
   With `--train` it first merges in what the PR will land behind — the landing train's
   tip, or the base branch when nothing is on the train — a merge: nothing is rebased.
   On the remote it writes only the recorded gate run: put on record for a green run of
@@ -26,7 +28,8 @@ WHAT IT ANSWERS
     detail       what to do next, in words
     exit_code, timed_out, command, head
                  the run: the gate command, its exit code, and the commit it ran on.
-                 A run killed at `--gate-timeout` is red, with exit_code 124
+                 A run ended at the gate limit is red, with exit_code 124 and
+                 timed_out true, and `detail` says so, and what the limit is
     locks        on a red run with a fleet lock standing: the locks. The base branch
                  may be what is red: declare nothing of it, stop, and run this again
                  when told to carry on
@@ -47,5 +50,7 @@ WHAT TRIPS YOU UP
     included, unless `.gitignore` covers them — makes the run green with `recorded`
     false: it proves nothing about a commit.
   - A recorded run is of one tree. Any further commit needs another run.
+  - The gate limit is no flag. It is `gate_seconds` in the config of this worktree
+    (`afkconvoy config --help`), the same for a worker's run and the train's.
   - A conflict is resolved by committing the merge, then running this again. A resolved
     merge left uncommitted is refused.

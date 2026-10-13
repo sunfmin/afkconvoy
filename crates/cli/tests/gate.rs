@@ -4,6 +4,7 @@ use afkconvoy::gate::recorded;
 use afkconvoy::git::Repo;
 use afkconvoy_core::gate::{GateCommand, RECORD_TTL, Tree};
 use common::{World, git};
+use serde_json::json;
 
 /// A world whose gate is red exactly while the file `red` exists beside it.
 fn gated() -> (World, String) {
@@ -54,15 +55,26 @@ fn a_red_run_records_nothing_and_takes_the_trees_record_away() {
 }
 
 #[test]
-fn a_run_that_times_out_is_red() {
+fn a_run_that_reaches_the_configs_gate_limit_is_ended_and_red() {
     let world = World::new();
-    world.set_gate("sleep 30");
+    world.set_gate_config("gate_command: sleep 30\ngate_seconds: 1");
     let started = std::time::Instant::now();
-    let answer = world.afk(&["gate", "--gate-timeout", "1"]).ok();
+    let answer = world.afk(&["gate"]).ok();
     assert!(started.elapsed().as_secs() < 10, "the run was killed");
     assert_eq!(answer["status"], "red");
-    assert_eq!(answer["timed_out"], true);
+    assert_eq!((&answer["timed_out"], &answer["exit_code"]), (&json!(true), &json!(124)));
     assert_eq!(answer["recorded"], false);
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.contains("reached the gate limit of 1s"), "{detail}");
+}
+
+#[test]
+fn a_red_run_that_ended_by_itself_says_nothing_of_the_gate_limit() {
+    let (world, _) = gated();
+    std::fs::write(world.root.join("red"), "").unwrap();
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!((&answer["status"], &answer["timed_out"]), (&json!("red"), &json!(false)));
+    assert!(!answer["detail"].as_str().unwrap().contains("gate limit"), "{answer}");
 }
 
 #[test]

@@ -227,11 +227,28 @@ impl Proven {
     }
 }
 
+/// What a red run adds to the words that report it when it reached the gate
+/// limit of `gate_seconds`: that it did, and what the limit is. Nothing for a
+/// run that ended by itself.
+pub fn at_limit(ran: Ran, gate_seconds: u64) -> String {
+    if ran.timed_out { format!(": its run {}", reached(gate_seconds)) } else { String::new() }
+}
+
+/// How a run that reached the gate limit of `gate_seconds` ended.
+fn reached(gate_seconds: u64) -> String {
+    format!("reached the gate limit of {gate_seconds}s and was ended")
+}
+
 /// The comment a red gate run leaves on each PR it was a run of: the command,
-/// how it ended, and the end of its log.
-pub fn red_comment(command: &GateCommand, ran: Ran, excerpt: &[String]) -> String {
+/// how it ended under the gate limit of `gate_seconds`, and the end of its log.
+pub fn red_comment(
+    command: &GateCommand,
+    ran: Ran,
+    gate_seconds: u64,
+    excerpt: &[String],
+) -> String {
     let ended =
-        if ran.timed_out { "timed out".to_string() } else { format!("exited {}", ran.exit_code) };
+        if ran.timed_out { reached(gate_seconds) } else { format!("exited {}", ran.exit_code) };
     let log = if excerpt.is_empty() { "(no output)".to_string() } else { excerpt.join("\n") };
     format!(
         "The gate is red on the landing train with this PR on it: `{}` {ended}. Nothing landed; \
@@ -381,8 +398,16 @@ mod tests {
         assert!(Proven::by(&tree, &command, &run, 1001 + RECORD_TTL).is_none(), "gone stale");
         assert!(Proven::by(&Tree::named("other"), &command, &run, 1000).is_none());
         assert!(Proven::by(&tree, &GateCommand::new("true"), &run, 1000).is_none());
-        let comment = red_comment(&command, ran(2), &["a".into(), "b".into()]);
+        let comment = red_comment(&command, ran(2), 600, &["a".into(), "b".into()]);
         assert!(comment.contains("`make test` exited 2") && comment.contains("```\na\nb\n```"));
+        let at_the_limit = Ran { timed_out: true, ..ran(124) };
+        let comment = red_comment(&command, at_the_limit, 600, &[]);
+        assert!(comment.contains("`make test` reached the gate limit of 600s and was ended"));
+        assert_eq!(
+            at_limit(at_the_limit, 600),
+            ": its run reached the gate limit of 600s and was ended"
+        );
+        assert_eq!(at_limit(ran(1), 600), "", "a run that ended by itself reached none");
     }
 
     #[test]

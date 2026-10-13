@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::Config;
-use afkconvoy_core::gate::{GateCommand, Proven, Tree, red_comment};
+use afkconvoy_core::gate::{GateCommand, Proven, Tree, at_limit, red_comment};
 use afkconvoy_core::train::{PUSH_TRIES, TrainOutcome, finished, keeps_its_commits, train_refs};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -14,14 +14,6 @@ use crate::gate::{Gated, gated};
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
 use crate::train::{Train, merge_in, require_committed, unmerged};
-
-/// How long a run of `land --train` is given.
-pub struct Limits {
-    /// The gate command, before it is killed and red.
-    pub gate: Duration,
-    /// GitHub, to show the PRs a landing landed as merged.
-    pub merged: Duration,
-}
 
 /// Pushes `commit` to the base branch as a fast-forward → whether the remote
 /// took it. It asks for the proof of the commit's tree, and pushes nothing
@@ -76,11 +68,12 @@ pub fn land_train(
     config: &Config,
     gh: &GitHub,
     now: u64,
-    limits: &Limits,
+    merged: Duration,
 ) -> Result<Value> {
     let branch = &config.base_branch;
     let refs = train_refs(repo.layout(), branch);
     let command = GateCommand::new(&config.gate_command);
+    let limit = config.gate_seconds();
     let mut answer = json!({"train": refs.line, "base": branch});
     let stop = |answer: &Value, outcome: TrainOutcome, more: Value| {
         let mut answer = answer.clone();
@@ -152,7 +145,7 @@ pub fn land_train(
     answer["commit"] = json!(head);
     answer["prs"] = json!(prs);
 
-    let (run, source) = match gated(repo, &command, now, limits.gate)? {
+    let (run, source) = match gated(repo, &command, now, Duration::from_secs(limit))? {
         Gated::Green { run, source } => (run, source),
         Gated::Red { ran, excerpt } => {
             // Best effort: a red commit not on record only costs a worker's gate a red run.
@@ -163,13 +156,16 @@ pub fn land_train(
                 REMOTE,
                 &format!("{head}:{}", refs.red),
             ]);
-            let comment = red_comment(&command, ran, &excerpt);
+            let comment = red_comment(&command, ran, limit, &excerpt);
             for pr in gh.open_prs()?.iter().filter(|pr| prs.contains(&pr.number)) {
                 gh.comment(pr.number, &comment)?;
             }
-            let detail = "the gate is red on the train's tip. Fix the TRAIN: read the failure, \
-                          change what makes it green, and COMMIT — one more commit on top, here. \
-                          Do not hunt for the PR at fault and drop nothing. Then run this again";
+            let detail = format!(
+                "the gate is red on the train's tip{}. Fix the TRAIN: read the failure, change \
+                 what makes it green, and COMMIT — one more commit on top, here. Do not hunt \
+                 for the PR at fault and drop nothing. Then run this again",
+                at_limit(ran, limit)
+            );
             let gate = json!({"status": "red", "exit_code": ran.exit_code,
                 "timed_out": ran.timed_out, "command": command.text(), "excerpt": excerpt});
             return Ok(stop(
@@ -211,7 +207,7 @@ pub fn land_train(
         }
     }
     let numbers: BTreeSet<u64> = landed.iter().map(|join| join.pr).collect();
-    let still_open = await_merged(gh, &numbers, limits.merged)?;
+    let still_open = await_merged(gh, &numbers, merged)?;
     for pr in
         open.iter().filter(|pr| numbers.contains(&pr.number) && !still_open.contains(&pr.number))
     {
