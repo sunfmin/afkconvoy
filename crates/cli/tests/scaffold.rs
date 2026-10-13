@@ -307,7 +307,8 @@ fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|role| (role["limits"] != json!([])).then(|| role["name"].as_str().unwrap()))
+        .filter(|role| role["limits"] != json!([]))
+        .map(|role| role["name"].as_str().unwrap())
         .collect();
     assert_eq!(limited, ["fellow", "attending"]);
     // And what the topic says to run on it does.
