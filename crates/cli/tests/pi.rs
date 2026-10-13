@@ -51,11 +51,12 @@ const EXTENSION: &str = include_str!("../../core/src/harness/pi/extension.js");
 /// Where orca installs its own, under the home of its host's user.
 const ORCA_S: &str = ".pi/agent/extensions/orca-agent-status.ts";
 
-/// A world whose repo is bound to a team of two roles and two workflows, and
-/// whose own rules are in an `AGENTS.md`.
+/// A world whose repo is bound to a team of two roles and two workflows, with
+/// rules of its own, and whose own rules are in an `AGENTS.md`.
 fn bound() -> World {
     bound_to(&[
         ("team.md", TEAM),
+        ("CLAUDE.md", "the rules of the team\n"),
         ("workflows/feature.md", FEATURE),
         ("workflows/audit.md", AUDIT),
         ("patrols/sweep.md", SWEEP),
@@ -312,7 +313,8 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
         started(&world, &dir),
         format!(
             "cd '{role}' && export PI_CODING_AGENT_DIR='{kept}' AFKCONVOY_GUARD='{guard} guard' \
-             AFKCONVOY_WORKTREE='{worktree}' AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+             AFKCONVOY_WORKTREE='{worktree}' AFKCONVOY_TEAM_DIR='{team_dir}' \
+             AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
              AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
              AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
@@ -323,6 +325,7 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
             role = role.display(),
             kept = kept.display(),
             worktree = dir.display(),
+            team_dir = copy(&world, "acme/team").display(),
             dev = head(&world, "acme/dev"),
             team = head(&world, "acme/team"),
         )
@@ -552,8 +555,9 @@ fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
             "extensions": [kept(&world).join("afkconvoy.js")],
             "model": "openai/gpt-5.5", "found": []})
     );
-    // Its rules are its role's, which pi loads itself, and the worktree's,
-    // which the extension adds — once, however many runs there are.
+    // Its rules are its role's, which pi loads itself, and the worktree's
+    // and the team's, which the extension adds — once, however many runs
+    // there are.
     let rules: Vec<&str> = ran["rules"]
         .as_array()
         .unwrap()
@@ -562,9 +566,14 @@ fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
         .collect();
     assert_eq!(
         rules,
-        [role.join("CLAUDE.md").to_str().unwrap(), build.join("AGENTS.md").to_str().unwrap()]
+        [
+            role.join("CLAUDE.md").to_str().unwrap(),
+            build.join("AGENTS.md").to_str().unwrap(),
+            copy(&world, "acme/team").join("CLAUDE.md").to_str().unwrap()
+        ]
     );
     assert_eq!(ran["rules"][1]["content"], "the rules of the project\n");
+    assert_eq!(ran["rules"][2]["content"], "the rules of the team\n");
 
     // What every worker is refused, and — in a stage that writes nothing — a
     // commit: each for the reason Claude Code is given.
@@ -601,6 +610,26 @@ fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
     assert!(
         said.as_str().unwrap().contains("the stage `look` is marked `writes: false`: `git commit`"),
         "{said}"
+    );
+}
+
+#[test]
+fn a_pi_worker_of_a_team_with_no_rules_is_given_its_role_s_and_its_worktree_s() {
+    if !has_node() {
+        eprintln!("skipped: no `node` on PATH to run the stand-in pi with");
+        return;
+    }
+    let world = bound_to(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let build = worktree(&world, 7);
+    let ran = under_pi(&world, &started(&world, &build), &json!([]));
+    let rules: Vec<&str> =
+        ran["rules"].as_array().unwrap().iter().flat_map(|file| file["path"].as_str()).collect();
+    let role = copy(&world, "acme/dev");
+    assert_eq!(
+        rules,
+        [role.join("CLAUDE.md").to_str().unwrap(), build.join("AGENTS.md").to_str().unwrap()]
     );
 }
 

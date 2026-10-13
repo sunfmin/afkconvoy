@@ -29,7 +29,8 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
         ])
         .ok();
     let held = |role: &str| ROLE_FILES.map(|file| format!("roles/{role}/{file}"));
-    let files = [vec!["team.md".to_string(), "workflows/feature.md".to_string()]];
+    let files = ["team.md", "CLAUDE.md", "workflows/feature.md"].map(str::to_string);
+    let files = [files.to_vec()];
     let files = [&files[..], &[held("fellow").to_vec(), held("attending").to_vec()]].concat();
     assert_eq!(
         wrote,
@@ -38,6 +39,14 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
     );
     let file = std::fs::read_to_string(team.join("team.md")).unwrap();
     assert!(file.contains("roles:\n  fellow: ./roles/fellow\n  attending: ./roles/attending\n"));
+    // Its rules: a heading, and two lines on what belongs there and what
+    // belongs in a repo's own rules or a role's.
+    let rules = std::fs::read_to_string(team.join("CLAUDE.md")).unwrap();
+    let lines: Vec<&str> = rules.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(lines.len(), 3, "{rules}");
+    assert_eq!(lines[0], "# Team rules");
+    assert!(lines[1].starts_with("Here: how this team works, in every repo bound to it"));
+    assert!(lines[2].contains("that repo's own rules") && lines[2].contains("its role's"));
     // One repo was created, from the one commit that holds exactly the skeleton.
     assert_eq!(git(&team, &["status", "--porcelain"]), "");
     assert_eq!(git(&team, &["rev-list", "--count", "HEAD"]), "1");
@@ -61,6 +70,8 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
             );
         }
         assert_eq!(roles.len(), 2);
+        // The team's own rules are the skeleton's, and above no role.
+        assert_eq!(read["rules"], true);
         // The example workflow asks the first role for the skill its skeleton holds.
         let feature = &read["workflows"][0];
         assert_eq!(
@@ -87,8 +98,8 @@ fn a_team_names_a_role_written_here_and_one_that_is_elsewhere() {
     let wrote = world.afk(&[&["scaffold", "team", dir][..], &roles].concat()).ok();
     let files: Vec<&str> =
         wrote["files"].as_array().unwrap().iter().flat_map(Value::as_str).collect();
-    assert_eq!(files[..2], ["team.md", "workflows/feature.md"]);
-    assert!(files[2..].iter().all(|file| file.starts_with("roles/a/")), "{files:?}");
+    assert_eq!(files[..3], ["team.md", "CLAUDE.md", "workflows/feature.md"]);
+    assert!(files[3..].iter().all(|file| file.starts_with("roles/a/")), "{files:?}");
     assert_eq!(std::fs::read_dir(team.join("roles")).unwrap().count(), 1);
     let file = std::fs::read_to_string(team.join("team.md")).unwrap();
     assert!(
@@ -154,13 +165,14 @@ fn a_role_in_a_repo_of_its_own_is_created_and_a_team_names_it() {
     let wrote = world
         .afk(&["scaffold", "team", team_dir, "--role", "dev=acme/dev", "--repo", "acme/team"])
         .ok();
-    assert_eq!(wrote["files"], json!(["team.md", "workflows/feature.md"]));
+    assert_eq!(wrote["files"], json!(["team.md", "CLAUDE.md", "workflows/feature.md"]));
     world.gh_calls();
 
     // As files in a directory, and as the repo that was created.
     for from in [["--dir", team_dir], ["--team", "acme/team"]] {
         let read = world.afk(&[&["check"][..], &from].concat()).ok();
-        assert_eq!(read["files"], wrote["files"]);
+        assert_eq!(read["files"], json!(["team.md", "workflows/feature.md"]));
+        assert_eq!(read["rules"], true);
         assert_eq!(read["roles"][0]["name"], "dev");
         assert_eq!(read["roles"][0]["skills"], json!(["implement"]));
         let feature = &read["workflows"][0];
