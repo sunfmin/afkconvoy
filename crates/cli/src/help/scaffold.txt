@@ -18,6 +18,10 @@ WHEN TO RUN IT
       afkconvoy scaffold team hospital --example hospital --repo acme/hospital
       afkconvoy help example
 
+  Read that one first when the team is to have more than one stage — a review, a
+  landing role of its own: a skeleton's workflow has one stage, and a skeleton holds
+  no skill to review or to land with. The example holds each, to copy from.
+
 WHO RUNS IT
 
   The operator, or whoever designs the team: anywhere. It reads no config.
@@ -35,13 +39,20 @@ WHAT IT READS AND WRITES
                                belongs in a repo's own rules or a role's
       workflows/feature.md     one workflow, `feature`: one stage the first role performs
                                as its skill `implement`, then the landing train
-      roles/<name>/            that role's skeleton, as `scaffold role` writes it
+      roles/<name>/            that role's skeleton, as `scaffold role` writes it —
+                               the first role's with the skill `implement`, every
+                               other's with no skill
 
   `--role` is given once for each role, and at least once. `--role <name>` is a role
   written here. `--role <name>=<owner/repo>` or `<name>=<owner/repo/path>` is one that
   is elsewhere — a role several teams share, in a repo of its own: `team.md` names it as
   given and nothing is written for it. The two forms mix. The example workflow is
   performed by the first role given; one that is elsewhere must hold a skill `implement`.
+
+  A role after the first is written with its rules and its limits, and no skill: a
+  reviewer does not implement. What it is to perform is yours to write, as
+  `roles/<name>/.claude/skills/<skill>/SKILL.md`, with the stage that names it in
+  `workflows/feature.md` — that file says so too.
 
   `scaffold team <dir> --example <name>` writes an example team whole in place of a
   skeleton: its team file, team rules, workflows, patrols and precedents, and every
@@ -56,7 +67,8 @@ WHAT IT READS AND WRITES
   `scaffold role <dir>` writes a role's three kinds of file, and takes no `--role`:
 
       CLAUDE.md                            rules to replace with the role's own
-      .claude/skills/implement/SKILL.md    one example skill, `implement`
+      .claude/skills/implement/SKILL.md    one example skill, `implement`: rename it,
+                                           and rewrite it, for a role that does not
       .claude/settings.json                its limits for claude-code — hooks: none yet
       .codex/hooks.json                    its limits for codex — hooks: none yet
 
