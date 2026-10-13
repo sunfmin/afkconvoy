@@ -329,11 +329,11 @@ mod tests {
 
     fn claim(number: u64, instance: &str, host: &str) -> Claim {
         let owner = Owner { instance: instance.into(), host: host.into(), ts: 1 };
-        Claim { number, owner: Some(owner), sha: format!("sha{number}") }
+        Claim::read(number, &owner.write(), format!("sha{number}"))
     }
 
     fn nobody(number: u64) -> Claim {
-        Claim { number, owner: None, sha: format!("sha{number}") }
+        Claim::read(number, "", format!("sha{number}"))
     }
 
     fn run(key: &str, instance: &str, host: &str) -> RunClaim {

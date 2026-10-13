@@ -66,6 +66,11 @@ fn bound() -> World {
 
 /// One tick at `now`, every worker that has not stopped being at work.
 fn tick(world: &World, now: u64) -> Value {
+    tick_as(world, "alpha", now)
+}
+
+/// The same, of the fleet instance `instance`.
+fn tick_as(world: &World, instance: &str, now: u64) -> Value {
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
             let at_work = terminal["agent"].is_null() || terminal["agent"]["state"] == "working";
@@ -76,7 +81,7 @@ fn tick(world: &World, now: u64) -> Value {
         }
     });
     let now = now.to_string();
-    let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok();
+    let ticked = world.afk(&["tick", "--instance", instance, "--host", "h1", "--now", &now]).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
     ticked
 }
@@ -383,4 +388,25 @@ fn a_pass_to_land_with_no_open_pr_hands_the_issue_to_a_human() {
     assert_eq!(world.labels(7), ["stage:land", "ready-for-human"]);
     assert_eq!(world.claims(), []);
     assert_eq!(did(&tick(&world, now + 90)), [] as [&str; 0]);
+}
+
+#[test]
+fn a_join_made_before_its_claim_is_taken_over_is_still_the_claim_s() {
+    let world = bound();
+    let now = through_the_stages(&world);
+    assert_eq!(did(&tick(&world, now)), ["dispatch 7 done"]);
+    join(&world, now + 60);
+    assert_eq!(did(&tick(&world, now + 90)), ["tend_train done"]);
+    let landed = world.afk_in(&train_worktree(&world), &["land", "--train"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+
+    // The claim changes hands after the landing, by a clock past the one the
+    // landing was made by: it is still the claim the PR was joined under.
+    let later = 4_000_000_000u64;
+    let from = ["takeover", "--from", "alpha", "--instance", "beta", "--host", "h1", "--now"];
+    let taken = world.afk(&[&from[..], &[&later.to_string()]].concat()).ok();
+    assert_eq!(taken["taken"], json!([7]), "{taken}");
+    assert_eq!(did(&tick_as(&world, "beta", later + 60)), ["settle 7 done"]);
+    assert_eq!(world.state(7), "closed");
+    assert_eq!(world.claims(), []);
 }

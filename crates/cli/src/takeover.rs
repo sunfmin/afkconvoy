@@ -11,15 +11,18 @@ use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::advance::advance;
 use crate::claims::{Me, Take, delete, retake_run, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::stage::Flows;
 
 /// Puts `claim` in my name under `_licence` — the one way a claim is taken
 /// from another instance — with one atomic push the remote rejects unless the
-/// ref still points at the sha that was read → whether it was won.
+/// ref still points at the sha that was read → whether it was won. It is
+/// still the claim it was created as: what was declared under it stands.
 fn take_over(fleet: &mut Fleet, me: &Me, claim: &Claim, _licence: &Licence) -> Result<bool> {
-    let taken = take(&fleet.repo, &mut fleet.scan, me, claim.number, Take::From(&claim.sha))?;
+    let taken = take(&fleet.repo, &mut fleet.scan, me, claim.number, Take::From(claim))?;
     Ok(taken["won"] == true)
 }
 
@@ -75,13 +78,25 @@ fn lapsed(fleet: &Fleet, me: &Me, issue: u64) -> Option<(Claim, Licence)> {
 }
 
 /// The tick's take of one stale claim: taken, then continued from what
-/// survived. `Lost` when a peer took it first, or its holder beat again.
-pub fn reclaim(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Outcome> {
+/// survived — or, where a stage had already declared under it, advanced as
+/// that verdict says, as `flows` read it. `Lost` when a peer took it first,
+/// or its holder beat again.
+pub fn reclaim(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    flows: &Flows,
+    issue: u64,
+) -> Result<Outcome> {
     let Some((claim, licence)) = lapsed(fleet, me, issue) else { return Ok(Outcome::Lost) };
     if !take_over(fleet, me, &claim, &licence)? {
         return Ok(Outcome::Lost);
     }
-    dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+    if fleet.config.bound.is_some() && flows.called(issue, &claim.id)?.said.is_some() {
+        advance(fleet, me, agent, flows, issue)?;
+    } else {
+        dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+    }
     Ok(Outcome::Done)
 }
 
