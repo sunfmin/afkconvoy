@@ -38,6 +38,22 @@ fn found<'a>(answer: &'a Value, what: &str) -> Vec<&'a Value> {
 }
 
 #[test]
+fn a_config_with_no_gate_seconds_is_a_finding_and_one_that_sets_it_is_none() {
+    let world = World::new();
+    world.set_gate_config("gate_command: ./gate.sh");
+    let answer = doctor(&world, "1100").json;
+    let undeclared = found(&answer, "declares no gate limit");
+    assert_eq!(undeclared.len(), 1, "{answer}");
+    assert_eq!(undeclared[0]["severity"], "info");
+    assert_eq!(undeclared[0]["fix"], "docs/agents/afkconvoy.md: gate_seconds");
+    assert_eq!(undeclared[0]["see"], "afkconvoy help troubleshooting");
+
+    world.set_gate_config("gate_command: ./gate.sh\ngate_seconds: 900");
+    let answer = doctor(&world, "1100").json;
+    assert_eq!(found(&answer, "declares no gate limit"), [] as [&Value; 0], "{answer}");
+}
+
+#[test]
 fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);

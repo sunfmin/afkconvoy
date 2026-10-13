@@ -44,6 +44,9 @@ The landing train  The one line of merge commits ahead of the base branch that
                    finished PRs join, one merge commit each. One worker gates its tip
                    and pushes it to the base branch as a fast-forward: what lands is
                    a tree the gate passed. `afkconvoy land --help`.
+The gate limit     How long the gate may run: `gate_seconds` in the repo's config,
+                   3600 where it sets none. A run that reaches it is ended and is
+                   red, a worker's and the train's alike. `afkconvoy config --help`.
 ````
 
 ### ONE ISSUE, IN AN UNBOUND REPO
@@ -977,12 +980,16 @@ has waited for a human for
     Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
 ````
 
-### WHAT `doctor` FINDS — info: nothing to fix
+### WHAT `doctor` FINDS — info: nothing is held up
 
 ````text
 moved since the stage
     A role or the team was pushed after a stage started: that worker goes by the
     older one, the next stage by the head. `afkconvoy doctor --help` says what moved is.
+declares no gate limit
+    The repo's config sets no `gate_seconds`: the gate may run 3600 seconds before
+    anything ends it. Set it to what the gate should take at most: `fix` names the
+    file and the key, and `afkconvoy config --help` says what the key is.
 ````
 
 ### WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start nothing

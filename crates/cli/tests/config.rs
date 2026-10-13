@@ -19,6 +19,7 @@ fn config_prints_every_key_with_defaults_filled() {
         serde_json::json!({
             "base_branch": "main",
             "gate_command": "make test",
+            "gate_seconds": 3600,
             "ready_label": "ready-for-agent",
             "epic_labels": ["epic", "prd"],
             "concurrency": 5,
@@ -45,6 +46,10 @@ fn a_bad_config_is_an_error_naming_the_key() {
         ("base_branch: main\ngate_command: make\nretry: 2", "retry"),
         ("base_branch: main\ngate_command: make\nconcurrency: lots", "concurrency"),
         ("base_branch: main\ngate_command: make\nconcurrency: 0", "concurrency"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: 0", "gate_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: 1.5", "gate_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: -1", "gate_seconds"),
+        ("base_branch: main\ngate_command: make\ngate_seconds: an hour", "gate_seconds"),
         (
             "base_branch: main\ngate_command: make\nescalate_label: ready-for-agent",
             "escalate_label",

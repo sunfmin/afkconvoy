@@ -25,6 +25,9 @@ THE FOUR THINGS
                      finished PRs join, one merge commit each. One worker gates its tip
                      and pushes it to the base branch as a fast-forward: what lands is
                      a tree the gate passed. `afkconvoy land --help`.
+  The gate limit     How long the gate may run: `gate_seconds` in the repo's config,
+                     3600 where it sets none. A run that reaches it is ended and is
+                     red, a worker's and the train's alike. `afkconvoy config --help`.
 
 ONE ISSUE, IN AN UNBOUND REPO
 

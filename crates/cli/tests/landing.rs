@@ -231,6 +231,24 @@ fn a_red_gate_lands_nothing_and_the_train_is_fixed_with_one_more_commit() {
 }
 
 #[test]
+fn a_train_whose_gate_reaches_the_configs_gate_limit_is_red_and_says_the_limit() {
+    let world = World::new();
+    world.set_gate_config("gate_command: sleep 30\ngate_seconds: 1");
+    let seven = world.worker(7, "seven.txt", "7\n");
+    join(&world, &seven, 7);
+    let started = std::time::Instant::now();
+    let (answer, _) = land_train(&world, &train(&world));
+    assert!(started.elapsed().as_secs() < 15, "the run was killed");
+    assert_eq!(answer["outcome"], "gate_red", "{answer}");
+    assert_eq!(
+        (&answer["gate"]["timed_out"], &answer["gate"]["exit_code"]),
+        (&json!(true), &json!(124))
+    );
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.contains("reached the gate limit of 1s"), "{detail}");
+}
+
+#[test]
 fn under_a_red_train_with_no_green_commit_a_worker_gates_on_the_base_branch() {
     let world = world();
     let seven = world.worker(7, "broken", "it is\n");
