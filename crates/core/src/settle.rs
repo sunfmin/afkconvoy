@@ -219,11 +219,18 @@ mod rejected {
         let mut order = SettleOrder::new(false);
         order.remove_worktree();
     }
+}
 
-    /// A landing older than the claim taken for the claim's own.
-    #[should_fail]
-    #[spec(fn(landed_at: u64, claimed_at: u64{claimed_at > landed_at}) -> bool[true])]
-    fn a_landing_older_than_the_claim(landed_at: u64, claimed_at: u64) -> bool {
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
+#[cfg(flux)]
+#[allow(dead_code)]
+mod relied_on {
+    use super::*;
+
+    /// A landing older than the claim is not the claim's own.
+    #[spec(fn(landed_at: u64, claimed_at: u64{claimed_at > landed_at}) -> bool[false])]
+    fn a_landing_older_than_the_claim_is_not_its_own(landed_at: u64, claimed_at: u64) -> bool {
         landed_under(landed_at, claimed_at)
     }
 }

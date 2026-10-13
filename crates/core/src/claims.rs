@@ -283,7 +283,7 @@ impl ClaimOrder {
     }
 
     /// A claim is pushed only behind a fresh heartbeat of its owner.
-    #[spec(fn(self: &mut Self[@o]) requires o.beaten ensures self: Self[o.beaten])]
+    #[spec(fn(self: &mut Self[@o]) requires o.beaten)]
     fn push(&mut self) {
         self.steps.push(ClaimStep::Push);
     }

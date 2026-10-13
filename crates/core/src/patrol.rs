@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::claims::{Holder, InstanceId, RunClaim};
 use crate::layout::Layout;
-use crate::lease::{SKEW, proved, stamp_age};
+use crate::lease::{SKEW, stamp_age};
 use crate::plan::Issue;
 use crate::record;
 use crate::worker::{GRACE, WorkerState};
@@ -70,12 +70,6 @@ pub fn is_due(every: u64, last_run: Option<u64>, now: u64) -> bool {
         Some(stamp) => interval_passed(every, stamp, now),
         None => true,
     }
-}
-
-/// A patrol that ran is not due again until its interval has passed.
-#[spec(fn(every: u64, ran: u64, later: u64) requires ran <= later && later - ran < every)]
-pub fn a_run_is_not_due_within_its_interval(every: u64, ran: u64, later: u64) {
-    proved(!interval_passed(every, ran, later));
 }
 
 /// What the effect layer read of one patrol the repo names.
@@ -244,16 +238,17 @@ pub fn checkout_name(name: &str) -> String {
     format!("convoy-patrol-{name}")
 }
 
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
 #[cfg(flux)]
 #[allow(dead_code)]
-mod rejected {
+mod relied_on {
     use super::*;
 
-    /// A patrol said to be due the moment after it ran.
-    #[should_fail]
-    #[spec(fn(every: u64{every > 0}, ran: u64) -> bool[true])]
-    fn a_patrol_due_the_moment_it_ran(every: u64, ran: u64) -> bool {
-        interval_passed(every, ran, ran)
+    /// A patrol that ran is not due again until its interval has passed.
+    #[spec(fn(every: u64, ran: u64, later: u64) requires ran <= later && later - ran < every)]
+    fn a_run_is_not_due_within_its_interval(every: u64, ran: u64, later: u64) {
+        flux_rs::assert(!interval_passed(every, ran, later));
     }
 }
 

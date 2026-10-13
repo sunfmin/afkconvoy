@@ -143,7 +143,7 @@ impl JoinOrder {
         JoinOrder { pushed, merged: false, steps: Vec::new() }
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.merged])]
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[{ pushed: true, ..o }])]
     fn push_branch(&mut self) {
         self.steps.push(JoinStep::PushBranch);
         self.pushed = true;
@@ -151,7 +151,7 @@ impl JoinOrder {
 
     /// What joins the train is the head GitHub shows for the PR: a head only
     /// this worktree has would land work the PR never showed.
-    #[spec(fn(self: &mut Self[@o]) requires o.pushed ensures self: Self[o.pushed, true])]
+    #[spec(fn(self: &mut Self[@o]) requires o.pushed ensures self: Self[{ merged: true, ..o }])]
     fn merge(&mut self) {
         self.steps.push(JoinStep::Merge);
         self.merged = true;
@@ -314,25 +314,31 @@ mod rejected {
         order.merge();
     }
 
-    /// A worktree's commits kept on a train they were never made on.
-    #[should_fail]
-    #[spec(fn(own: bool) -> bool[true])]
-    fn commits_of_a_landed_train_kept(own: bool) -> bool {
-        keeps_its_commits(true, own, false)
-    }
-
-    /// A repair assumed of a train that holds nothing.
-    #[should_fail]
-    #[spec(fn(red: Option<(bool, bool)>) -> bool[true])]
-    fn a_repair_of_no_train(red: Option<(bool, bool)>) -> bool {
-        under_repair(false, red)
-    }
-
     /// A tip pushed with nothing merged onto it.
     #[should_fail]
     fn a_line_pushed_without_a_join_commit() {
         let mut order = JoinOrder::new(true);
         order.push_line();
+    }
+}
+
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
+#[cfg(flux)]
+#[allow(dead_code)]
+mod relied_on {
+    use super::*;
+
+    /// A worktree's commits made on another train are not kept.
+    #[spec(fn(ahead: bool, own: bool) -> bool[false])]
+    fn commits_of_another_train_are_not_kept(ahead: bool, own: bool) -> bool {
+        keeps_its_commits(ahead, own, false)
+    }
+
+    /// A train that holds nothing is not under repair.
+    #[spec(fn(red: Option<(bool, bool)>) -> bool[false])]
+    fn a_train_that_holds_nothing_is_not_under_repair(red: Option<(bool, bool)>) -> bool {
+        under_repair(false, red)
     }
 }
 
