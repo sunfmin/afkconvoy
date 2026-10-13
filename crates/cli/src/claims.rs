@@ -132,6 +132,22 @@ pub enum Take<'a> {
     /// Take this one over, only while its ref still points where it was
     /// read: it stays the claim it was created as.
     From(&'a Claim),
+    /// Take this claim on a run over, only while its ref still points where
+    /// it was read. What its worker declared is carried on by whoever takes
+    /// it (`retake_run`).
+    Run(&'a RunClaim),
+}
+
+impl Take<'_> {
+    /// Where the ref must still point for the push to be taken; `None`: it
+    /// must not exist.
+    fn leased_to(&self) -> Option<&str> {
+        match self {
+            Take::Fresh => None,
+            Take::From(taken) => Some(&taken.sha),
+            Take::Run(taken) => Some(&taken.sha),
+        }
+    }
 }
 
 /// What putting a claim ref in my name came to.
@@ -153,7 +169,7 @@ enum Put {
 fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Result<Put> {
     let owner = Owner { instance: me.instance.to_string(), host: me.host.clone(), ts: me.now };
     let subject = match how {
-        Take::Fresh => owner.write(),
+        Take::Fresh | Take::Run(_) => owner.write(),
         Take::From(taken) => owner.write_over(taken),
     };
     let sha = repo.record_commit(&subject)?;
@@ -166,8 +182,8 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
                 let target = format!("{sha}:{refname}");
                 let lease;
                 let mut args = vec!["push", "--quiet", REMOTE];
-                if let Take::From(taken) = how {
-                    lease = format!("--force-with-lease={refname}:{}", taken.sha);
+                if let Some(expected) = how.leased_to() {
+                    lease = format!("--force-with-lease={refname}:{expected}");
                     args.push(&lease);
                 }
                 args.push(&target);
@@ -182,11 +198,11 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
     // Lost only if somebody else's claim is where ours would be.
     let detail = pushed.stderr.trim().to_string();
     let there = repo.remote_records(refname)?.pop();
-    let moved = match (&there, &how) {
-        (None, Take::Fresh) => false,
-        (None, Take::From(_)) => true,
-        (Some(_), Take::Fresh) => true,
-        (Some(now), Take::From(taken)) => now.sha != taken.sha,
+    let moved = match (&there, how.leased_to()) {
+        (None, None) => false,
+        (None, Some(_)) => true,
+        (Some(_), None) => true,
+        (Some(now), Some(expected)) => now.sha != expected,
     };
     if !moved {
         bail!("the push of {refname} failed and this is not a lost race: {detail}");
@@ -215,12 +231,18 @@ pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Re
     }
 }
 
-/// Claims the run keyed `key` in my name → the claim, or `None` when a peer
-/// holds one: of several hosts that found the run due, one makes it.
-pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, key: &str) -> Result<Option<RunClaim>> {
+/// Puts the claim on the run keyed `key` in my name with one atomic push →
+/// the claim, or `None` when it was lost to whoever holds it now.
+fn put_run(
+    repo: &Repo,
+    scan: &mut Scan,
+    me: &Me,
+    key: &str,
+    how: Take,
+) -> Result<Option<RunClaim>> {
     let refname = run_ref(repo.layout(), key);
     scan.runs.retain(|run| run.key != key);
-    let (claim, won) = match put(repo, scan, me, &refname, Take::Fresh)? {
+    let (claim, won) = match put(repo, scan, me, &refname, how)? {
         Put::Won { owner, sha, .. } => {
             (Some(RunClaim { key: key.to_string(), owner: Some(owner), sha, over: false }), true)
         }
@@ -236,6 +258,37 @@ pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, key: &str) -> Result<Opti
     };
     scan.runs.extend(claim.clone());
     Ok(claim.filter(|_| won))
+}
+
+/// Claims the run keyed `key` in my name → the claim, or `None` when a peer
+/// holds one: of several hosts that found the run due, one makes it.
+pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, key: &str) -> Result<Option<RunClaim>> {
+    put_run(repo, scan, me, key, Take::Fresh)
+}
+
+/// Re-stamps the claim on a run in my name, only while it is still `claim` →
+/// whether it was won. A run its worker declared over is over under my claim
+/// too: the worker is not there to say it again.
+pub fn retake_run(repo: &Repo, scan: &mut Scan, me: &Me, claim: &RunClaim) -> Result<bool> {
+    let Some(mine) = put_run(repo, scan, me, &claim.key, Take::Run(claim))? else {
+        return Ok(false);
+    };
+    if claim.over {
+        push_over(repo, &mine.key, &mine.sha)?;
+        for run in scan.runs.iter_mut().filter(|run| run.key == mine.key) {
+            run.over = true;
+        }
+    }
+    Ok(true)
+}
+
+/// Records on the remote that the run keyed `key`, claimed at `claim`, is
+/// over → the ref that says so.
+fn push_over(repo: &Repo, key: &str, claim: &str) -> Result<String> {
+    let refname = over_ref(repo.layout(), key);
+    let sha = repo.record_commit(&write_over(claim))?;
+    repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    Ok(refname)
 }
 
 /// Deletes the claim on a run, only while it is still `claim`, and with it
@@ -270,9 +323,7 @@ pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
     let Some(claim) = repo.remote_records(&run_ref(layout, key))?.pop() else {
         bail!("no run {key:?} is going: there is nothing to declare over");
     };
-    let refname = over_ref(layout, key);
-    let sha = repo.record_commit(&write_over(&claim.sha))?;
-    repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    let refname = push_over(repo, key, &claim.sha)?;
     let woke = crate::wake::wake(repo)?;
     Ok(json!({"over": true, "run": key, "ref": refname, "woke": woke["woke"]}))
 }

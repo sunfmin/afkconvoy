@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::WorkingSet;
+use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::wake::turn;
 use anyhow::Result;
@@ -359,7 +360,12 @@ fn start_line(took: &Value) -> Option<String> {
         let numbers = took[key].as_array().into_iter().flatten();
         numbers.filter_map(|n| n.as_u64()).map(|n| format!("#{n}")).collect()
     };
-    let (taken, lost) = (issues("taken"), issues("lost"));
+    let runs = |key: &str| -> Vec<String> {
+        let keys = took[key].as_array().into_iter().flatten();
+        keys.filter_map(|key| key.as_str()).map(run_said).collect()
+    };
+    let taken = [issues("taken"), runs("taken_runs")].concat();
+    let lost = [issues("lost"), runs("lost_runs")].concat();
     let mut parts = vec![];
     if !taken.is_empty() {
         parts.push(format!("took {} stamped with this host", taken.join(", ")));

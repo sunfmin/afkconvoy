@@ -646,3 +646,74 @@ fn the_slot_a_patrol_s_end_frees_is_filled_by_the_tick_that_ended_it() {
         ]
     );
 }
+
+/// Who holds the claim on the run of the patrol `sweep`.
+fn runner(world: &World) -> String {
+    let subject = git(&world.bare, &["log", "-1", "--format=%s", "refs/convoy/claim/patrol-sweep"]);
+    let named = subject.split_once("instance=").expect("a claim names its instance").1;
+    named.split([' ', '-']).next().unwrap().to_string()
+}
+
+/// #132: a `run` killed with a patrol's run claimed left the patrol
+/// `peer_running` for the whole lease, however often the fleet was started
+/// again on its host. A start takes the run with the host's other claims.
+#[test]
+fn a_start_takes_the_run_of_a_patrol_stamped_with_its_host_and_the_next_tick_ends_it() {
+    let world = bound("[sweep]");
+    let run = |instance: &str, host: &str, now: &str| {
+        let args = ["run", "--instance", instance, "--host", host, "--second-ms", "0"];
+        world.afk_lines(&[&args[..], &["--ticks", "1", "--now", now]].concat()).0
+    };
+    // The fleet that ran here claimed a run, and was killed.
+    assert_eq!(patrolled(&tick_as(&world, "before", 10_000)), ["patrol sweep done"]);
+    assert_eq!(planned(&world, "alpha", 10_010)["patrols"][0]["standing"], "peer_running");
+
+    // A fleet that starts on another host leaves a live peer's run alone.
+    let elsewhere = run("beta", "h2", "10010");
+    assert!(!elsewhere.iter().any(|line| line.starts_with("start:")), "{elsewhere:?}");
+    assert_eq!(runner(&world), "before");
+
+    // One that starts here takes it, and its worker still at it, the run goes on as its own…
+    workers_work(&world, 10_020);
+    let lines = run("alpha", "h1", "10020");
+    assert_eq!(lines[0], "start: took the run of the patrol sweep stamped with this host");
+    assert!(!lines[1].contains("the patrol"), "{}", lines[1]);
+    assert_eq!(runner(&world), "alpha");
+    assert_eq!(standing(&world, 10_030), ["sweep running"]);
+    // …and is ended, as any run of its own, once that worker is gone.
+    workers_leave(&world);
+    assert_eq!(patrolled(&tick(&world, 10_060)), ["end_patrol sweep done"]);
+    assert_eq!(standing(&world, 10_070), ["sweep not_due"]);
+    assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"]);
+}
+
+/// #132: `takeover` sees the claim on a run as it sees one on an issue.
+#[test]
+fn takeover_lists_and_takes_the_run_of_a_patrol_with_what_its_worker_declared() {
+    let world = bound("[sweep]");
+    assert_eq!(patrolled(&tick_as(&world, "before", 10_000)), ["patrol sweep done"]);
+    // Its worker declared the run over, and the fleet died before it read that.
+    world.afk_in(&checkout(&world), &["over", "--run", "patrol-sweep"]).ok();
+    workers_work(&world, 10_010);
+
+    let listed = world.afk(&["takeover", "--list", "--now", "10010"]).ok();
+    let row = &listed["instances"][0];
+    assert_eq!(
+        (&row["instance"], &row["host"], &row["claims"], &row["runs"], &row["claim_count"]),
+        (&json!("before"), &json!("h1"), &json!([]), &json!(["patrol-sweep"]), &json!(1))
+    );
+
+    let from = ["takeover", "--from", "before", "--instance", "beta", "--host", "h2"];
+    let asked = world.afk(&[&from[..], &["--now", "10010"]].concat()).ok();
+    assert_eq!((&asked["action"], &asked["taken_runs"]), (&json!("confirm"), &json!([])));
+    let taken = world.afk(&[&from[..], &["--now", "10010", "--yes"]].concat()).ok();
+    assert_eq!(taken["action"], "taken");
+    assert_eq!((&taken["taken"], &taken["taken_runs"]), (&json!([]), &json!(["patrol-sweep"])));
+    assert_eq!(taken["lost_runs"], json!([]));
+    assert!(taken["detail"].as_str().unwrap().starts_with("took 1 claim(s)"), "{taken}");
+    assert_eq!(runner(&world), "beta");
+
+    // The run is over under the claim that took it: the next tick ends it.
+    assert_eq!(patrolled(&tick_as(&world, "beta", 10_020)), ["end_patrol sweep done"]);
+    assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"], "nothing of the run is left");
+}

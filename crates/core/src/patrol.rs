@@ -37,6 +37,12 @@ pub fn claim_key(name: &str) -> String {
     format!("{CLAIM_KEY}{name}")
 }
 
+/// The patrol a run's claim keyed `key` is on a run of; `None` for a claim on
+/// anything else.
+pub fn claimed(key: &str) -> Option<&str> {
+    key.strip_prefix(CLAIM_KEY)
+}
+
 /// The record of a run started at `ts`.
 pub fn write_run(ts: u64) -> String {
     record::write(RUN, &[("ts", &ts.to_string())])
