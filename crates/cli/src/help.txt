@@ -27,8 +27,7 @@ WHAT TO RUN FIRST, in a checkout of the repo
   2. afkconvoy plan      What a tick would act on. It changes nothing.
   3. afkconvoy run       The fleet instance: tick after tick, until stopped.
 
-  And whenever something looks wrong: afkconvoy doctor — it reads everything, changes
-  nothing, and names the fix of each thing it finds.
+  And whenever something looks wrong: afkconvoy doctor — it changes nothing, and names each fix.
 
 WHAT A COMMAND ANSWERS
 
