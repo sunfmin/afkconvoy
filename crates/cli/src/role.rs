@@ -153,7 +153,7 @@ impl Staged {
             return Ok(());
         }
         worktree.keep_writes_nothing(|tip| WritesNothing {
-            claim: claim.sha.clone(),
+            claim: claim.id.clone(),
             tip,
             stage: self.stage.clone(),
             consult: self.consult,
@@ -165,7 +165,7 @@ impl Staged {
     /// say. The tick ends such a claim, and the next start takes another.
     pub fn refuse_spent(&self, claim: Option<&Claim>) -> Result<()> {
         let spent = |claim: &&Claim| {
-            self.verdicts.iter().any(|(said, _)| said.claim() == Some(claim.sha.as_str()))
+            self.verdicts.iter().any(|(said, _)| said.claim() == Some(claim.id.as_str()))
         };
         match claim.filter(spent) {
             Some(_) => bail!(

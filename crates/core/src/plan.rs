@@ -485,7 +485,7 @@ mod tests {
 
     fn claim(number: u64, instance: &str) -> Claim {
         let owner = Owner { instance: instance.into(), host: "h".into(), ts: 0 };
-        Claim { number, owner: Some(owner), sha: format!("c{number}") }
+        Claim::read(number, &owner.write(), format!("c{number}"))
     }
 
     fn me() -> InstanceId {
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn claims_are_partitioned_by_owner_and_liveness() {
         let issues = [issue(1, READY), issue(2, READY), issue(3, READY), issue(5, READY)];
-        let nobody = Claim { number: 5, owner: None, sha: "c5".into() };
+        let nobody = Claim::read(5, "", "c5".into());
         let claims = [
             claim(1, "me"),
             claim(2, "live"),

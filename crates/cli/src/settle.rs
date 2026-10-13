@@ -42,7 +42,7 @@ pub fn cut_landing_of(
     let Some((join, at)) = landing_of(repo, base_tip, claim.number)? else {
         return Ok(None);
     };
-    let claimed_at = claim.owner.as_ref().map(|owner| owner.ts);
+    let claimed_at = claim.since;
     let cut = cut_landing(&join, at, claimed_at, closing_pr(open, claim.number));
     Ok(cut.then_some(join))
 }

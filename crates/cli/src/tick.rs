@@ -116,7 +116,7 @@ fn carry_out(
             None => Ok(Outcome::Nothing),
         },
         TickStep::Unlock { issue } => unlock(fleet, me, issue),
-        TickStep::Reclaim { issue } => reclaim(fleet, me, agent, issue),
+        TickStep::Reclaim { issue } => reclaim(fleet, me, agent, read.flows, issue),
         TickStep::Dispatch { issue } => {
             let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })

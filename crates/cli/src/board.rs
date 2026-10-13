@@ -22,8 +22,9 @@ fn remembered(fleet: &Fleet, issue: u64) -> Result<PathBuf> {
 }
 
 /// Brings the status board of `claim`'s issue to what `board` renders → whether
-/// anything was written. A claim ref is written once, so a board remembered
-/// under another claim of the issue is never taken for this one's.
+/// anything was written. No two claims of an issue share a commit, and a
+/// takeover moves a claim to a new one, so a board remembered under another
+/// claim of the issue, or another holder of this one, is never taken for it.
 pub fn post(fleet: &Fleet, claim: &Claim, board: &Board) -> Result<bool> {
     let issue = claim.number;
     let text = render(board);

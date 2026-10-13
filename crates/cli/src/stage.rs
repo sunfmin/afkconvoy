@@ -84,7 +84,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     let record = StageRecord {
         stage,
         stated: Stated::Declared(declared),
-        by: Author::Worker { consult, claim: claim.sha.clone(), role_commit, team_commit },
+        by: Author::Worker { consult, claim: claim.id.clone(), role_commit, team_commit },
         blocked_by,
         text,
     };
@@ -98,7 +98,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
         gh.comment(issue, &record.comment())?;
     }
     let mut answer = json!({"issue": issue, "stage": record.stage,
-        "verdict": record.stated.word(), "claim": claim.sha,
+        "verdict": record.stated.word(), "claim": claim.id,
         "declared": standing.is_none(), "woke": wake(repo)?["woke"]});
     if let Some(standing) = standing {
         answer["standing"] = json!(standing.stated.word());
@@ -214,7 +214,9 @@ pub struct Called {
     pub rounds: Option<String>,
     /// The stage the issue waits at for a human, when it is at a human's.
     pub waits_at: Option<String>,
-    /// Whether the issue is with a consult: the worker asked after is one.
+    /// Whether the issue is with a consult. A worker asked after is then the
+    /// consult: the claim the stage itself was dispatched under carries its
+    /// `escalate`, and is not asked after.
     pub consulted: bool,
 }
 
@@ -410,7 +412,7 @@ impl Flows {
             let claim = claims.iter().find(|claim| claim.number == issue.number);
             let workflow = workflow_of(team, &issue.labels).ok();
             claim.zip(workflow).is_some_and(|(claim, workflow)| {
-                lands(&history(workflow, &issue.records), &issue.records, &claim.sha)
+                lands(&history(workflow, &issue.records), &issue.records, &claim.id)
             })
         };
         self.issues.iter().filter(lands).map(|issue| issue.number).collect()
