@@ -580,7 +580,7 @@ mod tests {
         );
         // Both slots are held by workers the lock leaves alone: the lock
         // issue does not wait for them.
-        assert_eq!((set.bound(2), set.free_slots), (4, 2));
+        assert_eq!((set.left_alone(), set.bound(2), set.free_slots), (2, 4, 2));
         assert!(set.locked_out(5) && !set.locked_out(2));
         // The last lock closed: everything is as it was.
         let open = [issues[0].clone(), issues[2].clone(), issues[4].clone(), issues[5].clone()];

@@ -749,6 +749,53 @@ mod tests {
     }
 
     #[test]
+    fn the_record_of_a_closed_lock_sets_the_escalate_of_its_stage_aside() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        // `plan` names no consult: its `escalate` is a human's, until a lock explains it.
+        let asked = [record("plan", Escalate, "c1")];
+        assert_eq!(history(workflow, &asked).stage_escalate(&asked), Some(0));
+        let closed = StageRecord::lock_closed("plan", 13);
+        assert_eq!(
+            closed.comment(),
+            format!(
+                "<!--convoy:stage stage=plan verdict=lock-closed by=fleet-->\n**afkconvoy** — a \
+                 fleet lock has closed, and the stage `plan` runs again.\n\n{}",
+                lock::closed_text(13)
+            )
+        );
+        assert_eq!(StageRecord::read(&closed.comment()), Some(closed.clone()));
+        let again = [&asked[..], &[closed]].concat();
+        assert_eq!(after(&again), ("stage:plan".to_string(), vec!["verdict", "lock-closed"]));
+        let read = history(workflow, &again);
+        assert_eq!((read.place.rework(), read.stage_escalate(&again)), (0, None));
+        // The claim that declared is spent and released; the stage is a new one's.
+        assert_eq!(advanced(&again, "c1"), Advance::HandOn);
+        assert_eq!(advanced(&again, "c2"), Advance::AskAfter);
+        // With the consult `build` names, the same: the consult is not asked.
+        let consulted = [record("plan", Pass, "c1"), record("build", Escalate, "c2")];
+        assert_eq!(history(workflow, &consulted).stage_escalate(&consulted), Some(1));
+        let again = [&consulted[..], &[StageRecord::lock_closed("build", 13)]].concat();
+        assert_eq!(after(&again).0, "stage:build");
+        assert_eq!(advanced(&again, "c3"), Advance::AskAfter);
+
+        // No lock explains a consult's word, a breaker, a human's `escalate`, or
+        // a verdict that is none.
+        let through = [&consulted[..], &[consult("build", Escalate, "c3")]].concat();
+        assert_eq!(history(workflow, &through).stage_escalate(&through), None);
+        let human = StageRecord { by: Author::Human, ..record("plan", Escalate, "") };
+        for stands in [&[record("plan", Pass, "c1")][..], &[record("plan", Reject, "c1")], &[human]]
+        {
+            assert_eq!(history(workflow, stands).stage_escalate(stands), None, "{stands:?}");
+        }
+        // …and the record moves an issue nowhere it is not asked from.
+        let passed = [record("plan", Pass, "c1"), StageRecord::lock_closed("build", 13)];
+        assert_eq!(after(&passed), ("stage:build".to_string(), vec!["verdict", "lock-closed"]));
+        let stray = [record("plan", Escalate, "c1"), StageRecord::lock_closed("build", 13)];
+        assert_eq!(after(&stray).1, ["verdict", "other-stage"]);
+    }
+
+    #[test]
     fn a_verdict_releases_the_claim_and_says_what_else_is_done() {
         // pass and reject hand the issue on: its next stage is the frontier's.
         let passed = [record("plan", Pass, "c1")];

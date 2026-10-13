@@ -216,21 +216,17 @@ pub fn advance(
         escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
         return Ok(Outcome::Done);
     }
-    let explained = match flows.stage_escalate(issue).filter(|_| declared) {
-        Some((stage, at)) => {
-            explaining_lock(&fleet.gh, &fleet.config, at)?.map(|lock| (stage, lock))
-        }
-        None => None,
-    };
+    // What a fleet lock explains is run again, not carried out: its stage's
+    // `escalate` goes neither to a consult nor to a human.
+    if let Some((stage, at)) = flows.stage_escalate(issue).filter(|_| declared)
+        && let Some(lock) = explaining_lock(&fleet.gh, &fleet.config, at)?
+    {
+        return run_again(fleet, flows, &claim, &stage, lock);
+    }
     let reason = match called.advance {
         Advance::AskAfter => {
             let asked = (called.stage.as_deref().unwrap_or("?"), called.consulted);
             return ask_after(fleet, me, agent, flows, &claim, asked);
-        }
-        // What a fleet lock explains is run again, not carried out.
-        Advance::HandOn | Advance::Escalate(_) if explained.is_some() => {
-            let (stage, lock) = explained.unwrap_or_default();
-            return run_again(fleet, flows, &claim, &stage, lock);
         }
         Advance::HandOn => {
             hand_on(fleet, &claim, called.waits_at.as_deref(), None)?;

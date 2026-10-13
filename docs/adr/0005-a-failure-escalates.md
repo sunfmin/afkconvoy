@@ -15,3 +15,9 @@ With the checks gate and the adversarial verify gone (ADR-0004), what is left to
 A failure is a worker that crashed, went silent past its nudge, could not turn the gate green, declared no valid verdict, or crossed a guard. Those still escalate at once and are never retried.
 
 A `reject` verdict is not a failure. It is an edge of the workflow: the earlier stage runs again, with the reason, in the same worktree with everything kept. What was wrong with afk-fleet's retry — a fresh worker reads the same issue and stops at the same place — does not apply, because the stage that runs again has been told something new. It is bounded by the breakers instead of by a retry count.
+
+## Amended: what a fleet lock explains runs again
+
+One failure is not the issue's own: a broken base branch, which every issue meets and a fleet lock is raised for (ADR-0011). A stage's `escalate`, or its silence past a nudge, from before the lock closed and not acted on since is not carried out once the last lock has closed: the stage runs again, and that counts as no rework. This is not the retry the decision above refuses — the stage has been told something new, and the base branch it runs on is another one. A human handed such an issue could only answer "run the gate again".
+
+It is decided each tick from the stage records and the time the lock's issue closed, and stored nowhere: the fleet leaves a stage record saying a lock stood, which is what puts the issue at its stage again (ADR-0010). What a stage declares after the lock closed is carried out as it stands, so nothing runs twice for one lock. A `pass`, a `blocked` and an `already-satisfied` are not what a broken base branch produces, and stand.

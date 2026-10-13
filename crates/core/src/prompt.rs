@@ -1235,8 +1235,22 @@ mod tests {
         // A human's `blocked` names no issue, and parks nothing.
         let unnamed = StageRecord { blocked_by: vec![], by: Author::Human, ..parked.clone() };
         let records = [Said { record: &unnamed, url: "https://gh/c/2" }];
-        let human = stage_prompt(&StageFields { records: &records, ..fields }).unwrap();
+        let human = stage_prompt(&StageFields { records: &records, ..fields.clone() }).unwrap();
         assert!(human.contains("it declared `blocked`, and it named no issue to wait on."));
+        // The fleet's record of a closed lock is why a stage runs again after one.
+        let closed = StageRecord::lock_closed("build", 13);
+        let records = [Said { record: &closed, url: "https://gh/c/3" }];
+        let told = stage_prompt(&StageFields { records: &records, ..fields }).unwrap();
+        assert!(
+            told.contains(
+                "- a fleet lock has closed, and the stage `build` runs again — https://gh/c/3\n\n\
+                 ## After a fleet lock\n\nThis stage runs again: a fleet lock stood while it was at \
+                 work, and has closed."
+            ),
+            "{told}"
+        );
+        assert!(told.contains("> A fleet lock stood (#13) and has closed."), "{told}");
+        assert!(!told.contains("## After a park") && !told.contains("<rework>"), "{told}");
     }
 
     #[test]

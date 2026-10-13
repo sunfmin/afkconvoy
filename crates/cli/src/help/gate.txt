@@ -15,7 +15,7 @@ WHAT IT READS AND WRITES
   tip, or the base branch when nothing is on the train — a merge, never a rebase.
   On the remote it writes only the recorded gate run: put on record for a green run of
   a committed tree, taken off record for a red one. It pushes no branch and changes
-  nothing on GitHub.
+  nothing on GitHub; after a red run it reads which fleet locks stand.
 
 WHAT IT ANSWERS
 
@@ -27,6 +27,9 @@ WHAT IT ANSWERS
     exit_code, timed_out, command, head
                  the run: the gate command, its exit code, and the commit it ran on.
                  A run killed at `--gate-timeout` is red, with exit_code 124
+    locks        on a red run with a fleet lock standing: the locks. The base branch
+                 may be what is red: declare nothing of it, stop, and run this again
+                 when told to carry on
     merged       with `--train`: the commit that was merged in
     uncommitted  on a green run of a tree that was not the commit: the paths, 20 at most
     not_recorded on a green run whose record the remote refused: why
