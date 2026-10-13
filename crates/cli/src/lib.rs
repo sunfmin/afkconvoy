@@ -203,8 +203,7 @@ enum Command {
         #[arg(long, hide = true, default_value_t = 1000)]
         second_ms: u64,
     },
-    /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open
-    /// the live one of this host's running fleet instance
+    /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
     #[command(after_long_help = include_str!("help/panel.txt"))]
     Panel {
         /// The fleet instance whose claims are its own [default: nobody's]
