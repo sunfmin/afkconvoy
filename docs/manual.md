@@ -242,7 +242,7 @@ each is for, and where a sentence belongs: `afkconvoy help roles`.
 ### HOW A REPO IS BOUND TO IT
 
 ````text
-By its config, on its base branch (`afkconvoy config --help`):
+By its config, on its base branch (`afkconvoy config --help` shows the file whole):
 
     team            owner/repo or owner/repo/path: naming it is what binds the repo
     patrols         which of the team's patrols run here, by name; none by default
