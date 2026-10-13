@@ -66,17 +66,17 @@ fn faults(refused: &Value) -> Vec<String> {
 fn a_well_formed_team_is_accepted_with_what_was_read() {
     let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     let read = world.afk(&["check"]).ok();
-    assert_eq!(read["team"], "acme/team");
+    assert_eq!((&read["team"], &read["path"]), (&json!("acme/team"), &json!("")));
     assert_eq!(read["commit"], head(&world, "acme/team"));
     assert_eq!(read["files"], json!(["team.md", "workflows/feature.md"]));
     assert_eq!(read["escalate_label"], "ready-for-human");
     assert_eq!(
         read["roles"],
         json!([
-            {"name": "dev", "repo": "acme/dev", "commit": head(&world, "acme/dev"),
-             "skills": ["implement", "land"]},
-            {"name": "reviewer", "repo": "acme/reviewer", "commit": head(&world, "acme/reviewer"),
-             "skills": ["review", "rule"]},
+            {"name": "dev", "repo": "acme/dev", "path": "", "commit": head(&world, "acme/dev"),
+             "skills": ["implement", "land"], "above": []},
+            {"name": "reviewer", "repo": "acme/reviewer", "path": "",
+             "commit": head(&world, "acme/reviewer"), "skills": ["review", "rule"], "above": []},
         ])
     );
     assert_eq!(
@@ -368,4 +368,243 @@ fn the_help_names_every_key_of_a_definition() {
     for key in keys.concat() {
         assert!(help.contains(&format!(" {key}:")), "`check --help` never shows the key {key}");
     }
+}
+
+/// A workflow of one stage, which the role `fellow` performs.
+const WARD: &str = "\
+# Ward
+
+```yaml
+stages:
+  - { name: treat, by: fellow, do: treat, on: { pass: done } }
+```
+";
+
+/// A world whose GitHub holds one repo, `acme/hospital`, of `files`, with the
+/// config of the fleet's checkout naming `team` as its team.
+fn hospital(team: &str, files: &[(&str, &str)]) -> World {
+    let world = World::new();
+    world.repo("acme/hospital", files);
+    let config =
+        format!("```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: {team}\n```\n");
+    write(&world.clone, "docs/agents/afkconvoy.md", &config);
+    world
+}
+
+fn team_file(roles: &str) -> String {
+    format!("# The team\n\n```yaml\nroles: {roles}\n```\n")
+}
+
+const TREAT: &str = "roles/fellow/.claude/skills/treat/SKILL.md";
+
+#[test]
+fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
+    let team = team_file("{ fellow: ./roles/fellow }");
+    let world = hospital(
+        "acme/hospital",
+        &[
+            ("team.md", &team),
+            ("workflows/ward.md", WARD),
+            (TREAT, "a skill\n"),
+            ("roles/fellow/CLAUDE.md", "the rules of a fellow\n"),
+            ("README.md", "for whoever reads the repo\n"),
+        ],
+    );
+    let answer = world.afk(&["check"]);
+    let commit = head(&world, "acme/hospital");
+    assert_eq!(answer.stderr, "");
+    let read = answer.ok();
+    assert_eq!((&read["team"], &read["path"]), (&json!("acme/hospital"), &json!("")));
+    assert_eq!(
+        read["roles"],
+        json!([{"name": "fellow", "repo": "acme/hospital", "path": "roles/fellow",
+            "commit": commit, "skills": ["treat"], "above": []}])
+    );
+    // The team's commit is its roles': the repo was read once.
+    assert_eq!(read["commit"], commit);
+    assert_eq!(clones(&world), ["acme/hospital"]);
+}
+
+#[test]
+fn a_role_is_named_by_repo_by_repo_and_path_and_twice_over() {
+    let team = team_file(
+        "{ fellow: ./roles/fellow, night: acme/hospital/roles/fellow, dev: acme/dev, \
+         boss: acme/roles/senior/boss }",
+    );
+    let world = hospital("acme/hospital", &[("team.md", &team), (TREAT, "a skill\n")]);
+    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "a skill\n")]);
+    world.repo("acme/roles", &[("senior/boss/.claude/skills/rule/SKILL.md", "a skill\n")]);
+    let read = world.afk(&["check"]).ok();
+    let role = |name: &str, repo: &str, path: &str, skill: &str| {
+        json!({"name": name, "repo": repo, "path": path, "commit": head(&world, repo),
+            "skills": [skill], "above": []})
+    };
+    assert_eq!(
+        read["roles"],
+        json!([
+            // Two names for one directory are two roles.
+            role("fellow", "acme/hospital", "roles/fellow", "treat"),
+            role("night", "acme/hospital", "roles/fellow", "treat"),
+            role("dev", "acme/dev", "", "implement"),
+            role("boss", "acme/roles", "senior/boss", "rule"),
+        ])
+    );
+    assert_eq!(clones(&world), ["acme/dev", "acme/hospital", "acme/roles"]);
+}
+
+#[test]
+fn a_team_in_a_subdirectory_reads_a_path_from_the_root_of_its_repo() {
+    let team = team_file("{ fellow: ./roles/fellow }");
+    let files = [
+        ("teams/hospital/team.md", team.as_str()),
+        ("teams/hospital/workflows/ward.md", WARD),
+        (TREAT, "a skill\n"),
+    ];
+    let world = hospital("acme/hospital/teams/hospital", &files);
+    let read = world.afk(&["check"]).ok();
+    assert_eq!((&read["team"], &read["path"]), (&json!("acme/hospital"), &json!("teams/hospital")));
+    assert_eq!(read["files"], json!(["team.md", "workflows/ward.md"]));
+    assert_eq!(read["roles"][0]["path"], "roles/fellow");
+    assert_eq!(read["roles"][0]["skills"], json!(["treat"]));
+    assert_eq!(read["workflows"][0]["stages"][0]["by"], "fellow");
+    let named = world.afk(&["check", "--team", "acme/hospital/teams/hospital/"]).ok();
+    assert_eq!(named["roles"], read["roles"]);
+    assert_eq!(world.afk(&["config"]).ok()["team"], "acme/hospital/teams/hospital");
+    // A team's directory that is none at the head is said so.
+    let error = world.afk(&["check", "--team", "acme/hospital/teams/clinic"]).error();
+    assert!(
+        error.starts_with(
+            "the team acme/hospital/teams/clinic cannot be read: teams/clinic is no directory at \
+             the head of the default branch of acme/hospital"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_role_s_directory_at_fault_is_reported_with_its_key() {
+    let team = team_file(
+        "{ fellow: ./roles/fellow, gone: ./roles/gone, up: ./roles/../.., root: /roles/fellow, \
+         all: ./, own: ./teams/night, inner: ./roles/fellow/night, linked: ./roles/linked, \
+         elsewhere: acme/other/roles/x }",
+    );
+    let world = hospital(
+        "acme/hospital/teams/night",
+        &[("teams/night/team.md", &team), (TREAT, "a skill\n"), ("shared/guard.sh", "exit 0\n")],
+    );
+    world.repo("acme/other", &[("README.md", "no roles here\n")]);
+    let repo = world.root.join("github/acme/hospital");
+    let linked = repo.join("roles/linked/hooks");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink("../../../shared/guard.sh", linked.join("guard.sh")).unwrap();
+    std::os::unix::fs::symlink("../CLAUDE.md", linked.join("rules.md")).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", linked.join("hosts")).unwrap();
+    write(&repo, "roles/linked/CLAUDE.md", "the rules\n");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "links"]);
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 1);
+    let commit = head(&world, "acme/hospital");
+    let said: Vec<String> = answer.json["faults"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| format!("{}: {}", f["key"].as_str().unwrap(), f["problem"].as_str().unwrap()))
+        .collect();
+    let hospital = "acme/hospital";
+    assert_eq!(
+        said,
+        [
+            format!(
+                "roles.gone: {hospital}/roles/gone cannot be read: it is no directory at the \
+                 head of the default branch of {hospital} ({commit})"
+            ),
+            "roles.up: `./roles/../..` has a `..`: a role's path is written from the root of \
+             its repo, and names nothing outside it"
+                .to_string(),
+            "roles.root: `/roles/fellow` is an absolute path: a role is named as owner/repo, \
+             owner/repo/path or ./path, its path written from the root of its repo"
+                .to_string(),
+            format!(
+                "roles.all: its directory {hospital} contains the team's ({hospital}/teams/night)"
+            ),
+            format!(
+                "roles.all: its directory {hospital} contains that of the role `fellow` \
+                 ({hospital}/roles/fellow)"
+            ),
+            format!(
+                "roles.all: its directory {hospital} contains that of the role `gone` \
+                 ({hospital}/roles/gone)"
+            ),
+            format!(
+                "roles.own: its directory is the team's own ({hospital}/teams/night): a role is \
+                 a directory of its own"
+            ),
+            format!(
+                "roles.inner: its directory {hospital}/roles/fellow/night is inside that of the \
+                 role `fellow` ({hospital}/roles/fellow)"
+            ),
+            // A link that stays in the role is none of them.
+            format!(
+                "roles.linked: {hospital}/roles/linked holds a symlink that leaves it: \
+                 hooks/guard.sh -> ../../../shared/guard.sh, hooks/hosts -> /etc/hosts. A worker \
+                 is given the role's directory alone, where such a link points at nothing"
+            ),
+            format!(
+                "roles.elsewhere: acme/other/roles/x cannot be read: it is no directory at the \
+                 head of the default branch of acme/other ({})",
+                head(&world, "acme/other")
+            ),
+        ]
+    );
+    assert!(answer.error().starts_with("the team acme/hospital/teams/night has 10 faults"));
+}
+
+#[test]
+fn rules_above_a_role_are_noted_and_the_team_loads() {
+    let team = team_file("{ fellow: ./roles/fellow, dev: acme/dev }");
+    let world = hospital(
+        "acme/hospital",
+        &[
+            ("team.md", &team),
+            (TREAT, "a skill\n"),
+            ("CLAUDE.md", "for whoever works on this repo\n"),
+            ("roles/.claude/settings.json", "{}\n"),
+        ],
+    );
+    // A whole repo has nothing above it.
+    world.repo("acme/dev", &[("CLAUDE.md", "the rules of a dev\n")]);
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 0, "{}", answer.json);
+    assert_eq!(answer.json["roles"][0]["above"], json!(["CLAUDE.md", "roles/.claude/"]));
+    assert_eq!(answer.json["roles"][1]["above"], json!([]));
+    assert_eq!(
+        answer.stderr.trim_end(),
+        "note: above the role `fellow` (acme/hospital/roles/fellow), its repo holds CLAUDE.md, \
+         roles/.claude/: a session opened by hand in the role's directory loads that too, and a \
+         worker does not — it is given the role's directory alone"
+    );
+}
+
+#[test]
+fn a_directory_of_a_team_s_files_names_its_repo_to_read_a_path_in_it() {
+    let team = team_file("{ fellow: ./roles/fellow }");
+    let world = hospital("acme/hospital", &[("team.md", &team), (TREAT, "a skill\n")]);
+    // An edit of the team, not pushed: a new workflow.
+    let edit = world.root.join("edit");
+    write(&edit, "team.md", &team);
+    write(&edit, "workflows/ward.md", WARD);
+    let dir = edit.to_str().unwrap();
+    let read = world.afk(&["check", "--dir", dir, "--team", "acme/hospital"]).ok();
+    assert_eq!(
+        (&read["team"], &read["path"], &read["commit"]),
+        (&json!(dir), &json!(null), &json!(null))
+    );
+    assert_eq!(read["roles"][0]["commit"], head(&world, "acme/hospital"));
+    assert_eq!(read["workflows"][0]["name"], "ward");
+    // A directory says no repo.
+    let answer = world.afk(&["check", "--dir", dir]);
+    assert_eq!(faults(&answer.json), ["team.md: roles.fellow"]);
+    let error = answer.error();
+    assert!(error.contains("nothing says which repo these files are of"), "{error}");
 }

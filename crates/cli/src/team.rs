@@ -1,14 +1,14 @@
-//! Reads a team — its own files, and the repo of each role it names — for the
-//! core to load (`afkconvoy_core::team`), and answers `check` with what was
-//! read or with every fault. `load` is how a command comes by a team and
-//! `keep` how a tick does: both read every repo from the fleet's copies.
+//! Reads a team — its own files, and the directory of each role it names —
+//! for the core to load (`afkconvoy_core::team`), and answers `check` with
+//! what was read or with every fault. `load` is how a command comes by a team
+//! and `keep` how a tick does: both read every repo from the fleet's copies.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
-use afkconvoy_core::config::RepoName;
+use afkconvoy_core::config::{RepoDir, RepoName};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::team::{
-    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RoleRepo, SKILLS, Sources, Stage,
+    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RoleDir, SKILLS, Sources, Stage,
     TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -18,15 +18,17 @@ use crate::config;
 use crate::copies::{Copies, Copy};
 use crate::gh::{GitHub, Unreached, unreached};
 
-/// Where a team's own files are taken from. Its roles' repos are always read
-/// from the fleet's copies of their heads on GitHub.
+/// Where a team's own files are taken from. Its roles' directories are
+/// always read from the fleet's copies of their repos' heads on GitHub.
 pub enum From {
     /// The team the config of this checkout names.
     Config,
-    /// A team's repo on GitHub.
-    Repo(RepoName),
-    /// A directory holding a team's files, read as they are, committed or not.
-    Dir(PathBuf),
+    /// A team's directory on GitHub: a repo, or a subdirectory of one.
+    Repo(RepoDir),
+    /// A directory holding a team's files, read as they are, committed or
+    /// not — with the directory on GitHub they are an edit of, where that is
+    /// said: the repo a role named `./path` is read from.
+    Dir(PathBuf, Option<RepoDir>),
 }
 
 /// A team that does not load: every fault it has.
@@ -125,9 +127,14 @@ fn yaml(markdown: &str) -> Result<Node, String> {
 
 /// A team that loaded, and what it was read from.
 pub struct Loaded {
-    /// What the team was named by: its repo, or its directory.
+    /// What the team's files were read from: its repo, or a directory of
+    /// this host.
     pub name: String,
-    /// The commit its own files were read at; `None` for a directory.
+    /// Its path in that repo, empty for a whole repo; `None` for a directory
+    /// of this host.
+    pub path: Option<String>,
+    /// The commit its own files were read at; `None` for a directory of this
+    /// host.
     pub commit: Option<String>,
     /// The definition files read, the team file first.
     pub files: Vec<String>,
@@ -140,11 +147,23 @@ pub struct Loaded {
     pub team: Team,
 }
 
-/// Reads the team `from` names and every role's repo, and loads it → what was
-/// read, with a warning for each workflow whose file says nothing of what it
-/// is for. A team with a fault fails with `Refused`.
+/// Reads the team `from` names and every role's directory, and loads it →
+/// what was read, with a warning for each workflow whose file says nothing of
+/// what it is for, and a note for each role a directory above which holds
+/// rules a worker in it is not given. A team with a fault fails with
+/// `Refused`.
 pub fn check(from: From) -> Result<Value> {
     let loaded = load(from)?;
+    for role in loaded.team.roles.iter().filter(|role| !role.above.is_empty()) {
+        eprintln!(
+            "note: above the role `{}` ({}), its repo holds {}: a session opened by hand in the \
+             role's directory loads that too, and a worker does not — it is given the role's \
+             directory alone",
+            role.name,
+            role.dir,
+            role.above.join(", ")
+        );
+    }
     for workflow in loaded.team.workflows.iter().filter(|w| w.description.is_empty()) {
         eprintln!(
             "warning: {WORKFLOWS}/{}.md says nothing of what the workflow is for: whoever hands \
@@ -155,25 +174,25 @@ pub fn check(from: From) -> Result<Value> {
     Ok(answer(&loaded))
 }
 
-/// Reads the team `from` names and every role's repo, and loads it. A team
-/// with a fault fails with `Refused`.
+/// Reads the team `from` names and every role's directory, and loads it. A
+/// team with a fault fails with `Refused`.
 pub fn load(from: From) -> Result<Loaded> {
     let gh = GitHub { dir: PathBuf::from(".") };
     let copies = Copies::here()?;
     // The patrols this checkout's repo names and its default harness, when
     // it is its team that is read.
     let (mut named, mut harness) = (vec![], Harness::DEFAULT);
-    let repo = match from {
-        From::Dir(dir) => {
+    let team = match from {
+        From::Dir(dir, of) => {
             if !dir.is_dir() {
                 bail!("{} is not a directory", dir.display());
             }
             let name = dir.display().to_string();
-            let (sources, roles) = read(&Tree { dir }, &gh, &copies)?;
+            let (sources, roles) = read(&Tree { dir }, of, None, &gh, &copies)?;
             roles.reached()?;
-            return loaded(name, None, sources, named, harness);
+            return loaded(name, None, None, sources, named, harness);
         }
-        From::Repo(repo) => repo,
+        From::Repo(team) => team,
         From::Config => {
             let config = config::load(&config::default_file()?)?;
             let Some(bound) = config.bound else {
@@ -186,15 +205,18 @@ pub fn load(from: From) -> Result<Loaded> {
             bound.team
         }
     };
-    let (copy, sources, roles) = read_kept(&gh, &copies, &repo)?;
+    let (copy, sources, roles) = read_kept(&gh, &copies, &team)?;
     roles.reached()?;
-    loaded(repo.to_string(), Some(copy.commit), sources, named, harness)
+    let path = Some(team.path().to_string());
+    loaded(team.repo.to_string(), path, Some(copy.commit), sources, named, harness)
 }
 
-/// The team `name` that `sources` load as, read at `commit`, on a repo whose
-/// config names the patrols `runs` and the default harness `harness`.
+/// The team that `sources` load as — read from `name`, at `path` of it and
+/// at `commit` — on a repo whose config names the patrols `runs` and the
+/// default harness `harness`.
 fn loaded(
     name: String,
+    path: Option<String>,
     commit: Option<String>,
     sources: Sources,
     runs: Vec<String>,
@@ -203,14 +225,19 @@ fn loaded(
     let mut files = vec![sources.team.path.clone()];
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
     files.extend(sources.patrols.iter().map(|file| file.path.clone()));
+    // A team is called by its directory on GitHub, where it was read from one.
+    let called = match (&sources.at, &path) {
+        (Some(at), Some(_)) => at.to_string(),
+        _ => name.clone(),
+    };
     let team = match team::load(&sources) {
         Ok(team) => team,
-        Err(faults) => return Err(Refused { team: name, faults }.into()),
+        Err(faults) => return Err(Refused { team: called, faults }.into()),
     };
     if let Err(unknown) = team.patrols_named(&runs) {
-        return Err(unknown_patrols(&name, &team, &unknown).into());
+        return Err(unknown_patrols(&called, &team, &unknown).into());
     }
-    Ok(Loaded { name, commit, files, runs, harness, team })
+    Ok(Loaded { name, path, commit, files, runs, harness, team })
 }
 
 /// What reading the repo of each role of a team came to, by the repo's name.
@@ -234,34 +261,47 @@ impl RoleReads {
 }
 
 /// Everything the core loads a team from: the team's own files out of
-/// `tree`, and each role's repo out of the fleet's copy of its head as it
-/// stands now — fetched only when no copy of that commit is here. The roles'
-/// repos are read at once, not one after another → with what those reads
-/// came to. A repo GitHub could not be reached for is no fault of the team
-/// (`Unread::Unreached`).
-fn read(tree: &Tree, gh: &GitHub, copies: &Copies) -> Result<(Sources, RoleReads)> {
+/// `tree`, and each role's directory out of the fleet's copy of its repo's
+/// head as it stands now — fetched only when no copy of that commit is here,
+/// and once however many roles the repo holds. `at` is the team's directory
+/// on GitHub, where one is known, and `own` the copy `tree` is in: a role in
+/// the team's repo is then read at the team's commit. The repos are read at
+/// once, not one after another → with what those reads came to. A repo GitHub
+/// could not be reached for is no fault of the team (`Unread::Unreached`).
+fn read(
+    tree: &Tree,
+    at: Option<RepoDir>,
+    own: Option<&Copy>,
+    gh: &GitHub,
+    copies: &Copies,
+) -> Result<(Sources, RoleReads)> {
     let team = tree.file(TEAM_FILE);
     let entries = tree.list(WORKFLOWS)?;
     let workflows = entries.iter().map(|name| tree.file(&format!("{WORKFLOWS}/{name}"))).collect();
     let entries = tree.list(PATROLS)?;
     let patrols = entries.iter().map(|name| tree.file(&format!("{PATROLS}/{name}"))).collect();
-    let role = |repo: &RepoName| {
-        let copy = copies.of(gh, repo)?;
-        let skills = Tree { dir: copy.dir.clone() }.list(SKILLS)?;
-        Ok((copy, skills))
+    let named = team::role_dirs(&team, at.as_ref());
+    let mut repos: Vec<&RepoName> = vec![];
+    for dir in &named {
+        if !repos.contains(&&dir.repo) {
+            repos.push(&dir.repo);
+        }
+    }
+    let copy = |repo: &RepoName| match (own, &at) {
+        (Some(own), Some(at)) if at.repo == *repo => Ok(own.clone()),
+        _ => copies.of(gh, repo),
     };
-    let named = team::role_repos(&team);
-    let reads: Vec<Result<(Copy, Vec<String>)>> = std::thread::scope(|scope| {
-        let reads: Vec<_> = named.iter().map(|repo| scope.spawn(|| role(repo))).collect();
+    let reads: Vec<Result<Copy>> = std::thread::scope(|scope| {
+        let reads: Vec<_> = repos.iter().map(|repo| scope.spawn(|| copy(repo))).collect();
         let joined = reads.into_iter().map(|read| read.join());
         joined.map(|read| read.unwrap_or_else(|panic| std::panic::resume_unwind(panic))).collect()
     });
-    let (mut repos, mut kept) = (vec![], RoleReads::default());
-    for (repo, read) in named.into_iter().zip(reads) {
+    let (mut copied, mut kept) = (vec![], RoleReads::default());
+    for (repo, read) in repos.into_iter().zip(reads) {
         let read = match read {
-            Ok((copy, skills)) => {
+            Ok(copy) => {
                 kept.copies.push((repo.clone(), copy.clone()));
-                Ok(RoleRepo { commit: copy.commit, skills })
+                Ok(copy)
             }
             Err(error) => Err(match unreached(&error) {
                 Some(read) => {
@@ -271,16 +311,116 @@ fn read(tree: &Tree, gh: &GitHub, copies: &Copies) -> Result<(Sources, RoleReads
                 None => Unread::Refused(format!("{error:#}")),
             }),
         };
-        repos.push((repo.to_string(), read));
+        copied.push((repo.clone(), read));
     }
-    Ok((Sources { team, workflows, patrols, repos }, kept))
+    let roles = named.into_iter().map(|dir| {
+        let copy = copied.iter().find(|(repo, _)| *repo == dir.repo).map(|(_, read)| read.clone());
+        let read = copy.unwrap_or_else(|| Err(Unread::Refused("its repo was not read".into())));
+        let read = read.and_then(|copy| role_dir(&copy, &dir));
+        (dir, read)
+    });
+    let roles = roles.collect();
+    Ok((Sources { at, team, workflows, patrols, roles }, kept))
 }
 
-/// `read`, of the team `repo` names: its own files out of the fleet's copy of
-/// its head as it stands now → with that copy.
-fn read_kept(gh: &GitHub, copies: &Copies, repo: &RepoName) -> Result<(Copy, Sources, RoleReads)> {
-    let copy = copies.of(gh, repo).with_context(|| format!("the team {repo} cannot be read"))?;
-    let (sources, roles) = read(&Tree { dir: copy.dir.clone() }, gh, copies)?;
+/// Where `dir` is in `copy`, the fleet's copy of its repo: the copy itself
+/// for a whole repo, spelled as the copy is.
+fn within(copy: &Copy, dir: &RepoDir) -> PathBuf {
+    if dir.path().is_empty() { copy.dir.clone() } else { copy.dir.join(dir.path()) }
+}
+
+/// What the core is told of the role's directory `dir`, read out of `copy`,
+/// the fleet's copy of its repo.
+fn role_dir(copy: &Copy, dir: &RepoDir) -> Result<RoleDir, Unread> {
+    let root = within(copy, dir);
+    if !root.is_dir() {
+        return Err(Unread::Refused(format!(
+            "it is no directory at the head of the default branch of {} ({})",
+            dir.repo, copy.commit
+        )));
+    }
+    let read = || {
+        let skills = Tree { dir: root.clone() }.list(SKILLS)?;
+        let mut links = vec![];
+        // A whole repo is copied whole: a link in it leaves nothing behind.
+        if !dir.path().is_empty() {
+            leaving_links(&root, Path::new(""), &mut links)?;
+            links.sort();
+        }
+        Ok(RoleDir { commit: copy.commit.clone(), skills, links, above: above(copy, dir) })
+    };
+    read().map_err(|error: anyhow::Error| Unread::Refused(format!("{error:#}")))
+}
+
+/// Each `CLAUDE.md` and `.claude/` a directory above `dir` holds in `copy`,
+/// the copy of its repo, as a path from the repo's root: what Claude Code
+/// loads for a session started in `dir` of a checkout, and a worker is not
+/// given (docs/adr/0014).
+fn above(copy: &Copy, dir: &RepoDir) -> Vec<String> {
+    let mut found = vec![];
+    let mut at = PathBuf::new();
+    for segment in dir.path().split('/').filter(|segment| !segment.is_empty()) {
+        let (rules, settings) = (at.join("CLAUDE.md"), at.join(".claude"));
+        if copy.dir.join(&rules).is_file() {
+            found.push(rules.display().to_string());
+        }
+        if copy.dir.join(&settings).is_dir() {
+            found.push(format!("{}/", settings.display()));
+        }
+        at.push(segment);
+    }
+    found
+}
+
+/// Adds to `links` each symlink under `under` of the directory `root` that
+/// leaves `root`, as `<link> -> <target>`: one whose target is absolute, or
+/// climbs above `root`. A link is not followed.
+fn leaving_links(root: &Path, under: &Path, links: &mut Vec<String>) -> Result<()> {
+    let dir = root.join(under);
+    for entry in
+        std::fs::read_dir(&dir).with_context(|| format!("cannot list {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = under.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            leaving_links(root, &path, links)?;
+        } else if kind.is_symlink() {
+            let target = std::fs::read_link(entry.path())?;
+            // How deep under `root` the link's target is, a part at a time.
+            let mut depth = Some(under.components().count());
+            for part in target.components() {
+                depth = match (part, depth) {
+                    (Component::Normal(_), Some(depth)) => Some(depth + 1),
+                    (Component::CurDir, depth) => depth,
+                    (Component::ParentDir, Some(depth)) => depth.checked_sub(1),
+                    _ => None,
+                };
+            }
+            if depth.is_none() {
+                links.push(format!("{} -> {}", path.display(), target.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `read`, of the team at `team`: its own files out of the fleet's copy of
+/// its repo's head as it stands now → with that copy, of the whole repo.
+fn read_kept(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<(Copy, Sources, RoleReads)> {
+    let copy =
+        copies.of(gh, &team.repo).with_context(|| format!("the team {team} cannot be read"))?;
+    let dir = within(&copy, team);
+    if !dir.is_dir() {
+        bail!(
+            "the team {team} cannot be read: {} is no directory at the head of the default \
+             branch of {} ({})",
+            team.path(),
+            team.repo,
+            copy.commit
+        );
+    }
+    let (sources, roles) = read(&Tree { dir }, Some(team.clone()), Some(&copy), gh, copies)?;
     Ok((copy, sources, roles))
 }
 
@@ -290,7 +430,8 @@ fn read_kept(gh: &GitHub, copies: &Copies, repo: &RepoName) -> Result<(Copy, Sou
 /// needs no worker in that role is carried out all the same.
 pub struct Kept {
     pub team: Team,
-    /// The copy of the team's own repo.
+    /// The team's own directory, in the copy of its repo, and that repo's
+    /// commit.
     pub copy: Copy,
     /// What reading each role's repo came to.
     roles: RoleReads,
@@ -298,28 +439,40 @@ pub struct Kept {
 
 impl Kept {
     /// The copy of the repo of `role`: what a worker in it starts in.
-    /// `Unreached` of a role GitHub could not be reached for.
+    /// `Unreached` of a role GitHub could not be reached for. A role that is
+    /// a subdirectory of its repo is refused: a worker started in the copy of
+    /// the whole repo would be given more than its role (docs/adr/0014).
     pub fn role(&self, role: &team::Role) -> Result<&Copy> {
-        if let Some((_, unreached)) =
-            self.roles.unreached.iter().find(|(repo, _)| *repo == role.repo)
-        {
+        let repo = &role.dir.repo;
+        if !role.dir.path().is_empty() {
+            bail!(
+                "the role `{}` is a subdirectory of its repo ({}), and the fleet on this host \
+                 cannot start a role in a subdirectory yet: this afkconvoy copies a role's whole \
+                 repo, not its directory alone (sunfmin/afkconvoy#174). Until one that does is \
+                 installed, only a role that is a whole repo can be started",
+                role.name,
+                role.dir
+            );
+        }
+        if let Some((_, unreached)) = self.roles.unreached.iter().find(|(read, _)| read == repo) {
             return Err(unreached.clone().into());
         }
         let mut copies = self.roles.copies.iter();
-        let kept = copies.find(|(repo, copy)| *repo == role.repo && copy.commit == role.commit);
-        kept.map(|(_, copy)| copy).ok_or_else(|| anyhow!("no copy of {} was kept", role.repo))
+        let kept = copies.find(|(read, copy)| read == repo && copy.commit == role.commit);
+        kept.map(|(_, copy)| copy).ok_or_else(|| anyhow!("no copy of {repo} was kept"))
     }
 }
 
-/// Loads the team `repo` names as it stands now: the head of its repo and of
+/// Loads the team at `team` as it stands now: the head of its repo and of
 /// each role's, each read from the fleet's copy of that commit and fetched
 /// only when no copy of it is here. A team with a fault fails with `Refused`,
 /// and one whose own repo GitHub could not be reached for with `Unreached`.
-pub fn keep(gh: &GitHub, copies: &Copies, repo: &RepoName) -> Result<Kept> {
-    let (copy, sources, roles) = read_kept(gh, copies, repo)?;
+pub fn keep(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<Kept> {
+    let (copy, sources, roles) = read_kept(gh, copies, team)?;
+    let copy = Copy { dir: within(&copy, team), commit: copy.commit };
     match team::load(&sources) {
         Ok(team) => Ok(Kept { team, copy, roles }),
-        Err(faults) => Err(Refused { team: repo.to_string(), faults }.into()),
+        Err(faults) => Err(Refused { team: team.to_string(), faults }.into()),
     }
 }
 
@@ -329,12 +482,13 @@ fn answer(loaded: &Loaded) -> Value {
         .roles
         .iter()
         .map(|role| {
-            json!({"name": role.name, "repo": role.repo, "commit": role.commit,
-                "skills": role.skills})
+            json!({"name": role.name, "repo": role.dir.repo, "path": role.dir.path(),
+                "commit": role.commit, "skills": role.skills, "above": role.above})
         })
         .collect();
     json!({
         "team": loaded.name,
+        "path": loaded.path,
         "commit": loaded.commit,
         "files": loaded.files,
         "escalate_label": team.escalate_label,

@@ -21,7 +21,8 @@ WHAT IT ANSWERS
   the fleet works lock issues only (`afkconvoy lock --help`).
 
   A repo whose config names a team is a bound repo, and answers four keys more:
-  {"team", "patrols", "intake_limit", "harness"} — the team's repo as owner/repo, which
+  {"team", "patrols", "intake_limit", "harness"} — the team's directory as owner/repo or
+  owner/repo/path (a whole repo, or a subdirectory of one), which
   of its patrols run here, by name (default none; `afkconvoy check` holds them against
   the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in
   by workers may be open (default 50), and the default harness: the one every worker
@@ -30,8 +31,8 @@ WHAT IT ANSWERS
   above only.
 
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
-  `gate_command` is missing; a key is unknown or of the wrong type; `team` is not
-  owner/repo; `harness` names no harness; `patrols`, `intake_limit` or `harness` is set
+  `gate_command` is missing; a key is unknown or of the wrong type; `team` is neither
+  owner/repo nor owner/repo/path; `harness` names no harness; `patrols`, `intake_limit` or `harness` is set
   where no `team` is — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 
 WHAT TRIPS YOU UP

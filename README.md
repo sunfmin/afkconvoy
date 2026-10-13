@@ -60,7 +60,7 @@ Then:
 
 ## Bind a repo to a team
 
-A **team** is a repo that names **roles** and holds **workflows**; a **role** is a repo too — the rules one kind of worker always works under, the limits it cannot cross, and the skills it can be asked to perform. A repo whose config names a team is a **bound repo**: an issue of it follows the workflow its flow label names, stage by stage, each stage one skill of one role performed by a new worker. The vocabulary is [`GLOSSARY.md`](GLOSSARY.md)'s; the decisions are [ADR-0008](docs/adr/0008-roles-and-workflows-are-part-of-afkconvoy.md) to [ADR-0012](docs/adr/0012-a-worker-is-limited-by-guards-not-by-identity.md).
+A **team** is a directory — a whole repo, or a subdirectory of one — that names **roles** and holds **workflows**; a **role** is a directory too — the rules one kind of worker always works under, the limits it cannot cross, and the skills it can be asked to perform. A repo whose config names a team is a **bound repo**: an issue of it follows the workflow its flow label names, stage by stage, each stage one skill of one role performed by a new worker. The vocabulary is [`GLOSSARY.md`](GLOSSARY.md)'s; the decisions are [ADR-0008](docs/adr/0008-roles-and-workflows-are-part-of-afkconvoy.md) to [ADR-0012](docs/adr/0012-a-worker-is-limited-by-guards-not-by-identity.md).
 
 ### From nothing to a bound repo
 

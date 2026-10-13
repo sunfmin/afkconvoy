@@ -43,7 +43,7 @@ pub fn seen(fleet: &Fleet, read: &Flows) -> Result<Seen> {
     seen.max_open = Some(precedents.max_open);
     seen.unproposed = read.unproposed();
     if !seen.unproposed.is_empty() {
-        for (_, branch) in fleet.gh.open_prs_of(&bound.team)? {
+        for (_, branch) in fleet.gh.open_prs_of(&bound.team.repo)? {
             if is_proposal(&branch) {
                 seen.open.push(branch);
             }
@@ -94,7 +94,9 @@ pub fn propose(
         drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
         return Ok(Outcome::Lost);
     };
-    fleet.gh.comment(ruling.issue, &proposed_comment(ruling, &role.name, team.as_str()))?;
+    let file = team.join(PRECEDENTS);
+    let said_proposed = proposed_comment(ruling, &role.name, team.repo.as_str(), file.path());
+    fleet.gh.comment(ruling.issue, &said_proposed)?;
 
     let base = fleet.base_tip()?;
     let source = Source::of(&fleet.repo)?;
@@ -113,7 +115,8 @@ pub fn propose(
         ruling: &record.text,
         role: &role.name,
         skill: &work.skill,
-        team: team.as_str(),
+        team: team.repo.as_str(),
+        file: file.path(),
         branch: &ruling.branch(),
         precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
         worktree: &path,
@@ -170,11 +173,13 @@ pub fn end(fleet: &mut Fleet, me: &Me, row: &Row) -> Result<Outcome> {
     let team = &fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?.team;
     let comments = fleet.gh.comments(ruling.issue)?;
     let link = comments.iter().find(|c| c.id == ruling.comment).map_or("", |c| c.url.as_str());
+    let file = team.join(PRECEDENTS);
+    let team = &team.repo;
     for (number, branch) in fleet.gh.open_prs_of(team)? {
         if branch != ruling.branch() {
             continue;
         }
-        if let Some(reason) = refused(&fleet.gh.pr_diff_of(team, number)?, link) {
+        if let Some(reason) = refused(&fleet.gh.pr_diff_of(team, number)?, link, file.path()) {
             fleet.gh.close_pr_of(team, number, &closing_comment(&reason))?;
         }
     }

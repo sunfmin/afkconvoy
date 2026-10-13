@@ -12,33 +12,41 @@ WHO RUNS IT
 WHAT IT READS AND WRITES
 
   It writes nothing but a copy the fleet has not got yet (below). It reads a team's
-  files, and of each role's repo which skills it holds:
+  files, and of each role's directory which skills it holds:
 
 {files}
-  Without a flag it reads the config of this checkout for `team`, and that repo from
-  GitHub at the head of its default branch — and holds the config's `patrols` against
-  the patrols that team has, and takes its `harness` as the default.
-  `--team owner/repo` names the repo instead.
+  Without a flag it reads the config of this checkout for `team`, and that directory
+  from GitHub at the head of its repo's default branch — and holds the config's
+  `patrols` against the patrols that team has, and takes its `harness` as the default.
+  `--team owner/repo` or `--team owner/repo/path` names the team instead.
   `--dir <path>` reads a team's files from a directory as they are, committed or not.
-  Every role's repo is always read from GitHub, at the head of its default branch.
+  Every role is always read from GitHub, at the head of its repo's default branch. A
+  directory says no repo, so a role it names as `./path` is a fault — unless `--team`
+  beside `--dir` says which team on GitHub the files are an edit of: the role is then
+  read from that repo.
 
   A repo on GitHub — the team's, and each role's — is asked for the commit at its head,
   and read from the fleet's copy of that commit: the one a worker starts in, kept
   read-only under the user's cache directory (afkconvoy/copies/<owner>/<repo>/<commit>).
   Only a commit the fleet has no copy of yet is cloned, so a role pushed since the last
-  run is read at its new head, and one that has not moved costs one question. The roles
-  are read at once, not one after another.
+  run is read at its new head, and one that has not moved costs one question. A repo is
+  asked and cloned once however many roles it holds, and a role in the team's own repo
+  is read at the team's commit. The repos are read at once, not one after another.
 
 WHAT IT ANSWERS
 
-  {"team", "commit", "files", "escalate_label", "harness", "roles", "workflows",
+  {"team", "path", "commit", "files", "escalate_label", "harness", "roles", "workflows",
   "patrols", "precedents"} — what it read.
-  `commit` is the team's commit read, null with `--dir`; `files` the files read.
+  `team` is the team's repo and `path` its directory there, "" for a whole repo — with
+  `--dir`, the directory read and null. `commit` is the team's commit read, null with
+  `--dir`; `files` the files read, each from the team's directory.
   `harness` is the default harness: the one the config of this checkout names, and
   claude-code where it names none — and with `--team` and `--dir`, which read no
   config. Each of
-  `roles` is {"name", "repo", "commit", "skills"}: `commit` is the one the role's repo
-  was read at. Each of `workflows` is {"name", "flow_label", "max_rework",
+  `roles` is {"name", "repo", "path", "commit", "skills", "above"}: `path` is the role's
+  directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read
+  at; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its
+  repo, as a path from the repo's root. Each of `workflows` is {"name", "flow_label", "max_rework",
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
   {"name", "by", "do", "harness", "model", "writes", "escalate", "pass", "reject"}.
   Each of `patrols` is {"name", "by", "do", "every", "harness", "model", "max_open",
@@ -56,7 +64,13 @@ WHAT IT ANSWERS
   `reject` that names no stage; a `reject` to its own or a later stage; a stage no path
   from the first reaches; a stage whose passes never come to `land` or `done`; a
   `pass: land` with no `land:`, or a `land:` no pass leads to; a role the team file does
-  not name; a role whose repo cannot be read; a skill its role's repo does not hold; a
+  not name; a role named as none of owner/repo, owner/repo/path and ./path; a role's
+  path with a `..`, or an absolute one; a role whose repo cannot be read, or whose path
+  is no directory at its head; a role's directory that is the team's or contains it, or
+  is inside the team's `workflows/` or `patrols/`; a role's directory that contains
+  another role's or is inside one — two names for one directory are none; a symlink in
+  a role in a subdirectory that leaves the role's directory; a skill its role's
+  directory does not hold; a
   missing `by`, `do` or `on`; a `harness` that names no harness, or one on a stage a
   human performs; a patrol file whose name is not a patrol's; an `every`
   that is no duration; a missing `every` or `max_open`; and — in the config,
@@ -66,14 +80,23 @@ WHAT IT ANSWERS
   that prose is what `afkconvoy flows` answers as what the workflow is for, and whoever
   hands the fleet work chooses a workflow by it. The team loads all the same.
 
+  A note, on stderr, for each role with something in `above`: a session opened by hand
+  in the role's directory loads those rules too, and a worker, given the role's
+  directory alone, does not. The team loads all the same, and it exits 0.
+
   Other errors, as {"error": …}: the repo's config names no team and no flag was given;
   the config cannot be read, the error naming its file and the key — a `harness` there
-  that names no harness is one; the team's repo cannot be read.
+  that names no harness is one; the team's repo cannot be read, or the team's path is no
+  directory at its head.
 
 WHAT TRIPS YOU UP
 
   - From GitHub it reads what is pushed to the default branch. An edit in a checkout
-    of the team is checked with `--dir`; a role's is checked only once it is pushed.
+    of the team is checked with `--dir`; a role's is checked only once it is pushed,
+    wherever the role is — in the team's own repo too.
+  - A team that loads is not yet a team every stage of which can be started: a role in a
+    subdirectory is read and checked here, and `dispatch` refuses to start a worker in
+    one (`afkconvoy dispatch --help`). Only a role that is a whole repo is started.
   - Following `pass` alone from any stage must end. A loop back is made with `reject`,
     which the breakers count; a round of passes nothing would ever stop.
   - A stage nothing leads to is reported only once every `pass` and `reject` names a
