@@ -12,6 +12,12 @@ WHEN TO RUN IT
 
   From there on a team is designed by editing its files and running `check`.
 
+  And to see a finished team first, or to start from one — a whole team the binary
+  holds, written as one repo holds it:
+
+      afkconvoy scaffold team hospital --example hospital --repo acme/hospital
+      afkconvoy help example
+
 WHO RUNS IT
 
   The operator, or whoever designs the team: anywhere. It reads no config.
@@ -36,6 +42,15 @@ WHAT IT READS AND WRITES
   is elsewhere — a role several teams share, in a repo of its own: `team.md` names it as
   given and nothing is written for it. The two forms mix. The example workflow is
   performed by the first role given; one that is elsewhere must hold a skill `implement`.
+
+  `scaffold team <dir> --example <name>` writes an example team whole in place of a
+  skeleton: its team file, team rules, workflows, patrols and precedents, and every
+  role it names under `roles/<name>/`, with each role's rules, skills and hooks. The
+  one name it takes is `hospital`: seven roles, three workflows and four patrols, which
+  `afkconvoy help example` goes through file by file. It takes no `--role` — the team
+  file names its own, each as `./roles/<name>` — and is a team's alone. A hook, like
+  any file written that starts with `#!`, is written executable. Skills by other
+  authors that the example's roles load are not written: `help example` says which.
 
   `scaffold role <dir>` writes a role's three kinds of file, and takes no `--role`:
 
@@ -76,8 +91,10 @@ WHAT IT ANSWERS
   outside any checkout with no `--repo`, or as the root of one.
 
   Errors, as {"error": …} with a non-zero exit: the directory is not empty; a team with
-  no `--role`, or one name given twice; a role with a `--role`; a `--role` that is
-  neither <name> nor <name>=<owner/repo[/path]>; a file that cannot be written; and,
+  no `--role` and no `--example`, or one name given twice; a role with a `--role` or an
+  `--example`; an `--example` with a `--role`; an `--example` there is no example of,
+  which lists the names there are; a `--role` that is neither <name> nor
+  <name>=<owner/repo[/path]>; a file that cannot be written; and,
   with `--repo`, a `git` or `gh` call that failed — the error says the skeleton is
   written and its repo is not created.
 

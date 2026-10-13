@@ -286,6 +286,126 @@ fn no_help_text_holds_a_word_the_glossary_says_to_avoid() {
     );
 }
 
+/// The topics that are files of `help/topics/`, each with its text: every
+/// topic but the glossary, which is the repository's own.
+fn topic_files() -> Vec<(String, String)> {
+    let long = help("--help");
+    let names = topics(&long).into_iter().map(|(name, _)| name);
+    let names = names.filter(|name| *name != "glossary");
+    names.map(|name| (name.to_string(), asked(&["help", name]))).collect()
+}
+
+/// The rows of a topic that heads each with what is seen: the lines indented
+/// as a row's head is, and no deeper.
+fn heads(topic: &str) -> Vec<&str> {
+    let heads = topic.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   "));
+    heads.map(str::trim).collect()
+}
+
+#[test]
+fn troubleshooting_has_a_row_for_every_finding_doctor_can_give() {
+    use afkconvoy::doctor::Kind;
+    let said = asked(&["help", "troubleshooting"]);
+    let heads = heads(&said);
+    assert!(Kind::ALL.len() > 20, "{:?}", Kind::ALL);
+    for kind in Kind::ALL {
+        let symptom = kind.symptom();
+        assert!(
+            heads.contains(&symptom),
+            "`doctor` can give the finding {kind:?}, and `afkconvoy help troubleshooting` has \
+             no row headed with its words: {symptom:?}"
+        );
+    }
+    // What it catches: words that are in the topic, but head no row.
+    assert!(said.contains("a line to run") && !heads.contains(&"a line to run"));
+    // A start's refusals have their rows too, by the words each is made of.
+    let no_branch = afkconvoy_core::layout::no_base_branch("main");
+    for refusal in [
+        "this host cannot work a fleet yet",
+        "cannot read the config file",
+        "that push would be refused",
+        "the remote rejects the fleet's refs under both",
+        "--worker-command was given twice for the harness",
+        "is no harness",
+        "this fleet runs on a custom provider",
+    ] {
+        assert!(heads.contains(&refusal), "no row for the refusal {refusal:?}");
+    }
+    assert!(heads.iter().any(|head| no_branch.starts_with(head)), "{no_branch}");
+}
+
+/// Every flag `text` gives a command of this tool's, with the command: what
+/// stands on a line after `afkconvoy <command>`, up to where the line stops
+/// being the command's.
+fn flagged(text: &str) -> Vec<(&str, &str)> {
+    let mut flagged = vec![];
+    for line in text.lines() {
+        for said in line.split("afkconvoy ").skip(1) {
+            let said = said.split(['`', ';', ':', ',']).next().unwrap();
+            let mut words = said.split_whitespace();
+            let Some(command) = words.next() else { continue };
+            let flags = words.filter(|word| word.starts_with("--"));
+            flagged.extend(flags.map(|flag| (command, flag.split('=').next().unwrap())));
+        }
+    }
+    flagged
+}
+
+/// Each way the fleet stops for a human, by the title `humans` gives it.
+const STOPS: [&str; 6] = [
+    "AN ESCALATION",
+    "A TRIPPED BREAKER",
+    "A STAGE `by: human`",
+    "A PATROL'S FAILED RUN",
+    "A FLEET LOCK",
+    "A PRECEDENT TO ACCEPT",
+];
+
+#[test]
+fn humans_names_for_each_way_the_fleet_stops_a_command_with_the_flags_its_help_gives() {
+    let said = asked(&["help", "humans"]);
+    let short = help("-h");
+    let commands = listed(&short);
+    for stop in STOPS {
+        let part = said.split(&format!("\n{stop}\n")).nth(1);
+        let part = part.unwrap_or_else(|| panic!("`humans` has no part {stop:?}"));
+        let part = part.split("\n\n").take_while(|part| part.starts_with([' ', '\n']));
+        let part = part.collect::<Vec<_>>().join("\n\n");
+        let named = mentioned(&part, "afkconvoy ");
+        assert!(named.iter().any(|name| commands.contains(name)), "{stop} names no command");
+    }
+    // What it catches: a flag the command's help does not give.
+    let made_up = "Run `afkconvoy rule --issue 7 --because x`, then afkconvoy show --issue 7: it";
+    assert_eq!(flagged(made_up), [("rule", "--issue"), ("rule", "--because"), ("show", "--issue")]);
+    let mut seen = 0;
+    for (topic, text) in topic_files() {
+        for (command, flag) in flagged(&text).into_iter().filter(|(_, flag)| *flag != "--help") {
+            let given = asked(&[command, "-h"]);
+            let gives = given.split_whitespace().any(|word| word.trim_end_matches(',') == flag);
+            assert!(gives, "{topic}: `afkconvoy {command} -h` gives no {flag}");
+            seen += 1;
+        }
+    }
+    assert!(seen >= 5, "{seen}");
+}
+
+#[test]
+fn a_topic_is_short_and_refers_to_nothing_outside_the_binary() {
+    let files = topic_files();
+    assert!(files.len() >= 4);
+    for (topic, text) in files {
+        let lines = text.lines().count();
+        assert!(lines <= 125, "{topic} is {lines} lines: a topic is about 120 at most; split it");
+        // No file of this repository, no URL, and not the manual.
+        for outside in ["docs/", "crates/", "GLOSSARY", "README", "manual", "://", "github.com"] {
+            assert!(!text.contains(outside), "{topic} refers to {outside:?}");
+        }
+        // Plain text, as `--help` is.
+        assert!(text.lines().all(|line| line.chars().count() <= 90), "{topic} has a long line");
+        assert!(text.ends_with('\n') && !text.ends_with("\n\n"), "{topic}");
+    }
+}
+
 #[test]
 fn the_guide_groups_every_visible_subcommand_once_and_names_no_other() {
     let (short, long) = (help("-h"), help("--help"));
@@ -327,20 +447,6 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     assert!(at("config") < at("plan") && at("plan") < at("run"));
     // clap's own listing still follows it.
     assert_eq!(listed(&long), listed(&help("-h")));
-}
-
-/// The topics that are files of `help/topics/`: each name with its text.
-fn topic_files() -> Vec<(String, String)> {
-    let files = fs::read_dir(repository().join("crates/cli/src/help/topics")).unwrap();
-    let mut topics: Vec<_> = files
-        .map(|file| file.unwrap().path())
-        .map(|file| {
-            let name = file.file_stem().unwrap().to_str().unwrap().to_string();
-            (name, fs::read_to_string(file).unwrap())
-        })
-        .collect();
-    topics.sort();
-    topics
 }
 
 /// Whether `text` shows `key` as a key of a file: followed by its `:`, and
@@ -410,7 +516,7 @@ fn the_guide_and_check_name_the_topics_and_describe_no_file_of_a_team() {
 
 /// The team topic is where an agent learns the files of a team and of a role.
 #[test]
-fn the_team_topic_lays_out_the_files_of_a_team_and_a_role_and_the_four_kinds_of_text() {
+fn the_team_topic_lays_out_the_files_of_a_team_and_a_role() {
     use afkconvoy_core::harness::Harness;
     use afkconvoy_core::team::{
         PATROLS, PRECEDENTS, ROLE_FORMS, RULES, SKILLS, TEAM_FILE, WORKFLOWS,
@@ -422,20 +528,10 @@ fn the_team_topic_lays_out_the_files_of_a_team_and_a_role_and_the_four_kinds_of_
     {
         assert!(team.contains(&format!("      {file}")), "the topic lays out no {file}");
     }
-    // The team rules are a file of the team's, and the four kinds of text a
-    // worker reads are each said with what it is for.
+    // The team rules are a file of the team's; what each of the four kinds of
+    // text a worker reads is for is the topic `roles`'s to say.
     assert!(team.contains(&format!("      {RULES}               the team rules: ")), "{team}");
-    for (kind, is_for) in [
-        ("the repo's own rules", "what that one codebase asks"),
-        ("the team rules", "how the team"),
-        ("a role's rules", "what one kind of"),
-        ("the precedents", "what a human"),
-    ] {
-        let said = team.split(&format!("      {kind}  ")).nth(1);
-        let said = said.unwrap_or_else(|| panic!("the topic names no {kind}"));
-        let said = said.split("\n\n").next().unwrap();
-        assert!(said.contains(is_for), "the topic does not say what {kind} is for: {said}");
-    }
+    assert!(team.contains("where a sentence belongs: `afkconvoy help roles`"), "{team}");
     // A role is a directory, named in one of three ways.
     for form in ["      owner/repo  ", "      owner/repo/path  ", "      ./path  "] {
         assert!(team.contains(form), "the topic lost the form {form:?}");
@@ -447,24 +543,23 @@ fn the_team_topic_lays_out_the_files_of_a_team_and_a_role_and_the_four_kinds_of_
     }
 }
 
-/// A topic that is a file of `help/topics/` says first what its thing is and
-/// when to read it, stays short, and ends with the topics to read next.
+/// Each of the three topics a team's files are described in says first what
+/// its thing is and when to read it, and ends with the topics to read next.
 #[test]
-fn a_topic_opens_with_what_it_is_and_when_to_read_it_and_ends_with_what_to_read_next() {
-    let topics = topic_files();
-    assert!(topics.len() >= 3, "{}", topics.len());
-    for (name, text) in &topics {
-        let lines = text.lines().count();
-        assert!(lines <= 120, "the topic {name} is {lines} lines: split it");
-        let opening = text.split("\n\n").next().unwrap();
-        assert!(opening.starts_with("A ") && opening.contains(" is "), "{name}: {opening}");
+fn a_topic_of_a_teams_files_opens_with_what_it_is_and_ends_with_what_to_read_next() {
+    for name in ["team", "workflows", "patrols"] {
+        let text = asked(&["help", name]);
+        let mut parts = text.split("\n\n");
+        assert_eq!(parts.next(), Some(name.to_uppercase().as_str()));
+        let opening = parts.next().unwrap();
+        assert!(opening.starts_with("  A ") && opening.contains(" is "), "{name}: {opening}");
         assert!(opening.contains(". Read this to "), "{name} does not say when to read it");
-        let (_, next) = text.rsplit_once("\nREAD NEXT\n").expect("its last section");
+        let (_, next) = text.rsplit_once("\nWHERE TO READ ON\n").expect("its last section");
         let rows: Vec<_> = next.lines().filter(|row| !row.is_empty()).collect();
         assert!(rows.len() >= 2, "{name}: {next}");
         for row in rows {
-            let other = row.trim_start().strip_prefix("afkconvoy help ");
-            let other = other.and_then(|rest| rest.split_whitespace().next());
+            let other = row.trim_start().strip_prefix("`afkconvoy help ");
+            let other = other.and_then(|rest| rest.split('`').next());
             let other = other.unwrap_or_else(|| panic!("{name} ends with more than topics: {row}"));
             assert!(other != name && asked(&["help", other]).len() > 100, "{name}: {row}");
         }

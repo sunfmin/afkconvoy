@@ -1,0 +1,107 @@
+HUMANS
+
+  Every way the fleet stops for a human, and the command that answers each. A human is
+  asked by exception, and nothing tells you so: you look.
+
+WHERE TO LOOK
+
+  `afkconvoy doctor` lists every open issue that waits for a human under
+  `waiting_on_human`, each with why, since when, and `answer`: the line that answers
+  it, the issue's number filled in. `afkconvoy plan` gives the same list, and the panel
+  shows it as "With a human". One that has waited for more than an hour is a finding.
+
+  An escalated issue also says so itself: it carries the escalate label in place of
+  its flow label — `ready-for-human`, unless the team's file names another — and the
+  comment of the escalation says why and ends with the same line. Run every command
+  below in a checkout of the repo the issue is of.
+
+AN ESCALATION
+
+  A stage declared `escalate` and no consult ruled on it; or something failed — a
+  worker went silent and its nudge changed nothing, a stage ended with no verdict, a
+  gate stayed red, a stage that may not write left a commit. The comment says which,
+  and for an `escalate` gives the question, often with the options.
+
+      afkconvoy rule --issue <n> --text-file <file>
+          Rule on it, where it stopped: that stage runs again with your ruling in its
+          brief, and both rework counts start over. `--text "<ruling>"` gives a
+          short one in place of a file. `afkconvoy rule --help`.
+      afkconvoy send --issue <n> --stage <stage> --text-file <file>
+          Put it at another stage of its workflow instead, whatever its stage records
+          say: when the approach changed, or the workflow changed under the issue and
+          a record names a stage that is gone. `afkconvoy send --help`.
+
+  For a failure, fix what failed first: a ruling starts the same stage anew, and what
+  failed it once fails it again. In an unbound repo there is no stage to run again:
+  fix what the comment names and put the ready label back, with the line the comment
+  ends with.
+
+A TRIPPED BREAKER
+
+  Rework went past what the workflow allows — in total for the issue, or as rejections
+  in a row by one stage — and the issue escalated in place of the rework that would
+  have passed it. The comment names the breaker and lists every rework, each with its
+  stage and why. Two stages that cannot agree are asking a question neither can
+  decide. Read the list, then answer as an escalation is answered: `afkconvoy rule`
+  with what settles it, or `afkconvoy send` to the stage that should take it up.
+  `afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
+
+A STAGE `by: human`
+
+  A workflow may give a stage to a human. An issue at one waits there, claimed by
+  nobody, under its flow label and with no escalate label: only the lists above show it.
+
+      afkconvoy verdict pass --issue <n> --stage <stage> --text-file <file>
+          Declare the stage's verdict: `pass`, or `reject` where the stage has that
+          edge. The issue goes where the workflow leads from it.
+          `afkconvoy verdict --help`.
+
+A PATROL'S FAILED RUN
+
+  A run of a patrol that failed opens an issue of its own, under the escalate label,
+  which says what failed. The patrol is not run again while that issue is open.
+
+      gh issue close <n>
+          Once you have looked: the patrol runs again when it is next due.
+          `afkconvoy plan` gives each patrol's standing, and `afkconvoy doctor` a
+          patrol that does not run as a finding.
+
+A FLEET LOCK
+
+  An open issue under the lock label is a fleet lock: the fleet works lock issues
+  only, and hands no other issue to a human, until the last one closes. A worker
+  raises one when the fault is one every issue shares; a human may too:
+
+      afkconvoy lock --issue <n>
+
+  A lock asks nothing of you while its issue is being worked: it lands as any issue
+  does, and closing it ends the lock. It asks for you when nothing can work it — it
+  has no flow label, or an open blocker — because the fleet then works nothing at
+  all. `afkconvoy doctor` says so as a critical finding whose `fix` is the line to
+  run. To end a lock raised by mistake, close its issue. `afkconvoy lock --help`.
+
+A PRECEDENT TO ACCEPT
+
+  Where the team names who proposes precedents, each ruling a human gives with
+  `afkconvoy rule` is followed by a proposal: a PR on the team's repo that appends one
+  entry to its precedents — the ruling in a sentence, when it applies, and a link to
+  the ruling. Nothing waits on it: the stage that asked has already run again.
+
+      gh pr merge <pr> --repo <the team's repo>
+          Merging accepts the precedent: every later stage reads it, and follows it
+          in place of declaring `escalate` on the same question.
+      gh pr close <pr> --repo <the team's repo>
+          The ruling was about that one issue, and no stage should follow it unasked.
+
+  The fleet never merges on the team's repo. `afkconvoy plan` lists the proposals
+  under way and open under `proposals`.
+
+AN ISSUE PAST THE END OF ITS WORKFLOW
+
+  A workflow that ended without a landing leaves its issue open: `gh issue close <n>`.
+
+WHAT NOT TO DO
+
+  Do not move the labels by hand. A label is not where an issue is — its stage records
+  are — so an issue handed back with no ruling on record is escalated again at the
+  next tick. Rule on it, or send it.

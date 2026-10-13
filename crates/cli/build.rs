@@ -3,12 +3,20 @@
 //! the commits past the newest tag and the commit — `0.2.0+11.g9f58035`, with
 //! `.dirty` for a tree that had changes. A build with no git around it (a
 //! tarball) says the release alone.
+//!
+//! And lists the example teams for `scaffold --example`: each directory of
+//! `src/scaffold/examples/` is one, named as the directory is, and holds the
+//! files it writes exactly as it writes them. Adding a file there is all it
+//! takes for the binary to hold it.
 
-use std::path::Path;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Where this package is in the checkout it is built from.
 const PACKAGE: &str = "crates/cli/";
+/// Where the example teams are, in this package.
+const EXAMPLES: &str = "src/scaffold/examples";
 
 fn main() {
     let release = env!("CARGO_PKG_VERSION");
@@ -17,9 +25,53 @@ fn main() {
     // Asked again whenever the checkout moved or a tracked file changed. With
     // no git there is nothing to watch but this script.
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={EXAMPLES}");
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
+    std::fs::write(out.join("examples.rs"), examples()).expect("OUT_DIR can be written in");
     for path in watched().unwrap_or_default() {
         if Path::new(&path).exists() {
             println!("cargo:rerun-if-changed={path}");
+        }
+    }
+}
+
+/// The example teams as a Rust expression: each one's name with its files,
+/// each file's path in the team's directory with its text. Both are in the
+/// order of their names, so that two builds of one tree hold the same.
+fn examples() -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(EXAMPLES);
+    let mut source = String::from("&[\n");
+    for example in entries(&root) {
+        let name = example.file_name().expect("an entry has a name").to_string_lossy().into_owned();
+        let mut files = Vec::new();
+        collect(&example, "", &mut files);
+        writeln!(source, "    Example {{ name: {name:?}, files: &[").unwrap();
+        for (path, file) in files {
+            writeln!(source, "        ({path:?}, include_str!({:?})),", file.display()).unwrap();
+        }
+        source.push_str("    ] },\n");
+    }
+    source + "]\n"
+}
+
+/// What `dir` holds, in the order of the names.
+fn entries(dir: &Path) -> Vec<PathBuf> {
+    let read = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    let mut entries: Vec<PathBuf> = read.map(|entry| entry.expect("an entry").path()).collect();
+    entries.sort();
+    entries
+}
+
+/// Every file under `dir`, each with its path from there, its segments joined
+/// by `/` after `prefix`.
+fn collect(dir: &Path, prefix: &str, files: &mut Vec<(String, PathBuf)>) {
+    for entry in entries(dir) {
+        let name = entry.file_name().expect("an entry has a name").to_string_lossy();
+        let path = format!("{prefix}{name}");
+        if entry.is_dir() {
+            collect(&entry, &format!("{path}/"), files);
+        } else {
+            files.push((path, entry));
         }
     }
 }

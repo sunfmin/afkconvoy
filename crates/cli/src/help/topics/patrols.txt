@@ -1,7 +1,9 @@
-A patrol is a role run on a schedule rather than for an issue: it looks for work, opens
-issues and takes them in. Read this to add a patrol to a team, to have a repo run one,
-or to learn how work reaches the fleet with no human labelling it — and how a fleet lock
-stops everything but one fix.
+PATROLS
+
+  A patrol is a role run on a schedule rather than for an issue: it looks for work, opens
+  issues and takes them in. Read this to add a patrol to a team, to have a repo run one,
+  or to learn how work reaches the fleet with no human labelling it — and how a fleet lock
+  stops everything but one fix.
 
 WHAT A PATROL IS, AND IS NOT
 
@@ -22,7 +24,7 @@ A PATROL'S FILE
 
       by: <role>
       do: <skill>
-      every: 6h                          # required: a whole number from 1 up, then m, h or d
+      every: 6h                          # required: a whole number from 1, then m, h or d
       harness: claude-code               # optional
       model: <model>                     # optional; its harness's own name for it
       max_open: 5                        # required
@@ -74,12 +76,13 @@ THE FLEET LOCK
   While one stands the fleet works lock issues only: nothing else is dispatched, no
   patrol runs, no PR of another issue joins the landing train, and workers already
   running are left alone. The lock issue is worked as any issue is: in a bound repo
-  it needs a flow label too. Closing the last lock issue ends the lock; a stage that declared
-  `escalate` or stayed silent before it closed then runs again, which is no rework.
-  What trips you up: `afkconvoy lock --help`.
+  it needs a flow label too. Closing the last lock issue ends the lock; a stage that
+  declared `escalate` or stayed silent before it closed then runs again, which is no
+  rework. What trips you up: `afkconvoy lock --help`.
 
-READ NEXT
+WHERE TO READ ON
 
-  afkconvoy help workflows    what an issue taken in then passes through
-  afkconvoy help team         the roles a patrol's `by` names, and a team's other files
-  afkconvoy help glossary     each term used here, with its one definition
+  `afkconvoy help workflows`  what an issue taken in then passes through
+  `afkconvoy help team`       the roles a patrol's `by` names, and a team's other files
+  `afkconvoy help roles`      what a role is, and how to write a good one
+  `afkconvoy help glossary`   each term used here, with its one definition

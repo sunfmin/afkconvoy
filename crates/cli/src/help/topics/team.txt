@@ -1,7 +1,9 @@
-A team is a directory — a whole repo, or a subdirectory of one — that names a set of
-roles and holds the workflows, patrols and precedents they work by. Read this to write a
-team's directory, to bind a repo to one, or when `afkconvoy check` names a fault in a
-team file or a role.
+TEAM
+
+  A team is a directory — a whole repo, or a subdirectory of one — that names a set of
+  roles and holds the workflows, patrols and precedents they work by. Read this to write a
+  team's directory, to bind a repo to one, or when `afkconvoy check` names a fault in a
+  team file or a role.
 
 WHAT ITS DIRECTORY HOLDS
 
@@ -46,7 +48,7 @@ HOW IT NAMES A ROLE
   another role's nor is inside one. It holds:
 
       CLAUDE.md                          its rules: what a worker in it always works under
-      .claude/skills/<skill>/SKILL.md    one directory per skill it can be asked to perform
+      .claude/skills/<skill>/SKILL.md    one directory per skill it can be asked for
       .claude/settings.json              its limits for claude-code: hooks, and the
                                          permissions it denies
       .pi/extensions/                    its limits for pi: extensions
@@ -70,21 +72,13 @@ THE TEAM RULES
   The `CLAUDE.md` in the team's directory, and optional. Every worker of the team is
   given it, whatever its role and whatever it was started for — a stage, a consult, a
   patrol, the proposal of a precedent, a landing — and no key turns it off. A role two
-  teams name works under the rules of the team whose stage it is in. A worker reads four
-  kinds of text, and each is for one thing:
+  teams name works under the rules of the team whose stage it is in.
 
-      the repo's own rules     the `CLAUDE.md` (or, for pi, `AGENTS.md`) of the repo an
-                               issue is of: what that one codebase asks
-      the team rules           the `CLAUDE.md` of the team's directory: how the team
-                               works, in every repo bound to it
-      a role's rules           the `CLAUDE.md` of the role's directory: what one kind of
-                               worker does, whichever stage it is in
-      the precedents           `precedents.md` of the team's directory: what a human
-                               ruled before, followed instead of asking again
-
-  The first three are loaded by the worker's harness, not copied into its brief, and
-  the brief says where each of the four is. They have no order: a team's rules and a
-  role's that contradict each other are a defect of the team's files.
+  They are one of four kinds of text a worker reads, beside the repo's own rules — the
+  `CLAUDE.md` (or, for pi, `AGENTS.md`) of the repo an issue is of — its role's rules
+  and the precedents. The first three are loaded by the worker's harness, not copied
+  into its brief, and the brief says where each of the four is. What each is for, and
+  where a sentence belongs: `afkconvoy help roles`.
 
 HOW A REPO IS BOUND TO IT
 
@@ -113,8 +107,9 @@ WHAT CHECK HOLDS IT TO
     checked: that is the role's to see to.
   - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
 
-READ NEXT
+WHERE TO READ ON
 
-  afkconvoy help workflows    the stages an issue passes through, and every key of them
-  afkconvoy help patrols      a role run on a schedule, intake and the fleet lock
-  afkconvoy help glossary     each term used here, with its one definition
+  `afkconvoy help roles`      what goes where in a role, and what makes one good
+  `afkconvoy help workflows`  the stages an issue passes through, and every key of them
+  `afkconvoy help patrols`    a role run on a schedule, intake and the fleet lock
+  `afkconvoy help glossary`   each term used here, with its one definition

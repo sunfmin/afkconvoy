@@ -1,6 +1,8 @@
-A workflow is the stages one issue passes through and where each verdict leads, ending in
-the landing train or in nothing more to do. Read this to write a file of a team's
-`workflows/`, or to tell why an issue went where it did.
+WORKFLOWS
+
+  A workflow is the stages one issue passes through and where each verdict leads, ending
+  in the landing train or in nothing more to do. Read this to write a file of a team's
+  `workflows/`, or to tell why an issue went where it did.
 
 A WORKFLOW'S FILE
 
@@ -101,8 +103,9 @@ A LANDING
   train (`afkconvoy land --help`), which lands it on the base branch as it lands any
   PR. A `land:` no pass leads to is a fault, and so is a `pass: land` with no `land:`.
 
-READ NEXT
+WHERE TO READ ON
 
-  afkconvoy help team         the roles a `by` names, and the rest of a team's directory
-  afkconvoy help patrols      how an issue comes to carry a flow label with no human
-  afkconvoy help glossary     each term used here, with its one definition
+  `afkconvoy help team`       the roles a `by` names, and the rest of a team's directory
+  `afkconvoy help roles`      what a role is, and how to write a good one
+  `afkconvoy help patrols`    how an issue comes to carry a flow label with no human
+  `afkconvoy help glossary`   each term used here, with its one definition
