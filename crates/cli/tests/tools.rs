@@ -54,7 +54,11 @@ fn nothing_was_done(world: &World) {
     assert_eq!(world.pushes(), [] as [String; 0], "no ref was written");
     assert_eq!(world.remote(&["for-each-ref", "--format=%(refname)"]), "refs/heads/main");
     assert_eq!(world.gh()["calls"], json!([]), "GitHub was not asked a thing");
-    assert_eq!(world.orca()["calls"], json!([]), "and neither was orca");
+    let asked = world.orca_calls();
+    let only_asked = asked.iter().all(|call| call == &["status"] || call == &["repo", "list"]);
+    assert!(only_asked, "orca was asked what it is, and nothing more: {asked:?}");
+    assert_eq!(world.orca()["worktrees"], json!([]), "no worktree was cut");
+    assert_eq!(world.orca()["terminals"], json!([]), "and no worker started");
     assert!(!world.clone.join(".git/convoy-layout").exists(), "no layout was noted");
 }
 
@@ -149,6 +153,62 @@ fn a_missing_command_and_a_logged_out_one_are_named_together() {
 }
 
 #[test]
+fn a_start_in_a_checkout_orca_does_not_know_refuses_naming_the_line_that_adds_it() {
+    let world = backlog();
+    world.with_orca(|orca| orca["repos"] = json!([]));
+    let checkout = common::git(&world.clone, &["rev-parse", "--show-toplevel"]);
+    let line = format!("  orca does not know this checkout: orca repo add --path '{checkout}'");
+    for start in starts(&world) {
+        assert_eq!(start.code, 1);
+        let error = start.error();
+        assert_eq!(faults(&error), [line.as_str()], "{error}");
+        assert!(error.contains("nothing was started"), "{error}");
+    }
+    nothing_was_done(&world);
+    assert_eq!(world.claims(), []);
+
+    // the line was run: the next start goes to work
+    world.with_orca(|orca| orca["repos"] = json!([{"id": "repo-1", "path": checkout}]));
+    for start in starts(&world) {
+        start.ok();
+    }
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+}
+
+#[test]
+fn a_start_with_orca_not_running_refuses_naming_the_line_that_starts_it() {
+    let world = backlog();
+    // …whatever it would say of this checkout, were it asked
+    world.with_orca(|orca| {
+        orca["stopped"] = json!(true);
+        orca["repos"] = json!([]);
+    });
+    for start in starts(&world) {
+        assert_eq!(start.code, 1);
+        let error = start.error();
+        assert_eq!(faults(&error), ["  orca is not running: orca open"], "{error}");
+    }
+    assert_eq!(world.orca_calls(), [["status"]; 3], "it was asked nothing more");
+    nothing_was_done(&world);
+    assert_eq!(world.claims(), []);
+}
+
+#[test]
+fn an_orca_fault_is_named_beside_the_others_in_the_one_run() {
+    let world = backlog();
+    world.with_orca(|orca| orca["stopped"] = json!(true));
+    world.logged_out("gh");
+    for start in starts(&world) {
+        let error = start.error();
+        assert_eq!(
+            faults(&error),
+            ["  gh is not logged in: gh auth login", "  orca is not running: orca open"],
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn claude_is_checked_only_as_the_first_word_of_the_worker_launch_command() {
     let world = backlog();
     world.shell_knows("claude", None);
@@ -221,4 +281,19 @@ fn the_readme_gives_the_install_lines_a_refusal_gives() {
     assert!(readme.contains(&format!("`{}`", Tool::Orca.install())));
     assert!(readme.contains(&format!("`{}`", Tool::Claude.install())));
     assert!(!readme.contains("Homebrew does not"), "orca has an install line now");
+    // …and the two an installed orca is refused with.
+    let said = afkconvoy_core::tools::refusal(
+        &[(Tool::Orca, afkconvoy_core::tools::Found::NotRunning)],
+        None,
+        None,
+    );
+    let start = said.unwrap().rsplit(": ").next().unwrap().to_string();
+    let add = afkconvoy_core::tools::add_checkout("\"$PWD\"").replace('\'', "");
+    for line in [start, add] {
+        assert!(readme.contains(&format!("`{line}`")), "the README lost `{line}`");
+        assert!(
+            include_str!("../src/help.txt").contains(&format!("`{line}`")),
+            "the guide lost `{line}`"
+        );
+    }
 }

@@ -1,7 +1,8 @@
 //! Finds the commands a fleet cannot work without (`afkconvoy_core::tools`):
 //! `git`, `gh` and `orca` on this process's `PATH`, which runs them, and
-//! every login in a login shell, which is where a worker runs. It only looks:
-//! nothing is installed and nobody is logged in.
+//! every login in a login shell, which is where a worker runs; and of an orca
+//! that is there, whether it is running and knows this checkout. It only
+//! looks: nothing is installed, started or added and nobody is logged in.
 
 use std::os::unix::fs::PermissionsExt;
 
@@ -10,8 +11,10 @@ use anyhow::{Result, bail};
 
 use crate::git::{REMOTE, Repo};
 use crate::launch::{Proposed, ask_login_shell};
+use crate::orca;
 
-/// Checks that this host has every command a start needs, each logged in.
+/// Checks that this host has every command a start needs, each logged in, and
+/// that orca is running and knows this checkout.
 /// `launch` is the worker launch command, when the start knows it. An error
 /// names every fault at once, each with the line a human runs to fix it.
 pub fn check(launch: Option<&Proposed>) -> Result<()> {
@@ -29,6 +32,7 @@ pub fn check(launch: Option<&Proposed>) -> Result<()> {
         };
         let state = match tool.login_question(host) {
             _ if !present => Found::Missing,
+            None if tool == Tool::Orca => orca::found()?,
             None => Found::Ready,
             Some(question) => {
                 let (succeeded, printed) = ask_login_shell(&question).unwrap_or_default();

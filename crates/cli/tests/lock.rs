@@ -93,7 +93,7 @@ fn running_workers_are_left_alone_and_what_they_declared_is_acted_on_once_the_lo
     assert_eq!(locked["locks"], json!([7]));
     assert_eq!((&locked["held"], &locked["frontier_remaining"]), (&json!(3), &json!(0)));
     assert_eq!(world.state(3), "open", "its verdict waits for the lock to end");
-    let typed = world.orca_calls().iter().any(|call| call[..2].join(" ") == "terminal send");
+    let typed = world.orca_calls().iter().any(|call| common::asked(call) == "terminal send");
     assert!(typed, "the lock issue's worker was handed its brief");
 
     // Still locked: only the lock issue's worker is asked after (silent, with

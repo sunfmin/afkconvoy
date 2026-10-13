@@ -153,7 +153,7 @@ fn worker_leaves(world: &World, checkout: &Path) {
 }
 
 fn calls(world: &World, what: &str) -> Vec<Vec<String>> {
-    world.orca_calls().into_iter().filter(|call| call[..2].join(" ") == what).collect()
+    world.orca_calls().into_iter().filter(|call| common::asked(call) == what).collect()
 }
 
 fn option<'a>(call: &'a [String], name: &str) -> Option<&'a str> {
@@ -239,7 +239,7 @@ fn a_humans_ruling_starts_one_worker_in_the_role_the_team_names_and_the_issue_do
     // Its worker is in a checkout of the base branch that is no issue's…
     let calls = world.orca_calls();
     let of = |what: &str| -> Vec<&Vec<String>> {
-        calls.iter().filter(|call| call[..2].join(" ") == what).collect()
+        calls.iter().filter(|call| common::asked(call) == what).collect()
     };
     let name = named(7, comment);
     let created: Vec<_> = of("worktree create")

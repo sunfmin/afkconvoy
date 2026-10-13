@@ -78,7 +78,8 @@ WHAT IT ANSWERS
                      stale_run     it is claimed by a peer presumed dead: a tick ends it
 
   The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
-  logged out (the error names each, with the line to run; `claude` is among them when
+  logged out, or orca is not running or does not know this checkout (the error names
+  each, with the line to run; `claude` is among them when
   no custom provider is set, as `run` would then start its workers with it); the repo
   fails the startup probe (the remote has no base branch, its protection refuses the
   fleet's push, or the remote takes none of the fleet's refs); the config cannot be

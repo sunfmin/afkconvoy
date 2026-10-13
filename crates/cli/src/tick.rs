@@ -306,7 +306,8 @@ impl Ticked {
                 parts.push(said.to_string());
             }
         }
-        if parts.len() == lead {
+        // A tick whose every step failed had things to do: its failures say so.
+        if parts.len() == lead && self.failures.is_empty() {
             parts.push("nothing to do".to_string());
         }
         parts.push(format!("holding {}/{}", self.pass.held, self.bound));

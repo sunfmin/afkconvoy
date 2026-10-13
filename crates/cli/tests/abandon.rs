@@ -168,7 +168,7 @@ fn a_silent_train_worker_is_nudged_once_and_then_the_train_is_abandoned() {
     assert_eq!(git(&dir, &["status", "--porcelain"]), "");
     assert!(!dir.join("junk.txt").exists());
     assert!(dir.join("target/built.o").exists());
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(!calls.contains(&"worktree rm".to_string()), "{calls:?}");
 
     // the next train: a PR joins again, and a train worker is started in the same worktree
