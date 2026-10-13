@@ -129,15 +129,16 @@ impl Staged {
     }
 
     /// The line the terminal on `worktree` runs to start the worker with
-    /// `launch`, the worker launch command of its harness.
-    pub fn command(&self, launch: &str, worktree: &Worktree) -> String {
+    /// `launch`, the worker launch command of its harness. What this host
+    /// keeps for that harness is put in place first (`kept::keep`).
+    pub fn command(&self, launch: &str, worktree: &Worktree) -> Result<String> {
         let start = Start {
             role_dir: &self.role_copy.dir.display().to_string(),
             worktree: &worktree.path.display().to_string(),
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
             guard: &crate::own_command().fixed(" guard").own(),
-            report: self.harness.report(),
+            kept: &crate::kept::keep(self.harness)?.display().to_string(),
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,
@@ -151,7 +152,7 @@ impl Staged {
                 team_commit: &self.team_copy.commit,
             },
         };
-        self.harness.in_role(launch, &start)
+        Ok(self.harness.in_role(launch, &start))
     }
 
     /// Keeps, for a stage that writes nothing and for a consult, where the

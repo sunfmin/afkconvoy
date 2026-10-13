@@ -36,6 +36,7 @@ pub mod git;
 pub mod guard;
 pub mod intake;
 pub mod judge;
+pub mod kept;
 pub mod landing;
 pub mod launch;
 pub mod lock;

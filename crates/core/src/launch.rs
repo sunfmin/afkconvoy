@@ -449,9 +449,9 @@ mod tests {
 
     #[test]
     fn a_name_that_is_no_harness_and_a_harness_given_twice_are_errors() {
-        for none in ["pi=pi", "Claude-Code=kim", "=kim", "ANTHROPIC_BASE_URL=x claude"] {
+        for none in ["codex=codex", "Claude-Code=kim", "=kim", "ANTHROPIC_BASE_URL=x claude"] {
             let error = given(&[none]).unwrap_err();
-            assert!(error.contains("is no harness; the harnesses are: claude-code"), "{error}");
+            assert!(error.contains("is no harness; the harnesses are: claude-code, pi"), "{error}");
             assert!(error.contains("<harness>=<command>"), "{error}");
         }
         for twice in [

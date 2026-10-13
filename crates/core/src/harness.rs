@@ -13,11 +13,36 @@ use crate::line::Line;
 use crate::role::{HARNESS_ENV, Start};
 
 mod claude_code;
+mod pi;
+
+/// A file of the host user's that a directory the host keeps for a harness
+/// links to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Link {
+    /// Where it is, under the home of the host's user.
+    pub home: &'static str,
+    /// Where the link to it is, under the directory.
+    pub kept: &'static str,
+}
+
+/// What a host keeps for one harness before it starts a worker of it, in a
+/// directory of the fleet's own: what that harness is given that is neither
+/// its role's nor, but for what is linked to, the host user's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kept {
+    /// The files of the host user's it links to. One the user has none of is
+    /// left out.
+    pub links: &'static [Link],
+    /// The files the tool carries, each by where it is under the directory
+    /// and by what it holds.
+    pub files: &'static [(&'static str, &'static str)],
+}
 
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
     ClaudeCode,
+    Pi,
 }
 
 /// A harness is written, wherever the fleet answers with one, as its key.
@@ -36,12 +61,13 @@ impl Harness {
     pub const UNNAMED: Harness = Harness::ClaudeCode;
 
     /// Every harness there is.
-    pub const ALL: [Harness; 1] = [Harness::ClaudeCode];
+    pub const ALL: [Harness; 2] = [Harness::ClaudeCode, Harness::Pi];
 
     /// What a team, a config and a stage record write it as.
     pub const fn key(self) -> &'static str {
         match self {
             Harness::ClaudeCode => claude_code::KEY,
+            Harness::Pi => pi::KEY,
         }
     }
 
@@ -60,6 +86,7 @@ impl Harness {
     pub const fn name(self) -> &'static str {
         match self {
             Harness::ClaudeCode => claude_code::NAME,
+            Harness::Pi => pi::NAME,
         }
     }
 
@@ -67,6 +94,7 @@ impl Harness {
     pub const fn program(self) -> &'static str {
         match self {
             Harness::ClaudeCode => claude_code::PROGRAM,
+            Harness::Pi => pi::PROGRAM,
         }
     }
 
@@ -75,15 +103,18 @@ impl Harness {
     pub const fn stock(self) -> &'static str {
         match self {
             Harness::ClaudeCode => claude_code::STOCK,
+            Harness::Pi => pi::STOCK,
         }
     }
 
-    /// The variable that points it at a custom provider. A worker's shell
-    /// inherits none of the fleet's, so the stock command would start a
-    /// worker on another provider than the fleet's own.
-    pub const fn provider_variable(self) -> &'static str {
+    /// The variable that points it at a custom provider, where one does. A
+    /// worker's shell inherits none of the fleet's, so the stock command
+    /// would start a worker on another provider than the fleet's own. pi
+    /// has none: its providers are read from its user directory.
+    pub const fn provider_variable(self) -> Option<&'static str> {
         match self {
-            Harness::ClaudeCode => claude_code::PROVIDER,
+            Harness::ClaudeCode => Some(claude_code::PROVIDER),
+            Harness::Pi => None,
         }
     }
 
@@ -92,29 +123,35 @@ impl Harness {
     pub const fn flags(self) -> &'static [&'static str] {
         match self {
             Harness::ClaudeCode => &claude_code::FLAGS,
+            Harness::Pi => &pi::FLAGS,
         }
     }
 
-    /// The shell line that tells the worker backend of the state of a worker
-    /// of this harness (`Start::report`). On a host where the backend
-    /// installed nothing for it, nothing is told.
-    pub const fn report(self) -> &'static str {
+    /// What a host keeps for it before it starts a worker of it
+    /// (`Start::kept`). For Claude Code, nothing.
+    pub const fn kept(self) -> Kept {
         match self {
-            Harness::ClaudeCode => claude_code::REPORT,
+            Harness::ClaudeCode => Kept { links: &[], files: &[] },
+            Harness::Pi => pi::KEPT,
         }
     }
 
     /// The line a terminal opened on the issue's worktree runs to start a
     /// worker of this harness in its role with the worker launch command
     /// `command`: change to the role's copy, put the stage's facts and this
-    /// harness in the environment, and start the command with the worktree and the team's
-    /// copy added, the user's configuration left out, the guard and the
-    /// report added, and the stage's model — each in this harness's way.
+    /// harness in the environment, and start the command with what this
+    /// harness does not load from there: the worktree and its rules, the
+    /// user's configuration left out, the guard and the report to the worker
+    /// backend, and the stage's model — each in this harness's way.
     pub fn in_role(self, command: &str, start: &Start) -> String {
         let mut line = Line::new().fixed("cd ").word(start.role_dir).fixed(" && export");
         for variable in self.environment() {
             line = line.fixed(" ").fixed(variable).fixed("=1");
         }
+        let mut line = match self {
+            Harness::ClaudeCode => line,
+            Harness::Pi => pi::environment(line, start),
+        };
         for (name, value) in start.facts.env() {
             line = line.fixed(" ").fixed(name).fixed("=").word(&value);
         }
@@ -122,15 +159,18 @@ impl Harness {
         let line = line.fixed(" && ").launch(command);
         match self {
             Harness::ClaudeCode => claude_code::added(line, start),
+            Harness::Pi => pi::added(line, start),
         }
         .done()
     }
 
     /// The variables this harness is switched by, each set in the
-    /// environment of a worker in its role.
+    /// environment of a worker in its role. What it reads a value from is
+    /// its module's to add.
     const fn environment(self) -> &'static [&'static str] {
         match self {
             Harness::ClaudeCode => &claude_code::ENVIRONMENT,
+            Harness::Pi => &[],
         }
     }
 
@@ -140,6 +180,7 @@ impl Harness {
         let line = Line::new().launch(command);
         match self {
             Harness::ClaudeCode => claude_code::asked_its_flags(line),
+            Harness::Pi => pi::asked_its_flags(line),
         }
         .done()
     }
@@ -176,6 +217,7 @@ impl Harness {
     pub fn call<'de, D: Deserializer<'de>>(self, described: D) -> Result<Call, D::Error> {
         match self {
             Harness::ClaudeCode => claude_code::call(described),
+            Harness::Pi => pi::call(described),
         }
     }
 
@@ -185,6 +227,7 @@ impl Harness {
     pub const fn refused(self) -> u8 {
         match self {
             Harness::ClaudeCode => claude_code::REFUSED,
+            Harness::Pi => pi::REFUSED,
         }
     }
 }

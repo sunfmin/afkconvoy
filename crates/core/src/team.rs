@@ -1752,7 +1752,7 @@ land: { by: dev, do: land }
     #[test]
     fn a_harness_is_named_only_where_a_model_is_and_only_by_its_key() {
         let usual = "{ by: dev, do: land }";
-        for none in ["pi", "Claude Code", "claude"] {
+        for none in ["codex", "Claude Code", "claude"] {
             let (key, problem) = fault(&landed(&format!("    harness: {none}\n"), usual));
             assert_eq!(key, "stages[1].harness");
             assert!(problem.contains(none) && problem.contains("claude-code"), "{problem}");
@@ -1773,7 +1773,7 @@ land: { by: dev, do: land }
         let human =
             two("{ pass: b }", "    by: human\n    harness: claude-code\n    on: { pass: done }\n");
         assert_eq!(fault(&human).0, "stages[1].harness");
-        let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: pi\nmax_open: 3\n";
+        let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: codex\nmax_open: 3\n";
         let faults = patrolled(&[("patrols/a.md", patrol)]).unwrap_err();
         assert_eq!(faults, [("patrols/a.md".to_string(), "harness".to_string())]);
     }
