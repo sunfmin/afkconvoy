@@ -12,7 +12,7 @@ THE FOUR THINGS
                      holds fleet state, so a `run` that is killed loses nothing and
                      several hosts can work one repo. `afkconvoy run --help`,
                      `afkconvoy tick --help`.
-  A worker           A session of one harness — Claude Code, or pi — started for one
+  A worker           A session of one harness — Claude Code, pi or Codex — started for one
                      issue, in a git worktree of that issue's own. It reports through
                      GitHub alone: a PR, a comment. The fleet never waits on one; it
                      reads what the worker left at the next tick.

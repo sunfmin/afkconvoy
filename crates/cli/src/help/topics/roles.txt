@@ -15,7 +15,7 @@ WHAT A ROLE IS
       its rules     what a worker in it always works under, whatever it is asked
       its skills    each one thing it can be asked to perform; a stage's `do` names one
       its limits    what it may never do, in the form its harness enforces: hooks for
-                    Claude Code, extensions for pi
+                    Claude Code and for Codex, extensions for pi
 
   A role names no workflow and no stage. The workflow says in which order the work is
   done and who judges whom; a role serves as many workflows as name it.

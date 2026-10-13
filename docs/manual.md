@@ -31,7 +31,7 @@ The fleet          A fleet instance is one `afkconvoy run` on one host, for one 
                    holds fleet state, so a `run` that is killed loses nothing and
                    several hosts can work one repo. `afkconvoy run --help`,
                    `afkconvoy tick --help`.
-A worker           A session of one harness — Claude Code, or pi — started for one
+A worker           A session of one harness — Claude Code, pi or Codex — started for one
                    issue, in a git worktree of that issue's own. It reports through
                    GitHub alone: a PR, a comment. The fleet never waits on one; it
                    reads what the worker left at the next tick.
@@ -194,13 +194,14 @@ another role's nor is inside one. It holds:
     .claude/settings.json              its limits for claude-code: hooks, and the
                                        permissions it denies
     .pi/extensions/                    its limits for pi: extensions
+    .codex/hooks.json                  its limits for codex: hooks
 
 None of them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in
 the directory of the role beside it. The rules and the skills are written once, and
 every harness works under them: pi reads `CLAUDE.md` from the directory it starts in,
 and the fleet names `.claude/skills/` to it. The limits — what the role may never do —
 are written once for each harness the role runs on, in that harness's own form: pi
-runs no hook of `.claude/settings.json`.
+and Codex run no hook of `.claude/settings.json`.
 
 A worker is given its role's directory alone, and nothing else of its repo: a
 `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
@@ -286,7 +287,7 @@ host. The directory holds three things:
     its rules     what a worker in it always works under, whatever it is asked
     its skills    each one thing it can be asked to perform; a stage's `do` names one
     its limits    what it may never do, in the form its harness enforces: hooks for
-                  Claude Code, extensions for pi
+                  Claude Code and for Codex, extensions for pi
 
 A role names no workflow and no stage. The workflow says in which order the work is
 done and who judges whom; a role serves as many workflows as name it.
@@ -421,10 +422,11 @@ knows nothing of the one before it but what the stage records say, so a stage th
 judges never inherits the reasoning of the one that wrote.
 
 `harness` names the harness the stage's worker is a session of: claude-code, Claude
-Code, or pi. It is a key of a stage a role performs and of a patrol — wherever `model`
-is one — and nowhere else. One that names none takes the default, which is the
-`harness` of the repo's config, and claude-code where that names none. `model` is
-passed to the harness; `afkconvoy check` holds it against the models pi lists.
+Code, pi, or codex, Codex. It is a key of a stage a role performs and of a patrol —
+wherever `model` is one — and nowhere else. One that names none takes the default,
+which is the `harness` of the repo's config, and claude-code where that names none.
+`model` is passed to the harness; `afkconvoy check` holds it against the models pi
+lists.
 
 `writes: false` has the guard refuse the stage's worker a commit and a push
 (`afkconvoy guard --help`): mark every stage that judges so.
@@ -903,7 +905,9 @@ what to do. Then what a start refuses with, and what neither says.
 is not installed
     A command the fleet needs is not on this host. Run `fix`: the line that installs it.
 is not logged in
-    `gh` or `claude` is logged out, as a login shell sees it. Run `fix`.
+    `gh` or `claude` is logged out, as a login shell sees it. Run `fix`. Of `codex`:
+    it has no login in ~/.codex/auth.json, the file a worker is given. One Codex
+    keeps in a keyring is in no file: have Codex keep it in one, and run `fix`.
 holds credentials for no provider
     A stage or a patrol runs on pi, logged in nowhere. Start `pi` and type `/login`.
 is not running
@@ -1084,7 +1088,7 @@ _Avoid_: team mode, managed repo
 
 **Guard**:
 The check made before each thing a worker does, refusing what its role or its stage may not do. It stops a worker that errs, not one that means to get past it.
-_Avoid_: permission (what a harness's own settings deny), sandbox
+_Avoid_: permission (what a harness's own settings deny), sandbox (what a harness may shut a worker's commands in)
 
 #### Workflows
 
@@ -1151,7 +1155,7 @@ _Avoid_: freeze, pause, kill switch
 #### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another. A stage names the one its worker runs, or takes the fleet's default.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third. A stage names the one its worker runs, or takes the fleet's default.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Worker**:

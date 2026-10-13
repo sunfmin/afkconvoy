@@ -17,11 +17,18 @@ pub enum Tool {
     Claude,
     /// pi: needed only when it is what starts a worker.
     Pi,
+    /// Codex: needed only when it is what starts a worker.
+    Codex,
 }
 
 /// What pi lists in place of its models when it holds credentials for no
 /// provider.
 const PI_NO_MODELS: &str = "No models available";
+
+/// What asks whether Codex holds a login a worker can use: the file a worker
+/// is given a link to, and that Codex takes what it holds for a login. A
+/// login Codex keeps in a keyring is in no file, and is no worker's.
+const CODEX_LOGIN: &str = "test -f \"$HOME/.codex/auth.json\" && codex login status";
 
 /// What a start found of one tool: the first thing in its way. A missing one
 /// is never also logged out, and one not running is asked nothing more.
@@ -54,6 +61,7 @@ impl Tool {
             Tool::Orca => "orca",
             Tool::Claude => Harness::ClaudeCode.program(),
             Tool::Pi => Harness::Pi.program(),
+            Tool::Codex => Harness::Codex.program(),
         }
     }
 
@@ -65,13 +73,14 @@ impl Tool {
         let tool = match harness {
             Harness::ClaudeCode => Tool::Claude,
             Harness::Pi => Tool::Pi,
+            Harness::Codex => Tool::Codex,
         };
         (first_word(launch) == Some(tool.name())).then_some(tool)
     }
 
     /// Whether it is a harness: what a worker launch command starts.
     fn starts_workers(self) -> bool {
-        matches!(self, Tool::Claude | Tool::Pi)
+        matches!(self, Tool::Claude | Tool::Pi | Tool::Codex)
     }
 
     /// The line that installs it. Homebrew's own `orca` cask is another
@@ -84,6 +93,7 @@ impl Tool {
             Tool::Orca => "brew install --cask stablyai/orca/orca",
             Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
             Tool::Pi => "curl -fsSL https://pi.dev/install.sh | sh",
+            Tool::Codex => "brew install --cask codex",
         }
     }
 
@@ -99,13 +109,14 @@ impl Tool {
             // holds credentials for: which one a worker uses is its stage's
             // to say.
             Tool::Pi => Some("pi --list-models".to_string()),
+            Tool::Codex => Some(CODEX_LOGIN.to_string()),
         }
     }
 
     /// Whether the answer to `login_question` says it is logged in: `gh` by
     /// its exit status, Claude Code by the `loggedIn` field of the JSON it
-    /// prints — whatever else the shell printed around it — and pi by
-    /// listing a model at all.
+    /// prints — whatever else the shell printed around it — pi by listing a
+    /// model at all, and Codex, as `gh`, by its exit status.
     pub fn logged_in(self, succeeded: bool, printed: &str) -> bool {
         match self {
             Tool::Claude => {
@@ -113,15 +124,21 @@ impl Tool {
                 dense.contains("\"loggedIn\":true")
             }
             Tool::Pi => succeeded && !printed.trim().is_empty() && !printed.contains(PI_NO_MODELS),
-            Tool::Git | Tool::Gh | Tool::Orca => succeeded,
+            Tool::Git | Tool::Gh | Tool::Orca | Tool::Codex => succeeded,
         }
     }
 
     /// What it is said to be when it is not logged in. pi logs in to a
     /// provider, at its own prompt: its words say how, since no line does.
+    /// Codex's say where a worker reads its login: one kept elsewhere is
+    /// none to a worker.
     pub fn logged_out(self) -> &'static str {
         match self {
             Tool::Pi => "holds credentials for no provider (`/login` at its prompt logs it in)",
+            Tool::Codex => {
+                "is not logged in where a worker reads its login, `~/.codex/auth.json` (a login \
+                 kept in a keyring is in no file)"
+            }
             Tool::Git | Tool::Gh | Tool::Orca | Tool::Claude => "is not logged in",
         }
     }
@@ -132,6 +149,7 @@ impl Tool {
         match self {
             Tool::Claude => "claude auth login".to_string(),
             Tool::Pi => "pi".to_string(),
+            Tool::Codex => "codex login".to_string(),
             // github.com is where `gh auth login` logs in unasked.
             _ => format!("gh auth login{}", hostname(host.filter(|host| *host != "github.com"))),
         }
@@ -239,7 +257,7 @@ mod tests {
         assert_eq!(claude("claude --dangerously-skip-permissions"), Some(Tool::Claude));
         assert_eq!(claude("  claude"), Some(Tool::Claude));
         // a wrapper, an alias that ends in claude, another agent, a path
-        for other in ["kim --yolo", "wrap claude", "codex", "/usr/local/bin/claude", "claudex", ""]
+        for other in ["kim --yolo", "wrap claude", "aider", "/usr/local/bin/claude", "claudex", ""]
         {
             assert_eq!(claude(other), None, "{other:?}");
         }
@@ -249,6 +267,11 @@ mod tests {
         }
         // …and only as its own harness's: pi starts no Claude Code worker
         assert_eq!(claude("pi"), None);
+        let codex = |launch| Tool::of(Harness::Codex, launch);
+        assert_eq!(codex("codex --dangerously-bypass-approvals-and-sandbox"), Some(Tool::Codex));
+        for other in ["wrap codex", "codexx", "claude", "pi"] {
+            assert_eq!(codex(other), None, "{other:?}");
+        }
     }
 
     #[test]
@@ -261,6 +284,27 @@ mod tests {
         let none = "No models available. Use /login to log into a provider via OAuth or API key.";
         assert!(!pi.logged_in(true, none));
         assert!(!pi.logged_in(true, " \n"));
+    }
+
+    #[test]
+    fn codex_is_logged_in_when_the_file_a_worker_is_linked_to_holds_a_login() {
+        let codex = Tool::Codex;
+        assert_eq!(
+            codex.login_question(Some("github.com")).unwrap(),
+            "test -f \"$HOME/.codex/auth.json\" && codex login status"
+        );
+        assert!(codex.logged_in(true, "Logged in using ChatGPT"));
+        assert!(!codex.logged_in(false, ""));
+        assert!(!codex.logged_in(false, "Not logged in"));
+        assert_eq!(
+            fault(codex, &Found::LoggedOut, None, &[]).unwrap(),
+            "  codex is not logged in where a worker reads its login, `~/.codex/auth.json` (a \
+             login kept in a keyring is in no file): codex login"
+        );
+        assert_eq!(
+            fault(codex, &Found::Missing, None, &[]).unwrap(),
+            "  codex is not installed: brew install --cask codex"
+        );
     }
 
     #[test]

@@ -85,7 +85,8 @@ mod tests {
         assert_eq!(asking(None), Ok(Harness::ClaudeCode));
         assert_eq!(asking(Some("claude-code")), Ok(Harness::ClaudeCode));
         assert_eq!(asking(Some("pi")), Ok(Harness::Pi));
-        assert!(asking(Some("codex")).unwrap_err().contains("`codex` is no harness"));
+        assert_eq!(asking(Some("codex")), Ok(Harness::Codex));
+        assert!(asking(Some("aider")).unwrap_err().contains("`aider` is no harness"));
     }
 
     #[test]

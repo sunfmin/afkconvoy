@@ -16,7 +16,7 @@ use crate::copies::cache;
 /// now → the directory. Every start does: a file the tool carries is as this
 /// build has it, and a link follows what the host user has today — made when
 /// the file is there, taken away when it no longer is. A harness nothing is
-/// kept for gets no directory.
+/// kept for gets no directory; any other has one, whatever it holds.
 pub fn keep(harness: Harness) -> Result<PathBuf> {
     let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
     keep_under(&cache()?, home.as_deref(), harness)
@@ -29,6 +29,11 @@ pub fn keep_under(cache: &Path, home: Option<&Path>, harness: Harness) -> Result
     let kept = harness.kept();
     let put =
         |what: &str| format!("cannot keep {what} for {} in {}", harness.name(), dir.display());
+    // The directory is there for a harness started under it, whatever of the
+    // host user's is missing today.
+    if !(kept.files.is_empty() && kept.links.is_empty()) {
+        std::fs::create_dir_all(&dir).with_context(|| put("anything"))?;
+    }
     for (name, text) in kept.files {
         carry(&dir.join(name), text).with_context(|| put(name))?;
     }

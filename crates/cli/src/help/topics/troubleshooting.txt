@@ -10,7 +10,9 @@ WHAT `doctor` FINDS — critical: the fleet does not work until it is fixed
   is not installed
       A command the fleet needs is not on this host. Run `fix`: the line that installs it.
   is not logged in
-      `gh` or `claude` is logged out, as a login shell sees it. Run `fix`.
+      `gh` or `claude` is logged out, as a login shell sees it. Run `fix`. Of `codex`:
+      it has no login in ~/.codex/auth.json, the file a worker is given. One Codex
+      keeps in a keyring is in no file: have Codex keep it in one, and run `fix`.
   holds credentials for no provider
       A stage or a patrol runs on pi, logged in nowhere. Start `pi` and type `/login`.
   is not running
