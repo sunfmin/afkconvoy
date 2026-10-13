@@ -67,7 +67,7 @@ fn a_tick_dispatches_into_the_free_slots_lowest_number_first() {
 fn a_tick_never_waits_for_the_workers_it_started() {
     let world = backlog(&[3]);
     tick(&world, "1000");
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls.iter().filter(|call| *call == "terminal wait").count(),
         1,
@@ -88,7 +88,7 @@ fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     assert!(!std::path::Path::new(&worktree).exists(), "the worktree is removed");
     assert_eq!(world.claims(), alpha(&[5, 9]));
     // the worktree went first, the claim last
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(calls.contains(&"worktree rm".to_string()));
     assert_eq!(world.pushes()[0], "refs/convoy/claim/3");
 }
@@ -221,4 +221,7 @@ fn a_failed_step_shows_in_the_line() {
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
     let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1"]);
     assert!(lines[0].contains("FAILED dispatch #3: orca worktree create failed"), "{lines:?}");
+    // every step it had failed: that is not having had nothing to do
+    assert!(!lines[0].contains("nothing to do"), "{lines:?}");
+    assert!(lines[0].starts_with("tick 1: holding 1/2 · frontier 0 · FAILED"), "{lines:?}");
 }

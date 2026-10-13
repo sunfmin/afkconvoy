@@ -116,7 +116,7 @@ fn a_claim_whose_worker_died_is_continued_in_the_worktree_still_here() {
     assert!(!world.pushes().iter().any(|push| push.contains("claim/7")), "nor pushed again");
 
     // the same worktree, with everything in it, and a new worker told to inspect it first
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(!calls.contains(&"worktree create".to_string()), "{calls:?}");
     assert!(!calls.contains(&"worktree rm".to_string()), "{calls:?}");
     assert_eq!(std::fs::read_to_string(dir.join("scratch.txt")).unwrap(), "uncommitted");
@@ -248,7 +248,7 @@ fn recovery_shows_the_tier_and_changes_nothing() {
     assert_eq!(found["worktree"], here);
 
     assert_eq!(world.pushes(), [] as [String; 0]);
-    let orca: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let orca: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(orca, ["repo list", "worktree list"]);
     let wrote = world.gh_calls().iter().any(|call| call.contains(&"--method".to_string()));
     assert!(!wrote);

@@ -39,7 +39,8 @@ WHAT IT ANSWERS
 
   Errors, before the first tick, as {"error": …} with a non-zero exit: the panel's port
   is taken; a command the
-  fleet needs is missing or logged out (the error names each, with the line to run);
+  fleet needs is missing or logged out, or orca is not running or does not know this
+  checkout (the error names each, with the line to run);
   the repo fails the startup probe; the config cannot be read; the worker launch
   command resolves to nothing, or — in a bound repo — does not take the flags that
   start a worker in its role.

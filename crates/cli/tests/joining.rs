@@ -130,7 +130,7 @@ fn a_silent_joining_worker_is_nudged_restarted_once_nudged_and_then_escalated() 
     assert_eq!(world.remote(&["rev-parse", "refs/heads/tester/issue-7-issue-7"]), head);
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(dir.join("scratch.txt")).unwrap(), "uncommitted");
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(!calls.iter().any(|call| call == "worktree rm" || call == "worktree create"));
     let pushes = world.pushes();
     assert!(pushes.iter().all(|push| push.starts_with("refs/convoy/")), "{pushes:?}");
@@ -195,7 +195,7 @@ fn a_worker_whose_terminal_is_gone_is_continued_onto_the_join_and_keeps_its_rest
     assert_eq!(restarts(&world), [] as [String; 0], "a continuation is not the restart");
     assert!(joins_only(&brief(&dir)));
     assert_eq!(open_terminals(&world, &dir).len(), 1);
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(!calls.contains(&"worktree create".to_string()), "{calls:?}");
     assert_eq!(world.claims().len(), 1);
 

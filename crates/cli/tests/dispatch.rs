@@ -83,7 +83,7 @@ fn the_steps_run_in_order() {
     world.watch_pushes(None);
     dispatch(&world, "7").ok();
     assert_eq!(world.pushes(), ["refs/convoy/heartbeat/alpha", "refs/convoy/claim/7"]);
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls,
         [
@@ -133,7 +133,7 @@ fn the_worktree_is_cut_from_what_the_remote_has() {
     let worktree = Path::new(started["worktree"].as_str().unwrap());
     assert_eq!(git(worktree, &["rev-parse", "HEAD"]), landed);
     let calls = world.orca_calls();
-    let create = calls.iter().find(|call| call[..2] == ["worktree", "create"]).unwrap();
+    let create = calls.iter().find(|call| common::asked(call) == "worktree create").unwrap();
     let at = create.iter().position(|arg| arg == "--base-branch").unwrap();
     assert_eq!(create[at + 1], landed, "handed over as a sha, not a branch name");
 }
@@ -151,7 +151,7 @@ fn a_worktree_orca_cut_behind_the_tip_is_brought_up_to_it() {
 
 #[test]
 fn a_failure_of_orca_is_an_error_with_the_claim_still_held() {
-    for knob in ["create_fails", "never_ready", "send_refused", "down"] {
+    for knob in ["create_fails", "never_ready", "send_refused", "stopped"] {
         let world = ready_world();
         world.with_orca(|orca| {
             orca[knob] = if knob == "create_fails" { json!([7]) } else { json!(true) }
