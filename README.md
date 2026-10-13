@@ -16,6 +16,7 @@ Homebrew installs `git` and `gh` with it. The rest is yours to set up:
 - **GitHub** — `gh auth login`, as a user who may push to the repo.
 - **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`.
 - **pi**, when it is what starts some of your workers — `curl -fsSL https://pi.dev/install.sh | sh`, then `pi`, and `/login` at its prompt.
+- **Codex**, when it is what starts some of your workers — `brew install --cask codex`, then `codex login`.
 
 `run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing, logged out, not running or not given the checkout. afkconvoy installs nothing, starts and adds nothing, and logs nobody in.
 
