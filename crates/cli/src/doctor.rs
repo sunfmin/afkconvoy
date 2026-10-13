@@ -938,7 +938,7 @@ fn read_held(
         };
         let under = worktree.as_ref().and_then(|worktree| worktree.under().ok().flatten());
         let green = worktree.as_ref().and_then(|worktree| {
-            let tree = head_tree(&Repo { dir: worktree.path.clone() }).ok()?;
+            let tree = head_tree(&Repo::new(worktree.path.clone())).ok()?;
             recorded(&fleet.repo, &tree, &gate, fleet.now).ok()?
         });
         let at = stood.iter().find(|issue| issue.number == mine.number);

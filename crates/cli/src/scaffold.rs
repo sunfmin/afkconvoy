@@ -311,7 +311,7 @@ pub fn scaffold(
 /// creates `create.repo` on GitHub from it: `gh` adds it as the remote and
 /// pushes.
 fn create(message: &str, dir: &Path, create: &Create) -> Result<()> {
-    let repo = Repo { dir: dir.to_path_buf() };
+    let repo = Repo::new(dir.to_path_buf());
     repo.git(&["init", "--quiet"])?;
     repo.git(&["add", "--all"])?;
     repo.git(&["commit", "--quiet", "-m", message])?;
