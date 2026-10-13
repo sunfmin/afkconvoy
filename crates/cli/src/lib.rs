@@ -66,11 +66,15 @@ use fleet::Fleet;
 use git::Repo;
 use tick::Pacing;
 
+/// What this binary was built from, as `--version` says it: stamped by
+/// `build.rs`.
+pub const VERSION: &str = env!("AFKCONVOY_VERSION");
+
 /// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
 /// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
 /// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
 #[derive(Parser)]
-#[command(name = "afkconvoy", version, about, long_about = with_files(include_str!("help.txt")))]
+#[command(name = "afkconvoy", version = VERSION, about, long_about = with_files(include_str!("help.txt")))]
 struct Cli {
     /// The time to act at, in epoch seconds [default: the clock's]
     #[arg(long, global = true, hide = true)]
