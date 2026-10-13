@@ -11,6 +11,9 @@ RUSTUP_TOOLCHAIN=nightly-2026-09-25
 export PATH RUSTUP_TOOLCHAIN
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
+# The manual is the help topics as one page, and is never edited: a topic
+# changed and the page not written again fails here, with the command to run.
+cargo run --quiet -p afkconvoy --example manual -- --check
 # A test of the CLI waits on the processes it starts, and cargo runs one test
 # program at a time: nextest runs them side by side. Without it the gate
 # checks the same and takes about three times as long.

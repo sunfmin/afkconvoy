@@ -594,27 +594,20 @@ fn scaffold_shows_a_team_and_its_roles_in_one_repo_first() {
     assert!(said.contains("\"team_line\": \"reviewer: ./roles/reviewer\""));
 }
 
+/// The README is what afkconvoy is, how it is installed, where it is
+/// explained and how it is developed: the help is the one place that explains.
 #[test]
-fn the_readme_says_how_a_repo_is_bound_and_how_a_role_gets_its_skills() {
-    let bind = README.split("\n## Bind a repo to a team\n").nth(1).expect("the section");
-    let bind = bind.split("\n## ").next().unwrap();
-    for said in [
-        "team: owner/repo",
-        "`patrols`",
-        "`intake_limit`",
-        "flow label",
-        "`flow:<name>`",
-        "afkconvoy scaffold role",
-        "afkconvoy scaffold team",
-        "afkconvoy check",
-        "### What a human is asked, and when",
-        "afkconvoy rule",
-        "`by: human`",
-        "npx skills add",
-        "wraps no installer",
-    ] {
-        assert!(bind.contains(said), "the README's section on binding lost {said:?}");
+fn the_readme_explains_no_concept_and_sends_its_reader_to_the_help() {
+    let heads: Vec<_> = README.lines().filter_map(|line| line.strip_prefix("## ")).collect();
+    assert_eq!(heads, ["Install", "Run `afkconvoy --help`", "Develop"]);
+    let (users, _) = README.split_once("\n## Develop\n").unwrap();
+    let said = users.to_lowercase();
+    for concept in ["role", "team", "guard", "workflow", "stage", "patrol", "verdict", "flow label"]
+    {
+        assert!(!said.contains(concept), "the README explains {concept:?}: a topic does");
     }
+    assert!(users.contains("`afkconvoy help <topic>`") && users.contains("(docs/manual.md)"));
+    assert!(!README.contains("manual.zh"));
 }
 
 #[test]
