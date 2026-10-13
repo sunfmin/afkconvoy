@@ -12,7 +12,7 @@ pub const BASE: &str = "main";
 
 /// The config every world starts with, committed on the base branch.
 pub const CONFIG: &str =
-    "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nconcurrency: 2\n```\n";
+    "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\nconcurrency: 2\n```\n";
 
 pub struct World {
     _root: TempDir,
@@ -141,8 +141,12 @@ impl World {
     /// Sets the repo's gate command: committed on the base branch and pushed,
     /// as a repo's config is.
     pub fn set_gate(&self, command: &str) {
-        let config =
-            format!("```yaml\nbase_branch: main\ngate_command: {command:?}\nconcurrency: 2\n```\n");
+        self.set_gate_config(&format!("gate_command: {command:?}\ngate_seconds: 600"));
+    }
+
+    /// Commits a config of the gate's keys as `yaml` has them, and pushes it.
+    pub fn set_gate_config(&self, yaml: &str) {
+        let config = format!("```yaml\nbase_branch: main\n{yaml}\nconcurrency: 2\n```\n");
         std::fs::write(self.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
         git(&self.clone, &["commit", "-q", "-am", "set the gate"]);
         git(&self.clone, &["push", "-q", "origin", BASE]);

@@ -44,6 +44,9 @@ The landing train  The one line of merge commits ahead of the base branch that
                    finished PRs join, one merge commit each. One worker gates its tip
                    and pushes it to the base branch as a fast-forward: what lands is
                    a tree the gate passed. `afkconvoy land --help`.
+The gate limit     How long the gate may run: `gate_seconds` in the repo's config,
+                   3600 where it sets none. A run that reaches it is ended and is
+                   red, a worker's and the train's alike. `afkconvoy config --help`.
 ````
 
 ### ONE ISSUE, IN AN UNBOUND REPO
@@ -199,10 +202,10 @@ another role's nor is inside one. It holds:
 None of them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in
 the directory of the role beside it. The rules and the skills are written once, and
 every harness works under them: pi reads `CLAUDE.md` from the directory it starts in,
-Codex does once the fleet tells it to, and the fleet names `.claude/skills/` to pi.
-The limits — what the role may never do — are written once for each harness the role
-runs on, in that harness's own form: pi and Codex run no hook of
-`.claude/settings.json`.
+Codex does once the fleet tells it to, the fleet names `.claude/skills/` to pi and links
+them where Codex looks (`afkconvoy run --help`). The limits — what the role may never do
+— are written once for each harness the role runs on, in that harness's own form: pi and
+Codex run no hook of `.claude/settings.json`.
 
 A worker is given its role's directory alone, and nothing else of its repo: a
 `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
@@ -977,12 +980,16 @@ has waited for a human for
     Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
 ````
 
-### WHAT `doctor` FINDS — info: nothing to fix
+### WHAT `doctor` FINDS — info: nothing is held up
 
 ````text
 moved since the stage
     A role or the team was pushed after a stage started: that worker goes by the
     older one, the next stage by the head. `afkconvoy doctor --help` says what moved is.
+declares no gate limit
+    The repo's config sets no `gate_seconds`: the gate may run 3600 seconds before
+    anything ends it. Set it to what the gate should take at most: `fix` names the
+    file and the key, and `afkconvoy config --help` says what the key is.
 ````
 
 ### WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start nothing
@@ -1254,7 +1261,7 @@ The repo's build-and-test command. It is the only machine verification a change 
 _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and the startup probe make), local CI
 
 **Recorded gate run**:
-The evidence that the gate passed on one committed tree, made by the tool that saw the exit code and kept where every host can read it.
+The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
 _Avoid_: gate cache, CI status
 
 **Sync**:

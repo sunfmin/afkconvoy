@@ -199,6 +199,19 @@ impl Harness {
         }
     }
 
+    /// The directories of the one it starts in where it finds skills, when
+    /// those are not where a role's are (`team::SKILLS`). The fleet's copy
+    /// of a role that holds none of them links the first to the role's
+    /// skills; a role that holds one is left as it is, and a worker is shown
+    /// the skills there. Empty: it finds a role's where they are, or is
+    /// named them.
+    pub const fn skills(self) -> &'static [&'static str] {
+        match self {
+            Harness::ClaudeCode | Harness::Pi => &[],
+            Harness::Codex => &codex::SKILLS,
+        }
+    }
+
     /// The shell line whose answer says which models it knows on a host,
     /// asked of the worker launch command `command` with what the host keeps
     /// for it in `kept` (`models` reads it). `None`: it has no way to say.

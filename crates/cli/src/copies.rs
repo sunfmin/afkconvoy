@@ -4,11 +4,16 @@
 //! the checkout a human edits is another. A repo is fetched once per commit,
 //! and each directory is taken out of that fetch on its own: a worker is
 //! given its role's directory and nothing else of its repo (docs/adr/0014).
+//! What a harness needs in the directory it starts in, and a role does not
+//! hold for it, is in the copy that harness's workers start in: the fleet's,
+//! and never the role's repo's (docs/adr/0013).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{RepoDir, RepoName};
+use afkconvoy_core::harness::Harness;
+use afkconvoy_core::team::SKILLS;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::gh::GitHub;
@@ -71,11 +76,18 @@ impl Copies {
     }
 
     /// The copy of the role's directory `dir` alone, taken out of `fetched`,
-    /// the copy of its repo: what a worker in the role starts in. Nothing
-    /// above the directory in its repo is in it or above it, and no
-    /// neighbour's. A role that is a whole repo is `fetched` itself.
-    pub fn role(&self, fetched: &Copy, dir: &RepoDir) -> Result<Copy> {
-        self.take(fetched, dir, "role", &[])
+    /// the copy of its repo: what a worker of `harness` in the role starts
+    /// in. Nothing above the directory in its repo is in it or above it, and
+    /// no neighbour's. Where `harness` finds skills in directories of its
+    /// own and the role holds none of them, the copy is that harness's, and
+    /// holds a link from the first of them to the role's skills
+    /// (`skills_link`): made once, with the copy. Otherwise it is every
+    /// harness's, and a role that is a whole repo is `fetched` itself.
+    pub fn role(&self, fetched: &Copy, dir: &RepoDir, harness: Harness) -> Result<Copy> {
+        match skills_link(&fetched.dir.join(dir.path()), harness) {
+            Some(link) => self.take(fetched, dir, &format!("role+{}", harness.key()), &[], &[link]),
+            None => self.take(fetched, dir, "role", &[], &[]),
+        }
     }
 
     /// The copy of the team's directory `dir`, taken out of `fetched`, the
@@ -84,17 +96,25 @@ impl Copies {
     /// itself. It is kept as a team with its rules: a copy an older afkconvoy
     /// kept, which left those out, is not taken for one.
     pub fn team(&self, fetched: &Copy, dir: &RepoDir, without: &[PathBuf]) -> Result<Copy> {
-        self.take(fetched, dir, "team+rules", without)
+        self.take(fetched, dir, "team+rules", without, &[])
     }
 
     /// The copy of `dir` out of `fetched`, leaving out each of `without`, a
-    /// path from `dir`. It is kept beside `fetched`, named for the commit,
-    /// for `kind` — what the directory is copied as, which says what is left
-    /// out — and for its path: one already here is used as it is.
-    fn take(&self, fetched: &Copy, dir: &RepoDir, kind: &str, without: &[PathBuf]) -> Result<Copy> {
+    /// path from `dir`, and with each of `links` added. It is kept beside
+    /// `fetched`, named for the commit, for `kind` — what the directory is
+    /// copied as, which says what is left out and what is added — and for
+    /// its path: one already here is used as it is.
+    fn take(
+        &self,
+        fetched: &Copy,
+        dir: &RepoDir,
+        kind: &str,
+        without: &[PathBuf],
+        links: &[Link],
+    ) -> Result<Copy> {
         let from = fetched.dir.join(dir.path());
         let there = |path: &PathBuf| from.join(path).symlink_metadata().is_ok();
-        if dir.path().is_empty() && !without.iter().any(there) {
+        if dir.path().is_empty() && !without.iter().any(there) && links.is_empty() {
             return Ok(fetched.clone());
         }
         let repo = self.root.join(dir.repo.as_str());
@@ -108,6 +128,7 @@ impl Copies {
         let scratch = repo.join(format!("taking-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         let taken = copy_dir(&from, &scratch, Path::new(""), without)
+            .and_then(|()| links.iter().try_for_each(|link| link.add(&scratch)))
             .and_then(|()| keep_whole(&scratch, &kept.dir))
             .with_context(|| format!("{dir} cannot be copied"));
         let _ = std::fs::remove_dir_all(&scratch);
@@ -148,6 +169,46 @@ impl Copies {
         let _ = std::fs::remove_dir_all(&scratch);
         copied
     }
+}
+
+/// A link the fleet adds to a copy of a directory.
+struct Link {
+    /// Where it is: a path from the directory.
+    at: PathBuf,
+    /// What it points at: a path from where it is, to something of the
+    /// directory, so that it holds wherever the copy is kept.
+    to: PathBuf,
+}
+
+impl Link {
+    /// Adds it to the copy being made at `copy`.
+    fn add(&self, copy: &Path) -> Result<()> {
+        let at = copy.join(&self.at);
+        let made = at.parent().map_or(Ok(()), std::fs::create_dir_all);
+        made.and_then(|()| std::os::unix::fs::symlink(&self.to, &at))
+            .with_context(|| format!("cannot link {}", at.display()))
+    }
+}
+
+/// The directories where `harness` finds skills by itself (`Harness::skills`)
+/// that the role's directory `root` holds: what a worker of it is shown in
+/// place of the role's skills, and the fleet leaves as it is.
+pub fn own_skills(root: &Path, harness: Harness) -> Vec<&'static str> {
+    let held = |dir: &&str| root.join(dir).symlink_metadata().is_ok();
+    harness.skills().iter().copied().filter(held).collect()
+}
+
+/// The link that has `harness` find the skills of the role's directory
+/// `root`: from the first directory it finds skills in to the role's own.
+/// `None` where it finds a role's skills without one, where the role holds
+/// such a directory itself (`own_skills`), and where it holds no skills.
+fn skills_link(root: &Path, harness: Harness) -> Option<Link> {
+    let at = Path::new(harness.skills().first()?);
+    if !own_skills(root, harness).is_empty() || !root.join(SKILLS).is_dir() {
+        return None;
+    }
+    let up = at.components().skip(1).map(|_| "..");
+    Some(Link { at: at.to_path_buf(), to: up.collect::<PathBuf>().join(SKILLS) })
 }
 
 /// Whether `dir` holds the same in `this` copy of its repo as in `that` one,

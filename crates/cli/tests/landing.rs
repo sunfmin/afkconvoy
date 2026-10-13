@@ -84,6 +84,81 @@ fn a_train_of_one_pr_lands_on_its_workers_recorded_run() {
     assert_eq!(base(&world), commit);
 }
 
+/// The gate's records on the remote → (ref, commit, subject), one a line.
+fn gate_records(world: &World) -> String {
+    world.remote(&[
+        "for-each-ref",
+        "--format=%(refname) %(objectname) %(subject)",
+        "refs/convoy/gate",
+    ])
+}
+
+#[test]
+fn a_landing_answered_by_a_run_on_record_says_that_runs_time_and_writes_no_record() {
+    let world = world();
+    let seven = world.worker(7, "seven.txt", "7\n");
+    let gate = world.afk_in(&seven, &["gate", "--train", "--host", "workers-host"]).ok();
+    assert_eq!(gate["recorded"], true, "{gate}");
+    join(&world, &seven, 7);
+    let train = train(&world);
+    let before = gate_records(&world);
+    assert!(
+        before.ends_with(&format!(" seconds={} host=workers-host", gate["seconds"])),
+        "{before}"
+    );
+
+    let args = ["land", "--train", "--merged-timeout", "5", "--host", "trains-host"];
+    let answer = world.afk_in(&train, &args).ok();
+    assert_eq!(answer["outcome"], "landed", "{answer}");
+    assert_eq!(answer["gate"]["source"], "recorded");
+    assert_eq!(answer["gate"]["seconds"], gate["seconds"]);
+    assert_eq!(answer["gate"]["host"], "workers-host", "the run's host, not the landing's");
+    assert_eq!(gate_records(&world), before, "no new record is written");
+}
+
+#[test]
+fn a_landing_gated_by_a_run_made_now_puts_its_time_on_record() {
+    let world = world();
+    let seven = world.worker(7, "seven.txt", "7\n");
+    join(&world, &seven, 7);
+    let train = train(&world);
+
+    let args = ["land", "--train", "--merged-timeout", "5", "--host", "trains-host"];
+    let answer = world.afk_in(&train, &args).ok();
+    assert_eq!(answer["outcome"], "landed", "{answer}");
+    assert_eq!(answer["gate"]["source"], "run");
+    assert_eq!(answer["gate"]["host"], "trains-host");
+    let seconds = answer["gate"]["seconds"].as_u64().expect("the answer says the seconds");
+    let records = gate_records(&world);
+    assert!(records.ends_with(&format!(" seconds={seconds} host=trains-host")), "{records}");
+}
+
+#[test]
+fn a_record_with_no_time_answers_a_landing_and_is_not_rewritten() {
+    let world = world();
+    let seven = world.worker(7, "seven.txt", "7\n");
+    assert_eq!(world.afk_in(&seven, &["gate", "--train", "--host", "mini"]).ok()["recorded"], true);
+    join(&world, &seven, 7);
+    let train = train(&world);
+    // the record as it was written before records kept a time
+    let written = gate_records(&world);
+    let (name, rest) = written.split_once(' ').unwrap();
+    let subject = rest.split_once(' ').unwrap().1.split_once(" seconds=").unwrap().0;
+    let tree = world.remote(&["rev-parse", &format!("{name}^{{tree}}")]);
+    let old = git(&world.clone, &["commit-tree", &tree, "-m", subject]);
+    git(&world.clone, &["push", "-q", "--force", "origin", &format!("{old}:{name}")]);
+    let before = gate_records(&world);
+    assert_eq!(before, format!("{name} {old} {subject}"));
+
+    let (answer, log) = land_train(&world, &train);
+    assert_eq!(answer["outcome"], "landed", "{answer}");
+    assert!(!log.contains("gate-ran"), "it is the green run it was: {log}");
+    let gate = answer["gate"].as_object().unwrap();
+    assert_eq!(gate["source"], "recorded");
+    assert!(!gate.contains_key("seconds") && !gate.contains_key("host"), "{answer}");
+    assert_eq!(gate_records(&world), before, "it is not rewritten");
+}
+
 #[test]
 fn a_train_of_several_prs_is_gated_once_and_landed_whole() {
     let world = world();
@@ -153,6 +228,24 @@ fn a_red_gate_lands_nothing_and_the_train_is_fixed_with_one_more_commit() {
     // the red commit is on the base branch now: the train is not under repair
     let ten = world.worker(10, "ten.txt", "10\n");
     assert_eq!(world.afk_in(&ten, &["gate", "--train"]).ok()["merged"], fix.as_str());
+}
+
+#[test]
+fn a_train_whose_gate_reaches_the_configs_gate_limit_is_red_and_says_the_limit() {
+    let world = World::new();
+    world.set_gate_config("gate_command: sleep 30\ngate_seconds: 1");
+    let seven = world.worker(7, "seven.txt", "7\n");
+    join(&world, &seven, 7);
+    let started = std::time::Instant::now();
+    let (answer, _) = land_train(&world, &train(&world));
+    assert!(started.elapsed().as_secs() < 15, "the run was killed");
+    assert_eq!(answer["outcome"], "gate_red", "{answer}");
+    assert_eq!(
+        (&answer["gate"]["timed_out"], &answer["gate"]["exit_code"]),
+        (&json!(true), &json!(124))
+    );
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.contains("reached the gate limit of 1s"), "{detail}");
 }
 
 #[test]

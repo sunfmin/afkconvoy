@@ -4,6 +4,7 @@ use afkconvoy::gate::recorded;
 use afkconvoy::git::Repo;
 use afkconvoy_core::gate::{GateCommand, RECORD_TTL, Tree};
 use common::{World, git};
+use serde_json::json;
 
 /// A world whose gate is red exactly while the file `red` exists beside it.
 fn gated() -> (World, String) {
@@ -21,13 +22,15 @@ fn records(world: &World) -> Vec<String> {
 #[test]
 fn a_green_run_on_a_committed_tree_is_put_on_record() {
     let (world, command) = gated();
-    let gate = world.afk(&["gate", "--now", "5000"]);
+    let gate = world.afk(&["gate", "--now", "5000", "--host", "mini"]);
     assert!(gate.stderr.contains("gate-ran"), "the log streams to the terminal: {}", gate.stderr);
     let answer = gate.ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["recorded"], true);
     assert_eq!(answer["command"], command.as_str());
     assert_eq!(answer["head"], git(&world.clone, &["rev-parse", "HEAD"]));
+    let seconds = answer["seconds"].as_u64().expect("the answer says how long the run took");
+    assert!(seconds < 60, "{answer}");
 
     let tree = git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
     let refs = records(&world);
@@ -36,7 +39,22 @@ fn a_green_run_on_a_committed_tree_is_put_on_record() {
     // the record is a commit of the tree it is about
     assert_eq!(world.remote(&["rev-parse", &format!("{}^{{tree}}", refs[0])]), tree);
     let subject = world.remote(&["log", "-1", "--format=%s", &refs[0]]);
-    assert!(subject.starts_with("convoy:gate tree=") && subject.ends_with(" at=5000"), "{subject}");
+    assert!(subject.starts_with("convoy:gate tree="), "{subject}");
+    // …and says when the run finished, how long it took and on which host
+    assert!(subject.ends_with(&format!(" at=5000 seconds={seconds} host=mini")), "{subject}");
+}
+
+#[test]
+fn a_run_is_timed_from_the_start_of_the_gate_command_to_its_end() {
+    let world = World::new();
+    world.set_gate("sleep 2");
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["recorded"], true, "{answer}");
+    assert!((2..30).contains(&answer["seconds"].as_u64().unwrap()), "{answer}");
+    let subject = world.remote(&["log", "-1", "--format=%s", &records(&world)[0]]);
+    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let said = format!(" seconds={} host={host}", answer["seconds"]);
+    assert!(subject.ends_with(&said), "the host is what the fleet calls this one: {subject}");
 }
 
 #[test]
@@ -50,19 +68,31 @@ fn a_red_run_records_nothing_and_takes_the_trees_record_away() {
     assert_eq!(answer["status"], "red");
     assert_eq!(answer["exit_code"], 1);
     assert_eq!(answer["recorded"], false);
+    assert!(answer["seconds"].is_u64(), "the run is timed, though no record keeps it: {answer}");
     assert_eq!(records(&world), [] as [String; 0], "the latest run of a tree is the one believed");
 }
 
 #[test]
-fn a_run_that_times_out_is_red() {
+fn a_run_that_reaches_the_configs_gate_limit_is_ended_and_red() {
     let world = World::new();
-    world.set_gate("sleep 30");
+    world.set_gate_config("gate_command: sleep 30\ngate_seconds: 1");
     let started = std::time::Instant::now();
-    let answer = world.afk(&["gate", "--gate-timeout", "1"]).ok();
+    let answer = world.afk(&["gate"]).ok();
     assert!(started.elapsed().as_secs() < 10, "the run was killed");
     assert_eq!(answer["status"], "red");
-    assert_eq!(answer["timed_out"], true);
+    assert_eq!((&answer["timed_out"], &answer["exit_code"]), (&json!(true), &json!(124)));
     assert_eq!(answer["recorded"], false);
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.contains("reached the gate limit of 1s"), "{detail}");
+}
+
+#[test]
+fn a_red_run_that_ended_by_itself_says_nothing_of_the_gate_limit() {
+    let (world, _) = gated();
+    std::fs::write(world.root.join("red"), "").unwrap();
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!((&answer["status"], &answer["timed_out"]), (&json!("red"), &json!(false)));
+    assert!(!answer["detail"].as_str().unwrap().contains("gate limit"), "{answer}");
 }
 
 #[test]

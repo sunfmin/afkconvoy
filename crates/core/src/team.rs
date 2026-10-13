@@ -172,6 +172,9 @@ pub struct RoleDir {
     /// Each file in it that a harness would load in place of its rules
     /// (`Harness::before_the_rules`), with that harness.
     pub in_place: Vec<(Harness, String)>,
+    /// The skills it holds where a harness finds them by itself
+    /// (`Harness::skills`), for each harness it holds such a directory for.
+    pub own_skills: Vec<(Harness, Vec<String>)>,
 }
 
 /// Everything read of a team, and nothing yet checked.
@@ -319,6 +322,9 @@ impl Team {
         let mut held = Held::default();
         for run in self.runs() {
             let harness = run.named.unwrap_or(default);
+            if let Some(note) = run.unfound(harness) {
+                held.notes.push(note);
+            }
             if let Some(problem) = run.unlimited(harness) {
                 held.faults.push(Fault { file: run.file.clone(), key: run.harness_key, problem });
             }
@@ -364,6 +370,7 @@ passed as written, and is its harness's own name for it",
                 model_key: MODEL_KEY.to_string(),
                 by: format!("the patrol `{}`", patrol.name),
                 role: self.role_of(&patrol.work).clone(),
+                skill: patrol.work.skill.clone(),
                 named: patrol.harness,
                 model: patrol.model.clone(),
             });
@@ -375,6 +382,7 @@ passed as written, and is its harness's own name for it",
                 model_key: String::new(),
                 by: "the proposal of a precedent".to_string(),
                 role: self.role_of(&precedents.work).clone(),
+                skill: precedents.work.skill.clone(),
                 named: None,
                 model: None,
             });
@@ -395,6 +403,10 @@ pub struct Held {
     /// models, that another harness lists under that very name: the model,
     /// what names it, and that harness.
     pub elsewhere: Vec<(String, String, Harness)>,
+    /// What a human is told and is no fault: each worker whose role holds
+    /// skills where its harness finds them by itself, the one it is asked to
+    /// perform not among them.
+    pub notes: Vec<String>,
 }
 
 /// One worker a team would have started: what calls for it and where that is
@@ -408,6 +420,8 @@ struct Run {
     /// What calls for it, in words.
     by: String,
     role: Role,
+    /// The skill it is asked to perform.
+    skill: String,
     /// The harness it names. `None`: it takes the default.
     named: Option<Harness>,
     model: Option<String>,
@@ -444,6 +458,36 @@ that harness's own form, or run this on a harness the role holds limits for",
     }
 }
 
+impl Run {
+    /// Why a worker of it on `harness` would not be shown the skill it is
+    /// asked to perform: its role holds a directory `harness` finds skills
+    /// in by itself, which the fleet leaves as it is, and the skill is not
+    /// there. `None` of a role that holds no such directory: the fleet has
+    /// that harness find the role's skills.
+    fn unfound(&self, harness: Harness) -> Option<String> {
+        let role = &self.role;
+        let (_, own) = role.own_skills.iter().find(|(holds, _)| *holds == harness)?;
+        if own.contains(&self.skill) {
+            return None;
+        }
+        let dirs: Vec<String> = harness.skills().iter().map(|dir| format!("`{dir}/`")).collect();
+        Some(format!(
+            "{} runs on `{}`, and its role `{}` holds skills of its own for {} ({}), `{}` not \
+among them: {} finds skills there and not in `{SKILLS}/`, and the fleet leaves what a role holds \
+there as it is, so a worker would not be shown the skill it is asked to perform. Hold the skill \
+there too, or hold neither directory: the fleet then has {} find every skill of `{SKILLS}/`",
+            self.by,
+            harness.key(),
+            role.name,
+            harness.name(),
+            dirs.join(" or "),
+            self.skill,
+            harness.name(),
+            harness.name()
+        ))
+    }
+}
+
 /// How many of the models a harness lists are said before the rest are
 /// counted.
 const SAID: usize = 8;
@@ -473,6 +517,7 @@ fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
                 model_key: under(&at, MODEL_KEY),
                 by: by.clone(),
                 role: team.role_of(work).clone(),
+                skill: work.skill.clone(),
                 named: stage.harness,
                 model: stage.model.clone(),
             });
@@ -484,6 +529,7 @@ fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
                 model_key: String::new(),
                 by: format!("the consult of {by}"),
                 role: team.role_of(consult).clone(),
+                skill: consult.skill.clone(),
                 named: None,
                 model: None,
             });
@@ -496,6 +542,7 @@ fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
             model_key: String::new(),
             by: format!("the landing of the workflow `{}`", workflow.name),
             role: team.role_of(land).clone(),
+            skill: land.skill.clone(),
             named: None,
             model: None,
         });
@@ -531,6 +578,10 @@ pub struct Role {
     /// The harnesses it holds limits for: the ones it is right for, where it
     /// holds any (`Team::held`).
     pub limits: Vec<Harness>,
+    /// The skills it holds where a harness finds them by itself, for each
+    /// harness it holds such a directory for (`RoleDir::own_skills`): what a
+    /// worker on that harness is shown, in place of the role's skills.
+    pub own_skills: Vec<(Harness, Vec<String>)>,
     /// Why its repo was not read, when the read got no answer
     /// (`Unread::Unreached`): it then has no commit, and every skill a
     /// workflow or a patrol names of it is taken as it is written. No worker
@@ -1226,6 +1277,7 @@ of its own is added to them, and never stands in their place",
                 skills: read.skills.clone(),
                 above: read.above.clone(),
                 limits: read.limits.clone(),
+                own_skills: read.own_skills.clone(),
                 unreached: None,
             }),
             Some((_, Err(Unread::Refused(why)))) => {
@@ -1238,6 +1290,7 @@ of its own is added to them, and never stands in their place",
                 skills: vec![],
                 above: vec![],
                 limits: vec![],
+                own_skills: vec![],
                 unreached: Some(why.clone()),
             }),
             None => report.fault(&key, format!("{dir} was not read")),
@@ -2149,6 +2202,47 @@ land: { by: dev, do: land }
         ));
         assert!(faults[1].problem.starts_with("the landing of the workflow `feature` runs on"));
         assert!(faults[2].problem.starts_with("the proposal of a precedent runs on `pi`"));
+    }
+
+    #[test]
+    fn a_skill_a_role_does_not_hold_where_its_harness_finds_its_own_is_noted_and_no_fault() {
+        use Harness::{ClaudeCode, Codex};
+        let workflow = landed("    harness: codex\n", "{ by: reviewer, do: rule }");
+        let patrol = "by: dev\ndo: plan\nevery: 6h\nmax_open: 3\n";
+        let notes = |own: &[(Harness, &[&str])], default: Harness| {
+            let mut sources = sources(TEAM, &[("workflows/feature.md", &workflow)]);
+            sources.patrols = vec![file("patrols/sweep.md", patrol)];
+            let own = own.iter().map(|(harness, skills)| {
+                (*harness, skills.iter().map(|skill| skill.to_string()).collect())
+            });
+            sources.roles[DEV].1.as_mut().unwrap().own_skills = own.collect();
+            let held = load(&sources).unwrap().held(default, &[]);
+            assert_eq!(held.faults, []);
+            held.notes
+        };
+        // A role that holds no such directory: the fleet has Codex find its
+        // skills, and there is nothing to say.
+        for default in Harness::ALL {
+            assert_eq!(notes(&[], default), [] as [String; 0]);
+            assert_eq!(notes(&[(Codex, &["plan", "implement"])], default), [] as [String; 0]);
+        }
+        // One that holds one without the skill: every worker of it on Codex
+        // is noted, and none on another harness.
+        let noted = notes(&[(Codex, &["implement"])], ClaudeCode);
+        assert_eq!(noted.len(), 1, "{noted:?}");
+        assert!(
+            noted[0].starts_with(
+                "the stage `b` of the workflow `feature` runs on `codex`, and its role `dev` \
+                 holds skills of its own for Codex (`.agents/skills/` or `.codex/skills/`), \
+                 `plan` not among them: "
+            ),
+            "{}",
+            noted[0]
+        );
+        let noted = notes(&[(Codex, &[])], Codex);
+        assert_eq!(noted.len(), 3, "{noted:?}");
+        assert!(noted[0].starts_with("the stage `a` of the workflow `feature` runs on"));
+        assert!(noted[2].starts_with("the patrol `sweep` runs on `codex`"), "{}", noted[2]);
     }
 
     #[test]

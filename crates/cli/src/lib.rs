@@ -230,12 +230,12 @@ enum Command {
     /// Run the gate in this worktree and put a green run on record (a worker's command)
     #[command(after_long_help = include_str!("help/gate.txt"))]
     Gate {
-        /// Seconds the gate command is given before it is killed, and red
-        #[arg(long, default_value_t = 3600)]
-        gate_timeout: u64,
         /// First merge in what the PR lands behind: the landing train, or the base branch
         #[arg(long)]
         train: bool,
+        /// The host a green run is recorded as made on [default: this machine's name]
+        #[arg(long)]
+        host: Option<String>,
     },
     /// Put this worktree's PR on the landing train (a worker's command), or land the train
     #[command(after_long_help = include_str!("help/land.txt"))]
@@ -249,12 +249,13 @@ enum Command {
         /// Gate the landing train and land it on the base branch (the train worker's command)
         #[arg(long)]
         train: bool,
-        /// Seconds the gate command is given before it is killed, and red
-        #[arg(long, default_value_t = 3600)]
-        gate_timeout: u64,
         /// Seconds GitHub is given to show a landed PR as merged
         #[arg(long, default_value_t = 60)]
         merged_timeout: u64,
+        /// The host a green run made by `--train` is recorded as made on [default: this
+        /// machine's name]
+        #[arg(long)]
+        host: Option<String>,
     },
     /// Declare the verdict that ends a stage, with the text it produced (a worker's
     /// command, and a human's for a stage nobody holds)
@@ -820,23 +821,22 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let agent = agent.start(now, true)?;
             Ok(tick::tick(&who.me(now), &agent, &stop::Stop::never())?.0.json())
         }
-        Command::Gate { gate_timeout, train } => {
+        Command::Gate { train, host } => {
             let repo = Repo::here()?;
             let config = config::load(&repo.dir.join(config::FILE))?;
-            gate::gate(&repo, &config, train, now, Duration::from_secs(gate_timeout))
+            let host = host.unwrap_or_else(this_host);
+            gate::gate(&repo, &config, train, &host, now)
         }
-        Command::Land { number, issue, gate_timeout, merged_timeout, .. } => {
+        Command::Land { number, issue, merged_timeout, host, .. } => {
             let repo = Repo::here()?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
             match issue.or(number) {
                 Some(issue) => train::land(&repo, &config, &gh, issue, now),
                 None => {
-                    let limits = landing::Limits {
-                        gate: Duration::from_secs(gate_timeout),
-                        merged: Duration::from_secs(merged_timeout),
-                    };
-                    landing::land_train(&repo, &config, &gh, now, &limits)
+                    let merged = Duration::from_secs(merged_timeout);
+                    let host = host.unwrap_or_else(this_host);
+                    landing::land_train(&repo, &config, &gh, &host, now, merged)
                 }
             }
         }

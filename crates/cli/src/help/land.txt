@@ -23,7 +23,10 @@ WHAT IT READS AND WRITES
 
   `--train` puts this worktree on the train's tip, merges the base branch in when it
   moved, pushes that as the train's tip, and gates it — by the run on record for that
-  tree, else by a run made now. Green: it pushes the commit to the base branch as a
+  tree, which it leaves as it is, else by a run made now, for no longer than the gate
+  limit: the config's `gate_seconds` (default 3600), as for `afkconvoy gate`. That run
+  is put on record with the seconds it took and the host (`--host`, else this
+  machine's name). Green: it pushes the commit to the base branch as a
   fast-forward, closes the issue of every PR that landed, and deletes those PRs'
   branches once GitHub shows them merged. Red: it comments the failure on every PR on
   the train, and lands nothing.
@@ -45,12 +48,17 @@ WHAT IT ANSWERS
 
     idle          nothing is on the train
     conflict      with "files" and "worktree": resolve, commit the merge, run it again
-    gate_red      with "commit", "prs" and "gate" {status, exit_code, timed_out, command,
-                  excerpt}: fix the train with one more commit here, run it again
+    gate_red      with "commit", "prs" and "gate" {status, exit_code, timed_out, seconds,
+                  command, excerpt}: fix the train with one more commit here, run it again.
+                  A run ended at the gate limit has exit_code 124 and timed_out
+                  true, and "detail" says so, and what the limit is
     target_moved  the base branch moved while the gate ran; nothing landed — run it again
-    landed        with "commit", "prs", "gate" {status, source, command, at}, "landed"
-                  [{issue, pr, commit}], "unmerged" (PRs GitHub still shows open) and
-                  "more": true when the train grew meanwhile
+    landed        with "commit", "prs", "gate" {status, source, command, at, seconds,
+                  host}, "landed" [{issue, pr, commit}], "unmerged" (PRs GitHub still
+                  shows open) and "more": true when the train grew meanwhile. "seconds"
+                  and "host" are how long the gate command ran and where, as the run
+                  that answered says — the one on record ("source": "recorded") or the
+                  one made now ("run"); a run recorded with no time has neither
 
   Errors: no open PR closes the issue; tracked files have uncommitted changes; the
   remote has no such branch; the train moved under the command too many times ("run this
@@ -63,4 +71,5 @@ WHAT TRIPS YOU UP
     Run in a checkout of your own it takes that checkout's branch with it.
   - Joined is not landed. `--issue` ends at `joined`; the train worker gates and lands.
   - `--issue` runs no gate. It joins whatever is committed: run `gate --train` first.
-  - `--gate-timeout` and `--merged-timeout` are read by `--train` only.
+  - `--merged-timeout` and `--host` are read by `--train` only. How long the gate may
+    run is no flag: it is `gate_seconds` in the config (`afkconvoy config --help`).

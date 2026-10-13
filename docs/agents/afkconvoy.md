@@ -13,7 +13,8 @@ escalate_label: ready-for-human   # swapped in for ready_label when the fleet gi
 ```
 
 `base_branch` and `gate_command` have no default. The rest default to the values
-shown, and so does `lock_label`, left out here: `fleet-lock`.
+shown, and so do the two left out here: `lock_label`, `fleet-lock`, and `gate_seconds`,
+the gate limit, 3600.
 
 This repo names no `team`, so it is unbound. A bound repo's four keys more —
 `team`, `patrols`, `intake_limit`, `harness` — are in `afkconvoy config --help`.

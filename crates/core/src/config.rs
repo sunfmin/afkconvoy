@@ -9,6 +9,9 @@ use crate::harness::Harness;
 /// The escalate label where nothing names one: a repo's, and a team's.
 pub const ESCALATE_LABEL: &str = "ready-for-human";
 
+/// The gate limit of a repo that declares none, in seconds: an hour.
+pub const GATE_SECONDS: u64 = 3600;
+
 /// The keys as a repo wrote them: any may be left out, none is yet checked.
 /// A key that is not one of these is refused where the file is read.
 #[derive(Debug, Default, Deserialize)]
@@ -16,6 +19,7 @@ pub const ESCALATE_LABEL: &str = "ready-for-human";
 pub struct Settings {
     pub base_branch: Option<String>,
     pub gate_command: Option<String>,
+    pub gate_seconds: Option<u64>,
     pub ready_label: Option<String>,
     pub epic_labels: Option<Vec<String>>,
     pub concurrency: Option<usize>,
@@ -44,11 +48,18 @@ pub struct Bound {
 
 /// A config a fleet can run on: every key present, defaults filled.
 #[derive(Debug, PartialEq, Eq, Serialize)]
-#[refined_by(concurrency: int)]
+#[refined_by(concurrency: int, gate_seconds: int)]
 #[invariant(concurrency > 0)]
+#[invariant(gate_seconds > 0)]
 pub struct Config {
     pub base_branch: String,
     pub gate_command: String,
+    /// The gate limit, in seconds: the repo's, or `GATE_SECONDS`.
+    #[field(u64[gate_seconds])]
+    gate_seconds: u64,
+    /// Whether the repo declared its gate limit: `gate_seconds` is in its config.
+    #[serde(skip)]
+    pub gate_limit_declared: bool,
     pub ready_label: String,
     pub epic_labels: Vec<String>,
     #[field(usize[concurrency])]
@@ -70,6 +81,8 @@ pub enum ConfigError {
     /// A label key set to the empty string.
     Empty(&'static str),
     ZeroConcurrency,
+    /// `gate_seconds` is 0: a gate given no time at all.
+    ZeroGateSeconds,
     /// `escalate_label` is `ready_label`: escalating would leave the issue dispatchable.
     EscalatesToReady,
     /// `team` is not `owner/repo` or `owner/repo/path`.
@@ -86,6 +99,9 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Required(key) => write!(f, "{key}: required, and it has no default"),
             ConfigError::Empty(key) => write!(f, "{key}: must not be empty"),
             ConfigError::ZeroConcurrency => write!(f, "concurrency: must be at least 1"),
+            ConfigError::ZeroGateSeconds => {
+                write!(f, "gate_seconds: must be a whole number of seconds, at least 1")
+            }
             ConfigError::EscalatesToReady => {
                 write!(f, "escalate_label: must differ from ready_label")
             }
@@ -142,35 +158,52 @@ impl Config {
             None if settings.harness.is_some() => return Err(ConfigError::NeedsTeam("harness")),
             None => None,
         };
+        let concurrency = settings.concurrency.unwrap_or(3);
+        if concurrency == 0 {
+            return Err(ConfigError::ZeroConcurrency);
+        }
         match checked(
             base_branch,
             gate_command,
+            settings.gate_seconds.unwrap_or(GATE_SECONDS),
+            settings.gate_seconds.is_some(),
             ready_label,
             epic_labels,
-            settings.concurrency.unwrap_or(3),
+            concurrency,
             escalate_label,
             lock_label,
             bound,
         ) {
             Some(config) => Ok(config),
-            None => Err(ConfigError::ZeroConcurrency),
+            None => Err(ConfigError::ZeroGateSeconds),
         }
     }
 
     /// How many claims the fleet holds at once. Never zero.
-    #[spec(fn(&Config[@c]) -> usize[c])]
+    #[spec(fn(&Config[@c]) -> usize[c.concurrency])]
     pub fn concurrency(&self) -> usize {
         self.concurrency
     }
+
+    /// The gate limit, in seconds: how long a run of the gate command is
+    /// given before it is ended, and red. Never zero.
+    #[spec(fn(&Config[@c]) -> u64[c.gate_seconds])]
+    pub fn gate_seconds(&self) -> u64 {
+        self.gate_seconds
+    }
 }
 
-/// The one place a `Config` is built: a zero concurrency never gets in.
-#[spec(fn(String, String, String, Vec<String>, concurrency: usize, String, String, Option<Bound>)
-    -> Option<Config[concurrency]>)]
+/// The one place a `Config` is built: a zero concurrency never gets in, nor
+/// a gate limit of no seconds.
+#[spec(fn(String, String, gate_seconds: u64, bool, String, Vec<String>,
+        concurrency: usize{concurrency > 0}, String, String, Option<Bound>)
+    -> Option<Config[concurrency, gate_seconds]>)]
 #[allow(clippy::too_many_arguments)]
 fn checked(
     base_branch: String,
     gate_command: String,
+    gate_seconds: u64,
+    gate_limit_declared: bool,
     ready_label: String,
     epic_labels: Vec<String>,
     concurrency: usize,
@@ -178,12 +211,14 @@ fn checked(
     lock_label: String,
     bound: Option<Bound>,
 ) -> Option<Config> {
-    if concurrency == 0 {
+    if gate_seconds == 0 {
         return None;
     }
     Some(Config {
         base_branch,
         gate_command,
+        gate_seconds,
+        gate_limit_declared,
         ready_label,
         epic_labels,
         concurrency,
@@ -356,8 +391,19 @@ mod tests {
         assert_eq!(config.escalate_label, "ready-for-human");
         assert_eq!(config.epic_labels, ["epic", "prd"]);
         assert_eq!(config.concurrency(), 3);
+        assert_eq!((config.gate_seconds(), config.gate_limit_declared), (3600, false));
         assert_eq!(config.lock_label, "fleet-lock", "a fleet lock needs no team");
         assert_eq!(config.bound, None, "a repo that names no team is unbound");
+    }
+
+    #[test]
+    fn a_repo_declares_its_gate_limit() {
+        let declared = Settings { gate_seconds: Some(600), ..minimal() };
+        let config = Config::new(declared).unwrap();
+        assert_eq!((config.gate_seconds(), config.gate_limit_declared), (600, true));
+        // Declaring the default is declaring it.
+        let hour = Config::new(Settings { gate_seconds: Some(3600), ..minimal() }).unwrap();
+        assert!(hour.gate_limit_declared);
     }
 
     #[test]
@@ -481,6 +527,8 @@ mod tests {
     fn a_config_nothing_could_run_on_is_refused() {
         let zero = Settings { concurrency: Some(0), ..minimal() };
         assert_eq!(Config::new(zero), Err(ConfigError::ZeroConcurrency));
+        let no_time = Settings { gate_seconds: Some(0), ..minimal() };
+        assert_eq!(Config::new(no_time), Err(ConfigError::ZeroGateSeconds));
         let same = Settings { escalate_label: Some("ready-for-agent".into()), ..minimal() };
         assert_eq!(Config::new(same), Err(ConfigError::EscalatesToReady));
         let empty = Settings { ready_label: Some(String::new()), ..minimal() };
