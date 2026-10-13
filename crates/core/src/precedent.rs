@@ -548,6 +548,13 @@ mod tests {
             entry()
         );
         assert_eq!(refused(&created, LINK, PRECEDENTS), None);
+        // A team in a subdirectory of its repo keeps its precedents there,
+        // and the file at the repo's root is not its own.
+        let under = appended.replace("precedents.md", "teams/night/precedents.md");
+        assert_eq!(refused(&under, LINK, "teams/night/precedents.md"), None);
+        let why = refused(&appended, LINK, "teams/night/precedents.md").expect("refused");
+        assert!(why.starts_with("it changes `precedents.md`: a proposal changes"), "{why}");
+        assert!(why.contains("`teams/night/precedents.md` and nothing else"), "{why}");
     }
 
     #[test]

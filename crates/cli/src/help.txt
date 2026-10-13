@@ -95,10 +95,12 @@ RULES TO KNOW BEFORE YOU START
 
 DESIGNING A TEAM, for a bound repo
 
-  A repo whose config names a team — `team: owner/repo` — is a bound repo. An issue of
+  A repo whose config names a team — `team: owner/repo`, or `team: owner/repo/path` for
+  a team in a subdirectory — is a bound repo. An issue of
   it that carries a flow label is walked through that workflow's stages, each performed
-  by a new worker started in the stage's role. A team and a role are each a repo of text
-  files, and designing one is editing them. Nothing else holds any of it.
+  by a new worker started in the stage's role. A team and a role are each a directory of
+  text files — a whole repo, or a subdirectory of one, so that one repo can hold a team
+  and every role it names — and designing one is editing them. Nothing else holds any of it.
 
 {files}
 

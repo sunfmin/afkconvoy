@@ -2191,10 +2191,12 @@ stages:
         assert!(role_dirs(&file(TEAM_FILE, "roles: {"), None).is_empty());
     }
 
+    type Pairs = Vec<(String, String)>;
+
     /// A team at `at` whose file is `team`, with every directory it names
     /// read as holding the skill `plan` → its roles as (name, directory), or
     /// its faults as (key, problem).
-    fn placed(at: &str, team: &str) -> Result<Vec<(String, String)>, Vec<(String, String)>> {
+    fn placed(at: &str, team: &str) -> Result<Pairs, Pairs> {
         let at = dir(at);
         let team = file(TEAM_FILE, team);
         let read = |dir: RepoDir| {

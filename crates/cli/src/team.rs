@@ -323,10 +323,16 @@ fn read(
     Ok((Sources { at, team, workflows, patrols, roles }, kept))
 }
 
+/// Where `dir` is in `copy`, the fleet's copy of its repo: the copy itself
+/// for a whole repo, spelled as the copy is.
+fn within(copy: &Copy, dir: &RepoDir) -> PathBuf {
+    if dir.path().is_empty() { copy.dir.clone() } else { copy.dir.join(dir.path()) }
+}
+
 /// What the core is told of the role's directory `dir`, read out of `copy`,
 /// the fleet's copy of its repo.
 fn role_dir(copy: &Copy, dir: &RepoDir) -> Result<RoleDir, Unread> {
-    let root = copy.dir.join(dir.path());
+    let root = within(copy, dir);
     if !root.is_dir() {
         return Err(Unread::Refused(format!(
             "it is no directory at the head of the default branch of {} ({})",
@@ -404,7 +410,7 @@ fn leaving_links(root: &Path, under: &Path, links: &mut Vec<String>) -> Result<(
 fn read_kept(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<(Copy, Sources, RoleReads)> {
     let copy =
         copies.of(gh, &team.repo).with_context(|| format!("the team {team} cannot be read"))?;
-    let dir = copy.dir.join(team.path());
+    let dir = within(&copy, team);
     if !dir.is_dir() {
         bail!(
             "the team {team} cannot be read: {} is no directory at the head of the default \
@@ -463,7 +469,7 @@ impl Kept {
 /// and one whose own repo GitHub could not be reached for with `Unreached`.
 pub fn keep(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<Kept> {
     let (copy, sources, roles) = read_kept(gh, copies, team)?;
-    let copy = Copy { dir: copy.dir.join(team.path()), commit: copy.commit };
+    let copy = Copy { dir: within(&copy, team), commit: copy.commit };
     match team::load(&sources) {
         Ok(team) => Ok(Kept { team, copy, roles }),
         Err(faults) => Err(Refused { team: team.to_string(), faults }.into()),

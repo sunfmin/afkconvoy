@@ -614,3 +614,30 @@ fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
         assert!(readme.contains(&format!("`{name}`")), "the README does not name {name}");
     }
 }
+
+/// A role that is a subdirectory of its repo loads, and no worker is started
+/// in it: the copy the fleet keeps is of the whole repo, and a worker started
+/// there would be given more than its role (docs/adr/0014).
+#[test]
+fn a_stage_whose_role_is_a_subdirectory_is_refused_and_nothing_is_claimed() {
+    let world = bound();
+    let team = "```yaml\nroles:\n  dev: ./roles/dev\n  reviewer: acme/reviewer\n```\n";
+    let repo = world.root.join("github/acme/team");
+    write(&repo, "roles/dev/.claude/skills/implement/SKILL.md", "build\n");
+    commit(&repo, "team.md", team);
+    assert_eq!(world.afk(&["check"]).ok()["roles"][0]["path"], "roles/dev");
+    world.issue(7, &["flow:feature"]);
+    let error = dispatch(&world, 7).error();
+    assert_eq!(
+        error,
+        "the role `dev` is a subdirectory of its repo (acme/team/roles/dev), and the fleet on \
+         this host cannot start a role in a subdirectory yet: this afkconvoy copies a role's \
+         whole repo, not its directory alone (sunfmin/afkconvoy#174). Until one that does is \
+         installed, only a role that is a whole repo can be started"
+    );
+    assert_eq!(world.claims(), []);
+    assert!(world.worktrees().is_empty() && world.open_terminals().is_empty());
+    // A stage of a role that is a whole repo starts as ever.
+    world.issue(8, &["flow:audit"]);
+    assert_eq!(dispatch(&world, 8).ok()["started"], true);
+}

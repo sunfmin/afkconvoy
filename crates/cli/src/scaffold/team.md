@@ -1,7 +1,8 @@
 # The team
 
-The roles this team names, each by the short name its workflows call it. A role is a repo; its
-rules, skills and hooks are in that repo, and nothing of them is here.
+The roles this team names, each by the short name its workflows call it. A role is a directory — a
+whole repo, or a subdirectory of one; its rules, skills and hooks are in it, and nothing of them is
+here.
 
 ```yaml
 roles:

@@ -136,7 +136,10 @@ fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
     assert!(guide.contains("until it exits 0"));
     assert!(guide.contains("skills installer") && guide.contains("wraps no installer"));
     // `check` lays the same files out, from the same text.
-    let files = guide.split("\n  A team is a repo that holds:").nth(1).unwrap();
+    let files = guide
+        .split("\n  A team is a directory — a whole repo, or a subdirectory of one — that holds:")
+        .nth(1)
+        .unwrap();
     let files = files.split("\n\n  The loop").next().unwrap();
     assert!(asked(&["check", "--help"]).contains(files));
     assert!(!long.contains("{files}"));
@@ -365,4 +368,22 @@ fn the_help_of_tick_and_of_run_say_what_run_does_about_the_hop_between_two_stage
     let run = asked(&["run", "--help"]);
     assert!(run.contains("· next now\n"), "{run}");
     assert!(run.contains(&format!("At most {most} ticks run back to back")), "{run}");
+}
+
+/// A role is a directory, named in one of three ways: the guide and `check`
+/// lay them out, and neither says any more that a role is a repo.
+#[test]
+fn the_help_lays_out_the_three_ways_to_name_a_role_and_calls_no_role_a_repo() {
+    for text in [help("--help"), asked(&["check", "--help"])] {
+        for form in ["      owner/repo  ", "      owner/repo/path  ", "      ./path  "] {
+            assert!(text.contains(form), "the help lost the form {form:?}");
+        }
+        assert!(text.contains(afkconvoy_core::team::ROLE_FORMS));
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        for gone in ["a role is a repo", "a team is a repo", "each a repo"] {
+            assert!(!flat.contains(gone), "the help still says {gone:?}");
+        }
+    }
+    let config = asked(&["config", "--help"]);
+    assert!(config.contains("owner/repo/path"));
 }

@@ -69,8 +69,9 @@ WHAT IT ANSWERS
 
   Errors: the issue is closed; in a bound repo, the issue carries no flow label, more
   than one, or one that names no workflow of the team, it is at no stage a worker
-  performs (the error says where it is), it passed to `land` and no open PR closes it, or the team does not load (the error carries
-  its `faults`) — none of which claims the issue; the instance's claim on it is one a
+  performs (the error says where it is), it passed to `land` and no open PR closes it, the team does not load (the error carries
+  its `faults`), or the role the worker would start in is a subdirectory of its repo —
+  none of which claims the issue; the instance's claim on it is one a
   stage already declared under; the worker launch
   command resolves to nothing; orca
   fails, or the worker is not ready in time. After a failed step the claim is still
@@ -85,5 +86,9 @@ WHAT TRIPS YOU UP
   - It checks that the issue is open, and nothing else of the frontier: an issue without
     the ready label, with an open blocker, or past the concurrency is started all the
     same.
+  - A role named as owner/repo/path or ./path loads, and `check` passes on it, but no
+    worker is started in one: the fleet's copy is of the role's whole repo, and a worker
+    started there would be given more than its role. The error says so, and nothing is
+    claimed. Only a role that is a whole repo is started.
   - It does not ask after a worker already there. On a claim whose worker is at work it
     starts another in the same worktree.
