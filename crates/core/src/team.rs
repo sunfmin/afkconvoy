@@ -5,7 +5,7 @@
 
 use flux_rs::attrs::*;
 
-use crate::config::{ESCALATE_LABEL, RepoName};
+use crate::config::{ESCALATE_LABEL, NotADir, RepoDir};
 use crate::harness::Harness;
 
 /// The team file, at the top of a team's repo.
@@ -149,33 +149,43 @@ pub struct File {
     pub yaml: Result<Node, String>,
 }
 
-/// What was read of a role's repo.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoleRepo {
-    /// The commit it was read at.
+/// What was read of a role's directory.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RoleDir {
+    /// The commit its repo was read at.
     pub commit: String,
     /// The entries of its skills directory.
     pub skills: Vec<String>,
+    /// Each symlink in it that leaves it, as `<link> -> <target>`.
+    pub links: Vec<String>,
+    /// Each `CLAUDE.md` and `.claude/` a directory above it in its repo
+    /// holds, as a path from the repo's root.
+    pub above: Vec<String>,
 }
 
 /// Everything read of a team, and nothing yet checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sources {
+    /// The team's directory: where a role named `./path` is, and what no
+    /// role's directory may be or contain. `None` for files nothing says the
+    /// repo of.
+    pub at: Option<RepoDir>,
     pub team: File,
     /// Every entry of the workflows directory.
     pub workflows: Vec<File>,
     /// Every entry of the patrols directory.
     pub patrols: Vec<File>,
-    /// Each repo `role_repos` names, with what was read of it or why it was
-    /// not read.
-    pub repos: Vec<(String, Result<RoleRepo, Unread>)>,
+    /// Each directory `role_dirs` names, with what was read of it or why it
+    /// was not read.
+    pub roles: Vec<(RepoDir, Result<RoleDir, Unread>)>,
 }
 
-/// Why a role's repo was not read.
+/// Why a role's directory was not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unread {
-    /// The read was answered, and the answer is no: there is no such repo, or
-    /// none a role can be read from. A fault of the team.
+    /// The read was answered, and the answer is no: there is no such repo,
+    /// none a role can be read from, or no such directory at its head. A
+    /// fault of the team.
     Refused(String),
     /// The read got no answer: nothing is known of the repo, and nothing is
     /// wrong with the team.
@@ -293,15 +303,20 @@ fn call(called: &mut Vec<(Harness, Vec<String>)>, harness: Harness, by: String) 
     }
 }
 
-/// One role of a team, as its repo stood when the team was loaded.
+/// One role of a team, as its directory stood when the team was loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Role {
     /// What the team's workflows call it.
     pub name: String,
-    pub repo: RepoName,
+    /// Its directory: a whole repo, or a subdirectory of one.
+    pub dir: RepoDir,
     /// The head of the repo's default branch when it was read.
     pub commit: String,
     pub skills: Vec<String>,
+    /// Each `CLAUDE.md` and `.claude/` above it in its repo
+    /// (`RoleDir::above`): what a session opened by hand in it loads and a
+    /// worker, given the directory alone, does not.
+    pub above: Vec<String>,
     /// Why its repo was not read, when the read got no answer
     /// (`Unread::Unreached`): it then has no commit, and every skill a
     /// workflow or a patrol names of it is taken as it is written. No worker
@@ -582,22 +597,86 @@ fn among_roles(work: Work, roles: usize) -> Option<Work> {
     if work.of == roles { Some(work) } else { None }
 }
 
-/// The repos a team file names as its roles: what to read before `load`. It
-/// reports nothing — `load` says what is wrong with the file.
-pub fn role_repos(team: &File) -> Vec<RepoName> {
-    let mut repos: Vec<RepoName> = vec![];
-    let Ok(Node::Map(entries)) = &team.yaml else { return repos };
+/// The directories the file of a team at `at` names as its roles, each
+/// once: what to read before `load`. It reports nothing — `load` says what
+/// is wrong with the file.
+pub fn role_dirs(team: &File, at: Option<&RepoDir>) -> Vec<RepoDir> {
+    let mut dirs: Vec<RepoDir> = vec![];
+    let Ok(Node::Map(entries)) = &team.yaml else { return dirs };
     if let Some(Node::Map(roles)) = get(entries, "roles") {
-        for (_, repo) in roles {
-            if let Node::Text(repo) = repo
-                && let Some(repo) = RepoName::read(repo)
-                && !repos.contains(&repo)
+        for (_, named) in roles {
+            if let Node::Text(named) = named
+                && let Ok(dir) = role_dir(named, at)
+                && !dirs.contains(&dir)
             {
-                repos.push(repo);
+                dirs.push(dir);
             }
         }
     }
-    repos
+    dirs
+}
+
+/// The three ways a team's file names a role.
+pub const ROLE_FORMS: &str = "owner/repo, owner/repo/path or ./path";
+
+/// The directory `named` names as a role of a team at `at` — `owner/repo`,
+/// `owner/repo/path`, or `./path`, a path from the root of the team's own
+/// repo (docs/adr/0014) — or why it names none.
+fn role_dir(named: &str, at: Option<&RepoDir>) -> Result<RepoDir, String> {
+    let read = match named.strip_prefix("./").or(if named == "." { Some("") } else { None }) {
+        Some(path) => match at {
+            Some(at) => RepoDir::at(at.repo.clone(), path),
+            None => {
+                return Err(format!(
+                    "`{named}` is a path in the team's repo, and nothing says which repo these \
+files are of"
+                ));
+            }
+        },
+        None if named.starts_with('/') => Err(NotADir::Absolute),
+        None => RepoDir::read(named),
+    };
+    read.map_err(|why| match why {
+        NotADir::NoRepo => format!("must be a role's directory, as {ROLE_FORMS}"),
+        NotADir::Absolute => format!(
+            "`{named}` is an absolute path: a role is named as {ROLE_FORMS}, its path written \
+from the root of its repo"
+        ),
+        NotADir::Leaves => format!(
+            "`{named}` has a `..`: a role's path is written from the root of its repo, and \
+names nothing outside it"
+        ),
+    })
+}
+
+/// Why a role at `dir` cannot stand beside the team at `at`: its directory
+/// is the team's or contains it, or is among the team's own files. A role
+/// under the team's directory is the usual layout, and no fault.
+fn beside_team(dir: &RepoDir, at: &RepoDir) -> Option<String> {
+    if dir == at {
+        return Some(format!(
+            "its directory is the team's own ({at}): a role is a directory of its own"
+        ));
+    }
+    if dir.holds(at) {
+        return Some(format!("its directory {dir} contains the team's ({at})"));
+    }
+    let own = [WORKFLOWS, PATROLS].into_iter().find(|own| at.join(own).holds(dir))?;
+    Some(format!("its directory {dir} is inside the team's {own}/"))
+}
+
+/// Why a role at `dir` cannot stand beside the role `other` at `its`: one
+/// contains the other. Two names for one directory are no fault.
+fn beside_role(dir: &RepoDir, other: &str, its: &RepoDir) -> Option<String> {
+    if dir == its {
+        None
+    } else if dir.holds(its) {
+        Some(format!("its directory {dir} contains that of the role `{other}` ({its})"))
+    } else if its.holds(dir) {
+        Some(format!("its directory {dir} is inside that of the role `{other}` ({its})"))
+    } else {
+        None
+    }
 }
 
 /// The name of the workflow the file at `path` defines; `None` when the path
@@ -827,6 +906,8 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
     let mut report = Report { file: &sources.team.path, faults };
     let mut names: Vec<&str> = vec![];
     let mut loaded: Vec<Role> = vec![];
+    // Every role whose directory stands apart from the team's and the others', read or not.
+    let mut placed: Vec<(&str, RepoDir)> = vec![];
     let mut escalate_label = ESCALATE_LABEL.to_string();
     let node = match &sources.team.yaml {
         Ok(node) => node,
@@ -845,12 +926,13 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
         None => return (escalate_label, Roles { known: true, names, loaded }),
         Some(Node::Map(named)) => named,
         Some(other) => {
-            let problem = format!("must be a map of role names to repos, not {}", kind(other));
+            let problem =
+                format!("must be a map of role names to directories, not {}", kind(other));
             report.fault("roles", problem);
             return (escalate_label, Roles { known: true, names, loaded });
         }
     };
-    for (name, repo) in named {
+    for (name, named) in named {
         let key = under("roles", name);
         if names.contains(&name.as_str()) {
             report.fault(&key, "written twice".to_string());
@@ -862,38 +944,66 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
                 .fault(&key, format!("a role cannot be named `{HUMAN}`: `by: {HUMAN}` is a human"));
             continue;
         }
-        let repo = match repo {
-            Node::Text(repo) => match RepoName::read(repo) {
-                Some(repo) => repo,
-                None => {
-                    report.fault(&key, "must be a repo, as owner/repo".to_string());
+        let dir = match named {
+            Node::Text(named) => match role_dir(named, sources.at.as_ref()) {
+                Ok(dir) => dir,
+                Err(problem) => {
+                    report.fault(&key, problem);
                     continue;
                 }
             },
             other => {
-                report.fault(&key, format!("must be a repo, as owner/repo, not {}", kind(other)));
+                let problem =
+                    format!("must be a role's directory, as {ROLE_FORMS}, not {}", kind(other));
+                report.fault(&key, problem);
                 continue;
             }
         };
-        match sources.repos.iter().find(|(read, _)| read == repo.as_str()) {
+        let mut apart = true;
+        if let Some(problem) = sources.at.as_ref().and_then(|at| beside_team(&dir, at)) {
+            report.fault(&key, problem);
+            apart = false;
+        }
+        for (other, its) in &placed {
+            if let Some(problem) = beside_role(&dir, other, its) {
+                report.fault(&key, problem);
+                apart = false;
+            }
+        }
+        // One at fault is held against no other: its fault is said once.
+        if !apart {
+            continue;
+        }
+        placed.push((name.as_str(), dir.clone()));
+        match sources.roles.iter().find(|(read, _)| *read == dir) {
+            Some((_, Ok(read))) if !read.links.is_empty() => {
+                let problem = format!(
+                    "{dir} holds a symlink that leaves it: {}. A worker is given the role's \
+directory alone, where such a link points at nothing",
+                    read.links.join(", ")
+                );
+                report.fault(&key, problem)
+            }
             Some((_, Ok(read))) => loaded.push(Role {
                 name: name.clone(),
-                repo: repo.clone(),
+                dir,
                 commit: read.commit.clone(),
                 skills: read.skills.clone(),
+                above: read.above.clone(),
                 unreached: None,
             }),
             Some((_, Err(Unread::Refused(why)))) => {
-                report.fault(&key, format!("{repo} cannot be read: {why}"))
+                report.fault(&key, format!("{dir} cannot be read: {why}"))
             }
             Some((_, Err(Unread::Unreached(why)))) => loaded.push(Role {
                 name: name.clone(),
-                repo: repo.clone(),
+                dir,
                 commit: String::new(),
                 skills: vec![],
+                above: vec![],
                 unreached: Some(why.clone()),
             }),
-            None => report.fault(&key, format!("{repo} was not read")),
+            None => report.fault(&key, format!("{dir} was not read")),
         }
     }
     (escalate_label, Roles { known: true, names, loaded })
@@ -951,7 +1061,7 @@ fn work(
     if loaded.unreached.is_none() && !loaded.skills.iter().any(|has| has == skill) {
         let problem = format!(
             "`{skill}` is not a skill of the role `{role}`: {} has no {SKILLS}/{skill} at {}",
-            loaded.repo, loaded.commit
+            loaded.dir, loaded.commit
         );
         report.fault(&under(at, skill_key), problem);
         return None;
@@ -1479,17 +1589,22 @@ land: { by: dev, do: land }
         }
     }
 
-    fn repo(name: &str, skills: &[&str]) -> (String, Result<RoleRepo, Unread>) {
+    fn dir(name: &str) -> RepoDir {
+        RepoDir::read(name).unwrap()
+    }
+
+    fn repo(name: &str, skills: &[&str]) -> (RepoDir, Result<RoleDir, Unread>) {
         let skills = skills.iter().map(|skill| skill.to_string()).collect();
-        (name.to_string(), Ok(RoleRepo { commit: format!("{name}@1"), skills }))
+        (dir(name), Ok(RoleDir { commit: format!("{name}@1"), skills, ..RoleDir::default() }))
     }
 
     fn sources(team: &str, workflows: &[(&str, &str)]) -> Sources {
         Sources {
+            at: Some(dir("acme/team")),
             team: file(TEAM_FILE, team),
             workflows: workflows.iter().map(|(path, yaml)| file(path, yaml)).collect(),
             patrols: vec![],
-            repos: vec![
+            roles: vec![
                 repo("acme/dev", &["plan", "implement", "land"]),
                 repo("acme/reviewer", &["review", "rule"]),
             ],
@@ -1645,7 +1760,7 @@ land: { by: dev, do: land }
         let team = load(&sources(TEAM, &[("workflows/feature.md", FEATURE)])).unwrap();
         assert_eq!(team.escalate_label, "ready-for-human");
         let dev = team.role("dev").unwrap();
-        assert_eq!((dev.repo.as_str(), dev.commit.as_str()), ("acme/dev", "acme/dev@1"));
+        assert_eq!((dev.dir.repo.as_str(), dev.commit.as_str()), ("acme/dev", "acme/dev@1"));
         assert_eq!(dev.skills, ["plan", "implement", "land"]);
         let flow = team.workflow("feature").unwrap();
         assert_eq!(flow.flow_label(), "flow:feature");
@@ -1658,7 +1773,7 @@ land: { by: dev, do: land }
         assert_eq!(build.consult, Some(work(REVIEWER, "rule")));
         let consulted = team.role_of(build.consult.as_ref().unwrap());
         assert_eq!(
-            (consulted.name.as_str(), consulted.repo.as_str()),
+            (consulted.name.as_str(), consulted.dir.repo.as_str()),
             ("reviewer", "acme/reviewer")
         );
         assert!(build.writes && !review.writes, "a stage writes unless it says not");
@@ -1974,7 +2089,7 @@ stages:
         unread("roles: { ops: 7 }", "not a number");
         let mut sources = sources("roles: { ops: acme/ops }", &[("workflows/w.md", workflow)]);
         let refused = Unread::Refused("no such repository".to_string());
-        sources.repos.push(("acme/ops".to_string(), Err(refused)));
+        sources.roles.push((dir("acme/ops"), Err(refused)));
         let found = load(&sources).unwrap_err();
         assert_eq!(found.len(), 1, "{found:#?}");
         assert_eq!(
@@ -1984,7 +2099,7 @@ stages:
         // a read that got no answer says nothing of the team: the role is
         // loaded with nothing known of it, and what names it loads too
         let unreached = Unread::Unreached("gh api failed".to_string());
-        *sources.repos.last_mut().unwrap() = ("acme/ops".to_string(), Err(unreached));
+        *sources.roles.last_mut().unwrap() = (dir("acme/ops"), Err(unreached));
         sources.workflows.push(file(
             "workflows/ops.md",
             "stages:\n  - { name: a, by: ops, do: anything, on: { pass: done } }",
@@ -2059,16 +2174,212 @@ stages:
     }
 
     #[test]
-    fn the_repos_to_read_are_the_ones_the_team_file_names() {
+    fn the_directories_to_read_are_the_ones_the_team_file_names() {
         let team = file(
             TEAM_FILE,
-            "roles: { dev: acme/dev, qa: acme/dev, ops: nowhere, n: 3, r: acme/r }",
+            "roles: { dev: acme/dev, qa: acme/dev, ops: nowhere, n: 3, r: acme/r/roles/r, \
+             own: ./roles/own, same: acme/team/roles/own/ }",
         );
-        let repos = role_repos(&team);
-        let repos: Vec<&str> = repos.iter().map(RepoName::as_str).collect();
-        assert_eq!(repos, ["acme/dev", "acme/r"]);
-        assert!(role_repos(&file(TEAM_FILE, "roles: [a/b]")).is_empty());
-        assert!(role_repos(&file(TEAM_FILE, "roles: {")).is_empty());
+        let at = dir("acme/team/teams/a");
+        let dirs: Vec<String> =
+            role_dirs(&team, Some(&at)).iter().map(RepoDir::to_string).collect();
+        // A `./path` is read from the root of the team's repo, not from its directory.
+        assert_eq!(dirs, ["acme/dev", "acme/r/roles/r", "acme/team/roles/own"]);
+        let dirs: Vec<String> = role_dirs(&team, None).iter().map(RepoDir::to_string).collect();
+        assert_eq!(dirs, ["acme/dev", "acme/r/roles/r", "acme/team/roles/own"]);
+        assert!(role_dirs(&file(TEAM_FILE, "roles: [a/b]"), None).is_empty());
+        assert!(role_dirs(&file(TEAM_FILE, "roles: {"), None).is_empty());
+    }
+
+    /// A team at `at` whose file is `team`, with every directory it names
+    /// read as holding the skill `plan` → its roles as (name, directory), or
+    /// its faults as (key, problem).
+    fn placed(at: &str, team: &str) -> Result<Vec<(String, String)>, Vec<(String, String)>> {
+        let at = dir(at);
+        let team = file(TEAM_FILE, team);
+        let read = |dir: RepoDir| {
+            let commit = format!("{}@1", dir.repo);
+            (dir, Ok(RoleDir { commit, skills: vec!["plan".to_string()], ..RoleDir::default() }))
+        };
+        let roles = role_dirs(&team, Some(&at)).into_iter().map(read).collect();
+        let sources = Sources { at: Some(at), team, workflows: vec![], patrols: vec![], roles };
+        match load(&sources) {
+            Ok(team) => {
+                Ok(team.roles.iter().map(|r| (r.name.clone(), r.dir.to_string())).collect())
+            }
+            Err(faults) => Err(faults.into_iter().map(|f| (f.key, f.problem)).collect()),
+        }
+    }
+
+    /// The one fault of the role `x` of a team at `at`, named `named` beside
+    /// a role `fellow` at `./roles/fellow`.
+    fn misplaced(at: &str, named: &str) -> String {
+        let team = format!("roles: {{ fellow: ./roles/fellow, x: {named} }}");
+        let mut faults = placed(at, &team).unwrap_err();
+        assert_eq!(faults.len(), 1, "{faults:#?}");
+        let (key, problem) = faults.remove(0);
+        assert_eq!(key, "roles.x");
+        problem
+    }
+
+    #[test]
+    fn a_role_is_named_by_repo_by_repo_and_path_or_by_a_path_in_the_teams_repo() {
+        let team = "roles: { fellow: ./roles/fellow, boss: acme/roles/boss/, dev: acme/dev }";
+        let named = |name: &str, dir: &str| (name.to_string(), dir.to_string());
+        let roles = [
+            named("fellow", "acme/hospital/roles/fellow"),
+            named("boss", "acme/roles/boss"),
+            named("dev", "acme/dev"),
+        ];
+        assert_eq!(placed("acme/hospital", team).unwrap(), roles);
+        // A `./path` is read from the root of the team's repo, not from the
+        // team's directory: a team in a subdirectory names the same role.
+        assert_eq!(placed("acme/hospital/teams/night", team).unwrap(), roles);
+        let whole = load(&sources(TEAM, &[])).unwrap();
+        assert_eq!(
+            (whole.roles[0].dir.to_string(), whole.roles[0].dir.path()),
+            ("acme/dev".to_string(), "")
+        );
+    }
+
+    #[test]
+    fn two_names_for_one_directory_are_two_roles() {
+        let team = "roles: { fellow: ./roles/fellow, night: acme/hospital/roles/fellow }";
+        let roles = placed("acme/hospital", team).unwrap();
+        assert_eq!(roles[0].1, roles[1].1);
+        assert_eq!((roles[0].0.as_str(), roles[1].0.as_str()), ("fellow", "night"));
+    }
+
+    #[test]
+    fn a_path_that_leaves_its_repo_or_starts_at_no_repos_root_is_a_fault() {
+        for leaves in ["./roles/../../x", "acme/roles/../x", "./.."] {
+            let problem = misplaced("acme/hospital", leaves);
+            assert!(problem.contains("has a `..`"), "{leaves}: {problem}");
+        }
+        for absolute in ["/roles/x", "acme/roles//x"] {
+            let problem = misplaced("acme/hospital", absolute);
+            assert!(problem.contains("is an absolute path"), "{absolute}: {problem}");
+        }
+        for formless in ["x", "../x", "acme", "roles/"] {
+            let problem = misplaced("acme/hospital", formless);
+            assert_eq!(
+                problem, "must be a role's directory, as owner/repo, owner/repo/path or ./path",
+                "{formless}"
+            );
+        }
+        assert_eq!(
+            misplaced("acme/hospital", "3"),
+            "must be a role's directory, as owner/repo, owner/repo/path or ./path, not a number"
+        );
+    }
+
+    #[test]
+    fn a_roles_directory_is_not_the_teams_and_does_not_contain_it() {
+        assert_eq!(
+            misplaced("acme/hospital/teams/night", "./teams/night"),
+            "its directory is the team's own (acme/hospital/teams/night): a role is a directory \
+             of its own"
+        );
+        assert_eq!(
+            misplaced("acme/hospital/teams/night", "acme/hospital/teams"),
+            "its directory acme/hospital/teams contains the team's (acme/hospital/teams/night)"
+        );
+        assert_eq!(
+            placed("acme/hospital/teams/night", "roles: { x: ./ }").unwrap_err()[0].1,
+            "its directory acme/hospital contains the team's (acme/hospital/teams/night)"
+        );
+        // Under the team's directory is where a team keeps its roles; among
+        // the team's own files is nowhere for one.
+        assert!(placed("acme/hospital", "roles: { x: ./roles/x }").is_ok());
+        assert_eq!(
+            misplaced("acme/hospital", "./workflows/x"),
+            "its directory acme/hospital/workflows/x is inside the team's workflows/"
+        );
+        assert_eq!(
+            misplaced("acme/hospital/teams/night", "./teams/night/patrols"),
+            "its directory acme/hospital/teams/night/patrols is inside the team's patrols/"
+        );
+        // Another repo's directory of the same path is another directory.
+        assert!(placed("acme/hospital", "roles: { x: acme/other }").is_ok());
+    }
+
+    #[test]
+    fn a_roles_directory_neither_contains_another_roles_nor_is_inside_one() {
+        assert_eq!(
+            misplaced("acme/hospital", "./roles/fellow/night"),
+            "its directory acme/hospital/roles/fellow/night is inside that of the role `fellow` \
+             (acme/hospital/roles/fellow)"
+        );
+        assert_eq!(
+            misplaced("acme/hospital", "./roles"),
+            "its directory acme/hospital/roles contains that of the role `fellow` \
+             (acme/hospital/roles/fellow)"
+        );
+        assert!(
+            placed("acme/hospital", "roles: { a: ./roles/fellow, b: ./roles/fellow-2 }").is_ok()
+        );
+    }
+
+    #[test]
+    fn a_path_in_the_teams_repo_needs_the_repo_to_be_known() {
+        let team = file(TEAM_FILE, "roles: { fellow: ./roles/fellow }");
+        let sources = Sources { at: None, team, workflows: vec![], patrols: vec![], roles: vec![] };
+        let faults = load(&sources).unwrap_err();
+        assert_eq!(faults[0].key, "roles.fellow");
+        assert!(faults[0].problem.contains("nothing says which repo"), "{}", faults[0].problem);
+    }
+
+    #[test]
+    fn a_symlink_that_leaves_a_role_is_a_fault_and_rules_above_it_are_kept_to_be_said() {
+        let at = dir("acme/hospital");
+        let team = file(TEAM_FILE, "roles: { fellow: ./roles/fellow }");
+        let read = |links: &[&str], above: &[&str]| {
+            let all = |list: &[&str]| list.iter().map(|one| one.to_string()).collect();
+            let read = RoleDir {
+                commit: "c1".to_string(),
+                skills: vec![],
+                links: all(links),
+                above: all(above),
+            };
+            let roles = vec![(dir("acme/hospital/roles/fellow"), Ok(read))];
+            load(&Sources {
+                at: Some(at.clone()),
+                team: team.clone(),
+                workflows: vec![],
+                patrols: vec![],
+                roles,
+            })
+        };
+        let faults = read(&["hooks/guard.sh -> ../../shared/guard.sh"], &[]).unwrap_err();
+        assert_eq!(faults[0].key, "roles.fellow");
+        assert!(
+            faults[0].problem.starts_with(
+                "acme/hospital/roles/fellow holds a symlink that leaves it: hooks/guard.sh -> \
+                 ../../shared/guard.sh."
+            ),
+            "{}",
+            faults[0].problem
+        );
+        let loaded = read(&[], &["CLAUDE.md", "roles/.claude/"]).unwrap();
+        assert_eq!(loaded.roles[0].above, ["CLAUDE.md", "roles/.claude/"]);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_at_the_head_of_its_repo_is_a_fault() {
+        let team = file(TEAM_FILE, "roles: { fellow: ./roles/fellow }");
+        let refused = Unread::Refused("it is no directory at the head of acme/hospital".into());
+        let roles = vec![(dir("acme/hospital/roles/fellow"), Err(refused))];
+        let at = Some(dir("acme/hospital"));
+        let faults =
+            load(&Sources { at, team, workflows: vec![], patrols: vec![], roles }).unwrap_err();
+        assert_eq!(
+            (faults[0].key.as_str(), faults[0].problem.as_str()),
+            (
+                "roles.fellow",
+                "acme/hospital/roles/fellow cannot be read: it is no directory at the head of \
+                 acme/hospital"
+            )
+        );
     }
 
     #[test]

@@ -5,7 +5,6 @@ use crate::position::Declared;
 use crate::precedent::entry_form;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
-use crate::team::PRECEDENTS;
 use crate::verdict;
 
 /// What a worker prompt is filled with: the issue, and the branch and path
@@ -625,6 +624,8 @@ pub struct ProposalFields<'a> {
     pub skill: &'a str,
     /// The team's repo, as `owner/repo`.
     pub team: &'a str,
+    /// The team's precedents file, from the root of that repo.
+    pub file: &'a str,
     /// The branch of the team's repo the PR is opened from.
     pub branch: &'a str,
     /// The precedents file, in the fleet's copy of the team.
@@ -647,7 +648,7 @@ pub fn proposal_prompt(fields: &ProposalFields) -> Result<String, String> {
             ("role", fields.role),
             ("skill", fields.skill),
             ("team", fields.team),
-            ("file", PRECEDENTS),
+            ("file", fields.file),
             ("branch", fields.branch),
             ("entry", &entry_form(fields.link)),
             ("precedents", fields.precedents),
@@ -1358,6 +1359,7 @@ mod tests {
             ruling: "Keep the v1 schema.\nMigrate later.",
             role: "clerk",
             skill: "propose",
+            file: "precedents.md",
             team: "acme/team",
             branch: "convoy-precedent-7-c2001",
             precedents: "/copies/acme/team/def/precedents.md",

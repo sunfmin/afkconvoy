@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
-use afkconvoy_core::config::RepoName;
+use afkconvoy_core::config::{RepoDir, RepoName};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
@@ -473,19 +473,21 @@ impl IssueArg {
 /// The team a command reads.
 #[derive(clap::Args)]
 struct TeamArgs {
-    /// The team's repo, as owner/repo [default: the team this checkout's config names]
-    #[arg(long, value_parser = team_repo)]
-    team: Option<RepoName>,
-    /// A directory of a team's files, read as they are instead of from GitHub
-    #[arg(long, conflicts_with = "team")]
+    /// The team's directory on GitHub, as owner/repo or owner/repo/path [default: the
+    /// team this checkout's config names]
+    #[arg(long, value_parser = team_dir)]
+    team: Option<RepoDir>,
+    /// A directory of a team's files, read as they are instead of from GitHub; with
+    /// --team, as an edit of that team: a role it names as ./path is read from that repo
+    #[arg(long)]
     dir: Option<PathBuf>,
 }
 
 impl TeamArgs {
     fn from(self) -> team::From {
         match (self.team, self.dir) {
-            (_, Some(dir)) => team::From::Dir(dir),
-            (Some(repo), None) => team::From::Repo(repo),
+            (of, Some(dir)) => team::From::Dir(dir, of),
+            (Some(team), None) => team::From::Repo(team),
             (None, None) => team::From::Config,
         }
     }
@@ -571,8 +573,11 @@ fn repo(text: &str) -> Result<RepoName, String> {
     RepoName::read(text).ok_or_else(|| "a repo is named as owner/repo".to_string())
 }
 
-fn team_repo(text: &str) -> Result<RepoName, String> {
-    RepoName::read(text).ok_or_else(|| "a team is named as its repo: owner/repo".to_string())
+fn team_dir(text: &str) -> Result<RepoDir, String> {
+    RepoDir::read(text).map_err(|_| {
+        "a team is named as its repo or a directory of one: owner/repo or owner/repo/path"
+            .to_string()
+    })
 }
 
 fn declared(text: &str) -> Result<Declared, String> {

@@ -264,9 +264,10 @@ pub struct Start<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RepoDir;
     use crate::position::Declared;
     use crate::stage_record::{Author, Stated};
-    use crate::team::{File, RoleRepo, Sources, TEAM_FILE, load};
+    use crate::team::{File, RoleDir, Sources, TEAM_FILE, load};
     use crate::transition::escalation_comment;
 
     const TEAM: &str = "roles:\n  dev: acme/dev\n  boss: acme/boss\n";
@@ -324,7 +325,10 @@ land: { by: boss, do: implement }
     fn team() -> Team {
         let repo = |name: &str| {
             let skills = vec!["implement".to_string()];
-            (name.to_string(), Ok(RoleRepo { commit: format!("{name}@1"), skills }))
+            (
+                RepoDir::read(name).unwrap(),
+                Ok(RoleDir { commit: format!("{name}@1"), skills, ..RoleDir::default() }),
+            )
         };
         load(&Sources {
             team: file(TEAM_FILE, TEAM),
@@ -336,7 +340,8 @@ land: { by: boss, do: implement }
                 file("workflows/asks.md", ASKS),
             ],
             patrols: vec![],
-            repos: vec![repo("acme/dev"), repo("acme/boss")],
+            at: None,
+            roles: vec![repo("acme/dev"), repo("acme/boss")],
         })
         .unwrap()
     }
@@ -371,7 +376,7 @@ land: { by: boss, do: implement }
         assert_eq!(entry.stage.name, "build");
         assert_eq!((entry.role.name.as_str(), entry.work.skill.as_str()), ("dev", "implement"));
         assert_eq!(
-            (entry.role.repo.as_str(), entry.role.commit.as_str()),
+            (entry.role.dir.repo.as_str(), entry.role.commit.as_str()),
             ("acme/dev", "acme/dev@1")
         );
         assert_eq!(entry.stage.model.as_deref(), Some("opus"));
@@ -430,7 +435,7 @@ land: { by: boss, do: implement }
         };
         assert_eq!(entry.stage.name, "build");
         assert_eq!((entry.role.name.as_str(), entry.work.skill.as_str()), ("boss", "implement"));
-        assert_eq!(entry.role.repo.as_str(), "acme/boss");
+        assert_eq!(entry.role.dir.repo.as_str(), "acme/boss");
         let ruled = [&asked[..], &[consult(Declared::Ruling)]].concat();
         assert_eq!(said(due(&team, &flow, &ruled, None)), "build by dev");
         // The chain is one role long: a consult's own `escalate` goes to a human.
@@ -452,7 +457,7 @@ land: { by: boss, do: implement }
             panic!("a landing worker is due")
         };
         assert_eq!((lander.role.name.as_str(), lander.work.skill.as_str()), ("boss", "implement"));
-        assert_eq!((lander.role.repo.as_str(), lander.pr), ("acme/boss", 70));
+        assert_eq!((lander.role.dir.repo.as_str(), lander.pr), ("acme/boss", 70));
         assert_eq!(lander.workflow.name, "lands");
         // With no PR there is nothing to join: a human's.
         assert_eq!(

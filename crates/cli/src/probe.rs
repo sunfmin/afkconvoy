@@ -61,7 +61,7 @@ impl Asked {
         Ok(Asked {
             base_branch: config.base_branch.clone(),
             remote: repo.git(&["remote", "get-url", REMOTE])?,
-            team: config.bound.as_ref().map(|bound| bound.team.as_str().to_string()),
+            team: config.bound.as_ref().map(|bound| bound.team.to_string()),
             layout: repo.layout().name().to_string(),
             launch,
         })
