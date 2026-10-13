@@ -578,12 +578,14 @@ pub fn empty_streak(streak: u32, did_work: bool, held: usize, frontier_remaining
 }
 
 /// The most ticks the loop makes back to back, with no sleep between them:
-/// a fault that makes every tick leave a follow-up cannot make it spin.
+/// a fault that makes every tick leave a follow-up cannot make it spin, nor
+/// can a GitHub that stays out of reach.
 pub const BACK_TO_BACK: u32 = 4;
 
 /// The sleeps skipped in a row once one more tick has ended, `skipped` having
-/// been before it and `follow_up_due` saying whether it left the next tick a
-/// worker to start (`Pass::follow_up_due`). More than zero: the next tick
+/// been before it and `follow_up_due` saying whether the next tick is due at
+/// once: it left that tick a worker to start (`Pass::follow_up_due`), or it
+/// failed on a read GitHub could not be reached for. More than zero: the next tick
 /// starts now. Zero: the loop sleeps as `pace` says — after a tick that left
 /// nothing, and after the last of `BACK_TO_BACK` ticks whatever it left.
 #[spec(fn(skipped: u32, follow_up_due: bool) -> u32{after: after < BACK_TO_BACK})]

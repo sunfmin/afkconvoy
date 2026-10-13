@@ -16,6 +16,7 @@ use crate::board::show;
 use crate::claims::{Me, beat};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
+use crate::gh::unreached;
 use crate::git::Repo;
 use crate::judge::judge;
 use crate::log::{self, Log};
@@ -34,6 +35,8 @@ use crate::watch::watch;
 struct Failure {
     step: TickStep,
     error: String,
+    /// Whether it failed on a read GitHub could not be reached for.
+    unreached: bool,
 }
 
 /// What one tick came to.
@@ -62,7 +65,8 @@ pub fn tick(me: &Me, agent: &Agent) -> Result<(Ticked, Fleet)> {
     let pass = run_pass(&set, bound, set.held(), |step| {
         // Whatever a step raised, the rest of the tick is still owed.
         carry_out(&mut fleet, me, agent, &read, step).unwrap_or_else(|error| {
-            failures.push(Failure { step, error: format!("{error:#}") });
+            let unreached = unreached(&error).is_some();
+            failures.push(Failure { step, error: format!("{error:#}"), unreached });
             Outcome::Failed
         })
     });
@@ -220,6 +224,12 @@ impl Ticked {
         let mut panel = panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did);
         panel.held = self.pass.held;
         panel
+    }
+
+    /// Whether a step of the tick failed on a read GitHub could not be
+    /// reached for: nothing says the next tick's read fails too.
+    pub fn unreached(&self) -> bool {
+        self.failures.iter().any(|failure| failure.unreached)
     }
 
     /// The claims held, as the line says them: those that take a slot against
@@ -383,7 +393,12 @@ impl Ticked {
         }
         parts.extend(self.holding());
         parts.push(format!("frontier {}", self.pass.frontier_remaining));
-        for failure in &self.failures {
+        // One cause is said once, however many steps it stopped.
+        for (failure, steps) in log::by_cause(&self.failures, |failure| &failure.error) {
+            if steps > 1 {
+                parts.push(format!("FAILED {steps} steps: {}", failure.error));
+                continue;
+            }
             let (word, issue) = words(failure.step);
             let issue = issue.or(self.proposal(failure.step));
             let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
@@ -462,7 +477,8 @@ impl Said {
 
 /// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
 /// `afkconvoy wake` ends early, and that is skipped after a tick that left the
-/// next one a worker to start (`Pass::follow_up_due`). Stopping it is just exiting: no claim is
+/// next one a worker to start (`Pass::follow_up_due`) or that failed on a read
+/// GitHub could not be reached for. Stopping it is just exiting: no claim is
 /// released on the way out, and the next start on this host takes them back
 /// (docs/adr/0003). With a `panel_port` it serves the panel there, a new page
 /// after every tick. It keeps a line of each tick in its log (`log::Log`),
@@ -519,16 +535,21 @@ pub fn run(
                     shown = panel;
                 }
                 let pass = &ticked.pass;
-                streak = empty_streak(streak, pass.did_work(), pass.held, pass.frontier_remaining);
-                skipped = sleeps_skipped(skipped, pass.follow_up_due(ticked.bound));
-                let sleep = if skipped > 0 { 0 } else { pace(pass.did_work(), pass.held, streak) };
+                // A tick GitHub could not be reached in was not an empty one:
+                // what it could not read may be work.
+                let busy = pass.did_work() || ticked.unreached();
+                streak = empty_streak(streak, busy, pass.held, pass.frontier_remaining);
+                let due = pass.follow_up_due(ticked.bound) || ticked.unreached();
+                skipped = sleeps_skipped(skipped, due);
+                let sleep = if skipped > 0 { 0 } else { pace(busy, pass.held, streak) };
                 let logged = (Some(ticked.bound), Some(ticked.json()), None);
                 (ticked.line(), sleep, logged)
             }
             Err(error) => {
-                skipped = 0;
+                skipped = sleeps_skipped(skipped, unreached(&error).is_some());
+                let sleep = if skipped > 0 { 0 } else { pace(true, 0, 0) };
                 let error = format!("{error:#}");
-                (format!("FAILED: {error}"), pace(true, 0, 0), (None, None, Some(error)))
+                (format!("FAILED: {error}"), sleep, (None, None, Some(error)))
             }
         };
         match sleep {

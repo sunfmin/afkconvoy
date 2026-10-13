@@ -27,7 +27,7 @@ use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
 use crate::git::Repo;
 use crate::launch;
-use crate::log::{Entry, Failed, Log, Tick, What};
+use crate::log::{Entry, Failed, Log, Tick, What, by_cause};
 use crate::orca::{Source, Under, Worktree};
 use crate::panel::lasted;
 use crate::stage::Stood;
@@ -826,9 +826,11 @@ fn fleet_json(run: &Run) -> Value {
     });
     let mut failed = vec![];
     for (ended, tick) in run.ticks.iter().flatten().rev() {
-        for step in tick.failed() {
+        let steps = tick.failed();
+        for (step, count) in by_cause(&steps, |step| &step.error) {
             failed.push(json!({"tick": tick.count, "ended": ended, "do": step.step,
-                "issue": step.issue, "patrol": step.patrol, "error": step.error}));
+                "issue": step.issue, "patrol": step.patrol, "error": step.error,
+                "count": count}));
         }
     }
     failed.truncate(FAILED_SHOWN);
