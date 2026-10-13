@@ -577,7 +577,8 @@ pub fn render(panel: &Panel) -> String {
         ),
         None => out.push_str(
             "<p class=\"tick\">One rebuild, read just now. No fleet instance keeps this page \
-             fresh: <code>afkconvoy run --panel</code> does.</p>\n",
+             fresh: <code>afkconvoy run --panel</code> does, and so does one that is running \
+             already, asked with <code>afkconvoy panel --open</code>.</p>\n",
         ),
     }
     if !panel.locks.is_empty() {

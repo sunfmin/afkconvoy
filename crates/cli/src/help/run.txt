@@ -78,6 +78,11 @@ WHAT IT ANSWERS
 
     panel: http://127.0.0.1:7070/
 
+  Started without it, it serves the same page once `afkconvoy panel --open` asks it
+  to, from any worktree of the repo on this host — while it sleeps or in the middle
+  of a tick, which goes on — and then prints that line, wherever its ticks have got
+  to. `panel --open` answers the address again later, of a panel opened either way.
+
   Errors, before the first tick, as {"error": …} with a non-zero exit: the panel's port
   is taken; a command the
   fleet needs is missing or logged out, or orca is not running or does not know this
@@ -123,6 +128,23 @@ WHAT TRIPS YOU UP
     cannot be started refuses the start, named with its harness and the stage or
     patrol that calls for it, and no worker at all is started: no harness is ever
     started in another's place.
+  - A Claude Code worker of a bound repo starts in its role's directory, with the rest
+    added to the worker launch command:
+        cd <the role's copy> && export <the stage's facts> && <worker launch command>
+          --add-dir <the issue's worktree> --add-dir <the team's copy>
+          --setting-sources project --settings <the fleet's> [--model <the stage's>]
+    The role's rules, skills and hooks load because it starts there. The repo's own
+    rules load from the added worktree, and its hooks do not; the team rules load from
+    the team's copy; nothing of your own Claude Code settings, rules, skills or hooks
+    is loaded. The settings added hold the guard and orca's status report, as hooks,
+    and the answer to the bypass warning. A command you give must take `--add-dir`,
+    `--setting-sources`, `--settings` and `--model`.
+  - The stage's facts are in the environment of every worker of a bound repo, and a
+    role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE,
+    AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT,
+    AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL,
+    AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's
+    worker has AFKCONVOY_PATROL in place of the first three.
   - A pi worker — of a stage or a patrol that says `harness: pi` — starts in its
     role's directory like any other, with what pi does not load from there added:
         cd <the role's copy> && export PI_CODING_AGENT_DIR=<the fleet's own>

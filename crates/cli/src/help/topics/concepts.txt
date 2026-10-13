@@ -29,7 +29,9 @@ THE FOUR THINGS
 ONE ISSUE, IN AN UNBOUND REPO
 
   An unbound repo's config names no team: every issue takes the same path, with one
-  worker from start to landing.
+  worker from start to landing. It is where to start when issues turned into PRs is
+  all you want; bind the repo to a team once the work is to be judged by another than
+  the worker that wrote it before it lands.
 
   1. Intake. A human puts the ready label on the issue. It is on the frontier once it
      is open, unclaimed, under no epic label, with no open blocker and no open PR
