@@ -108,12 +108,11 @@ RULES TO KNOW BEFORE YOU START
 
 DESIGNING A TEAM, for a bound repo
 
-  A repo whose config names a team — `team: owner/repo`, or `team: owner/repo/path` for
-  a team in a subdirectory — is a bound repo. An issue of
-  it that carries a flow label is walked through that workflow's stages, each performed
-  by a new worker started in the stage's role. A team and a role are each a directory of
-  text files — a whole repo, or a subdirectory of one, so that one repo can hold a team
-  and every role it names — and designing one is editing them. Nothing else holds any of it.
+  A repo whose config names a team — `team: owner/repo`, or `team: owner/repo/path` for a team in a
+  subdirectory — is a bound repo. An issue of it that carries a flow label is walked through that
+  workflow's stages, each performed by a new worker started in the stage's role. A team and a role are
+  each a directory of text files — a whole repo, or a subdirectory of one, so that one repo can hold a
+  team and every role it names — and designing one is editing them. Nothing else holds any of it.
 
   What those files are, and every key of them, is three topics: `afkconvoy help team`
   for a team's directory, its file, its rules and a role's directory, then
@@ -122,8 +121,9 @@ DESIGNING A TEAM, for a bound repo
   The loop, from nothing:
 
   1. afkconvoy scaffold team <dir> --role <name> --repo <owner/repo>
-       A team's skeleton and, under roles/<name>/, each role's — `--role` once for each
-       — in one repo created on GitHub, with one workflow which the first role performs.
+       A team's skeleton and, under roles/<name>/, each role's — `--role` once for each — in one
+       repo created on GitHub, with one workflow of one stage, by the first role. For more than one
+       stage — a review, a landing role — read `afkconvoy help example` first: `--example hospital`.
   2. afkconvoy scaffold role <dir>/roles/<name>
        One more role's skeleton, in that checkout: it answers the line to add to
        team.md. A role several teams share is a repo of its own instead: `--repo`.

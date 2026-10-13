@@ -32,10 +32,17 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
             "acme/hospital",
         ])
         .ok();
-    let held = |role: &str| ROLE_FILES.map(|file| format!("roles/{role}/{file}"));
+    // The first role is written whole. One after it holds no skill: the
+    // example workflow asks it for none, and it is not there to implement.
+    let held = |role: &str, files: &[&str]| -> Vec<String> {
+        files.iter().map(|file| format!("roles/{role}/{file}")).collect()
+    };
+    let unskilled: Vec<&str> =
+        ROLE_FILES.into_iter().filter(|file| !file.contains("/skills/")).collect();
+    assert_eq!(unskilled.len(), ROLE_FILES.len() - 1);
     let files = ["team.md", "CLAUDE.md", "workflows/feature.md"].map(str::to_string);
-    let files = [files.to_vec()];
-    let files = [&files[..], &[held("fellow").to_vec(), held("attending").to_vec()]].concat();
+    let files = [files.to_vec(), held("fellow", &ROLE_FILES), held("attending", &unskilled)];
+    assert!(!team.join("roles/attending/.claude/skills").exists());
     assert_eq!(
         wrote,
         json!({"scaffolded": "team", "dir": team, "repo": "acme/hospital",
@@ -61,14 +68,16 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
     for from in [&["--team", "acme/hospital"][..], &["--dir", dir, "--team", "acme/hospital"]] {
         let read = world.afk(&[&["check"], from].concat()).ok();
         let roles = read["roles"].as_array().unwrap();
-        for (role, name) in roles.iter().zip(["fellow", "attending"]) {
+        let skills = [json!(["implement"]), json!([])];
+        for (role, (name, skills)) in roles.iter().zip(["fellow", "attending"].iter().zip(&skills))
+        {
             assert_eq!(
                 (&role["name"], &role["repo"], &role["path"], &role["skills"], &role["above"]),
                 (
                     &json!(name),
                     &json!("acme/hospital"),
                     &json!(format!("roles/{name}")),
-                    &json!(["implement"]),
+                    skills,
                     &json!([])
                 )
             );
@@ -91,6 +100,22 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
     }
     let rehearse = ["rehearse", "--dir", ".", "--team", "acme/hospital", "feature", "pass"];
     assert!(world.afk_in(&team, &rehearse).ok()["ends"].is_object());
+    // Whoever wants a stage more is told where its skill goes, and sent to
+    // the team that holds a review and a landing role: by the workflow
+    // written, by `scaffold --help` and by the loop in `--help`.
+    let workflow = std::fs::read_to_string(team.join("workflows/feature.md")).unwrap();
+    assert!(workflow.contains("`.claude/skills/<skill>/SKILL.md`"), "{workflow}");
+    assert!(workflow.contains("No other role written with this file holds a skill yet"));
+    for (name, text) in [
+        ("the workflow", workflow),
+        ("scaffold --help", printed(&["scaffold", "--help"])),
+        ("--help", printed(&["--help"])),
+    ] {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains("more than one stage") || text.contains("A stage more"), "{name}");
+        assert!(text.contains("--example hospital"), "{name}: {text}");
+        assert!(text.contains("afkconvoy help example"), "{name}: {text}");
+    }
 }
 
 #[test]
@@ -104,6 +129,7 @@ fn a_team_names_a_role_written_here_and_one_that_is_elsewhere() {
         wrote["files"].as_array().unwrap().iter().flat_map(Value::as_str).collect();
     assert_eq!(files[..3], ["team.md", "CLAUDE.md", "workflows/feature.md"]);
     assert!(files[3..].iter().all(|file| file.starts_with("roles/a/")), "{files:?}");
+    assert!(files.contains(&"roles/a/.claude/skills/implement/SKILL.md"), "{files:?}");
     assert_eq!(std::fs::read_dir(team.join("roles")).unwrap().count(), 1);
     let file = std::fs::read_to_string(team.join("team.md")).unwrap();
     assert!(

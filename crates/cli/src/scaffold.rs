@@ -15,6 +15,7 @@ use crate::git::Repo;
 
 /// The one skill a role's skeleton holds, and the one a team's example
 /// workflow asks of its role: the two skeletons fit because both name this.
+/// In a team's skeleton only the role that workflow is performed by holds it.
 pub const EXAMPLE_SKILL: &str = "implement";
 /// The example workflow of a team's skeleton.
 pub const EXAMPLE_WORKFLOW: &str = "feature";
@@ -112,20 +113,24 @@ pub struct Create {
     pub public: bool,
 }
 
-/// The files of a role's skeleton, each with its path in the role's directory.
-fn role_files() -> Vec<(String, String)> {
-    let skill = include_str!("scaffold/skill.md").replace("{skill}", EXAMPLE_SKILL);
-    let mut files = vec![
-        (RULES.to_string(), include_str!("scaffold/rules.md").to_string()),
-        (format!("{SKILLS}/{EXAMPLE_SKILL}/SKILL.md"), skill),
-    ];
+/// The files of a role's skeleton, each with its path in the role's
+/// directory: its rules, its limits and, when it is `skilled`, the example
+/// skill.
+fn role_files(skilled: bool) -> Vec<(String, String)> {
+    let mut files = vec![(RULES.to_string(), include_str!("scaffold/rules.md").to_string())];
+    if skilled {
+        let skill = include_str!("scaffold/skill.md").replace("{skill}", EXAMPLE_SKILL);
+        files.push((format!("{SKILLS}/{EXAMPLE_SKILL}/SKILL.md"), skill));
+    }
     files.extend(LIMITS.map(|(harness, text)| (harness.limits().to_string(), text.to_string())));
     files
 }
 
 /// The files of the skeleton of a team that names `roles`, each with its
 /// path in the team's directory: the team's own, and under `roles/<name>/`
-/// those of each role given by its name alone. `root` is the team's
+/// those of each role given by its name alone — the first role with the
+/// example skill, which the example workflow asks of it, and the others with
+/// none: what a role after it does is not to implement. `root` is the team's
 /// directory as a path from the root of its repo, and `repo` that repo where
 /// it is known.
 fn team_files(
@@ -176,7 +181,7 @@ fn team_files(
         (format!("{WORKFLOWS}/{EXAMPLE_WORKFLOW}.md"), fill(include_str!("scaffold/workflow.md"))),
     ];
     for role in roles.iter().filter(|role| role.at.is_none()) {
-        let held = role_files().into_iter();
+        let held = role_files(role.name == first.name).into_iter();
         files.extend(held.map(|(path, text)| (format!("{ROLES}/{}/{path}", role.name), text)));
     }
     Ok(files)
@@ -254,7 +259,7 @@ pub fn scaffold(
         What::Role if example.is_some() => {
             bail!("--example is a team's: an example is a whole team, with its roles")
         }
-        What::Role => (role_files(), team_line(&dir, create)),
+        What::Role => (role_files(true), team_line(&dir, create)),
         What::Team if example.is_some() && !roles.is_empty() => {
             bail!("--example names its own roles: give --role, or --example, not both")
         }
