@@ -182,7 +182,7 @@ pub fn run_over(claim: &RunClaim, worker: WorkerState, now: u64) -> bool {
         WorkerState::Gone => true,
         WorkerState::Busy => false,
         WorkerState::Idle { quiet: Some(quiet) } => quiet >= GRACE,
-        // A runtime that reports nothing: the run's own age decides.
+        // Neither a report nor the terminal says since when: the run's own age decides.
         WorkerState::Idle { quiet: None } => match started {
             Some(started) => stamp_age(started, now).is_none_or(|age| age >= GRACE),
             None => true,

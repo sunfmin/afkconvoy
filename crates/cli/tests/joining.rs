@@ -32,12 +32,13 @@ fn worktree(world: &World) -> PathBuf {
     PathBuf::from(row["path"].as_str().unwrap())
 }
 
-/// A world whose worker on issue 7, dispatched at 1000, pushed its work and
-/// opened PR #70 — and stopped there, short of the landing train.
+/// A world whose worker on issue 7, dispatched at 700 — a grace period and
+/// more before anything asks after it — pushed its work and opened PR #70,
+/// and stopped there, short of the landing train.
 fn joining() -> World {
     let world = World::new();
     world.issue(7, &["ready-for-agent", "bug"]);
-    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 700)), ["dispatch 7 done", "heartbeat done"]);
     let dir = worktree(&world);
     commit(&dir, "seven.txt", "7\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
@@ -199,9 +200,11 @@ fn a_worker_whose_terminal_is_gone_is_continued_onto_the_join_and_keeps_its_rest
     assert!(!calls.contains(&"worktree create".to_string()), "{calls:?}");
     assert_eq!(world.claims().len(), 1);
 
-    // the join still has its whole ladder: nudge, then the one restart
-    assert_eq!(did(&tick(&world, 1180))[0], "watch 7 nudged");
-    assert_eq!(did(&tick(&world, 1480))[0], "watch 7 restarted");
+    // the join still has its whole ladder: a grace period from its start,
+    // the nudge, then the one restart
+    assert_eq!(did(&tick(&world, 1180))[0], "watch 7 nothing");
+    assert_eq!(did(&tick(&world, 1390))[0], "watch 7 nudged");
+    assert_eq!(did(&tick(&world, 1690))[0], "watch 7 restarted");
     assert_eq!(restarts(&world).len(), 1);
 }
 

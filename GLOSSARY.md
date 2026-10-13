@@ -137,7 +137,7 @@ The one shell string every worker of a fleet instance is started with. In an unb
 _Avoid_: agent command, provider profile
 
 **Worker state**:
-Whether a worker is busy or has stopped, as its agent reports it to the worker backend. Stopped never means finished.
+Whether a worker is busy or has stopped, as its agent reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
 _Avoid_: liveness, status
 
 **Verdict**:

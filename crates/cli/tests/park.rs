@@ -229,9 +229,11 @@ fn every_blocker_closed_starts_a_worker_on_the_issue_again() {
     assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
 
     // the verdict that was answered is not the new worker's: its silence is
-    // nudged, then escalated — the issue is not started over and over
-    assert_eq!(did(&tick(&world, 1180))[0], "judge 7 nudged");
-    assert_eq!(did(&tick(&world, 1480))[0], "judge 7 done");
+    // left a grace period from its start, nudged, then escalated — the issue
+    // is not started over and over
+    assert_eq!(did(&tick(&world, 1180))[0], "judge 7 nothing");
+    assert_eq!(did(&tick(&world, 1390))[0], "judge 7 nudged");
+    assert_eq!(did(&tick(&world, 1690))[0], "judge 7 done");
     assert!(escalation(&world).contains("stayed silent after one nudge"));
 }
 

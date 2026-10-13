@@ -177,8 +177,8 @@ fn run_ticks_until_stopped_and_says_what_each_tick_did() {
         lines,
         [
             "tick 1: dispatched #3, #5 · holding 2/2 · frontier 1 · next in 90s",
-            // their workers, silent with no clock to read, are told to carry on
-            "tick 2: nudged #3, #5 · holding 2/2 · frontier 1 · next in 90s",
+            // their workers, started a moment ago, are left a grace period
+            "tick 2: nothing to do · holding 2/2 · frontier 1 · next in 90s",
         ]
     );
     assert_eq!(stopped["ticks"], 2);

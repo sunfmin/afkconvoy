@@ -58,7 +58,7 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     match terminal {
         Some(terminal) => worktree.tell(&terminal, &train_pointer(&brief))?,
         None => {
-            let terminal = worktree.start(agent.command.as_str())?;
+            let terminal = worktree.start(agent.command.as_str(), fleet.now)?;
             worktree.await_ready(&terminal, agent.ready_timeout)?;
             worktree.tell(&terminal, &brief_pointer(&brief))?;
         }
