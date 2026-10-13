@@ -18,8 +18,7 @@ use crate::judge::mine;
 /// of an issue whose board has not changed — what a board says is always
 /// rendered, never taken from here or from GitHub.
 fn remembered(fleet: &Fleet, issue: u64) -> Result<PathBuf> {
-    let common = fleet.repo.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-    Ok(PathBuf::from(common).join("convoy-boards").join(issue.to_string()))
+    Ok(fleet.repo.common_dir()?.join("convoy-boards").join(issue.to_string()))
 }
 
 /// Brings the status board of `claim`'s issue to what `board` renders → whether

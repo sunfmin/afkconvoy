@@ -54,6 +54,9 @@ impl World {
         let root = dir.path().canonicalize().unwrap();
         let (bare, clone, bin) = (root.join("remote.git"), root.join("clone"), root.join("bin"));
         git(&root, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
+        // git takes a pusher's config off before it starts the remote's side:
+        // the remote is told by itself to do no housekeeping (`GIT_ENV`).
+        append(&bare.join("config"), "[maintenance]\n\tauto = false\n");
         git(&root, &["clone", "-q", bare.to_str().unwrap(), clone.to_str().unwrap()]);
         std::fs::write(clone.join("README.md"), "widgets\n").unwrap();
         std::fs::create_dir_all(clone.join("docs/agents")).unwrap();
@@ -628,14 +631,19 @@ fn is_board(body: &str) -> bool {
     body.starts_with("<!--convoy:status-->")
 }
 
-/// An identity for the commits a test makes, and no config of the machine's.
-const GIT_ENV: [(&str, &str); 6] = [
+/// An identity for the commits a test makes, and no config of the machine's —
+/// and no housekeeping after a commit, a fetch or a push: a world is gone long
+/// before it would gain from any, and each is one more process to start.
+const GIT_ENV: [(&str, &str); 9] = [
     ("GIT_AUTHOR_NAME", "tester"),
     ("GIT_AUTHOR_EMAIL", "tester@example.com"),
     ("GIT_COMMITTER_NAME", "tester"),
     ("GIT_COMMITTER_EMAIL", "tester@example.com"),
     ("GIT_CONFIG_GLOBAL", "/dev/null"),
     ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_CONFIG_COUNT", "1"),
+    ("GIT_CONFIG_KEY_0", "maintenance.auto"),
+    ("GIT_CONFIG_VALUE_0", "false"),
 ];
 
 /// Commits one file in a checkout → the commit.

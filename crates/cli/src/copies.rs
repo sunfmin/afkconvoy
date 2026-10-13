@@ -125,7 +125,7 @@ impl Copies {
             .with_context(|| format!("cannot create {}", files.display()))?;
         let copied = (|| {
             gh.clone_head(repo, &clone)?;
-            let clone = Repo { dir: clone };
+            let clone = Repo::new(clone);
             let head = clone.try_git(&["rev-parse", "--quiet", "--verify", "HEAD^{commit}"])?;
             if !head.ok {
                 bail!("it has no commit on its default branch");

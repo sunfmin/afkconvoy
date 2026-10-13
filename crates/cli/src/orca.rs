@@ -200,7 +200,7 @@ impl Worktree {
         if branch.is_empty() {
             bail!("orca worktree create named no branch for {}", path.display());
         }
-        let checkout = Repo { dir: path.clone() };
+        let checkout = Repo::new(path.clone());
         if !checkout.try_git(&["merge-base", "--is-ancestor", sha, "HEAD"])?.ok {
             checkout.git(&["merge", "--quiet", "--ff-only", sha])?;
         }
@@ -316,7 +316,7 @@ impl Worktree {
     /// A note about the worker here, kept in the worktree's own git dir: this
     /// machine's, like the worker itself, and gone when the worktree is.
     fn note(&self, name: &str) -> Result<PathBuf> {
-        let git_dir = Repo { dir: self.path.clone() }.git(&["rev-parse", "--absolute-git-dir"])?;
+        let git_dir = Repo::new(self.path.clone()).git(&["rev-parse", "--absolute-git-dir"])?;
         Ok(Path::new(&git_dir).join(name))
     }
 
@@ -365,7 +365,7 @@ impl Worktree {
     pub fn clear(&self, sha: &str) -> Result<()> {
         // One with no terminal is as wanted.
         let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
-        let repo = Repo { dir: self.path.clone() };
+        let repo = Repo::new(self.path.clone());
         repo.git(&["reset", "--quiet", "--hard", sha])?;
         repo.git(&["clean", "--quiet", "-fd"])?;
         self.forget(TOLD_FILE)?;
@@ -390,13 +390,12 @@ impl Worktree {
 
     /// The commit the branch here is at.
     pub fn tip(&self) -> Result<String> {
-        Repo { dir: self.path.clone() }.git(&["rev-parse", "HEAD"])
+        Repo::new(self.path.clone()).git(&["rev-parse", "HEAD"])
     }
 
     /// The branch checked out here now; `None` on a detached HEAD.
     pub fn branch_now(&self) -> Result<Option<String>> {
-        let named =
-            Repo { dir: self.path.clone() }.try_git(&["symbolic-ref", "--short", "HEAD"])?;
+        let named = Repo::new(self.path.clone()).try_git(&["symbolic-ref", "--short", "HEAD"])?;
         Ok(named.ok.then_some(named.stdout))
     }
 

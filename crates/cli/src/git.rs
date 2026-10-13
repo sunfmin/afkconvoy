@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use afkconvoy_core::layout::Layout;
 use anyhow::{Context, Result, bail};
@@ -24,6 +25,8 @@ pub struct Ran {
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub dir: PathBuf,
+    /// The repo's git dir, once it was asked for (`common_dir`).
+    common: OnceLock<PathBuf>,
 }
 
 impl Repo {
@@ -38,14 +41,28 @@ impl Repo {
         if !ran.ok {
             bail!("{} is not in a git checkout", dir.display());
         }
-        Ok(Repo { dir: PathBuf::from(ran.stdout) })
+        Ok(Repo::new(PathBuf::from(ran.stdout)))
+    }
+
+    /// The checkout whose top directory is `dir`.
+    pub fn new(dir: PathBuf) -> Repo {
+        Repo { dir, common: OnceLock::new() }
+    }
+
+    /// The repo's git dir, which every worktree of it shares. git is asked
+    /// once: a checkout's repo is the same one for as long as it is there.
+    pub fn common_dir(&self) -> Result<&Path> {
+        if self.common.get().is_none() {
+            let dir = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+            let _ = self.common.set(PathBuf::from(dir));
+        }
+        Ok(self.common.get().expect("set above"))
     }
 
     /// The main worktree of this checkout: where its `.git` directory is.
     pub fn main_checkout(&self) -> Result<PathBuf> {
-        let common = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-        let common = PathBuf::from(common);
-        Ok(common.parent().map(Path::to_path_buf).unwrap_or(common))
+        let common = self.common_dir()?;
+        Ok(common.parent().unwrap_or(common).to_path_buf())
     }
 
     /// Where the last start found the remote keeps the fleet's refs
@@ -70,8 +87,7 @@ impl Repo {
     /// Where a note called `name` is kept on this host: in the repo's git
     /// dir, which every worktree of it shares.
     pub fn note(&self, name: &str) -> Result<PathBuf> {
-        let common = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-        Ok(PathBuf::from(common).join(name))
+        Ok(self.common_dir()?.join(name))
     }
 
     /// One git call whose failure the caller reads.
