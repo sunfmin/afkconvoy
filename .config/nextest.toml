@@ -5,5 +5,11 @@
 # Measured on one host, 14 cores, warm build: the slowest test takes 24s with
 # the host to itself and 79s with other gates' tests running beside it. The
 # limit is three times that.
+#
+# Six tests run at a time, not nextest's one per logical CPU: a test of the
+# CLI starts processes by the dozen (the CLI itself, and the `git`, `gh` and
+# `orca` it runs), and a host runs several gates at once, its workers' and the
+# train's.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 4 }
+test-threads = 6
