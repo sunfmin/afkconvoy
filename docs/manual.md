@@ -742,7 +742,7 @@ CLAUDE.md                          rules
 
 | Who | Commands |
 |---|---|
-| The operator | `config` `check` `plan` `run` `panel` `tick` `takeover` |
+| The operator | `doctor` `config` `check` `plan` `run` `panel` `tick` `takeover` |
 | Whoever designs a team | `scaffold` `check` `show` `rehearse` |
 | A human an issue waits for | `rule` `send` `verdict` |
 | A worker (its brief names each) | `gate` `land` `verdict` `intake` `lock` `wake` `rule` (a consult) |
@@ -764,15 +764,23 @@ The guard recognises commands. It stops a worker that errs, not one that sets ou
 
 ## 10. When something goes wrong
 
-Start with three questions, in this order:
+Start with one command, in the checkout the fleet runs in:
+
+```sh
+afkconvoy doctor
+```
+
+It reads everything — this host, the log `run` keeps of its ticks, GitHub, the remote, orca — changes nothing, and answers one JSON object: `host`, `fleet`, `claims`, `issues`, and `findings`. Each finding is `{severity, what, evidence, fix}`, most severe first, and `fix` is a line to run or a file and key to edit. It finds the instance id of this host's `run` itself, and it exits non-zero while a finding is `critical`, so a script can gate on it. With `"findings": []` the fleet is doing what it should, and `fleet.last_tick` says what that was.
+
+What it cannot tell you, three commands can:
 
 ```sh
 afkconvoy plan --instance <id>     # what is on the frontier, what is excluded and why, what I hold
 afkconvoy show --issue <n>         # where one issue is, and its records
-afkconvoy takeover --list          # which instance ids exist: `run` never prints its own
+afkconvoy takeover --list          # every instance id the remote remembers, on any host
 ```
 
-and the lines `run` printed: a step that failed is reported there and nowhere else.
+A step that failed is in the line `run` printed and in its log, which `doctor` reads back as `fleet.failed_steps`.
 
 | What you see | Why | What to do |
 |---|---|---|
@@ -788,7 +796,5 @@ and the lines `run` printed: a step that failed is reported there and nowhere el
 | A warning that the base branch's protection could not be read | a private repo on a free plan does not expose it | fine if the branch is unprotected; otherwise landings will be refused |
 | `run` was killed | nothing is lost | start it again on the same machine: it takes its claims back |
 | Another machine's fleet died | its claims go stale by themselves | wait, or `afkconvoy takeover --from <instance> --instance <yours>` |
-
-There is not yet one command that says what is wrong with a running fleet and how to fix it; that is [#121](https://github.com/sunfmin/afkconvoy/issues/121).
 
 **To stop everything now**: kill `run`, then close the workers' terminals in orca. Issues keep their flow labels and their records, so a later `run` goes on from where each one was.

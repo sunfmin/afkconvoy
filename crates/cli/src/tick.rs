@@ -17,6 +17,7 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::judge::judge;
+use crate::log::{self, Log};
 use crate::panel::{self, Panel};
 use crate::patrol;
 use crate::precedent;
@@ -348,12 +349,49 @@ fn start_line(took: &Value) -> Option<String> {
     if parts.is_empty() { None } else { Some(parts.join(" · ")) }
 }
 
+/// The log a `run` keeps of itself (`log::Log`). One that cannot be written
+/// is said once and costs only what `doctor` could have read of it: no tick
+/// waits for its log.
+struct Said {
+    log: Option<Log>,
+}
+
+impl Said {
+    /// Opens the log and says in it that `me` started, with `agent`.
+    fn open(me: &Me, agent: &Agent) -> Said {
+        let log = Repo::here().and_then(|repo| Log::of(&repo));
+        let mut said = Said { log: log.ok() };
+        // Its first word alone: what follows may name what a human keeps to
+        // themselves, and the command is written to no file.
+        let first = agent.command.as_str().split_whitespace().next();
+        let worker_command = first.unwrap_or_default().to_string();
+        said.keep(me, me.now, log::What::Start { worker_command });
+        said.log = said.log.filter(|log| log.file.exists());
+        if said.log.is_none() {
+            eprintln!(
+                "warning: this run keeps no log of its ticks: `afkconvoy doctor` has none to read"
+            );
+        }
+        said
+    }
+
+    fn keep(&self, me: &Me, at: u64, what: log::What) {
+        let instance = me.instance.as_str().to_string();
+        let entry = log::Entry { at, instance, host: me.host.clone(), what };
+        if let Some(log) = &self.log {
+            // Soft: the line is on stdout too, and the next one is tried again.
+            let _ = log.append(&entry);
+        }
+    }
+}
+
 /// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
 /// `afkconvoy wake` ends early, and that is skipped after a tick that left the
 /// next one a worker to start (`Pass::follow_up_due`). Stopping it is just exiting: no claim is
 /// released on the way out, and the next start on this host takes them back
 /// (docs/adr/0003). With a `panel_port` it serves the panel there, a new page
-/// after every tick.
+/// after every tick. It keeps a line of each tick in its log (`log::Log`),
+/// which nothing here ever reads.
 pub fn run(
     me: &mut Me,
     agent: &Agent,
@@ -375,6 +413,7 @@ pub fn run(
     let mut count = 0;
     let mut started = false;
     let wakes = Listener::open(&Repo::here()?);
+    let said = Said::open(me, agent);
     loop {
         count += 1;
         me.now = clock();
@@ -400,7 +439,7 @@ pub fn run(
                 Ok::<_, anyhow::Error>((ticked, panel))
             },
         );
-        let (line, sleep) = match ticked {
+        let (line, sleep, logged) = match ticked {
             Ok((ticked, panel)) => {
                 if let Some(panel) = panel {
                     shown = panel;
@@ -409,17 +448,22 @@ pub fn run(
                 streak = empty_streak(streak, pass.did_work(), pass.held, pass.frontier_remaining);
                 skipped = sleeps_skipped(skipped, pass.follow_up_due(ticked.bound));
                 let sleep = if skipped > 0 { 0 } else { pace(pass.did_work(), pass.held, streak) };
-                (ticked.line(), sleep)
+                let logged = (Some(ticked.bound), Some(ticked.json()), None);
+                (ticked.line(), sleep, logged)
             }
             Err(error) => {
                 skipped = 0;
-                (format!("FAILED: {error:#}"), pace(true, 0, 0))
+                let error = format!("{error:#}");
+                (format!("FAILED: {error}"), pace(true, 0, 0), (None, None, Some(error)))
             }
         };
         match sleep {
             0 => println!("tick {count}: {line} · next now"),
             _ => println!("tick {count}: {line} · next in {sleep}s"),
         }
+        let (bound, answer, error) = logged;
+        let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
+        said.keep(me, clock(), log::What::Tick(tick));
         if let Some(served) = &served {
             // A tick that failed leaves the page as the last one found it.
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });

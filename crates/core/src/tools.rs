@@ -31,7 +31,7 @@ pub enum Found {
 }
 
 /// The line that starts orca.
-const START_ORCA: &str = "orca open";
+pub const START_ORCA: &str = "orca open";
 
 /// The line that gives orca the checkout at `path`, once.
 pub fn add_checkout(path: &str) -> String {
@@ -86,7 +86,7 @@ impl Tool {
     }
 
     /// The line that logs it in.
-    fn login(self, host: Option<&str>) -> String {
+    pub fn login(self, host: Option<&str>) -> String {
         match self {
             Tool::Claude => "claude auth login".to_string(),
             // github.com is where `gh auth login` logs in unasked.

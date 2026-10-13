@@ -24,6 +24,7 @@ pub mod claims;
 pub mod config;
 pub mod copies;
 pub mod dispatch;
+pub mod doctor;
 pub mod fleet;
 pub mod flows;
 pub mod gate;
@@ -35,6 +36,7 @@ pub mod judge;
 pub mod landing;
 pub mod launch;
 pub mod lock;
+pub mod log;
 pub mod orca;
 pub mod panel;
 pub mod park;
@@ -136,6 +138,13 @@ enum Command {
         declared: Vec<Declared>,
         #[command(flatten)]
         team: TeamArgs,
+    },
+    /// Say what the fleet on this host is doing and what is wrong with it, each finding with its fix
+    #[command(after_long_help = include_str!("help/doctor.txt"))]
+    Doctor {
+        /// The host whose fleet is asked after [default: this machine's name]
+        #[arg(long)]
+        host: Option<String>,
     },
     /// Show what a tick would act on, and change nothing
     #[command(after_long_help = include_str!("help/plan.txt"))]
@@ -565,7 +574,8 @@ impl AgentArgs {
 }
 
 /// Runs one command line. Prints exactly one JSON object on stdout: the
-/// command's answer, or `{"error": …}` with a non-zero exit. An answer that
+/// command's answer, or `{"error": …}` with a non-zero exit — `doctor` exits
+/// non-zero with its answer, when that holds a critical finding. An answer that
 /// is text — a drawing — is printed as it is. `guard` answers Claude Code,
 /// in the way a hook does: with its exit code, and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
@@ -587,13 +597,17 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             println!("{answer}");
             ExitCode::SUCCESS
         }
-        Err(e) => match e.downcast_ref::<team::Refused>() {
-            Some(refused) => {
+        Err(e) => {
+            if let Some(refused) = e.downcast_ref::<team::Refused>() {
                 println!("{}", json!({ "error": refused.to_string(), "faults": refused.json() }));
-                ExitCode::from(1)
+            } else if let Some(doctor::Unwell(answer)) = e.downcast_ref() {
+                // Not an error to report: the answer itself, which says what is wrong.
+                println!("{answer}");
+            } else {
+                return fail(1, &format!("{e:#}"));
             }
-            None => fail(1, &format!("{e:#}")),
-        },
+            ExitCode::from(1)
+        }
     }
 }
 
@@ -635,6 +649,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Rehearse { workflow, declared, team } => {
             workflow::rehearse(&team::load(team.from())?, &workflow, &declared)
         }
+        Command::Doctor { host } => doctor::doctor(now, &host.unwrap_or_else(this_host)),
         Command::Plan { instance } => {
             probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);
             let fleet = Fleet::open(now)?;

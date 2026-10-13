@@ -2,7 +2,7 @@
 //! as one JSON file (`CONVOY_FAKE_GH`), the code in the bare repo it names.
 //!
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?,
-//! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
+//! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url, at?}]}, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail. `repos` {owner/repo: the git repo that
 //! stands in for it}: the other repos GitHub holds, which `repo clone` clones and
@@ -427,7 +427,8 @@ fn api(st: &mut State) -> ! {
             let lines: Vec<String> = rows
                 .iter()
                 .map(|c| {
-                    json!({"id": c["id"], "body": c["body"], "url": c["html_url"]}).to_string()
+                    json!({"id": c["id"], "body": c["body"], "url": c["html_url"], "at": c["at"]})
+                        .to_string()
                 })
                 .collect();
             st.finish(&lines.join("\n"), 0, "")

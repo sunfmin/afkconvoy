@@ -369,11 +369,7 @@ pub fn read(
 ) -> Panel {
     let source = Source::of(&fleet.repo).ok();
     let state = |issue: u64| {
-        let worktree = Worktree::of_issue(source.as_ref()?, issue).ok()?;
-        Some(match worktree {
-            Some(worktree) => worktree.state(fleet.now).ok()?,
-            None => WorkerState::Gone,
-        })
+        Worktree::worker_of(source.as_ref()?, issue, fleet.now).ok().map(|(_, state)| state)
     };
     let at_work = |status| matches!(status, Status::NoPr | Status::AtStage | Status::Joining);
     let mut workers = vec![];
@@ -416,7 +412,7 @@ fn esc(text: &str) -> String {
 }
 
 /// A length of time in words short enough for a card: `40s`, `12m`, `3h 5m`.
-fn lasted(seconds: u64) -> String {
+pub(crate) fn lasted(seconds: u64) -> String {
     match seconds {
         0..60 => format!("{seconds}s"),
         60..3600 => format!("{}m", seconds / 60),

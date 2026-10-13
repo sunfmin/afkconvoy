@@ -12,6 +12,18 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::gh::GitHub;
 use crate::git::Repo;
 
+/// Where on this host this user's fleets keep what they need not read again:
+/// their cache directory, outside every checkout.
+pub fn cache() -> Result<PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    let cache = match (set("XDG_CACHE_HOME"), set("HOME")) {
+        (Some(cache), _) => PathBuf::from(cache),
+        (None, Some(home)) => PathBuf::from(home).join(".cache"),
+        (None, None) => bail!("neither XDG_CACHE_HOME nor HOME says where the fleet's cache is"),
+    };
+    Ok(cache.join("afkconvoy"))
+}
+
 /// Where on this host the copies are kept.
 pub struct Copies {
     root: PathBuf,
@@ -28,13 +40,7 @@ impl Copies {
     /// This user's copies: in their cache directory, outside every checkout —
     /// a worker started in one finds no rules above it but its role's.
     pub fn here() -> Result<Copies> {
-        let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-        let cache = match (set("XDG_CACHE_HOME"), set("HOME")) {
-            (Some(cache), _) => PathBuf::from(cache),
-            (None, Some(home)) => PathBuf::from(home).join(".cache"),
-            (None, None) => bail!("neither XDG_CACHE_HOME nor HOME says where copies are kept"),
-        };
-        Ok(Copies { root: cache.join("afkconvoy").join("copies") })
+        Ok(Copies { root: cache()?.join("copies") })
     }
 
     /// The copy of `repo` at the head of its default branch

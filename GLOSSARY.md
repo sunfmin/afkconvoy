@@ -200,6 +200,14 @@ _Avoid_: progress log, worklog
 The web page that shows a human where the whole fleet stands: each workflow as the line of its stages, the issues at work, queued and held back at each, and the landing train. A fleet instance serves it on its own host, made anew from what each tick read; it is never read back.
 _Avoid_: dashboard, status page, status board (the comment on one issue), UI
 
+**Tick log**:
+The file a fleet instance's `run` keeps on its own host: one line as it starts and one for each tick, cut back to its newest lines at a bound. It is a log and not fleet state: nothing reads it to decide what the fleet does.
+_Avoid_: state file, journal, history
+
+**Finding**:
+One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, and its fix: a line to run, or a file and the key in it to edit. `doctor` fixes none itself.
+_Avoid_: diagnosis, alert, warning (one of its severities), error
+
 ### Landing
 
 **Gate**:

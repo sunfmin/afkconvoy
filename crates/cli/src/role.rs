@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use crate::copies::{Copies, Copy};
 use crate::fleet::Fleet;
 use crate::launch::Proposed;
-use crate::orca::Worktree;
+use crate::orca::{Under, Worktree};
 use crate::stage::records_of;
 use crate::team::keep;
 
@@ -139,7 +139,14 @@ impl Staged {
     /// Keeps, for a stage that writes nothing and for a consult, where the
     /// branch in `worktree` is as its worker starts under `claim`: what the
     /// fleet checks once it has declared (`advance::advance`).
+    /// Every start also keeps the commits it is made under (`orca::Under`).
     pub fn keep_start(&self, worktree: &Worktree, claim: &Claim) -> Result<()> {
+        worktree.keep_under(&Under {
+            stage: self.stage.clone(),
+            role: self.role.clone(),
+            role_commit: self.role_copy.commit.clone(),
+            team_commit: self.team_copy.commit.clone(),
+        })?;
         if self.writes && !self.consult {
             return Ok(());
         }

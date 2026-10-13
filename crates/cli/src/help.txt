@@ -25,6 +25,9 @@ WHAT TO RUN FIRST, in a checkout of the repo
   2. afkconvoy plan      What a tick would act on. It changes nothing.
   3. afkconvoy run       The fleet instance: tick after tick, until stopped.
 
+  And whenever something looks wrong: afkconvoy doctor — it reads everything, changes
+  nothing, and names the fix of each thing it finds.
+
 WHAT A COMMAND ANSWERS
 
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
@@ -36,8 +39,11 @@ THE COMMANDS, by who runs them
 
   Read `afkconvoy <command> --help` before the first time you run one.
 
-  The operator — starting, watching or stopping a fleet. Read these first:
-      config  check  plan  run  panel  tick  takeover
+  The operator — starting, watching or stopping a fleet. Read these first. `doctor` is
+  what to run when something looks wrong, or you are asked whether the fleet is working:
+  it says what the fleet on this host is doing and what is wrong, each finding with the
+  line that fixes it:
+      doctor  config  check  plan  run  panel  tick  takeover
 
   Whoever designs a team — `scaffold` to start one or a role of it from a skeleton,
   then, once `check` accepts it, the others: to review a workflow, to try one out with

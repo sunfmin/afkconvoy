@@ -178,6 +178,8 @@ An unbound repo's command stays opaque and may start any agent.
 
 **Another host's claims** come free on their own when its heartbeat goes stale. `afkconvoy takeover --list` shows who holds what; `afkconvoy takeover --from <instance> --instance <yours>` takes them now.
 
+**When something looks wrong**, run `afkconvoy doctor` in the checkout the fleet runs in. It reads this host, the log `run` keeps of its ticks, GitHub, the remote and orca, changes nothing, and answers what the fleet is doing and a list of findings — each with the line to run, or the file and key to edit. It exits non-zero while a finding is critical.
+
 Every transition the fleet makes is also a subcommand, for doing one by hand: see `afkconvoy --help`.
 
 ## Develop
