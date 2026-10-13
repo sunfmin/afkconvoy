@@ -104,7 +104,8 @@ enum Command {
         #[command(flatten)]
         team: TeamArgs,
     },
-    /// Write the skeleton of a team's repo or of a role's, and create it on GitHub if asked
+    /// Write the skeleton of a team with its roles, or of one role, and create its repo on
+    /// GitHub if asked
     #[command(after_long_help = include_str!("help/scaffold.txt"))]
     Scaffold {
         /// What to write the skeleton of
@@ -112,9 +113,11 @@ enum Command {
         what: scaffold::What,
         /// The directory to write it in: one not there yet, or empty
         dir: PathBuf,
-        /// A team's one role, which its example workflow is performed by, as <name>=<owner/repo>
+        /// A role of the team, once for each: <name> for one written here, under roles/<name>,
+        /// or <name>=<owner/repo[/path]> for one that is elsewhere. The example workflow is
+        /// performed by the first
         #[arg(long, value_parser = scaffold::named)]
-        role: Option<scaffold::Named>,
+        role: Vec<scaffold::Named>,
         /// Also commit the skeleton and create this repo on GitHub from it, as owner/repo
         #[arg(long, value_parser = repo)]
         repo: Option<RepoName>,
@@ -707,7 +710,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Check { team } => team::check(team.from()),
         Command::Scaffold { what, dir, role, repo, public } => {
             let create = repo.map(|repo| scaffold::Create { repo, public });
-            scaffold::scaffold(what, &dir, role.as_ref(), create.as_ref())
+            scaffold::scaffold(what, &dir, &role, create.as_ref())
         }
         Command::Flows => flows::flows(&Repo::here()?),
         Command::Show { workflow, issue, team } => {

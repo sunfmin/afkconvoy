@@ -13,5 +13,5 @@ stages:
 land: { by: {role}, do: {skill} }
 ```
 
-To see it drawn: `afkconvoy show --dir .`. To see where a list of verdicts would take an issue,
-with no worker started: `afkconvoy rehearse --dir . {workflow} pass`.
+To see it drawn: `afkconvoy show {from}`. To see where a list of verdicts would take an issue,
+with no worker started: `afkconvoy rehearse {from} {workflow} pass`.

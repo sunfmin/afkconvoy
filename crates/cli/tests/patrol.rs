@@ -286,6 +286,34 @@ fn a_patrol_the_repo_names_runs_when_due_and_one_it_does_not_name_never_runs() {
     assert_eq!(world.afk(&["scan"]).ok()["claims"], json!([]));
 }
 
+/// A patrol's worker starts as a stage's does: in its role's directory alone,
+/// where the role is a subdirectory of its repo (docs/adr/0014).
+#[test]
+fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
+    let world = bound("[sweep]");
+    let repo = world.root.join("github/acme/team");
+    write(&repo, "CLAUDE.md", "the rules of a human\n");
+    write(&repo, "roles/dev/CLAUDE.md", "the rules of a dev\n");
+    write(&repo, "roles/dev/.claude/skills/sweep/SKILL.md", "s\n");
+    write(&repo, "roles/dev/.claude/skills/implement/SKILL.md", "build\n");
+    let head = commit(&repo, "team.md", "```yaml\nroles:\n  dev: ./roles/dev\n```\n");
+    world.orca_calls();
+
+    assert_eq!(patrolled(&tick(&world, 10_000)), ["patrol sweep done"]);
+    let started = calls(&world, "terminal create");
+    let command = option(&started[0], "--command").unwrap();
+    let kept = world.cache().join("afkconvoy/copies/acme/team");
+    let (role_dir, team_dir) =
+        (kept.join(format!("{head}-role-roles%2Fdev")), kept.join(format!("{head}-team-")));
+    assert!(command.starts_with(&format!("cd '{}' && ", role_dir.display())), "{command}");
+    assert!(command.contains(&format!(" --add-dir '{}' ", team_dir.display())), "{command}");
+    let commits = format!(" AFKCONVOY_ROLE_COMMIT='{head}' AFKCONVOY_TEAM_COMMIT='{head}' ");
+    assert!(command.contains(&commits), "{command}");
+    assert!(role_dir.join("CLAUDE.md").is_file() && !role_dir.join("team.md").exists());
+    assert!(team_dir.join("patrols/sweep.md").is_file());
+    assert!(!team_dir.join("roles/dev").exists() && !team_dir.join("CLAUDE.md").exists());
+}
+
 #[test]
 fn a_patrol_due_while_its_run_is_still_going_is_skipped_and_a_missed_run_is_not_made_up() {
     let world = bound("[sweep]");
