@@ -63,7 +63,8 @@ fn mentioned<'a>(text: &'a str, before: &str) -> BTreeSet<&'a str> {
 fn topics(long: &str) -> Vec<(&str, &str)> {
     let rows = between(long, "THE TOPICS", "RULES").into_iter();
     let rows = rows.filter(|row| row.starts_with("      "));
-    rows.map(|row| row.trim().split_once("  ").expect("a name and its line")).collect()
+    let rows = rows.map(|row| row.trim().split_once("  ").expect("a name and its line"));
+    rows.map(|(name, line)| (name, line.trim_start())).collect()
 }
 
 /// Where this repository is checked out.
@@ -328,50 +329,155 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     assert_eq!(listed(&long), listed(&help("-h")));
 }
 
-/// The guide is where an agent learns to design a team from any directory:
-/// the files of a team and of a role, every key, and the loop.
+/// The topics that are files of `help/topics/`: each name with its text.
+fn topic_files() -> Vec<(String, String)> {
+    let files = fs::read_dir(repository().join("crates/cli/src/help/topics")).unwrap();
+    let mut topics: Vec<_> = files
+        .map(|file| file.unwrap().path())
+        .map(|file| {
+            let name = file.file_stem().unwrap().to_str().unwrap().to_string();
+            (name, fs::read_to_string(file).unwrap())
+        })
+        .collect();
+    topics.sort();
+    topics
+}
+
+/// Whether `text` shows `key` as a key of a file: followed by its `:`, and
+/// not as the end of a longer key.
+fn shows(text: &str, key: &str) -> bool {
+    let shown = format!("{key}:");
+    text.match_indices(&shown).any(|(at, _)| text[..at].ends_with([' ', '`', '{']))
+}
+
+/// A team's files are described in the topics, each kind of file in its own:
+/// the keys are the loader's, so one it learns is one a topic must describe.
 #[test]
-fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
-    use afkconvoy_core::harness::Harness;
+fn every_key_the_loader_knows_is_described_in_the_topic_of_its_file_and_in_no_other() {
     use afkconvoy_core::team::{
-        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PATROLS, RULES, SKILLS, STAGE_KEYS,
-        TEAM_FILE, TEAM_KEYS, WORKFLOW_KEYS, WORKFLOWS,
+        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PRECEDENTS_KEYS, STAGE_KEYS, TEAM_KEYS,
+        WORKFLOW_KEYS,
     };
+    let files = [
+        ("team", [&TEAM_KEYS[..], &PRECEDENTS_KEYS].concat()),
+        (
+            "workflows",
+            [&WORKFLOW_KEYS[..], &STAGE_KEYS, &ON_KEYS, &ESCALATE_KEYS, &LAND_KEYS].concat(),
+        ),
+        ("patrols", PATROL_KEYS.to_vec()),
+    ];
+    // What it catches: a key shown, and one that is only part of another's name.
+    assert!(shows("      max_open: 5", "max_open") && shows("{ by: <role>", "by"));
+    assert!(!shows("      max_open: 5", "open") && !shows("the stages follow", "stages"));
+    for (topic, keys) in &files {
+        let text = asked(&["help", topic]);
+        for key in keys {
+            assert!(shows(&text, key), "`afkconvoy help {topic}` never shows the key {key}");
+            // A key two kinds of file have is described once for each.
+            for (other, theirs) in files.iter().filter(|(other, _)| other != topic) {
+                let said = theirs.contains(key) || !shows(&asked(&["help", other]), key);
+                assert!(said, "{key} is a key of {topic}'s file, and {other} shows it too");
+            }
+        }
+    }
+}
+
+/// `--help` and `check --help` name the topics where they held the
+/// description of a team's files, and hold none of it.
+#[test]
+fn the_guide_and_check_name_the_topics_and_describe_no_file_of_a_team() {
+    use afkconvoy_core::team::{PATROL_KEYS, STAGE_KEYS, TEAM_KEYS, WORKFLOW_KEYS};
     let long = help("--help");
     let guide = guide(&long);
+    let check = asked(&["check", "--help"]);
+    let check = section(&check, "WHAT IT READS AND WRITES");
+    for (text, from) in [(guide, "--help"), (check.as_str(), "check --help")] {
+        for topic in ["team", "workflows", "patrols"] {
+            let named = format!("`afkconvoy help {topic}`");
+            assert!(text.contains(&named), "`{from}` does not name {named}");
+        }
+        let keys = [&TEAM_KEYS[..], &WORKFLOW_KEYS, &STAGE_KEYS, &PATROL_KEYS].concat();
+        for key in keys.into_iter().filter(|key| *key != "harness") {
+            let laid_out =
+                text.lines().any(|line| line.trim_start().starts_with(&format!("{key}:")));
+            assert!(!laid_out, "`{from}` still lays out the key {key}");
+        }
+        assert!(!text.contains("{files}") && !text.contains("      team.md  "), "{from}");
+    }
+    // It is shorter for it: what it held was longer than all the rest of it is.
+    assert!(guide.lines().count() < 150, "the guide is {} lines", guide.lines().count());
+}
+
+/// The team topic is where an agent learns the files of a team and of a role.
+#[test]
+fn the_team_topic_lays_out_the_files_of_a_team_and_a_role_and_the_four_kinds_of_text() {
+    use afkconvoy_core::harness::Harness;
+    use afkconvoy_core::team::{
+        PATROLS, PRECEDENTS, ROLE_FORMS, RULES, SKILLS, TEAM_FILE, WORKFLOWS,
+    };
+    let team = asked(&["help", "team"]);
     // A role's limits are laid out once for each harness.
     let limits = Harness::ALL.map(Harness::limits);
-    for file in [&[TEAM_FILE, WORKFLOWS, PATROLS, RULES, SKILLS][..], &limits].concat() {
-        assert!(guide.contains(&format!("      {file}")), "the guide lays out no {file}");
+    for file in [&[TEAM_FILE, WORKFLOWS, PATROLS, PRECEDENTS, RULES, SKILLS][..], &limits].concat()
+    {
+        assert!(team.contains(&format!("      {file}")), "the topic lays out no {file}");
     }
     // The team rules are a file of the team's, and the four kinds of text a
     // worker reads are each said with what it is for.
-    assert!(guide.contains(&format!("      {RULES}               the team rules: ")), "{guide}");
+    assert!(team.contains(&format!("      {RULES}               the team rules: ")), "{team}");
     for (kind, is_for) in [
         ("the repo's own rules", "what that one codebase asks"),
         ("the team rules", "how the team"),
         ("a role's rules", "what one kind of"),
         ("the precedents", "what a human"),
     ] {
-        let said = guide.split(&format!("      {kind}  ")).nth(1);
-        let said = said.unwrap_or_else(|| panic!("the guide names no {kind}"));
+        let said = team.split(&format!("      {kind}  ")).nth(1);
+        let said = said.unwrap_or_else(|| panic!("the topic names no {kind}"));
         let said = said.split("\n\n").next().unwrap();
-        assert!(said.contains(is_for), "the guide does not say what {kind} is for: {said}");
+        assert!(said.contains(is_for), "the topic does not say what {kind} is for: {said}");
     }
-    let keys = [
-        &TEAM_KEYS[..],
-        &WORKFLOW_KEYS,
-        &STAGE_KEYS,
-        &ON_KEYS,
-        &ESCALATE_KEYS,
-        &LAND_KEYS,
-        &PATROL_KEYS,
-    ];
-    for key in keys.concat() {
-        assert!(guide.contains(&format!(" {key}:")), "the guide never shows the key {key}");
+    // A role is a directory, named in one of three ways.
+    for form in ["      owner/repo  ", "      owner/repo/path  ", "      ./path  "] {
+        assert!(team.contains(form), "the topic lost the form {form:?}");
     }
-    // The loop, in order: a team with its roles in one repo, one more role
-    // there, then `check` after each edit.
+    assert!(team.contains(ROLE_FORMS));
+    // How a repo is bound, and what `check` holds the team to.
+    for said in ["HOW A REPO IS BOUND TO IT", "intake_limit", "WHAT CHECK HOLDS IT TO"] {
+        assert!(team.contains(said), "the topic lost {said:?}");
+    }
+}
+
+/// A topic that is a file of `help/topics/` says first what its thing is and
+/// when to read it, stays short, and ends with the topics to read next.
+#[test]
+fn a_topic_opens_with_what_it_is_and_when_to_read_it_and_ends_with_what_to_read_next() {
+    let topics = topic_files();
+    assert!(topics.len() >= 3, "{}", topics.len());
+    for (name, text) in &topics {
+        let lines = text.lines().count();
+        assert!(lines <= 120, "the topic {name} is {lines} lines: split it");
+        let opening = text.split("\n\n").next().unwrap();
+        assert!(opening.starts_with("A ") && opening.contains(" is "), "{name}: {opening}");
+        assert!(opening.contains(". Read this to "), "{name} does not say when to read it");
+        let (_, next) = text.rsplit_once("\nREAD NEXT\n").expect("its last section");
+        let rows: Vec<_> = next.lines().filter(|row| !row.is_empty()).collect();
+        assert!(rows.len() >= 2, "{name}: {next}");
+        for row in rows {
+            let other = row.trim_start().strip_prefix("afkconvoy help ");
+            let other = other.and_then(|rest| rest.split_whitespace().next());
+            let other = other.unwrap_or_else(|| panic!("{name} ends with more than topics: {row}"));
+            assert!(other != name && asked(&["help", other]).len() > 100, "{name}: {row}");
+        }
+    }
+}
+
+/// The loop that designs a team is the guide's: the commands, in order.
+#[test]
+fn the_guide_teaches_the_loop_that_designs_a_team() {
+    let long = help("--help");
+    let guide = guide(&long);
+    // A team with its roles in one repo, one more role there, then `check`
+    // after each edit.
     let at = |line: &str| guide.find(line).unwrap_or_else(|| panic!("the guide lost {line:?}"));
     assert!(
         at("afkconvoy scaffold team <dir> --role <name> --repo") < at("afkconvoy scaffold role")
@@ -379,14 +485,6 @@ fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
     assert!(at("afkconvoy scaffold role") < at("afkconvoy check --dir <dir> --team"));
     assert!(guide.contains("until it exits 0"));
     assert!(guide.contains("skills installer") && guide.contains("wraps no installer"));
-    // `check` lays the same files out, from the same text.
-    let files = guide
-        .split("\n  A team is a directory — a whole repo, or a subdirectory of one — that holds:")
-        .nth(1)
-        .unwrap();
-    let files = files.split("\n\n  The loop").next().unwrap();
-    assert!(asked(&["check", "--help"]).contains(files));
-    assert!(!long.contains("{files}"));
 }
 
 /// One repo for a team and its roles is the layout a new team starts from
@@ -626,18 +724,13 @@ fn the_help_of_tick_and_of_run_say_what_run_does_about_the_hop_between_two_stage
     assert!(run.contains(&format!("At most {most} ticks run back to back")), "{run}");
 }
 
-/// A role is a directory, named in one of three ways: the guide and `check`
-/// lay them out, and neither says any more that a role is a repo.
+/// A role is a directory: no help says any more that a role is a repo.
 #[test]
-fn the_help_lays_out_the_three_ways_to_name_a_role_and_calls_no_role_a_repo() {
-    for text in [help("--help"), asked(&["check", "--help"])] {
-        for form in ["      owner/repo  ", "      owner/repo/path  ", "      ./path  "] {
-            assert!(text.contains(form), "the help lost the form {form:?}");
-        }
-        assert!(text.contains(afkconvoy_core::team::ROLE_FORMS));
+fn no_help_calls_a_role_or_a_team_a_repo() {
+    for (file, text) in help_texts() {
         let flat = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
         for gone in ["a role is a repo", "a team is a repo", "each a repo"] {
-            assert!(!flat.contains(gone), "the help still says {gone:?}");
+            assert!(!flat.contains(gone), "{file} still says {gone:?}");
         }
     }
     let config = asked(&["config", "--help"]);

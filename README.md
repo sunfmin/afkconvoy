@@ -75,7 +75,7 @@ afkconvoy scaffold role roles/tester                                      # in t
 
 `scaffold role <dir>` writes one role's skeleton. In a checkout it creates nothing on GitHub, and its answer holds the line to add under `roles` in `team.md` — `"team_line": "tester: ./roles/tester"`. A role several teams share is a repo of its own instead: `scaffold role dev --repo acme/dev` creates it, and a team names it with `--role dev=acme/dev`, or `dev=owner/repo/path` for a directory of a repo.
 
-From there a team is designed by editing those files: edit, run `afkconvoy check --dir <the team's checkout> --team <owner/repo>`, repeat until it exits 0 — `--team` says the repo a role named `./path` is read from. `afkconvoy --help` lays out every file of a team and of a role and every key; `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started.
+From there a team is designed by editing those files: edit, run `afkconvoy check --dir <the team's checkout> --team <owner/repo>`, repeat until it exits 0 — `--team` says the repo a role named `./path` is read from. `afkconvoy help team`, `afkconvoy help workflows` and `afkconvoy help patrols` lay out every file of a team and of a role and every key; `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started.
 
 **A role's skills** are added with the skills installer, run in the role's directory, in a checkout of its repo, and committed there:
 

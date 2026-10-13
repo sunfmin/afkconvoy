@@ -10,6 +10,6 @@ roles:
 {roles}
 ```
 
-Every key of this file, and of a workflow and a patrol, is in `afkconvoy --help`. After each edit
-run `afkconvoy check {from}` here, until it exits 0. A role is read from GitHub, at the
+Every key of this file is in `afkconvoy help team`, and a workflow's and a patrol's in
+`afkconvoy help workflows` and `afkconvoy help patrols`. After each edit run `afkconvoy check {from}` here, until it exits 0. A role is read from GitHub, at the
 head of its repo's default branch: an edit to one counts once it is pushed.

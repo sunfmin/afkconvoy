@@ -1,0 +1,108 @@
+A workflow is the stages one issue passes through and where each verdict leads, ending in
+the landing train or in nothing more to do. Read this to write a file of a team's
+`workflows/`, or to tell why an issue went where it did.
+
+A WORKFLOW'S FILE
+
+  `workflows/<name>.md` is the workflow `<name>`, and its flow label is `flow:<name>`: an
+  issue that carries it is at the first stage. Above the yaml block, say what the
+  workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to
+  whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
+
+      max_rework: 3                      # default
+      max_consecutive_rework: 2          # default
+      stages:
+        - name: <unique; not land, done or human>
+          by: <role> | human
+          do: <skill>                    # required unless by: human
+          harness: claude-code           # optional
+          model: <model>                 # optional; its harness's own name for it
+          writes: false                  # optional; default true
+          escalate: { to: <role>, do: <skill> }                  # optional: the consult
+          on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
+      land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
+
+STAGES
+
+  A stage is one skill of one role, performed by one new worker: `by` is a short name of
+  the team file, `do` an entry of that role's `.claude/skills/`. The worker of a stage
+  knows nothing of the one before it but what the stage records say, so a stage that
+  judges never inherits the reasoning of the one that wrote.
+
+  `harness` names the harness the stage's worker is a session of: claude-code, Claude
+  Code, or pi. It is a key of a stage a role performs and of a patrol — wherever `model`
+  is one — and nowhere else. One that names none takes the default, which is the
+  `harness` of the repo's config, and claude-code where that names none. `model` is
+  passed to the harness; `afkconvoy check` holds it against the models pi lists.
+
+  `writes: false` has the guard refuse the stage's worker a commit and a push
+  (`afkconvoy guard --help`): mark every stage that judges so.
+
+VERDICTS, AND WHERE EACH LEADS
+
+  A worker ends its stage with `afkconvoy verdict`, which leaves a stage record on the
+  issue. Where an issue is, is derived from those records each tick and stored nowhere:
+  `afkconvoy show --issue <n>` reads it.
+
+      pass               where the stage's `on.pass` says: a stage, `land` or `done`
+      reject             back to the stage `on.reject` names: always an earlier one
+      blocked            parked; the same stage runs again when its blockers close
+      already-satisfied  the workflow ends, with nothing landed
+      escalate           to the stage's consult where it names one, else to a human
+
+  Only `pass` and `reject` are keys of `on`: the other three mean the same at every
+  stage. `done` ends the workflow with nothing to land; `land` hands the issue's PR to
+  the landing (below). A stage with no `reject` may not declare one. Following `pass`
+  alone from any stage must come to `land` or `done`, and every stage must be reached
+  from the first: a loop back is made with `reject` only.
+
+  A stage that finds its issue too large splits it: it opens issues, takes each in
+  (`afkconvoy intake --help`) and declares `blocked` on all of them. When they have all
+  closed, the stage runs again and judges the whole.
+
+REWORK AND ITS BREAKERS
+
+  Rework is a stage running again because a later stage rejected its work or a consult
+  ruled on it. It is counted per issue from the stage records, from where a human last
+  ruled on the issue or sent it to a stage. Two breakers bound it:
+
+      max_rework                 the rework of one issue, in total
+      max_consecutive_rework     the rejections in a row by one stage
+
+  A count never passes its breaker: the rework that would is not started, and the issue
+  escalates, the comment naming the breaker and every rework's stage and reason.
+  `afkconvoy rehearse` shows which verdict trips one, with no worker started.
+
+A CONSULT
+
+  `escalate: { to, do }` names a more senior role to ask before a human is. The stage's
+  `escalate` verdict then starts a worker in the role `to`, with the skill `do`, which
+  rules with `afkconvoy rule` — the stage that asked runs again under the ruling, as
+  one more of the issue's rework in total — or lets the escalation through to a human.
+  The chain is one role long, and a consult writes no code: one that left a commit has
+  failed. It runs on the default harness.
+
+A STAGE BY: HUMAN
+
+  No human stands in a workflow unless it names one. A stage `by: human` has no `do`,
+  no `harness` and no `model`; it starts no worker and holds no claim. The issue waits
+  there until a human declares the stage's verdict with `afkconvoy verdict`.
+
+  Anywhere else a human is reached by an escalation: an `escalate` no consult ruled on,
+  a tripped breaker, or a failure — nothing is tried a second time. The human answers
+  with `afkconvoy rule`, and the stage runs again under the ruling, or puts the issue at
+  a stage of their choosing with `afkconvoy send`.
+
+A LANDING
+
+  A workflow in which a pass leads to `land` names who lands: `land: { by, do }`. The
+  tick after that `pass` starts a new worker in the role `by`, with the skill `do`, on
+  the default harness. It runs the gate on the issue's PR and joins it to the landing
+  train (`afkconvoy land --help`), which lands it on the base branch as it lands any
+  PR. A `land:` no pass leads to is a fault, and so is a `pass: land` with no `land:`.
+
+READ NEXT
+
+  afkconvoy help team         the roles a `by` names, and the rest of a team's directory
+  afkconvoy help patrols      how an issue comes to carry a flow label with no human
+  afkconvoy help glossary     each term used here, with its one definition

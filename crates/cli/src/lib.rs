@@ -101,7 +101,7 @@ enum Command {
         file: Option<PathBuf>,
     },
     /// Read a team and its workflows: what was read, or every fault
-    #[command(after_long_help = with_files(include_str!("help/check.txt")))]
+    #[command(after_long_help = include_str!("help/check.txt"))]
     Check {
         #[command(flatten)]
         team: TeamArgs,
@@ -574,16 +574,10 @@ fn own_program() -> String {
     exe.unwrap_or_else(|| "afkconvoy".to_string())
 }
 
-/// A help text with the files and keys of a team and a role put in where it
-/// says `{files}`: `help/files.txt` is the one place they are written.
-fn with_files(help: &str) -> String {
-    help.replace("{files}", include_str!("help/files.txt").trim_end())
-}
-
 /// What `--help` opens with: `help.txt`, with the topics listed where it says
 /// `{topics}`.
 fn guide() -> String {
-    with_files(include_str!("help.txt")).replace("{topics}", &topic::listing())
+    include_str!("help.txt").replace("{topics}", &topic::listing())
 }
 
 /// What `help` prints: the guide with no name, the long help of the command

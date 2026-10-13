@@ -13,11 +13,28 @@ pub struct Topic {
 
 /// A topic that is not the repository's own glossary is a file of
 /// `help/topics/`, named `<name>.txt`.
-pub const TOPICS: &[Topic] = &[Topic {
-    name: "glossary",
-    line: "every term the help uses, each with its one definition",
-    text: include_str!("../../../GLOSSARY.md"),
-}];
+pub const TOPICS: &[Topic] = &[
+    Topic {
+        name: "team",
+        line: "a team's directory, its file, how it names a role, binding a repo",
+        text: include_str!("help/topics/team.txt"),
+    },
+    Topic {
+        name: "workflows",
+        line: "stages, verdicts, rework, a consult, a landing: a workflow's file",
+        text: include_str!("help/topics/workflows.txt"),
+    },
+    Topic {
+        name: "patrols",
+        line: "a role run on a schedule: a patrol's file, intake, the fleet lock",
+        text: include_str!("help/topics/patrols.txt"),
+    },
+    Topic {
+        name: "glossary",
+        line: "every term the help uses, each with its one definition",
+        text: include_str!("../../../GLOSSARY.md"),
+    },
+];
 
 /// The text of the topic called `name`.
 pub fn text(name: &str) -> Option<&'static str> {
@@ -26,7 +43,7 @@ pub fn text(name: &str) -> Option<&'static str> {
 
 /// The topics as `--help` lists them: a name and its line, one topic a row.
 pub fn listing() -> String {
-    let rows = TOPICS.iter().map(|topic| format!("      {:<10}{}", topic.name, topic.line));
+    let rows = TOPICS.iter().map(|topic| format!("      {:<11}{}", topic.name, topic.line));
     rows.collect::<Vec<_>>().join("\n")
 }
 
