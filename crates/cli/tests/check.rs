@@ -28,8 +28,15 @@ land: { by: dev, do: land }
 ```
 ";
 
-fn skill(name: &str) -> (String, &'static str) {
-    (format!(".claude/skills/{name}/SKILL.md"), "a skill\n")
+/// The file of the skill `name`, in the form `check` holds one to.
+fn skill_file(name: &str) -> String {
+    format!(
+        "---\nname: {name}\ndescription: A skill. Use when the brief names it.\n---\n\n# {name}\n"
+    )
+}
+
+fn skill(name: &str) -> (String, String) {
+    (format!(".claude/skills/{name}/SKILL.md"), skill_file(name))
 }
 
 /// A world whose GitHub holds two roles and a team of `files`, with the
@@ -41,7 +48,7 @@ fn bound(files: &[(&str, &str)]) -> World {
     {
         let skills: Vec<_> = skills.iter().map(|name| skill(name)).collect();
         let files: Vec<(&str, &str)> =
-            skills.iter().map(|(file, text)| (file.as_str(), *text)).collect();
+            skills.iter().map(|(file, text)| (file.as_str(), text.as_str())).collect();
         world.repo(role, &files);
     }
     world.repo("acme/team", files);
@@ -147,7 +154,11 @@ fn a_repo_is_cloned_only_when_the_fleet_has_no_copy_of_its_head() {
     world.afk(&["rehearse", "feature", "pass", "pass"]).ok();
     assert_eq!(clones(&world), [] as [&str; 0]);
     // A role pushed since is read at its new head: that repo alone is cloned.
-    let pushed = commit(&world.root.join("github/acme/dev"), ".claude/skills/plan/SKILL.md", "a\n");
+    let pushed = commit(
+        &world.root.join("github/acme/dev"),
+        ".claude/skills/plan/SKILL.md",
+        "---\nname: plan\ndescription: a\n---\n",
+    );
     let after = world.afk(&["check"]).ok();
     assert_eq!(after["roles"][0]["commit"], pushed);
     assert_eq!(after["roles"][0]["skills"], json!(["implement", "land", "plan"]));
@@ -203,6 +214,60 @@ fn every_fault_of_a_team_is_reported_in_one_run_with_its_file_and_key() {
     ] {
         assert!(error.contains(said), "{said:?} is not in {error}");
     }
+}
+
+/// A skill a `do` names is held to the form of a skill's file: one whose
+/// `SKILL.md` is missing or malformed is a fault at each `do` that names it,
+/// and one no `do` names is not read.
+#[test]
+fn a_skill_whose_file_is_not_in_the_form_of_one_is_a_fault_at_the_do_that_names_it() {
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let (dev, reviewer) =
+        (world.root.join("github/acme/dev"), world.root.join("github/acme/reviewer"));
+    // Nobody is asked to perform `draft`.
+    commit(&dev, ".claude/skills/draft/SKILL.md", "a draft\n");
+    world.afk(&["check"]).ok();
+
+    commit(&dev, ".claude/skills/implement/SKILL.md", "# implement\n\nBuild it.\n");
+    commit(&dev, ".claude/skills/land/SKILL.md", &skill_file("join"));
+    commit(&reviewer, ".claude/skills/rule/SKILL.md", "---\nname: rule\n---\n\n# rule\n");
+    git(&reviewer, &["rm", "-q", ".claude/skills/review/SKILL.md"]);
+    commit(&reviewer, ".claude/skills/review/notes.md", "what a review looks for\n");
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 1);
+    assert_eq!(
+        faults(&answer.json),
+        [
+            "workflows/feature.md: stages[0].do",
+            "workflows/feature.md: stages[0].escalate.do",
+            "workflows/feature.md: stages[1].do",
+            "workflows/feature.md: land.do",
+        ]
+    );
+    let problems: Vec<&str> = answer.json["faults"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["problem"].as_str().unwrap())
+        .collect();
+    for (problem, why) in problems.iter().zip([
+        "acme/dev/.claude/skills/implement/SKILL.md does not open with frontmatter: ",
+        "acme/reviewer/.claude/skills/rule/SKILL.md says no `description`. ",
+        "acme/reviewer/.claude/skills/review/SKILL.md is not there, or is no file. ",
+        "acme/dev/.claude/skills/land/SKILL.md says its `name` is `join`, which its directory's is not. ",
+    ]) {
+        assert!(problem.contains(why), "{problem}");
+        assert!(problem.ends_with("`afkconvoy help skill-file` says its form"), "{problem}");
+    }
+    assert!(problems[0].starts_with("`implement`, the skill the stage `build` of the workflow `feature` has the role `dev` perform, "));
+
+    // Each put right, the team loads.
+    for (repo, name) in
+        [(&dev, "implement"), (&dev, "land"), (&reviewer, "rule"), (&reviewer, "review")]
+    {
+        commit(repo, &format!(".claude/skills/{name}/SKILL.md"), &skill_file(name));
+    }
+    world.afk(&["check"]).ok();
 }
 
 #[test]
@@ -272,10 +337,14 @@ fn a_role_is_read_at_the_head_of_its_default_branch() {
     // A skill on another branch is not the role's; one pushed to the default
     // branch is, from the next read on.
     git(&dev, &["checkout", "-q", "-b", "draft"]);
-    commit(&dev, ".claude/skills/draft/SKILL.md", "a draft\n");
+    commit(&dev, ".claude/skills/draft/SKILL.md", "---\nname: draft\ndescription: a draft\n---\n");
     git(&dev, &["checkout", "-q", "main"]);
     assert_eq!(world.afk(&["check"]).ok()["roles"], before["roles"]);
-    let pushed = commit(&dev, ".claude/skills/plan/SKILL.md", "a skill\n");
+    let pushed = commit(
+        &dev,
+        ".claude/skills/plan/SKILL.md",
+        "---\nname: plan\ndescription: a skill\n---\n",
+    );
     let after = world.afk(&["check"]).ok();
     assert_ne!(before["roles"][0]["commit"], after["roles"][0]["commit"]);
     assert_eq!(after["roles"][0]["commit"], pushed);
@@ -387,6 +456,7 @@ fn team_file(roles: &str) -> String {
 }
 
 const TREAT: &str = "roles/fellow/.claude/skills/treat/SKILL.md";
+const TREATS: &str = "---\nname: treat\ndescription: Treat it.\n---\n";
 
 #[test]
 fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
@@ -396,7 +466,7 @@ fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
         &[
             ("team.md", &team),
             ("workflows/ward.md", WARD),
-            (TREAT, "a skill\n"),
+            (TREAT, TREATS),
             ("roles/fellow/CLAUDE.md", "the rules of a fellow\n"),
             ("README.md", "for whoever reads the repo\n"),
         ],
@@ -422,9 +492,21 @@ fn a_role_is_named_by_repo_by_repo_and_path_and_twice_over() {
         "{ fellow: ./roles/fellow, night: acme/hospital/roles/fellow, dev: acme/dev, \
          boss: acme/roles/senior/boss }",
     );
-    let world = hospital("acme/hospital", &[("team.md", &team), (TREAT, "a skill\n")]);
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "a skill\n")]);
-    world.repo("acme/roles", &[("senior/boss/.claude/skills/rule/SKILL.md", "a skill\n")]);
+    let world = hospital("acme/hospital", &[("team.md", &team), (TREAT, TREATS)]);
+    world.repo(
+        "acme/dev",
+        &[(
+            ".claude/skills/implement/SKILL.md",
+            "---\nname: implement\ndescription: a skill\n---\n",
+        )],
+    );
+    world.repo(
+        "acme/roles",
+        &[(
+            "senior/boss/.claude/skills/rule/SKILL.md",
+            "---\nname: rule\ndescription: a skill\n---\n",
+        )],
+    );
     let read = world.afk(&["check"]).ok();
     let role = |name: &str, repo: &str, path: &str, skill: &str| {
         json!({"name": name, "repo": repo, "path": path, "commit": head(&world, repo),
@@ -449,7 +531,7 @@ fn a_team_in_a_subdirectory_reads_a_path_from_the_root_of_its_repo() {
     let files = [
         ("teams/hospital/team.md", team.as_str()),
         ("teams/hospital/workflows/ward.md", WARD),
-        (TREAT, "a skill\n"),
+        (TREAT, TREATS),
     ];
     let world = hospital("acme/hospital/teams/hospital", &files);
     let read = world.afk(&["check"]).ok();
@@ -481,7 +563,7 @@ fn a_role_s_directory_at_fault_is_reported_with_its_key() {
     );
     let world = hospital(
         "acme/hospital/teams/night",
-        &[("teams/night/team.md", &team), (TREAT, "a skill\n"), ("shared/guard.sh", "exit 0\n")],
+        &[("teams/night/team.md", &team), (TREAT, TREATS), ("shared/guard.sh", "exit 0\n")],
     );
     world.repo("acme/other", &[("README.md", "no roles here\n")]);
     let repo = world.root.join("github/acme/hospital");
@@ -558,7 +640,7 @@ fn rules_above_a_role_are_noted_and_the_team_loads() {
         "acme/hospital",
         &[
             ("team.md", &team),
-            (TREAT, "a skill\n"),
+            (TREAT, TREATS),
             ("CLAUDE.md", "how the hospital works\n"),
             ("roles/CLAUDE.md", "for whoever edits the roles\n"),
             ("roles/.claude/settings.json", "{}\n"),
@@ -584,7 +666,7 @@ fn rules_above_a_role_are_noted_and_the_team_loads() {
 #[test]
 fn a_team_at_a_repo_s_root_is_given_no_note_for_its_own_rules() {
     let team = team_file("{ fellow: ./roles/fellow }");
-    let files = [("team.md", team.as_str()), (TREAT, "a skill\n"), ("CLAUDE.md", "how we work\n")];
+    let files = [("team.md", team.as_str()), (TREAT, TREATS), ("CLAUDE.md", "how we work\n")];
     let world = hospital("acme/hospital", &files);
     let answer = world.afk(&["check"]);
     assert_eq!((answer.code, answer.stderr.as_str()), (0, ""), "{}", answer.json);
@@ -605,7 +687,13 @@ fn hooks_and_skills_in_a_team_s_directory_are_noted_and_the_team_loads() {
     let team = team_file("{ dev: acme/dev }");
     let world = hospital(
         "acme/hospital",
-        &[("team.md", &team), (".claude/skills/release/SKILL.md", "a human's\n")],
+        &[
+            ("team.md", &team),
+            (
+                ".claude/skills/release/SKILL.md",
+                "---\nname: release\ndescription: a human's\n---\n",
+            ),
+        ],
     );
     world.repo("acme/dev", &[("CLAUDE.md", "the rules of a dev\n")]);
     let note = "note: the team's directory holds a .claude/: no worker loads the hooks and skills \
@@ -623,7 +711,7 @@ fn hooks_and_skills_in_a_team_s_directory_are_noted_and_the_team_loads() {
 #[test]
 fn a_directory_of_a_team_s_files_names_its_repo_to_read_a_path_in_it() {
     let team = team_file("{ fellow: ./roles/fellow }");
-    let world = hospital("acme/hospital", &[("team.md", &team), (TREAT, "a skill\n")]);
+    let world = hospital("acme/hospital", &[("team.md", &team), (TREAT, TREATS)]);
     // An edit of the team, not pushed: a new workflow.
     let edit = world.root.join("edit");
     write(&edit, "team.md", &team);

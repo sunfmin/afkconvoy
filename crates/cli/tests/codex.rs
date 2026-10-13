@@ -50,13 +50,25 @@ const SWEEP: &str =
 const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
 
 /// A world whose repo is bound to a team of two roles and two workflows.
+/// The file of the skill `implement`.
+const IMPLEMENT: &str = "---\nname: implement\ndescription: build\n---\n";
+
 fn bound() -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
-        &[("CLAUDE.md", "the rules of a dev\n"), (".claude/skills/implement/SKILL.md", "build\n")],
+        &[
+            ("CLAUDE.md", "the rules of a dev\n"),
+            (
+                ".claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+        ],
     );
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
     world.repo(
         "acme/team",
         &[
@@ -344,7 +356,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
         (".codex/AGENTS.md", "the user's rules\n"),
         (".codex/config.toml", "model = \"theirs\"\n"),
         (".codex/hooks.json", "{\"hooks\": {}}\n"),
-        (".codex/skills/theirs/SKILL.md", "theirs\n"),
+        (".codex/skills/theirs/SKILL.md", "---\nname: theirs\ndescription: theirs\n---\n"),
         (".codex/memories/theirs.md", "theirs\n"),
     ] {
         write(&home, file, text);
@@ -984,7 +996,7 @@ fn a_codex_worker_finds_its_role_s_skills_through_a_link_in_the_fleet_s_copy() {
     let link = role.join(".agents/skills");
     assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("../.claude/skills"));
     assert_eq!(entries(&link), entries(&repo.join(".claude/skills")));
-    assert_eq!(std::fs::read_to_string(link.join("implement/SKILL.md")).unwrap(), "build\n");
+    assert_eq!(std::fs::read_to_string(link.join("implement/SKILL.md")).unwrap(), IMPLEMENT);
     // The role's repo holds nothing for Codex, and neither does the copy of
     // it another harness's worker starts in.
     assert_eq!(entries(&repo), [".claude", "CLAUDE.md"]);
@@ -1008,7 +1020,7 @@ fn a_codex_worker_finds_its_role_s_skills_through_a_link_in_the_fleet_s_copy() {
 fn a_role_that_holds_skills_for_codex_itself_is_left_as_it_is_and_noted_not_refused() {
     let world = bound();
     let dev = world.root.join("github/acme/dev");
-    write(&dev, ".agents/skills/tidy/SKILL.md", "tidy\n");
+    write(&dev, ".agents/skills/tidy/SKILL.md", "---\nname: tidy\ndescription: tidy\n---\n");
     git(&dev, &["add", "."]);
     git(&dev, &["commit", "-q", "-m", "a skill for Codex alone"]);
 
@@ -1042,7 +1054,11 @@ fn a_role_that_holds_skills_for_codex_itself_is_left_as_it_is_and_noted_not_refu
     assert!(!role_copy(&world, "acme/dev").exists());
 
     // The skill held where Codex finds it, in either directory: nothing is noted.
-    write(&dev, ".codex/skills/implement/SKILL.md", "build\n");
+    write(
+        &dev,
+        ".codex/skills/implement/SKILL.md",
+        "---\nname: implement\ndescription: build\n---\n",
+    );
     git(&dev, &["add", "."]);
     git(&dev, &["commit", "-q", "-m", "the skill, for Codex"]);
     let checked = world.afk(&["check"]);

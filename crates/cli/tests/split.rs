@@ -40,8 +40,10 @@ stages:
 /// issues taken in by workers.
 fn bound(concurrency: u64, limit: u64) -> World {
     let world = World::new();
-    let skills =
-        [(".claude/skills/plan/SKILL.md", "plan\n"), (".claude/skills/implement/SKILL.md", "do\n")];
+    let skills = [
+        (".claude/skills/plan/SKILL.md", "---\nname: plan\ndescription: plan\n---\n"),
+        (".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: do\n---\n"),
+    ];
     world.repo("acme/dev", &skills);
     let workflows = [("workflows/feature.md", FEATURE), ("workflows/fix.md", FIX)];
     world.repo("acme/team", &[&[("team.md", TEAM)][..], &workflows].concat());

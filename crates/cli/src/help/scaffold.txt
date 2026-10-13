@@ -68,7 +68,8 @@ WHAT IT READS AND WRITES
 
       CLAUDE.md                            rules to replace with the role's own
       .claude/skills/implement/SKILL.md    one example skill, `implement`: rename it,
-                                           and rewrite it, for a role that does not
+                                           and rewrite it, for a role that does not;
+                                           its form is in `afkconvoy help skill-file`
       .claude/settings.json                its limits for claude-code — hooks: none yet
       .codex/hooks.json                    its limits for codex — hooks: none yet
 

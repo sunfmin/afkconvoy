@@ -68,9 +68,18 @@ fn bound_to(team: &[(&str, &str)]) -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
-        &[("CLAUDE.md", "the rules of a dev\n"), (".claude/skills/implement/SKILL.md", "build\n")],
+        &[
+            ("CLAUDE.md", "the rules of a dev\n"),
+            (
+                ".claude/skills/implement/SKILL.md",
+                "---\nname: implement\ndescription: build\n---\n",
+            ),
+        ],
     );
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
     world.repo("acme/team", team);
     write(&world.clone, "docs/agents/afkconvoy.md", CONFIG);
     write(&world.clone, "AGENTS.md", "the rules of the project\n");
@@ -302,7 +311,7 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
         (".pi/agent/auth.json", "{\"a\": \"login\"}\n"),
         (".pi/agent/AGENTS.md", "the user's rules\n"),
         (".pi/agent/settings.json", "{}\n"),
-        (".pi/agent/skills/theirs/SKILL.md", "theirs\n"),
+        (".pi/agent/skills/theirs/SKILL.md", "---\nname: theirs\ndescription: theirs\n---\n"),
         (".pi/agent/extensions/theirs.ts", "// theirs\n"),
         (ORCA_S, "// orca's\n"),
     ] {

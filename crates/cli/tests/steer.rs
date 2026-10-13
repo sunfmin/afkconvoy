@@ -36,8 +36,14 @@ stages:
 /// and runs `concurrency` workers at once.
 fn bound(concurrency: u64) -> World {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
-    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
+    world.repo(
+        "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     let config = format!(
         "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\

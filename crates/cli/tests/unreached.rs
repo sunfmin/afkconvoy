@@ -34,8 +34,14 @@ fn head_of(repo: &str) -> String {
 /// stage. The repo names `patrols` of them.
 fn bound(patrols: &str) -> World {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
-    world.repo("acme/research", &[(".claude/skills/rounds/SKILL.md", "rounds\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
+    world.repo(
+        "acme/research",
+        &[(".claude/skills/rounds/SKILL.md", "---\nname: rounds\ndescription: rounds\n---\n")],
+    );
     let team = [("team.md", TEAM), ("workflows/fix.md", FIX), ("patrols/rounds.md", ROUNDS)];
     world.repo("acme/team", &team);
     let config = format!(

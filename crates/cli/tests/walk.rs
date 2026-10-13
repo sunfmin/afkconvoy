@@ -37,10 +37,13 @@ fn bound(concurrency: u64) -> World {
 /// `bound`, the workflow `feature` being `feature`.
 fn bound_to(feature: &str, concurrency: u64) -> World {
     let world = World::new();
-    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
+    );
     let reviewer = [
-        (".claude/skills/review/SKILL.md", "review\n"),
-        (".claude/skills/rule/SKILL.md", "rule\n"),
+        (".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n"),
+        (".claude/skills/rule/SKILL.md", "---\nname: rule\ndescription: rule\n---\n"),
     ];
     world.repo("acme/reviewer", &reviewer);
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", feature)]);

@@ -115,8 +115,7 @@ DESIGNING A TEAM, for a bound repo
   team and every role it names — and designing one is editing them. Nothing else holds any of it.
 
   What those files are, and every key of them, is three topics: `afkconvoy help team`
-  for a team's directory, its file, its rules and a role's directory, then
-  `afkconvoy help workflows` and `afkconvoy help patrols`.
+  (a team's directory and a role's), `afkconvoy help workflows`, `afkconvoy help patrols`.
 
   The loop, from nothing:
 
@@ -134,6 +133,6 @@ DESIGNING A TEAM, for a bound repo
   4. Push the team, name it under `team` in the config of the repo it is to work, and
      run `afkconvoy check` in that checkout. Then `show` draws each workflow and `rehearse` tries one out.
 
-  A role's skills are added with the skills installer you already use, run in the role's
-  directory, in a checkout of its repo, and committed there, so that every host runs the same role. The
-  fleet installs no skill and wraps no installer.
+  A role's skill is a file you write (`afkconvoy help skill-file` says its form), or one
+  added with the skills installer you already use, run in the role's directory and
+  committed there. The fleet installs no skill and wraps no installer.

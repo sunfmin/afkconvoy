@@ -2,7 +2,8 @@ ROLES
 
   What a role is, what goes where in one, and what makes one good. The files of a
   role, path by path and harness by harness, are in `afkconvoy help team`; a
-  skeleton of one is written by `afkconvoy scaffold role`.
+  skeleton of one is written by `afkconvoy scaffold role`. What a skill's file holds —
+  its path, its frontmatter, its keys — is in `afkconvoy help skill-file`.
 
 WHAT A ROLE IS
 
@@ -14,6 +15,7 @@ WHAT A ROLE IS
 
       its rules     what a worker in it always works under, whatever it is asked
       its skills    each one thing it can be asked to perform; a stage's `do` names one
+                    (`afkconvoy help skill-file`)
       its limits    what it may never do, in the form its harness enforces: hooks for
                     Claude Code and for Codex, extensions for pi
 
