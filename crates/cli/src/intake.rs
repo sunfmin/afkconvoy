@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::config;
 use crate::copies::Copies;
-use crate::gh::{Comment, GitHub};
+use crate::gh::{Comment, GitHub, OpenIssues};
 use crate::git::Repo;
 use crate::team::keep;
 use crate::wake::wake;
@@ -55,15 +55,12 @@ pub(crate) fn came_in(labels: &[String], comments: &[Comment]) -> Value {
 
 /// How many of `issues` — the open ones — a worker took in, counted from
 /// their intake records.
-pub(crate) fn open_taken_in(gh: &GitHub, issues: &[Issue]) -> Result<usize> {
-    let mut open = 0;
-    for issue in issues.iter().filter(|issue| !flows(&issue.labels).is_empty()) {
-        let comments = gh.comments(issue.number)?;
-        if taken_in(&issue.labels, comments.iter().map(|comment| comment.body.as_str())).is_some() {
-            open += 1;
-        }
-    }
-    Ok(open)
+pub(crate) fn open_taken_in(open: &OpenIssues) -> usize {
+    let taken = |issue: &&Issue| {
+        let bodies = open.comments(issue.number).iter().map(|comment| comment.body.as_str());
+        !flows(&issue.labels).is_empty() && taken_in(&issue.labels, bodies).is_some()
+    };
+    open.rows.iter().filter(taken).count()
 }
 
 /// The database id of each issue `blocked_by` names, as a blocker of issue
@@ -144,7 +141,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
         ),
     }
     let blockers = blockers(&gh, number, &blocked_by)?;
-    let (open, limit) = (open_taken_in(&gh, &gh.open_issues()?)?, bound.intake_limit);
+    let (open, limit) = (open_taken_in(&gh.open_issues()?), bound.intake_limit);
     if !has_room(open, limit) {
         bail!(
             "the intake limit is reached: {open} open issues were taken in by workers, and \

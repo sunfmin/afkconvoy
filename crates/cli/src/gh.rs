@@ -1,8 +1,10 @@
 //! GitHub, through `gh` as a subprocess run in the checkout: `gh` works out
 //! which repository that is, so nothing here names one.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::thread;
 
 use afkconvoy_core::config::RepoName;
 use afkconvoy_core::layout::{Guard, Protection};
@@ -10,9 +12,27 @@ use afkconvoy_core::plan::{Issue, PullRequest};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// What is read of every open issue. `gh api` fills `{owner}` and `{repo}` in.
-pub const ISSUES_JQ: &str = ".[] | select(.pull_request == null) | {number, title, \
-    labels: [.labels[].name], blocked_by: (.issue_dependencies_summary.blocked_by // 0)}";
+/// The open issues, a page at a time, each with its labels, how many open
+/// issues block it, and its first `COMMENTS_WITH` comments: one call a page,
+/// however many of the issues have comments to read. `gh api graphql` fills
+/// `{owner}` and `{repo}` in, and `$endCursor` page after page.
+pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $endCursor: String) { \
+    repository(owner: $owner, name: $repo) { \
+    issues(states: OPEN, first: 100, after: $endCursor, \
+    orderBy: {field: CREATED_AT, direction: DESC}) { \
+    pageInfo { hasNextPage endCursor } \
+    nodes { number title labels(first: 100) { nodes { name } } \
+    issueDependenciesSummary { blockedBy } \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } } }";
+/// What is read of every open issue: `more` says its comments go on past
+/// those that came with it.
+pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, title, \
+    labels: [.labels.nodes[].name], blocked_by: (.issueDependenciesSummary.blockedBy // 0), \
+    more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
+    {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// How many comments of an issue come with it (`OPEN_ISSUES_QUERY`).
+pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
 pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].name], \
     pull_request: (.pull_request != null)}";
@@ -60,6 +80,35 @@ pub struct Comment {
     /// When it was written, in epoch seconds.
     #[serde(default)]
     pub at: Option<u64>,
+}
+
+/// Every open issue, with the comments on each, as one read of GitHub saw
+/// them.
+#[derive(Debug, Default)]
+pub struct OpenIssues {
+    pub rows: Vec<Issue>,
+    /// issue → its comments, oldest first.
+    comments: HashMap<u64, Vec<Comment>>,
+}
+
+impl OpenIssues {
+    /// Every comment on the open issue `number`, oldest first; none of an
+    /// issue that is not among them.
+    pub fn comments(&self, number: u64) -> &[Comment] {
+        self.comments.get(&number).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// What is open on GitHub, as a rebuild reads it.
+#[derive(Debug, Default)]
+pub struct Open {
+    pub issues: OpenIssues,
+    pub prs: Vec<PullRequest>,
+}
+
+/// What a read made beside another came to: a panic in it is this thread's.
+pub fn beside<T>(read: thread::ScopedJoinHandle<'_, T>) -> T {
+    read.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 impl IssueRead {
@@ -170,29 +219,57 @@ impl GitHub {
         ))
     }
 
-    /// Every open issue — all of them, page after page.
-    pub fn open_issues(&self) -> Result<Vec<Issue>> {
+    /// Every open issue with its comments — all of them, page after page:
+    /// the number of calls does not grow with the issues that have comments.
+    /// Only an issue with more than `COMMENTS_WITH` comments is asked about
+    /// again, for all of them.
+    pub fn open_issues(&self) -> Result<OpenIssues> {
         #[derive(Deserialize)]
         struct Row {
             number: u64,
             title: String,
             labels: Vec<String>,
             blocked_by: u64,
+            more: bool,
+            comments: Vec<Comment>,
         }
-        let endpoint = "repos/{owner}/{repo}/issues?state=open&per_page=100";
-        let out = self.gh(&["api", "--paginate", endpoint, "--jq", ISSUES_JQ])?;
-        let mut issues = vec![];
+        let query = format!("query={OPEN_ISSUES_QUERY}");
+        let out = self.gh(&[
+            "api",
+            "graphql",
+            "--paginate",
+            "-F",
+            "owner={owner}",
+            "-F",
+            "repo={repo}",
+            "-f",
+            &query,
+            "--jq",
+            OPEN_ISSUES_JQ,
+        ])?;
+        let mut open = OpenIssues::default();
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row =
-                serde_json::from_str(line).context("gh api issues: unexpected answer")?;
-            issues.push(Issue {
+                serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
+            let comments = if row.more { self.comments(row.number)? } else { row.comments };
+            open.comments.insert(row.number, comments);
+            open.rows.push(Issue {
                 number: row.number,
                 title: row.title,
                 labels: row.labels,
                 open_blockers: row.blocked_by,
             });
         }
-        Ok(issues)
+        Ok(open)
+    }
+
+    /// What is open: the issues and the PRs, asked for side by side.
+    pub fn open(&self) -> Result<Open> {
+        let (issues, prs) = thread::scope(|scope| {
+            let prs = scope.spawn(|| self.open_prs());
+            (self.open_issues(), beside(prs))
+        });
+        Ok(Open { issues: issues?, prs: prs? })
     }
 
     /// Every closed issue that carries `label`, each with when it closed, in

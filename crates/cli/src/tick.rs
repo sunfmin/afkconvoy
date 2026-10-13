@@ -50,19 +50,21 @@ pub struct Ticked {
 /// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
 /// for the workers it started, and leaves nothing on this host a later tick
 /// needs: the next one rebuilds from GitHub and the remote.
-pub fn tick(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Ticked> {
-    let (set, flows) = fleet.rebuild(Some(&me.instance))?;
+pub fn tick(me: &Me, agent: &Agent) -> Result<(Ticked, Fleet)> {
+    let (mut fleet, open) = Fleet::read(me.now)?;
+    let (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
     let bound = set.bound(fleet.config.concurrency());
     let mut failures = vec![];
     let read = Read { set: &set, flows: &flows };
     let pass = run_pass(&set, bound, set.held(), |step| {
         // Whatever a step raised, the rest of the tick is still owed.
-        carry_out(fleet, me, agent, &read, step).unwrap_or_else(|error| {
+        carry_out(&mut fleet, me, agent, &read, step).unwrap_or_else(|error| {
             failures.push(Failure { step, error: format!("{error:#}") });
             Outcome::Failed
         })
     });
-    Ok(Ticked { pass, failures, bound, set, flows })
+    let ticked = Ticked { pass, failures, bound, set, flows };
+    Ok((ticked, fleet))
 }
 
 /// What the tick's rebuild read: its steps act on this, and read nothing of
@@ -460,8 +462,7 @@ pub fn run(
         let ticked = turn(
             || wakes.forget(),
             || {
-                let mut fleet = Fleet::open(me.now)?;
-                let ticked = tick(&mut fleet, me, agent)?;
+                let (ticked, fleet) = tick(me, agent)?;
                 let panel = served.as_ref().map(|_| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },

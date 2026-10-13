@@ -355,6 +355,17 @@ impl Worktree {
         Ok(())
     }
 
+    /// Closes every terminal here and keeps the worktree: the worker whose
+    /// work here is over is ended, whatever it is doing. One with no terminal
+    /// is as wanted.
+    pub fn close_terminals(&self) -> Result<()> {
+        if self.terminal()?.is_none() {
+            return Ok(());
+        }
+        orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
+        Ok(())
+    }
+
     /// Clears the worktree and keeps it: its terminals closed, what it held
     /// discarded for the commit `sha`, what its worker was told forgotten.
     /// What git ignores — everything a gate run built — stays.
@@ -461,7 +472,8 @@ impl Worktree {
         Ok(tail.iter().filter_map(|line| line.as_str().map(str::to_string)).collect())
     }
 
-    /// Has orca remove the worktree, its terminals with it.
+    /// Has orca remove the worktree, its terminals with it — and its branch,
+    /// which orca deletes unless it holds changes nothing has merged.
     pub fn remove(&self) -> Result<()> {
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
         Ok(())

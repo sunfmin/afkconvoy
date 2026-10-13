@@ -86,7 +86,7 @@ pub(crate) fn worktree_and_work(
 /// (`transition::Relabel`), release the claim last —
 /// so it can be run again from wherever it was cut, and posts one comment.
 /// The PR, the branch and the worktree are kept, except a worktree whose
-/// branch holds no work.
+/// branch holds no work; the terminal of its worker is closed.
 pub fn escalate(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
     let (worktree, workless) = worktree_and_work(fleet, issue)?;
@@ -142,6 +142,11 @@ pub(crate) fn escalate_claim(
             EscalateStep::RemoveWorktree => {
                 if let Some(worktree) = worktree {
                     worktree.remove()?;
+                }
+            }
+            EscalateStep::CloseTerminal => {
+                if let Some(worktree) = worktree {
+                    worktree.close_terminals()?;
                 }
             }
         }

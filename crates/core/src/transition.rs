@@ -4,6 +4,11 @@
 //! `Released` only that release produces — so one cannot end half way and be
 //! taken for done.
 //!
+//! Each ends the claim's worker too, once the claim has gone: its worktree is
+//! removed where nothing will use it again, and its terminal closed where the
+//! worktree is kept. Sooner, a claim still held would be one with no worker,
+//! and be continued.
+//!
 //! The order is decided here; the effect layer hands in the one function that
 //! carries a step out.
 
@@ -115,13 +120,16 @@ pub enum EscalateStep {
     Release,
     /// Remove the worktree: only one whose branch holds no work.
     RemoveWorktree,
+    /// Close the worker's terminal, in a worktree that is kept.
+    CloseTerminal,
 }
 
 /// Escalates issue `issue` from wherever `begun` says it got: does what is
 /// left, in order, and releases last. The PR, the branch and the worktree are
 /// kept as evidence — except a worktree whose branch holds no work
-/// (`workless`), which goes once the claim has. A step that fails ends it
-/// there, the claim still held.
+/// (`workless`), which goes once the claim has; one that is kept has its
+/// worker's terminal closed. A step that fails ends it there, the claim still
+/// held unless it was the last.
 pub fn escalate<E, F>(
     issue: u64,
     mut begun: Escalation,
@@ -144,9 +152,10 @@ where
     word.write();
     carry_out(EscalateStep::Release)?;
     let released = begun.release(&word, issue);
-    if workless.is_some() {
-        carry_out(EscalateStep::RemoveWorktree)?;
-    }
+    carry_out(match workless {
+        Some(_) => EscalateStep::RemoveWorktree,
+        None => EscalateStep::CloseTerminal,
+    })?;
     Ok(released)
 }
 
@@ -270,6 +279,8 @@ pub enum ParkStep {
     Board,
     Release,
     RemoveWorktree,
+    /// Close the worker's terminal, in a worktree that is kept.
+    CloseTerminal,
 }
 
 /// A park under way: whether an edge holds the issue off the frontier yet.
@@ -300,7 +311,8 @@ impl Parking {
 }
 
 /// Parks the claim on `issue`: an edge to every open blocker its worker named
-/// → release the claim → remove the worktree, when its branch holds no work.
+/// → release the claim → remove the worktree, when its branch holds no work,
+/// and close its worker's terminal when it does.
 /// `ready_label` is not touched: the edges hold the issue back, and it returns
 /// to the frontier by itself once the last blocker closes.
 pub fn park<E, F>(
@@ -323,9 +335,10 @@ where
     carry_out(ParkStep::Release)?;
     let released = parking.release(&word, issue);
     // A worktree with work in it is what a later continuation starts from.
-    if workless.is_some() {
-        carry_out(ParkStep::RemoveWorktree)?;
-    }
+    carry_out(match workless {
+        Some(_) => ParkStep::RemoveWorktree,
+        None => ParkStep::CloseTerminal,
+    })?;
     Ok(released)
 }
 
@@ -335,16 +348,20 @@ pub enum HandOnStep {
     /// Write the status board: the stage declared.
     Board,
     Release,
+    /// Remove the worktree: no stage is left to work in it.
     RemoveWorktree,
+    /// Close the worker's terminal, in the worktree the next stage works in.
+    CloseTerminal,
 }
 
 /// Ends the claim on `issue` once its stage has declared, leaving the issue
-/// where its stage records put it: write the board → release the claim. The
-/// issue's labels are not touched: a later stage is the frontier's to start,
-/// in the same worktree. `ended` is given when the workflow has ended, with
-/// the proof that the branch holds no work when it does not: only then does
-/// the worktree go.
-pub fn hand_on<E, F>(issue: u64, ended: Option<&Workless>, mut carry_out: F) -> Result<Released, E>
+/// where its stage records put it: write the board → release the claim → end
+/// its worker. The issue's labels are not touched: a later stage is the
+/// frontier's to start, in the same worktree and a terminal of its own.
+/// `ended` says the workflow has ended: only then does the worktree go,
+/// whatever its branch holds — a branch with a commit past the base branch
+/// outlives it.
+pub fn hand_on<E, F>(issue: u64, ended: bool, mut carry_out: F) -> Result<Released, E>
 where
     F: FnMut(HandOnStep) -> Result<(), E>,
 {
@@ -353,9 +370,7 @@ where
     word.write();
     carry_out(HandOnStep::Release)?;
     let released = word.release(issue);
-    if ended.is_some() {
-        carry_out(HandOnStep::RemoveWorktree)?;
-    }
+    carry_out(if ended { HandOnStep::RemoveWorktree } else { HandOnStep::CloseTerminal })?;
     Ok(released)
 }
 
@@ -441,11 +456,11 @@ mod tests {
         use EscalateStep::*;
         assert_eq!(
             steps(Escalation::read(false, false), false, None),
-            (vec![Comment, Relabel, Board, Release], true)
+            (vec![Comment, Relabel, Board, Release, CloseTerminal], true)
         );
         assert_eq!(
             steps(Escalation::read(true, false), false, None),
-            (vec![Relabel, Board, Release], true)
+            (vec![Relabel, Board, Release, CloseTerminal], true)
         );
         assert_eq!(
             steps(Escalation::read(true, true), true, None),
@@ -454,7 +469,7 @@ mod tests {
         // a relabel seen with no comment of this claim's: the reason is still owed
         assert_eq!(
             steps(Escalation::read(false, true), false, None),
-            (vec![Comment, Board, Release], true)
+            (vec![Comment, Board, Release, CloseTerminal], true)
         );
     }
 
@@ -535,7 +550,7 @@ mod tests {
     #[test]
     fn handing_on_releases_after_the_board_and_keeps_a_worktree_another_stage_needs() {
         use HandOnStep::*;
-        let run = |ended: Option<&Workless>, fail_at: Option<HandOnStep>| {
+        let run = |ended: bool, fail_at: Option<HandOnStep>| {
             let mut steps = vec![];
             let done = hand_on(7, ended, |step| {
                 steps.push(step);
@@ -543,12 +558,9 @@ mod tests {
             });
             (done.map(|released| released.issue), steps)
         };
-        assert_eq!(run(None, None), (Ok(7), vec![Board, Release]));
-        let empty =
-            Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
-        let workless = Workless::of(&empty).unwrap();
-        assert_eq!(run(Some(&workless), None), (Ok(7), vec![Board, Release, RemoveWorktree]));
-        assert_eq!(run(None, Some(Board)), (Err("cut"), vec![Board]), "the claim is still held");
+        assert_eq!(run(false, None), (Ok(7), vec![Board, Release, CloseTerminal]));
+        assert_eq!(run(true, None), (Ok(7), vec![Board, Release, RemoveWorktree]));
+        assert_eq!(run(false, Some(Board)), (Err("cut"), vec![Board]), "the claim is still held");
     }
 
     #[test]
@@ -593,7 +605,11 @@ mod tests {
         // a branch with work on it keeps its worktree
         let (done, steps) = run(None, None);
         assert_eq!(done, Ok(7));
-        assert_eq!(steps, [edges[0], edges[1], ParkStep::Board, ParkStep::Release]);
+        assert_eq!(
+            steps,
+            [edges[0], edges[1], ParkStep::Board, ParkStep::Release, ParkStep::CloseTerminal],
+            "its worker's terminal is closed"
+        );
         let empty =
             Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
         let workless = Workless::of(&empty).unwrap();

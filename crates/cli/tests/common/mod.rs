@@ -309,6 +309,22 @@ impl World {
         self.write_orca(&state);
     }
 
+    /// The worktrees the stand-in orca lists, oldest first.
+    pub fn worktrees(&self) -> Vec<PathBuf> {
+        let orca = self.orca();
+        let rows = orca["worktrees"].as_array().unwrap().iter();
+        rows.map(|row| PathBuf::from(row["path"].as_str().unwrap())).collect()
+    }
+
+    /// Where each terminal the stand-in orca has open is: one path a terminal.
+    pub fn open_terminals(&self) -> Vec<String> {
+        let orca = self.orca();
+        let rows = orca["terminals"].as_array().unwrap().iter();
+        rows.filter(|terminal| terminal["open"] == true)
+            .map(|terminal| terminal["worktreePath"].as_str().unwrap().to_string())
+            .collect()
+    }
+
     /// Every `orca` call made since the last look, without the trailing `--json`.
     pub fn orca_calls(&self) -> Vec<Vec<String>> {
         let mut calls: Vec<Vec<String>> =
@@ -383,6 +399,26 @@ impl World {
 
     fn every_push(&self) -> Vec<String> {
         let log = std::fs::read_to_string(self.root.join("pushes.log")).unwrap_or_default();
+        log.lines().map(str::to_string).collect()
+    }
+
+    /// Has every `git` call afkconvoy makes from here on logged (`git_calls`).
+    pub fn watch_git(&self) {
+        let path = std::env::var_os("PATH").unwrap();
+        let git = std::env::split_paths(&path).map(|dir| dir.join("git")).find(|git| git.is_file());
+        let (git, log) = (git.expect("git is on PATH"), self.root.join("git.log"));
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            git.display()
+        );
+        write_script(&self.bin.join("git"), &script);
+    }
+
+    /// The `git` calls afkconvoy made since `watch_git`, each as its command
+    /// line, in order.
+    pub fn git_calls(&self) -> Vec<String> {
+        let log = std::fs::read_to_string(self.root.join("git.log")).unwrap_or_default();
         log.lines().map(str::to_string).collect()
     }
 

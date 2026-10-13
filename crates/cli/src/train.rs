@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::{REMOTE, Repo};
+use crate::git::{Listing, REMOTE, Repo};
 use crate::lock::standing_locks;
 
 /// The landing train as one read of the remote saw it, its commits in the
@@ -25,12 +25,22 @@ pub struct Train {
 }
 
 impl Train {
+    /// The train as the remote has it now.
     pub fn read(repo: &Repo, config: &Config) -> Result<Train> {
+        Train::listed(repo, config, &repo.listing(&config.base_branch)?)
+    }
+
+    /// The train as `listing` saw it.
+    pub fn listed(repo: &Repo, config: &Config, listing: &Listing) -> Result<Train> {
         let branch = &config.base_branch;
-        let base = repo
-            .fetched(&format!("refs/heads/{branch}"))?
-            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
-        let line = repo.fetched(&train_refs(repo.layout(), branch).line)?;
+        let base =
+            listing.base.clone().ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+        repo.bring(&base, &listing.base_ref)?;
+        let line_ref = train_refs(repo.layout(), branch).line;
+        let line = listing.sha(&line_ref).map(str::to_string);
+        if let Some(tip) = &line {
+            repo.bring(tip, &line_ref)?;
+        }
         let on_base = match &line {
             Some(tip) => repo.within(tip, &base)?,
             None => false,

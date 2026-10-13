@@ -337,6 +337,26 @@ fn a_help_names_every_key_its_command_answers_with() {
 }
 
 #[test]
+fn the_help_of_tick_says_for_each_kind_of_end_what_becomes_of_the_terminal_and_the_worktree() {
+    let tick = asked(&["tick", "--help"]);
+    let ends = between(&tick, "  - The step that ends a piece of work", "  - An `escalate`");
+    let said = ends.join("\n");
+    for (end, terminal, worktree) in [
+        ("end_patrol  ", "terminal is closed", "checkout removed"),
+        ("end_proposal  ", "terminal is closed", "checkout removed"),
+        ("advance, to a  ", "terminal is closed", "worktree kept"),
+        ("advance, to `done`  ", "terminal is closed", "worktree removed"),
+        ("an escalation  ", "terminal is closed", "worktree"),
+    ] {
+        let from = said.find(end).unwrap_or_else(|| panic!("{end:?} in {said}"));
+        let row: String = said[from..].lines().take(2).collect();
+        assert!(row.contains(terminal) && row.contains(worktree), "{end:?}: {row}");
+    }
+    assert!(said.contains("A run that failed keeps its checkout"), "{said}");
+    assert!(said.contains("only worker alive is the train's"), "{said}");
+}
+
+#[test]
 fn the_help_of_tick_and_of_run_say_what_run_does_about_the_hop_between_two_stages() {
     let most = afkconvoy_core::tick::BACK_TO_BACK;
     let tick = asked(&["tick", "--help"]);

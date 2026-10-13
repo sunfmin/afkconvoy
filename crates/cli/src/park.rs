@@ -62,7 +62,8 @@ pub fn standings(fleet: &Fleet, issue: u64, named: &[u64]) -> Result<Vec<(u64, S
 }
 
 /// Parks `claim`: a native blocked-by edge to every blocker in `parkable`
-/// GitHub does not record yet → release → remove a worktree with no work.
+/// GitHub does not record yet → release → remove a worktree with no work, or
+/// close the terminal of its worker in one that is kept.
 pub fn park_claim(
     fleet: &mut Fleet,
     claim: &Claim,
@@ -86,6 +87,11 @@ pub fn park_claim(
             ParkStep::RemoveWorktree => {
                 if let Some(worktree) = worktree {
                     worktree.remove()?;
+                }
+            }
+            ParkStep::CloseTerminal => {
+                if let Some(worktree) = worktree {
+                    worktree.close_terminals()?;
                 }
             }
         }
