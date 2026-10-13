@@ -1,0 +1,9 @@
+# The limit for one test, which ./gate.sh runs the tests under: a test still
+# running after 240 seconds is ended and fails as TIMEOUT, by name. From 60
+# seconds on it is reported SLOW.
+#
+# Measured on one host, 14 cores, warm build: the slowest test takes 24s with
+# the host to itself and 79s with other gates' tests running beside it. The
+# limit is three times that.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 4 }
