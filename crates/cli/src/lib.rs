@@ -714,6 +714,8 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             } else if let Some(doctor::Unwell(answer)) = e.downcast_ref() {
                 // Not an error to report: the answer itself, which says what is wrong.
                 println!("{answer}");
+            } else if let Some(see) = topic::explains(&e) {
+                println!("{}", json!({ "error": format!("{e:#}"), "see": see }));
             } else {
                 return fail(1, &format!("{e:#}"));
             }

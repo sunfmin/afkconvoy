@@ -117,6 +117,8 @@ fn a_settling_that_failed_keeps_the_claim_and_the_pass_goes_on() {
     assert_eq!(ticked["errors"][0]["do"], "settle");
     assert_eq!(ticked["errors"][0]["issue"], 3);
     assert!(ticked["errors"][0]["error"].as_str().unwrap().contains("worktree_busy"));
+    // No topic explains what orca refused with: the step names none.
+    assert_eq!(ticked["errors"][0].get("see"), None);
     assert_eq!(world.claims(), alpha(&[3, 5]), "the claim is held for the next tick");
 
     world.with_orca(|orca| orca["rm_fails"] = json!(false));

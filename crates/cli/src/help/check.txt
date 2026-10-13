@@ -72,9 +72,16 @@ WHAT IT ANSWERS
   "max_open"}, or null where the team names nobody to propose them.
 
   A team with a fault: {"error", "faults"} and exit 1. `faults` holds every fault of the
-  team, not the first: each {"file", "key", "problem"}. `key` is a path from the top of
+  team, not the first: each {"file", "key", "problem", "see"}. `key` is a path from the
+  top of
   the file's yaml, counting from 0 — `stages[1].on.reject` — and empty when the fault is
-  the file itself. A fault is one of: an unknown key, or one written twice; a wrong
+  the file itself. `see` is the command that prints the help topic describing that file,
+  to run as it is: `afkconvoy help workflows` for a workflow's, `afkconvoy help patrols`
+  for a patrol's, and `afkconvoy help team` for the team file — a role is named there,
+  and that topic says what its directory holds — and for the config's keys that bind the
+  repo. A fault in a file no topic describes has no `see`.
+
+  A fault is one of: an unknown key, or one written twice; a wrong
   type; a duplicate stage name; a stage named `land`, `done` or `human`; a `pass` or
   `reject` that names no stage; a `reject` to its own or a later stage; a stage no path
   from the first reaches; a stage whose passes never come to `land` or `done`; a

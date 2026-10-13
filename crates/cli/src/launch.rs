@@ -21,6 +21,7 @@ use afkconvoy_core::launch::{
 use anyhow::{Result, anyhow, bail};
 
 use crate::config;
+use crate::topic::{Explain, See};
 
 /// How long the login shell is given to answer.
 const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -95,7 +96,8 @@ impl Launches {
     /// commands that read it were looked for. An error is `supplied`'s.
     pub fn new(given: &[String], starts: bool) -> Result<Launches> {
         let mut launches = Launches::foreseen();
-        launches.supplied = supplied(given, launches.default).map_err(|why| anyhow!(why))?;
+        let supplied = supplied(given, launches.default);
+        launches.supplied = supplied.map_err(|why| See::Troubleshooting.refusal(why))?;
         launches.starts = starts;
         Ok(launches)
     }
@@ -139,7 +141,7 @@ impl Launches {
         let cell = self.proposed.iter().find(|(named, _)| *named == harness).map(|(_, cell)| cell);
         let cell = cell.ok_or_else(|| anyhow!("`{}` is no harness", harness.key()))?;
         if cell.get().is_none() {
-            let proposed = self.propose(harness)?;
+            let proposed = self.propose(harness).see(See::Troubleshooting)?;
             if let Some(Ok(command)) = proposed.as_ref().map(Proposed::checked)
                 && let Some(warning) = command.warning().filter(|_| self.starts)
             {
@@ -176,8 +178,10 @@ impl Launches {
     /// The command every worker of `harness` is started with, checked to
     /// resolve in a login shell: no worker is started on one that does not.
     pub fn command(&self, harness: Harness) -> Result<LaunchCommand> {
-        let proposed = self.of(harness)?.ok_or_else(|| anyhow!(no_reply()))?;
-        proposed.checked().map_err(|why| anyhow!(self.said(&why, harness, &[])))
+        let proposed = self.of(harness)?;
+        let proposed = proposed.ok_or_else(|| See::Troubleshooting.refusal(no_reply()))?;
+        let checked = proposed.checked();
+        checked.map_err(|why| See::Troubleshooting.refusal(self.said(&why, harness, &[])))
     }
 
     /// `fault`, of the command of `harness`, as a human is told it: in a

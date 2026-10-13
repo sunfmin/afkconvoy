@@ -34,7 +34,8 @@ WHAT IT ANSWERS
                         A step that escalated its issue says why, in a few words:
                         {do, issue, outcome, escalated}
     errors              each step that failed: {do, issue, error}, with `patrol` as
-                        in `did`
+                        in `did` — and `see`, where a help topic explains what
+                        refused it: the command that prints the topic
     held                the claims the instance holds after the pass, a patrol's run
                         and a proposal still going among them
     frontier_remaining  the frontier issues it left undispatched

@@ -18,6 +18,7 @@ use crate::config;
 use crate::copies::{self, Copies, Copy};
 use crate::gh::{GitHub, Unreached, unreached};
 use crate::launch;
+use crate::topic::See;
 
 /// Where a team's own files are taken from. Its roles' directories are
 /// always read from the fleet's copies of their repos' heads on GitHub.
@@ -54,10 +55,16 @@ impl std::fmt::Display for Refused {
 impl std::error::Error for Refused {}
 
 impl Refused {
-    /// The faults, each as `{file, key, problem}`.
+    /// The faults, each as `{file, key, problem}` — and `see`, where a topic
+    /// describes the file it is in.
     pub fn json(&self) -> Value {
-        let fault =
-            |fault: &Fault| json!({"file": fault.file, "key": fault.key, "problem": fault.problem});
+        let fault = |fault: &Fault| {
+            let mut said = json!({"file": fault.file, "key": fault.key, "problem": fault.problem});
+            if let Some(see) = See::of_fault(fault) {
+                said["see"] = json!(see);
+            }
+            said
+        };
         self.faults.iter().map(fault).collect()
     }
 }

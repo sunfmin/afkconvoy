@@ -537,7 +537,7 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
             "what": "#7 has waited for a human for 2h 1m: escalated at build",
             "evidence": "nobody holds it and no tick moves it; it is the fleet's again once \
                          it is answered, and it has waited longer than 1h 0m",
-            "fix": answer})]
+            "fix": answer, "see": "afkconvoy help humans"})]
     );
 
     // The panel's "With a human" is that list.

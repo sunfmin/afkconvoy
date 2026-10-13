@@ -213,7 +213,7 @@ The file a fleet instance's `run` keeps on its own host: one line as it starts a
 _Avoid_: state file, journal, history
 
 **Finding**:
-One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, and its fix: a line to run, or a file and the key in it to edit. `doctor` fixes none itself.
+One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — and the help topic that explains it. `doctor` fixes none itself.
 _Avoid_: diagnosis, alert, warning (one of its severities), error (what a command that failed answers with)
 
 ### Landing

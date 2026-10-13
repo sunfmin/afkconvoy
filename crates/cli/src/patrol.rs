@@ -21,6 +21,7 @@ use crate::git::REMOTE;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 use crate::team::unknown_patrols;
+use crate::topic::See;
 
 /// What the remote and GitHub say of each patrol the repo names, in the
 /// order it names them. A repo that names none, and one whose team does not
@@ -70,8 +71,8 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
 pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -> Result<Outcome> {
     let name = row.name.as_str();
     let kept = read.kept()?;
-    let patrol =
-        kept.team.patrol(name).ok_or_else(|| anyhow!("the team has no patrol {name:?}"))?;
+    let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
+    let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
     let role_copy = kept.role(role)?;
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;

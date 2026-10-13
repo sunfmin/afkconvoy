@@ -483,7 +483,12 @@ fn an_issue_no_worker_can_be_started_on_is_not_claimed() {
     world.issue(7, &["flow:chore"]);
     world.issue(8, &["flow:feature", "flow:audit"]);
     world.issue(9, &["bug"]);
-    let why = dispatch(&world, 7).error();
+    // What a human is handed names their topic; an issue that follows no
+    // workflow, the one that says what a flow label is.
+    let refused = dispatch(&world, 7);
+    assert_eq!(refused.json["see"], "afkconvoy help humans");
+    assert_eq!(dispatch(&world, 9).json["see"], "afkconvoy help workflows");
+    let why = refused.error();
     assert!(why.contains("issue #7 cannot be started"), "{why}");
     assert!(why.contains("flow:chore names no workflow of the team"), "{why}");
     assert!(dispatch(&world, 8).error().contains("2 flow labels (flow:feature, flow:audit)"));

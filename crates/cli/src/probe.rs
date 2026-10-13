@@ -11,7 +11,7 @@ use afkconvoy_core::layout::{
     Answer, BaseCheck, GATE_KIND, PROBE_STANDS, answer, base_check, choose, no_base_branch,
     no_gate_records, probe_stands,
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config;
@@ -20,6 +20,7 @@ use crate::git::{REMOTE, Repo};
 use crate::launch::Launches;
 use crate::role;
 use crate::tools;
+use crate::topic::{Explain, See};
 
 /// What a probe's commit says it is.
 const PROBE_RECORD: &str = "convoy:probe";
@@ -113,24 +114,24 @@ pub fn standing(now: u64, launches: &Launches) -> Option<Vec<String>> {
 /// gate records, and the ones past their day are swept. A probe that passed is
 /// noted for `standing`.
 pub fn startup(now: u64, launches: &Launches) -> Result<Vec<String>> {
-    tools::check(launches)?;
+    tools::check(launches).see(See::Troubleshooting)?;
     let repo = Repo::here()?;
-    let config = config::load(&repo.dir.join(config::FILE))?;
+    let config = config::load(&repo.dir.join(config::FILE)).see(See::Troubleshooting)?;
     // A bound repo's workers start in their roles, each on the harness its
     // stage names: every one's command must be there, and take that.
     if let Some(bound) = &config.bound {
-        role::probe(launches, bound)?;
+        role::probe(launches, bound).see(See::Troubleshooting)?;
     }
     let branch = &config.base_branch;
     let mut warnings = vec![];
 
     if repo.remote_sha(&format!("refs/heads/{branch}"))?.is_none() {
-        bail!(no_base_branch(branch));
+        return Err(See::Troubleshooting.refusal(no_base_branch(branch)));
     }
     match base_check(branch, &GitHub { dir: repo.dir.clone() }.protection(branch)) {
         BaseCheck::Clear(_) => {}
         BaseCheck::Warn(warning) => warnings.push(warning),
-        BaseCheck::Refuse(why) => bail!(why),
+        BaseCheck::Refuse(why) => return Err(See::Troubleshooting.refusal(why)),
     }
 
     // The probe's own name: two starts probing at once never meet on one ref.
@@ -145,7 +146,8 @@ pub fn startup(now: u64, launches: &Launches) -> Result<Vec<String>> {
         Ok(ran) => answer(ran.ok, &ran.stderr),
         Err(error) => Answer::Unreached(format!("{error:#}")),
     };
-    let chosen = choose(|layout| push(&layout.probe("", &token))).map_err(|why| anyhow!(why))?;
+    let chosen = choose(|layout| push(&layout.probe("", &token)))
+        .map_err(|why| See::Troubleshooting.refusal(why))?;
     let layout = chosen.layout();
     warnings.extend(chosen.warning());
     repo.note_layout(layout)?;
