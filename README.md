@@ -65,19 +65,21 @@ A **team** is a directory — a whole repo, or a subdirectory of one — that na
 ### From nothing to a bound repo
 
 ```sh
-afkconvoy scaffold role dev --repo acme/dev             # a role's skeleton, created on GitHub
-afkconvoy scaffold team team --role dev=acme/dev        # a team's skeleton, naming that role
-afkconvoy check --dir team                              # does it load? every fault, with its file and key
+afkconvoy scaffold team team --role dev --role reviewer --repo acme/team   # a team and its roles, in one repo created on GitHub
+afkconvoy check --team acme/team                                          # does it load? every fault, with its file and key
+afkconvoy scaffold role roles/tester                                      # in the team's checkout: one more role, and the line to add to team.md
 ```
 
-`scaffold role` writes a rules file (`CLAUDE.md`), one example skill (`.claude/skills/implement/SKILL.md`) and a hooks file (`.claude/settings.json`); `scaffold team` writes the team file (`team.md`) and one example workflow (`workflows/feature.md`). Both pass `afkconvoy check` as written. `--repo owner/repo` commits the skeleton and creates that repo on GitHub, private, with `gh repo create`; without it only files are written. The role comes first: `check` reads a role's repo from GitHub, at the head of its default branch.
+`scaffold team` writes the team file (`team.md`), one example workflow (`workflows/feature.md`) and, under `roles/<name>/`, the skeleton of each role given with `--role <name>`: a rules file (`CLAUDE.md`), one example skill (`.claude/skills/implement/SKILL.md`) and a hooks file (`.claude/settings.json`). `team.md` names each as `./roles/<name>`, a path in the team's own repo. `--repo owner/repo` commits the skeleton and creates that one repo on GitHub, private, with `gh repo create`; it passes `afkconvoy check` as written. Without `--repo` only files are written, and `check` passes once they are pushed: it reads a role from GitHub, at the head of its repo's default branch.
 
-From there a team is designed by editing those files: edit, run `afkconvoy check --dir <the team's checkout>`, repeat until it exits 0. `afkconvoy --help` lays out every file of a team and of a role and every key; `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started.
+`scaffold role <dir>` writes one role's skeleton. In a checkout it creates nothing on GitHub, and its answer holds the line to add under `roles` in `team.md` — `"team_line": "tester: ./roles/tester"`. A role several teams share is a repo of its own instead: `scaffold role dev --repo acme/dev` creates it, and a team names it with `--role dev=acme/dev`, or `dev=owner/repo/path` for a directory of a repo.
 
-**A role's skills** are added with the skills installer, run in a checkout of the role's repo, and committed there:
+From there a team is designed by editing those files: edit, run `afkconvoy check --dir <the team's checkout> --team <owner/repo>`, repeat until it exits 0 — `--team` says the repo a role named `./path` is read from. `afkconvoy --help` lays out every file of a team and of a role and every key; `afkconvoy show` draws a workflow as a graph, and `afkconvoy rehearse <workflow> <verdict>…` says where an issue would be after each verdict, with no worker started.
+
+**A role's skills** are added with the skills installer, run in the role's directory, in a checkout of its repo, and committed there:
 
 ```sh
-cd dev && npx skills add <owner/repo of the skills> && git add -A && git commit -m "Add a skill" && git push
+cd team/roles/dev && npx skills add <owner/repo of the skills> && git add -A && git commit -m "Add a skill" && git push
 ```
 
 A skill a role can be asked to perform is an entry of `.claude/skills/` in its repo, so every host that runs the role runs the same one. afkconvoy installs no skill and wraps no installer. Pushing is the only way a change to a role or a team reaches a worker.

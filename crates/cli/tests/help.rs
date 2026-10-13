@@ -129,10 +129,13 @@ fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
     for key in keys.concat() {
         assert!(guide.contains(&format!(" {key}:")), "the guide never shows the key {key}");
     }
-    // The loop, in order: a role, the team that names it, then `check` after each edit.
+    // The loop, in order: a team with its roles in one repo, one more role
+    // there, then `check` after each edit.
     let at = |line: &str| guide.find(line).unwrap_or_else(|| panic!("the guide lost {line:?}"));
-    assert!(at("afkconvoy scaffold role") < at("afkconvoy scaffold team"));
-    assert!(at("afkconvoy scaffold team") < at("afkconvoy check --dir"));
+    assert!(
+        at("afkconvoy scaffold team <dir> --role <name> --repo") < at("afkconvoy scaffold role")
+    );
+    assert!(at("afkconvoy scaffold role") < at("afkconvoy check --dir <dir> --team"));
     assert!(guide.contains("until it exits 0"));
     assert!(guide.contains("skills installer") && guide.contains("wraps no installer"));
     // `check` lays the same files out, from the same text.
@@ -143,6 +146,18 @@ fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
     let files = files.split("\n\n  The loop").next().unwrap();
     assert!(asked(&["check", "--help"]).contains(files));
     assert!(!long.contains("{files}"));
+}
+
+/// One repo for a team and its roles is the layout a new team starts from
+/// (docs/adr/0014): `scaffold` shows it before a role on its own.
+#[test]
+fn scaffold_shows_a_team_and_its_roles_in_one_repo_first() {
+    let said = asked(&["scaffold", "--help"]);
+    let at = |line: &str| said.find(line).unwrap_or_else(|| panic!("scaffold lost {line:?}"));
+    let one_repo = "afkconvoy scaffold team hospital --role fellow --role attending --repo";
+    assert!(at(one_repo) < at("afkconvoy scaffold role"));
+    assert!(at(one_repo) < at("<name>=<owner/repo>"));
+    assert!(said.contains("\"team_line\": \"reviewer: ./roles/reviewer\""));
 }
 
 #[test]
