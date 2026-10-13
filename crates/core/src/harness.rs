@@ -182,8 +182,20 @@ impl Harness {
     /// rules every harness works under (`team::RULES`). A role holds none.
     pub const fn before_the_rules(self) -> &'static [&'static str] {
         match self {
-            Harness::ClaudeCode | Harness::Codex => &[],
+            Harness::ClaudeCode => &[],
             Harness::Pi => &pi::BEFORE_THE_RULES,
+            Harness::Codex => &codex::BEFORE_THE_RULES,
+        }
+    }
+
+    /// The files it is told the repo's own rules from, on the line that
+    /// starts it — the first of them the worktree holds — and the team rules
+    /// with them (`Start::told`): it loads rules from no directory but the
+    /// one it starts in. Empty: it loads both itself, and is told nothing.
+    pub const fn told(self) -> &'static [&'static str] {
+        match self {
+            Harness::ClaudeCode | Harness::Pi => &[],
+            Harness::Codex => &codex::REPO_RULES,
         }
     }
 

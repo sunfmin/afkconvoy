@@ -2,7 +2,7 @@
 //! issue is dispatched to, the copies its worker starts among, and what a
 //! start asks of the worker launch command.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::Bound;
@@ -12,11 +12,11 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
-use afkconvoy_core::role::{Due, Facts, On, Start, due};
+use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::{BY_DEFAULT, LAND, PRECEDENTS};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::copies::{Copies, Copy};
@@ -145,6 +145,7 @@ impl Staged {
     /// `launch`, the worker launch command of its harness. What this host
     /// keeps for that harness is put in place first (`kept::keep`).
     pub fn command(&self, launch: &str, worktree: &Worktree) -> Result<String> {
+        let told = ToldRules::read(self.harness, &worktree.path, self.team_rules.as_deref())?;
         let start = Start {
             role_dir: &self.role_copy.dir.display().to_string(),
             worktree: &worktree.path.display().to_string(),
@@ -152,6 +153,7 @@ impl Staged {
             model: self.model.as_deref(),
             guard: &crate::own_command().fixed(" guard").own(),
             kept: &crate::kept::keep(self.harness)?.display().to_string(),
+            told: told.told(),
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,
@@ -281,6 +283,45 @@ impl Staged {
             "model": self.model,
             "role_commit": self.role_copy.commit, "role_dir": self.role_copy.dir,
             "team_commit": self.team_copy.commit, "team_dir": self.team_copy.dir})
+    }
+}
+
+/// The rules a worker is told on the line that starts it, as they stand
+/// when it starts: each with the file it was read from.
+#[derive(Default)]
+pub struct ToldRules {
+    repo: Option<(String, String)>,
+    team: Option<(String, String)>,
+}
+
+impl ToldRules {
+    /// Reads what a worker of `harness` is told: the repo's own rules, from
+    /// the first file of `Harness::told` that `worktree` holds, and the team
+    /// rules, from `team_rules`, of a team that has them. Nothing is read
+    /// for a harness that loads both itself.
+    pub fn read(harness: Harness, worktree: &Path, team_rules: Option<&str>) -> Result<ToldRules> {
+        let names = harness.told();
+        if names.is_empty() {
+            return Ok(ToldRules::default());
+        }
+        let read = |file: PathBuf| {
+            let text = std::fs::read_to_string(&file)
+                .with_context(|| format!("cannot read the rules in {}", file.display()))?;
+            anyhow::Ok((file.display().to_string(), text))
+        };
+        let held = names.iter().map(|name| worktree.join(name)).find(|file| file.is_file());
+        Ok(ToldRules {
+            repo: held.map(read).transpose()?,
+            team: team_rules.map(PathBuf::from).map(read).transpose()?,
+        })
+    }
+
+    /// What was read, as a start says it.
+    pub fn told(&self) -> Told<'_> {
+        fn rules(read: &(String, String)) -> Rules<'_> {
+            Rules { file: &read.0, text: &read.1 }
+        }
+        Told { repo: self.repo.as_ref().map(rules), team: self.team.as_ref().map(rules) }
     }
 }
 
