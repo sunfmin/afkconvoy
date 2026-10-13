@@ -110,7 +110,7 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         team_dir: &text(&team),
         model: Some("haiku"),
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
-        report: "cat >/dev/null",
+        kept: &text(&root.join("kept")),
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
             role: "dev",

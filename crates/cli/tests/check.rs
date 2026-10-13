@@ -206,7 +206,7 @@ fn a_stage_and_a_patrol_answer_their_harness_and_a_name_that_is_none_is_a_fault(
 
     // It is a key where `model` is one, and nowhere else.
     let feature = FEATURE
-        .replace("do: implement\n", "do: implement\n    harness: pi\n")
+        .replace("do: implement\n", "do: implement\n    harness: codex\n")
         .replace("do: rule }", "do: rule, harness: claude-code }")
         .replace("do: land }", "do: land, harness: claude-code }");
     let signed = "```yaml\nstages:\n  - { name: sign, by: human, harness: claude-code, on: { pass: done } }\n```\n";
@@ -234,18 +234,17 @@ fn a_stage_and_a_patrol_answer_their_harness_and_a_name_that_is_none_is_a_fault(
         ]
     );
     let error = answer.error();
-    let said = "workflows/feature.md: stages[0].harness: `pi` is no harness; the harnesses are: \
-                claude-code";
+    let said = "workflows/feature.md: stages[0].harness: `codex` is no harness; the harnesses are: \
+                claude-code, pi";
     assert!(error.contains(said), "{error}");
 
     // The config's is a fault with its file and key.
     let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
-    let config =
-        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\nharness: pi\n```\n";
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\nharness: codex\n```\n";
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     let error = world.afk(&["check"]).error();
     assert!(error.contains("docs/agents/afkconvoy.md"), "{error}");
-    assert!(error.contains("harness: `pi` is no harness"), "{error}");
+    assert!(error.contains("harness: `codex` is no harness"), "{error}");
 }
 
 #[test]
@@ -330,7 +329,7 @@ fn a_bound_repos_config_answers_its_four_keys_more() {
         ("patrols: [triage]", "patrols"),
         ("intake_limit: 5", "intake_limit"),
         ("harness: claude-code", "harness: is read only in a bound repo"),
-        ("team: acme/team\nharness: pi", "harness: `pi` is no harness"),
+        ("team: acme/team\nharness: codex", "harness: `codex` is no harness"),
         ("team: acme/team\nharness: [claude-code]", "harness"),
     ] {
         let error = config(yaml).error();

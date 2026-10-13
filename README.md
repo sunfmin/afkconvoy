@@ -18,7 +18,7 @@ Homebrew installs `git` and `gh` with it. Three things are yours to set up:
 
 - **orca** — afkconvoy starts every worker through [orca](https://github.com/stablyai/orca): `brew install --cask stablyai/orca/orca`. Give the tap's name: the cask Homebrew itself calls `orca` is another program. Then start it — `orca open` — and, in each checkout a fleet is to work, give it the repo once: `orca repo add --path "$PWD"`.
 - **GitHub** — `gh auth login`, as a user who may push to the repo.
-- **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`.
+- **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`. A team that puts a stage on **pi** needs pi installed and logged in to the provider of that stage's model, as you would use it yourself.
 
 `run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing, logged out, not running or not given the checkout. afkconvoy installs nothing, starts and adds nothing, and logs nobody in.
 
@@ -160,12 +160,12 @@ Without `--worker-command`, `run` lists your login shell's aliases that start Cl
 A fleet instance has one worker launch command for each harness its workers run, and the flag has two forms. The bare one above says the command of the repo's default harness. `--worker-command <harness>=<command>` says the command of one harness by its key, and is given once for each:
 
 ```sh
-afkconvoy run --worker-command claude-code=kim
+afkconvoy run --worker-command claude-code=kim --worker-command pi=mypi
 ```
 
-A harness nobody said a command for is started with its stock one. A command given twice for one harness, or for a name that is no harness, is an error. A value is read as `<harness>=<command>` when its first word holds an `=`.
+The harnesses are `claude-code` and `pi`. A harness nobody said a command for is started with its stock one: `claude --dangerously-skip-permissions`, and `pi`. A command given twice for one harness, or for a name that is no harness, is an error. A value is read as `<harness>=<command>` when its first word holds an `=`.
 
-**In a bound repo** a worker starts in its role, so the worker launch command is no longer opaque: it must end in Claude Code taking flags, because the fleet appends to it. The terminal is opened on the issue's worktree as ever, and the line it runs is:
+**In a bound repo** a worker starts in its role, so the worker launch command is no longer opaque: it must end in its harness taking flags, because the fleet appends to it. The terminal is opened on the issue's worktree as ever, and the line it runs for a Claude Code worker is:
 
 ```sh
 cd <the role's copy> && export <the stage's facts> && <worker launch command> \
@@ -180,6 +180,22 @@ cd <the role's copy> && export <the stage's facts> && <worker launch command> \
 - The stage's facts are in the worker's environment: `AFKCONVOY_ISSUE`, `AFKCONVOY_FLOW`, `AFKCONVOY_STAGE`, `AFKCONVOY_ROLE`, `AFKCONVOY_SKILL`, `AFKCONVOY_WRITES`, `AFKCONVOY_CONSULT`, `AFKCONVOY_BASE_BRANCH`, `AFKCONVOY_ESCALATE_LABEL`, `AFKCONVOY_LOCK_LABEL`, `AFKCONVOY_ROLE_COMMIT` and `AFKCONVOY_TEAM_COMMIT`.
 - Every worker is started with the guard: `afkconvoy guard`, added as a hook that Claude Code runs before each tool call, whatever the role's repo holds. It refuses, with a reason the worker is shown, what no worker may do — add or remove a flow, stage, escalate or lock label, write a stage record by hand, merge a PR, push the base branch — and, in a stage marked `writes: false` and for every consult, committing and pushing. A role's own limits are hooks in its repo; they run beside the guard. A guard recognises commands, so it stops a worker that errs, not one that means to get past it: after a stage marked `writes: false`, and after a consult, the fleet checks the branch, and a commit that was not there before escalates the issue. `afkconvoy guard --help` lists what is refused.
 - Every worker is started reporting to orca too. orca hears whether an agent is working or has stopped through hooks it keeps in your own Claude Code settings, which a worker in its role does not load; the fleet adds the same hook (`~/.orca/agent-hooks/claude-hook.sh`, where orca installed it) beside the guard, so `orca worktree ps` shows an agent for a stage's worker as it does for the train's. Where orca has no report all the same — a host whose orca installed no hook, a runtime that sends none — the worker's terminal speaks for it: one that wrote within the grace period (five minutes) is at work, and one quiet longer has stopped. A worker is also left a grace period from its start, whatever its terminal and its worktree show.
+
+**A pi worker** — of a stage or a patrol that says `harness: pi` — starts in its role's directory like any other, and the fleet adds what pi does not load from there:
+
+```sh
+cd <the role's copy> && export PI_CODING_AGENT_DIR=<the fleet's own> <the stage's facts> && <worker launch command> \
+  --approve --no-skills --skill <the role's copy>/.claude/skills \
+  --extension <the fleet's own>/afkconvoy.js [--model <the stage's>]
+```
+
+- pi's stock command is `pi`: it asks nothing before a tool call. A command you give must take `--approve`, `--no-skills`, `--skill`, `--extension` and `--model`, checked as Claude Code's is.
+- The role's rules (`CLAUDE.md`) load because pi starts in the role's directory. Its skills are named (`--skill`), and pi looks for no other (`--no-skills`): pi reads skills from `~/.agents/skills` wherever its user directory is, and none of yours is to be loaded.
+- `--approve` answers on the line the question pi asks before it loads a directory's own files. Asked at the terminal it would take the worker's brief for its answer; answered, pi loads the role's own limits, which for pi are extensions in the role's `.pi/extensions/`. A role's Claude Code hooks are not run by pi: a limit is written once per harness.
+- pi's user directory is the fleet's own, `~/.cache/afkconvoy/harness/pi` (or under `$XDG_CACHE_HOME`), not yours (`~/.pi/agent`). Each start puts in it links to your `auth.json` and `models.json` — your logins and the models you defined, so a login pi renews is renewed for you too — and a link to the extension orca installed to hear of a pi session (`extensions/orca-agent-status.ts`), where there is one. Nothing else of yours is there: no rule, skill, setting or other extension. Two things it cannot leave out: a provider key in your login shell's environment, and a rules file in a directory above the fleet's copies (`~/AGENTS.md`).
+- The extension is afkconvoy's own, written there by each start. It asks `afkconvoy guard` before every tool call — the same guard, refusing the same things for the same reasons — and a call the guard refuses, or could not be asked of, is not made; a pi worker whose extension is missing does not start. It also loads the rules of the issue's worktree (`AGENTS.md`, or `CLAUDE.md`), which pi does not find from the role's directory.
+- A stage's model is its harness's own name for it: pi's is `<provider>/<id>`. A stage on pi that names none gets whichever model pi picks for itself.
+- orca hears of a pi worker from its first turn on; until then, and on a host where orca installed no extension, its terminal speaks for it, as above.
 
 An unbound repo's command stays opaque and may start any agent.
 

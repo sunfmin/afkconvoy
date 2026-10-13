@@ -99,6 +99,7 @@ impl World {
             .env("CONVOY_FAKE_ORCA", &self.orca_file)
             .env("SHELL", self.bin.join("shell"))
             .env("XDG_CACHE_HOME", self.cache())
+            .env("HOME", self.home())
             .envs(GIT_ENV)
             .env_remove("ANTHROPIC_BASE_URL");
         cmd
@@ -108,6 +109,12 @@ impl World {
     /// of a team and its roles are under it.
     pub fn cache(&self) -> PathBuf {
         self.root.join("cache")
+    }
+
+    /// The home of this world's host user: nothing of the home of whoever
+    /// runs the tests is read. It holds nothing but what a test puts there.
+    pub fn home(&self) -> PathBuf {
+        self.root.join("home")
     }
 
     /// Runs the real CLI in the fleet's checkout.
@@ -510,7 +517,8 @@ impl Drop for World {
 }
 
 /// The login shell a worker would get, as far as the fleet asks it anything:
-/// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'`,
+/// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
+/// where `pi` answers as pi does and every other command as Claude Code —
 /// and whether `gh` and `claude` are logged in. Every word is a program unless `shell-types`
 /// beside `bin/` says otherwise, and both are logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
@@ -526,6 +534,13 @@ case "$2" in
     if [ -e "$root/logged-out-claude" ]; then echo '{ "loggedIn": false }'; exit 0; fi
     echo 'a line an rc file printed'; echo '{'; echo '  "loggedIn": true'; echo '}'; exit 1 ;;
   alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
+  "pi --help")
+    echo "Usage:"; echo "  pi [options] [--] [@files...] [messages...]"
+    echo "  --model <pattern>              Model pattern or ID"
+    echo "  --extension, -e <path>         Load an extension file"
+    echo "  --skill <path>                 Load a skill file or directory"
+    echo "  --no-skills, -ns               Disable skills discovery and loading"
+    echo "  --approve, -a                  Trust project-local files for this run"; exit 0 ;;
   *" --help")
     if [ -f "$root/shell-help" ]; then
       if [ "$(cat "$root/shell-help")" = "-" ]; then echo "unknown option --help" >&2; exit 1; fi

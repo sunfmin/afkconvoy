@@ -153,7 +153,7 @@ pub fn dispatch(
                     staged.keep_start(cut, claim)?;
                 }
                 terminal = Some(match &staged {
-                    Some(staged) => cut.start(&staged.command(launch, cut), fleet.now)?,
+                    Some(staged) => cut.start(&staged.command(launch, cut)?, fleet.now)?,
                     None => cut.start(launch, fleet.now)?,
                 });
             }
