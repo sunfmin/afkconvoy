@@ -1200,12 +1200,22 @@ directory alone, where such a link points at nothing",
                 report.fault(&key, problem)
             }
             Some((_, Ok(read))) if !read.in_place.is_empty() => {
-                for (harness, file) in &read.in_place {
+                // A file is one fault, whichever harnesses would load it.
+                let mut files: Vec<&str> = vec![];
+                for (_, file) in &read.in_place {
+                    if !files.contains(&file.as_str()) {
+                        files.push(file);
+                    }
+                }
+                for file in files {
+                    let of_file = read.in_place.iter().filter(|(_, held)| held == file);
+                    let harnesses: Vec<&str> = of_file.map(|(harness, _)| harness.name()).collect();
+                    let load = if harnesses.len() == 1 { "loads" } else { "load" };
                     let problem = format!(
-                        "{dir} holds `{file}`: {} loads that in place of `{RULES}`, the rules \
+                        "{dir} holds `{file}`: {} {load} that in place of `{RULES}`, the rules \
 every harness works under. A role's rules are written once, in `{RULES}`; what one harness needs \
 of its own is added to them, and never stands in their place",
-                        harness.name()
+                        harnesses.join(" and ")
                     );
                     report.fault(&key, problem)
                 }
@@ -2184,20 +2194,25 @@ land: { by: dev, do: land }
         let mut sources = sources(TEAM, &[]);
         let read = sources.roles[DEV].1.as_mut().unwrap();
         read.in_place = vec![
-            (Harness::Pi, "AGENTS.md".to_string()),
             (Harness::Pi, "AGENTS.override.md".to_string()),
+            (Harness::Pi, "AGENTS.md".to_string()),
+            (Harness::Pi, "AGENTS.MD".to_string()),
+            (Harness::Codex, "AGENTS.override.md".to_string()),
+            (Harness::Codex, "AGENTS.md".to_string()),
         ];
         let faults = load(&sources).unwrap_err();
-        assert_eq!(places(&faults), ["team.md: roles.dev", "team.md: roles.dev"]);
+        // One fault a file, naming each harness that would load it.
+        assert_eq!(places(&faults), ["team.md: roles.dev"; 3]);
         assert!(
-            faults[0].problem.starts_with(
-                "acme/dev holds `AGENTS.md`: pi loads that in place of `CLAUDE.md`, the rules \
-                 every harness works under."
+            faults[1].problem.starts_with(
+                "acme/dev holds `AGENTS.md`: pi and Codex load that in place of `CLAUDE.md`, the \
+                 rules every harness works under."
             ),
             "{}",
-            faults[0].problem
+            faults[1].problem
         );
-        assert!(faults[1].problem.starts_with("acme/dev holds `AGENTS.override.md`: "));
+        assert!(faults[0].problem.starts_with("acme/dev holds `AGENTS.override.md`: pi and "));
+        assert!(faults[2].problem.starts_with("acme/dev holds `AGENTS.MD`: pi loads that in "));
     }
 
     #[test]

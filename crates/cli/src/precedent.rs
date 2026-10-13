@@ -127,6 +127,7 @@ pub fn propose(
         over_command: &crate::own_command_in(&path).fixed(" over --run ").word(&claim.key).own(),
     };
     let brief = checkout.write_brief(&proposal_prompt(&fields).map_err(|e| anyhow!(e))?)?;
+    let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;
     let start = Start {
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
@@ -134,6 +135,7 @@ pub fn propose(
         model: None,
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &crate::kept::keep(harness)?.display().to_string(),
+        told: told.told(),
         facts: Facts {
             on: On::Proposal { issue: ruling.issue },
             role: &role.name,

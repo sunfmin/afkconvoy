@@ -170,11 +170,20 @@ WHAT TRIPS YOU UP
           <the stage's facts> && <worker launch command> --add-dir <the worktree>
           --dangerously-bypass-hook-trust
           --config 'projects={"<the role's copy>"={trust_level="trusted"}}'
+          --config 'project_doc_fallback_filenames=["CLAUDE.md"]'
+          --config 'project_root_markers=[]'
+          [--config 'developer_instructions="<the repo's own rules, the team rules>"']
           --config 'hooks={PreToolUse=[<what asks afkconvoy guard>]}'
           --config features.memories=false [--model <the stage's>]
     `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex
     would ask at its terminal — whether it trusts the folder, and a review of its
-    hooks — and have it load the role's own limits (`.codex/hooks.json`). The hook
+    hooks — and have it load the role's own limits (`.codex/hooks.json`). The next
+    two have it load its role's rules — the CLAUDE.md of the directory it starts in —
+    and those of no directory above. Codex loads rules from no directory added to
+    it, so `developer_instructions` says the other two to it, each as what it is and
+    with its file: the repo's own rules — the worktree's AGENTS.md, or its CLAUDE.md
+    where it holds none — and the team rules (the team's CLAUDE.md), as they stand
+    when the worker starts. A repo and a team with none are told none. The hook
     named asks `afkconvoy guard` before every tool call: one the guard refuses, or
     cannot be asked of, is not made. It is on the line and in no file, so no worker
     starts without it. Codex's user directory is the fleet's own

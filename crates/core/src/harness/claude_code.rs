@@ -239,7 +239,7 @@ mod tests {
     use super::*;
     use crate::harness::Harness;
     use crate::line::quoted;
-    use crate::role::{Facts, On};
+    use crate::role::{Facts, On, Told};
 
     fn in_role(command: &str, start: &Start) -> String {
         Harness::ClaudeCode.in_role(command, start)
@@ -274,6 +274,7 @@ mod tests {
             model,
             guard: "/bin/afkconvoy guard",
             kept: "/cache/harness/claude-code",
+            told: Told::default(),
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },
                 role: "dev",

@@ -20,7 +20,7 @@ use std::process::{Command, Stdio};
 
 use afkconvoy_core::harness::Harness;
 
-use afkconvoy_core::role::{Facts, On, Start};
+use afkconvoy_core::role::{Facts, On, Start, Told};
 use serde_json::Value;
 
 const ROLE_WORD: &str = "ROLE-7391";
@@ -111,6 +111,7 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         model: Some("haiku"),
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         kept: &text(&root.join("kept")),
+        told: Told::default(),
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
             role: "dev",
