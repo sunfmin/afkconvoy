@@ -216,7 +216,10 @@ fn claude_is_checked_only_as_the_first_word_of_the_worker_launch_command() {
     world.shell_knows("kim", Some("kim is an alias for claude --dangerously-skip-permissions"));
     for command in ["agent", "kim"] {
         for start in worker_starts(&world, &["--worker-command", command]) {
-            assert_eq!(start.stderr, "", "{command}");
+            // all a start says is that the probe that passed still stands
+            let said: Vec<&str> =
+                start.stderr.lines().filter(|line| !line.starts_with("note: ")).collect();
+            assert_eq!(said, [] as [&str; 0], "{command}");
             start.ok();
         }
     }

@@ -9,7 +9,7 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  Everything the fleet does. It makes the startup probe, takes every claim stamped with
+  Everything the fleet does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with
   this host, then ticks: each tick rebuilds the working set from GitHub and the remote
   and makes every transition it calls for — claims and heartbeats on the remote, workers
   in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the

@@ -1,11 +1,19 @@
 //! What `run`, `tick` and `plan` check before anything else: a host or a repo
 //! the fleet cannot work is refused here, not at its first tick or landing.
+//!
+//! A probe that passed is noted on the host that made it (`Passed`). `run`
+//! probes at every start; `tick` and `plan` trust a note that still stands
+//! (`standing`) and probe only without one.
 
+use afkconvoy_core::config::Config;
+use afkconvoy_core::gate::key;
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
-    Answer, BaseCheck, GATE_KIND, answer, base_check, choose, no_base_branch, no_gate_records,
+    Answer, BaseCheck, GATE_KIND, PROBE_STANDS, answer, base_check, choose, no_base_branch,
+    no_gate_records, probe_stands,
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::gh::GitHub;
@@ -16,6 +24,81 @@ use crate::tools;
 
 /// What a probe's commit says it is.
 const PROBE_RECORD: &str = "convoy:probe";
+
+/// The note of the last startup probe that passed (`Repo::note`).
+const PASSED_NOTE: &str = "convoy-probe";
+
+/// A startup probe that passed, as the host that made it notes it: when, what
+/// it was asked about, and what it warned of. A probe asked about anything
+/// else is another probe.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Passed {
+    /// When it passed, in epoch seconds.
+    at: u64,
+    #[serde(flatten)]
+    asked: Asked,
+    warnings: Vec<String>,
+}
+
+/// What a startup probe is asked about.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Asked {
+    base_branch: String,
+    /// Where the remote is.
+    remote: String,
+    /// The team the repo is bound to: a bound repo's workers start in roles.
+    team: Option<String>,
+    /// The ref layout it settled on, as the repo has it noted.
+    layout: String,
+    /// The worker launch command it checked, when the start knew one — as
+    /// its key (`gate::key`): the command itself is written to no file.
+    launch: Option<u64>,
+}
+
+impl Asked {
+    /// What a probe of `repo` under `config` is asked about now.
+    fn now(repo: &Repo, config: &Config, launch: Option<&Proposed>) -> Result<Asked> {
+        Ok(Asked {
+            base_branch: config.base_branch.clone(),
+            remote: repo.git(&["remote", "get-url", REMOTE])?,
+            team: config.bound.as_ref().map(|bound| bound.team.as_str().to_string()),
+            layout: repo.layout().name().to_string(),
+            launch: launch.map(|launch| key(launch.as_str())),
+        })
+    }
+}
+
+/// The warnings of a startup probe that still stands for the repo this
+/// command was run in, said again; `None` when there is none, and one is to
+/// be made. One stands for an hour (`probe_stands`) on the host that made it,
+/// while the config's base branch and team, the remote, and the noted ref
+/// layout are what it was asked about — and, for a command that starts
+/// workers, `launch` is the worker launch command it checked. Says on stderr
+/// that no probe was made. Whatever keeps the note from being read or
+/// compared is the probe's to report: none stands.
+pub fn standing(now: u64, launch: Option<&Proposed>) -> Option<Vec<String>> {
+    let read = || -> Result<(Passed, Asked)> {
+        let repo = Repo::here()?;
+        let config = config::load(&repo.dir.join(config::FILE))?;
+        let passed = serde_json::from_str(&std::fs::read_to_string(repo.note(PASSED_NOTE)?)?)?;
+        Ok((passed, Asked::now(&repo, &config, launch)?))
+    };
+    let (passed, mut asked) = read().ok()?;
+    // A command that starts no worker asks nothing of the launch command.
+    if launch.is_none() {
+        asked.launch = passed.asked.launch;
+    }
+    if !probe_stands(passed.at, now) || passed.asked != asked {
+        return None;
+    }
+    eprintln!(
+        "note: no startup probe was made: the one that passed on this host {} min ago stands \
+         for {} min (`afkconvoy plan --help`)",
+        (now - passed.at) / 60,
+        PROBE_STANDS / 60
+    );
+    Some(passed.warnings)
+}
 
 /// Checks this host and the repo this command was run in → what the human
 /// should know before the fleet carries on. An error is a host or a repo the
@@ -28,7 +111,8 @@ const PROBE_RECORD: &str = "convoy:probe";
 /// (`role::probe`); the base branch exists (none is ever created); no rule of its
 /// protection refuses the train's push; where the remote takes the fleet's
 /// refs — noted for every later command (`Repo::layout`); whether it takes
-/// gate records, and the ones past their day are swept.
+/// gate records, and the ones past their day are swept. A probe that passed is
+/// noted for `standing`.
 pub fn startup(now: u64, launch: Option<&Proposed>) -> Result<Vec<String>> {
     tools::check(launch)?;
     let repo = Repo::here()?;
@@ -90,7 +174,11 @@ pub fn startup(now: u64, launch: Option<&Proposed>) -> Result<Vec<String>> {
         // Soft: a ref that stays is litter the next start deletes.
         let _ = repo.try_git(&args);
     }
-    Ok(warnings)
+    let passed = Passed { at: now, asked: Asked::now(&repo, &config, launch)?, warnings };
+    let note = repo.note(PASSED_NOTE)?;
+    std::fs::write(&note, serde_json::to_string(&passed)?)
+        .with_context(|| format!("cannot write {}", note.display()))?;
+    Ok(passed.warnings)
 }
 
 /// Says each warning where a human reads it; stdout stays the command's answer.

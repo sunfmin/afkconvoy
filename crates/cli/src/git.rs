@@ -10,6 +10,9 @@ use anyhow::{Context, Result, bail};
 /// The remote every ref and branch is pushed to and fetched from.
 pub const REMOTE: &str = "origin";
 
+/// The note of the ref layout a start settled on (`Repo::note`).
+const LAYOUT_NOTE: &str = "convoy-layout";
+
 /// What one git call came to. Never an error by itself: the caller reads `ok`.
 pub struct Ran {
     pub ok: bool,
@@ -50,23 +53,25 @@ impl Repo {
     /// worktree, so a worker's command names the refs the fleet does. A repo
     /// no start has probed uses the first layout.
     pub fn layout(&self) -> Layout {
-        let noted = self.layout_note().and_then(|note| Ok(std::fs::read_to_string(note)?));
+        let noted = self.note(LAYOUT_NOTE).and_then(|note| Ok(std::fs::read_to_string(note)?));
         noted.ok().and_then(|name| Layout::named(name.trim())).unwrap_or(Layout::ALL[0])
     }
 
     /// Notes the layout a start settled on.
     pub fn note_layout(&self, layout: Layout) -> Result<()> {
         if self.layout() != layout {
-            let note = self.layout_note()?;
+            let note = self.note(LAYOUT_NOTE)?;
             std::fs::write(&note, format!("{}\n", layout.name()))
                 .with_context(|| format!("cannot write {}", note.display()))?;
         }
         Ok(())
     }
 
-    fn layout_note(&self) -> Result<PathBuf> {
+    /// Where a note called `name` is kept on this host: in the repo's git
+    /// dir, which every worktree of it shares.
+    pub fn note(&self, name: &str) -> Result<PathBuf> {
         let common = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-        Ok(PathBuf::from(common).join("convoy-layout"))
+        Ok(PathBuf::from(common).join(name))
     }
 
     /// One git call whose failure the caller reads.

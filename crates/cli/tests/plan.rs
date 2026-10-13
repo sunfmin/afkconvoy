@@ -119,7 +119,10 @@ fn plan_writes_nothing() {
     for call in &calls {
         let line = call.join(" ");
         assert!(line.starts_with("api ") || line.starts_with("pr list"), "{line}");
-        let writes = ["--method", "-X", "-f", "-F"];
+        // The one GraphQL call is a query: its fields say what it asks for.
+        let asks = call.iter().any(|arg| arg.starts_with("query=query("));
+        let writes: &[&str] =
+            if asks { &["--method", "-X"] } else { &["--method", "-X", "-f", "-F"] };
         assert!(!call.iter().any(|arg| writes.contains(&arg.as_str())), "{line}");
     }
     let mut gh_after = world.gh();

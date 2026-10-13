@@ -114,7 +114,7 @@ fn a_wake_that_arrives_during_a_tick_makes_the_next_start_at_once() {
     // the tick is reading: its list of the open issues was asked for
     until("the first tick's rebuild", || {
         let calls = world.gh()["calls"].to_string();
-        calls.contains("issues?state=open")
+        calls.contains("graphql")
     });
     assert_eq!(wake(&world, &world.clone), json!({"woke": true}));
     assert_eq!(wake(&world, &world.clone), json!({"woke": true}), "and a second, as well");

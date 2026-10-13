@@ -11,7 +11,10 @@ WHAT IT READS AND WRITES
 
   What one tick of `run` does: the startup probe, the rebuild, then every transition the
   working set calls for — on the remote, on GitHub and in orca. It does not wait for the
-  workers it starts, and keeps nothing on this host a later tick needs.
+  workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it
+  makes no probe while one that passed on this host in the last hour stands, and says
+  so on stderr (`afkconvoy plan --help`) — one that checked the worker launch command
+  this tick starts its workers with: another command is probed for.
 
 WHAT IT ANSWERS
 

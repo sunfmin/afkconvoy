@@ -33,10 +33,8 @@ impl Train {
     /// The train as `listing` saw it.
     pub fn listed(repo: &Repo, config: &Config, listing: &Listing) -> Result<Train> {
         let branch = &config.base_branch;
-        let base = listing
-            .base
-            .clone()
-            .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
+        let base =
+            listing.base.clone().ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
         repo.bring(&base, &listing.base_ref)?;
         let line_ref = train_refs(repo.layout(), branch).line;
         let line = listing.sha(&line_ref).map(str::to_string);
