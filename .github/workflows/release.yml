@@ -3,9 +3,12 @@
 # that installs them. Every step is `packaging/release.sh`, so it can be run
 # by hand as well.
 #
-# The formula goes to the tap (sunfmin/homebrew-tap) when the repository has
-# the secret HOMEBREW_TAP_TOKEN — a token that may push there. Without it the
-# formula is only attached to the release, to be committed to the tap by hand.
+# This repository is private, and Homebrew downloads with no login: what it
+# installs is published to the tap (sunfmin/homebrew-tap) — the archives to a
+# release there, the formula to Formula/afkconvoy.rb. That takes the secret
+# HOMEBREW_TAP_TOKEN, a token that may write the tap's contents; without it
+# the run fails after the release here is made, and `packaging/release.sh
+# publish` finishes it by hand.
 
 name: release
 
@@ -70,17 +73,13 @@ jobs:
             dist/*.tar.gz dist/SHA256SUMS dist/afkconvoy.rb
       - name: Tap
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          if [ -z "$TAP_TOKEN" ]; then
-            echo "::notice::No HOMEBREW_TAP_TOKEN: commit the release's afkconvoy.rb to sunfmin/homebrew-tap as Formula/afkconvoy.rb by hand."
-            exit 0
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::No HOMEBREW_TAP_TOKEN: nothing was published to sunfmin/homebrew-tap, so Homebrew cannot install this release. Build it and run packaging/release.sh publish by hand, or set the secret and run this workflow again."
+            exit 1
           fi
-          version=$(packaging/release.sh version)
-          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/sunfmin/homebrew-tap.git" tap
-          cp dist/afkconvoy.rb tap/Formula/afkconvoy.rb
-          cd tap
-          git add Formula/afkconvoy.rb
-          git -c user.name=afkconvoy-release -c user.email=afkconvoy-release@users.noreply.github.com \
-            commit -m "afkconvoy $version"
-          git push origin HEAD
+          gh auth setup-git
+          git config --global user.name afkconvoy-release
+          git config --global user.email afkconvoy-release@users.noreply.github.com
+          packaging/release.sh publish
