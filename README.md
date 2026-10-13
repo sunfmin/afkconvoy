@@ -31,6 +31,8 @@ Homebrew installs `git` and `gh` with it. Three things are yours to set up:
 npx skills add sunfmin/afkconvoy
 ```
 
+`afkconvoy skill` prints that same file, for an agent the installer does not know: `afkconvoy skill > ~/.claude/skills/afkconvoy/SKILL.md` for a user, or under a project's own `.claude/skills/afkconvoy/`. `afkconvoy skill --help` says where it goes.
+
 ## Configure a repo
 
 Add `docs/agents/afkconvoy.md` to the repo's base branch. afkconvoy reads the first `yaml` block in it and nothing else; an unknown key or a wrong type is an error.
