@@ -71,7 +71,7 @@ impl Tool {
     }
 
     /// The line that logs it in.
-    fn login(self, host: Option<&str>) -> String {
+    pub fn login(self, host: Option<&str>) -> String {
         match self {
             Tool::Claude => "claude auth login".to_string(),
             // github.com is where `gh auth login` logs in unasked.

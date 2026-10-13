@@ -35,7 +35,8 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum What {
-    /// A `run` started, giving its workers this worker launch command.
+    /// A `run` started, its worker launch command beginning with this word:
+    /// the word a login shell is asked about, and never what follows it.
     Start { worker_command: String },
     /// One tick ended.
     Tick(Tick),

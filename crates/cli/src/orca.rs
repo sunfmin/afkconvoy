@@ -6,6 +6,7 @@ use std::process::Command;
 
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::launch::{Waited, until_ready};
+use afkconvoy_core::line::Line;
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::train::TRAIN_WORKTREE;
@@ -13,6 +14,7 @@ use afkconvoy_core::worker::{
     AgentReport, WorkerState, is_worktree_named, lead, short_branch, worker_state,
 };
 use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::git::Repo;
@@ -30,6 +32,8 @@ const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 const STARTED_FILE: &str = "convoy-patrol-started";
 /// The comment of the `blocked` verdict a worker was last started again over.
 const ANSWERED_FILE: &str = "convoy-answered";
+/// What a bound repo's worker here was started under (`Under`).
+const UNDER_FILE: &str = "convoy-started-under";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
@@ -93,18 +97,30 @@ impl Source {
     /// The orca repo whose path is this checkout's main worktree.
     pub fn of(repo: &Repo) -> Result<Source> {
         let main = repo.main_checkout()?;
+        Source::known(&main)?.ok_or_else(|| {
+            anyhow!(
+                "orca knows no repo at {} — add this checkout once with `{}`",
+                main.display(),
+                Source::add(&main)
+            )
+        })
+    }
+
+    /// The orca repo whose path is `main`; `None` when orca knows none there.
+    /// An error is an orca that could not be asked.
+    pub fn known(main: &Path) -> Result<Option<Source>> {
         let listed = orca(&["repo", "list"])?;
         let rows = listed["repos"].as_array().cloned().unwrap_or_default();
         let found = rows
             .iter()
-            .find(|row| row["path"].as_str().is_some_and(|path| same_dir(Path::new(path), &main)));
-        let id = found.and_then(|row| row["id"].as_str()).ok_or_else(|| {
-            anyhow!(
-                "orca knows no repo at {} — add this checkout once with `orca repo add --path <path>`",
-                main.display()
-            )
-        })?;
-        Ok(Source { id: id.to_string() })
+            .find(|row| row["path"].as_str().is_some_and(|path| same_dir(Path::new(path), main)));
+        let id = found.and_then(|row| row["id"].as_str());
+        Ok(id.map(|id| Source { id: id.to_string() }))
+    }
+
+    /// The line that tells orca of the checkout at `main`.
+    pub fn add(main: &Path) -> String {
+        Line::new().fixed("orca repo add --path ").word(&main.display().to_string()).own()
     }
 }
 
@@ -120,6 +136,16 @@ pub struct Told {
     pub tip: String,
     /// `None` for a note written before the time was kept.
     pub at: Option<u64>,
+}
+
+/// What a bound repo's worker was started as, and under which commits of its
+/// role's repo and of the team's: what `doctor` holds against their heads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Under {
+    pub stage: String,
+    pub role: String,
+    pub role_commit: String,
+    pub team_commit: String,
 }
 
 /// A worker's worktree on this machine.
@@ -189,6 +215,21 @@ impl Worktree {
                 branch: short_branch(row["branch"].as_str().unwrap_or("")).to_string(),
             })
         }))
+    }
+
+    /// The worktree orca links to issue `number`, and what the worker in it
+    /// is doing: gone, where there is no worktree.
+    pub fn worker_of(
+        source: &Source,
+        number: u64,
+        now: u64,
+    ) -> Result<(Option<Worktree>, WorkerState)> {
+        let worktree = Worktree::of_issue(source, number)?;
+        let state = match &worktree {
+            Some(worktree) => worktree.state(now)?,
+            None => WorkerState::Gone,
+        };
+        Ok((worktree, state))
     }
 
     /// The landing train's worktree on this machine.
@@ -363,6 +404,19 @@ impl Worktree {
         }
         let file = self.note(WRITES_NOTHING_FILE)?;
         std::fs::write(&file, starting.note())
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// What the worker here was started under, when a bound repo's was.
+    pub fn under(&self) -> Result<Option<Under>> {
+        let kept = std::fs::read_to_string(self.note(UNDER_FILE)?).unwrap_or_default();
+        Ok(serde_json::from_str(&kept).ok())
+    }
+
+    /// Keeps what a bound repo's worker starts under here.
+    pub fn keep_under(&self, under: &Under) -> Result<()> {
+        let file = self.note(UNDER_FILE)?;
+        std::fs::write(&file, serde_json::to_string(under)?)
             .with_context(|| format!("cannot write {}", file.display()))
     }
 

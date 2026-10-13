@@ -15,6 +15,12 @@ WHAT IT READS AND WRITES
   in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the
   landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep.
 
+  It also keeps a log on this host: one line when it starts and one per tick — what
+  `tick` answers for it — in a file under your cache directory, cut back to its newest
+  lines at a bound. A line is written whole as its tick ends, so killing `run` loses
+  none. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say
+  what the last ticks did and which steps failed.
+
 WHAT IT ANSWERS
 
   Not one JSON object: one line on stdout per tick, until it is killed.
@@ -49,8 +55,10 @@ WHAT TRIPS YOU UP
   - Stopping it is killing it. No claim is released on the way out and no worker is
     stopped: the workers work on, and the next `run` on this host takes the claims back.
   - Without `--instance` it mints a new instance id, named for this host, and its lines
-    never print it. `takeover --list` shows it, for `plan --instance` and the commands
-    that make one transition by hand.
+    never print it. `afkconvoy doctor` finds it, and says it as `fleet.instance`, for
+    `plan --instance` and the commands that make one transition by hand.
+  - Its lines are gone with the terminal they were printed in. What each tick did, and
+    every step that failed, is in its log: `afkconvoy doctor` reads it back.
   - A second `run` on this host for this repo takes the first one's claims at its start.
   - The panel is served to this host only, and shows a tick, not this second: between
     two ticks it changes nothing but its countdown. It costs GitHub no read of its own.

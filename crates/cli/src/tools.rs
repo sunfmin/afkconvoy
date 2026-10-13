@@ -11,10 +11,17 @@ use anyhow::{Result, bail};
 use crate::git::{REMOTE, Repo};
 use crate::launch::{Proposed, ask_login_shell};
 
-/// Checks that this host has every command a start needs, each logged in.
-/// `launch` is the worker launch command, when the start knows it. An error
-/// names every fault at once, each with the line a human runs to fix it.
-pub fn check(launch: Option<&Proposed>) -> Result<()> {
+/// What this host has of the commands a start needs.
+pub struct Looked {
+    /// Each tool needed, and what was found of it.
+    pub found: Vec<(Tool, Found)>,
+    /// The host `gh` was asked about: the one the repo's remote is on.
+    pub host: Option<String>,
+}
+
+/// Looks for every command a start needs, and asks each whether it is logged
+/// in. `launch` is the worker launch command, when the start knows it.
+pub fn look(launch: Option<&Proposed>) -> Looked {
     // No git, no checkout, a remote that is a path: `gh` is asked about no host.
     let remote = Repo::here().and_then(|repo| repo.try_git(&["remote", "get-url", REMOTE]));
     let remote = remote.ok().filter(|ran| ran.ok).map(|ran| ran.stdout);
@@ -37,7 +44,16 @@ pub fn check(launch: Option<&Proposed>) -> Result<()> {
         };
         found.push((tool, state));
     }
-    match refusal(&found, host, launch.and_then(Proposed::fault).as_deref()) {
+    Looked { found, host: host.map(str::to_string) }
+}
+
+/// Checks that this host has every command a start needs, each logged in.
+/// `launch` is the worker launch command, when the start knows it. An error
+/// names every fault at once, each with the line a human runs to fix it.
+pub fn check(launch: Option<&Proposed>) -> Result<()> {
+    let looked = look(launch);
+    let fault = launch.and_then(Proposed::fault);
+    match refusal(&looked.found, looked.host.as_deref(), fault.as_deref()) {
         Some(why) => bail!(why),
         None => Ok(()),
     }

@@ -1,0 +1,99 @@
+WHEN TO RUN IT
+
+  When something looks wrong, and before anything else: a fleet that seems stuck, an
+  issue nobody works, a worker that sits there — or when you are asked "is it working?".
+  Run it before you file a bug, too, and put its answer in the report. It is one command
+  for what `scan`, `takeover --list`, `plan`, `show` and orca each say a part of, and it
+  is the only one that says what is wrong.
+
+WHO RUNS IT
+
+  The operator, in a checkout of the repo, on the host the fleet runs on. No `--instance`
+  is needed: it finds the fleet instance of this host's `run` itself.
+
+WHAT IT READS AND WRITES
+
+  It reads this host (the commands the fleet needs, in a login shell; orca), the log
+  this host's `run` keeps of its ticks, the open issues, PRs and stage records on
+  GitHub, the claims, heartbeats and recorded gate runs on the remote, and orca after
+  the worker of each claim. It writes nothing on GitHub and nothing on the remote, and
+  makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes
+  nothing either: each finding names the command that does.
+
+WHAT IT ANSWERS
+
+  {"host", "fleet", "claims", "issues", "findings"}
+
+    host      what this host has of what the fleet needs:
+                tools            each command needed: {name, state} — state is ready,
+                                 missing or logged_out
+                orca             {running, knows_checkout, checkout, error}: whether orca
+                                 answers, and whether it knows the checkout worktrees
+                                 are cut from
+                worker_command   {command, from, starts_a_worker, takes_role_flags} —
+                                 from is `run`, when this host's `run` logged the first
+                                 word of what it started with (all it logs of it), else
+                                 `default`: what a `run` started now would use. null on
+                                 a custom provider with no `run` to say
+    fleet     the `run` of this host for this repo:
+                alive            whether one is running now
+                instance, host   its fleet instance id: the one its log names, else the
+                                 one the claims stamped with this host name; null when
+                                 this host never ran one
+                heartbeat_age    seconds since its heartbeat; null: it has none
+                log              the file its ticks are logged in, or "no log": no `run`
+                                 of this version ran here
+                last_tick        {count, ended, next_due, line, did, error}: when its
+                                 last tick ended and the next is due, in epoch seconds,
+                                 the line `run` printed, and what `tick` answers as `did`;
+                                 error, when the tick failed whole. null with no log
+                failed_steps     the last ten steps that failed, newest first: {tick,
+                                 ended, do, issue, patrol, error}
+    claims    each claim of that instance: {issue, title, status, pr, stage, role,
+              held_for, worker, worktree, gate} — status as `plan` gives it; stage and
+              role in a bound repo; held_for in seconds; worker is {state, quiet}, state
+              being busy, stopped or gone, and null when orca could not say; gate is
+              {green_at} when a green gate run is on record for the tree the worktree
+              is at, else null
+    issues    as `plan` answers them: {frontier, excluded, escalating, locks, free_slots,
+              patrols} — what a worker can be started on, what waits and why, and what
+              is being handed to a human and why. null when they could not be read
+    findings  what is wrong, most severe first — none: []. Each is {severity, what,
+              evidence, fix}:
+                severity   critical  the fleet does not work until it is fixed
+                           warning   one issue or one patrol is held up, or about to be
+                           info      nothing to fix: said so that a surprise is explained
+                what       the fault, in a sentence
+                evidence   what was read that says so
+                fix        one command line to run as it is — or, for a fault in a
+                           team's or a role's file, `<file>: <key>` to edit
+
+  It exits 0 with no critical finding, and non-zero with one — printing the same
+  object, not {"error"} — so that a script can gate on it. Errors: "is not in a git
+  checkout". Whatever else cannot be read is itself a finding.
+
+  The findings: a command the fleet needs is missing or logged out; orca cannot be
+  asked, or does not know the checkout; the worker launch command cannot start a
+  worker; no `run` is alive and claims are held; the same step failed in each of the
+  last three ticks; the team has a fault at its head; a fleet lock stands on an issue
+  that cannot be worked (all critical) — a claim has no worker; a worker has been
+  stopped for half an hour with its claim still at work; the frontier is not empty,
+  slots are free and the last tick started nobody; a flow label names no workflow of
+  the team; an issue has been at a stage longer than any before it took; an issue is
+  one rework from a breaker; a patrol is failed or full (all warning) — and a role's or
+  the team's head moved since a stage in flight started (info).
+
+WHAT TRIPS YOU UP
+
+  - A warning may be the fleet mid-step: a claim has no worker between the tick that
+    took it and the one that starts its worker. Run it again after a tick before you
+    act on one; a critical finding does not go away by waiting.
+  - It says nothing of ticks nobody logged. A `run` logs under your cache directory
+    ($XDG_CACHE_HOME, else ~/.cache) on the host it runs on: run `doctor` there, as the
+    same user. The log is a log: nothing reads it to decide anything, and deleting it
+    loses only what `doctor` could say of the ticks before.
+  - It makes no startup probe, so it looks for the fleet's refs where this repo's last
+    `plan`, `tick` or `run` found the remote keeps them. In a clone none ever ran in, it
+    looks under refs/convoy/.
+  - `fix` is the first thing to try, not a promise: read `afkconvoy <command> --help`
+    of the command it names before you run it.

@@ -92,6 +92,10 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     ] {
         assert!(guide.contains(needed), "the guide lost {needed:?}");
     }
+    // What to run when something looks wrong is named first among the operator's.
+    assert_eq!(group(guide, "  The operator")[0], "doctor");
+    let lead = between(guide, "  The operator", "      doctor").join(" ");
+    assert!(lead.contains("what to run when something looks wrong"), "{lead}");
     // The operator's flow, in order.
     let at = |command: &str| guide.find(&format!("afkconvoy {command} ")).unwrap();
     assert!(at("config") < at("plan") && at("plan") < at("run"));
@@ -164,7 +168,7 @@ fn the_readme_says_how_a_repo_is_bound_and_how_a_role_gets_its_skills() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 42, "{short}");
+    assert!(short.lines().count() <= 43, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -174,11 +178,12 @@ fn the_skill_points_at_the_help_and_restates_none_of_it() {
     assert!(SKILL.starts_with("---\nname: afkconvoy\ndescription: "));
     assert!(body.contains("`afkconvoy --help`"));
     assert!(body.contains("`afkconvoy flows`"), "it sends whoever opens issues to `flows`");
+    assert!(body.contains("`afkconvoy doctor`"), "it sends whoever asks what is wrong to `doctor`");
     let long = help("--help");
     for line in guide(&long).lines().map(str::trim).filter(|line| line.len() > 20) {
         assert!(!body.contains(line), "the skill restates the help: {line}");
     }
-    assert!(body.lines().filter(|line| !line.trim().is_empty()).count() <= 3, "{body}");
+    assert!(body.lines().filter(|line| !line.trim().is_empty()).count() <= 4, "{body}");
     assert!(README.contains("npx skills add sunfmin/afkconvoy"));
 }
 
@@ -302,6 +307,7 @@ fn a_help_names_every_key_its_command_answers_with() {
     check(&["scaffold", "role", world.root.join("role").to_str().unwrap()], &["scaffolded"]);
     check(&["flows"], &["ready_label"]);
     check(&["plan"], &["frontier"]);
+    check(&["doctor"], &["findings"]);
     check(&["scan"], &["claims"]);
     check(&["takeover", "--list"], &["instances"]);
     check(&[&["claim"][..], &on("8", "beta")].concat(), &["sha"]);

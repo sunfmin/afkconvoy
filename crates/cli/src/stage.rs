@@ -10,11 +10,11 @@ use afkconvoy_core::intake::{opened_by, taken_in};
 use afkconvoy_core::plan::{Issue, PullRequest, closing_pr};
 use afkconvoy_core::position::{Declared, Position};
 use afkconvoy_core::precedent::{Ruling, proposed, rulings};
-use afkconvoy_core::role::{Due, due, followed, workflow_of};
+use afkconvoy_core::role::{Due, due, flows, followed, workflow_of};
 use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, advance, history, label_moves, lands, stage_records,
 };
-use afkconvoy_core::team::{Team, Workflow};
+use afkconvoy_core::team::{FLOW_LABEL, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
@@ -192,6 +192,8 @@ struct Flowing {
     urls: Vec<String>,
     /// The id of each record's comment.
     ids: Vec<u64>,
+    /// When each record's comment was written, where GitHub said.
+    at: Vec<Option<u64>>,
     /// The rulings its comments say were proposed as precedents
     /// (`precedent::proposed`).
     proposed: Vec<u64>,
@@ -214,6 +216,28 @@ pub struct Called {
     pub waits_at: Option<String>,
     /// Whether the issue is with a consult: the worker asked after is one.
     pub consulted: bool,
+}
+
+/// Where one issue that carries a flow label stands, for `doctor` to judge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stood {
+    pub number: u64,
+    /// The flow labels it carries.
+    pub flow_labels: Vec<String>,
+    /// The workflow it follows, or why it follows none.
+    pub workflow: Result<String, String>,
+    /// The stage it is at — `land` once its last one passed to the landing
+    /// train — and the role a worker performs it in, where one does.
+    pub stage: Option<String>,
+    pub role: Option<String>,
+    /// Its rework in total: what it had, and what it has left.
+    pub rework: (u64, u64),
+    /// The same of each stage's rejections in a row, by the stage's name.
+    pub in_a_row: Vec<(String, u64, u64)>,
+    /// When each of its stage records was written, oldest first.
+    pub recorded: Vec<u64>,
+    /// The patrol that opened it, when one did.
+    pub opened_by: Option<String>,
 }
 
 /// One rebuild's read of a bound repo's issues that follow a workflow: the
@@ -245,6 +269,7 @@ impl Flows {
             let (records, said) = records_in(&comments);
             let urls = said.iter().map(|comment| comment.url.clone()).collect();
             let ids = said.iter().map(|comment| comment.id).collect();
+            let at = said.iter().map(|comment| comment.at).collect();
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
             let proposed = proposed(bodies());
             let taken_in = taken_in(&issue.labels, bodies()).is_some();
@@ -256,6 +281,7 @@ impl Flows {
                 records,
                 urls,
                 ids,
+                at,
                 proposed,
                 taken_in,
                 opened_by,
@@ -292,6 +318,47 @@ impl Flows {
             Some((issue.number, workflow, history(workflow, &issue.records).place.position))
         };
         self.issues.iter().filter_map(placed).collect()
+    }
+
+    /// Where each issue read stands. None where the team did not load: what
+    /// its issues follow cannot be said.
+    pub fn stood(&self) -> Vec<Stood> {
+        let Ok(team) = self.team() else { return vec![] };
+        let stood = |issue: &Flowing| {
+            let flow_labels: Vec<String> =
+                flows(&issue.labels).iter().map(|name| format!("{FLOW_LABEL}{name}")).collect();
+            let mut stood = Stood {
+                number: issue.number,
+                flow_labels,
+                workflow: Err(String::new()),
+                stage: None,
+                role: None,
+                rework: (0, 0),
+                in_a_row: vec![],
+                recorded: issue.at.iter().flatten().copied().collect(),
+                opened_by: issue.opened_by.clone(),
+            };
+            let workflow = match workflow_of(team, &issue.labels) {
+                Ok(workflow) => workflow,
+                Err(why) => return Stood { workflow: Err(why), ..stood },
+            };
+            let place = history(workflow, &issue.records).place;
+            stood.workflow = Ok(workflow.name.clone());
+            let (stage, work) = match place.position {
+                Position::Landing => (Some(LAND.to_string()), workflow.land.as_ref()),
+                at => (at.stage().map(|stage| stage.name.clone()), at.worker()),
+            };
+            stood.stage = stage;
+            stood.role = work.map(|work| team.role_of(work).name.clone());
+            stood.rework = (place.rework(), place.rework_left());
+            for stage in workflow.stages().iter().filter(|stage| stage.reject().is_some()) {
+                let (had, left) =
+                    (place.consecutive_rework(stage), place.consecutive_rework_left(stage));
+                stood.in_a_row.push((stage.name.clone(), had, left));
+            }
+            stood
+        };
+        self.issues.iter().map(stood).collect()
     }
 
     /// The rulings humans gave the issues read that nothing says were

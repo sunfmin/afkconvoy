@@ -17,7 +17,8 @@ pub const ISSUES_JQ: &str = ".[] | select(.pull_request == null) | {number, titl
 pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].name], \
     pull_request: (.pull_request != null)}";
 /// What is read of each comment on an issue or a PR.
-pub const COMMENTS_JQ: &str = ".[] | {id, body, url: .html_url}";
+pub const COMMENTS_JQ: &str =
+    ".[] | {id, body, url: .html_url, at: (.created_at | fromdateiso8601? // null)}";
 /// What is read of each issue another is blocked by.
 pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
 /// What is read of each label a repo has.
@@ -53,6 +54,9 @@ pub struct Comment {
     pub id: u64,
     pub body: String,
     pub url: String,
+    /// When it was written, in epoch seconds.
+    #[serde(default)]
+    pub at: Option<u64>,
 }
 
 impl IssueRead {

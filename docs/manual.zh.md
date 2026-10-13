@@ -746,7 +746,7 @@ CLAUDE.md                          规则
 
 | 谁 | 命令 |
 |---|---|
-| 操作者 | `config` `check` `plan` `run` `panel` `tick` `takeover` |
+| 操作者 | `doctor` `config` `check` `plan` `run` `panel` `tick` `takeover` |
 | 设计团队的人 | `scaffold` `check` `show` `rehearse` |
 | issue 在等的那个人 | `rule` `send` `verdict` |
 | worker（简报里会点名每一条） | `gate` `land` `verdict` `intake` `lock` `wake` `rule`（会诊时） |
@@ -768,15 +768,23 @@ CLAUDE.md                          规则
 
 ## 10. 出问题时
 
-先按顺序问三个问题：
+先在 fleet 运行的那个 checkout 里跑一条命令：
+
+```sh
+afkconvoy doctor
+```
+
+它把该读的都读一遍——这台机器、`run` 为每个 tick 留下的日志、GitHub、远端、orca——什么都不改，回答一个 JSON 对象：`host`、`fleet`、`claims`、`issues` 和 `findings`。每条 finding 是 `{severity, what, evidence, fix}`，最严重的排在最前，`fix` 是一行可以直接运行的命令，或者要改的文件和键。它会自己找到这台机器上 `run` 的 instance id；只要有一条 finding 是 `critical`，它就以非零退出，脚本可以据此把关。`"findings": []` 说明 fleet 在照常工作，`fleet.last_tick` 说的是它刚做了什么。
+
+它说不了的，这三条命令可以：
 
 ```sh
 afkconvoy plan --instance <id>     # 前沿上有什么、什么被排除及原因、我持有什么
 afkconvoy show --issue <n>         # 某一张 issue 在哪，以及它的记录
-afkconvoy takeover --list          # 有哪些 instance id：`run` 从不打印自己的
+afkconvoy takeover --list          # 远端记得的每一个 instance id，不论在哪台机器
 ```
 
-再看 `run` 打印的那些行：某一步失败只会报告在那里，别处没有。
+某一步失败，会出现在 `run` 打印的那一行里，也会记进它的日志；`doctor` 把日志读回来，放在 `fleet.failed_steps` 里。
 
 | 你看到的 | 原因 | 怎么办 |
 |---|---|---|
@@ -793,7 +801,5 @@ afkconvoy takeover --list          # 有哪些 instance id：`run` 从不打印�
 | 警告说读不到主干的分支保护 | 免费套餐下的私有仓库不暴露这项信息 | 主干没设保护就没事；否则落地会被拒绝 |
 | `run` 被杀掉了 | 什么都没丢 | 在同一台机器上重新启动：它会把认领接回来 |
 | 另一台机器的 fleet 挂了 | 它的认领会自己过期 | 等，或者 `afkconvoy takeover --from <对方实例> --instance <你的>` |
-
-目前还没有一条命令能直接说出「正在运行的 fleet 哪里不对、该怎么修」；那是 [#121](https://github.com/sunfmin/afkconvoy/issues/121)。
 
 **想立刻全部停下**：杀掉 `run`，再在 orca 里关掉各个 worker 的终端。issue 上的流程标签和记录都还在，所以之后再 `run`，每张 issue 都会从原来的位置继续。
