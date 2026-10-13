@@ -195,7 +195,7 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
     let terminals = open_terminals(&world, &dir);
     assert_eq!(terminals.len(), 1, "{terminals:?}");
     let calls = world.orca_calls();
-    let created = calls.iter().find(|call| call[..2] == ["terminal", "create"]).unwrap();
+    let created = calls.iter().find(|call| common::asked(call) == "terminal create").unwrap();
     assert_eq!(created[2..4], ["--worktree".to_string(), format!("path:{}", dir.display())]);
     // …and what it runs changes to the role's copy first, then adds a fixed set.
     let command = format!(

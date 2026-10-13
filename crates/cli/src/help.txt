@@ -9,11 +9,13 @@ WHAT IT NEEDS
 
   - A config on the base branch: the first yaml block of docs/agents/afkconvoy.md.
   - `gh` logged in as a user who may push to the repo.
-  - `orca` on the PATH: every worker is started through it.
+  - `orca` on the PATH: every worker is started through it. It is running (`orca open`)
+    and was given this checkout, once (`orca repo add --path "$PWD"`).
   - `claude` on the PATH and logged in, when it is what starts a worker.
 
-  `plan`, `tick` and `run` check these first. With one missing or logged out they do
-  nothing and the error gives the line to run for each: nothing is installed for you.
+  `plan`, `tick` and `run` check these first. With one missing, logged out, not running
+  or not given the checkout they do nothing and the error gives the line to run for
+  each: nothing is installed, started or added for you.
 
 WHAT TO RUN FIRST, in a checkout of the repo
 
@@ -55,7 +57,7 @@ THE COMMANDS, by who runs them
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped (`rule`, below, is a consult's too):
-      gate  land  verdict  intake  lock  wake
+      gate  land  verdict  intake  lock  over  wake
 
   A human an issue waits for — in a bound repo. Read them to answer an escalated issue,
   to put an issue at a stage of your choosing, or to see what a `by: human` stage asks:

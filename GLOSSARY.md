@@ -19,7 +19,7 @@ A tick stopped after its rebuild, which reports what an acting tick would do and
 _Avoid_: dry run, preview
 
 **Startup probe**:
-What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that the base branch exists and no rule of its protection refuses a push, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing.
+What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing.
 _Avoid_: bootstrap, preflight, health check
 
 **Ref layout**:
@@ -119,7 +119,7 @@ Parking an issue on issues its own stage opened. When they have all closed, that
 _Avoid_: decompose, epic, fan out
 
 **Patrol**:
-A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code.
+A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period.
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:

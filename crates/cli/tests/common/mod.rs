@@ -681,3 +681,9 @@ pub fn card(markup: &str, number: u64) -> String {
     }
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+/// What a call of a stand-in asked for: its first two words — `worktree
+/// create` — or its one, of a call that has no more: `status`.
+pub fn asked(call: &[String]) -> String {
+    call.iter().take(2).map(String::as_str).collect::<Vec<_>>().join(" ")
+}

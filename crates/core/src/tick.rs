@@ -156,6 +156,20 @@ impl Pass {
             )
         })
     }
+
+    /// Whether the pass left the tick after it a worker to start that it
+    /// could not start itself: under a bound of `concurrency` claims a slot
+    /// is free, and it advanced an issue or settled one. What follows either
+    /// — the stage the verdict leads to, an issue the landing unblocked — is
+    /// on no frontier before the next rebuild. A slot any other step freed
+    /// was the pass's own to fill: it ends claims before it takes any.
+    pub fn follow_up_due(&self, concurrency: usize) -> bool {
+        self.held < concurrency
+            && self.did.iter().any(|(step, outcome)| {
+                matches!(step, TickStep::Advance { .. } | TickStep::Settle { .. })
+                    && *outcome == Outcome::Done
+            })
+    }
 }
 
 /// Runs one pass over `set` under a bound of `concurrency` claims — what
@@ -508,10 +522,33 @@ pub fn empty_streak(streak: u32, did_work: bool, held: usize, frontier_remaining
     }
 }
 
+/// The most ticks the loop makes back to back, with no sleep between them:
+/// a fault that makes every tick leave a follow-up cannot make it spin.
+pub const BACK_TO_BACK: u32 = 4;
+
+/// The sleeps skipped in a row once one more tick has ended, `skipped` having
+/// been before it and `follow_up_due` saying whether it left the next tick a
+/// worker to start (`Pass::follow_up_due`). More than zero: the next tick
+/// starts now. Zero: the loop sleeps as `pace` says — after a tick that left
+/// nothing, and after the last of `BACK_TO_BACK` ticks whatever it left.
+#[spec(fn(skipped: u32, follow_up_due: bool) -> u32{after: after < BACK_TO_BACK})]
+pub fn sleeps_skipped(skipped: u32, follow_up_due: bool) -> u32 {
+    if follow_up_due && skipped < BACK_TO_BACK - 1 { skipped + 1 } else { 0 }
+}
+
 #[cfg(flux)]
 #[allow(dead_code)]
 mod rejected {
     use super::*;
+
+    /// A sleep skipped after every tick that left a follow-up, however many
+    /// ran back to back: a fault spins the loop.
+    #[should_fail]
+    #[spec(fn(skipped: u32{skipped < BACK_TO_BACK}, follow_up_due: bool)
+        -> u32{after: after < BACK_TO_BACK})]
+    fn a_sleep_skipped_with_no_look_at_the_run(skipped: u32, follow_up_due: bool) -> u32 {
+        if follow_up_due { skipped + 1 } else { 0 }
+    }
 
     /// A claim taken with no look at the bound.
     #[should_fail]
@@ -1027,6 +1064,62 @@ mod tests {
         let pass = run_pass(&set(&[], &[]), 2, 0, |_| Done);
         assert_eq!(acts(&pass), []);
         assert!(!pass.did_work());
+    }
+
+    #[test]
+    fn a_follow_up_is_due_after_an_advance_or_a_settle_that_left_a_slot_free() {
+        let mine = [(1, Status::AtStage), (2, Status::Closed), (3, Status::NoPr)];
+        let only = |ending: TickStep| {
+            run_pass(
+                &set(&[], &mine),
+                3,
+                3,
+                move |step| if step == ending { Done } else { Nothing },
+            )
+        };
+        assert!(only(Advance { issue: 1 }).follow_up_due(3), "the stage its verdict leads to");
+        assert!(only(Settle { issue: 2 }).follow_up_due(3), "what its landing unblocked");
+        // A claim that ended for good leaves nothing to start…
+        assert!(!only(Judge { issue: 3 }).follow_up_due(3));
+        // …and neither does a tick that only looked, or whose step failed.
+        assert!(!only(Heartbeat).follow_up_due(3));
+        let failed = run_pass(&set(&[], &mine), 3, 3, |step| match step {
+            Advance { .. } => Failed,
+            _ => Nothing,
+        });
+        assert!(!failed.follow_up_due(3));
+        // With no slot free the stage that follows waits, as any frontier issue does:
+        // the slot the advance freed went to #5.
+        let full = run_pass(&set(&[5], &[(1, Status::AtStage)]), 1, 1, |_| Done);
+        assert_eq!(steps(&full), [Advance { issue: 1 }, Dispatch { issue: 5 }, Heartbeat]);
+        assert!(!full.follow_up_due(1));
+    }
+
+    #[test]
+    fn a_slot_a_patrol_or_a_proposal_freed_is_filled_by_the_pass_that_freed_it() {
+        let mut waiting = set(&[5], &[]);
+        waiting.patrols = patrols(&[Standing::Running]);
+        waiting.proposals = proposals(&[precedent::Standing::Running]);
+        let pass = run_pass(&waiting, 2, 2, |_| Done);
+        assert!(pass.did.contains(&(Dispatch { issue: 5 }, Done)));
+        assert_eq!(pass.frontier_remaining, 0);
+        assert!(!pass.follow_up_due(2), "nothing is left for the tick after it");
+    }
+
+    #[test]
+    fn no_more_than_a_fixed_number_of_ticks_run_back_to_back() {
+        // Every tick leaves a follow-up — a fault: the loop still sleeps.
+        let (mut skipped, mut run, mut longest) = (0, 1, 1);
+        for _ in 0..50 {
+            skipped = sleeps_skipped(skipped, true);
+            run = if skipped > 0 { run + 1 } else { 1 };
+            longest = longest.max(run);
+        }
+        assert_eq!(longest, BACK_TO_BACK);
+        // A tick that left nothing sleeps, and ends the run.
+        assert_eq!(sleeps_skipped(0, false), 0);
+        assert_eq!(sleeps_skipped(1, false), 0);
+        assert_eq!(sleeps_skipped(0, true), 1, "the hop: the next tick starts now");
     }
 
     #[test]

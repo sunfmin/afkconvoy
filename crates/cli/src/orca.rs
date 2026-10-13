@@ -6,9 +6,9 @@ use std::process::Command;
 
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::launch::{Waited, until_ready};
-use afkconvoy_core::line::Line;
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::stopped::Nudged;
+use afkconvoy_core::tools::{Found, add_checkout};
 use afkconvoy_core::train::TRAIN_WORKTREE;
 use afkconvoy_core::worker::{
     AgentReport, WorkerState, is_worktree_named, lead, short_branch, worker_state,
@@ -88,6 +88,24 @@ impl Asked {
     }
 }
 
+/// What a start finds of an installed orca: whether it is running, and then
+/// whether it knows this checkout. It only asks.
+pub fn found() -> Result<Found> {
+    // An orca that cannot say is not one a worker can be started through.
+    let ready = orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready");
+    if !ready {
+        return Ok(Found::NotRunning);
+    }
+    // No git, no checkout: another fault's to name.
+    let Ok(main) = Repo::here().and_then(|repo| repo.main_checkout()) else {
+        return Ok(Found::Ready);
+    };
+    Ok(match Source::at(&main)? {
+        Some(_) => Found::Ready,
+        None => Found::KnowsNoCheckout(main.display().to_string()),
+    })
+}
+
 /// The repo orca cuts this checkout's worktrees from.
 pub struct Source {
     pub id: String,
@@ -97,30 +115,23 @@ impl Source {
     /// The orca repo whose path is this checkout's main worktree.
     pub fn of(repo: &Repo) -> Result<Source> {
         let main = repo.main_checkout()?;
-        Source::known(&main)?.ok_or_else(|| {
+        Source::at(&main)?.ok_or_else(|| {
+            let path = main.display().to_string();
             anyhow!(
-                "orca knows no repo at {} — add this checkout once with `{}`",
-                main.display(),
-                Source::add(&main)
+                "orca knows no repo at {path} — add this checkout once with `{}`",
+                add_checkout(&path)
             )
         })
     }
 
     /// The orca repo whose path is `main`; `None` when orca knows none there.
-    /// An error is an orca that could not be asked.
-    pub fn known(main: &Path) -> Result<Option<Source>> {
+    fn at(main: &Path) -> Result<Option<Source>> {
         let listed = orca(&["repo", "list"])?;
         let rows = listed["repos"].as_array().cloned().unwrap_or_default();
         let found = rows
             .iter()
             .find(|row| row["path"].as_str().is_some_and(|path| same_dir(Path::new(path), main)));
-        let id = found.and_then(|row| row["id"].as_str());
-        Ok(id.map(|id| Source { id: id.to_string() }))
-    }
-
-    /// The line that tells orca of the checkout at `main`.
-    pub fn add(main: &Path) -> String {
-        Line::new().fixed("orca repo add --path ").word(&main.display().to_string()).own()
+        Ok(found.and_then(|row| row["id"].as_str()).map(|id| Source { id: id.to_string() }))
     }
 }
 

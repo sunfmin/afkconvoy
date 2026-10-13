@@ -6,6 +6,7 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use common::{World, commit, git, write};
 use serde_json::{Value, json};
@@ -572,4 +573,48 @@ fn a_breaker_found_on_an_issue_nobody_holds_is_escalated_with_its_rounds_too() {
     assert!(said.contains("> Not yet."), "{said}");
     assert_eq!(world.claims(), []);
     assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
+}
+
+/// `run` as alpha at `now`, for `ticks` ticks → its lines, and how long it took.
+fn run(world: &World, now: &str, ticks: &str, pacing: &[&str]) -> (Vec<String>, Duration) {
+    let started = Instant::now();
+    let args = ["run", "--instance", "alpha", "--host", "h1", "--now", now, "--ticks", ticks];
+    let (lines, _) = world.afk_lines(&[&args[..], pacing].concat());
+    (lines, started.elapsed())
+}
+
+#[test]
+fn run_starts_the_stage_a_verdict_leads_to_with_no_sleep() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    declare(&world, 7, "build", "pass", &["--text", "Built."]);
+
+    // Its seconds are real ones: a sleep between the two ticks is 90 of them.
+    let (lines, took) = run(&world, "1090", "2", &[]);
+    assert_eq!(
+        lines,
+        [
+            "tick 1: advanced #7 · holding 0/2 · frontier 0 · next now",
+            "tick 2: dispatched #7 · holding 1/2 · frontier 0 · next in 90s",
+        ]
+    );
+    assert!(took < Duration::from_secs(45), "the sleep was not skipped: {took:?}");
+    assert!(workers(&world, &worktree(&world, 7))[0].contains(" AFKCONVOY_STAGE='review' "));
+}
+
+#[test]
+fn run_sleeps_after_a_tick_that_gave_the_slot_a_verdict_freed_to_the_frontier() {
+    let world = bound(1);
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    declare(&world, 7, "build", "pass", &["--text", "Built."]);
+
+    // #7's next stage has no slot to start in: there is nothing to hurry for.
+    let (lines, _) = run(&world, "1090", "1", &["--second-ms", "0"]);
+    assert_eq!(
+        lines,
+        ["tick 1: advanced #7 · dispatched #8 · holding 1/1 · frontier 0 · next in 90s"]
+    );
 }

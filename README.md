@@ -16,11 +16,11 @@ brew install sunfmin/tap/afkconvoy
 
 Homebrew installs `git` and `gh` with it. Three things are yours to set up:
 
-- **orca** — afkconvoy starts every worker through [orca](https://github.com/stablyai/orca): `brew install --cask stablyai/orca/orca`. Give the tap's name: the cask Homebrew itself calls `orca` is another program.
+- **orca** — afkconvoy starts every worker through [orca](https://github.com/stablyai/orca): `brew install --cask stablyai/orca/orca`. Give the tap's name: the cask Homebrew itself calls `orca` is another program. Then start it — `orca open` — and, in each checkout a fleet is to work, give it the repo once: `orca repo add --path "$PWD"`.
 - **GitHub** — `gh auth login`, as a user who may push to the repo.
 - **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`.
 
-`run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing or logged out. afkconvoy installs nothing and logs nobody in.
+`run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing, logged out, not running or not given the checkout. afkconvoy installs nothing, starts and adds nothing, and logs nobody in.
 
 `afkconvoy --version` prints the release you have.
 
@@ -125,7 +125,7 @@ A stage that finds its issue too large splits it: it opens child issues, takes e
 
 A workflow whose last stage passes to `land` names the role that lands (`land: { by, do }`): the tick after that `pass` starts a worker in it, which gates the issue's PR and joins the landing train, and the train lands it as it lands any PR.
 
-A team's patrols are files too (`patrols/<name>.md`: `by`, `do`, `every`, `model`, `max_open`), and a repo runs the ones its `patrols` names: the tick that finds one due — its interval passed since its last recorded run, no run of it still going, no fleet lock standing, fewer than `max_open` open issues it opened — claims the run on the remote, so of several hosts one runs it, and starts a worker in the patrol's role in a checkout of the base branch that is linked to no issue. That worker has `AFKCONVOY_PATROL` in its environment, opens issues and takes them in with `afkconvoy intake`; a run takes one slot of `concurrency`, a missed run is not made up, and `afkconvoy plan` lists how each patrol stands.
+A team's patrols are files too (`patrols/<name>.md`: `by`, `do`, `every`, `model`, `max_open`), and a repo runs the ones its `patrols` names: the tick that finds one due — its interval passed since its last recorded run, no run of it still going, no fleet lock standing, fewer than `max_open` open issues it opened — claims the run on the remote, so of several hosts one runs it, and starts a worker in the patrol's role in a checkout of the base branch that is linked to no issue. That worker has `AFKCONVOY_PATROL` in its environment, opens issues and takes them in with `afkconvoy intake`; a run takes one slot of `concurrency` until its worker declares it over with `afkconvoy over` — the last line of its brief — or, where it never does, until it is gone or has been stopped for five minutes; a missed run is not made up, and `afkconvoy plan` lists how each patrol stands.
 
 ### Precedents
 

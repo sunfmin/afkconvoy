@@ -13,7 +13,8 @@ WHAT IT READS AND WRITES
   this host, then ticks: each tick rebuilds the working set from GitHub and the remote
   and makes every transition it calls for — claims and heartbeats on the remote, workers
   in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the
-  landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep.
+  landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep,
+  and a tick that left the next one a worker to start is followed with no sleep.
 
   It also keeps a log on this host: one line when it starts and one per tick — what
   `tick` answers for it — in a file under your cache directory, cut back to its newest
@@ -28,12 +29,19 @@ WHAT IT ANSWERS
     start: took #4, #7 stamped with this host        only when a start took or lost claims
     tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s
     tick 2: nothing to do · holding 2/3 · frontier 4 · next in 60s
+    tick 3: advanced #12 · holding 1/3 · frontier 0 · next now
+    tick 4: dispatched #12 · holding 2/3 · frontier 0 · next in 90s
 
   A tick's line names what it did — settled, ended, escalated, unlocked, reclaimed,
   dispatched, nudged, continued, restarted, tended the train, abandoned the train — then
   the claims held out of the concurrency, and the frontier left. A step that failed is
   in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as
   `tick N: FAILED: <why>`; the loop goes on either way.
+
+  `next now` in place of `next in <n>s`: the tick advanced an issue or settled one and
+  left a slot free, so what follows — the stage the verdict leads to, an issue the
+  landing unblocked — is the next tick's to start, and that tick starts with no sleep.
+  At most 4 ticks run back to back; then it sleeps, whatever the last one left.
 
   With `--panel <port>` its first line is the panel's address, and it serves the panel
   there until it is killed: the fleet as a web page — every workflow as a line of its
@@ -45,7 +53,8 @@ WHAT IT ANSWERS
 
   Errors, before the first tick, as {"error": …} with a non-zero exit: the panel's port
   is taken; a command the
-  fleet needs is missing or logged out (the error names each, with the line to run);
+  fleet needs is missing or logged out, or orca is not running or does not know this
+  checkout (the error names each, with the line to run);
   the repo fails the startup probe; the config cannot be read; the worker launch
   command resolves to nothing, or — in a bound repo — does not take the flags that
   start a worker in its role.

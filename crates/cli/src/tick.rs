@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::WorkingSet;
-use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass};
+use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::wake::turn;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -307,7 +307,8 @@ impl Ticked {
                 parts.push(said.to_string());
             }
         }
-        if parts.len() == lead {
+        // A tick whose every step failed had things to do: its failures say so.
+        if parts.len() == lead && self.failures.is_empty() {
             parts.push("nothing to do".to_string());
         }
         parts.push(format!("holding {}/{}", self.pass.held, self.bound));
@@ -385,7 +386,8 @@ impl Said {
 }
 
 /// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
-/// `afkconvoy wake` ends early. Stopping it is just exiting: no claim is
+/// `afkconvoy wake` ends early, and that is skipped after a tick that left the
+/// next one a worker to start (`Pass::follow_up_due`). Stopping it is just exiting: no claim is
 /// released on the way out, and the next start on this host takes them back
 /// (docs/adr/0003). With a `panel_port` it serves the panel there, a new page
 /// after every tick. It keeps a line of each tick in its log (`log::Log`),
@@ -407,6 +409,7 @@ pub fn run(
         None => None,
     };
     let mut streak = 0;
+    let mut skipped = 0;
     let mut count = 0;
     let mut started = false;
     let wakes = Listener::open(&Repo::here()?);
@@ -443,15 +446,21 @@ pub fn run(
                 }
                 let pass = &ticked.pass;
                 streak = empty_streak(streak, pass.did_work(), pass.held, pass.frontier_remaining);
+                skipped = sleeps_skipped(skipped, pass.follow_up_due(ticked.bound));
+                let sleep = if skipped > 0 { 0 } else { pace(pass.did_work(), pass.held, streak) };
                 let logged = (Some(ticked.bound), Some(ticked.json()), None);
-                (ticked.line(), pace(pass.did_work(), pass.held, streak), logged)
+                (ticked.line(), sleep, logged)
             }
             Err(error) => {
+                skipped = 0;
                 let error = format!("{error:#}");
                 (format!("FAILED: {error}"), pace(true, 0, 0), (None, None, Some(error)))
             }
         };
-        println!("tick {count}: {line} · next in {sleep}s");
+        match sleep {
+            0 => println!("tick {count}: {line} · next now"),
+            _ => println!("tick {count}: {line} · next in {sleep}s"),
+        }
         let (bound, answer, error) = logged;
         let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
         said.keep(me, clock(), log::What::Tick(tick));

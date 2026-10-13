@@ -26,10 +26,9 @@ WHAT IT ANSWERS
 
     host      what this host has of what the fleet needs:
                 tools            each command needed: {name, state} — state is ready,
-                                 missing or logged_out
-                orca             {running, knows_checkout, checkout, error}: whether orca
-                                 answers, and whether it knows the checkout worktrees
-                                 are cut from
+                                 missing or logged_out; of orca also not_running,
+                                 knows_no_checkout (the checkout worktrees are cut
+                                 from was never added to it) or unasked
                 worker_command   {command, from, starts_a_worker, takes_role_flags} —
                                  from is `run`, when this host's `run` logged the first
                                  word of what it started with (all it logs of it), else

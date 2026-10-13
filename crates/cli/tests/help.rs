@@ -168,7 +168,7 @@ fn the_readme_says_how_a_repo_is_bound_and_how_a_role_gets_its_skills() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 43, "{short}");
+    assert!(short.lines().count() <= 44, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -235,7 +235,7 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let guide = guide(&long);
     let who = |command: &str| section(&asked(&[command, "--help"]), "WHO RUNS IT");
     let workers = group(guide, "  A worker");
-    assert_eq!(workers, ["gate", "land", "verdict", "intake", "lock", "wake"]);
+    assert_eq!(workers, ["gate", "land", "verdict", "intake", "lock", "over", "wake"]);
     for command in &workers {
         let who = who(command);
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");
@@ -334,4 +334,15 @@ fn a_help_names_every_key_its_command_answers_with() {
     check(&reason, &["detail"]);
     check(&["land", "--train"], &["outcome"]);
     assert!(seen.len() >= 15, "{seen:?}");
+}
+
+#[test]
+fn the_help_of_tick_and_of_run_say_what_run_does_about_the_hop_between_two_stages() {
+    let most = afkconvoy_core::tick::BACK_TO_BACK;
+    let tick = asked(&["tick", "--help"]);
+    assert!(tick.contains("`run` does not sleep across that hop"), "{tick}");
+    assert!(tick.contains(&format!("at most {most} ticks back to back")), "{tick}");
+    let run = asked(&["run", "--help"]);
+    assert!(run.contains("· next now\n"), "{run}");
+    assert!(run.contains(&format!("At most {most} ticks run back to back")), "{run}");
 }

@@ -1,9 +1,10 @@
 //! The commands a fleet cannot work without, and what a human runs when one
-//! is missing or logged out. A start that lacks any refuses, naming every
+//! is missing, logged out, not running or does not know this checkout. A start that lacks any refuses, naming every
 //! fault with the line that fixes it; the tool itself never installs anything
 //! and logs nobody in.
 
 use crate::launch::first_word;
+use crate::line::quoted;
 
 /// A command the fleet, or a worker it starts, runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,12 +16,26 @@ pub enum Tool {
     Claude,
 }
 
-/// What a start found of one tool. A missing one is never also logged out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a start found of one tool: the first thing in its way. A missing one
+/// is never also logged out, and one not running is asked nothing more.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Found {
     Ready,
     Missing,
     LoggedOut,
+    /// Installed, and not running: orca, which every call goes to as an app.
+    NotRunning,
+    /// Running, and it has no repo at this path, the checkout's main worktree:
+    /// orca, which cuts a worktree only from a repo it was given.
+    KnowsNoCheckout(String),
+}
+
+/// The line that starts orca.
+pub const START_ORCA: &str = "orca open";
+
+/// The line that gives orca the checkout at `path`, once.
+pub fn add_checkout(path: &str) -> String {
+    format!("orca repo add --path {}", quoted(path))
 }
 
 impl Tool {
@@ -132,6 +147,11 @@ pub fn refusal(
             Found::LoggedOut => {
                 faults.push(format!("  {name} is not logged in: {}", tool.login(host)));
             }
+            Found::NotRunning => faults.push(format!("  {name} is not running: {START_ORCA}")),
+            Found::KnowsNoCheckout(path) => {
+                faults
+                    .push(format!("  {name} does not know this checkout: {}", add_checkout(path)));
+            }
         }
     }
     let launch_fault = launch_fault.filter(|_| !claude_missing);
@@ -215,6 +235,25 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("logged in:"), "missing is not also logged out: {said}");
+    }
+
+    #[test]
+    fn an_orca_that_cannot_cut_a_worktree_here_is_named_with_the_line_to_run() {
+        let said = refusal(&[(Tool::Orca, Found::NotRunning)], None, None).unwrap();
+        assert!(said.ends_with("\n  orca is not running: orca open"), "{said}");
+        assert!(said.contains("nothing was started"), "{said}");
+
+        let unknown = Found::KnowsNoCheckout("/Users/kim/hospital demo".to_string());
+        let said = refusal(&[(Tool::Gh, Found::LoggedOut), (Tool::Orca, unknown)], None, None);
+        let said = said.unwrap();
+        let lines: Vec<&str> = said.lines().skip(1).collect();
+        assert_eq!(
+            lines,
+            [
+                "  gh is not logged in: gh auth login",
+                "  orca does not know this checkout: orca repo add --path '/Users/kim/hospital demo'",
+            ]
+        );
     }
 
     #[test]

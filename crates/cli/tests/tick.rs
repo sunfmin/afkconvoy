@@ -67,7 +67,7 @@ fn a_tick_dispatches_into_the_free_slots_lowest_number_first() {
 fn a_tick_never_waits_for_the_workers_it_started() {
     let world = backlog(&[3]);
     tick(&world, "1000");
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert_eq!(
         calls.iter().filter(|call| *call == "terminal wait").count(),
         1,
@@ -88,7 +88,7 @@ fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     assert!(!std::path::Path::new(&worktree).exists(), "the worktree is removed");
     assert_eq!(world.claims(), alpha(&[5, 9]));
     // the worktree went first, the claim last
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| call[..2].join(" ")).collect();
+    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
     assert!(calls.contains(&"worktree rm".to_string()));
     assert_eq!(world.pushes()[0], "refs/convoy/claim/3");
 }
@@ -197,6 +197,22 @@ fn run_goes_idle_after_three_empty_ticks() {
 }
 
 #[test]
+fn run_follows_a_tick_that_settled_a_claim_with_no_sleep_and_sleeps_after_one_that_did_nothing() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    world.close_issue(3);
+    let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "2", "--now", "1090"]);
+    assert_eq!(
+        lines,
+        [
+            // what the landing unblocked is the next tick's to find
+            "tick 1: settled #3 · holding 0/2 · frontier 0 · next now",
+            "tick 2: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+        ]
+    );
+}
+
+#[test]
 fn run_mints_an_instance_id_named_for_the_host() {
     let world = backlog(&[3]);
     let (_, stopped) = run(&world, &["--ticks", "1"]);
@@ -221,4 +237,7 @@ fn a_failed_step_shows_in_the_line() {
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
     let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1"]);
     assert!(lines[0].contains("FAILED dispatch #3: orca worktree create failed"), "{lines:?}");
+    // every step it had failed: that is not having had nothing to do
+    assert!(!lines[0].contains("nothing to do"), "{lines:?}");
+    assert!(lines[0].starts_with("tick 1: holding 1/2 · frontier 0 · FAILED"), "{lines:?}");
 }

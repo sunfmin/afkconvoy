@@ -4,8 +4,9 @@
 use std::collections::BTreeMap;
 
 use afkconvoy_core::claims::{
-    CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, Owner, RunClaim, claim_ref,
-    claim_steps, heartbeat_ref, read_heartbeat, releasable, run_ref, write_heartbeat,
+    CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, OVER_KIND, Owner, RunClaim,
+    claim_ref, claim_steps, heartbeat_ref, over_ref, read_heartbeat, read_over, releasable,
+    run_ref, write_heartbeat, write_over,
 };
 use afkconvoy_core::patrol::{RUN_KIND, read_run};
 use afkconvoy_core::record::fleet_number;
@@ -41,6 +42,8 @@ impl Scan {
     /// unreadable must not look like one holding none.
     pub fn read(repo: &Repo) -> Result<Scan> {
         let mut scan = Scan::default();
+        // run key → the claim its worker declared over.
+        let mut over: BTreeMap<String, String> = BTreeMap::new();
         let layout = repo.layout();
         for record in repo.remote_records(&layout.every(""))? {
             let Some(kept) = layout.kept(&record.name) else { continue };
@@ -49,7 +52,8 @@ impl Scan {
                 if let Some(number) = fleet_number(name) {
                     scan.claims.push(Claim { number, owner, sha: record.sha });
                 } else {
-                    scan.runs.push(RunClaim { key: name.to_string(), owner, sha: record.sha });
+                    let (key, sha) = (name.to_string(), record.sha);
+                    scan.runs.push(RunClaim { key, owner, sha, over: false });
                 }
             } else if let Some(instance) = kept.strip_prefix(HEARTBEAT_KIND)
                 && let Some(ts) = read_heartbeat(&record.subject)
@@ -59,7 +63,14 @@ impl Scan {
                 && let Some(ts) = read_run(&record.subject)
             {
                 scan.last_runs.insert(patrol.to_string(), ts);
+            } else if let Some(key) = kept.strip_prefix(OVER_KIND)
+                && let Some(claim) = read_over(&record.subject)
+            {
+                over.insert(key.to_string(), claim);
             }
+        }
+        for run in &mut scan.runs {
+            run.over = over.get(&run.key) == Some(&run.sha);
         }
         scan.claims.sort_by_key(|claim| claim.number);
         Ok(scan)
@@ -208,13 +219,14 @@ pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, key: &str) -> Result<Opti
     scan.runs.retain(|run| run.key != key);
     let (claim, won) = match put(repo, scan, me, &refname, Take::Fresh)? {
         Put::Won { owner, sha } => {
-            (Some(RunClaim { key: key.to_string(), owner: Some(owner), sha }), true)
+            (Some(RunClaim { key: key.to_string(), owner: Some(owner), sha, over: false }), true)
         }
         Put::Lost { there, .. } => {
             let read = |now: RemoteRecord| RunClaim {
                 key: key.to_string(),
                 owner: Owner::read(&now.subject),
                 sha: now.sha,
+                over: false,
             };
             (there.map(read), false)
         }
@@ -223,12 +235,43 @@ pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, key: &str) -> Result<Opti
     Ok(claim.filter(|_| won))
 }
 
-/// Deletes the claim on a run, only while it is still `claim`. Already gone
-/// counts as released.
+/// Deletes the claim on a run, only while it is still `claim`, and with it
+/// what its worker declared. Already gone counts as released.
 pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
     unput(repo, &run_ref(repo.layout(), &claim.key), &claim.sha)?;
+    if claim.over {
+        // What is left of it names a claim that is gone, and declares nothing.
+        repo.try_git(&[
+            "push",
+            "--quiet",
+            REMOTE,
+            &format!(":{}", over_ref(repo.layout(), &claim.key)),
+        ])?;
+    }
     scan.runs.retain(|run| run.key != claim.key);
     Ok(())
+}
+
+/// `afkconvoy over`: records on the remote that the run keyed `key` is over,
+/// as the claim on it stands now, and wakes the fleet: its next tick ends the
+/// run. An error when no run is claimed under `key` — an issue's claim is no
+/// run's: a stage ends with a verdict.
+pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
+    if fleet_number(key).is_some() {
+        bail!(
+            "{key} is an issue, and no run: the stage of a worker on an issue ends with \
+             `afkconvoy verdict`. Only a patrol's run and a proposal's are declared over"
+        );
+    }
+    let layout = repo.layout();
+    let Some(claim) = repo.remote_records(&run_ref(layout, key))?.pop() else {
+        bail!("no run {key:?} is going: there is nothing to declare over");
+    };
+    let refname = over_ref(layout, key);
+    let sha = repo.record_commit(&write_over(&claim.sha))?;
+    repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    let woke = crate::wake::wake(repo)?;
+    Ok(json!({"over": true, "run": key, "ref": refname, "woke": woke["woke"]}))
 }
 
 /// Deletes the claim ref `refname`, only while it still points at `expected`

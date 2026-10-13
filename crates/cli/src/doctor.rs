@@ -16,7 +16,7 @@ use afkconvoy_core::lease::{LEASE, stamp_age};
 use afkconvoy_core::patrol::Standing;
 use afkconvoy_core::plan::{LabelBar, Status, WorkingSet};
 use afkconvoy_core::team::Fault;
-use afkconvoy_core::tools::{Found, Tool};
+use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::Result;
 use serde::Serialize;
@@ -89,15 +89,6 @@ impl std::fmt::Display for Unwell {
 
 impl std::error::Error for Unwell {}
 
-/// Whether orca knows the checkout the fleet cuts its worktrees from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Orca {
-    Knows,
-    KnowsNot,
-    /// It could not be asked, and what it said.
-    Unreached(String),
-}
-
 /// The worker launch command, as far as this host can say what it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
@@ -118,9 +109,9 @@ pub struct Host {
     pub tools: Vec<(Tool, Found)>,
     /// The host `gh` was asked about.
     pub gh_host: Option<String>,
-    pub orca: Orca,
-    /// The main checkout: the one orca is to know.
-    pub checkout: PathBuf,
+    /// Why an orca that is running could not be asked about this checkout
+    /// (`tools::Looked`).
+    pub orca_unasked: Option<String>,
     /// `None` on a custom provider with no `run` to say: a start would ask.
     pub launch: Option<Launch>,
 }
@@ -252,25 +243,27 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 ),
                 tool.login(gh_host),
             ),
+            Found::NotRunning => match &host.orca_unasked {
+                Some(why) => (
+                    format!(
+                        "`{name}` cannot be asked about this checkout: no worker can be started"
+                    ),
+                    why.clone(),
+                    "orca repo list".to_string(),
+                ),
+                None => (
+                    format!("`{name}` is not running: no worker can be started or asked after"),
+                    "`orca status` does not say its runtime is ready".to_string(),
+                    START_ORCA.to_string(),
+                ),
+            },
+            Found::KnowsNoCheckout(path) => (
+                format!("`{name}` does not know this checkout: no worker can be started"),
+                format!("`orca repo list` names no repo at {path}"),
+                add_checkout(path),
+            ),
         };
         found.push(finding(Severity::Critical, what, evidence, fix));
-    }
-    let orca_here = !host.tools.contains(&(Tool::Orca, Found::Missing));
-    let checkout = host.checkout.display();
-    match &host.orca {
-        Orca::Unreached(why) if orca_here => found.push(finding(
-            Severity::Critical,
-            "orca cannot be asked anything: no worker can be started or asked after".to_string(),
-            why.clone(),
-            "orca repo list".to_string(),
-        )),
-        Orca::KnowsNot => found.push(finding(
-            Severity::Critical,
-            "orca does not know this checkout: no worker can be started".to_string(),
-            format!("`orca repo list` names no repo at {checkout}"),
-            Source::add(&host.checkout),
-        )),
-        Orca::Knows | Orca::Unreached(_) => {}
     }
     if let Some(launch) = &host.launch {
         let claude_missing = host.tools.contains(&(Tool::Claude, Found::Missing));
@@ -646,18 +639,12 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found
 }
 
-fn read_host(repo: &Repo, config: Option<&Config>, started_with: Option<&str>) -> Host {
+fn read_host(config: Option<&Config>, started_with: Option<&str>) -> Host {
     let proposed = match started_with {
         Some(command) => launch::propose(Some(command)).ok(),
         None => launch::foreseen(),
     };
     let looked = tools::look(proposed.as_ref());
-    let checkout = repo.main_checkout().unwrap_or_else(|_| repo.dir.clone());
-    let orca = match Source::known(&checkout) {
-        Ok(Some(_)) => Orca::Knows,
-        Ok(None) => Orca::KnowsNot,
-        Err(error) => Orca::Unreached(format!("{error:#}")),
-    };
     let bound = config.is_some_and(|config| config.bound.is_some());
     let launch = proposed.map(|proposed| Launch {
         command: proposed.as_str().to_string(),
@@ -665,7 +652,7 @@ fn read_host(repo: &Repo, config: Option<&Config>, started_with: Option<&str>) -
         fault: proposed.fault(),
         flags_fault: role::probe(&proposed).err().filter(|_| bound).map(|why| format!("{why:#}")),
     });
-    Host { tools: looked.found, gh_host: looked.host, orca, checkout, launch }
+    Host { tools: looked.found, gh_host: looked.host, orca_unasked: looked.orca_unasked, launch }
 }
 
 /// What the log says of the `run` of `host`: its fleet instance, the worker
@@ -786,17 +773,14 @@ fn host_json(host: &Host) -> Value {
             Found::Ready => "ready",
             Found::Missing => "missing",
             Found::LoggedOut => "logged_out",
+            Found::NotRunning if host.orca_unasked.is_some() => "unasked",
+            Found::NotRunning => "not_running",
+            Found::KnowsNoCheckout(_) => "knows_no_checkout",
         };
         json!({"name": tool.name(), "state": state})
     };
-    let (running, error) = match &host.orca {
-        Orca::Unreached(why) => (false, Some(why)),
-        Orca::Knows | Orca::KnowsNot => (true, None),
-    };
     json!({
         "tools": host.tools.iter().map(tool).collect::<Vec<_>>(),
-        "orca": {"running": running, "knows_checkout": host.orca == Orca::Knows,
-            "checkout": host.checkout, "error": error},
         "worker_command": host.launch.as_ref().map(|launch| json!({
             "command": launch.command,
             "from": if launch.of_run { "run" } else { "default" },
@@ -882,7 +866,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         ticks: entries.map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
-    let seen_host = read_host(&repo, config.as_ref().ok(), started_with.as_deref());
+    let seen_host = read_host(config.as_ref().ok(), started_with.as_deref());
     let state = read_state(now, &mut run).map_err(|error| format!("{error:#}"));
     let seen =
         Seen { now, host: &seen_host, run: &run, state: state.as_ref().map_err(String::as_str) };
@@ -921,8 +905,7 @@ mod tests {
                 (Tool::Orca, Found::Ready),
             ],
             gh_host: Some("github.com".into()),
-            orca: Orca::Knows,
-            checkout: PathBuf::from("/repos/widgets"),
+            orca_unasked: None,
             launch: Some(Launch {
                 command: "claude".into(),
                 of_run: true,
@@ -1082,20 +1065,27 @@ mod tests {
     fn a_host_that_lacks_what_the_fleet_needs_is_critical_with_the_line_that_fixes_it() {
         let mut lacking = host();
         lacking.tools = vec![(Tool::Gh, Found::LoggedOut), (Tool::Orca, Found::Missing)];
-        lacking.orca = Orca::Unreached("orca repo could not run".into());
         let found = found(&lacking, &run(vec![]), &state());
         assert_eq!(fixes(&found, "`gh` is not logged in"), ["gh auth login"]);
         assert_eq!(fixes(&found, "`orca` is not installed"), [Tool::Orca.install()]);
-        assert_eq!(found.len(), 2, "an orca that is not there is said once: {found:?}");
+        assert_eq!(found.len(), 2, "{found:?}");
         assert!(found.iter().all(|finding| finding.severity == Severity::Critical));
 
         let mut unknown = host();
-        unknown.orca = Orca::KnowsNot;
+        unknown.tools[2].1 = Found::KnowsNoCheckout("/repos/widgets".into());
         let found = self::found(&unknown, &run(vec![]), &state());
         assert_eq!(
-            fixes(&found, "orca does not know this checkout"),
+            fixes(&found, "`orca` does not know this checkout"),
             ["orca repo add --path '/repos/widgets'"]
         );
+        // an orca that is not running, and one that runs and cannot say
+        let mut stopped = host();
+        stopped.tools[2].1 = Found::NotRunning;
+        let found = self::found(&stopped, &run(vec![]), &state());
+        assert_eq!(fixes(&found, "`orca` is not running"), ["orca open"]);
+        stopped.orca_unasked = Some("orca repo list failed: no".into());
+        let found = self::found(&stopped, &run(vec![]), &state());
+        assert_eq!(fixes(&found, "`orca` cannot be asked about this checkout"), ["orca repo list"]);
 
         let mut flagless = host();
         flagless.launch.as_mut().unwrap().flags_fault = Some("it takes no --settings".into());

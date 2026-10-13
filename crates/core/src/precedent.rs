@@ -374,7 +374,7 @@ mod tests {
 
     fn claim(of: Ruling, instance: &str) -> (Ruling, RunClaim) {
         let owner = Owner { instance: instance.into(), host: "h".into(), ts: 0 };
-        (of, RunClaim { key: of.claim_key(), owner: Some(owner), sha: "c".into() })
+        (of, RunClaim { key: of.claim_key(), owner: Some(owner), sha: "c".into(), over: false })
     }
 
     fn standing(seen: &Seen, locked: bool) -> Vec<(u64, Standing)> {

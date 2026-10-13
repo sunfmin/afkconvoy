@@ -69,8 +69,6 @@ fn a_fleet_with_no_fault_answers_its_five_keys_and_no_finding_and_writes_nothing
         .map(|tool| (tool["name"].as_str().unwrap(), tool["state"].as_str().unwrap()))
         .collect();
     assert_eq!(tools, [("git", "ready"), ("gh", "ready"), ("orca", "ready")]);
-    assert_eq!(host["orca"]["running"], true);
-    assert_eq!(host["orca"]["knows_checkout"], true);
     // the command the `run` here said it started with
     assert_eq!(host["worker_command"]["command"], "agent");
     assert_eq!(host["worker_command"]["from"], "run");
@@ -215,22 +213,29 @@ fn a_tick_that_failed_whole_is_logged_and_three_in_a_row_are_a_finding() {
 }
 
 #[test]
-fn a_step_that_keeps_failing_names_the_line_its_error_names() {
+fn a_step_that_fails_tick_after_tick_is_critical() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    // orca was never told of this checkout: every start fails the same way
-    world.with_orca(|orca| orca["repos"] = json!([]));
-    // …the first as it starts the worker, each one after as it looks for it
+    world.with_orca(|orca| orca["create_fails"] = json!([3]));
+    // the first tick fails as it starts the worker, each one after as it looks for it
     run(&world, &["--instance", "alpha", "--ticks", "4", "--now", "1000"]);
     let unwell = doctor(&world, "1000");
     assert_eq!(unwell.code, 1);
-    let add = format!("orca repo add --path '{}'", world.clone.display());
     let failed = found(&unwell.json, "`judge #3` failed in each of the last 3 ticks (2 to 4)");
-    assert_eq!(failed[0]["fix"], add.as_str(), "{}", unwell.json);
-    // …and the host says the same of itself, with no tick needed
-    let unknown = found(&unwell.json, "orca does not know this checkout");
-    assert_eq!(unknown[0]["fix"], add.as_str());
-    assert_eq!(unwell.json["host"]["orca"]["knows_checkout"], false);
+    assert_eq!(failed[0]["severity"], "critical", "{}", unwell.json);
+    assert_eq!(unwell.json["fleet"]["failed_steps"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn an_orca_that_does_not_know_the_checkout_or_is_not_running_is_critical() {
+    let world = World::new();
+    world.with_orca(|orca| orca["repos"] = json!([]));
+    let unwell = doctor(&world, "1000");
+    assert_eq!(unwell.code, 1);
+    let add = format!("orca repo add --path '{}'", world.clone.display());
+    let unknown = found(&unwell.json, "`orca` does not know this checkout");
+    assert_eq!(unknown[0]["fix"], add.as_str(), "{}", unwell.json);
+    assert_eq!(unwell.json["host"]["tools"][2]["state"], "knows_no_checkout");
 }
 
 #[test]

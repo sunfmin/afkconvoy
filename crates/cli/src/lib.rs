@@ -304,6 +304,13 @@ enum Command {
         #[arg(long, env = ROLE_ENV)]
         role: Option<String>,
     },
+    /// Declare a patrol's run or a proposal's over: the next tick ends it (a worker's command)
+    #[command(after_long_help = include_str!("help/over.txt"))]
+    Over {
+        /// The run, as its brief names it
+        #[arg(long)]
+        run: String,
+    },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     #[command(after_long_help = include_str!("help/guard.txt"))]
     Guard,
@@ -762,6 +769,15 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let gh = gh::GitHub { dir: repo.dir.clone() };
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
             lock::lock(&repo, &config, &gh, issue, role)
+        }
+        Command::Over { run } => {
+            if let Ok(issue) = std::env::var(ISSUE_ENV) {
+                anyhow::bail!(
+                    "this worker is on issue #{issue} ({ISSUE_ENV}), whose stage ends with \
+                     `afkconvoy verdict`: only a patrol's run and a proposal's are declared over"
+                );
+            }
+            claims::declare_over(&Repo::here()?, run.trim())
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
