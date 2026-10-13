@@ -109,6 +109,7 @@ pub fn propose(
         None => Worktree::cut(&source, &created_as, &base, None)?,
     };
     let path = checkout.path.display().to_string();
+    let team_rules = kept.rules();
     let fields = ProposalFields {
         number: ruling.issue,
         link: &said.url,
@@ -119,6 +120,7 @@ pub fn propose(
         file: file.path(),
         branch: &ruling.branch(),
         precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
+        team_rules: team_rules.as_deref(),
         worktree: &path,
         base_branch: &fleet.config.base_branch,
         // The worker works in a clone of its own: the line is run from the checkout.

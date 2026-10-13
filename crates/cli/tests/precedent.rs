@@ -267,6 +267,7 @@ fn a_humans_ruling_starts_one_worker_in_the_role_the_team_names_and_the_issue_do
     let brief = brief.unwrap();
     assert!(brief.contains(&format!("issue #7, which was escalated to them — {link}")), "{brief}");
     assert!(brief.contains("> Keep the v1 schema.\n> Migrate later."), "{brief}");
+    assert!(!brief.contains("Team rules"), "the team has none: {brief}");
     assert!(brief.contains("`propose`, of the role you were started in (`clerk`)"), "{brief}");
     assert!(brief.contains(&format!("opening one PR on `acme/team`, from the branch `{name}`")));
     assert!(
@@ -309,7 +310,8 @@ fn a_humans_ruling_starts_one_worker_in_the_role_the_team_names_and_the_issue_do
 fn a_proposal_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let world = proposing(3);
     let repo = team(&world);
-    write(&repo, "CLAUDE.md", "the rules of a human\n");
+    write(&repo, "CLAUDE.md", "the rules of the team\n");
+    write(&repo, ".claude/skills/release/SKILL.md", "a human's\n");
     write(&repo, "roles/clerk/CLAUDE.md", "the rules of a clerk\n");
     write(&repo, "roles/clerk/.claude/skills/propose/SKILL.md", "propose\n");
     let roles = ROLES.replace("acme/clerk", "./roles/clerk");
@@ -326,14 +328,24 @@ fn a_proposal_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let command = command.expect("one worker proposes");
     let kept = world.cache().join("afkconvoy/copies/acme/team");
     let (role_dir, team_dir) =
-        (kept.join(format!("{head}-role-roles%2Fclerk")), kept.join(format!("{head}-team-")));
+        (kept.join(format!("{head}-role-roles%2Fclerk")), kept.join(format!("{head}-team+rules-")));
     assert!(command.starts_with(&format!("cd '{}' && ", role_dir.display())), "{command}");
     assert!(command.contains(&format!(" --add-dir '{}' ", team_dir.display())), "{command}");
     let commits = format!(" AFKCONVOY_ROLE_COMMIT='{head}' AFKCONVOY_TEAM_COMMIT='{head}' ");
     assert!(command.contains(&commits), "{command}");
     assert!(role_dir.join("CLAUDE.md").is_file() && !role_dir.join("team.md").exists());
     assert!(team_dir.join("precedents.md").is_file());
-    assert!(!team_dir.join("roles/clerk").exists() && !team_dir.join("CLAUDE.md").exists());
+    assert!(!team_dir.join("roles/clerk").exists() && !team_dir.join(".claude").exists());
+    // The team rules are a proposal's worker's too: in the copy added to it,
+    // and named in its brief.
+    let rules = team_dir.join("CLAUDE.md");
+    assert_eq!(std::fs::read_to_string(&rules).unwrap(), "the rules of the team\n");
+    assert!(command.contains(" export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 "));
+    let checkout = command.split(" --add-dir '").nth(1).unwrap().split('\'').next().unwrap();
+    let brief = git(Path::new(checkout), &["rev-parse", "--absolute-git-dir"]);
+    let brief = std::fs::read_to_string(PathBuf::from(brief).join("convoy-worker-prompt.md"));
+    let brief = brief.unwrap();
+    assert!(brief.contains(&format!("- **Team rules:** `{}`\n", rules.display())), "{brief}");
 }
 
 fn calls_none(world: &World) -> bool {

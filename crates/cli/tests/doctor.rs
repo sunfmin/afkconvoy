@@ -373,7 +373,8 @@ fn a_bound_repos_claim_says_its_stage_and_role_and_a_head_that_moved_since_is_sa
     assert_eq!(found(&answer, "moved since").len(), 0, "{answer}");
 
     commit(&dev, "CLAUDE.md", "be careful\n");
-    commit(&team, "precedents.md", "none yet\n");
+    // Its rules alone changed: the team moved all the same.
+    commit(&team, "CLAUDE.md", "review before you land\n");
     let answer = doctor(&world, "1100").json;
     let moved = found(&answer, "moved since the stage `build` of #3 started");
     let which: Vec<&str> =
@@ -420,7 +421,7 @@ fn in_a_repo_of_several_roles_a_role_moved_only_when_its_own_directory_changed()
 
     // another role's directory, and what is neither a role's nor the team's
     commit(&hospital, "roles/attending/CLAUDE.md", "be strict\n");
-    commit(&hospital, "CLAUDE.md", "for whoever reads the repo\n");
+    commit(&hospital, ".claude/settings.json", "{}\n");
     assert_eq!(moved(&doctor(&world, "1100").json, "build"), []);
 
     // its own: the role moved, and the team did not

@@ -70,6 +70,7 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
     assert_eq!(read["commit"], head(&world, "acme/team"));
     assert_eq!(read["files"], json!(["team.md", "workflows/feature.md"]));
     assert_eq!(read["escalate_label"], "ready-for-human");
+    assert_eq!(read["rules"], false, "the team holds no CLAUDE.md");
     assert_eq!(
         read["roles"],
         json!([
@@ -569,7 +570,8 @@ fn rules_above_a_role_are_noted_and_the_team_loads() {
         &[
             ("team.md", &team),
             (TREAT, "a skill\n"),
-            ("CLAUDE.md", "for whoever works on this repo\n"),
+            ("CLAUDE.md", "how the hospital works\n"),
+            ("roles/CLAUDE.md", "for whoever edits the roles\n"),
             ("roles/.claude/settings.json", "{}\n"),
         ],
     );
@@ -577,14 +579,56 @@ fn rules_above_a_role_are_noted_and_the_team_loads() {
     world.repo("acme/dev", &[("CLAUDE.md", "the rules of a dev\n")]);
     let answer = world.afk(&["check"]);
     assert_eq!(answer.code, 0, "{}", answer.json);
-    assert_eq!(answer.json["roles"][0]["above"], json!(["CLAUDE.md", "roles/.claude/"]));
+    // The `CLAUDE.md` at the root is the team rules, which a worker is
+    // given: it is none of what is above the role and not given.
+    assert_eq!(answer.json["rules"], true);
+    assert_eq!(answer.json["roles"][0]["above"], json!(["roles/CLAUDE.md", "roles/.claude/"]));
     assert_eq!(answer.json["roles"][1]["above"], json!([]));
     assert_eq!(
         answer.stderr.trim_end(),
-        "note: above the role `fellow` (acme/hospital/roles/fellow), its repo holds CLAUDE.md, \
-         roles/.claude/: a session opened by hand in the role's directory loads that too, and a \
-         worker does not — it is given the role's directory alone"
+        "note: above the role `fellow` (acme/hospital/roles/fellow), its repo holds \
+         roles/CLAUDE.md, roles/.claude/: a session opened by hand in the role's directory loads \
+         that too, and a worker does not — it is given the role's directory alone"
     );
+}
+
+#[test]
+fn a_team_at_a_repo_s_root_is_given_no_note_for_its_own_rules() {
+    let team = team_file("{ fellow: ./roles/fellow }");
+    let files = [("team.md", team.as_str()), (TREAT, "a skill\n"), ("CLAUDE.md", "how we work\n")];
+    let world = hospital("acme/hospital", &files);
+    let answer = world.afk(&["check"]);
+    assert_eq!((answer.code, answer.stderr.as_str()), (0, ""), "{}", answer.json);
+    assert_eq!(answer.json["rules"], true);
+    assert_eq!(answer.json["roles"][0]["above"], json!([]));
+    // The rules of another team's directory, above the role, are none of
+    // this team's: its workers are not given them.
+    let night = [("teams/night/team.md", team.as_str()), ("teams/night/CLAUDE.md", "at night\n")];
+    let world = hospital("acme/hospital/teams/night", &[&files[1..], &night[..]].concat());
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 0, "{}", answer.json);
+    assert_eq!(answer.json["rules"], true);
+    assert_eq!(answer.json["roles"][0]["above"], json!(["CLAUDE.md"]));
+}
+
+#[test]
+fn hooks_and_skills_in_a_team_s_directory_are_noted_and_the_team_loads() {
+    let team = team_file("{ dev: acme/dev }");
+    let world = hospital(
+        "acme/hospital",
+        &[("team.md", &team), (".claude/skills/release/SKILL.md", "a human's\n")],
+    );
+    world.repo("acme/dev", &[("CLAUDE.md", "the rules of a dev\n")]);
+    let note = "note: the team's directory holds a .claude/: no worker loads the hooks and skills \
+                there. Of a team's directory a worker is given its rules (CLAUDE.md); a hook and \
+                a skill are a role's, in the role's own directory";
+    let answer = world.afk(&["check"]);
+    assert_eq!((answer.code, answer.stderr.trim_end()), (0, note), "{}", answer.json);
+    assert_eq!(answer.json["rules"], false);
+    // As its files in a directory, too.
+    let edit = world.root.join("github/acme/hospital");
+    let answer = world.afk(&["check", "--dir", edit.to_str().unwrap()]);
+    assert_eq!((answer.code, answer.stderr.trim_end()), (0, note), "{}", answer.json);
 }
 
 #[test]

@@ -119,6 +119,20 @@ fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
     for file in [&[TEAM_FILE, WORKFLOWS, PATROLS, RULES, SKILLS][..], &limits].concat() {
         assert!(guide.contains(&format!("      {file}")), "the guide lays out no {file}");
     }
+    // The team rules are a file of the team's, and the four kinds of text a
+    // worker reads are each said with what it is for.
+    assert!(guide.contains(&format!("      {RULES}               the team rules: ")), "{guide}");
+    for (kind, is_for) in [
+        ("the repo's own rules", "what that one codebase asks"),
+        ("the team rules", "how the team"),
+        ("a role's rules", "what one kind of"),
+        ("the precedents", "what a human"),
+    ] {
+        let said = guide.split(&format!("      {kind}  ")).nth(1);
+        let said = said.unwrap_or_else(|| panic!("the guide names no {kind}"));
+        let said = said.split("\n\n").next().unwrap();
+        assert!(said.contains(is_for), "the guide does not say what {kind} is for: {said}");
+    }
     let keys = [
         &TEAM_KEYS[..],
         &WORKFLOW_KEYS,

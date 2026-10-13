@@ -177,7 +177,7 @@ reads this terminal: never wait for an answer.
 - **Worktree:** `{worktree_path}`, on the branch `{branch}` (the base is `{base_branch}`)
 - **History:** the issue and every comment on it (`gh issue view {n} --comments`), and what the
   branch holds past `origin/{base_branch}`
-- **Precedents:** `{precedents}`
+<rules>- **Precedents:** `{precedents}`
 
 ## Stage records
 
@@ -294,7 +294,7 @@ wait for an answer.
   yours to read only: a consult writes no code, so never commit and never push
 - **History:** the issue and every comment on it (`gh issue view {n} --comments`), and what the
   branch holds past `origin/{base_branch}`
-- **Precedents:** `{precedents}`
+<rules>- **Precedents:** `{precedents}`
 
 ## Stage records
 
@@ -324,6 +324,27 @@ Then stop.
   {verdict_command} escalate --text-file <file>
   ```
 ";
+
+/// Where the rules a worker works under are, beside the precedents: a line
+/// for each kind. A harness loads them; a brief copies none. They are given
+/// no order, and nothing here says which holds when two disagree: a team's
+/// rules and a role's that contradict each other are a defect of the team's
+/// files.
+const RULES: &str = "\
+- **The repo's rules:** the rules file at the top of the <place>, where it has one
+<team_rules>- **Your role's rules:** the rules file of the directory you were started in
+";
+
+/// The line of `RULES` for the team rules, of a team that has them.
+const TEAM_RULES: &str = "- **Team rules:** `{team_rules}`\n";
+
+/// `template` with `RULES` where it says `<rules>`: of a worker whose repo is
+/// at `place` — its worktree, or its checkout — and whose team has rules or
+/// has none.
+fn with_rules(template: &str, place: &str, team_rules: Option<&str>) -> String {
+    let team = if team_rules.is_some() { TEAM_RULES } else { "" };
+    template.replace("<rules>", &RULES.replace("<place>", place).replace("<team_rules>", team))
+}
 
 /// What a stage is told of the human who sent the issue to it.
 const SENT: &str = "
@@ -357,6 +378,9 @@ pub struct StageFields<'a> {
     pub base_branch: &'a str,
     /// The precedents file, in the fleet's copy of the team.
     pub precedents: &'a str,
+    /// The team rules, in the fleet's copy of the team: `None` of a team that
+    /// has none.
+    pub team_rules: Option<&'a str>,
     /// What was declared on the issue so far, oldest first: the worker's
     /// history. When the last is a `reject`, a ruling or a human's sending,
     /// the stage runs for it; a consult rules on the last, an `escalate`.
@@ -434,7 +458,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
         Some(_) => GATE_BEFORE_PASS.replace("<gate_step>", &GATE_STEP.replace("<g>", "1")),
         None => String::new(),
     };
-    let template = STAGE
+    let template = with_rules(STAGE, "worktree", fields.team_rules)
         .replace("<rework>", why)
         .replace("<gate>", &gate)
         .replace("<precedents_first>", PRECEDENTS_FIRST);
@@ -457,6 +481,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
             ("precedents", fields.precedents),
+            ("team_rules", fields.team_rules.unwrap_or_default()),
             ("verdict_command", fields.verdict_command),
             ("gate_command", fields.gate_command.unwrap_or_default()),
         ],
@@ -473,7 +498,7 @@ reads this terminal: never wait for an answer.
 - **Skill to perform:** `{skill}`, of the role you were started in (`{role}`)
 - **Checkout:** `{worktree_path}`, the base branch `{base_branch}` as it stood when you started.
   It is read-only to you: commit nothing in it and push nothing
-- **Precedents:** `{precedents}`
+<rules>- **Precedents:** `{precedents}`
 - **Workflows of the team:** {workflows}
 
 ## What a patrol does
@@ -518,6 +543,9 @@ pub struct PatrolFields<'a> {
     pub base_branch: &'a str,
     /// The precedents file, in the fleet's copy of the team.
     pub precedents: &'a str,
+    /// The team rules, in the fleet's copy of the team: `None` of a team that
+    /// has none.
+    pub team_rules: Option<&'a str>,
     /// The names of the team's workflows: what an issue can be taken in to.
     pub workflows: &'a [&'a str],
     /// How many more issues the patrol may have open.
@@ -537,7 +565,7 @@ pub fn patrol_prompt(fields: &PatrolFields) -> Result<String, String> {
         named => named.join(", "),
     };
     fill(
-        PATROL,
+        &with_rules(PATROL, "checkout", fields.team_rules),
         &[
             ("patrol", fields.patrol),
             ("role", fields.role),
@@ -545,6 +573,7 @@ pub fn patrol_prompt(fields: &PatrolFields) -> Result<String, String> {
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
             ("precedents", fields.precedents),
+            ("team_rules", fields.team_rules.unwrap_or_default()),
             ("workflows", &workflows),
             ("room", &fields.room.to_string()),
             ("intake_command", fields.intake_command),
@@ -578,7 +607,7 @@ Nobody reads this terminal: never wait for an answer.
   checkout
 - **Checkout:** `{worktree_path}`, the base branch `{base_branch}` of the issue's repo as it stood
   when you started. It is read-only to you: commit nothing in it and push nothing from it
-
+<rules>
 ## The ruling
 
 {ruling}
@@ -630,6 +659,9 @@ pub struct ProposalFields<'a> {
     pub branch: &'a str,
     /// The precedents file, in the fleet's copy of the team.
     pub precedents: &'a str,
+    /// The team rules, in the fleet's copy of the team: `None` of a team that
+    /// has none.
+    pub team_rules: Option<&'a str>,
     /// The worker's checkout of the base branch.
     pub worktree: &'a str,
     pub base_branch: &'a str,
@@ -640,7 +672,7 @@ pub struct ProposalFields<'a> {
 /// The brief a proposal's worker is given.
 pub fn proposal_prompt(fields: &ProposalFields) -> Result<String, String> {
     fill(
-        PROPOSAL,
+        &with_rules(PROPOSAL, "checkout", fields.team_rules),
         &[
             ("n", &fields.number.to_string()),
             ("link", fields.link),
@@ -652,6 +684,7 @@ pub fn proposal_prompt(fields: &ProposalFields) -> Result<String, String> {
             ("branch", fields.branch),
             ("entry", &entry_form(fields.link)),
             ("precedents", fields.precedents),
+            ("team_rules", fields.team_rules.unwrap_or_default()),
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
             ("over_command", fields.over_command),
@@ -666,7 +699,8 @@ pub fn consult_prompt(fields: &StageFields, rule_command: &str) -> Result<String
     let number = fields.number.to_string();
     let asked = fields.records.last().map_or(String::new(), |said| quoted(&said.record.text));
     fill(
-        &CONSULT.replace("<precedents_first>", PRECEDENTS_FIRST),
+        &with_rules(CONSULT, "worktree", fields.team_rules)
+            .replace("<precedents_first>", PRECEDENTS_FIRST),
         &[
             ("records", &records_said(fields.records)),
             ("reason", &asked),
@@ -680,6 +714,7 @@ pub fn consult_prompt(fields: &StageFields, rule_command: &str) -> Result<String
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
             ("precedents", fields.precedents),
+            ("team_rules", fields.team_rules.unwrap_or_default()),
             ("verdict_command", fields.verdict_command),
             ("rule_command", rule_command),
         ],
@@ -1023,6 +1058,7 @@ mod tests {
             worktree: "/wt/issue-7",
             base_branch: "develop",
             precedents: "/copies/acme/team/def/precedents.md",
+            team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
             intake_command: "/opt/bin/afkconvoy intake",
@@ -1187,6 +1223,7 @@ mod tests {
             worktree: "/wt/issue-7",
             base_branch: "develop",
             precedents: "/copies/acme/team/def/precedents.md",
+            team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage plan",
             intake_command: "cd '/wt/issue-7' && /opt/bin/afkconvoy intake",
@@ -1271,6 +1308,7 @@ mod tests {
             worktree: "/wt/issue-7",
             base_branch: "develop",
             precedents: "/copies/acme/team/def/precedents.md",
+            team_rules: None,
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
             intake_command: "/opt/bin/afkconvoy intake",
@@ -1363,6 +1401,7 @@ mod tests {
             team: "acme/team",
             branch: "convoy-precedent-7-c2001",
             precedents: "/copies/acme/team/def/precedents.md",
+            team_rules: None,
             worktree: "/wt/convoy-precedent-7-c2001",
             base_branch: "develop",
             over_command: "/opt/bin/afkconvoy over --run precedent-7-c2001",
@@ -1385,5 +1424,104 @@ mod tests {
         assert!(!prompt.contains("afkconvoy verdict"), "{prompt}");
         let last = "```bash\n/opt/bin/afkconvoy over --run precedent-7-c2001\n```\n";
         assert!(prompt.ends_with(last), "{prompt}");
+    }
+
+    #[test]
+    fn a_brief_says_where_each_kind_of_rule_is_and_names_the_team_s_only_of_a_team_that_has_them() {
+        const TEAM: &str = "/copies/acme/team/def/CLAUDE.md";
+        let workflows = ["feature".to_string()];
+        let asked = StageRecord {
+            stage: "build".to_string(),
+            stated: Stated::Declared(Declared::Escalate),
+            by: Author::Worker {
+                consult: false,
+                claim: "c".to_string(),
+                role_commit: "r".to_string(),
+                team_commit: "t".to_string(),
+                harness: Harness::ClaudeCode,
+            },
+            blocked_by: vec![],
+            text: "v1 or v2?".to_string(),
+        };
+        let escalated = [Said { record: &asked, url: "https://gh/c/5" }];
+        let stage = |team_rules| StageFields {
+            number: 7,
+            title: "Add support",
+            flow: "feature",
+            stage: "build",
+            role: "dev",
+            skill: "implement",
+            branch: "tester/issue-7-add",
+            worktree: "/wt/issue-7",
+            base_branch: "develop",
+            precedents: "/copies/acme/team/def/precedents.md",
+            team_rules,
+            records: &[],
+            verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
+            intake_command: "/opt/bin/afkconvoy intake",
+            workflows: &workflows,
+            gate_command: None,
+        };
+        let patrol = |team_rules| PatrolFields {
+            patrol: "sweep",
+            role: "dev",
+            skill: "implement",
+            worktree: "/wt/convoy-patrol-sweep",
+            base_branch: "develop",
+            precedents: "/copies/acme/team/def/precedents.md",
+            team_rules,
+            workflows: &["feature"],
+            room: 2,
+            intake_command: "/opt/bin/afkconvoy intake",
+            lock_command: "/opt/bin/afkconvoy lock",
+            over_command: "/opt/bin/afkconvoy over --run sweep",
+        };
+        let proposal = |team_rules| ProposalFields {
+            number: 7,
+            link: "https://github.com/acme/app/issues/7#issuecomment-2001",
+            ruling: "Keep the v1 schema.",
+            role: "clerk",
+            skill: "propose",
+            team: "acme/team",
+            file: "precedents.md",
+            branch: "convoy-precedent-7-c2001",
+            precedents: "/copies/acme/team/def/precedents.md",
+            team_rules,
+            worktree: "/wt/convoy-precedent-7-c2001",
+            base_branch: "develop",
+            over_command: "/opt/bin/afkconvoy over --run precedent-7-c2001",
+        };
+        let briefs = |team_rules| {
+            [
+                ("worktree", stage_prompt(&stage(team_rules)).unwrap()),
+                (
+                    "worktree",
+                    consult_prompt(
+                        &StageFields { records: &escalated, ..stage(team_rules) },
+                        "afkconvoy rule",
+                    )
+                    .unwrap(),
+                ),
+                ("checkout", patrol_prompt(&patrol(team_rules)).unwrap()),
+                ("checkout", proposal_prompt(&proposal(team_rules)).unwrap()),
+            ]
+        };
+        for (place, brief) in briefs(Some(TEAM)) {
+            let lines = format!(
+                "- **The repo's rules:** the rules file at the top of the {place}, where it has \
+                 one\n- **Team rules:** `{TEAM}`\n- **Your role's rules:** the rules file of the \
+                 directory you were started in\n"
+            );
+            assert!(brief.contains(&lines), "{brief}");
+            assert!(brief.contains("`/copies/acme/team/def/precedents.md`"), "{brief}");
+        }
+        // A team with none: no line for them, and the others as they are.
+        for (place, brief) in briefs(None) {
+            let lines = format!(
+                "the top of the {place}, where it has one\n- **Your role's rules:** the rules file"
+            );
+            assert!(brief.contains(&lines), "{brief}");
+            assert!(!brief.contains("Team rules") && !brief.contains("rules>"), "{brief}");
+        }
     }
 }

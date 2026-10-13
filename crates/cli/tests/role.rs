@@ -229,6 +229,10 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
 
     // The brief is a fixed form, and the worker is pointed at it.
     let brief = brief(&dir);
+    // The team has no rules: the brief has no line for them, and the worker
+    // is started as it is under a team that has them.
+    assert!(!team_dir.join("CLAUDE.md").exists() && !brief.contains("Team rules"), "{brief}");
+    assert!(brief.contains("- **Your role's rules:** the rules file of the directory you were"));
     let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
     for said in [
         "- **Issue:** #7 — issue 7\n".to_string(),
@@ -616,7 +620,8 @@ fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
 }
 
 /// A team whose repo holds two of its roles, `dev` and `tester`, each in a
-/// directory of its own, beside rules at its root that are a human's.
+/// directory of its own, beside the team rules at its root and skills there
+/// that are a human's.
 fn one_repo() -> World {
     let world = bound();
     let team = "```yaml\nroles:\n  dev: ./roles/dev\n  tester: acme/team/roles/tester\n  \
@@ -625,7 +630,7 @@ fn one_repo() -> World {
         "command": "sh \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/limit.sh"}]}]}}"#;
     let repo = world.root.join("github/acme/team");
     for (file, text) in [
-        ("CLAUDE.md", "the rules of a human who edits this repo\n"),
+        ("CLAUDE.md", "the rules of the team\n"),
         (".claude/skills/release/SKILL.md", "a human's\n"),
         ("precedents.md", "# Precedents\n"),
         ("patrols/sweep.md", "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 2\n```\n"),
@@ -686,7 +691,7 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     assert_eq!((&stage["role_commit"], &stage["team_commit"]), (&json!(team), &json!(team)));
     let kept = world.cache().join("afkconvoy/copies/acme/team");
     let (role_dir, team_dir) =
-        (kept.join(format!("{team}-role-roles%2Fdev")), kept.join(format!("{team}-team-")));
+        (kept.join(format!("{team}-role-roles%2Fdev")), kept.join(format!("{team}-team+rules-")));
     assert_eq!((&stage["role_dir"], &stage["team_dir"]), (&json!(role_dir), &json!(team_dir)));
 
     // The role's copy is its directory and nothing else of its repo…
@@ -698,10 +703,10 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     assert_eq!(holds(&role_dir.join(".claude")), ["hooks", "settings.json", "skills"]);
     assert!(!role_dir.parent().unwrap().join("CLAUDE.md").exists());
     // …and the team's is its directory without those of its roles, and
-    // without the rules at its top.
+    // without the skills and settings at its top: its rules are kept.
     assert_eq!(
         holds(&team_dir),
-        ["docs", "patrols", "precedents.md", "roles", "team.md", "workflows"]
+        ["CLAUDE.md", "docs", "patrols", "precedents.md", "roles", "team.md", "workflows"]
     );
     assert_eq!(holds(&team_dir.join("roles")), ["README.md"]);
     for copied in [&role_dir, &role_dir.join(".claude/settings.json"), &team_dir] {
@@ -709,12 +714,25 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     }
 
     // The launch: the worker starts in the role's copy, with the worktree and
-    // the team's copy added, and loads the role's rules and no others —
-    // neither the repo's root's nor a neighbour's.
+    // the team's copy added, and the rules of added directories on. It loads
+    // the role's rules and the team rules and no others — no neighbour's, and
+    // of the team's directory no skill and no setting.
     let dir = worktree(&world, 7);
     let command = open_terminals(&world, &dir)[0]["command"].as_str().unwrap().to_string();
     assert_eq!(started_in(&command), (role_dir.clone(), vec![dir.clone(), team_dir.clone()]));
-    assert_eq!(loaded(&command), [role_dir.join("CLAUDE.md"), role_dir.join(".claude")]);
+    assert!(command.contains(" export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 "));
+    assert_eq!(
+        loaded(&command),
+        [role_dir.join("CLAUDE.md"), role_dir.join(".claude"), team_dir.join("CLAUDE.md")]
+    );
+    assert_eq!(
+        std::fs::read_to_string(team_dir.join("CLAUDE.md")).unwrap(),
+        "the rules of the team\n"
+    );
+    // The brief names them, and copies none.
+    let told = brief(&dir);
+    let rules = format!("- **Team rules:** `{}`\n", team_dir.join("CLAUDE.md").display());
+    assert!(told.contains(&rules) && !told.contains("the rules of the team"), "{told}");
     let roles = format!(" AFKCONVOY_ROLE_COMMIT='{team}' AFKCONVOY_TEAM_COMMIT='{team}' ");
     assert!(command.contains(&roles), "{command}");
     assert!(brief(&dir).contains(&team_dir.join("precedents.md").display().to_string()));

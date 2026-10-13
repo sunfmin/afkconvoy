@@ -18,8 +18,9 @@ pub const PATROLS: &str = "patrols";
 pub const SKILLS: &str = ".claude/skills";
 /// The file of a team's repo that holds its precedents.
 pub const PRECEDENTS: &str = "precedents.md";
-/// A role's rules, in its directory: the file every harness loads them from,
-/// so that they are written once (docs/adr/0013).
+/// A directory's rules: the file every harness loads them from, so that they
+/// are written once (docs/adr/0013). In a role's directory they are the
+/// role's, and in a team's the team rules.
 pub const RULES: &str = "CLAUDE.md";
 /// What a flow label is made of: this, then the workflow's name.
 pub const FLOW_LABEL: &str = "flow:";
@@ -181,6 +182,8 @@ pub struct Sources {
     /// repo of.
     pub at: Option<RepoDir>,
     pub team: File,
+    /// Whether the team's directory holds a rules file (`RULES`).
+    pub rules: bool,
     /// Every entry of the workflows directory.
     pub workflows: Vec<File>,
     /// Every entry of the patrols directory.
@@ -229,6 +232,9 @@ impl std::fmt::Display for Fault {
 pub struct Team {
     /// Swapped in for the flow label when the fleet hands an issue to a human.
     pub escalate_label: String,
+    /// Whether it has team rules: a `RULES` in its directory, which every
+    /// worker of the team is given with that directory.
+    pub rules: bool,
     #[field(Vec<Role>[roles])]
     pub roles: Vec<Role>,
     #[field(Vec<Workflow{v: v.roles == roles}>)]
@@ -935,6 +941,7 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     if faults.is_empty() {
         Ok(Team {
             escalate_label,
+            rules: sources.rules,
             roles: roles.loaded,
             workflows,
             patrols,
@@ -1823,6 +1830,7 @@ land: { by: dev, do: land }
         Sources {
             at: Some(dir("acme/team")),
             team: file(TEAM_FILE, team),
+            rules: false,
             workflows: workflows.iter().map(|(path, yaml)| file(path, yaml)).collect(),
             patrols: vec![],
             roles: vec![
@@ -2565,7 +2573,8 @@ stages:
             (dir, Ok(RoleDir { commit, skills: vec!["plan".to_string()], ..RoleDir::default() }))
         };
         let roles = role_dirs(&team, Some(&at)).into_iter().map(read).collect();
-        let sources = Sources { at: Some(at), team, workflows: vec![], patrols: vec![], roles };
+        let sources =
+            Sources { at: Some(at), team, rules: false, workflows: vec![], patrols: vec![], roles };
         match load(&sources) {
             Ok(team) => {
                 Ok(team.roles.iter().map(|r| (r.name.clone(), r.dir.to_string())).collect())
@@ -2686,7 +2695,14 @@ stages:
     #[test]
     fn a_path_in_the_teams_repo_needs_the_repo_to_be_known() {
         let team = file(TEAM_FILE, "roles: { fellow: ./roles/fellow }");
-        let sources = Sources { at: None, team, workflows: vec![], patrols: vec![], roles: vec![] };
+        let sources = Sources {
+            at: None,
+            team,
+            rules: false,
+            workflows: vec![],
+            patrols: vec![],
+            roles: vec![],
+        };
         let faults = load(&sources).unwrap_err();
         assert_eq!(faults[0].key, "roles.fellow");
         assert!(faults[0].problem.contains("nothing says which repo"), "{}", faults[0].problem);
@@ -2709,6 +2725,7 @@ stages:
             load(&Sources {
                 at: Some(at.clone()),
                 team: team.clone(),
+                rules: false,
                 workflows: vec![],
                 patrols: vec![],
                 roles,
@@ -2735,7 +2752,8 @@ stages:
         let roles = vec![(dir("acme/hospital/roles/fellow"), Err(refused))];
         let at = Some(dir("acme/hospital"));
         let faults =
-            load(&Sources { at, team, workflows: vec![], patrols: vec![], roles }).unwrap_err();
+            load(&Sources { at, team, rules: false, workflows: vec![], patrols: vec![], roles })
+                .unwrap_err();
         assert_eq!(
             (faults[0].key.as_str(), faults[0].problem.as_str()),
             (

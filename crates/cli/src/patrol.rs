@@ -102,6 +102,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let own = || crate::own_command_in(&path);
     let workflows: Vec<&str> =
         kept.team.workflows.iter().map(|workflow| workflow.name.as_str()).collect();
+    let team_rules = kept.rules();
     let fields = PatrolFields {
         patrol: name,
         role: &role.name,
@@ -109,6 +110,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         worktree: &path,
         base_branch: &fleet.config.base_branch,
         precedents: &kept.copy.dir.join(PRECEDENTS).display().to_string(),
+        team_rules: team_rules.as_deref(),
         workflows: &workflows,
         room: row.max_open.saturating_sub(row.open),
         intake_command: &own().fixed(" intake --issue <number> --workflow <name>").own(),

@@ -264,6 +264,7 @@ fn team_of(definition: &Definition) -> Result<Team, Vec<Fault>> {
         workflows: vec![file(&format!("workflows/{NAME}.md"), &definition.yaml())],
         patrols: vec![],
         at: None,
+        rules: false,
         roles: vec![
             repo("acme/dev", &["plan", "implement", "land"]),
             repo("acme/reviewer", &["review", "rule"]),

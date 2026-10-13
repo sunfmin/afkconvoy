@@ -273,6 +273,7 @@ fn a_patrol_the_repo_names_runs_when_due_and_one_it_does_not_name_never_runs() {
     assert!(brief.contains("**Patrol:** `sweep`") && brief.contains("`feature`"), "{brief}");
     assert!(brief.contains("intake --issue <number> --workflow <name>"), "{brief}");
     assert!(brief.contains("You may have 2 more such issue(s) open"), "{brief}");
+    assert!(!brief.contains("Team rules"), "the team has none: {brief}");
     assert_eq!(of("terminal send").len(), 1);
 
     // The run is claimed and recorded on the remote, with the fleet's other refs.
@@ -292,7 +293,8 @@ fn a_patrol_the_repo_names_runs_when_due_and_one_it_does_not_name_never_runs() {
 fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let world = bound("[sweep]");
     let repo = world.root.join("github/acme/team");
-    write(&repo, "CLAUDE.md", "the rules of a human\n");
+    write(&repo, "CLAUDE.md", "the rules of the team\n");
+    write(&repo, ".claude/skills/release/SKILL.md", "a human's\n");
     write(&repo, "roles/dev/CLAUDE.md", "the rules of a dev\n");
     write(&repo, "roles/dev/.claude/skills/sweep/SKILL.md", "s\n");
     write(&repo, "roles/dev/.claude/skills/implement/SKILL.md", "build\n");
@@ -304,14 +306,23 @@ fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let command = option(&started[0], "--command").unwrap();
     let kept = world.cache().join("afkconvoy/copies/acme/team");
     let (role_dir, team_dir) =
-        (kept.join(format!("{head}-role-roles%2Fdev")), kept.join(format!("{head}-team-")));
+        (kept.join(format!("{head}-role-roles%2Fdev")), kept.join(format!("{head}-team+rules-")));
     assert!(command.starts_with(&format!("cd '{}' && ", role_dir.display())), "{command}");
     assert!(command.contains(&format!(" --add-dir '{}' ", team_dir.display())), "{command}");
     let commits = format!(" AFKCONVOY_ROLE_COMMIT='{head}' AFKCONVOY_TEAM_COMMIT='{head}' ");
     assert!(command.contains(&commits), "{command}");
     assert!(role_dir.join("CLAUDE.md").is_file() && !role_dir.join("team.md").exists());
     assert!(team_dir.join("patrols/sweep.md").is_file());
-    assert!(!team_dir.join("roles/dev").exists() && !team_dir.join("CLAUDE.md").exists());
+    assert!(!team_dir.join("roles/dev").exists() && !team_dir.join(".claude").exists());
+    // The team rules are a patrol's worker's too: in the copy added to it,
+    // and named in its brief.
+    let rules = team_dir.join("CLAUDE.md");
+    assert_eq!(std::fs::read_to_string(&rules).unwrap(), "the rules of the team\n");
+    assert!(command.contains(" export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 "));
+    let brief = git(&checkout(&world), &["rev-parse", "--absolute-git-dir"]);
+    let brief = std::fs::read_to_string(PathBuf::from(brief).join("convoy-worker-prompt.md"));
+    let brief = brief.unwrap();
+    assert!(brief.contains(&format!("- **Team rules:** `{}`\n", rules.display())), "{brief}");
 }
 
 #[test]

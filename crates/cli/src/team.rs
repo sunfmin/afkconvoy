@@ -148,6 +148,9 @@ pub struct Loaded {
     /// The default harness: the one the config of this checkout names, when
     /// it is its team that was read, and Claude Code where no config was.
     pub harness: Harness,
+    /// Whether the team's directory holds a `.claude/`: hooks and skills no
+    /// worker loads.
+    pub settings: bool,
     pub team: Team,
     /// The team's directory on GitHub; `None` for a directory of this host.
     dir: Option<RepoDir>,
@@ -198,13 +201,21 @@ fn changed(copies: &Copies, dir: &RepoDir, since: &str, head: &str, without: &[P
 /// Reads the team `from` names and every role's directory, loads it, and
 /// holds it to the harnesses its workers would run on (`held`) → what was
 /// read, with a warning for each workflow whose file says nothing of what it
-/// is for, and a note for each role a directory above which holds rules a
+/// is for, and a note for a team whose directory holds hooks and skills no
+/// worker loads, and for each role a directory above which holds rules a
 /// worker in it is not given. A team with a fault fails with `Refused`.
 pub fn check(from: From) -> Result<Value> {
     let loaded = load(from)?;
     let faults = held(&loaded);
     if !faults.is_empty() {
         return Err(Refused { team: loaded.called, faults }.into());
+    }
+    if loaded.settings {
+        eprintln!(
+            "note: the team's directory holds a {SETTINGS}/: no worker loads the hooks and skills \
+             there. Of a team's directory a worker is given its rules ({RULES}); a hook and a \
+             skill are a role's, in the role's own directory"
+        );
     }
     for role in loaded.team.roles.iter().filter(|role| !role.above.is_empty()) {
         eprintln!(
@@ -304,9 +315,10 @@ pub fn load(from: From) -> Result<Loaded> {
                 bail!("{} is not a directory", dir.display());
             }
             let name = dir.display().to_string();
+            let settings = dir.join(SETTINGS).is_dir();
             let (sources, roles) = read(&Tree { dir }, of, None, &gh, &copies)?;
             roles.reached()?;
-            return loaded(name, None, copies, sources, named, harness);
+            return loaded(name, None, copies, sources, named, harness, settings);
         }
         From::Repo(team) => team,
         From::Config => {
@@ -323,13 +335,16 @@ pub fn load(from: From) -> Result<Loaded> {
     };
     let (copy, sources, roles) = read_kept(&gh, &copies, &team)?;
     roles.reached()?;
-    loaded(team.repo.to_string(), Some((team, copy.commit)), copies, sources, named, harness)
+    let settings = within(&copy, &team).join(SETTINGS).is_dir();
+    let at = Some((team.clone(), copy.commit));
+    loaded(team.repo.to_string(), at, copies, sources, named, harness, settings)
 }
 
 /// The team that `sources` load as — read from `name`: out of `copies`, from
 /// the directory on GitHub and at the commit `at` says, or from a directory
 /// of this host — on a repo whose config names the patrols `runs` and the
-/// default harness `harness`.
+/// default harness `harness`. `settings` is whether its directory holds a
+/// `.claude/`.
 fn loaded(
     name: String,
     at: Option<(RepoDir, String)>,
@@ -337,6 +352,7 @@ fn loaded(
     sources: Sources,
     runs: Vec<String>,
     harness: Harness,
+    settings: bool,
 ) -> Result<Loaded> {
     let mut files = vec![sources.team.path.clone()];
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
@@ -355,7 +371,7 @@ fn loaded(
     }
     let (dir, commit) = at.unzip();
     let path = dir.as_ref().map(|dir: &RepoDir| dir.path().to_string());
-    Ok(Loaded { name, called, path, commit, files, runs, harness, team, dir, copies })
+    Ok(Loaded { name, called, path, commit, files, runs, harness, settings, team, dir, copies })
 }
 
 /// What reading the repo of each role of a team came to, by the repo's name.
@@ -394,6 +410,7 @@ fn read(
     copies: &Copies,
 ) -> Result<(Sources, RoleReads)> {
     let team = tree.file(TEAM_FILE);
+    let rules = tree.dir.join(RULES).is_file();
     let entries = tree.list(WORKFLOWS)?;
     let workflows = entries.iter().map(|name| tree.file(&format!("{WORKFLOWS}/{name}"))).collect();
     let entries = tree.list(PATROLS)?;
@@ -434,11 +451,11 @@ fn read(
     let roles = named.into_iter().map(|dir| {
         let copy = copied.iter().find(|(repo, _)| *repo == dir.repo).map(|(_, read)| read.clone());
         let read = copy.unwrap_or_else(|| Err(Unread::Refused("its repo was not read".into())));
-        let read = read.and_then(|copy| role_dir(&copy, &dir));
+        let read = read.and_then(|copy| role_dir(&copy, &dir, at.as_ref()));
         (dir, read)
     });
     let roles = roles.collect();
-    Ok((Sources { at, team, workflows, patrols, roles }, kept))
+    Ok((Sources { at, team, rules, workflows, patrols, roles }, kept))
 }
 
 /// Where `dir` is in `copy`, the fleet's copy of its repo: the copy itself
@@ -448,8 +465,8 @@ fn within(copy: &Copy, dir: &RepoDir) -> PathBuf {
 }
 
 /// What the core is told of the role's directory `dir`, read out of `copy`,
-/// the fleet's copy of its repo.
-fn role_dir(copy: &Copy, dir: &RepoDir) -> Result<RoleDir, Unread> {
+/// the fleet's copy of its repo, for the team at `team`.
+fn role_dir(copy: &Copy, dir: &RepoDir, team: Option<&RepoDir>) -> Result<RoleDir, Unread> {
     let root = within(copy, dir);
     if !root.is_dir() {
         return Err(Unread::Refused(format!(
@@ -475,7 +492,7 @@ fn role_dir(copy: &Copy, dir: &RepoDir) -> Result<RoleDir, Unread> {
             commit: copy.commit.clone(),
             skills,
             links,
-            above: above(copy, dir),
+            above: above(copy, dir, team),
             limits: limits(&root)?,
             in_place: in_place.collect(),
         })
@@ -510,20 +527,24 @@ fn limits(root: &Path) -> Result<Vec<Harness>> {
     }
     Ok(limited)
 }
-/// The directory Claude Code loads its skills and settings from, in a
-/// directory a session is started in or under, and in one added to it.
+
+/// The directory of skills and settings Claude Code loads, beside the rules
+/// (`RULES`), from a directory a session is started in or under.
 const SETTINGS: &str = ".claude";
 
 /// Each `CLAUDE.md` and `.claude/` a directory above `dir` holds in `copy`,
 /// the copy of its repo, as a path from the repo's root: what Claude Code
 /// loads for a session started in `dir` of a checkout, and a worker is not
-/// given (docs/adr/0014).
-fn above(copy: &Copy, dir: &RepoDir) -> Vec<String> {
+/// given (docs/adr/0014). The rules of the directory of `team`, the team the
+/// role is read for, are none of them: a worker is given the team rules.
+fn above(copy: &Copy, dir: &RepoDir, team: Option<&RepoDir>) -> Vec<String> {
     let mut found = vec![];
     let mut at = PathBuf::new();
+    let teams =
+        |at: &Path| team.is_some_and(|team| team.repo == dir.repo && Path::new(team.path()) == at);
     for segment in dir.path().split('/').filter(|segment| !segment.is_empty()) {
         let (rules, settings) = (at.join(RULES), at.join(SETTINGS));
-        if copy.dir.join(&rules).is_file() {
+        if copy.dir.join(&rules).is_file() && !teams(&at) {
             found.push(rules.display().to_string());
         }
         if copy.dir.join(&settings).is_dir() {
@@ -602,6 +623,12 @@ pub struct Kept {
 }
 
 impl Kept {
+    /// The team rules, in the team's copy: what a brief names. `None` of a
+    /// team that has none.
+    pub fn rules(&self) -> Option<String> {
+        self.team.rules.then(|| self.copy.dir.join(RULES).display().to_string())
+    }
+
     /// The copy of the directory of `role`, and of nothing else of its repo:
     /// what a worker in it starts in, taken out of the copy of its repo
     /// unless one of that commit is here (docs/adr/0014). `Unreached` of a
@@ -620,17 +647,17 @@ impl Kept {
 
 /// What the copy of the team `loaded` from the directory `dir` leaves out,
 /// each a path from `dir`: the directory of every role in it, and the
-/// `CLAUDE.md` and `.claude/` at its top. The team's copy is added to every
-/// worker, and Claude Code loads those two from an added directory as it does
-/// from one above the worker's: a worker's rules are its role's, and neither
-/// its neighbours' nor those a repo's root holds for a human (docs/adr/0014).
+/// `.claude/` at its top. The team's copy is added to every worker, and what
+/// a harness loads from an added directory is then the `CLAUDE.md` at its top
+/// alone: the team rules, and neither a neighbour's rules nor the skills and
+/// settings a repo's root holds for a human (docs/adr/0014).
 fn left_out(dir: &RepoDir, loaded: &Team) -> Vec<PathBuf> {
     let inside = loaded.roles.iter().filter(|role| dir.holds(&role.dir) && role.dir != *dir);
     let roles = inside.map(|role| {
         let under = role.dir.path().strip_prefix(dir.path()).unwrap_or(role.dir.path());
         PathBuf::from(under.trim_start_matches('/'))
     });
-    roles.chain([PathBuf::from(RULES), PathBuf::from(SETTINGS)]).collect()
+    roles.chain([PathBuf::from(SETTINGS)]).collect()
 }
 
 /// Loads the team at `team` as it stands now: the head of its repo and of
@@ -665,6 +692,7 @@ fn answer(loaded: &Loaded) -> Value {
         "commit": loaded.commit,
         "files": loaded.files,
         "escalate_label": team.escalate_label,
+        "rules": team.rules,
         "harness": loaded.harness,
         "roles": roles,
         "workflows": team.workflows.iter().map(|w| workflow(loaded, w)).collect::<Vec<_>>(),

@@ -57,6 +57,8 @@ pub struct Staged {
     joins: Option<u64>,
     role_copy: Copy,
     team_copy: Copy,
+    /// The team rules, in the team's copy, of a team that has them.
+    team_rules: Option<String>,
     /// The team's workflows, by name: what a stage that splits its issue
     /// may take a child in to.
     workflows: Vec<String>,
@@ -121,6 +123,7 @@ impl Staged {
             joins,
             role_copy: kept.role(role)?,
             team_copy: kept.copy.clone(),
+            team_rules: kept.rules(),
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
     }
@@ -249,6 +252,7 @@ impl Staged {
             worktree: &path,
             base_branch: &fleet.config.base_branch,
             precedents: &self.team_copy.dir.join(PRECEDENTS).display().to_string(),
+            team_rules: self.team_rules.as_deref(),
             records: &records,
             verdict_command: &declare(" verdict"),
             intake_command: &own().fixed(" intake").own(),

@@ -129,6 +129,7 @@ fn team_files(
     };
     let mut files = vec![
         (TEAM_FILE.to_string(), fill(include_str!("scaffold/team.md"))),
+        (RULES.to_string(), include_str!("scaffold/team_rules.md").to_string()),
         (format!("{WORKFLOWS}/{EXAMPLE_WORKFLOW}.md"), fill(include_str!("scaffold/workflow.md"))),
     ];
     for role in roles.iter().filter(|role| role.at.is_none()) {
