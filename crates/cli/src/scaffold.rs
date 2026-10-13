@@ -18,9 +18,13 @@ use crate::git::Repo;
 pub const EXAMPLE_SKILL: &str = "implement";
 /// The example workflow of a team's skeleton.
 pub const EXAMPLE_WORKFLOW: &str = "feature";
-/// The harness a role's skeleton holds a file of limits for, with none in
-/// it yet: the one a team that names no harness runs on.
-const LIMITED: Harness = Harness::DEFAULT;
+/// The harnesses a role's skeleton holds a file of limits for, each with that
+/// file, which names no hook yet: the ones whose limits are one file. pi's
+/// are the entries of a directory, and a skeleton writes no empty one.
+const LIMITS: [(Harness, &str); 2] = [
+    (Harness::ClaudeCode, include_str!("scaffold/settings.json")),
+    (Harness::Codex, include_str!("scaffold/hooks.json")),
+];
 /// Where a team's skeleton writes the roles it holds, in the team's directory.
 pub const ROLES: &str = "roles";
 
@@ -111,11 +115,12 @@ pub struct Create {
 /// The files of a role's skeleton, each with its path in the role's directory.
 fn role_files() -> Vec<(String, String)> {
     let skill = include_str!("scaffold/skill.md").replace("{skill}", EXAMPLE_SKILL);
-    vec![
+    let mut files = vec![
         (RULES.to_string(), include_str!("scaffold/rules.md").to_string()),
         (format!("{SKILLS}/{EXAMPLE_SKILL}/SKILL.md"), skill),
-        (LIMITED.limits().to_string(), include_str!("scaffold/settings.json").to_string()),
-    ]
+    ];
+    files.extend(LIMITS.map(|(harness, text)| (harness.limits().to_string(), text.to_string())));
+    files
 }
 
 /// The files of the skeleton of a team that names `roles`, each with its
