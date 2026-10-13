@@ -70,11 +70,16 @@
 
       CLAUDE.md                          its rules: what a worker in it always works under
       .claude/skills/<skill>/SKILL.md    one directory per skill it can be asked to perform
-      .claude/settings.json              its hooks: the limits it cannot cross
+      .claude/settings.json              its limits for claude-code: hooks, and the
+                                         permissions it denies
+      .pi/extensions/                    its limits for pi: extensions
 
-  Claude Code loads all three from the directory a worker starts in; none of them has a
-  key the fleet reads. A `do` names an entry of `.claude/skills/` in the directory of the
-  role beside it. A worker is given its role's directory alone, and nothing else of its
+  The rules and the skills are written once, and every harness works under them. The
+  limits — what the role may never do — are written once for each harness its stages
+  run on, in that harness's own form, and a role needs only those of the harnesses it
+  runs on. Claude Code loads its three from the directory a worker starts in; none of
+  them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in the
+  directory of the role beside it. A worker is given its role's directory alone, and nothing else of its
   repo: a role that is a whole repo, opened by hand, is the role a worker gets, and one
   in a subdirectory is too unless a directory above it holds a `CLAUDE.md` or a
   `.claude/`, which Claude Code loads for a session opened by hand and a worker never
@@ -90,3 +95,12 @@
   `.claude/settings.json`, so what such a role may never do is an extension of pi's in
   `.pi/extensions/`, which the fleet has pi load. What a pi worker is started with:
   `afkconvoy run --help`.
+
+  `afkconvoy check` holds a role and a team to their harnesses. A role's directory that
+  holds an `AGENTS.md`, an `AGENTS.MD` or an `AGENTS.override.md` is a fault: pi loads
+  the first of those in place of `CLAUDE.md`, and the role would have two sets of rules.
+  A role that holds limits for one harness and none for another is right for the first
+  alone: a stage, a patrol, a consult, a landing or the proposal of a precedent that
+  runs such a role on the other is a fault, and a role with no limits at all is right
+  for every harness. Whether a role's limits for two harnesses refuse the same things
+  is not checked: that is the role's to see to.

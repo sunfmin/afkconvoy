@@ -237,6 +237,17 @@ fn ask(
     replied(&reply, &offered).ok_or_else(|| anyhow!(no_reply()))
 }
 
+/// The models `harness` knows on this host, as it says them to a login shell
+/// — the one a worker gets — when its stock worker launch command is asked
+/// (`Harness::models_question`), with what this host keeps for it. `None`: it
+/// has no way to say. An error is the question that failed, or listed none.
+pub fn models(harness: Harness) -> Option<Result<Vec<String>, String>> {
+    let kept = crate::kept::keep(harness).ok()?;
+    let question = harness.models_question(harness.stock(), &kept.display().to_string())?;
+    let listed = login_shell(&question).and_then(|answer| harness.models(&answer));
+    Some(listed.ok_or(question))
+}
+
 /// Runs `script` in the user's interactive login shell → what it printed.
 /// `None` when it failed, timed out, or exited non-zero: `type` prints "not
 /// found" and exits 1, so its output alone proves nothing.

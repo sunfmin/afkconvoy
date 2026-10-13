@@ -10,7 +10,7 @@
 use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
 
-use super::{Kept, Link};
+use super::{Held, Kept, Link};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
@@ -43,6 +43,21 @@ const MODEL: &str = "--model";
 pub(super) const FLAGS: [&str; 5] = [APPROVE, NO_SKILLS, SKILL, EXTENSION, MODEL];
 /// What pi is asked for the flags it takes.
 const HELP: &str = " --help";
+
+/// What pi is asked for the models it knows.
+const LIST_MODELS: &str = " --list-models";
+/// What may follow a model's name and a `:`, where pi is given one: how hard
+/// the model is to think.
+const THINKING: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Where a role's limits for pi are written, in its directory: the
+/// extensions pi loads from the directory it starts in, once its question is
+/// answered (`APPROVE`).
+pub(super) const LIMITS: &str = ".pi/extensions";
+/// The files pi loads the rules of a directory from before the one every
+/// harness loads (`team::RULES`), and in its place: it loads the first of
+/// them a directory holds, and no other.
+pub(super) const BEFORE_THE_RULES: [&str; 3] = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD"];
 
 /// The variable that names pi's user directory: the fleet's own, in place of
 /// the host user's.
@@ -131,6 +146,84 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
 #[spec(fn(Line[@l]) -> Line[l])]
 pub(super) fn asked_its_flags(line: Line) -> Line {
     line.fixed(HELP)
+}
+
+/// Whether what a role's directory holds at `LIMITS` limits a worker: a
+/// directory with an entry. What an extension refuses is not read.
+pub(super) fn limited<D>(held: Held<D>) -> bool {
+    match held {
+        Held::Entries(entries) => entries > 0,
+        Held::Nothing | Held::File(_) => false,
+    }
+}
+
+/// The line that asks `command`, a worker launch command of pi's, which
+/// models it knows, under the user directory `kept` a worker of it is given:
+/// the logins and the models there are the ones a worker would have.
+pub(super) fn models_question(command: &str, kept: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command)
+        .fixed(LIST_MODELS)
+        .done()
+}
+
+/// The models pi lists in `answer`, what it printed for `models_question`,
+/// each as `provider/id`: a table under a line that heads it `provider
+/// model`, whatever a shell printed above. `None` when it lists none: pi has
+/// no login on this host, or said something else.
+pub(super) fn models(answer: &str) -> Option<Vec<String>> {
+    let mut listed = vec![];
+    let mut headed = false;
+    for line in answer.lines() {
+        let mut columns = line.split_whitespace();
+        let (Some(provider), Some(id)) = (columns.next(), columns.next()) else { continue };
+        if headed {
+            listed.push(format!("{provider}/{id}"));
+        } else {
+            headed = provider == "provider" && id == "model";
+        }
+    }
+    if listed.is_empty() { None } else { Some(listed) }
+}
+
+/// Whether `model`, as a stage writes it, is one of `listed`, the models pi
+/// lists on a host, as pi reads a model's name: a `provider/id`, an id, or a
+/// part of an id — in one provider, where it names one — whatever the case,
+/// with how hard to think after a `:` or not. pi takes more than this: a
+/// name it has no login for, and any name at all after a provider it knows.
+/// Neither would run a worker here, and neither is known.
+pub(super) fn knows(listed: &[String], model: &str) -> bool {
+    let thinks = model.rsplit_once(':').filter(|(_, level)| THINKING.contains(level));
+    named(listed, model) || thinks.is_some_and(|(model, _)| named(listed, model))
+}
+
+/// Whether `model` is one of `listed` by its whole name, a `provider/id`,
+/// with how hard to think after a `:` or not.
+pub(super) fn names(listed: &[String], model: &str) -> bool {
+    let whole = |name: &str| listed.iter().any(|full| full.eq_ignore_ascii_case(name.trim()));
+    let thinks = model.rsplit_once(':').filter(|(_, level)| THINKING.contains(level));
+    whole(model) || thinks.is_some_and(|(model, _)| whole(model))
+}
+
+/// Whether `name` names one of `listed`, each a `provider/id`.
+fn named(listed: &[String], name: &str) -> bool {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return false;
+    }
+    let within = name.split_once('/').filter(|(_, part)| !part.is_empty());
+    listed.iter().any(|full| {
+        let full = full.to_lowercase();
+        let (provider, id) = full.split_once('/').unwrap_or(("", &full));
+        full == name
+            || id.contains(&name)
+            || within.is_some_and(|(of, part)| of == provider && id.contains(part))
+    })
 }
 
 /// One tool call, as the fleet's extension passes on what pi describes to it
@@ -242,6 +335,66 @@ mod tests {
         let why = Harness::Pi.takes("kim", Some(&old)).unwrap_err();
         assert!(why.contains("`kim --help` names no --approve."), "{why}");
         assert!(why.contains("must end in pi taking flags"), "{why}");
+    }
+
+    #[test]
+    fn a_role_holds_limits_for_pi_where_its_extensions_directory_has_an_entry() {
+        let limited = |held: Held<()>| limited(held);
+        assert!(limited(Held::Entries(1)));
+        for none in [Held::Entries(0), Held::Nothing, Held::File(())] {
+            assert!(!limited(none));
+        }
+    }
+
+    const LISTED: &str = "a line an rc file printed\n\
+        provider      model                context  max-out  thinking  images\n\
+        openai-codex  gpt-5.5              272K     128K     yes       yes   \n\
+        zai           glm-5.2              1M       131.1K   yes       no    \n\
+        openrouter    moonshotai/kimi-k2.6 256K     64K      yes       no\n";
+
+    #[test]
+    fn pi_is_asked_its_models_under_the_directory_a_worker_is_given() {
+        assert_eq!(
+            Harness::Pi.models_question("kim  --thinking high", "/it's kept"),
+            Some(
+                "export PI_CODING_AGENT_DIR='/it'\\''s kept' && kim  --thinking high --list-models"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            Harness::Pi.models(LISTED).unwrap(),
+            ["openai-codex/gpt-5.5", "zai/glm-5.2", "openrouter/moonshotai/kimi-k2.6"]
+        );
+        for nothing in ["", "No models available. Use /login to sign in.\n", "provider model\n"] {
+            assert_eq!(Harness::Pi.models(nothing), None, "{nothing}");
+        }
+        // Claude Code has no such question, and knows whatever it is given.
+        assert_eq!(Harness::ClaudeCode.models_question("claude", "/kept"), None);
+        assert_eq!(Harness::ClaudeCode.models(LISTED), None);
+        assert!(Harness::ClaudeCode.knows(&[], "anything"));
+    }
+
+    #[test]
+    fn pi_knows_a_model_it_lists_by_its_name_or_a_part_of_its_id() {
+        let listed = Harness::Pi.models(LISTED).unwrap();
+        for known in [
+            "openai-codex/gpt-5.5",
+            "OpenAI-Codex/GPT-5.5",
+            "gpt-5.5",
+            "glm",
+            "zai/glm",
+            "zai/glm-5.2:high",
+            "glm-5.2:off",
+            "moonshotai/kimi-k2.6",
+            "openrouter/moonshotai/kimi-k2.6",
+        ] {
+            assert!(Harness::Pi.knows(&listed, known), "{known}");
+        }
+        for unknown in
+            ["opus", "zai/gpt-5.5", "openai-codex/gpt-9", "glm-5.2:loud", "zai/", "", "codex"]
+        {
+            assert!(!Harness::Pi.knows(&listed, unknown), "{unknown}");
+        }
     }
 
     /// JSON is read here as the YAML it also is.
