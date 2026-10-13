@@ -13,6 +13,33 @@ WHAT IT READS AND WRITES
   — and of that file only the first ```yaml block. It writes nothing, and reads neither
   GitHub nor the remote.
 
+THE CONFIG FILE
+
+  A markdown file. The keys of its ```yaml block are the keys of the answer below, named
+  and written alike: a file holding every key, each at its default, is
+
+      # afkconvoy config
+
+      ```yaml
+      base_branch: "main"                # required: it has no default
+      gate_command: ./gate.sh            # required: it has no default
+      gate_seconds: 3600
+      ready_label: ready-for-agent
+      epic_labels: [epic, prd]
+      concurrency: 3
+      escalate_label: ready-for-human
+      lock_label: fleet-lock
+      team: acme/team                    # naming a team binds the repo
+      patrols: []
+      intake_limit: 50
+      harness: claude-code
+      ```
+
+  A key left out is at the value shown, so the shortest config is the first two lines,
+  and a bound repo's those and `team`. The last three are read only beside `team`: an
+  unbound repo leaves all four out. What is outside the block is yours to explain it in.
+  No command writes this file: write it, commit it, and run `afkconvoy config`.
+
 WHAT IT ANSWERS
 
   {"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels",
