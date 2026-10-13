@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::launch::{Waited, until_ready};
@@ -167,9 +168,15 @@ pub struct Worktree {
     pub path: PathBuf,
     /// The branch orca named for it — never assumed from the worktree's name.
     pub branch: String,
+    /// The worktree's own git dir, once it was asked for (`note`).
+    git_dir: OnceLock<PathBuf>,
 }
 
 impl Worktree {
+    fn at(path: PathBuf, branch: String) -> Worktree {
+        Worktree { path, branch, git_dir: OnceLock::new() }
+    }
+
     /// Has orca create a worktree and branch at the commit `sha`, linked to
     /// `issue` — and asserts the worktree contains that commit, however orca
     /// resolved it: a worker started on a base that is commits behind builds
@@ -204,7 +211,7 @@ impl Worktree {
         if !checkout.try_git(&["merge-base", "--is-ancestor", sha, "HEAD"])?.ok {
             checkout.git(&["merge", "--quiet", "--ff-only", sha])?;
         }
-        Ok(Worktree { path, branch })
+        Ok(Worktree::at(path, branch))
     }
 
     /// The worktree orca links to issue `number` on this machine: the most
@@ -223,10 +230,10 @@ impl Worktree {
             .collect();
         hits.sort_by_key(|row| row["lastActivityAt"].as_u64().unwrap_or(0));
         Ok(hits.last().and_then(|row| {
-            Some(Worktree {
-                path: PathBuf::from(row["path"].as_str()?),
-                branch: short_branch(row["branch"].as_str().unwrap_or("")).to_string(),
-            })
+            Some(Worktree::at(
+                PathBuf::from(row["path"].as_str()?),
+                short_branch(row["branch"].as_str().unwrap_or("")).to_string(),
+            ))
         }))
     }
 
@@ -269,10 +276,10 @@ impl Worktree {
             .collect();
         hits.sort_by_key(|row| row["lastActivityAt"].as_u64().unwrap_or(0));
         Ok(hits.last().and_then(|row| {
-            Some(Worktree {
-                path: PathBuf::from(row["path"].as_str()?),
-                branch: short_branch(row["branch"].as_str().unwrap_or("")).to_string(),
-            })
+            Some(Worktree::at(
+                PathBuf::from(row["path"].as_str()?),
+                short_branch(row["branch"].as_str().unwrap_or("")).to_string(),
+            ))
         }))
     }
 
@@ -314,10 +321,14 @@ impl Worktree {
     }
 
     /// A note about the worker here, kept in the worktree's own git dir: this
-    /// machine's, like the worker itself, and gone when the worktree is.
+    /// machine's, like the worker itself, and gone when the worktree is. git
+    /// is asked where that is once.
     fn note(&self, name: &str) -> Result<PathBuf> {
-        let git_dir = Repo::new(self.path.clone()).git(&["rev-parse", "--absolute-git-dir"])?;
-        Ok(Path::new(&git_dir).join(name))
+        if self.git_dir.get().is_none() {
+            let dir = Repo::new(self.path.clone()).git(&["rev-parse", "--absolute-git-dir"])?;
+            let _ = self.git_dir.set(PathBuf::from(dir));
+        }
+        Ok(self.git_dir.get().expect("set above").join(name))
     }
 
     /// What the train worker here was last told: the train's tip, and when.

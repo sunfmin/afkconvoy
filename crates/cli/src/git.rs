@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use afkconvoy_core::layout::Layout;
 use anyhow::{Context, Result, bail};
@@ -25,14 +25,29 @@ pub struct Ran {
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub dir: PathBuf,
-    /// The repo's git dir, once it was asked for (`common_dir`).
+    /// What git said of this checkout that holds for as long as it is there.
+    /// Every copy of this value shares it, so git is asked each thing once.
+    fixed: Arc<Fixed>,
+}
+
+#[derive(Debug, Default)]
+struct Fixed {
+    /// The repo's git dir (`common_dir`).
     common: OnceLock<PathBuf>,
+    /// The empty tree's id in the repo's object format (`record_commit`).
+    empty_tree: OnceLock<String>,
 }
 
 impl Repo {
-    /// The checkout the command was run in.
+    /// The checkout the command was run in. git is asked once in a process:
+    /// every later call is a copy of the first one's answer.
     pub fn here() -> Result<Repo> {
-        Repo::at(Path::new("."))
+        static HERE: OnceLock<Repo> = OnceLock::new();
+        if let Some(repo) = HERE.get() {
+            return Ok(repo.clone());
+        }
+        let repo = Repo::at(Path::new("."))?;
+        Ok(HERE.get_or_init(|| repo).clone())
     }
 
     /// The checkout that contains `dir`.
@@ -46,17 +61,17 @@ impl Repo {
 
     /// The checkout whose top directory is `dir`.
     pub fn new(dir: PathBuf) -> Repo {
-        Repo { dir, common: OnceLock::new() }
+        Repo { dir, fixed: Arc::default() }
     }
 
     /// The repo's git dir, which every worktree of it shares. git is asked
     /// once: a checkout's repo is the same one for as long as it is there.
     pub fn common_dir(&self) -> Result<&Path> {
-        if self.common.get().is_none() {
+        if self.fixed.common.get().is_none() {
             let dir = self.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
-            let _ = self.common.set(PathBuf::from(dir));
+            let _ = self.fixed.common.set(PathBuf::from(dir));
         }
-        Ok(self.common.get().expect("set above"))
+        Ok(self.fixed.common.get().expect("set above"))
     }
 
     /// The main worktree of this checkout: where its `.git` directory is.
@@ -158,8 +173,11 @@ impl Repo {
     /// sha, which is what gets pushed to a ref. It drags no history along, and
     /// is written under the fleet's identity, whoever's machine this is.
     pub fn record_commit(&self, record: &str) -> Result<String> {
-        let tree = self.git(&["hash-object", "-t", "tree", "/dev/null"])?;
-        self.record_commit_of(&tree, record)
+        if self.fixed.empty_tree.get().is_none() {
+            let tree = self.git(&["hash-object", "-t", "tree", "/dev/null"])?;
+            let _ = self.fixed.empty_tree.set(tree);
+        }
+        self.record_commit_of(self.fixed.empty_tree.get().expect("set above"), record)
     }
 
     /// A parentless commit of `tree` whose subject is `record`: a record that
