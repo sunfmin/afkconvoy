@@ -1,0 +1,7 @@
+# A test of the CLI starts processes by the dozen (the CLI itself, and the
+# `git`, `gh` and `orca` it runs), and a host runs several gates at once: its
+# workers' and the train's. nextest's default, one test per logical CPU, has
+# them fight over the machine, so the number is set here, for the gate and for
+# a run by hand alike.
+[profile.default]
+test-threads = 6
