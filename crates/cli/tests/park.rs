@@ -127,6 +127,7 @@ fn a_parked_worktree_with_work_in_it_is_kept() {
         assert_eq!(world.edges(7), [41]);
         assert_eq!(world.claims(), [(41, "beta".to_string())]);
         assert!(dir.exists(), "what a later continuation starts from");
+        assert_eq!(world.open_terminals(), Vec::<String>::new(), "its worker is ended");
     }
 }
 

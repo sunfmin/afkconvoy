@@ -239,7 +239,7 @@ pub fn failure_of(issues: &[Issue], name: &str, escalate_label: &str) -> Option<
 }
 
 /// The name a patrol's checkout is created under: one per patrol on a
-/// machine, kept across its runs.
+/// machine at a time, cut for a run and removed as it ends.
 pub fn checkout_name(name: &str) -> String {
     format!("convoy-patrol-{name}")
 }

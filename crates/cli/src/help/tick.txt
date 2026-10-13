@@ -59,6 +59,26 @@ WHAT TRIPS YOU UP
     settled one and left a slot free, it starts the next tick at once (`next now` in
     its line), at most 4 ticks back to back. Ticking by hand, the next `tick` is yours
     to run.
+  - The step that ends a piece of work ends its worker too: no worker is left at its
+    prompt once the tick has acted on what it declared, and with nothing claimed the
+    only worker alive is the train's. What becomes of the terminal and the worktree:
+      end_patrol          The terminal is closed and the checkout removed: the patrol's
+                          next run starts in a new one, cut from the base branch as it
+                          then stands. A run that failed keeps its checkout, with the
+                          terminal closed — the issue that reports it gives the path —
+                          until the patrol is run again.
+      end_proposal        The terminal is closed and the checkout removed.
+      advance, to a       The terminal is closed and the worktree kept: the next stage's
+      stage or a consult  worker is started in it, in a terminal of its own. The same
+                          where the issue then waits on a human.
+      advance, to `done`  The terminal is closed and the worktree removed, with whatever
+                          was uncommitted in it. Its branch goes with it when it holds no
+                          commit past the base branch, and is kept when it does. The
+                          issue stays open until somebody closes it.
+      an escalation       The terminal is closed. The PR, the branch and the worktree
+                          are kept for the human — but for a worktree whose branch
+                          holds no work, which is removed. A park does the same.
+    An issue that lands loses its worktree, and its worker with it, as it is settled.
   - An `escalate` does not always hand the issue to a human. From a stage that names a
     consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim,
     and the next one starts a worker in the consult's role — under a claim of its
@@ -91,6 +111,8 @@ WHAT TRIPS YOU UP
     gone, or has been stopped for the grace period. Either way a run that left a commit
     in its checkout, or opened a PR, has failed: the tick opens an issue that says so, with the team's escalate label,
     and touches no other issue. The patrol is not run again until a human closes it.
+    An operator reading orca sees a patrol's checkout only while its run is going, or
+    has failed.
   - A human's ruling on an escalated issue is proposed as a precedent, where the team
     names who proposes (`precedents`, `afkconvoy check --help`): a tick starts one
     worker in that role, with that skill, in a checkout of the base branch linked to no
