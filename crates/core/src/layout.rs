@@ -349,11 +349,18 @@ mod rejected {
     fn a_locked_branch_landed_on(protection: &Protection) -> Landable {
         Landable { barred: protection.locked }
     }
+}
 
-    /// A branch with required reviews read as one nothing bars.
-    #[should_fail]
-    #[spec(fn(protection: &Protection{p: p.reviews}) -> bool[false])]
-    fn required_reviews_read_as_no_bar(protection: &Protection) -> bool {
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
+#[cfg(flux)]
+#[allow(dead_code)]
+mod relied_on {
+    use super::*;
+
+    /// A branch with required reviews bars the train.
+    #[spec(fn(protection: &Protection{p: p.reviews}) -> bool[true])]
+    fn required_reviews_bar_the_train(protection: &Protection) -> bool {
         protection.bars()
     }
 }

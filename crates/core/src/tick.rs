@@ -597,26 +597,32 @@ pub fn sleeps_skipped(skipped: u32, follow_up_due: bool) -> u32 {
 mod rejected {
     use super::*;
 
-    /// A sleep skipped after every tick that left a follow-up, however many
-    /// ran back to back: a fault spins the loop.
-    #[should_fail]
-    #[spec(fn(skipped: u32{skipped < BACK_TO_BACK}, follow_up_due: bool)
-        -> u32{after: after < BACK_TO_BACK})]
-    fn a_sleep_skipped_with_no_look_at_the_run(skipped: u32, follow_up_due: bool) -> u32 {
-        if follow_up_due { skipped + 1 } else { 0 }
-    }
-
     /// A claim taken with no look at the bound.
     #[should_fail]
     fn a_claim_taken_past_the_bound(concurrency: usize, held: usize) {
         let mut slots = Slots::new(concurrency, held);
         slots.take();
     }
+}
 
-    /// A pass that claims to end under the bound, whatever it started with.
-    #[should_fail]
-    #[spec(fn(set: &WorkingSet, concurrency: usize, held: usize) -> Pass{pass: pass.held <= concurrency})]
-    fn a_pass_that_sheds_claims_it_holds(
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
+#[cfg(flux)]
+#[allow(dead_code)]
+mod relied_on {
+    use super::*;
+
+    /// However many ticks left a follow-up, the sleeps skipped in a row stay
+    /// under `BACK_TO_BACK`: a fault cannot spin the loop.
+    #[spec(fn(skipped: u32, follow_up_due: bool) -> u32{after: after < BACK_TO_BACK})]
+    fn the_loop_sleeps_within_back_to_back(skipped: u32, follow_up_due: bool) -> u32 {
+        sleeps_skipped(skipped, follow_up_due)
+    }
+
+    /// A pass that starts within the bound ends within it.
+    #[spec(fn(set: &WorkingSet, concurrency: usize, held: usize{held <= concurrency})
+        -> Pass{pass: pass.held <= concurrency})]
+    fn a_pass_within_the_bound_stays_within_it(
         set: &WorkingSet,
         concurrency: usize,
         held: usize,
@@ -624,11 +630,16 @@ mod rejected {
         run_pass(set, concurrency, held, |_| Outcome::Failed)
     }
 
-    /// A sleep of a whole lease: every claim held would be stale on waking.
-    #[should_fail]
-    #[spec(fn() -> u64{sleep: 2 * sleep <= crate::lease::LEASE})]
-    fn a_sleep_of_a_whole_lease() -> u64 {
-        crate::lease::LEASE
+    /// A fleet that holds a claim sleeps half a lease at most: its heartbeat
+    /// cannot lapse while it sleeps.
+    #[spec(fn(did_work: bool, held: usize{held > 0}, empty_streak: u32)
+        -> u64{sleep: 2 * sleep <= crate::lease::LEASE})]
+    fn a_fleet_with_a_claim_wakes_within_half_a_lease(
+        did_work: bool,
+        held: usize,
+        empty_streak: u32,
+    ) -> u64 {
+        pace(did_work, held, empty_streak)
     }
 }
 

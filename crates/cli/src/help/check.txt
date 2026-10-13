@@ -97,8 +97,10 @@ WHAT IT ANSWERS
   is inside the team's `workflows/` or `patrols/`; a role's directory that contains
   another role's or is inside one — two names for one directory are none; a symlink in
   a role in a subdirectory that leaves the role's directory; a file in a role's
-  directory that pi would load in place of `CLAUDE.md` — `AGENTS.md`, `AGENTS.MD`,
-  `AGENTS.override.md` — the fault naming the file; a role's limits that cannot be
+  directory that a harness would load in place of `CLAUDE.md`, its rules under every
+  harness — pi `AGENTS.override.md`, `AGENTS.md` or `AGENTS.MD`, Codex
+  `AGENTS.override.md` or `AGENTS.md` — the fault naming the file and each harness
+  that would load it, whatever harness the role's stages run on; a role's limits that cannot be
   read; a skill its role's directory does not hold; a
   missing `by`, `do` or `on`; a `harness` that names no harness, or one on a stage a
   human performs; a patrol file whose name is not a patrol's; an `every`

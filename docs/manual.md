@@ -199,9 +199,10 @@ another role's nor is inside one. It holds:
 None of them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in
 the directory of the role beside it. The rules and the skills are written once, and
 every harness works under them: pi reads `CLAUDE.md` from the directory it starts in,
-and the fleet names `.claude/skills/` to it. The limits — what the role may never do —
-are written once for each harness the role runs on, in that harness's own form: pi
-and Codex run no hook of `.claude/settings.json`.
+Codex does once the fleet tells it to, and the fleet names `.claude/skills/` to pi.
+The limits — what the role may never do — are written once for each harness the role
+runs on, in that harness's own form: pi and Codex run no hook of
+`.claude/settings.json`.
 
 A worker is given its role's directory alone, and nothing else of its repo: a
 `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
@@ -219,11 +220,18 @@ given it, whatever its role and whatever it was started for — a stage, a consu
 patrol, the proposal of a precedent, a landing — and no key turns it off. A role two
 teams name works under the rules of the team whose stage it is in.
 
-They are one of four kinds of text a worker reads, beside the repo's own rules — the
-`CLAUDE.md` (or, for pi, `AGENTS.md`) of the repo an issue is of — its role's rules
-and the precedents. The first three are loaded by the worker's harness, not copied
-into its brief, and the brief says where each of the four is. What each is for, and
-where a sentence belongs: `afkconvoy help roles`.
+They are one of four kinds of text a worker reads, beside the repo's own rules, its
+role's rules and the precedents. Which file is whose rules:
+
+    its role's        the CLAUDE.md of the role's directory, under every harness
+    the team rules    the CLAUDE.md of the team's directory, under every harness
+    the repo's own    of the repo an issue is of: under claude-code its CLAUDE.md;
+                      under pi and codex its AGENTS.md, or CLAUDE.md where it has none
+
+Claude Code and pi load the three. Codex loads its role's, and nothing from a
+directory above it; the fleet says the other two to it on the line that starts it,
+each as what it is. The brief copies none of the four, and says where each is. What
+each is for, and where a sentence belongs: `afkconvoy help roles`.
 ````
 
 ### HOW A REPO IS BOUND TO IT
@@ -248,7 +256,8 @@ carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows
 key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 - A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an
   `AGENTS.override.md` is a fault: pi loads the first of those in place of `CLAUDE.md`,
-  and the role would have two sets of rules.
+  Codex the first of `AGENTS.override.md` and `AGENTS.md`, and the role would have two
+  sets of rules.
 - A role that holds limits for one harness and none for another is right for the
   first alone: a stage, a patrol, a consult, a landing or the proposal of a precedent
   that runs it on the other is a fault. A role with no limits at all is right for

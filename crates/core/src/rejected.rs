@@ -1,18 +1,9 @@
-//! Misuses Flux must refuse. Each is the smallest program that breaks one rule
-//! the crate states; `#[should_fail]` makes the check fail if Flux ever accepts
-//! it. Compiled only under Flux.
+//! Misuses Flux must refuse, and what callers may rely on. Each misuse is the
+//! smallest program that breaks one rule the crate states; `#[should_fail]`
+//! makes the check fail if Flux ever accepts it. Compiled only under Flux.
 #![allow(dead_code)]
 
 use flux_rs::attrs::*;
-
-use crate::config::Config;
-
-/// A config's concurrency is never zero, so nothing may claim to hold one that is.
-#[should_fail]
-#[spec(fn(&Config) -> usize[0])]
-fn a_config_with_no_slots(config: &Config) -> usize {
-    config.concurrency()
-}
 
 /// A `Vec` has a length, so nothing may write to whatever index it is handed.
 #[should_fail]
@@ -26,60 +17,13 @@ fn the_first_of_a_vec_that_may_be_empty(numbers: &Vec<u64>) -> u64 {
     numbers[0]
 }
 
-mod team {
-    use flux_rs::attrs::*;
-
-    use crate::team::Stage;
-
-    /// A stage's reject leads back, so none may be read as leading to the
-    /// stage itself or past it.
-    #[should_fail]
-    #[spec(fn(&Stage[@s]) -> Option<usize{v: v >= s.at}>)]
-    fn a_reject_that_leads_forward(stage: &Stage) -> Option<usize> {
-        stage.reject()
-    }
-}
-
-mod lease {
-    use flux_rs::attrs::*;
-
-    use crate::lease::{proved, stamp_stale};
-
-    /// A heartbeat is not live merely for having been read.
-    #[should_fail]
-    #[spec(fn(stamp: u64, now: u64))]
-    fn a_heartbeat_assumed_live(stamp: u64, now: u64) {
-        let _ = (stamp, now);
-        proved(!stamp_stale(stamp, now));
-    }
-
-    /// A stamp from the future is not fresh for being new.
-    #[should_fail]
-    #[spec(fn(stamp: u64, now: u64) requires stamp > now)]
-    fn a_future_stamp_read_as_live(stamp: u64, now: u64) {
-        proved(!stamp_stale(stamp, now));
-    }
-}
-
-mod position {
-    use flux_rs::attrs::*;
-
-    use crate::position::Count;
-
-    /// Rework is counted under its breaker, so no count may be read as past it.
-    #[should_fail]
-    #[spec(fn(&Count[@c]) -> u64{v: v > c.limit})]
-    fn a_count_past_its_breaker(count: &Count) -> u64 {
-        count.times()
-    }
-}
-
 /// What callers may rely on: each is checked by Flux, and stops passing when
 /// the spec it reads is weakened.
 mod relied_on {
     use flux_rs::attrs::*;
 
     use crate::config::Config;
+    use crate::lease::{stamp_due, stamp_stale};
     use crate::position::Count;
     use crate::team::Stage;
 
@@ -95,9 +39,31 @@ mod relied_on {
         count.times()
     }
 
-    /// A stage's reject leads to a stage of its workflow.
-    #[spec(fn(&Stage[@s]) -> Option<usize{v: v < s.n}>)]
-    fn a_reject_leads_to_a_stage(stage: &Stage) -> Option<usize> {
+    /// A stage's reject leads back, to a stage of its workflow.
+    #[spec(fn(&Stage[@s]) -> Option<usize{v: v < s.at && v < s.n}>)]
+    fn a_reject_leads_back_to_a_stage(stage: &Stage) -> Option<usize> {
         stage.reject()
+    }
+
+    /// A heartbeat no older than the lease is live.
+    #[spec(fn(stamp: u64, now: u64) requires stamp <= now && now - stamp <= crate::lease::LEASE)]
+    fn a_heartbeat_within_the_lease_is_live(stamp: u64, now: u64) {
+        flux_rs::assert(!stamp_stale(stamp, now));
+    }
+
+    /// A stamp further ahead than skew allows is stale, not fresh for being new.
+    #[spec(fn(stamp: u64, now: u64) requires stamp > now && stamp - now > crate::lease::SKEW)]
+    fn a_stamp_from_the_future_is_stale(stamp: u64, now: u64) {
+        flux_rs::assert(stamp_stale(stamp, now));
+    }
+
+    /// A heartbeat that is not due is live to every peer, and stays live for
+    /// two thirds of a lease: an owner that beats when due is never read as dead.
+    #[spec(fn(stamp: u64, now: u64, later: u64)
+        requires now <= later && later - now <= crate::lease::LEASE - crate::lease::BEAT_EVERY)]
+    fn a_beat_not_due_outlives_the_wait(stamp: u64, now: u64, later: u64) {
+        if !stamp_due(stamp, now) && stamp <= now {
+            flux_rs::assert(!stamp_stale(stamp, later));
+        }
     }
 }

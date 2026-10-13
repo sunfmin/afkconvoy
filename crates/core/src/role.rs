@@ -257,7 +257,27 @@ pub struct Start<'a> {
     /// The directory this host keeps for the worker's harness, holding what
     /// that harness is given of the fleet's own (`Harness::kept`).
     pub kept: &'a str,
+    /// The rules its harness is told on the line that starts it: nothing, of
+    /// a harness that loads them itself (`Harness::told`).
+    pub told: Told<'a>,
     pub facts: Facts<'a>,
+}
+
+/// One set of rules as it was read: the file it is in, and what that holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rules<'a> {
+    pub file: &'a str,
+    pub text: &'a str,
+}
+
+/// The rules a worker is given from outside the directory it starts in, read
+/// for a harness that loads none from there itself (`Harness::told`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Told<'a> {
+    /// The repo's own rules, in the worktree. `None`: the repo holds none.
+    pub repo: Option<Rules<'a>>,
+    /// The team rules, in the team's copy. `None` of a team that has none.
+    pub team: Option<Rules<'a>>,
 }
 
 #[cfg(test)]

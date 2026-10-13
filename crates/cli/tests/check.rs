@@ -657,21 +657,35 @@ fn dev(world: &World) -> std::path::PathBuf {
 }
 
 #[test]
-fn a_role_whose_files_would_have_pi_load_other_rules_is_a_fault_naming_the_file() {
+fn a_role_whose_files_would_have_pi_or_codex_load_other_rules_is_a_fault_naming_the_file() {
     let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     commit(&dev(&world), "CLAUDE.md", "the rules\n");
     world.afk(&["check"]).ok();
-    // pi loads `AGENTS.md` first, and then no `CLAUDE.md`: whatever harness
-    // the role's stages run on today.
+    // pi and Codex load `AGENTS.md` first, and then no `CLAUDE.md`: whatever
+    // harness the role's stages run on today. The file is one fault.
     commit(&dev(&world), "AGENTS.md", "other rules\n");
     let answer = world.afk(&["check"]);
     assert_eq!(faults(&answer.json), ["team.md: roles.dev"]);
     let error = answer.error();
     assert!(
         error.contains(
-            "team.md: roles.dev: acme/dev holds `AGENTS.md`: pi loads that in place of \
+            "team.md: roles.dev: acme/dev holds `AGENTS.md`: pi and Codex load that in place of \
              `CLAUDE.md`, the rules every harness works under."
         ),
+        "{error}"
+    );
+    // A stage on `codex` is refused for `AGENTS.override.md` too, which
+    // Codex loads before either.
+    let on_codex = building(&["harness: codex"]);
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_codex)]);
+    commit(&dev(&world), "CLAUDE.md", "the rules\n");
+    assert_eq!(world.afk(&["check"]).ok()["workflows"][0]["stages"][0]["harness"], "codex");
+    commit(&dev(&world), "AGENTS.override.md", "other rules\n");
+    let answer = world.afk(&["check"]);
+    assert_eq!(faults(&answer.json), ["team.md: roles.dev"]);
+    let error = answer.error();
+    assert!(
+        error.contains("acme/dev holds `AGENTS.override.md`: pi and Codex load that in place of"),
         "{error}"
     );
 }

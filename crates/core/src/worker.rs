@@ -125,8 +125,7 @@ impl DispatchOrder {
         }
     }
 
-    #[spec(fn(self: &mut Self[@o])
-        ensures self: Self[o.by_hand, true, o.chosen, o.placed, o.briefed, o.started, o.ready])]
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[{ claimed: true, ..o }])]
     fn claim(&mut self) {
         self.steps.push(DispatchStep::Claim);
         self.claimed = true;
@@ -135,7 +134,7 @@ impl DispatchOrder {
     /// What survived is read under the claim: a claim lost costs no read, and
     /// nobody else is changing what is found.
     #[spec(fn(self: &mut Self[@o]) requires o.claimed && !o.by_hand
-        ensures self: Self[o.by_hand, o.claimed, true, o.placed, o.briefed, o.started, o.ready])]
+        ensures self: Self[{ chosen: true, ..o }])]
     fn survey(&mut self) {
         self.steps.push(DispatchStep::Survey);
         self.chosen = true;
@@ -145,7 +144,7 @@ impl DispatchOrder {
     /// anything is put in place for the new one: a continuation tears nothing
     /// down.
     #[spec(fn(self: &mut Self[@o]) requires o.by_hand && o.claimed && !o.placed
-        ensures self: Self[o.by_hand, o.claimed, true, o.placed, o.briefed, o.started, o.ready])]
+        ensures self: Self[{ chosen: true, ..o }])]
     fn discard(&mut self) {
         self.steps.push(DispatchStep::Discard);
         self.chosen = true;
@@ -154,7 +153,7 @@ impl DispatchOrder {
     /// No worktree for an issue the fleet does not hold, or before it is
     /// known what the worker starts from.
     #[spec(fn(self: &mut Self[@o]) requires o.claimed && o.chosen
-        ensures self: Self[o.by_hand, o.claimed, o.chosen, true, o.briefed, o.started, o.ready])]
+        ensures self: Self[{ placed: true, ..o }])]
     fn place(&mut self) {
         self.steps.push(DispatchStep::Place);
         self.steps.push(DispatchStep::RecordBranch);
@@ -162,8 +161,7 @@ impl DispatchOrder {
     }
 
     /// The brief names the worktree: it is written once there is one.
-    #[spec(fn(self: &mut Self[@o]) requires o.placed
-        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, true, o.started, o.ready])]
+    #[spec(fn(self: &mut Self[@o]) requires o.placed ensures self: Self[{ briefed: true, ..o }])]
     fn brief(&mut self) {
         self.steps.push(DispatchStep::Brief);
         self.briefed = true;
@@ -171,23 +169,20 @@ impl DispatchOrder {
 
     /// A worker is started only on a claim held, in a worktree, with its brief waiting.
     #[spec(fn(self: &mut Self[@o]) requires o.claimed && o.placed && o.briefed
-        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, o.briefed, true, o.ready])]
+        ensures self: Self[{ started: true, ..o }])]
     fn start(&mut self) {
         self.steps.push(DispatchStep::Start);
         self.started = true;
     }
 
-    #[spec(fn(self: &mut Self[@o]) requires o.started
-        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, o.briefed, o.started, true])]
+    #[spec(fn(self: &mut Self[@o]) requires o.started ensures self: Self[{ ready: true, ..o }])]
     fn await_ready(&mut self) {
         self.steps.push(DispatchStep::AwaitReady);
         self.ready = true;
     }
 
     /// A prompt typed at an agent that is not ready is lost.
-    #[spec(fn(self: &mut Self[@o]) requires o.ready
-        ensures self: Self[o.by_hand, o.claimed, o.chosen, o.placed, o.briefed, o.started,
-            o.ready])]
+    #[spec(fn(self: &mut Self[@o]) requires o.ready)]
     fn deliver(&mut self) {
         self.steps.push(DispatchStep::Deliver);
     }

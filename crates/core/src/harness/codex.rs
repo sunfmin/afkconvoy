@@ -5,7 +5,10 @@
 //! user's configuration out, so it is given a user directory of the fleet's
 //! own (docs/adr/0013). It writes its configuration file in that directory
 //! by itself: what the fleet says to it is said on the line that starts it,
-//! and in no file — the hook that asks the guard among it.
+//! and in no file — the hook that asks the guard among it. It loads rules
+//! from the directory it starts in and from no directory added to it: a
+//! role's it is told to load from the file every harness does, and the repo's
+//! own and the team rules are said on the line too.
 
 use std::collections::BTreeMap;
 
@@ -16,7 +19,8 @@ use serde::{Deserialize, Deserializer};
 use super::{Held, Kept, Link};
 use crate::guard::Call;
 use crate::line::Line;
-use crate::role::Start;
+use crate::role::{Rules, Start, Told};
+use crate::team::RULES;
 
 pub(super) const NAME: &str = "Codex";
 pub(super) const KEY: &str = "codex";
@@ -77,6 +81,33 @@ const BEFORE_A_CALL: &str = "PreToolUse";
 /// Keeps Codex from carrying what one worker learned to the next on this
 /// host: a role is what its repo says, the same on every host.
 const NO_MEMORY: &str = "features.memories=false";
+
+/// The files Codex loads the rules of a directory from before any other,
+/// and in their place: it loads the first of them a directory holds.
+pub(super) const BEFORE_THE_RULES: [&str; 2] = ["AGENTS.override.md", "AGENTS.md"];
+/// The key of Codex's configuration that names the files it loads a
+/// directory's rules from where the directory holds none of
+/// `BEFORE_THE_RULES`: the one every harness loads them from. A name with a
+/// path in it is left out by Codex, so this reaches no other directory.
+const RULES_FILES: &str = "project_doc_fallback_filenames";
+/// Has Codex load the rules of the directory it starts in alone. It loads
+/// those of every directory from the root of a project down, and with no
+/// file that marks a root there is none: nothing above a role's directory is
+/// the role's (docs/adr/0014).
+const NO_ROOT: &str = "project_root_markers=[]";
+/// The key of Codex's configuration whose text is put before the model as a
+/// developer's: the one way Codex is given rules from outside the directory
+/// it starts in.
+const TOLD: &str = "developer_instructions";
+/// The files the repo's own rules are read from, for Codex: the first of
+/// them the worktree holds, as pi reads a directory's.
+pub(super) const REPO_RULES: [&str; 2] = ["AGENTS.md", RULES];
+/// What a worker is told before the rules it is told, of what they are.
+const TOLD_OPENS: &str = "afkconvoy started you, and gives you the rules below. You work under \
+     them as you do under your role's, which are those of the directory you started in.";
+/// What each set of rules a worker is told is said to be.
+const REPO_S_OWN: &str = "The repo's own rules";
+const TEAM_S: &str = "The team rules";
 
 /// What Codex runs the guard as, around the line that runs it. Codex takes a
 /// hook for refusing only when it exits `REFUSED` having said why, and makes
@@ -154,6 +185,30 @@ fn guard_hook(guard: &str) -> String {
     format!("{HOOKS}={{{BEFORE_A_CALL}=[{{hooks=[{{type=\"command\",command={asked}}}]}}]}}")
 }
 
+/// The file Codex is told to load a directory's rules from, as one key of
+/// its configuration.
+fn rules_files() -> String {
+    format!("{RULES_FILES}=[{}]", toml_text(RULES))
+}
+
+/// One set of rules a worker is told, said to be `whose`, with the file it
+/// was read from.
+fn told_rules(whose: &str, rules: Rules) -> String {
+    format!("\n\n# {whose}: {}\n\n<rules>\n{}\n</rules>", rules.file, rules.text.trim_end())
+}
+
+/// The rules `told`, each said to be what it is, as one key of Codex's
+/// configuration. `None` when there are none to tell.
+fn told(told: &Told) -> Option<String> {
+    let repo = told.repo.map(|rules| told_rules(REPO_S_OWN, rules));
+    let team = told.team.map(|rules| told_rules(TEAM_S, rules));
+    if repo.is_none() && team.is_none() {
+        return None;
+    }
+    let text = format!("{TOLD_OPENS}{}{}", repo.unwrap_or_default(), team.unwrap_or_default());
+    Some(format!("{TOLD}={}", toml_text(&text)))
+}
+
 /// `line`, which exports a worker's environment, with what Codex reads from
 /// it: the user directory the host keeps.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
@@ -163,8 +218,9 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 
 /// `line`, which starts the worker launch command, with what Codex is given
 /// to put a worker in its role: the worktree added, the review of its hooks
-/// and the question about its role's directory answered, the guard, no
-/// memory, and the stage's model.
+/// and the question about its role's directory answered, the role's rules
+/// and none from above them, the repo's own and the team rules, the guard,
+/// no memory, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
     let line = line
@@ -178,6 +234,19 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(CONFIG)
         .fixed(" ")
         .word(&trusted(start.role_dir))
+        .fixed(" ")
+        .fixed(CONFIG)
+        .fixed(" ")
+        .word(&rules_files())
+        .fixed(" ")
+        .fixed(CONFIG)
+        .fixed(" ")
+        .word(NO_ROOT);
+    let line = match told(&start.told) {
+        Some(told) => line.fixed(" ").fixed(CONFIG).fixed(" ").word(&told),
+        None => line,
+    };
+    let line = line
         .fixed(" ")
         .fixed(CONFIG)
         .fixed(" ")
@@ -261,7 +330,7 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
 mod tests {
     use super::*;
     use crate::harness::Harness;
-    use crate::role::{Facts, On};
+    use crate::role::{Facts, On, Told};
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
@@ -271,6 +340,7 @@ mod tests {
             model,
             guard: "/bin/afkconvoy guard",
             kept: "/cache/harness/codex",
+            told: Told::default(),
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },
                 role: "dev",
@@ -300,6 +370,8 @@ mod tests {
              codex --dangerously-bypass-approvals-and-sandbox --add-dir '/wt/issue 7' \
              --dangerously-bypass-hook-trust \
              --config 'projects={\"/copies/acme/dev/abc\"={trust_level=\"trusted\"}}' \
+             --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
+             --config 'project_root_markers=[]' \
              --config 'hooks={PreToolUse=[{hooks=[{type=\"command\",command=\"said=$(/bin/afkconvoy \
              guard 2>&1 >/dev/null) && exit 0; printf '\\''%s\\\\n'\\'' \\\"${said:-afkconvoy \
              guard: it could not be asked}\\\" >&2; exit 2\"}]}]}' \
@@ -327,6 +399,44 @@ mod tests {
         let hook = guard_hook(odd.guard);
         assert!(hook.contains(r#"command="said=$(/it's \"here\"/afkconvoy guard 2>&1 "#), "{hook}");
         assert_eq!(toml_text("a\tb\u{7f}"), r#""a\u0009b\u007F""#);
+    }
+
+    #[test]
+    fn the_repo_s_own_rules_and_the_team_rules_are_told_each_said_to_be_what_it_is() {
+        let repo = Rules { file: "/wt/issue 7/AGENTS.md", text: "Run `make`.\nIt's \"so\".\n\n" };
+        let team = Rules { file: "/copies/acme/team/def/CLAUDE.md", text: "Be kind." };
+        let told = |told: Told| {
+            let line = Harness::Codex.in_role(STOCK, &Start { told, ..start(None) });
+            let (before, after) = line.split_once(" --config 'project_root_markers=[]' ").unwrap();
+            assert!(before.ends_with("=[\"CLAUDE.md\"]'"), "{line}");
+            after.split_once("--config 'hooks=").unwrap().0.to_string()
+        };
+        // A repo with no rules of its own, and a team with none: nothing is
+        // told, and the worker starts all the same.
+        assert_eq!(told(Told::default()), "");
+        assert_eq!(
+            told(Told { repo: Some(repo), team: Some(team) }),
+            format!(
+                "--config 'developer_instructions=\"{TOLD_OPENS}\\u000A\\u000A\
+                 # The repo'\\''s own rules: /wt/issue 7/AGENTS.md\\u000A\\u000A\
+                 <rules>\\u000ARun `make`.\\u000AIt'\\''s \\\"so\\\".\\u000A</rules>\\u000A\\u000A\
+                 # The team rules: /copies/acme/team/def/CLAUDE.md\\u000A\\u000A\
+                 <rules>\\u000ABe kind.\\u000A</rules>\"' ",
+                TOLD_OPENS = TOLD_OPENS.replace('\'', "'\\''")
+            )
+        );
+        let one = told(Told { repo: None, team: Some(team) });
+        assert!(one.contains("# The team rules: ") && !one.contains("own rules"), "{one}");
+        let one = told(Told { repo: Some(repo), team: None });
+        assert!(one.contains("s own rules: ") && !one.contains("The team rules"), "{one}");
+    }
+
+    #[test]
+    fn a_role_holds_no_file_codex_would_load_in_place_of_its_rules() {
+        assert_eq!(Harness::Codex.before_the_rules(), ["AGENTS.override.md", "AGENTS.md"]);
+        // The repo's own rules are read as pi reads a directory's.
+        assert_eq!(Harness::Codex.told(), ["AGENTS.md", RULES]);
+        assert!(Harness::Pi.told().is_empty() && Harness::ClaudeCode.told().is_empty());
     }
 
     #[test]
