@@ -13,7 +13,7 @@ use crate::wake::wake;
 
 /// The fleet locks standing on GitHub now, lowest number first.
 pub fn standing_locks(gh: &GitHub, config: &Config) -> Result<Vec<u64>> {
-    Ok(standing(&gh.open_issues()?, config))
+    Ok(standing(&gh.open_issues()?.rows, config))
 }
 
 /// `afkconvoy lock --issue <n>`: raise a fleet lock on an open issue — leave

@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use crate::claims::Scan;
 use crate::copies::Copies;
 use crate::fleet::Fleet;
-use crate::gh::{Comment, GitHub};
+use crate::gh::{Comment, GitHub, OpenIssues};
 use crate::git::Repo;
 use crate::intake::came_in;
 use crate::team::{Kept, keep};
@@ -254,10 +254,13 @@ pub struct Flows {
 }
 
 impl Flows {
-    /// Reads the team `fleet`'s repo is bound to and the stage records of
-    /// each of `flowing`. A team that does not load is not an error here:
-    /// the issues it leaves without a position are said so, one by one.
-    pub fn read(fleet: &Fleet, flowing: &[&Issue]) -> Result<Flows> {
+    /// Reads the team `fleet`'s repo is bound to and, among the comments of
+    /// `open`, the stage records of each issue that carries a flow label. A
+    /// team that does not load is not an error here: the issues it leaves
+    /// without a position are said so, one by one.
+    pub fn read(fleet: &Fleet, open: &OpenIssues) -> Result<Flows> {
+        let flowing: Vec<&Issue> =
+            open.rows.iter().filter(|issue| !flows(&issue.labels).is_empty()).collect();
         let read = |bound: &&Bound| !flowing.is_empty() || !bound.patrols.is_empty();
         let Some(bound) = fleet.config.bound.as_ref().filter(read) else {
             return Ok(Flows { team: None, issues: vec![] });
@@ -267,8 +270,8 @@ impl Flows {
             .map_err(|error| format!("{error:#}"));
         let mut issues = vec![];
         for issue in flowing {
-            let comments = fleet.gh.comments(issue.number)?;
-            let (records, said) = records_in(&comments);
+            let comments = open.comments(issue.number);
+            let (records, said) = records_in(comments);
             let urls = said.iter().map(|comment| comment.url.clone()).collect();
             let ids = said.iter().map(|comment| comment.id).collect();
             let at = said.iter().map(|comment| comment.at).collect();

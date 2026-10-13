@@ -652,8 +652,8 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Doctor { host } => doctor::doctor(now, &host.unwrap_or_else(this_host)),
         Command::Plan { instance } => {
             probe::announce(&probe::startup(now, launch::foreseen().as_ref())?);
-            let fleet = Fleet::open(now)?;
-            let (set, flows) = fleet.rebuild(instance.as_ref())?;
+            let (fleet, open) = Fleet::read(now)?;
+            let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
             let mut plan = serde_json::to_value(set)?;
             if let Some(bound) = &fleet.config.bound {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
@@ -670,16 +670,16 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             tick::run(&mut me, &agent, &pacing, panel, || fixed_now.unwrap_or_else(clock))
         }
         Command::Panel { instance, host } => {
-            let fleet = Fleet::open(now)?;
+            let (fleet, open) = Fleet::read(now)?;
             let host = host.unwrap_or_else(this_host);
             let me = instance.map(|instance| Me { instance, host, now });
-            let (set, flows) = fleet.rebuild(me.as_ref().map(|me| &me.instance))?;
+            let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
             let shown = panel::read(&fleet, me.as_ref(), &set, &flows, &[]);
             Ok(Value::String(panel::render(&shown)))
         }
         Command::Tick { who, agent } => {
             let agent = agent.start(now)?;
-            Ok(tick::tick(&mut Fleet::open(now)?, &who.me(now), &agent)?.json())
+            Ok(tick::tick(&who.me(now), &agent)?.0.json())
         }
         Command::Gate { gate_timeout, train } => {
             let repo = Repo::here()?;

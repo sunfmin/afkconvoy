@@ -89,6 +89,14 @@ impl Repo {
     /// remote it writes no ref here and no FETCH_HEAD.
     pub fn fetched(&self, refname: &str) -> Result<Option<String>> {
         let Some(sha) = self.remote_sha(refname)? else { return Ok(None) };
+        self.bring(&sha, refname)?;
+        Ok(Some(sha))
+    }
+
+    /// Brings into this repo the commit `sha` the remote was seen to have at
+    /// `refname`, when it is not here yet. An error when the remote no longer
+    /// has it there.
+    pub fn bring(&self, sha: &str, refname: &str) -> Result<()> {
         let here = |repo: &Repo| -> Result<bool> {
             Ok(repo.try_git(&["cat-file", "-e", &format!("{sha}^{{commit}}")])?.ok)
         };
@@ -98,7 +106,7 @@ impl Repo {
                 bail!("{refname} moved on the remote while it was read — run this again");
             }
         }
-        Ok(Some(sha))
+        Ok(())
     }
 
     /// One git call that must succeed → its stdout as it came: for output whose
@@ -146,8 +154,36 @@ impl Repo {
     /// The sha the remote has for one ref, `None` if it has none. An error when
     /// the remote cannot be read at all.
     pub fn remote_sha(&self, refname: &str) -> Result<Option<String>> {
-        let listed = self.git(&["ls-remote", REMOTE, refname])?;
-        Ok(listed.split_whitespace().next().map(str::to_string))
+        let found = self.listed(&[refname])?.into_iter().find(|listed| listed.name == refname);
+        Ok(found.map(|listed| listed.sha))
+    }
+
+    /// Every ref the remote has that matches one of `patterns` — a ref's
+    /// name, or `<namespace>/*` — in one call, with no record read yet. An
+    /// error when the remote cannot be read.
+    fn listed(&self, patterns: &[&str]) -> Result<Vec<RemoteRecord>> {
+        let listed = self.git(&[&["ls-remote", REMOTE], patterns].concat())?;
+        let rows = listed.lines().filter_map(|row| row.split_once('\t'));
+        Ok(rows
+            .map(|(sha, name)| RemoteRecord {
+                name: name.to_string(),
+                sha: sha.to_string(),
+                subject: String::new(),
+            })
+            .collect())
+    }
+
+    /// The tip of the branch `base_branch` and every ref the fleet keeps, as
+    /// ONE listing of the remote saw them: what a rebuild reads of the remote,
+    /// all of it from one moment.
+    pub fn listing(&self, base_branch: &str) -> Result<Listing> {
+        let (every, base_ref) = (self.layout().every(""), format!("refs/heads/{base_branch}"));
+        let mut records = self.listed(&[&every, &base_ref])?;
+        let base = records.iter().find(|record| record.name == base_ref);
+        let base = base.map(|record| record.sha.clone());
+        records.retain(|record| record.name != base_ref);
+        self.read_records(&mut records, &every)?;
+        Ok(Listing { base_ref, base, records })
     }
 
     /// Every branch the remote has, by its short name. An error when the
@@ -168,21 +204,19 @@ impl Repo {
     /// Nothing is written to this checkout's refs or its FETCH_HEAD: worktrees
     /// share both, and a worker's command may be reading the remote meanwhile.
     pub fn remote_records(&self, pattern: &str) -> Result<Vec<RemoteRecord>> {
-        let listed = self.git(&["ls-remote", REMOTE, pattern])?;
-        let mut records: Vec<RemoteRecord> = listed
-            .lines()
-            .filter_map(|row| row.split_once('\t'))
-            .map(|(sha, name)| RemoteRecord {
-                name: name.to_string(),
-                sha: sha.to_string(),
-                subject: String::new(),
-            })
-            .collect();
+        let mut records = self.listed(&[pattern])?;
+        self.read_records(&mut records, pattern)?;
+        Ok(records)
+    }
+
+    /// Reads the record each of `records` carries: the subject of its commit,
+    /// fetched with everything `pattern` matches when it is not here yet.
+    fn read_records(&self, records: &mut [RemoteRecord], pattern: &str) -> Result<()> {
         if records.is_empty() {
-            return Ok(records);
+            return Ok(());
         }
         // The commits are usually here already: fetched by an earlier read.
-        let subjects = match self.subjects(&records)? {
+        let subjects = match self.subjects(records)? {
             Some(subjects) => subjects,
             None => {
                 self.git(&[
@@ -193,15 +227,15 @@ impl Repo {
                     REMOTE,
                     pattern,
                 ])?;
-                self.subjects(&records)?.unwrap_or_default()
+                self.subjects(records)?.unwrap_or_default()
             }
         };
-        for record in &mut records {
+        for record in records {
             // A ref that moved between the listing and the fetch reads as a
             // record nobody can read; the next read sees it where it is.
             record.subject = subjects.get(&record.sha).cloned().unwrap_or_default();
         }
-        Ok(records)
+        Ok(())
     }
 
     /// The subject of each record's commit by sha; `None` when a commit is not
@@ -224,6 +258,26 @@ pub struct RemoteRecord {
     pub name: String,
     pub sha: String,
     pub subject: String,
+}
+
+/// The base branch's tip and every ref of the fleet, as one listing of the
+/// remote saw them (`Repo::listing`).
+#[derive(Debug, Clone)]
+pub struct Listing {
+    /// The base branch's ref.
+    pub base_ref: String,
+    /// Its tip; `None` when the remote has no such branch.
+    pub base: Option<String>,
+    /// Every ref of the fleet, with the record its commit carries.
+    pub records: Vec<RemoteRecord>,
+}
+
+impl Listing {
+    /// The sha the fleet's ref `refname` was at, `None` if the remote had none.
+    pub fn sha(&self, refname: &str) -> Option<&str> {
+        let found = self.records.iter().find(|record| record.name == refname);
+        found.map(|record| record.sha.as_str())
+    }
 }
 
 const RECORD_IDENTITY: [(&str, &str); 4] = [

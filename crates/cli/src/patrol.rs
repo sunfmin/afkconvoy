@@ -7,7 +7,6 @@ use afkconvoy_core::patrol::{
     Row, Seen, Standing, broke, checkout_name, claim_key, failure_of, failure_report,
     failure_title, is_due, read_run, run_over, run_ref, write_run,
 };
-use afkconvoy_core::plan::Issue;
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start, flows, in_role};
 use afkconvoy_core::team::PRECEDENTS;
@@ -17,6 +16,7 @@ use anyhow::{Result, anyhow};
 use crate::claims::{Me, drop_run, take_run};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
+use crate::gh::OpenIssues;
 use crate::git::REMOTE;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
@@ -26,7 +26,7 @@ use crate::team::unknown_patrols;
 /// order it names them. A repo that names none, and one whose team does not
 /// load, has none to run: what is wrong with a team is `check`'s to say. A
 /// name the team has no patrol for is an error.
-pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue]) -> Result<Vec<Seen>> {
+pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>> {
     let Some(bound) = fleet.config.bound.as_ref().filter(|bound| !bound.patrols.is_empty()) else {
         return Ok(vec![]);
     };
@@ -38,9 +38,10 @@ pub fn seen(fleet: &Fleet, read: &Flows, issues: &[Issue]) -> Result<Vec<Seen>> 
     // An issue handed to a human left its workflow, and is open all the same.
     let escalate = &kept.team.escalate_label;
     let mut opened = read.opened();
+    let issues = &open.rows;
     for issue in issues {
         if flows(&issue.labels).is_empty() && issue.labels.contains(escalate) {
-            let comments = fleet.gh.comments(issue.number)?;
+            let comments = open.comments(issue.number);
             opened.extend(opened_by(comments.iter().map(|comment| comment.body.as_str())));
         }
     }

@@ -8,6 +8,7 @@ use afkconvoy_core::claims::{
     claim_ref, claim_steps, heartbeat_ref, over_ref, read_heartbeat, read_over, releasable,
     run_ref, write_heartbeat, write_over,
 };
+use afkconvoy_core::layout::Layout;
 use afkconvoy_core::patrol::{RUN_KIND, read_run};
 use afkconvoy_core::record::fleet_number;
 use anyhow::{Result, bail};
@@ -41,11 +42,17 @@ impl Scan {
     /// An error when the remote cannot be read: a fleet whose claims are
     /// unreadable must not look like one holding none.
     pub fn read(repo: &Repo) -> Result<Scan> {
+        let layout = repo.layout();
+        Ok(Scan::among(layout, repo.remote_records(&layout.every(""))?))
+    }
+
+    /// The claims, heartbeats and runs among `records`: the fleet's refs
+    /// under `layout`, as one read of the remote saw them.
+    pub fn among(layout: Layout, records: Vec<RemoteRecord>) -> Scan {
         let mut scan = Scan::default();
         // run key → the claim its worker declared over.
         let mut over: BTreeMap<String, String> = BTreeMap::new();
-        let layout = repo.layout();
-        for record in repo.remote_records(&layout.every(""))? {
+        for record in records {
             let Some(kept) = layout.kept(&record.name) else { continue };
             if let Some(name) = kept.strip_prefix(CLAIM_KIND) {
                 if let Some(number) = fleet_number(name) {
@@ -73,7 +80,7 @@ impl Scan {
             run.over = over.get(&run.key) == Some(&run.sha);
         }
         scan.claims.sort_by_key(|claim| claim.number);
-        Ok(scan)
+        scan
     }
 
     pub fn claim_of(&self, number: u64) -> Option<&Claim> {
