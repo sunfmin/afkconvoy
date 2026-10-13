@@ -28,6 +28,7 @@ macro_rules! topic {
 pub const TOPICS: &[Topic] = &[
     topic!("concepts", "one issue from intake to landing, and the four things that carry it"),
     topic!("roles", "what a role is, what goes where in one, and the four kinds of text"),
+    topic!("example", "the team `scaffold --example hospital` writes, read file by file"),
     topic!("humans", "every way the fleet stops for a human, and the command that answers"),
     topic!("troubleshooting", "a symptom, its cause and its fix: each finding, each refusal"),
     Topic {

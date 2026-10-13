@@ -1,6 +1,6 @@
-//! `scaffold`: writes the skeleton of a team with its roles, or of one role —
-//! files `check` accepts as they are — and, when asked, creates the repo on
-//! GitHub and pushes the skeleton to it.
+//! `scaffold`: writes the skeleton of a team with its roles, or of one role,
+//! or a whole example team — files `check` accepts as they are — and, when
+//! asked, creates the repo on GitHub and pushes what it wrote to it.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -62,6 +62,44 @@ pub fn named(text: &str) -> Result<Named, String> {
         None => None,
     };
     Ok(Named { name: name.to_string(), at })
+}
+
+/// A whole team the binary holds, written out by `--example <name>`: its
+/// files, each with its path in the team's directory, as one repo holds a
+/// team — the team at the root, each role under `roles/`.
+pub struct Example {
+    pub name: &'static str,
+    pub files: &'static [(&'static str, &'static str)],
+}
+
+/// Every example there is: the directories of `scaffold/examples/`, which the
+/// build script lists.
+pub const EXAMPLES: &[Example] = include!(concat!(env!("OUT_DIR"), "/examples.rs"));
+
+/// The names `--example` takes.
+pub fn example_names() -> Vec<&'static str> {
+    EXAMPLES.iter().map(|example| example.name).collect()
+}
+
+/// The example called `name`.
+pub fn example(name: &str) -> Option<&'static Example> {
+    EXAMPLES.iter().find(|example| example.name == name)
+}
+
+impl Example {
+    /// Its files as they are written for a team whose directory is `root`, a
+    /// path from the root of its repo: the team file names each role by its
+    /// path from there (docs/adr/0014), and holds it as `./roles/<name>`.
+    fn files(&self, root: &str) -> Vec<(String, String)> {
+        let written = |path: &str, text: &str| {
+            if path == TEAM_FILE && !root.is_empty() {
+                text.replace(&format!(": ./{ROLES}/"), &format!(": ./{root}/{ROLES}/"))
+            } else {
+                text.to_string()
+            }
+        };
+        self.files.iter().map(|(path, text)| (path.to_string(), written(path, text))).collect()
+    }
 }
 
 /// Where a skeleton's repo is created: its name on GitHub, and who may see it.
@@ -180,16 +218,41 @@ fn team_line(dir: &Path, create: Option<&Create>) -> Option<String> {
     }
 }
 
-/// Writes the skeleton of `what` in `dir` — which must not be there yet, or be
-/// empty: nothing is overwritten — and, with `create`, commits it there and
-/// creates its repo on GitHub from it → what was written.
-pub fn scaffold(what: What, dir: &Path, roles: &[Named], create: Option<&Create>) -> Result<Value> {
+/// Writes `text` as `file`, which a harness is to run when it starts with a
+/// `#!`: a role's hook is a program.
+fn write(file: &Path, text: &str) -> std::io::Result<()> {
+    std::fs::write(file, text)?;
+    #[cfg(unix)]
+    if text.starts_with("#!") {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
+}
+
+/// Writes the skeleton of `what` in `dir`, or the team `example` whole — `dir`
+/// must not be there yet, or be empty: nothing is overwritten — and, with
+/// `create`, commits it there and creates its repo on GitHub from it → what
+/// was written.
+pub fn scaffold(
+    what: What,
+    dir: &Path,
+    roles: &[Named],
+    example: Option<&Example>,
+    create: Option<&Create>,
+) -> Result<Value> {
     let dir = resolved(dir)?;
     let (files, line) = match what {
         What::Role if !roles.is_empty() => {
             bail!("--role is a team's: a role's skeleton names no role")
         }
+        What::Role if example.is_some() => {
+            bail!("--example is a team's: an example is a whole team, with its roles")
+        }
         What::Role => (role_files(), team_line(&dir, create)),
+        What::Team if example.is_some() && !roles.is_empty() => {
+            bail!("--example names its own roles: give --role, or --example, not both")
+        }
         What::Team => {
             // The repo created is the team's alone; without one the team is
             // a directory of the checkout it is written in, if it is in one.
@@ -197,7 +260,11 @@ pub fn scaffold(what: What, dir: &Path, roles: &[Named], create: Option<&Create>
                 Some(_) => String::new(),
                 None => in_checkout(&dir).unwrap_or_default(),
             };
-            (team_files(roles, &root, create.map(|create| &create.repo))?, None)
+            let files = match example {
+                Some(example) => example.files(&root),
+                None => team_files(roles, &root, create.map(|create| &create.repo))?,
+            };
+            (files, None)
         }
     };
     let taken = match std::fs::read_dir(&dir) {
@@ -213,10 +280,15 @@ pub fn scaffold(what: What, dir: &Path, roles: &[Named], create: Option<&Create>
         let parent = file.parent().unwrap_or(&dir);
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
-        std::fs::write(&file, text).with_context(|| format!("cannot write {}", file.display()))?;
+        write(&file, text).with_context(|| format!("cannot write {}", file.display()))?;
     }
     if let Some(create) = create {
-        self::create(what, &dir, create).with_context(|| {
+        let message = match (what, example) {
+            (_, Some(example)) => format!("The example team `{}`", example.name),
+            (What::Team, None) => "The skeleton of a team".to_string(),
+            (What::Role, None) => "The skeleton of a role".to_string(),
+        };
+        self::create(&message, &dir, create).with_context(|| {
             format!("the skeleton is written in {}, and its repo is not created", dir.display())
         })?;
     }
@@ -230,14 +302,11 @@ pub fn scaffold(what: What, dir: &Path, roles: &[Named], create: Option<&Create>
     }))
 }
 
-/// Makes `dir` a git repo holding one commit, and creates `create.repo` on
-/// GitHub from it: `gh` adds it as the remote and pushes.
-fn create(what: What, dir: &Path, create: &Create) -> Result<()> {
+/// Makes `dir` a git repo holding one commit, whose message is `message`, and
+/// creates `create.repo` on GitHub from it: `gh` adds it as the remote and
+/// pushes.
+fn create(message: &str, dir: &Path, create: &Create) -> Result<()> {
     let repo = Repo { dir: dir.to_path_buf() };
-    let message = match what {
-        What::Team => "The skeleton of a team",
-        What::Role => "The skeleton of a role",
-    };
     repo.git(&["init", "--quiet"])?;
     repo.git(&["add", "--all"])?;
     repo.git(&["commit", "--quiet", "-m", message])?;
