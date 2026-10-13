@@ -273,6 +273,9 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
         }
     }
     let held = team.held(default, &listed);
+    for note in &held.notes {
+        eprintln!("note: {note}");
+    }
     let mut faults = held.faults;
     for (model, by, other) in &held.elsewhere {
         eprintln!(
@@ -502,9 +505,31 @@ fn role_dir(copy: &Copy, dir: &RepoDir, team: Option<&RepoDir>) -> Result<RoleDi
             above: above(copy, dir, team),
             limits: limits(&root)?,
             in_place: in_place.collect(),
+            own_skills: own_skills(&root)?,
         })
     };
     read().map_err(|error: anyhow::Error| Unread::Refused(format!("{error:#}")))
+}
+
+/// The skills the role whose directory is `root` holds where a harness finds
+/// them by itself, for each harness it holds such a directory for
+/// (`copies::own_skills`).
+fn own_skills(root: &Path) -> Result<Vec<(Harness, Vec<String>)>> {
+    let mut own = vec![];
+    for harness in Harness::ALL {
+        let dirs = copies::own_skills(root, harness);
+        if dirs.is_empty() {
+            continue;
+        }
+        let mut skills = vec![];
+        for dir in dirs {
+            skills.extend(Tree { dir: root.to_path_buf() }.list(dir)?);
+        }
+        skills.sort();
+        skills.dedup();
+        own.push((harness, skills));
+    }
+    Ok(own)
 }
 
 /// The harnesses the role whose directory is `root` holds limits for: what
@@ -637,10 +662,11 @@ impl Kept {
     }
 
     /// The copy of the directory of `role`, and of nothing else of its repo:
-    /// what a worker in it starts in, taken out of the copy of its repo
-    /// unless one of that commit is here (docs/adr/0014). `Unreached` of a
-    /// role GitHub could not be reached for.
-    pub fn role(&self, role: &team::Role) -> Result<Copy> {
+    /// what a worker of `harness` in it starts in (`Copies::role`), taken
+    /// out of the copy of its repo unless one of that commit is here
+    /// (docs/adr/0014). `Unreached` of a role GitHub could not be reached
+    /// for.
+    pub fn role(&self, role: &team::Role, harness: Harness) -> Result<Copy> {
         let repo = &role.dir.repo;
         if let Some((_, unreached)) = self.roles.unreached.iter().find(|(read, _)| read == repo) {
             return Err(unreached.clone().into());
@@ -648,7 +674,7 @@ impl Kept {
         let mut copies = self.roles.copies.iter();
         let fetched = copies.find(|(read, copy)| read == repo && copy.commit == role.commit);
         let (_, fetched) = fetched.ok_or_else(|| anyhow!("no copy of {repo} was kept"))?;
-        self.copies.role(fetched, &role.dir)
+        self.copies.role(fetched, &role.dir, harness)
     }
 }
 

@@ -8,7 +8,11 @@
 //! and in no file — the hook that asks the guard among it. It loads rules
 //! from the directory it starts in and from no directory added to it: a
 //! role's it is told to load from the file every harness does, and the repo's
-//! own and the team rules are said on the line too.
+//! own and the team rules are said on the line too. It finds skills in
+//! directories of its own and not where a role's are: the fleet's copy of a
+//! role links the one to the other. No flag has it look nowhere else, so it
+//! also loads the skills of the host user's home, wherever its user directory
+//! is: the one thing of the host user's a worker is left with (docs/adr/0013).
 
 use std::collections::BTreeMap;
 
@@ -73,6 +77,15 @@ const BEFORE_A_CALL: &str = "PreToolUse";
 /// Keeps Codex from carrying what one worker learned to the next on this
 /// host: a role is what its repo says, the same on every host.
 const NO_MEMORY: &str = "features.memories=false";
+
+/// Keeps out the skills Codex carries itself: a role's skills are what its
+/// directory says. It is all of its own discovery of skills Codex can be told
+/// to leave out.
+const NO_CARRIED_SKILLS: &str = "skills.bundled.enabled=false";
+/// The directories of the one it starts in where Codex finds skills. A role's
+/// are in neither (`team::SKILLS`): the fleet's copy of a role that holds
+/// none of these links the first to the role's skills.
+pub(super) const SKILLS: [&str; 2] = [".agents/skills", ".codex/skills"];
 
 /// The files Codex loads the rules of a directory from before any other,
 /// and in their place: it loads the first of them a directory holds.
@@ -212,7 +225,7 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 /// to put a worker in its role: the worktree added, the review of its hooks
 /// and the question about its role's directory answered, the role's rules
 /// and none from above them, the repo's own and the team rules, the guard,
-/// no memory, and the stage's model.
+/// no memory, none of the skills it carries, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
     let line = line
@@ -246,7 +259,11 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(CONFIG)
         .fixed(" ")
-        .fixed(NO_MEMORY);
+        .fixed(NO_MEMORY)
+        .fixed(" ")
+        .fixed(CONFIG)
+        .fixed(" ")
+        .fixed(NO_CARRIED_SKILLS);
     match start.model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
@@ -334,7 +351,8 @@ mod tests {
              --config 'hooks={PreToolUse=[{hooks=[{type=\"command\",command=\"said=$(/bin/afkconvoy \
              guard 2>&1 >/dev/null) && exit 0; printf '\\''%s\\\\n'\\'' \\\"${said:-afkconvoy \
              guard: it could not be asked}\\\" >&2; exit 2\"}]}]}' \
-             --config features.memories=false --model 'gpt-5.5'"
+             --config features.memories=false --config skills.bundled.enabled=false \
+             --model 'gpt-5.5'"
         );
     }
 
@@ -350,7 +368,8 @@ mod tests {
         assert!(line.starts_with("cd '/it'\\''s \"here\"/a\\b/$HOME' && export "), "{line}");
         assert!(line.contains(" export CODEX_HOME='/it'\\''s kept/$HOME' "), "{line}");
         assert!(line.contains(" && kim  --search --add-dir '/wt/issue 7' "), "{line}");
-        assert!(line.ends_with(" --config features.memories=false"), "{line}");
+        let ends = " --config features.memories=false --config skills.bundled.enabled=false";
+        assert!(line.ends_with(ends), "{line}");
         assert_eq!(
             trusted(odd.role_dir),
             r#"projects={"/it's \"here\"/a\\b/$HOME"={trust_level="trusted"}}"#
@@ -396,6 +415,12 @@ mod tests {
         // The repo's own rules are read as pi reads a directory's.
         assert_eq!(Harness::Codex.told(), ["AGENTS.md", RULES]);
         assert!(Harness::Pi.told().is_empty() && Harness::ClaudeCode.told().is_empty());
+    }
+
+    #[test]
+    fn codex_finds_skills_in_directories_of_its_own_and_no_other_harness_does() {
+        assert_eq!(Harness::Codex.skills(), [".agents/skills", ".codex/skills"]);
+        assert!(Harness::Pi.skills().is_empty() && Harness::ClaudeCode.skills().is_empty());
     }
 
     #[test]
