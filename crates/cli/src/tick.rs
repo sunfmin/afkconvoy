@@ -180,6 +180,12 @@ impl Ticked {
     /// One step as an answer names it: what it does, and the issue or the
     /// patrol it is on. A step on a proposal names the issue that was ruled
     /// on.
+    /// The stage an advance that handed `issue` on left it at.
+    fn advanced_to(&self, issue: u64) -> Option<String> {
+        let handed_on = (TickStep::Advance { issue }, Outcome::HandedOn);
+        self.pass.did.contains(&handed_on).then(|| self.flows.at(issue)).flatten()
+    }
+
     fn named(&self, step: TickStep) -> Value {
         let (word, issue) = words(step);
         let mut named = json!({"do": word, "issue": issue.or(self.proposal(step))});
@@ -223,7 +229,7 @@ impl Ticked {
             .iter()
             .map(|(step, outcome)| {
                 let outcome = match outcome {
-                    Outcome::Done => "done",
+                    Outcome::Done | Outcome::HandedOn => "done",
                     Outcome::Nudged => "nudged",
                     Outcome::Continued => "continued",
                     Outcome::Restarted => "restarted",
@@ -234,6 +240,11 @@ impl Ticked {
                 };
                 let mut did = self.named(*step);
                 did["outcome"] = json!(outcome);
+                if let TickStep::Advance { issue } = step
+                    && let Some(stage) = self.advanced_to(*issue)
+                {
+                    did["stage"] = json!(stage);
+                }
                 did
             })
             .collect();
@@ -272,8 +283,14 @@ impl Ticked {
                 .pass
                 .did
                 .iter()
-                .filter(|(step, outcome)| words(*step).0 == wanted && *outcome == Outcome::Done)
-                .filter_map(|(step, _)| words(*step).1.map(|issue| format!("#{issue}")))
+                .filter(|(step, outcome)| {
+                    words(*step).0 == wanted && matches!(outcome, Outcome::Done | Outcome::HandedOn)
+                })
+                .filter_map(|(step, _)| words(*step).1)
+                .map(|issue| match self.advanced_to(issue) {
+                    Some(stage) if wanted == "advance" => format!("#{issue} → {stage}"),
+                    _ => format!("#{issue}"),
+                })
                 .collect();
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));

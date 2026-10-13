@@ -1,7 +1,8 @@
 //! The tick walks an issue through the stages of its workflow (docs/adr/0010):
-//! a verdict ends its stage's claim, and the next tick starts the stage the
-//! records then put the issue at — in the same worktree, under a claim of its
-//! own, with what was declared so far as the worker's history.
+//! a verdict ends its stage's claim, and the tick that reads it starts the
+//! stage the records then put the issue at — in the same worktree, under a
+//! claim of its own, with what was declared so far as the worker's history.
+//! With no slot free, that start is a later tick's.
 
 mod common;
 
@@ -160,16 +161,16 @@ fn a_pass_starts_the_next_stage_s_worker_in_the_same_worktree_and_done_ends_the_
     assert_eq!(did(&tick(&world, 1090)), [] as [&str; 0]);
     assert_eq!(world.claims(), [(7, "alpha".to_string())]);
 
-    // A `pass` ends the stage's claim, and the issue is on the frontier at the
-    // stage that follows, its PR open or not.
+    // A `pass` ends the stage's claim, and the same tick starts a worker in
+    // the role of the stage that follows, where the last one worked, under a
+    // claim of its own — the issue's PR open or not.
     declare(&world, 7, "build", "pass", &["--text", "Built: seven.txt holds it."]);
-    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done"]);
-    assert_eq!(world.claims(), []);
-    assert!(world.boards(7)[0].contains("Its stage declared its verdict"), "{:?}", world.boards(7));
-    assert_eq!(frontier(&world), [(7, "review".to_string())]);
-
-    // The next tick starts a worker in that stage's role, where the last one worked.
-    assert_eq!(did(&tick(&world, 1270)), ["dispatch 7 done"]);
+    let advanced = tick(&world, 1180);
+    assert_eq!(did(&advanced), ["advance 7 done", "dispatch 7 done"]);
+    let advance = advanced["did"].as_array().unwrap().iter().find(|step| step["do"] == "advance");
+    assert_eq!(advance.unwrap()["stage"], "review", "{advanced}");
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+    assert_eq!(frontier(&world), []);
     assert_eq!(worktree(&world, 7), dir);
     let started = workers(&world, &dir);
     assert_eq!(started.len(), 1, "the worker before it is gone: {started:?}");
@@ -180,9 +181,9 @@ fn a_pass_starts_the_next_stage_s_worker_in_the_same_worktree_and_done_ends_the_
     assert!(told.contains("- `build` declared `pass` — https://gh/c/"), "{told}");
     assert!(!told.contains("## Rework"), "{told}");
 
-    // The tick after a start shows the claim on the status board; one more
-    // over an unchanged world does nothing.
-    assert_eq!(did(&tick(&world, 1300)), [] as [&str; 0]);
+    // The next tick has nothing to do for the issue, and one over an
+    // unchanged world writes nothing.
+    assert_eq!(did(&tick(&world, 1270)), [] as [&str; 0]);
     world.gh_calls();
     assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
     let wrote: Vec<_> = world
@@ -211,12 +212,12 @@ fn a_reject_starts_the_stage_the_workflow_names_with_the_reason_in_its_brief() {
     tick(&world, 1000);
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
     tick(&world, 1090);
-    tick(&world, 1180);
     declare(&world, 7, "review", "reject", &["--text", "The empty list is not handled.\nAdd it."]);
-    assert_eq!(did(&tick(&world, 1270)), ["advance 7 done"]);
-    assert_eq!(frontier(&world), [(7, "build".to_string())]);
-
-    assert_eq!(did(&tick(&world, 1360)), ["dispatch 7 done"]);
+    // The tick that reads the `reject` starts the stage it sends the issue
+    // back to, and leaves the next tick nothing.
+    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done", "dispatch 7 done"]);
+    assert_eq!(frontier(&world), []);
+    assert_eq!(did(&tick(&world, 1270)), [] as [&str; 0]);
     let dir = worktree(&world, 7);
     assert!(workers(&world, &dir)[0].contains(" AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' "));
     let told = brief(&dir);
@@ -237,8 +238,8 @@ fn a_commit_left_by_a_stage_marked_as_writing_nothing_escalates_the_issue() {
         commit(&dir, "work.txt", "built\n");
         declare(&world, issue, "build", "pass", &["--text", "Built."]);
     }
-    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done", "advance 8 done"]);
-    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done", "dispatch 8 done"]);
+    let reviewing = ["advance 7 done", "dispatch 7 done", "advance 8 done", "dispatch 8 done"];
+    assert_eq!(did(&tick(&world, 1090)), reviewing);
 
     // The reviewer of 7 fixes what it found — past its guard, in a script —
     // and the reviewer of 8 only reads. Both pass.
@@ -382,6 +383,8 @@ fn a_record_naming_a_stage_the_workflow_no_longer_has_escalates_the_issue() {
     tick(&world, 1000);
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
     tick(&world, 1090);
+    // Nobody holds it: its `review` worker is gone, with its claim.
+    world.afk(&["release", "--issue", "7", "--instance", "alpha", "--host", "h1"]).ok();
 
     let team = world.root.join("github/acme/team");
     commit(&team, "workflows/feature.md", &FEATURE.replace("build", "make"));
@@ -404,16 +407,48 @@ fn every_stage_worker_takes_one_slot_of_concurrency() {
     assert_eq!(did(&first), ["dispatch 7 done"]);
     assert_eq!((&first["held"], &first["frontier_remaining"]), (&json!(1), &json!(1)));
 
-    // The slot a verdict frees goes to the frontier as it stood: #8, at its
-    // first stage. #7 waits at its next one, like any issue.
+    // The slot a verdict frees is its own issue's next stage's: #8, never
+    // started, waits on.
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
     let second = tick(&world, 1090);
-    assert_eq!(did(&second), ["advance 7 done", "dispatch 8 done"]);
-    assert_eq!(second["held"], 1);
-    let third = tick(&world, 1180);
-    assert_eq!(did(&third), [] as [&str; 0]);
-    assert_eq!((&third["held"], &third["frontier_remaining"]), (&json!(1), &json!(1)));
-    assert_eq!(frontier(&world), [(7, "review".to_string())]);
+    assert_eq!(did(&second), ["advance 7 done", "dispatch 7 done"]);
+    assert_eq!((&second["held"], &second["frontier_remaining"]), (&json!(1), &json!(1)));
+    assert_eq!(frontier(&world), [(8, "build".to_string())]);
+
+    // The end of its workflow leaves the slot to the frontier.
+    declare(&world, 7, "review", "pass", &["--text", "It reads well."]);
+    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done", "dispatch 8 done"]);
+}
+
+#[test]
+fn an_issue_advanced_with_no_slot_free_waits_ahead_of_the_issues_never_started() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done", "dispatch 8 done"]);
+
+    // The fleet is over its bound: one slot now, and two claims held.
+    let config = std::fs::read_to_string(world.clone.join("docs/agents/afkconvoy.md")).unwrap();
+    let narrowed = config.replace("concurrency: 2", "concurrency: 1");
+    write(&world.clone, "docs/agents/afkconvoy.md", &narrowed);
+    git(&world.clone, &["commit", "-q", "-am", "one worker at once"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.issue(5, &["flow:feature"]);
+
+    // #8's verdict frees a slot the bound does not leave free: its next
+    // stage waits on the frontier, ahead of #5, which nobody ever started.
+    declare(&world, 8, "build", "pass", &["--text", "Built."]);
+    let advanced = tick(&world, 1090);
+    assert_eq!(did(&advanced), ["advance 8 done"]);
+    assert_eq!((&advanced["held"], &advanced["frontier_remaining"]), (&json!(1), &json!(1)));
+    assert_eq!(frontier(&world), [(8, "review".to_string()), (5, "build".to_string())]);
+
+    // The slot #7 frees at the end of its workflow goes to #8.
+    declare(&world, 7, "build", "pass", &["--text", "Built."]);
+    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done", "dispatch 7 done"]);
+    declare(&world, 7, "review", "pass", &["--text", "It reads well."]);
+    assert_eq!(did(&tick(&world, 1270)), ["advance 7 done", "dispatch 8 done"]);
+    assert_eq!(frontier(&world), [(5, "build".to_string())]);
 }
 
 /// `FEATURE` under these breakers, its `build` naming a consult.
@@ -431,9 +466,10 @@ fn shown(world: &World) -> Value {
     world.afk(&["show", "--issue", "7"]).ok()
 }
 
-/// Walks issue 7 through `verdicts`, a worker each: a tick starts the one its
-/// position calls for, it declares the next verdict, and a tick carries that
-/// out. After each, the rework the tick acts on is what `rehearse` prints for
+/// Walks issue 7 through `verdicts`, a worker each: it declares the next
+/// verdict, and a tick carries that out and starts the worker the issue's
+/// position then calls for — a tick of its own starting the first, and the
+/// one after a park. After each, the rework the tick acts on is what `rehearse` prints for
 /// the same verdicts, and the issue is a human's exactly where `rehearse` says
 /// a breaker trips. `blocked` is by #3, which closes once the issue is parked.
 fn walk(world: &World, verdicts: &[&str]) -> Value {
@@ -441,12 +477,18 @@ fn walk(world: &World, verdicts: &[&str]) -> Value {
     let rehearsed = world.afk(&args).ok();
     let mut now = 1000;
     for (nth, verdict) in verdicts.iter().enumerate() {
-        assert_eq!(did(&tick(world, now)), ["dispatch 7 done"], "before verdict {nth}");
+        if !world.claims().iter().any(|(issue, _)| *issue == 7) {
+            assert_eq!(did(&tick(world, now)), ["dispatch 7 done"], "before verdict {nth}");
+        }
         let stage = shown(world)["position"]["stage"].as_str().unwrap().to_string();
         let text = format!("Verdict {nth}: `{stage}` says {verdict}.");
         let blocked_by: &[&str] = if *verdict == "blocked" { &["--blocked-by", "3"] } else { &[] };
         declare(world, 7, &stage, verdict, &[&["--text", &text][..], blocked_by].concat());
-        assert_eq!(did(&tick(world, now + 90)), ["advance 7 done"], "after verdict {nth}");
+        let carried = did(&tick(world, now + 90));
+        let held = world.claims().iter().any(|(issue, _)| *issue == 7);
+        let expected: &[&str] =
+            if held { &["advance 7 done", "dispatch 7 done"] } else { &["advance 7 done"] };
+        assert_eq!(carried, expected, "after verdict {nth}");
         if *verdict == "blocked" {
             world.close(3, "completed");
         }
@@ -551,7 +593,7 @@ fn running_again_after_a_park_counts_as_no_rework() {
     assert_eq!(read["rework"], json!({"had": 2, "left": 0}));
     assert_eq!(read["position"]["stage"], "build");
     assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
-    assert_eq!(did(&tick(&world, 5000)), ["dispatch 7 done"]);
+    assert!(workers(&world, &worktree(&world, 7))[0].contains(" AFKCONVOY_STAGE='build' "));
 }
 
 #[test]
@@ -561,7 +603,6 @@ fn a_breaker_found_on_an_issue_nobody_holds_is_escalated_with_its_rounds_too() {
     tick(&world, 1000);
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
     tick(&world, 1090);
-    tick(&world, 1180);
     declare(&world, 7, "review", "reject", &["--text", "Not yet."]);
     world.afk(&["release", "--issue", "7", "--instance", "alpha", "--host", "h1"]).ok();
     assert_eq!(excluded(&world, 7), "");
@@ -584,37 +625,56 @@ fn run(world: &World, now: &str, ticks: &str, pacing: &[&str]) -> (Vec<String>, 
 }
 
 #[test]
-fn run_starts_the_stage_a_verdict_leads_to_with_no_sleep() {
+fn run_starts_the_stage_a_verdict_leads_to_in_the_tick_that_reads_it() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
+
+    // Nothing is left for the tick after it: there is nothing to hurry for.
+    let (lines, _) = run(&world, "1090", "1", &["--second-ms", "0"]);
+    assert_eq!(
+        lines,
+        ["tick 1: advanced #7 → review · dispatched #7 · holding 1/2 · frontier 0 · next in 90s"]
+    );
+    assert!(workers(&world, &worktree(&world, 7))[0].contains(" AFKCONVOY_STAGE='review' "));
+    assert_eq!(did(&tick(&world, 1180)), [] as [&str; 0]);
+}
+
+#[test]
+fn run_starts_what_a_verdict_left_the_next_tick_with_no_sleep() {
+    // `build` names a consult: its `escalate` leaves a worker no stage's
+    // verdict starts in the tick that reads it.
+    let world = bound_to(&limited(3, 2), 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    declare(&world, 7, "build", "escalate", &["--text", "Which schema?"]);
 
     // Its seconds are real ones: a sleep between the two ticks is 90 of them.
     let (lines, took) = run(&world, "1090", "2", &[]);
     assert_eq!(
         lines,
         [
-            "tick 1: advanced #7 · holding 0/2 · frontier 0 · next now",
+            "tick 1: advanced #7 → build · holding 0/2 · frontier 0 · next now",
             "tick 2: dispatched #7 · holding 1/2 · frontier 0 · next in 90s",
         ]
     );
     assert!(took < Duration::from_secs(45), "the sleep was not skipped: {took:?}");
-    assert!(workers(&world, &worktree(&world, 7))[0].contains(" AFKCONVOY_STAGE='review' "));
+    assert!(workers(&world, &worktree(&world, 7))[0].contains(" AFKCONVOY_CONSULT='true' "));
 }
 
 #[test]
-fn run_sleeps_after_a_tick_that_gave_the_slot_a_verdict_freed_to_the_frontier() {
+fn run_gives_the_slot_a_verdict_freed_to_the_stage_it_led_to() {
     let world = bound(1);
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
     declare(&world, 7, "build", "pass", &["--text", "Built."]);
 
-    // #7's next stage has no slot to start in: there is nothing to hurry for.
+    // #8, never started, has no slot to start in.
     let (lines, _) = run(&world, "1090", "1", &["--second-ms", "0"]);
     assert_eq!(
         lines,
-        ["tick 1: advanced #7 · dispatched #8 · holding 1/1 · frontier 0 · next in 90s"]
+        ["tick 1: advanced #7 → review · dispatched #7 · holding 1/1 · frontier 1 · next in 90s"]
     );
 }

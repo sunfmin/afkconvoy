@@ -146,6 +146,12 @@ pub struct Mine {
     pub title: Option<String>,
     pub status: Status,
     pub pr: Option<u64>,
+    /// The stage a worker is due on, were the issue unclaimed: where the
+    /// frontier would hold it — at a stage a role performs, never for a
+    /// consult or the join. A claim that ends with its issue left there
+    /// (`tick::Outcome::HandedOn`) leaves that worker for the pass to start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -159,8 +165,10 @@ pub struct PeerClaim {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkingSet {
-    /// The issues a worker can be started on right now, lowest number first:
-    /// in a bound repo, each at the stage its stage records put it at.
+    /// The issues a worker can be started on right now: in a bound repo,
+    /// each at the stage its stage records put it at, those a stage has
+    /// already declared on ahead of those never started — work somebody
+    /// began. Lowest number first within each.
     pub frontier: Vec<Dispatchable>,
     /// A bound repo's unclaimed issues to hand to a human, each with the
     /// reason: a flow label that names no one workflow, or a position that
@@ -290,6 +298,9 @@ pub struct Observed<'a> {
     /// The claimed issues of a bound repo whose claim is a landing worker's
     /// (`stage_record::lands`). Empty in an unbound repo.
     pub landing: &'a [u64],
+    /// The open issues of a bound repo that have a stage record: a worker
+    /// was started on each before. Empty in an unbound repo.
+    pub begun: &'a [u64],
     /// The patrols the repo names (`patrol::Seen`), in its order. Empty in
     /// an unbound repo.
     pub patrols: &'a [patrol::Seen],
@@ -306,6 +317,35 @@ pub struct Observed<'a> {
 #[allow(clippy::implicit_saturating_sub)]
 pub fn free_slots(concurrency: usize, held: usize) -> usize {
     if held >= concurrency { 0 } else { concurrency - held }
+}
+
+/// What a bound repo's open issue calls for by what is due on it, whoever
+/// holds it. The one home of that rule: the frontier reads it, and so does
+/// what a claim of mine leaves to start once it ends.
+enum Call<'d> {
+    /// A worker is to be started at this stage — `land` for the join.
+    Start(String, &'d Due<'d>),
+    /// The issue is to be handed to a human, for this reason.
+    Human(String),
+    /// Nothing, for this reason.
+    Nothing(String),
+}
+
+fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
+    // Where its stage records put it decides. An open PR declares nothing.
+    match due.iter().find(|(number, _)| *number == issue.number).map(|(_, due)| due) {
+        Some(Due::Human(reason)) => Call::Human(reason.clone()),
+        Some(Due::Nothing(why)) => Call::Nothing(why.clone()),
+        Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_)) if issue.open_blockers > 0 => {
+            Call::Nothing(format!("{} open blocker(s)", issue.open_blockers))
+        }
+        Some(due @ Due::Lander(_)) => Call::Start(LAND.to_string(), due),
+        // A consult is started at the stage that asked it.
+        Some(due @ (Due::Worker(entry) | Due::Consult(entry))) => {
+            Call::Start(entry.stage.name.clone(), due)
+        }
+        None => Call::Nothing("its position was not read".to_string()),
+    }
 }
 
 /// Assembles the working set of the fleet instance `me` (`None`: of nobody —
@@ -347,30 +387,16 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         } else if claimed {
             "already claimed".to_string()
         } else if config.bound.is_some() {
-            // Where its stage records put it decides. An open PR declares nothing.
-            match seen.due.iter().find(|(due, _)| *due == number).map(|(_, due)| due) {
-                Some(Due::Human(reason)) => {
-                    set.escalating.push(Excluded { number, title, reason: reason.clone() });
+            match call(issue, seen.due) {
+                Call::Human(reason) => {
+                    set.escalating.push(Excluded { number, title, reason });
                     continue;
                 }
-                Some(Due::Nothing(why)) => why.clone(),
-                Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_))
-                    if issue.open_blockers > 0 =>
-                {
-                    format!("{} open blocker(s)", issue.open_blockers)
-                }
-                Some(Due::Lander(_)) => {
-                    let stage = Some(LAND.to_string());
-                    set.frontier.push(Dispatchable { number, title, stage });
+                Call::Nothing(why) => why,
+                Call::Start(stage, _) => {
+                    set.frontier.push(Dispatchable { number, title, stage: Some(stage) });
                     continue;
                 }
-                // A consult is started at the stage that asked it.
-                Some(Due::Worker(entry) | Due::Consult(entry)) => {
-                    let stage = Some(entry.stage.name.clone());
-                    set.frontier.push(Dispatchable { number, title, stage });
-                    continue;
-                }
-                None => "its position was not read".to_string(),
             }
         } else if closing_pr(seen.prs, number).is_some() {
             "has an open linked PR".to_string()
@@ -382,6 +408,8 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         };
         set.excluded.push(Excluded { number, title, reason });
     }
+    // Stable: lowest number first on either side.
+    set.frontier.sort_by_key(|issue| !seen.begun.contains(&issue.number));
     for claim in claims {
         let closed = seen.closed.contains(&claim.number);
         if me.is_some_and(|me| claim.is_held_by(me)) {
@@ -405,7 +433,14 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             };
             let issue = issues.iter().find(|issue| issue.number == claim.number);
             let title = issue.map(|issue| issue.title.clone());
-            set.mine.push(Mine { number: claim.number, title, status, pr });
+            let startable = |issue: &&&Issue| {
+                config.bound.is_some() && label_bar(&issue.labels, config).is_none()
+            };
+            let due = issue.filter(startable).and_then(|issue| match call(issue, seen.due) {
+                Call::Start(stage, Due::Worker(_)) => Some(stage),
+                _ => None,
+            });
+            set.mine.push(Mine { number: claim.number, title, status, pr, due });
             continue;
         }
         let instance = claim.owner.as_ref().map(|owner| owner.instance.clone());
@@ -517,6 +552,7 @@ mod tests {
             landed: &[],
             due: &[],
             landing: &[],
+            begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
         };
@@ -559,6 +595,7 @@ mod tests {
             landed: &[],
             due: &[],
             landing: &[],
+            begun: &[],
             patrols: &[],
             proposals: &none,
         };
@@ -628,6 +665,7 @@ mod tests {
             landed: &[],
             due: &due,
             landing: &[],
+            begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
         };
@@ -731,6 +769,7 @@ mod tests {
             landed: &[],
             due: &due,
             landing: &[],
+            begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
         };
@@ -792,6 +831,7 @@ mod tests {
             due: &[],
             // #10's PR is gone: its landing worker has nothing to join.
             landing: &[8, 9, 10],
+            begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
         };
@@ -840,6 +880,7 @@ mod tests {
             landed: &[9],
             due: &[],
             landing: &[],
+            begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
         };
@@ -879,6 +920,7 @@ mod tests {
             landed: &[],
             due: &[],
             landing: &[],
+            begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
         };
@@ -911,6 +953,7 @@ mod tests {
                     landed: &[],
                     due: &[],
                     landing: &[],
+                    begun: &[],
                     patrols: &[],
                     proposals: &precedent::Seen::default(),
                 };

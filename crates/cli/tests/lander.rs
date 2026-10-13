@@ -169,15 +169,19 @@ fn stopped(world: &World, since: u64) {
     });
 }
 
-/// Walks issue 7 through its four stages, each started by one tick and ended
-/// by the next, the `build` stage opening PR #70 → the time after the last
-/// verdict was carried out. Every tick is 90 seconds after the one before.
+/// Walks issue 7 through its four stages, the first started by a tick of its
+/// own and each of the others by the tick that ended the one before, the
+/// `build` stage opening PR #70 → the time after the last verdict was carried
+/// out. Every tick is 90 seconds after the one before.
 fn through_the_stages(world: &World) -> u64 {
     world.issue(7, &["flow:feature"]);
     let mut now = 1000;
-    for (stage, role) in STAGES {
-        assert_eq!(frontier(world), [(7, stage.to_string())]);
-        assert_eq!(did(&tick(world, now)), ["dispatch 7 done"], "{stage}");
+    let last = STAGES.len() - 1;
+    for (nth, (stage, role)) in STAGES.into_iter().enumerate() {
+        if nth == 0 {
+            assert_eq!(frontier(world), [(7, stage.to_string())]);
+            assert_eq!(did(&tick(world, now)), ["dispatch 7 done"], "{stage}");
+        }
         let dir = worktree(world);
         let started = worker(world, &dir);
         let facts = format!(" AFKCONVOY_STAGE='{stage}' AFKCONVOY_ROLE='{role}' ");
@@ -195,8 +199,12 @@ fn through_the_stages(world: &World) -> u64 {
             assert!(!brief(&dir).contains("## The gate"), "{stage} writes nothing");
         }
         pass(world, stage);
-        assert_eq!(did(&tick(world, now + 90)), ["advance 7 done"], "{stage}");
-        assert_eq!(world.claims(), []);
+        // The join that follows the last stage is no stage's worker: it is
+        // the next tick's to start.
+        let carried: &[&str] =
+            if nth == last { &["advance 7 done"] } else { &["advance 7 done", "dispatch 7 done"] };
+        assert_eq!(did(&tick(world, now + 90)), carried, "{stage}");
+        assert_eq!(world.claims().len(), carried.len() - 1);
         now += 180;
     }
     now

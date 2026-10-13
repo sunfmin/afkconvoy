@@ -199,6 +199,8 @@ fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<String>> {
 /// worker is doing: it was declared through the fleet, and a claim declares
 /// once. A stage that left what it may not have — and a consult that left a
 /// commit — is escalated instead, whatever it declared. The PR, the branch and the worktree are the issue's next stage's.
+/// `HandedOn` when the issue was left where its stage records put it, for
+/// whoever is due there: starting that worker is the pass's.
 pub fn advance(
     fleet: &mut Fleet,
     me: &Me,
@@ -230,10 +232,11 @@ pub fn advance(
         }
         Advance::HandOn => {
             hand_on(fleet, &claim, called.waits_at.as_deref(), None)?;
-            // What follows is the next tick's to start: it need not wait
-            // out a sleep. A wake nobody hears costs only that wait.
+            // What follows that this tick does not start is the next one's:
+            // it need not wait out a sleep. A wake nobody hears costs only
+            // that wait.
             let _ = wake(&fleet.repo);
-            return Ok(Outcome::Done);
+            return Ok(Outcome::HandedOn);
         }
         Advance::End => {
             let (worktree, workless) = worktree_and_work(fleet, issue)?;
@@ -258,7 +261,7 @@ pub fn advance(
             // stage that parked it.
             Blocked::Redispatch => {
                 hand_on(fleet, &claim, None, None)?;
-                return Ok(Outcome::Done);
+                return Ok(Outcome::HandedOn);
             }
             Blocked::Escalate(reason) => stated(&reason.to_string(), said, None),
         },

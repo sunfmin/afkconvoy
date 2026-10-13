@@ -79,15 +79,36 @@ fn did(ticked: &Value) -> Vec<String> {
     .collect()
 }
 
-/// One whole stage of `issue`, from `now`: a tick starts its worker, the
-/// worker declares `verdict`, and the next tick carries that out.
+/// Whether a worker holds `issue`.
+fn held(world: &World, issue: u64) -> bool {
+    world.claims().iter().any(|(claimed, _)| *claimed == issue)
+}
+
+/// One whole stage of `issue`, from `now`: a tick starts its worker, unless
+/// the tick that carried the last verdict out did; the worker declares
+/// `verdict`, and the next tick carries that out — and starts the worker of
+/// the stage it leads to, when a worker performs one.
 fn stage(world: &World, issue: u64, now: u64, stage: &str, verdict: &str) {
-    assert_eq!(did(&tick(world, now)), [format!("dispatch {issue} done")], "{stage}");
+    if !held(world, issue) {
+        assert_eq!(did(&tick(world, now)), [format!("dispatch {issue} done")], "{stage}");
+    }
     let number = issue.to_string();
     let line = ["verdict", verdict, "--issue", &number, "--stage", stage, "--text", "As asked."];
     let commits = ["--role-commit", "r1", "--team-commit", "t1"];
     assert_eq!(world.afk(&[&line[..], &commits].concat()).ok()["declared"], true);
-    assert_eq!(did(&tick(world, now + 30)), [format!("advance {issue} done")], "{stage}");
+    let carried = did(&tick(world, now + 30));
+    let mut expected = vec![format!("advance {issue} done")];
+    if held(world, issue) {
+        expected.push(format!("dispatch {issue} done"));
+    }
+    assert_eq!(carried, expected, "{stage}");
+}
+
+/// Nobody holds `issue` any more: the claim its worker was started under is
+/// released by hand.
+fn let_go(world: &World, issue: u64) {
+    let issue = issue.to_string();
+    world.afk(&["release", "--issue", &issue, "--instance", "alpha", "--host", "h1"]).ok();
 }
 
 fn show(world: &World, issue: u64) -> Value {
@@ -228,7 +249,6 @@ fn a_ruling_answers_an_issue_whose_worker_went_silent() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
-    assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done"]);
     // Its reviewer stops with no verdict, past its nudge: no record says so.
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
@@ -276,6 +296,7 @@ fn an_issue_is_sent_to_a_named_stage_of_its_workflow() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
+    let_go(&world, 7);
     assert_eq!(frontier(&world), [(7, "review".to_string())]);
 
     // A stage the workflow does not have is refused, and nothing is written.
@@ -330,6 +351,7 @@ fn sending_an_escalated_issue_hands_it_back_to_the_fleet() {
     assert_eq!(frontier(&world), [(7, "build".to_string())]);
     // To a human's stage it waits for them, and no worker is started.
     stage(&world, 7, 1200, "build", "pass");
+    let_go(&world, 7);
     world.afk(&["send", "--issue", "7", "--stage", "sign-off", "--text", "I read it."]).ok();
     assert_eq!(at(&world, 7), ("waiting".to_string(), "sign-off".to_string()));
     assert_eq!(did(&tick(&world, 1300)), [] as [&str; 0]);
@@ -409,7 +431,6 @@ fn a_human_declares_the_verdict_of_their_stage_with_the_verdict_command() {
     assert_eq!(show(&world, 7)["rework"], json!({"had": 1, "left": 0}));
     stage(&world, 7, 1200, "build", "pass");
     // While a worker holds the issue its stage is the worker's to declare.
-    assert_eq!(did(&tick(&world, 1300)), ["dispatch 7 done"]);
     let held = declare("pass", "review").error();
     assert!(held.contains("issue #7 is claimed") && held.contains("--role-commit"), "{held}");
     let commits = ["--role-commit", "r1", "--team-commit", "t1"];

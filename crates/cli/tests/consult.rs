@@ -248,7 +248,8 @@ fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_unde
         "{record}"
     );
 
-    assert_eq!(did(&tick(&world, 1270)), ["advance 7 done"]);
+    // The tick that reads the ruling starts the stage that asked again.
+    assert_eq!(did(&tick(&world, 1270)), ["advance 7 done", "dispatch 7 done"]);
     let read = shown(&world);
     assert_eq!(
         (&read["position"]["is"], &read["position"]["stage"]),
@@ -260,7 +261,6 @@ fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_unde
     assert_eq!((&last["by"], &last["reads"]), (&json!("consult"), &json!("verdict")));
     assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
 
-    assert_eq!(did(&tick(&world, 1360)), ["dispatch 7 done"]);
     let again = started(&world).pop().unwrap();
     assert!(
         again.contains("AFKCONVOY_SKILL='implement'")
@@ -369,9 +369,9 @@ fn a_consult_takes_one_slot_of_concurrency() {
     assert_eq!(did(&next), [] as [&str; 0]);
     assert_eq!((&next["held"], &next["frontier_remaining"]), (&json!(1), &json!(1)));
 
-    // Its ruling frees the slot.
+    // Its ruling frees the slot, for the stage that asked.
     rule(&world, "Keep the v1 schema.");
-    assert_eq!(did(&tick(&world, 1360)), ["advance 7 done", "dispatch 8 done"]);
+    assert_eq!(did(&tick(&world, 1360)), ["advance 7 done", "dispatch 7 done"]);
 }
 
 #[test]
@@ -448,8 +448,8 @@ fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
     rule(&world, "Keep the v1 schema.");
     stop(&world, 1190);
     taken_over(&world, 1200);
-    assert_eq!(did(&tick_as(&world, "beta", 3000)), ["advance 7 done"]);
-    assert_eq!(world.claims(), []);
+    assert_eq!(did(&tick_as(&world, "beta", 3000)), ["advance 7 done", "dispatch 7 done"]);
+    assert_eq!(world.claims(), [(7, "beta".to_string())]);
     let read = shown(&world);
     assert_eq!(
         (&read["position"]["is"], &read["position"]["stage"]),
