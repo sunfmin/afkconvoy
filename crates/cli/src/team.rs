@@ -15,7 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::config;
-use crate::copies::{Copies, Copy};
+use crate::copies::{self, Copies, Copy};
 use crate::gh::{GitHub, Unreached, unreached};
 
 /// Where a team's own files are taken from. Its roles' directories are
@@ -145,6 +145,50 @@ pub struct Loaded {
     /// it is its team that was read, and Claude Code where no config was.
     pub harness: Harness,
     pub team: Team,
+    /// The team's directory on GitHub; `None` for a directory of this host.
+    dir: Option<RepoDir>,
+    /// Where the repos it was read from are kept.
+    copies: Copies,
+}
+
+impl Loaded {
+    /// Whether the team has moved since `since`, a commit of its repo: its
+    /// directory, without what its copy leaves out (`left_out`), is not at
+    /// its head what it was then. A push that changes only a role's
+    /// directory, or something else of the repo, moves no team. One read
+    /// from a directory of this host has moved from any commit.
+    pub fn moved(&self, since: &str) -> bool {
+        match (&self.dir, &self.commit) {
+            (Some(dir), Some(head)) => {
+                changed(&self.copies, dir, since, head, &left_out(dir, &self.team))
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether `role` has moved since `since`, a commit of its repo: its
+    /// directory is not at the head what it was then. In a repo of several
+    /// roles a push moves the commit of each, and the roles whose directory
+    /// it changed.
+    pub fn role_moved(&self, role: &team::Role, since: &str) -> bool {
+        changed(&self.copies, &role.dir, since, &role.commit, &[])
+    }
+}
+
+/// Whether `dir`, less each of `without`, holds at the commit `head` of its
+/// repo anything else than at `since` (docs/adr/0014): asked of the fleet's
+/// copies of the two, and of nobody else. A commit this host keeps no copy
+/// of — no stage started under it here — is taken to have held something
+/// else: two commits are then all there is to go by.
+fn changed(copies: &Copies, dir: &RepoDir, since: &str, head: &str, without: &[PathBuf]) -> bool {
+    if since == head {
+        return false;
+    }
+    let (Some(then), Some(now)) = (copies.kept(&dir.repo, since), copies.kept(&dir.repo, head))
+    else {
+        return true;
+    };
+    !copies::alike(&then, &now, dir, without).unwrap_or(false)
 }
 
 /// Reads the team `from` names and every role's directory, and loads it →
@@ -190,7 +234,7 @@ pub fn load(from: From) -> Result<Loaded> {
             let name = dir.display().to_string();
             let (sources, roles) = read(&Tree { dir }, of, None, &gh, &copies)?;
             roles.reached()?;
-            return loaded(name, None, None, sources, named, harness);
+            return loaded(name, None, copies, sources, named, harness);
         }
         From::Repo(team) => team,
         From::Config => {
@@ -207,17 +251,17 @@ pub fn load(from: From) -> Result<Loaded> {
     };
     let (copy, sources, roles) = read_kept(&gh, &copies, &team)?;
     roles.reached()?;
-    let path = Some(team.path().to_string());
-    loaded(team.repo.to_string(), path, Some(copy.commit), sources, named, harness)
+    loaded(team.repo.to_string(), Some((team, copy.commit)), copies, sources, named, harness)
 }
 
-/// The team that `sources` load as — read from `name`, at `path` of it and
-/// at `commit` — on a repo whose config names the patrols `runs` and the
+/// The team that `sources` load as — read from `name`: out of `copies`, from
+/// the directory on GitHub and at the commit `at` says, or from a directory
+/// of this host — on a repo whose config names the patrols `runs` and the
 /// default harness `harness`.
 fn loaded(
     name: String,
-    path: Option<String>,
-    commit: Option<String>,
+    at: Option<(RepoDir, String)>,
+    copies: Copies,
     sources: Sources,
     runs: Vec<String>,
     harness: Harness,
@@ -226,7 +270,7 @@ fn loaded(
     files.extend(sources.workflows.iter().map(|file| file.path.clone()));
     files.extend(sources.patrols.iter().map(|file| file.path.clone()));
     // A team is called by its directory on GitHub, where it was read from one.
-    let called = match (&sources.at, &path) {
+    let called = match (&sources.at, &at) {
         (Some(at), Some(_)) => at.to_string(),
         _ => name.clone(),
     };
@@ -237,7 +281,9 @@ fn loaded(
     if let Err(unknown) = team.patrols_named(&runs) {
         return Err(unknown_patrols(&called, &team, &unknown).into());
     }
-    Ok(Loaded { name, path, commit, files, runs, harness, team })
+    let (dir, commit) = at.unzip();
+    let path = dir.as_ref().map(|dir: &RepoDir| dir.path().to_string());
+    Ok(Loaded { name, path, commit, files, runs, harness, team, dir, copies })
 }
 
 /// What reading the repo of each role of a team came to, by the repo's name.

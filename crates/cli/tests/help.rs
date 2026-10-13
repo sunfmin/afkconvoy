@@ -402,3 +402,17 @@ fn the_help_lays_out_the_three_ways_to_name_a_role_and_calls_no_role_a_repo() {
     let config = asked(&["config", "--help"]);
     assert!(config.contains("owner/repo/path"));
 }
+
+#[test]
+fn the_help_of_doctor_says_what_moved_means() {
+    let said = asked(&["doctor", "--help"]);
+    let moved = said.split("\n\n").find(|part| part.trim_start().starts_with("Moved: ")).unwrap();
+    for part in [
+        "the role's directory holds something else at the head of its repo than at the",
+        "A new commit is\n  not it",
+        "without what a worker is not given of it: the directories of its roles",
+        "a different commit is all there is to go by",
+    ] {
+        assert!(moved.contains(part), "{part:?} is not in:\n{moved}");
+    }
+}

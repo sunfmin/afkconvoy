@@ -104,8 +104,20 @@ WHAT IT ANSWERS
   slots are free and the last tick started nobody; a flow label names no workflow of
   the team; an issue has been at a stage longer than any before it took; an issue is
   one rework from a breaker; a patrol is failed or full; an issue has waited for a human
-  for more than an hour, its `fix` being the line that answers it (all warning) — and a
-  role's or the team's head moved since a stage in flight started (info).
+  for more than an hour, its `fix` being the line that answers it (all warning) — and the
+  role or the team a stage in flight started under has moved since (info).
+
+  Moved: the role's directory holds something else at the head of its repo than at the
+  commit the stage started under — a file added, removed or changed. A new commit is
+  not it: in a repo of several roles a push gives every role a new commit, and moves
+  the ones whose directory it changed. The team has moved when its directory has,
+  without what a worker is not given of it: the directories of its roles, and the
+  CLAUDE.md and .claude/ at its top. So a push that changes only a role moves no team,
+  and one that changes a workflow moves no role. A role in a repo of its own moves with
+  every push that changes a file there. The two are compared in the copies this host
+  keeps (afkconvoy/copies/ under the cache directory); where the one the stage started
+  under is no longer there, a different commit is all there is to go by, and it is
+  said to have moved. `evidence` gives both commits.
 
 WHAT TRIPS YOU UP
 
