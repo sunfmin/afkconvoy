@@ -47,6 +47,14 @@ pub(super) const FLAGS: [&str; 4] = [ADD_DIR, HOOKS_REVIEWED, CONFIG, MODEL];
 /// What Codex is asked for the flags it takes.
 const HELP: &str = " --help";
 
+/// What Codex is asked for the models it knows: the ones it was built with,
+/// which it says at once and without asking the network.
+const LIST_MODELS: &str = " debug models --bundled";
+/// What comes before each model's name in what Codex answers: the key of it,
+/// in the JSON it prints. A `"` inside a JSON string is written `\"`, so this
+/// is in the answer only where a key is.
+const NAMED: &str = "\"slug\":\"";
+
 /// The variable that names Codex's user directory: the fleet's own, in place
 /// of the host user's.
 const USER_DIR: &str = "CODEX_HOME";
@@ -260,6 +268,39 @@ pub(super) fn asked_its_flags(line: Line) -> Line {
     line.fixed(HELP)
 }
 
+/// The line that asks `command`, a worker launch command of Codex's, which
+/// models it knows, under the user directory `kept` a worker of it is given.
+pub(super) fn models_question(command: &str, kept: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command)
+        .fixed(LIST_MODELS)
+        .done()
+}
+
+/// The models Codex lists in `answer`, what it printed for `models_question`,
+/// each by the name its `MODEL` flag takes: the `slug` of each model in the
+/// JSON there, whatever a shell printed around it, the ones Codex shows in no
+/// menu among them. `None` when it lists none: it said something else.
+pub(super) fn models(answer: &str) -> Option<Vec<String>> {
+    let dense: String = answer.split_whitespace().collect();
+    let names = dense.split(NAMED).skip(1).filter_map(|after| after.split_once('"'));
+    let listed: Vec<String> =
+        names.map(|(name, _)| name.to_string()).filter(|name| !name.is_empty()).collect();
+    if listed.is_empty() { None } else { Some(listed) }
+}
+
+/// Whether `model`, as a stage writes it, is one of `listed`, the models
+/// Codex lists on a host: its whole name, as written. Codex takes any name
+/// at all and fails at its first turn on one it has no model for.
+pub(super) fn knows(listed: &[String], model: &str) -> bool {
+    listed.iter().any(|name| name == model.trim())
+}
+
 /// One tool call, as Codex describes it to a hook before making it.
 #[derive(Deserialize)]
 struct Described {
@@ -433,11 +474,39 @@ mod tests {
         assert!(held(Held::Entries(1)).unwrap_err().to_string().contains("a directory"));
     }
 
+    const LISTED: &str = "a line an rc file printed\n\
+        {\"models\":[{\"slug\":\"gpt-5.5\",\"display_name\":\"GPT-5.5\",\
+        \"description\":\"said \\\"slug\\\":\\\"no-model\\\" once\",\"visibility\":\"list\"},\n\
+        { \"slug\": \"codex-auto-review\", \"visibility\": \"hide\" }]}\n";
+
     #[test]
-    fn codex_has_no_way_to_say_which_models_it_knows_and_no_provider_variable() {
-        assert_eq!(Harness::Codex.models_question(STOCK, "/kept"), None);
-        assert!(Harness::Codex.knows(&[], "anything"));
+    fn codex_is_asked_its_models_under_the_directory_a_worker_is_given() {
+        assert_eq!(
+            Harness::Codex.models_question("kim  --search", "/it's kept"),
+            Some(
+                "export CODEX_HOME='/it'\\''s kept' && kim  --search debug models --bundled"
+                    .to_string()
+            )
+        );
+        assert_eq!(Harness::Codex.models(LISTED).unwrap(), ["gpt-5.5", "codex-auto-review"]);
+        for nothing in ["", "{\"models\":[]}\n", "error: unrecognized subcommand 'models'\n"] {
+            assert_eq!(Harness::Codex.models(nothing), None, "{nothing}");
+        }
         assert_eq!(Harness::Codex.provider_variable(), None);
+    }
+
+    #[test]
+    fn codex_knows_a_model_it_lists_by_its_whole_name_and_no_other() {
+        let listed = Harness::Codex.models(LISTED).unwrap();
+        for known in ["gpt-5.5", " gpt-5.5 ", "codex-auto-review"] {
+            assert!(Harness::Codex.knows(&listed, known), "{known}");
+            assert!(Harness::Codex.names(&listed, known), "{known}");
+        }
+        for unknown in ["opus", "gpt", "GPT-5.5", "gpt-5.5:high", "openai/gpt-5.5", "no-model", ""]
+        {
+            assert!(!Harness::Codex.knows(&listed, unknown), "{unknown}");
+            assert!(!Harness::Codex.names(&listed, unknown), "{unknown}");
+        }
     }
 
     /// JSON is read here as the YAML it also is.
