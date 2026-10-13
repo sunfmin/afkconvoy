@@ -3,8 +3,7 @@ afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance
 worktree, and lands each finished PR on the base branch through the landing train, behind
 the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
 
-This text is the way in. What it leaves out is in each command's own help, and in the
-topics: THE TOPICS, below.
+This text is the way in. The rest is in each command's own help and in THE TOPICS, below.
 
 WHAT IT NEEDS
 
@@ -59,8 +58,7 @@ THE COMMANDS, by who runs them
   workflow takes which issue and the line that opens one, and creates the labels:
       flows
 
-  Whoever sets an agent up — a human whose own agent is to learn of afkconvoy. It
-  prints the skill file to install into that agent, and the file sends it to this text:
+  Whoever sets an agent up — it prints the skill file that sends their agent to this text:
       skill
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
