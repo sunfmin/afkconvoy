@@ -769,7 +769,7 @@ mod tests {
             landed: &[],
             due: &due,
             landing: &[],
-            begun: &[],
+            begun: &[5, 6, 7, 8, 9, 10, 11, 12],
             patrols: &[],
             proposals: &precedent::Seen::default(),
         };
@@ -778,9 +778,10 @@ mod tests {
             set.frontier.iter().map(|d| (d.number, d.stage.as_deref())).collect();
         // #7 returned from its park: it is at the stage that parked it.
         // #11's last stage passed to the landing train: its PR is to be joined.
+        // #1, which no stage ever declared on, comes after what was begun.
         assert_eq!(
             frontier,
-            [(1, Some("plan")), (5, Some("build")), (7, Some("build")), (11, Some("land"))]
+            [(5, Some("build")), (7, Some("build")), (11, Some("land")), (1, Some("plan"))]
         );
         let reasons = |rows: &[Excluded]| -> Vec<(u64, String)> {
             rows.iter().map(|e| (e.number, e.reason.clone())).collect()
@@ -808,6 +809,17 @@ mod tests {
                 (10, "already claimed".to_string()),
             ]
         );
+
+        // Under a claim of mine, a worker is due where the frontier would
+        // hold the issue at a stage a role performs: not behind an epic
+        // label or an open blocker, and never for the join.
+        let claims = [claim(3, "me"), claim(5, "me"), claim(6, "me"), claim(7, "me")];
+        let landing = [claim(11, "me")];
+        let held = Observed { claims: &[&claims[..], &landing].concat(), ..seen };
+        let mine = assemble(&held, Some(&me()), 1000, &bound()).mine;
+        let due: Vec<(u64, Option<&str>)> =
+            mine.iter().map(|mine| (mine.number, mine.due.as_deref())).collect();
+        assert_eq!(due, [(3, None), (5, Some("build")), (6, None), (7, Some("build")), (11, None)]);
     }
 
     #[test]

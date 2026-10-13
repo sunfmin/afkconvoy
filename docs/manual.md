@@ -469,7 +469,7 @@ tick 7: advanced #1 · dispatched #2 · holding 3/3 · frontier 1 · next in 90s
 tick 9: advanced #2 · dispatched #1, #3 · ended the patrol triage, rounds · proposed as a precedent the ruling on #3 · holding 3/3 · frontier 0 · next in 90s
 ```
 
-`dispatched` starts a worker on a stage; `advanced` is the fleet reading a verdict and ending that stage's claim. The stage that follows is dispatched a tick later, under a claim of its own; where a slot is free for it, `run` starts that tick with no sleep and the line ends `next now`. Here is what happened to each issue.
+`dispatched` starts a worker on a stage; `advanced` is the fleet reading a verdict and ending that stage's claim. These lines are from a build in which the stage that follows was dispatched a tick later; today the tick that reads the verdict starts it, under a claim of its own, and says both: `advanced #3 → review · dispatched #3`. Here is what happened to each issue.
 
 #### Issue 2: routed by a patrol, landed by a short workflow
 

@@ -32,10 +32,11 @@ WHAT IT ANSWERS
     start: took #4, the run of the patrol triage stamped with this host
     tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s
     tick 2: nothing to do · holding 2/3 · frontier 4 · next in 60s
-    tick 3: advanced #12 · holding 1/3 · frontier 0 · next now
-    tick 4: dispatched #12 · holding 2/3 · frontier 0 · next in 90s
+    tick 3: advanced #12 → review · dispatched #12 · holding 2/3 · frontier 0 · next in 90s
+    tick 4: advanced #12 → land · holding 1/3 · frontier 0 · next now
+    tick 5: dispatched #12 · holding 2/3 · frontier 0 · next in 90s
 
-  A tick's line names what it did — settled, ended, escalated, unlocked, reclaimed,
+  A tick's line names what it did — settled, ended, escalated, advanced, unlocked, reclaimed,
   dispatched, nudged, continued, restarted, tended the train, abandoned the train — then
   the claims held out of the concurrency, and the frontier left. The claims a fleet
   lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left
@@ -43,9 +44,15 @@ WHAT IT ANSWERS
   in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as
   `tick N: FAILED: <why>`; the loop goes on either way.
 
-  `next now` in place of `next in <n>s`: the tick advanced an issue or settled one and
-  left a slot free, so what follows — the stage the verdict leads to, an issue the
-  landing unblocked — is the next tick's to start, and that tick starts with no sleep.
+  `advanced #12 → review`: the tick read a verdict that left #12 at `review`. Where a
+  role performs that stage the same tick starts its worker, and says so: `dispatched
+  #12`. An issue advanced to no stage — its workflow ended, it was parked or handed to
+  a human — is named alone.
+
+  `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one
+  without starting what follows, and left a slot free, so what follows — a consult, the
+  join of a PR, an issue the landing unblocked — is the next tick's to start, and that
+  tick starts with no sleep.
   At most 4 ticks run back to back; then it sleeps, whatever the last one left.
 
   With `--panel <port>` its first line is the panel's address, and it serves the panel

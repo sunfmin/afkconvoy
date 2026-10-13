@@ -27,7 +27,9 @@ WHAT IT ANSWERS
                         restarted, abandoned, nothing, lost or failed. A step on a
                         patrol has a null issue and names it: {do, issue, patrol,
                         outcome}. A step on the proposal of a precedent names the
-                        issue that was ruled on
+                        issue that was ruled on. An `advance` that read a verdict and
+                        left the issue at a stage names it: {do, issue, outcome,
+                        stage} — `land` once the last stage passed to the landing train
     errors              each step that failed: {do, issue, error}, with `patrol` as
                         in `did`
     held                the claims the instance holds after the pass, a patrol's run
@@ -48,22 +50,27 @@ WHAT TRIPS YOU UP
   - `--instance` is required: `run` mints an id, a tick has to be given one. Give every
     tick of one fleet the same id — a new id holds no claims, and sees the old id's as
     another instance's.
-  - In a bound repo one tick does not take an issue from one stage to the next. The
-    tick that reads a verdict ends the claim its stage was performed under (`advance`);
-    the stage that follows is on the frontier of the tick after it, and is started
-    under a claim of its own when a slot is free. The same holds for the last stage:
-    the tick after a `pass` that leads to `land` starts a worker in the workflow's
-    landing role, which gates the PR and joins the landing train; a `pass` to `land`
-    with no open PR to join is handed to a human.
-  - `run` does not sleep across that hop: after a tick that advanced an issue or
-    settled one and left a slot free, it starts the next tick at once (`next now` in
-    its line), at most 4 ticks back to back. Ticking by hand, the next `tick` is yours
-    to run.
+  - In a bound repo the tick that reads a verdict ends the claim its stage was
+    performed under (`advance`) and, where the verdict leads to a stage a role
+    performs, starts that stage's worker into the slot it freed, under a claim of
+    its own (`dispatch`, on the same issue): a `pass` to the next stage, a `reject`
+    to an earlier one, a ruling that runs a stage again. That worker goes ahead of
+    everything else the tick takes a slot for. Only a fleet over its `concurrency`
+    has no slot for it: the issue is then on the frontier of the tick after, ahead
+    of the issues no stage has declared on yet.
+  - The last stage is different: the tick after a `pass` that leads to `land` starts a
+    worker in the workflow's landing role, which gates the PR and joins the landing
+    train; a `pass` to `land` with no open PR to join is handed to a human. A consult
+    and a stage that runs again once a fleet lock closed are the tick after's too.
+  - `run` does not sleep across that hop: after a tick that settled an issue or
+    advanced one without starting what follows, and left a slot free, it starts the
+    next tick at once (`next now` in its line), at most 4 ticks back to back. Ticking
+    by hand, the next `tick` is yours to run.
   - An `escalate` does not always hand the issue to a human. From a stage that names a
     consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim,
     and the next one starts a worker in the consult's role — under a claim of its
     own, in one slot of `concurrency`, in the same worktree. Its ruling (`afkconvoy
-    rule`) runs the stage that asked again, a tick later, and counts as one more of
+    rule`) runs the stage that asked again, in the tick that reads it, and counts as one more of
     the issue's rework in total; its own `escalate` goes to a human. A consult that
     stays silent is nudged once and then escalated, like any worker.
   - A `reject` does not always start the earlier stage again. Where it would pass one

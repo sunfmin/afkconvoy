@@ -174,18 +174,34 @@ impl Pass {
     /// step freed was the pass's own to fill: it ends claims before it takes
     /// any.
     pub fn follow_up_due(&self, concurrency: usize) -> bool {
-        self.held < concurrency
-            && self.did.iter().any(|(step, outcome)| match step {
+        if self.held >= concurrency {
+            return false;
+        }
+        for (step, outcome) in &self.did {
+            let left = match step {
                 TickStep::Settle { .. } => *outcome == Outcome::Done,
                 TickStep::Advance { issue } => {
-                    let started = TickStep::Dispatch { issue: *issue };
                     *outcome == Outcome::Done
-                        || *outcome == Outcome::HandedOn
-                            && !self.did.iter().any(|(step, _)| *step == started)
+                        || *outcome == Outcome::HandedOn && !dispatched(&self.did, *issue)
                 }
                 _ => false,
-            })
+            };
+            if left {
+                return true;
+            }
+        }
+        false
     }
+}
+
+/// Whether `did` holds a dispatch of `issue`, however it ended.
+fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
+    for (step, _) in did {
+        if *step == (TickStep::Dispatch { issue }) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Runs one pass over `set` under a bound of `concurrency` claims — what
@@ -243,12 +259,7 @@ where
         let step = TickStep::Heartbeat;
         did.push((step, carry_out(step)));
     }
-    let mut left = 0;
-    for issue in &set.frontier {
-        if !did.iter().any(|(step, _)| *step == TickStep::Dispatch { issue: issue.number }) {
-            left += 1;
-        }
-    }
+    let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
     Pass { did, held, frontier_remaining: left }
 }
 
@@ -294,8 +305,6 @@ where
 {
     let mut slots = Slots::new(concurrency, held);
     for mine in &set.mine {
-        // What stays true on every turn, which Flux does not find alone.
-        qualifier!(now: int, before: int; now <= before);
         if sweep == Sweep::Stopped && set.locked_out(mine.number) {
             continue;
         }
@@ -654,6 +663,11 @@ mod tests {
     use Outcome::*;
     use TickStep::*;
 
+    /// A working set of these claims of mine, with nothing on the frontier.
+    fn set_of(mine: &[(u64, Status)]) -> WorkingSet {
+        set(&[], mine)
+    }
+
     fn peers(numbers: &[u64]) -> Vec<crate::plan::PeerClaim> {
         let claim = |&number| crate::plan::PeerClaim { number, instance: None, sha: String::new() };
         numbers.iter().map(claim).collect()
@@ -824,6 +838,71 @@ mod tests {
             ],
             "never of the claim the pass ended"
         );
+    }
+
+    /// `set`, a worker being due at `stage` on each of `issues` once its
+    /// claim of mine ends.
+    fn due_on(mut set: WorkingSet, issues: &[u64], stage: &str) -> WorkingSet {
+        for mine in set.mine.iter_mut().filter(|mine| issues.contains(&mine.number)) {
+            mine.due = Some(stage.to_string());
+        }
+        set
+    }
+
+    #[test]
+    fn a_claim_handed_on_has_the_worker_due_on_its_issue_started_into_the_slot_it_freed() {
+        let at_stage = [(4, Status::AtStage), (6, Status::AtStage), (9, Status::AtStage)];
+        // A worker performs the stage #4 and #9 were left at; #6 waits for a human.
+        let set = due_on(set(&[2, 5], &at_stage), &[4, 9], "review");
+        let handed_on = |step| if matches!(step, Advance { .. }) { HandedOn } else { Done };
+        let pass = run_pass(&set, 3, 3, handed_on);
+        assert_eq!(
+            steps(&pass),
+            [
+                Advance { issue: 4 },
+                Dispatch { issue: 4 },
+                Advance { issue: 6 },
+                Advance { issue: 9 },
+                Dispatch { issue: 9 },
+                Dispatch { issue: 2 },
+                Heartbeat
+            ],
+            "ahead of the frontier, which gets the slot nothing was due in"
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (3, 1));
+        assert!(pass.did_work());
+        let boards: Vec<TickStep> =
+            pass.did.iter().map(|(step, _)| *step).filter(|s| matches!(s, Board { .. })).collect();
+        assert_eq!(
+            boards,
+            [
+                Board { issue: 4, stage: Stage::Claimed, pr: None },
+                Board { issue: 9, stage: Stage::Claimed, pr: None },
+                Board { issue: 2, stage: Stage::Claimed, pr: None }
+            ],
+            "of the claims its starts made, never of the one #6 was handed on under"
+        );
+
+        // A fleet over its bound starts nothing: the issue waits on the frontier.
+        let one = due_on(set_of(&[(4, Status::AtStage), (5, Status::NoPr)]), &[4], "review");
+        let full = run_pass(&one, 1, 2, |step| match step {
+            Advance { .. } => HandedOn,
+            _ => Nothing,
+        });
+        assert_eq!(steps(&full), [Advance { issue: 4 }, Judge { issue: 5 }, Heartbeat]);
+        assert_eq!(full.held, 1);
+
+        // A claim that ended any other way leaves nothing to start, whatever was due…
+        let ended = run_pass(&set, 3, 3, |_| Done);
+        assert!(!ended.did.contains(&(Dispatch { issue: 4 }, Done)), "{:?}", ended.did);
+        // …and a start a peer won takes no slot: the frontier has it.
+        let lost = run_pass(&set, 3, 3, |step| match step {
+            Advance { .. } => HandedOn,
+            Dispatch { issue: 4 } => Lost,
+            _ => Done,
+        });
+        assert_eq!(lost.frontier_remaining, 0, "{:?}", lost.did);
+        assert_eq!(lost.held, 3);
     }
 
     #[test]
@@ -1125,6 +1204,20 @@ mod tests {
         };
         assert!(only(Advance { issue: 1 }).follow_up_due(3), "the stage its verdict leads to");
         assert!(only(Settle { issue: 2 }).follow_up_due(3), "what its landing unblocked");
+        // A claim handed on leaves the tick after it whoever is due on the
+        // issue that this pass did not start: a consult, the join…
+        let handed_on = |set: &WorkingSet, bound| {
+            run_pass(set, bound, 1, |step| match step {
+                Advance { .. } => HandedOn,
+                _ => Done,
+            })
+        };
+        let at_stage = set(&[], &[(1, Status::AtStage)]);
+        assert!(handed_on(&at_stage, 1).follow_up_due(1));
+        // …and nothing once it started the next stage's worker itself.
+        let started = handed_on(&due_on(at_stage, &[1], "review"), 2);
+        assert!(started.did.contains(&(Dispatch { issue: 1 }, Done)));
+        assert!(!started.follow_up_due(2), "a slot is free, and nothing is left to start");
         // A claim that ended for good leaves nothing to start…
         assert!(!only(Judge { issue: 3 }).follow_up_due(3));
         // …and neither does a tick that only looked, or whose step failed.
