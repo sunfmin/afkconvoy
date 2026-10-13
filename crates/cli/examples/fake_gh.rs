@@ -16,8 +16,8 @@
 mod fake;
 
 use afkconvoy::gh::{
-    BLOCKED_BY_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ, OPEN_ISSUES_JQ,
-    OPEN_ISSUES_QUERY, PR_FIELDS,
+    BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
+    OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
 };
 use fake::State;
 use serde_json::{Value, json};
@@ -294,6 +294,24 @@ fn api(st: &mut State) -> ! {
                 .filter(|issue| issue["labels"].as_array().unwrap().contains(&json!(label)))
                 .map(|issue| {
                     json!({"number": issue["number"], "at": issue["closed_at"]}).to_string()
+                })
+                .collect();
+            st.finish(&rows.join("\n"), 0, "")
+        }
+        ["issues"] if query.contains("state=all") => {
+            assert!(st.has("--paginate"), "{:?}", st.argv);
+            assert_eq!(jq, Some(CARRYING_JQ), "fake gh: unsupported jq");
+            let label = query.split('&').find_map(|field| field.strip_prefix("labels="));
+            let label = unescaped(label.expect("the issues of one label"));
+            let rows: Vec<String> = st.doc["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|issue| issue["labels"].as_array().unwrap().contains(&json!(label)))
+                .map(|issue| {
+                    json!({"number": issue["number"], "open": is_open(issue),
+                        "closed_at": issue["closed_at"]})
+                    .to_string()
                 })
                 .collect();
             st.finish(&rows.join("\n"), 0, "")

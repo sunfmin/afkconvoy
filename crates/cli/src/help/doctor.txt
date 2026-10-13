@@ -109,7 +109,9 @@ WHAT IT ANSWERS
   slots are free and the last tick started nobody; a flow label names no workflow of
   the team; an issue has been at a stage longer than any before it took; an issue is
   one rework from a breaker; a patrol is failed or full; an issue has waited for a human
-  for more than an hour, its `fix` being the line that answers it (all warning) — the
+  for more than an hour, its `fix` being the line that answers it; the gate is slow —
+  with the host, the gate limit and the 5 runs, each a commit and its seconds, as
+  `afkconvoy plan` has them, and the issue open for it when there is one (all warning) — the
   role or the team a stage in flight started under has moved since; and the repo's
   config declares no gate limit, so the gate has the default's 3600 seconds before
   anything ends it: `fix` is the file and the key, `gate_seconds` (both info).

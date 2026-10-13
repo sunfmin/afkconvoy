@@ -23,8 +23,8 @@ WHAT IT ANSWERS
 
     did                 each step taken: {do, issue, outcome}. do is settle, tend_train,
                         judge, watch, advance, escalate, end_patrol, patrol,
-                        end_proposal, propose, unlock, reclaim, dispatch, board,
-                        stage_label or heartbeat; outcome is done, nudged, continued,
+                        end_proposal, propose, unlock, reclaim, dispatch, slow_gate,
+                        board, stage_label or heartbeat; outcome is done, nudged, continued,
                         restarted, abandoned, nothing, lost or failed. A step on a
                         patrol has a null issue and names it: {do, issue, patrol,
                         outcome}. A step on the proposal of a precedent names the
@@ -145,6 +145,19 @@ WHAT TRIPS YOU UP
     or has been stopped for the grace period: a PR from its branch that changes anything but `precedents.md`, or does
     anything there but append that one entry, is closed with the reason in a comment;
     one that is a proposal is left for a human. The checkout is removed.
+  - A tick that finds the gate slow opens one issue that says so (`slow_gate`). The
+    gate is slow when, on one host, the last 5 landings on the base branch that have a
+    recorded run of the config's `gate_command` with a time all took more than 80% of
+    the gate limit, `gate_seconds`. The issue carries the config's `ready_label`, so
+    the fleet works it, and the label `slow-gate`, which is how it is found again. Its
+    body gives the limit, the host and the 5 runs, each with its commit and its
+    seconds, and says what is not a fix: deleting or skipping tests, and raising
+    `gate_seconds`. `afkconvoy plan` shows the same evidence, as `slow_gate`.
+  - It opens no other while an issue carrying `slow-gate` is open, on any host, and
+    the opening is claimed on the remote as a patrol's run is: of several hosts that
+    found the gate slow one opens the issue, and the rest say `lost`. After that
+    issue is closed only the landings made since count: the gate is slow again when
+    5 of those all took more than 80%. It takes no slot of `concurrency`.
   - With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`).
     It dispatches nothing else, runs no patrol, proposes no precedent, takes no stale claim of another issue, hands no other
     issue to a human, and leaves alone every claim of its own on another issue whose PR

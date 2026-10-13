@@ -70,6 +70,11 @@ fleet mid-step: run `doctor` again after a tick before you act on one.
       raise `max_open` in the patrol's file.
   has waited for a human for
       Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
+  the gate is slow
+      On one host, the last 5 landings with a recorded gate run all took more than 80%
+      of the gate limit. Nothing is stopped yet. A tick opens one issue for the fleet
+      to make the gate faster, and no other while that one is open: `fix` shows it.
+      Raising `gate_seconds` is not a fix, and neither is deleting or skipping tests.
 
 WHAT `doctor` FINDS — info: nothing is held up
 
