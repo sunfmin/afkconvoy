@@ -123,7 +123,11 @@ fn hostname(host: Option<&str>) -> String {
 pub fn needed(launch: Option<&str>) -> Vec<Tool> {
     let mut tools = vec![Tool::Git, Tool::Gh, Tool::Orca];
     let word = launch.and_then(first_word);
-    tools.extend(AGENTS.into_iter().filter(|agent| word == Some(agent.name())));
+    for agent in AGENTS {
+        if word == Some(agent.name()) {
+            tools.push(agent);
+        }
+    }
     tools
 }
 
