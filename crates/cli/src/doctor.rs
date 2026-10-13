@@ -153,6 +153,19 @@ impl Run {
     }
 }
 
+/// A role or the team a stage in flight started under, that has moved since:
+/// its directory holds something else at the head of its repo than at the
+/// commit the stage started under. A commit that differs moves nothing by
+/// itself: a push to a repo of several roles gives each a new one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    /// `the team`, or the role by its name.
+    pub which: String,
+    /// The commit the stage started under.
+    pub started: String,
+    pub head: String,
+}
+
 /// One claim of this host's fleet instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
@@ -169,6 +182,8 @@ pub struct Held {
     pub worktree: Option<PathBuf>,
     /// What its worker was started under, in a bound repo.
     pub under: Option<Under>,
+    /// What of that has moved since: the team, its role, or both.
+    pub moved: Vec<Moved>,
     /// When the green gate run on record for the tree its worktree is at
     /// finished; `None`: none stands.
     pub gate: Option<u64>,
@@ -187,10 +202,6 @@ impl Held {
 pub enum TeamRead {
     Unbound,
     Loaded {
-        /// The head of the team's repo.
-        commit: Option<String>,
-        /// Each role, with the head of its repo.
-        roles: Vec<(String, String)>,
         /// The flow label of each workflow it has.
         flow_labels: Vec<String>,
     },
@@ -343,8 +354,8 @@ fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
 }
 
 /// A claim with no worker, a worker stopped for long, and a role or a team
-/// whose head moved since a stage in flight started.
-fn claim_findings(run: &Run, held: &[Held], team: &TeamRead) -> Vec<Finding> {
+/// that moved since a stage in flight started.
+fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
     let mut found = vec![];
     let instance = run.instance.as_deref().unwrap_or_default();
     for claim in held.iter().filter(|claim| claim.at_work()) {
@@ -389,18 +400,8 @@ fn claim_findings(run: &Run, held: &[Held], team: &TeamRead) -> Vec<Finding> {
             }
             _ => {}
         }
-        let (Some(under), TeamRead::Loaded { commit, roles, .. }) = (&claim.under, team) else {
-            continue;
-        };
-        let mut moved = vec![];
-        if let Some(head) = commit.as_ref().filter(|head| **head != under.team_commit) {
-            moved.push(("the team".to_string(), &under.team_commit, head));
-        }
-        let role = roles.iter().find(|(name, _)| *name == under.role);
-        if let Some((name, head)) = role.filter(|(_, head)| *head != under.role_commit) {
-            moved.push((format!("the role `{name}`"), &under.role_commit, head));
-        }
-        for (which, started, head) in moved {
+        let Some(under) = &claim.under else { continue };
+        for Moved { which, started, head } in &claim.moved {
             found.push(finding(
                 Severity::Info,
                 format!(
@@ -681,7 +682,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(run_findings(seen.run, &state.held));
             found.extend(team_findings(&state.team));
             found.extend(plan_findings(seen.run, state));
-            found.extend(claim_findings(seen.run, &state.held, &state.team));
+            found.extend(claim_findings(seen.run, &state.held));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
             found.extend(waiting_findings(&state.set, seen.now));
         }
@@ -753,37 +754,58 @@ fn read_log(
     (Some(newest.instance.clone()), command, ticks.collect())
 }
 
-fn read_team(bound: bool) -> TeamRead {
+/// The team a bound repo names, as it stands at its head → with the team
+/// itself, where it loaded: what a stage in flight is held against.
+fn read_team(bound: bool) -> (TeamRead, Option<team::Loaded>) {
     if !bound {
-        return TeamRead::Unbound;
+        return (TeamRead::Unbound, None);
     }
     match team::load(team::From::Config) {
-        Ok(loaded) => TeamRead::Loaded {
-            commit: loaded.commit,
-            roles: loaded
-                .team
-                .roles
-                .iter()
-                .map(|role| (role.name.clone(), role.commit.clone()))
-                .collect(),
-            flow_labels: loaded
-                .team
-                .workflows
-                .iter()
-                .map(|workflow| workflow.flow_label())
-                .collect(),
-        },
-        Err(error) => match error.downcast::<Refused>() {
-            Ok(refused) => TeamRead::Faulty { name: refused.team, faults: refused.faults },
-            Err(error) => TeamRead::Unread(format!("{error:#}")),
-        },
+        Ok(loaded) => {
+            let workflows = loaded.team.workflows.iter();
+            let flow_labels = workflows.map(|workflow| workflow.flow_label()).collect();
+            (TeamRead::Loaded { flow_labels }, Some(loaded))
+        }
+        Err(error) => {
+            let read = match error.downcast::<Refused>() {
+                Ok(refused) => TeamRead::Faulty { name: refused.team, faults: refused.faults },
+                Err(error) => TeamRead::Unread(format!("{error:#}")),
+            };
+            (read, None)
+        }
     }
+}
+
+/// What of the team and the role a stage started `under` has moved since, in
+/// `team` as it stands at its head: the team first. A role the team no longer
+/// names has no head to have moved to.
+fn read_moved(team: &team::Loaded, under: &Under) -> Vec<Moved> {
+    let mut moved = vec![];
+    if let Some(head) = team.commit.as_ref().filter(|_| team.moved(&under.team_commit)) {
+        let started = under.team_commit.clone();
+        moved.push(Moved { which: "the team".to_string(), started, head: head.clone() });
+    }
+    let role = team.team.roles.iter().find(|role| role.name == under.role);
+    if let Some(role) = role.filter(|role| team.role_moved(role, &under.role_commit)) {
+        moved.push(Moved {
+            which: format!("the role `{}`", role.name),
+            started: under.role_commit.clone(),
+            head: role.commit.clone(),
+        });
+    }
+    moved
 }
 
 /// The claims of `instance` in `set`, each with what orca and the remote say
 /// of its worker. Whatever cannot be asked is left unsaid: one claim that
-/// cannot be read does not cost the answer.
-fn read_held(fleet: &Fleet, set: &WorkingSet, stood: &[Stood]) -> Vec<Held> {
+/// cannot be read does not cost the answer. `team` is the repo's, where it
+/// loaded: what each stage in flight started under is held against it.
+fn read_held(
+    fleet: &Fleet,
+    set: &WorkingSet,
+    stood: &[Stood],
+    team: Option<&team::Loaded>,
+) -> Vec<Held> {
     let source = Source::of(&fleet.repo).ok();
     let gate = GateCommand::new(&fleet.config.gate_command);
     let read = |mine: &afkconvoy_core::plan::Mine| {
@@ -817,6 +839,10 @@ fn read_held(fleet: &Fleet, set: &WorkingSet, stood: &[Stood]) -> Vec<Held> {
             held_for: stamped.and_then(|owner| stamp_age(owner.ts, fleet.now)),
             worker,
             worktree: worktree.map(|worktree| worktree.path),
+            moved: match (&under, team) {
+                (Some(under), Some(team)) => read_moved(team, under),
+                _ => vec![],
+            },
             under,
             gate: green.map(|green| green.at()),
         }
@@ -850,8 +876,8 @@ fn read_state(now: u64, run: &mut Run) -> Result<State> {
     };
     let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
     let stood = flows.stood();
-    let held = read_held(&fleet, &set, &stood);
-    let team = read_team(fleet.config.bound.is_some());
+    let (team, loaded) = read_team(fleet.config.bound.is_some());
+    let held = read_held(&fleet, &set, &stood, loaded.as_ref());
     Ok(State { set, held, stood, team, ready_label: fleet.config.ready_label.clone() })
 }
 
@@ -1077,11 +1103,7 @@ mod tests {
     }
 
     fn team() -> TeamRead {
-        TeamRead::Loaded {
-            commit: Some("team-1".into()),
-            roles: vec![("dev".into(), "dev-1".into()), ("reviewer".into(), "rev-1".into())],
-            flow_labels: vec!["flow:feature".into()],
-        }
+        TeamRead::Loaded { flow_labels: vec!["flow:feature".into()] }
     }
 
     /// A claim at work on `issue`, its worker busy in its worktree.
@@ -1097,6 +1119,7 @@ mod tests {
             worker: Some(WorkerState::Busy),
             worktree: Some(PathBuf::from(format!("/wt/issue-{issue}"))),
             under: None,
+            moved: vec![],
             gate: None,
         }
     }
@@ -1558,17 +1581,26 @@ mod tests {
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
     }
 
-    #[test]
-    fn a_head_that_moved_since_a_stage_in_flight_started_is_said_and_no_more() {
-        let mut state = state();
-        state.team = team();
-        let under = |role_commit: &str, team_commit: &str| Under {
+    fn under() -> Under {
+        Under {
             stage: "build".into(),
             role: "dev".into(),
-            role_commit: role_commit.into(),
-            team_commit: team_commit.into(),
-        };
-        state.held = vec![Held { under: Some(under("dev-0", "team-0")), ..held(3) }];
+            role_commit: "dev-0".into(),
+            team_commit: "team-0".into(),
+        }
+    }
+
+    fn moved(which: &str, started: &str, head: &str) -> Moved {
+        Moved { which: which.into(), started: started.into(), head: head.into() }
+    }
+
+    #[test]
+    fn what_moved_since_a_stage_in_flight_started_is_said_and_no_more() {
+        let mut state = state();
+        state.team = team();
+        let both =
+            vec![moved("the team", "team-0", "team-1"), moved("the role `dev`", "dev-0", "dev-1")];
+        state.held = vec![Held { under: Some(under()), moved: both.clone(), ..held(3) }];
         let found = found(&host(), &run(vec![]), &state);
         assert_eq!(
             fixes(&found, "the team moved since the stage `build` of #3 started"),
@@ -1580,12 +1612,12 @@ mod tests {
         );
         assert_eq!(found[1].evidence, "it started under dev-0; the head is dev-1");
         assert!(found.iter().all(|finding| finding.severity == Severity::Info));
-        // started under the heads, or another role's head moved: none
-        state.held = vec![Held { under: Some(under("dev-1", "team-1")), ..held(3) }];
+        // a stage neither has moved under: none
+        state.held = vec![Held { under: Some(under()), ..held(3) }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
         // a claim that is no longer at work says nothing of where it started
         state.held =
-            vec![Held { status: Status::Closed, under: Some(under("dev-0", "team-0")), ..held(3) }];
+            vec![Held { status: Status::Closed, under: Some(under()), moved: both, ..held(3) }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
     }
 
@@ -1600,12 +1632,8 @@ mod tests {
         state.team = team();
         state.stood = vec![Stood { rework: (2, 0), ..stood(7) }];
         state.held = vec![Held {
-            under: Some(Under {
-                stage: "build".into(),
-                role: "dev".into(),
-                role_commit: "dev-0".into(),
-                team_commit: "team-1".into(),
-            }),
+            under: Some(under()),
+            moved: vec![moved("the role `dev`", "dev-0", "dev-1")],
             ..held(7)
         }];
         state.set.locks = vec![9];
