@@ -50,7 +50,7 @@ lock_label: fleet-lock            # an open issue carrying this is a fleet lock
 
 A repo may also name a team, which makes it a bound repo: its issues then pass through the stages of a workflow, each performed by a worker in its own role. See [Bind a repo to a team](#bind-a-repo-to-a-team). A repo that names no team is unbound and works as described here.
 
-When the fault is one every issue shares — the base branch is broken — put the lock label on the issue that carries the fix, or have a worker run `afkconvoy lock --issue <n>`. While that issue is open the fleet works lock issues only: nothing else is dispatched, no PR of another issue joins the landing train, and the workers already running are left alone, what they declared being acted on afterwards. Closing the issue ends the lock; `plan` and every tick say which lock stands.
+When the fault is one every issue shares — the base branch is broken — put the lock label on the issue that carries the fix, or have a worker run `afkconvoy lock --issue <n>`. While that issue is open the fleet works lock issues only: nothing else is dispatched, no PR of another issue joins the landing train, and the workers already running are left alone, what they declared being acted on afterwards — but for a stage that declared `escalate` or went silent before the lock closed: a broken base branch explains that, so the stage runs again instead of going to a human. A worker whose gate is red while a lock stands is told so by `afkconvoy gate`. Closing the issue ends the lock; `plan` and every tick say which lock stands.
 
 Then:
 

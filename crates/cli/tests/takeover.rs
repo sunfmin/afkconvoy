@@ -176,7 +176,10 @@ fn a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat() {
         .afk_lines(&[&args[..], &["--second-ms", "0", "--ticks", "2", "--now", "1060"]].concat());
     assert_eq!(lines[0], "start: took #3, #7, #9 stamped with this host");
     // over its bound of two, it continues what it took and takes nothing new
-    assert_eq!(lines[1], "tick 1: continued #3, #7, #9 · holding 3/2 · frontier 1 · next in 90s");
+    assert_eq!(
+        lines[1],
+        "tick 1: continued #3, #7, #9 · holding 2/2 · 1 past the bound · frontier 1 · next in 90s"
+    );
     assert!(!lines[2].contains("dispatched"), "{}", lines[2]);
     assert!(!lines.iter().skip(1).any(|line| line.starts_with("start:")), "taken once: {lines:?}");
     assert_eq!(
