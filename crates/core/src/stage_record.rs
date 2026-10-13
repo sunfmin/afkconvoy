@@ -7,6 +7,7 @@
 use flux_rs::attrs::*;
 use flux_rs::macros::qualifier;
 
+use crate::lock;
 use crate::position::{Declared, Place, Position, Reason};
 use crate::prompt::quoted;
 use crate::record;
@@ -19,6 +20,8 @@ pub const STAGE_RECORD: &str = "convoy:stage";
 pub const STAGE_LABEL: &str = "stage:";
 /// Who a stage record says left it, when a consult did.
 const CONSULT: &str = "consult";
+/// Who a stage record says left it, when the fleet did.
+const FLEET: &str = "fleet";
 
 /// What a stage record states of its stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +30,9 @@ pub enum Stated {
     Declared(Declared),
     /// A human sent the issue to the stage.
     Sent,
+    /// A fleet lock that explains what stopped the stage has closed: the
+    /// stage runs again.
+    LockClosed,
 }
 
 impl Stated {
@@ -34,12 +40,15 @@ impl Stated {
         match self {
             Stated::Declared(declared) => declared.word(),
             Stated::Sent => "sent",
+            Stated::LockClosed => "lock-closed",
         }
     }
 
     pub fn read(word: &str) -> Option<Stated> {
-        if word == Stated::Sent.word() {
-            return Some(Stated::Sent);
+        for stated in [Stated::Sent, Stated::LockClosed] {
+            if word == stated.word() {
+                return Some(stated);
+            }
         }
         Declared::read(word).map(Stated::Declared)
     }
@@ -61,6 +70,8 @@ pub enum Author {
     },
     /// A human, through the fleet, on an issue nobody held.
     Human,
+    /// The fleet itself, as a fleet lock closed.
+    Fleet,
 }
 
 impl Author {
@@ -69,6 +80,7 @@ impl Author {
             Author::Worker { consult: true, .. } => CONSULT,
             Author::Worker { consult: false, .. } => "worker",
             Author::Human => HUMAN,
+            Author::Fleet => FLEET,
         }
     }
 }
@@ -89,11 +101,24 @@ pub struct StageRecord {
 }
 
 impl StageRecord {
-    /// The claim a worker declared it under; `None` of a human's.
+    /// The record the fleet leaves as `stage` runs again, the closed lock
+    /// `lock` having explained what stopped it (`lock::explains`).
+    pub fn lock_closed(stage: &str, lock: u64) -> StageRecord {
+        StageRecord {
+            stage: stage.to_string(),
+            stated: Stated::LockClosed,
+            by: Author::Fleet,
+            blocked_by: vec![],
+            text: lock::closed_text(lock),
+        }
+    }
+
+    /// The claim a worker declared it under; `None` of a human's and of the
+    /// fleet's.
     pub fn claim(&self) -> Option<&str> {
         match &self.by {
             Author::Worker { claim, .. } => Some(claim),
-            Author::Human => None,
+            Author::Human | Author::Fleet => None,
         }
     }
 
@@ -111,6 +136,9 @@ impl StageRecord {
         let (stage, word) = (&self.stage, self.stated.word());
         match (&self.by, self.stated) {
             (_, Stated::Sent) => format!("a human sent this issue to the stage `{stage}`"),
+            (_, Stated::LockClosed) | (Author::Fleet, _) => {
+                format!("a fleet lock has closed, and the stage `{stage}` runs again")
+            }
             (Author::Human, Stated::Declared(Declared::Ruling)) => {
                 format!("a human ruled on the stage `{stage}`, which runs again under the ruling")
             }
@@ -142,6 +170,7 @@ impl StageRecord {
                 (claim.as_str(), role_commit.as_str(), team_commit.as_str(), by)
             }
             Author::Human => ("", "", "", HUMAN),
+            Author::Fleet => ("", "", "", FLEET),
         };
         let marker = record::marker(
             STAGE_RECORD,
@@ -167,6 +196,7 @@ impl StageRecord {
         let text = rest.split_once("\n\n").map_or("", |(_, text)| text);
         let by = match fields.get("by") {
             Some(HUMAN) => Author::Human,
+            Some(FLEET) => Author::Fleet,
             Some(by) if by != CONSULT => return None,
             by => Author::Worker {
                 consult: by.is_some(),
@@ -214,6 +244,9 @@ pub enum Reading {
     /// A verdict was already declared under its claim. A claim is dispatched
     /// to one stage, and that stage has ended.
     ClaimSpent,
+    /// The fleet's, as a fleet lock closed: the stage the issue was at runs
+    /// again.
+    LockClosed,
 }
 
 impl Reading {
@@ -224,6 +257,7 @@ impl Reading {
             Reading::OtherStage => "other-stage",
             Reading::UnknownStage => "unknown-stage",
             Reading::ClaimSpent => "claim-spent",
+            Reading::LockClosed => "lock-closed",
         }
     }
 }
@@ -251,8 +285,9 @@ pub struct History<'w> {
 /// is at, and sends it to any stage; ruling and sending put the issue at the
 /// stage, to be performed, with both rework counts started over. A record
 /// naming a stage the workflow does not have escalates the issue: the
-/// workflow changed, and nothing is guessed (docs/adr/0010). Every other
-/// record changes nothing.
+/// workflow changed, and nothing is guessed (docs/adr/0010). The fleet's
+/// record of a lock that closed sets aside the `escalate` of the stage the
+/// issue is at (`Place::again`). Every other record changes nothing.
 #[spec(fn(&Workflow[@w], &[StageRecord]) -> History[w.n, w.roles])]
 pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'w> {
     let mut place = Place::enter(workflow);
@@ -280,6 +315,9 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
                 place = place.put(stage);
                 rounds.clear();
                 Reading::Verdict
+            } else if record.stated == Stated::LockClosed {
+                place = place.again();
+                Reading::LockClosed
             } else if let Stated::Declared(declared) = record.stated {
                 if let Some(claim) = record.claim() {
                     spent.push(claim);
@@ -329,6 +367,27 @@ impl History<'_> {
             }
         }
         None
+    }
+
+    /// Which of `records` — the ones this was read from — is the `escalate`
+    /// a fleet lock may explain: the one the worker of the stage the issue
+    /// is at declared, which left it with that stage's consult or with a
+    /// human. `None` anywhere else, and once a consult has had its word.
+    pub fn stage_escalate(&self, records: &[StageRecord]) -> Option<usize> {
+        let asked = matches!(
+            self.place.position,
+            Position::Consult(..) | Position::Escalating(_, Reason::Verdict)
+        );
+        let mut last = None;
+        for (at, reading) in self.readings.iter().enumerate() {
+            if *reading == Reading::Verdict {
+                last = Some(at);
+            }
+        }
+        let at = last.filter(|_| asked)?;
+        let record = records.get(at)?;
+        let own = matches!(record.by, Author::Worker { consult: false, .. });
+        (own && record.stated == Stated::Declared(Declared::Escalate)).then_some(at)
     }
 
     /// The rework a breaker stopped, as the human it is handed to is told

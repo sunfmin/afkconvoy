@@ -10,7 +10,7 @@ use afkconvoy_core::wake::turn;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::advance::{advance, hand_to_human};
+use crate::advance::{advance, hand_to_human, run_again_unclaimed};
 use crate::board::show;
 use crate::claims::{Me, beat};
 use crate::dispatch::{Agent, StartFrom, dispatch};
@@ -90,6 +90,8 @@ fn carry_out(
         TickStep::Escalate { issue } => {
             let calling = read.set.escalating.iter().find(|calling| calling.number == issue);
             match calling {
+                // Nothing was handed over: the step did not do what it names.
+                Some(_) if run_again_unclaimed(fleet, read.flows, issue)? => Ok(Outcome::Nothing),
                 Some(calling) => {
                     let rounds = read.flows.rounds(issue);
                     hand_to_human(fleet, me, issue, &calling.reason, rounds.as_deref())
@@ -190,6 +192,25 @@ impl Ticked {
         let mut panel = panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did);
         panel.held = self.pass.held;
         panel
+    }
+
+    /// The claims held, as the line says them: those that take a slot against
+    /// the `concurrency` they are held under, then the ones a fleet lock has
+    /// the tick leave alone, which take none, then those past the bound — a
+    /// start takes every claim stamped with its host, whatever the bound. So
+    /// the first never shows more held than its bound.
+    fn holding(&self) -> Vec<String> {
+        let left_alone = self.set.left_alone().min(self.pass.held);
+        let concurrency = self.bound.saturating_sub(self.set.left_alone());
+        let taking = self.pass.held - left_alone;
+        let mut parts = vec![format!("holding {}/{concurrency}", taking.min(concurrency))];
+        if left_alone > 0 {
+            parts.push(format!("{left_alone} left alone"));
+        }
+        if taking > concurrency {
+            parts.push(format!("{} past the bound", taking - concurrency));
+        }
+        parts
     }
 
     pub fn json(&self) -> Value {
@@ -311,7 +332,7 @@ impl Ticked {
         if parts.len() == lead && self.failures.is_empty() {
             parts.push("nothing to do".to_string());
         }
-        parts.push(format!("holding {}/{}", self.pass.held, self.bound));
+        parts.extend(self.holding());
         parts.push(format!("frontier {}", self.pass.frontier_remaining));
         for failure in &self.failures {
             let (word, issue) = words(failure.step);

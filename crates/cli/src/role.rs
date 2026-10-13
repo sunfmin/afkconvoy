@@ -88,7 +88,9 @@ impl Staged {
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
         Ok(Staged {
             verdicts: verdicts
-                .filter(|(_, reading)| matches!(reading, Reading::Verdict | Reading::Sent))
+                .filter(|(_, reading)| {
+                    matches!(reading, Reading::Verdict | Reading::Sent | Reading::LockClosed)
+                })
                 .map(|(verdict, _)| verdict)
                 .collect(),
             issue,

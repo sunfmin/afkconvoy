@@ -1,8 +1,8 @@
 //! Stands in for `gh` in the tests: GitHub's issues, pull requests and comments
 //! as one JSON file (`CONVOY_FAKE_GH`), the code in the bare repo it names.
 //!
-//! State: `issues` [{number, title, labels: [name…], state, state_reason?,
-//! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url, at?}]}, `prs` [{number, headRefName, headRefOid, body, state,
+//! State: `issues` [{number, title, labels: [name…], state, state_reason?, closed_at?,
+//! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url, at?}]}, `now` the time a comment posted here is written at, when there is one, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail. `repos` {owner/repo: the git repo that
 //! stands in for it}: the other repos GitHub holds, which `repo clone` clones and
@@ -13,7 +13,9 @@
 
 mod fake;
 
-use afkconvoy::gh::{BLOCKED_BY_JQ, COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, LABELS_JQ, PR_FIELDS};
+use afkconvoy::gh::{
+    BLOCKED_BY_JQ, CLOSED_JQ, COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, LABELS_JQ, PR_FIELDS,
+};
 use fake::State;
 use serde_json::{Value, json};
 
@@ -268,6 +270,23 @@ fn api(st: &mut State) -> ! {
             st.doc["issues"].as_array_mut().unwrap().push(issue);
             st.finish(&number.to_string(), 0, "")
         }
+        ["issues"] if query.contains("state=closed") => {
+            assert!(st.has("--paginate"), "{:?}", st.argv);
+            assert_eq!(jq, Some(CLOSED_JQ), "fake gh: unsupported jq");
+            let label = query.split('&').find_map(|field| field.strip_prefix("labels="));
+            let label = unescaped(label.expect("the closed issues of one label"));
+            let rows: Vec<String> = st.doc["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|issue| !is_open(issue))
+                .filter(|issue| issue["labels"].as_array().unwrap().contains(&json!(label)))
+                .map(|issue| {
+                    json!({"number": issue["number"], "at": issue["closed_at"]}).to_string()
+                })
+                .collect();
+            st.finish(&rows.join("\n"), 0, "")
+        }
         ["issues"] => {
             assert!(query.contains("state=open") && st.has("--paginate"), "{:?}", st.argv);
             assert_eq!(jq, Some(ISSUES_JQ), "fake gh: unsupported jq");
@@ -418,7 +437,11 @@ fn api(st: &mut State) -> ! {
             if !rows.is_array() {
                 *rows = json!([]);
             }
-            rows.as_array_mut().unwrap().push(json!({"id": id, "body": body, "html_url": url}));
+            let at = st.doc["now"].clone();
+            let rows = &mut st.doc["comments"][*number];
+            rows.as_array_mut()
+                .unwrap()
+                .push(json!({"id": id, "body": body, "html_url": url, "at": at}));
             st.finish(&json!({"id": id, "html_url": url}).to_string(), 0, "")
         }
         ["issues", number, "comments"] => {

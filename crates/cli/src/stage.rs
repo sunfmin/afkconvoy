@@ -164,7 +164,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
                 Author::Worker { role_commit, team_commit, .. } => {
                     (Some(role_commit), Some(team_commit))
                 }
-                Author::Human => (None, None),
+                Author::Human | Author::Fleet => (None, None),
             };
             json!({"stage": record.stage, "verdict": record.stated.word(),
                 "reads": reading.word(), "by": record.by.word(), "claim": record.claim(),
@@ -449,6 +449,24 @@ impl Flows {
             said: verdict.and_then(|at| issue.urls.get(at).cloned()),
             rounds: history.rounds_said(&issue.records, &issue.urls),
         })
+    }
+
+    /// The `escalate` on issue `number` a fleet lock may explain
+    /// (`History::stage_escalate`) → the stage that declared it, and when,
+    /// where GitHub said. `None` where the issue's last word is no such
+    /// `escalate`.
+    pub fn stage_escalate(&self, number: u64) -> Option<(String, Option<u64>)> {
+        let issue = self.issues.iter().find(|issue| issue.number == number)?;
+        let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
+        let at = history(workflow, &issue.records).stage_escalate(&issue.records)?;
+        Some((issue.records.get(at)?.stage.clone(), issue.at.get(at).copied().flatten()))
+    }
+
+    /// Whether `record` is the last stage record issue `number` was read
+    /// with: what was left once is not left again.
+    pub fn ends_with(&self, number: u64, record: &StageRecord) -> bool {
+        let issue = self.issues.iter().find(|issue| issue.number == number);
+        issue.is_some_and(|issue| issue.records.last() == Some(record))
     }
 
     /// Every round of the rework a breaker stopped on issue `number`, as the

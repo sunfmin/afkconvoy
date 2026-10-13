@@ -3,7 +3,9 @@
 
 mod common;
 
-use common::{World, write};
+use std::path::PathBuf;
+
+use common::{World, git, write};
 use serde_json::{Value, json};
 
 const AGENT: [&str; 2] = ["--worker-command", "agent"];
@@ -210,4 +212,242 @@ fn an_unbound_repo_names_its_own_lock_label_and_its_worker_is_on_record_with_no_
     let plan = world.afk(&["plan", "--now", "1000"]).ok();
     assert_eq!(plan["locks"], json!([3]));
     assert_eq!(numbers(&plan["frontier"]), [3]);
+}
+
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+/// `build` names a consult; `review` names none.
+const FEATURE: &str = "\
+```yaml
+stages:
+  - name: build
+    by: dev
+    do: implement
+    escalate: { to: reviewer, do: rule }
+    on: { pass: review }
+  - name: review
+    by: reviewer
+    do: review
+    writes: false
+    on: { pass: done, reject: build }
+```
+";
+
+/// A world whose repo is bound to a team with the one workflow `feature`,
+/// and runs three workers at once.
+fn bound() -> World {
+    let world = World::new();
+    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
+    let reviewer = [
+        (".claude/skills/review/SKILL.md", "review\n"),
+        (".claude/skills/rule/SKILL.md", "rule\n"),
+    ];
+    world.repo("acme/reviewer", &reviewer);
+    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
+                  concurrency: 3\n```\n";
+    write(&world.clone, "docs/agents/afkconvoy.md", config);
+    git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world
+}
+
+/// One tick of a bound repo at `now`, every worker that has not stopped
+/// being at work → what it did that came to anything, but for the boards and
+/// the `stage:` labels.
+fn at_work(world: &World, now: u64) -> Vec<String> {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            let at_work = terminal["agent"].is_null() || terminal["agent"]["state"] == "working";
+            if terminal["open"] == true && !terminal["command"].is_null() && at_work {
+                terminal["agent"] = json!({"state": "working", "stateStartedAt": now * 1000});
+                terminal["lastOutputAt"] = json!(now * 1000);
+            }
+        }
+    });
+    worked(&tick(world, now))
+}
+
+fn worked(ticked: &Value) -> Vec<String> {
+    let steps = ticked["did"].as_array().unwrap().iter();
+    let kept = steps.filter(|step| {
+        !["board", "stage_label", "heartbeat"].contains(&step["do"].as_str().unwrap())
+            && step["outcome"] != "nothing"
+    });
+    kept.map(|step| {
+        format!("{} {} {}", step["do"].as_str().unwrap(), step["issue"], step["outcome"])
+    })
+    .map(|line| line.replace('"', ""))
+    .collect()
+}
+
+/// Declares `verdict` for `stage` of `issue` at `now`, as the stage's worker
+/// would.
+fn declare(world: &World, now: u64, issue: u64, stage: &str, verdict: &str) {
+    world.with_gh(|gh| gh["now"] = json!(now));
+    let issue = issue.to_string();
+    let line = ["verdict", verdict, "--issue", &issue, "--stage", stage, "--text", "Said."];
+    let commits = ["--role-commit", "r1", "--team-commit", "t1"];
+    let declared = world.afk(&[&line[..], &commits].concat()).ok();
+    assert_eq!(declared["declared"], true, "{declared}");
+}
+
+/// Closes the lock `number` at `now`.
+fn close_lock(world: &World, number: u64, now: u64) {
+    world.with_gh(|gh| {
+        gh["now"] = json!(now);
+        for issue in gh["issues"].as_array_mut().unwrap() {
+            if issue["number"] == number {
+                issue["state"] = json!("closed");
+                issue["closed_at"] = json!(now);
+            }
+        }
+    });
+}
+
+fn position(world: &World, issue: u64) -> (String, String, u64) {
+    let shown = world.afk(&["show", "--issue", &issue.to_string()]).ok();
+    let at = &shown["position"];
+    let word = |value: &Value| value.as_str().unwrap().to_string();
+    (word(&at["is"]), word(&at["stage"]), shown["rework"]["had"].as_u64().unwrap())
+}
+
+/// The brief of the worker last started on `issue`.
+fn brief(world: &World, issue: u64) -> String {
+    let orca = world.orca();
+    let rows = orca["worktrees"].as_array().unwrap();
+    let row = rows.iter().rev().find(|row| row["linkedIssue"] == issue).expect("a worktree");
+    let dir = PathBuf::from(row["path"].as_str().unwrap());
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::read_to_string(git_dir.join("convoy-worker-prompt.md")).unwrap()
+}
+
+#[test]
+fn once_the_lock_closes_a_stage_that_declared_escalate_runs_again_and_a_pass_stands() {
+    let world = bound();
+    for issue in [7, 8, 9] {
+        world.issue(issue, &["flow:feature"]);
+    }
+    assert_eq!(at_work(&world, 1000), ["dispatch 7 done", "dispatch 8 done", "dispatch 9 done"]);
+    // #8 is at `review`, which names no consult, before the base branch breaks.
+    declare(&world, 1010, 8, "build", "pass");
+    assert_eq!(at_work(&world, 1020), ["advance 8 done"]);
+    assert_eq!(at_work(&world, 1030), ["dispatch 8 done"]);
+
+    // The base branch broke, and #20 is the lock. Both stages met the fault
+    // and said so; #9 built on, and passed.
+    world.issue(20, &["fleet-lock"]);
+    declare(&world, 1100, 7, "build", "escalate");
+    declare(&world, 1110, 8, "review", "escalate");
+    declare(&world, 1120, 9, "build", "pass");
+    assert_eq!(at_work(&world, 1200), [] as [&str; 0], "left alone while the lock stands");
+
+    close_lock(&world, 20, 1300);
+    assert_eq!(at_work(&world, 1400), ["advance 7 done", "advance 8 done", "advance 9 done"]);
+    // Neither is with a consult nor with a human: each is at its stage again,
+    // to be performed, and that is no rework.
+    assert_eq!(position(&world, 7), ("perform".into(), "build".into(), 0));
+    assert_eq!(position(&world, 8), ("perform".into(), "review".into(), 0));
+    for issue in [7, 8] {
+        let labels = world.labels(issue);
+        assert!(labels.contains(&"flow:feature".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"ready-for-human".to_string()), "{labels:?}");
+        let record = world.comments(issue).pop().unwrap();
+        assert!(record.starts_with("<!--convoy:stage stage="), "{record}");
+        assert!(record.contains(" verdict=lock-closed by=fleet-->"), "{record}");
+        assert!(record.contains("A fleet lock stood (#20) and has closed."), "{record}");
+    }
+    // A `pass` declared while the lock stood is advanced as ever.
+    assert_eq!(position(&world, 9), ("perform".into(), "review".into(), 0));
+    assert_eq!(world.claims(), []);
+
+    assert_eq!(at_work(&world, 1410), ["dispatch 7 done", "dispatch 8 done", "dispatch 9 done"]);
+    for (issue, stage) in [(7, "build"), (8, "review")] {
+        let told = brief(&world, issue);
+        assert!(told.contains(&format!("- **Stage:** `{stage}`, of the workflow")), "{told}");
+        assert!(told.contains("## After a fleet lock\n\nThis stage runs again"), "{told}");
+        assert!(told.contains("> A fleet lock stood (#20) and has closed."), "{told}");
+    }
+    assert!(!brief(&world, 9).contains("## After a fleet lock"));
+
+    // What a stage declares once the lock has closed is carried out as it
+    // stands: nothing runs a second time for the same lock.
+    declare(&world, 1500, 8, "review", "escalate");
+    assert_eq!(at_work(&world, 1510), ["advance 8 done"]);
+    assert!(world.labels(8).contains(&"ready-for-human".to_string()));
+    assert_eq!(at_work(&world, 1600), [] as [&str; 0]);
+}
+
+#[test]
+fn a_stage_that_stayed_silent_past_a_nudge_while_a_lock_stood_runs_again() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    world.with_gh(|gh| gh["now"] = json!(1000));
+    assert_eq!(worked(&tick(&world, 1000)), ["dispatch 7 done"]);
+    // Its worker stopped with nothing declared, and was told to carry on.
+    assert_eq!(worked(&tick(&world, 1390)), ["advance 7 nudged"]);
+    world.issue(20, &["fleet-lock"]);
+    assert_eq!(worked(&tick(&world, 1800)), [] as [&str; 0]);
+
+    close_lock(&world, 20, 1900);
+    assert_eq!(worked(&tick(&world, 2000)), ["advance 7 done"]);
+    assert_eq!(position(&world, 7), ("perform".into(), "build".into(), 0));
+    assert!(world.labels(7).contains(&"flow:feature".to_string()));
+    assert_eq!(world.claims(), []);
+    assert_eq!(worked(&tick(&world, 2010)), ["dispatch 7 done"]);
+    assert!(brief(&world, 7).contains("## After a fleet lock"));
+
+    // The worker that ran it again is nudged once, like any, and its silence
+    // after that is a failure no lock explains.
+    assert_eq!(worked(&tick(&world, 2400)), ["advance 7 nudged"]);
+    assert_eq!(worked(&tick(&world, 2800)), ["advance 7 done"]);
+    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    let records = world.comments(7).iter().filter(|c| c.contains("verdict=lock-closed")).count();
+    assert_eq!(records, 1);
+}
+
+#[test]
+fn a_red_gate_says_which_lock_stands_and_a_green_one_says_nothing_of_it() {
+    let world = World::new();
+    let red = world.root.join("red");
+    world.set_gate(&format!("test ! -f {}", red.display()));
+    world.issue(8, &["fleet-lock"]);
+    let green = world.afk(&["gate", "--train"]).ok();
+    assert_eq!((&green["status"], &green["locks"]), (&json!("green"), &Value::Null));
+    assert!(!green["detail"].as_str().unwrap().contains("lock"), "{green}");
+
+    std::fs::write(&red, "").unwrap();
+    let answer = world.afk(&["gate", "--train"]).ok();
+    assert_eq!((&answer["status"], &answer["locks"]), (&json!("red"), &json!([8])));
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.contains("A fleet lock stands (#8): the base branch may be what is red"));
+    assert!(detail.contains("declare nothing of it, stop, and run this again when you are told"));
+
+    // No lock stands: a red gate is the worker's own to fix.
+    world.close_issue(8);
+    let own = world.afk(&["gate", "--train"]).ok();
+    assert_eq!((&own["status"], &own["locks"]), (&json!("red"), &Value::Null));
+    assert!(own["detail"].as_str().unwrap().contains("fix it, commit, and run this again"));
+}
+
+#[test]
+fn the_line_of_a_tick_shows_the_claims_a_lock_leaves_alone_apart_from_the_bound() {
+    let world = World::new();
+    write(
+        &world.clone,
+        "docs/agents/afkconvoy.md",
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nconcurrency: 3\n```\n",
+    );
+    world.issue(3, &["ready-for-agent"]);
+    world.issue(5, &["ready-for-agent"]);
+    tick(&world, 1000);
+    world.issue(7, &["ready-for-agent", "fleet-lock"]);
+    let args = ["run", "--instance", "alpha", "--host", "h1", "--now", "1010"];
+    let paced = ["--ticks", "1", "--second-ms", "0"];
+    let (lines, _) = world.afk_lines(&[&args[..], &AGENT, &paced].concat());
+    let line = lines.iter().find(|line| line.starts_with("tick 1: ")).expect("a tick's line");
+    assert_eq!(
+        line,
+        "tick 1: FLEET LOCK #7 stands: only it is worked · dispatched #7 · holding 1/3 · \
+         2 left alone · frontier 0 · next in 90s"
+    );
 }

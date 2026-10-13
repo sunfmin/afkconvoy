@@ -287,6 +287,25 @@ impl<'w> Place<'w> {
         Place { position: at(stage), ..Place::enter(self.workflow) }
     }
 
+    /// Where the issue is once the `escalate` of its stage is set aside, a
+    /// fleet lock having explained it (`lock::explains`): at that stage again,
+    /// to be performed, with both counts as they were — it is no rework. An
+    /// issue that is neither with a consult nor with a human for that verdict
+    /// stays where it is.
+    #[spec(fn(Place[@p]) -> Place[p])]
+    pub fn again(self) -> Place<'w> {
+        let position = match self.position {
+            Position::Consult(stage, _) | Position::Escalating(stage, Reason::Verdict) => at(stage),
+            Position::Perform(..)
+            | Position::Waiting(_)
+            | Position::Parked(_)
+            | Position::Escalating(..)
+            | Position::Landing
+            | Position::Ended => self.position,
+        };
+        Place { position, ..self }
+    }
+
     /// The issue's rework in total, since it entered or a human last put it
     /// at a stage. The rework a breaker refused is not in it.
     pub fn rework(&self) -> u64 {
@@ -572,6 +591,24 @@ mod tests {
         // A consult's ruling is held to the breaker like any rework.
         let most = [&ruled[..], &[Escalate, Ruling, Escalate, Ruling]].concat();
         assert_eq!(at(&team, &most), "escalating at build: Breaker(Rework)");
+    }
+
+    #[test]
+    fn an_escalate_set_aside_puts_the_issue_at_its_stage_again_with_no_rework() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let again = |declared: &[Declared]| {
+            let place = position(workflow, declared).again();
+            (place.position.start().map(|(stage, _)| stage.name.clone()), place.rework())
+        };
+        // With a human, and with the consult `build` names.
+        assert_eq!(again(&[Escalate]), (Some("plan".into()), 0));
+        assert_eq!(again(&[Pass, Pass, Reject, Escalate]), (Some("build".into()), 1));
+        // Nothing else is set aside: a breaker, a consult's word, an end.
+        for stands in [&[Reject][..], &[Pass, Escalate, Escalate], &[AlreadySatisfied], &[Pass]] {
+            let place = position(workflow, stands);
+            assert_eq!(place.clone().again(), place, "{stands:?}");
+        }
     }
 
     #[test]

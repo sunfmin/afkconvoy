@@ -236,6 +236,21 @@ to do, or go on with what is left. What the stage said as it parked:
 {reason}
 ";
 
+/// What a stage running again after a fleet lock closed is told: what
+/// stopped it before may have been the base branch, and is to be looked at
+/// again on the base branch as it is now.
+const LOCK_CLOSED: &str = "
+## After a fleet lock
+
+This stage runs again: a fleet lock stood while it was at work, and has closed. A lock is raised
+when the base branch is broken for every issue, so what this stage declared before, or how it
+stopped, may have been that fault and not this issue's. Take in the base branch as it is now and
+judge again from there; conclude nothing from a gate that was red while the lock stood. What the
+fleet recorded:
+
+{reason}
+";
+
 /// What a stage that may commit is told of the gate: a PR it wrote is handed
 /// on green (docs/adr/0010).
 const GATE_BEFORE_PASS: &str = "
@@ -378,7 +393,9 @@ fn records_said(records: &[Said]) -> String {
         let (stage, word) = (&said.record.stage, said.record.stated.word());
         let line = match said.record.by {
             Author::Worker { consult: false, .. } => format!("`{stage}` declared `{word}`"),
-            Author::Worker { consult: true, .. } | Author::Human => said.record.headline(),
+            Author::Worker { consult: true, .. } | Author::Human | Author::Fleet => {
+                said.record.headline()
+            }
         };
         records_said.push_str(&format!("\n- {line} — {}", said.url));
     }
@@ -393,6 +410,7 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     let last = fields.records.last().map(|said| said.record);
     let (why, reason) = match last {
         Some(last) if last.stated == Stated::Sent => (SENT, quoted(&last.text)),
+        Some(last) if last.stated == Stated::LockClosed => (LOCK_CLOSED, quoted(&last.text)),
         Some(last) if last.puts() => (RULED, quoted(&last.text)),
         Some(last) if last.stated == Stated::Declared(Declared::Ruling) => {
             (CONSULTED, quoted(&last.text))

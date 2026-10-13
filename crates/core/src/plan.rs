@@ -220,20 +220,27 @@ impl WorkingSet {
         held
     }
 
+    /// How many claims of mine a standing fleet lock has a pass leave alone:
+    /// those on another issue whose worker is not on the train yet. None
+    /// while no lock stands.
+    pub fn left_alone(&self) -> usize {
+        let mut left_alone: usize = 0;
+        for mine in &self.mine {
+            let at_work = matches!(mine.status, Status::NoPr | Status::Joining | Status::AtStage);
+            if at_work && self.locked_out(mine.number) {
+                left_alone = left_alone.saturating_add(1);
+            }
+        }
+        left_alone
+    }
+
     /// The claims a pass may hold, in a fleet whose config allows
     /// `concurrency`: with a fleet lock standing, one more for each claim of
     /// mine the pass leaves alone. Nothing reads what their workers declare
     /// until the lock ends, so a lock issue that waited for one of their
     /// slots would wait for the lock it is there to end.
     pub fn bound(&self, concurrency: usize) -> usize {
-        let mut bound = concurrency;
-        for mine in &self.mine {
-            let at_work = matches!(mine.status, Status::NoPr | Status::Joining | Status::AtStage);
-            if at_work && self.locked_out(mine.number) {
-                bound = bound.saturating_add(1);
-            }
-        }
-        bound
+        concurrency.saturating_add(self.left_alone())
     }
 }
 

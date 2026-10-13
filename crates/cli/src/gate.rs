@@ -10,11 +10,14 @@ use std::time::{Duration, Instant};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{GateCommand, GreenRun, Ran, Recording, Tree, after_run, record_ref};
 use afkconvoy_core::layout::GATE_KIND;
+use afkconvoy_core::lock::named;
 use afkconvoy_core::train::{last_green, train_refs, under_repair};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
+use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
+use crate::lock::standing_locks;
 use crate::train::{Train, merge_in, unmerged};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
@@ -271,6 +274,9 @@ fn lands_behind(
 /// a rebase (`lands_behind`). So a conflict with what is on the train is met before the run,
 /// and a green run is of the very tree the PR joins the train with. A merge
 /// that conflicts is left in progress and no gate runs.
+///
+/// A red run with a fleet lock standing says which: the base branch may be
+/// what is red, and the worker is to declare nothing of it.
 pub fn gate(
     repo: &Repo,
     config: &Config,
@@ -303,7 +309,21 @@ pub fn gate(
         answer["merged"] = json!(merged);
     }
     let head = &run.head;
-    let detail = if !run.ran.green() {
+    // Soft: locks that cannot be read cost the worker only this warning.
+    let gh = GitHub { dir: repo.dir.clone() };
+    let locks = match run.ran.green() {
+        true => vec![],
+        false => standing_locks(&gh, config).unwrap_or_default(),
+    };
+    let detail = if !locks.is_empty() {
+        answer["locks"] = json!(locks);
+        format!(
+            "the gate is red — nothing is on record. A fleet lock stands ({}): the base branch \
+             may be what is red, and not your change — declare nothing of it, stop, and run \
+             this again when you are told to carry on",
+            named(&locks)
+        )
+    } else if !run.ran.green() {
         "the gate is red — nothing is on record; fix it, commit, and run this again".to_string()
     } else if run.green.is_none() {
         let why = if run.ran.clean_before {
