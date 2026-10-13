@@ -1,0 +1,532 @@
+//! pi is a harness (docs/adr/0013): a stage that names it gets a worker that
+//! is a pi session, started in its role's directory with what pi does not
+//! load from there added to its worker launch command — and a stage that
+//! names none is started as ever. The line is read off a stand-in orca, and
+//! then run with a stand-in pi, which loads the fleet's extension as pi does
+//! and hands it tool calls: what refuses them is the guard itself.
+
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use common::{World, git, write};
+use serde_json::{Value, json};
+
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+/// A workflow whose first stage is on pi and whose second names no harness.
+const FEATURE: &str = "\
+```yaml
+stages:
+  - name: build
+    by: dev
+    do: implement
+    harness: pi
+    model: openai/gpt-5.5
+    on: { pass: review }
+  - name: review
+    by: reviewer
+    do: review
+    writes: false
+    on: { pass: done, reject: build }
+```
+";
+/// A workflow whose one stage reviews, on pi: no model, and nothing written.
+const AUDIT: &str = "\
+```yaml
+stages:
+  - name: look
+    by: reviewer
+    do: review
+    harness: pi
+    writes: false
+    on: { pass: done }
+```
+";
+const SWEEP: &str = "```yaml\nby: dev\ndo: implement\nharness: pi\nevery: 1h\nmax_open: 1\n```\n";
+const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
+
+/// The fleet's extension for pi, as the tool carries it.
+const EXTENSION: &str = include_str!("../../core/src/harness/pi/extension.js");
+/// Where orca installs its own, under the home of its host's user.
+const ORCA_S: &str = ".pi/agent/extensions/orca-agent-status.ts";
+
+/// A world whose repo is bound to a team of two roles and two workflows, and
+/// whose own rules are in an `AGENTS.md`.
+fn bound() -> World {
+    let world = World::new();
+    world.repo(
+        "acme/dev",
+        &[("CLAUDE.md", "the rules of a dev\n"), (".claude/skills/implement/SKILL.md", "build\n")],
+    );
+    world.repo("acme/reviewer", &[(".claude/skills/review/SKILL.md", "review\n")]);
+    world.repo(
+        "acme/team",
+        &[
+            ("team.md", TEAM),
+            ("workflows/feature.md", FEATURE),
+            ("workflows/audit.md", AUDIT),
+            ("patrols/sweep.md", SWEEP),
+        ],
+    );
+    write(&world.clone, "docs/agents/afkconvoy.md", CONFIG);
+    write(&world.clone, "AGENTS.md", "the rules of the project\n");
+    git(&world.clone, &["add", "."]);
+    git(&world.clone, &["commit", "-q", "-m", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world
+}
+
+fn tick(world: &World, now: u64) -> common::Answer {
+    let now = now.to_string();
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now])
+}
+
+fn did(ticked: &Value) -> Vec<String> {
+    let steps = ticked["did"].as_array().unwrap();
+    steps
+        .iter()
+        .filter(|step| step["do"] != "board")
+        .map(|step| {
+            let issue = step["issue"].as_u64().map(|n| format!(" {n}")).unwrap_or_default();
+            format!("{}{issue} {}", step["do"].as_str().unwrap(), step["outcome"].as_str().unwrap())
+        })
+        .collect()
+}
+
+fn head(world: &World, repo: &str) -> String {
+    git(&world.root.join("github").join(repo), &["rev-parse", "HEAD"])
+}
+
+/// Where the fleet keeps its copy of `repo` at its head.
+fn copy(world: &World, repo: &str) -> PathBuf {
+    world.cache().join("afkconvoy/copies").join(repo).join(head(world, repo))
+}
+
+/// The directory the fleet keeps for pi on this world's host.
+fn kept(world: &World) -> PathBuf {
+    world.cache().join("afkconvoy/harness/pi")
+}
+
+fn worktree(world: &World, issue: u64) -> PathBuf {
+    let orca = world.orca();
+    let rows = orca["worktrees"].as_array().unwrap();
+    let row = rows.iter().rev().find(|row| row["linkedIssue"] == issue).expect("a worktree");
+    PathBuf::from(row["path"].as_str().unwrap())
+}
+
+/// The line the one terminal open in `dir` was started with.
+fn started(world: &World, dir: &Path) -> String {
+    let orca = world.orca();
+    let terminals = orca["terminals"].as_array().unwrap();
+    let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
+    let open: Vec<&Value> = here.filter(|t| t["open"] == true).collect();
+    assert_eq!(open.len(), 1, "{open:?}");
+    open[0]["command"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_stage_and_a_patrol_name_pi_and_pi_has_a_stock_worker_launch_command() {
+    let world = bound();
+    let read = world.afk(&["check"]).ok();
+    let stages = read["workflows"].as_array().unwrap().iter().flat_map(|workflow| {
+        let name = workflow["name"].as_str().unwrap().to_string();
+        let stages = workflow["stages"].as_array().unwrap().clone();
+        stages.into_iter().map(move |stage| {
+            format!("{name}/{}", stage["name"].as_str().unwrap())
+                + " on "
+                + stage["harness"].as_str().unwrap()
+        })
+    });
+    let mut stages: Vec<String> = stages.collect();
+    stages.sort();
+    assert_eq!(
+        stages,
+        ["audit/look on pi", "feature/build on pi", "feature/review on claude-code"]
+    );
+    assert_eq!(read["patrols"][0]["harness"], "pi");
+
+    // Nobody said what starts a pi worker: its stock command does, checked
+    // by the start beside Claude Code's — each asked for its own flags.
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let asked = world.shell_asked();
+    for question in ["type -- 'pi'", "pi --help", "claude --dangerously-skip-permissions --help"] {
+        assert!(asked.contains(&question.to_string()), "{question:?} is not in {asked:?}");
+    }
+    assert!(started(&world, &worktree(&world, 7)).contains(" && pi --approve "));
+
+    // A command that does not take what the fleet adds for pi starts nothing.
+    let world = bound();
+    world.issue(7, &["flow:audit"]);
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    let why = world.afk(&[&args[..], &["--worker-command", "pi=agent"]].concat()).error();
+    assert!(why.contains("`agent --help` names no --approve, no --no-skills,"), "{why}");
+    assert!(why.contains("the worker launch command of the harness `pi`"), "{why}");
+    assert!(why.contains("the stage `look` of the workflow `audit`"), "{why}");
+    assert!(world.worktrees().is_empty());
+}
+
+#[test]
+fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
+    let world = bound();
+    // What this host's user has of pi's: a login, a rule, a skill, settings,
+    // an extension of their own, and the one orca installed.
+    let home = world.home();
+    for (file, text) in [
+        (".pi/agent/auth.json", "{\"a\": \"login\"}\n"),
+        (".pi/agent/AGENTS.md", "the user's rules\n"),
+        (".pi/agent/settings.json", "{}\n"),
+        (".pi/agent/skills/theirs/SKILL.md", "theirs\n"),
+        (".pi/agent/extensions/theirs.ts", "// theirs\n"),
+        (ORCA_S, "// orca's\n"),
+    ] {
+        write(&home, file, text);
+    }
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+
+    let (role, dir, kept) = (copy(&world, "acme/dev"), worktree(&world, 7), kept(&world));
+    assert_eq!(
+        started(&world, &dir),
+        format!(
+            "cd '{role}' && export PI_CODING_AGENT_DIR='{kept}' AFKCONVOY_GUARD='{guard} guard' \
+             AFKCONVOY_WORKTREE='{worktree}' AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+             AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
+             AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
+             AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
+             AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
+             AFKCONVOY_HARNESS='pi' && pi --approve --no-skills --skill '{role}/.claude/skills' \
+             --extension '{kept}/afkconvoy.js' --model 'openai/gpt-5.5'",
+            guard = env!("CARGO_BIN_EXE_afkconvoy"),
+            role = role.display(),
+            kept = kept.display(),
+            worktree = dir.display(),
+            dev = head(&world, "acme/dev"),
+            team = head(&world, "acme/team"),
+        )
+    );
+    // Nothing was asked at its terminal: its question is answered on the
+    // line, and the worker backend was sent the brief's pointer and no key.
+    let sent: Vec<Vec<String>> = world
+        .orca_calls()
+        .into_iter()
+        .filter(|call| call.starts_with(&["terminal".to_string(), "send".to_string()]))
+        .collect();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].iter().any(|word| word.starts_with("Your task brief is the file ")));
+
+    // The fleet's own user directory for pi: the extension the tool carries,
+    // the user's login and orca's extension as links to theirs, and no
+    // models file, which the user has none of. Nothing else of the user's.
+    let mut held: Vec<String> = vec![];
+    for dir in [kept.clone(), kept.join("extensions")] {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            held.push(path.strip_prefix(&kept).unwrap().display().to_string());
+        }
+    }
+    held.sort();
+    assert_eq!(
+        held,
+        ["afkconvoy.js", "auth.json", "extensions", "extensions/orca-agent-status.ts"]
+    );
+    assert_eq!(std::fs::read_to_string(kept.join("afkconvoy.js")).unwrap(), EXTENSION);
+    let link = |name: &str| std::fs::read_link(kept.join(name)).unwrap();
+    assert_eq!(link("auth.json"), home.join(".pi/agent/auth.json"));
+    assert_eq!(link("extensions/orca-agent-status.ts"), home.join(ORCA_S));
+
+    // The next start follows what the user has by then: a login gone, the
+    // models they defined since, and an extension an older build left.
+    std::fs::remove_file(home.join(".pi/agent/auth.json")).unwrap();
+    std::fs::remove_file(home.join(ORCA_S)).unwrap();
+    write(&home, ".pi/agent/models.json", "{}\n");
+    std::fs::write(kept.join("afkconvoy.js"), "// an older build's\n").unwrap();
+    world.issue(8, &["flow:audit"]);
+    let ticked = did(&tick(&world, 1100).ok());
+    assert!(ticked.contains(&"dispatch 8 done".to_string()), "{ticked:?}");
+    assert!(kept.join("auth.json").symlink_metadata().is_err(), "a link to no login is left");
+    assert!(kept.join("extensions/orca-agent-status.ts").symlink_metadata().is_err());
+    assert_eq!(link("models.json"), home.join(".pi/agent/models.json"));
+    assert_eq!(std::fs::read_to_string(kept.join("afkconvoy.js")).unwrap(), EXTENSION);
+    // A stage that names no model names none to pi.
+    let line = started(&world, &worktree(&world, 8));
+    assert!(line.ends_with(&format!("--extension '{}/afkconvoy.js'", kept.display())), "{line}");
+}
+
+#[test]
+fn a_stage_that_names_no_harness_starts_its_worker_as_before() {
+    let world = bound();
+    // The first stage, on pi, passed: the second names no harness.
+    world.issue(7, &["flow:feature"]);
+    world.comment(
+        7,
+        "<!--convoy:stage stage=build verdict=pass claim=c0 role_commit=r team_commit=t \
+         harness=pi-->\nbuilt",
+    );
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+    let line = started(&world, &worktree(&world, 7));
+    let (role, team) = (copy(&world, "acme/reviewer"), copy(&world, "acme/team"));
+    let begins = format!(
+        "cd '{}' && export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
+         CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+         AFKCONVOY_STAGE='review' ",
+        role.display()
+    );
+    assert!(line.starts_with(&begins), "{line}");
+    let adds = format!(
+        " AFKCONVOY_HARNESS='claude-code' && claude --dangerously-skip-permissions --add-dir \
+         '{}' --add-dir '{}' --setting-sources project --settings '{{\"hooks\":",
+        worktree(&world, 7).display(),
+        team.display()
+    );
+    assert!(line.contains(&adds), "{line}");
+    assert!(!line.contains("PI_CODING_AGENT_DIR") && !line.contains("AFKCONVOY_GUARD"), "{line}");
+    // Nothing is kept for Claude Code, and nothing for pi until it is started.
+    assert!(!world.cache().join("afkconvoy/harness").exists());
+}
+
+/// A stand-in pi: it takes the flags the fleet adds, loads each extension
+/// named to it as pi does, and — in place of a model — hands the extensions
+/// each tool call of `STAND_IN_CALLS` and starts two runs. It prints what it
+/// was started with, what each call was answered, and the rules files loaded
+/// by the second run: the first of pi's two in the directory it starts in,
+/// and whatever an extension added.
+const STAND_IN_PI: &str = r#"#!/usr/bin/env node
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { pathToFileURL } from "node:url"
+
+const args = process.argv.slice(2)
+const started = { cwd: process.cwd(), userDir: process.env.PI_CODING_AGENT_DIR, flags: [],
+  skills: [], extensions: [], model: null }
+while (args.length > 0) {
+  const flag = args.shift()
+  if (flag === "--skill") started.skills.push(args.shift())
+  else if (flag === "--extension") started.extensions.push(args.shift())
+  else if (flag === "--model") started.model = args.shift()
+  else if (flag === "--approve" || flag === "--no-skills") started.flags.push(flag)
+  else { console.error(`pi: unknown option ${flag}`); process.exit(1) }
+}
+// What pi finds by itself in its user directory. Found, not run: the
+// stand-in runs no TypeScript.
+const own = join(started.userDir, "extensions")
+started.found = existsSync(own) ? readdirSync(own).sort() : []
+
+const handlers = { tool_call: [], before_agent_start: [] }
+const pi = { on: (name, handler) => handlers[name].push(handler) }
+for (const extension of started.extensions) {
+  // An extension that is not there, or does not load, is no session.
+  const loadable = join(mkdtempSync(join(tmpdir(), "stand-in-pi-")), "extension.mjs")
+  copyFileSync(extension, loadable)
+  ;(await import(pathToFileURL(loadable).href)).default(pi)
+}
+const ctx = { cwd: started.cwd }
+const answers = []
+for (const [toolName, input] of JSON.parse(process.env.STAND_IN_CALLS ?? "[]")) {
+  let answer = { ran: true }
+  for (const handler of handlers.tool_call) {
+    try {
+      const said = await handler({ type: "tool_call", toolName, toolCallId: "call", input }, ctx)
+      if (said?.block) answer = { ran: false, reason: said.reason }
+    } catch (error) {
+      // A handler that throws refuses the call, with what it threw.
+      answer = { ran: false, reason: String(error.message), threw: true }
+    }
+    if (!answer.ran) break
+  }
+  answers.push(answer)
+}
+const contextFiles = []
+for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+  const path = join(started.cwd, name)
+  if (existsSync(path)) { contextFiles.push({ path, content: readFileSync(path, "utf8") }); break }
+}
+const event = { type: "before_agent_start", systemPrompt: "", systemPromptOptions: { contextFiles } }
+for (let run = 0; run < 2; run++) for (const handler of handlers.before_agent_start) await handler(event, ctx)
+console.log(JSON.stringify({ started, answers, rules: contextFiles }))
+"#;
+
+/// Whether this host has a `node` to run the stand-in pi with.
+fn has_node() -> bool {
+    Command::new("node").arg("--version").output().is_ok_and(|out| out.status.success())
+}
+
+/// Runs `line`, the line a pi worker was started with, with the stand-in pi
+/// for `pi` and `calls` for the tool calls its model makes → what the
+/// stand-in printed. Nothing of this process's environment is the worker's
+/// but its PATH.
+fn under_pi(world: &World, line: &str, calls: &Value) -> Value {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = world.root.join("stand-in");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("pi"), STAND_IN_PI).unwrap();
+    std::fs::set_permissions(bin.join("pi"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new("/bin/sh")
+        .args(["-c", line])
+        .env_clear()
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env("STAND_IN_CALLS", calls.to_string())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{line}\n{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// What the guard answers Claude Code for the shell line `shell`, asked as
+/// its hook asks, under the facts of the worker `line` started: its exit
+/// code and what it said.
+fn claude_is_told(line: &str, shell: &str) -> (i32, String) {
+    use std::io::Write;
+    let mut steps = line.split(" && ");
+    let (enter, facts) = (steps.next().unwrap(), steps.next().unwrap());
+    let guard = format!(
+        "{enter} && {facts} && AFKCONVOY_HARNESS=claude-code '{}' guard",
+        env!("CARGO_BIN_EXE_afkconvoy")
+    );
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", &guard])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let described = json!({"tool_name": "Bash", "tool_input": {"command": shell}});
+    child.stdin.take().unwrap().write_all(described.to_string().as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out.status.code().unwrap(), String::from_utf8(out.stderr).unwrap().trim().to_string())
+}
+
+fn bash(line: &str) -> Value {
+    json!(["bash", {"command": line}])
+}
+
+#[test]
+fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
+    if !has_node() {
+        eprintln!("skipped: no `node` on PATH to run the stand-in pi with");
+        return;
+    }
+    let world = bound();
+    world.issue(7, &["flow:audit"]);
+    world.issue(8, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[..2], ["dispatch 7 done", "dispatch 8 done"], "{ticked}");
+    let (look, build) = (worktree(&world, 7), worktree(&world, 8));
+    let (reviews, writes) = (started(&world, &look), started(&world, &build));
+
+    // The stand-in was started as pi is: in the role's directory, under the
+    // fleet's own user directory, its question answered, with the role's
+    // skills and no others, the fleet's extension, and the stage's model.
+    let ran = under_pi(&world, &writes, &json!([]));
+    let role = copy(&world, "acme/dev");
+    assert_eq!(
+        ran["started"],
+        json!({"cwd": role, "userDir": kept(&world), "flags": ["--approve", "--no-skills"],
+            "skills": [role.join(".claude/skills")],
+            "extensions": [kept(&world).join("afkconvoy.js")],
+            "model": "openai/gpt-5.5", "found": []})
+    );
+    // Its rules are its role's, which pi loads itself, and the worktree's,
+    // which the extension adds — once, however many runs there are.
+    let rules: Vec<&str> = ran["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        rules,
+        [role.join("CLAUDE.md").to_str().unwrap(), build.join("AGENTS.md").to_str().unwrap()]
+    );
+    assert_eq!(ran["rules"][1]["content"], "the rules of the project\n");
+
+    // What every worker is refused, and — in a stage that writes nothing — a
+    // commit: each for the reason Claude Code is given.
+    let every = [
+        "gh pr merge 70 --squash",
+        "git push origin main",
+        "gh issue edit 7 --add-label flow:feature",
+        "gh issue edit 7 --remove-label flow:audit",
+    ];
+    let commit = "git add -A && git commit -m step";
+    let allowed = ["ls", "git status"];
+    for (line, refused) in
+        [(&writes, &every[..]), (&reviews, &[&every[..], &[commit]].concat()[..])]
+    {
+        let calls: Vec<Value> = refused.iter().chain(&allowed).map(|shell| bash(shell)).collect();
+        let ran = under_pi(&world, line, &json!(calls));
+        let answers = ran["answers"].as_array().unwrap();
+        for (shell, answer) in refused.iter().zip(answers) {
+            let (code, said) = claude_is_told(line, shell);
+            assert_eq!(code, 2, "{shell}: Claude Code is not refused it");
+            assert!(said.starts_with("afkconvoy guard: "), "{shell}: {said}");
+            assert_eq!(answer, &json!({"ran": false, "reason": said}), "{shell}");
+        }
+        for (shell, answer) in allowed.iter().zip(&answers[refused.len()..]) {
+            assert_eq!(answer, &json!({"ran": true}), "{shell}");
+        }
+    }
+    // A stage that writes may commit; and a tool that runs no shell line is
+    // the guard's to allow, whatever it is handed.
+    let calls = json!([bash(commit), ["write", {"path": "a", "content": "git push origin main"}]]);
+    let ran = under_pi(&world, &writes, &calls);
+    assert_eq!(ran["answers"], json!([{"ran": true}, {"ran": true}]));
+    let said = &under_pi(&world, &reviews, &json!([bash(commit)]))["answers"][0]["reason"];
+    assert!(
+        said.as_str().unwrap().contains("the stage `look` is marked `writes: false`: `git commit`"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
+    if !has_node() {
+        eprintln!("skipped: no `node` on PATH to run the stand-in pi with");
+        return;
+    }
+    let world = bound();
+    world.issue(8, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 8 done");
+    let line = started(&world, &worktree(&world, 8));
+    let calls = json!([bash("ls"), ["read", {"path": "README.md"}]]);
+    let answers = |line: &str| under_pi(&world, line, &calls)["answers"].clone();
+    assert_eq!(answers(&line), json!([{"ran": true}, {"ran": true}]));
+
+    let guard = format!("AFKCONVOY_GUARD='{} guard'", env!("CARGO_BIN_EXE_afkconvoy"));
+    assert!(line.contains(&guard), "{line}");
+    let refused = |(from, with): (&str, &str), why: &str| {
+        assert!(line.contains(from), "{from}: {line}");
+        let answers = answers(&line.replace(from, with));
+        for answer in answers.as_array().unwrap() {
+            assert_eq!(answer["ran"], false, "{with}: {answers}");
+            assert!(answer["reason"].as_str().unwrap().contains(why), "{with}: {answers}");
+        }
+        answers
+    };
+    // A guard that is not there, one that fails saying nothing, one that
+    // cannot read the stage, and one that never answers its name.
+    refused((&guard, "AFKCONVOY_GUARD='/nowhere/afkconvoy guard'"), "/nowhere/afkconvoy");
+    refused((&guard, "AFKCONVOY_GUARD='exit 1'"), "afkconvoy guard: it could not be asked");
+    refused(("AFKCONVOY_STAGE='build' ", ""), "AFKCONVOY_STAGE is not set");
+    refused(("AFKCONVOY_HARNESS='pi'", "AFKCONVOY_HARNESS='codex'"), "`codex` is no harness");
+    // With no line to ask it by, the extension refuses by throwing.
+    let unset = refused((&guard, "AFKCONVOY_NO_GUARD=''"), "AFKCONVOY_GUARD is not set");
+    assert_eq!(unset[0]["threw"], true);
+
+    // An extension that is not there is no session at all.
+    let gone = line.replace("/afkconvoy.js'", "/nothing.js'");
+    let bin = world.root.join("stand-in");
+    let out = Command::new("/bin/sh")
+        .args(["-c", &gone])
+        .env_clear()
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+}
