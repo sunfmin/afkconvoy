@@ -1,12 +1,14 @@
-//! The fleet's own copies of a team's repo and of each role's: one per commit,
-//! read-only, kept on this host (docs/adr/0009). A worker starts in one, so a
-//! push is the only way a change to a role reaches a worker, and the checkout
-//! a human edits is another.
+//! The fleet's own copies of a team's directory and of each role's: one per
+//! commit, read-only, kept on this host (docs/adr/0009). A worker starts in
+//! one, so a push is the only way a change to a role reaches a worker, and
+//! the checkout a human edits is another. A repo is fetched once per commit,
+//! and each directory is taken out of that fetch on its own: a worker is
+//! given its role's directory and nothing else of its repo (docs/adr/0014).
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use afkconvoy_core::config::RepoName;
+use afkconvoy_core::config::{RepoDir, RepoName};
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::gh::GitHub;
@@ -25,14 +27,17 @@ pub fn cache() -> Result<PathBuf> {
 }
 
 /// Where on this host the copies are kept.
+#[derive(Clone)]
 pub struct Copies {
     root: PathBuf,
 }
 
-/// One repo as it stood at one commit: plain files, with no git dir.
+/// One repo as it stood at one commit, or one directory taken out of it:
+/// plain files, with no git dir.
 #[derive(Debug, Clone)]
 pub struct Copy {
     pub dir: PathBuf,
+    /// The repo's commit, whichever of its directories this is.
     pub commit: String,
 }
 
@@ -57,6 +62,49 @@ impl Copies {
 
     fn at(&self, repo: &RepoName, commit: &str) -> Copy {
         Copy { dir: self.root.join(repo.as_str()).join(commit), commit: commit.to_string() }
+    }
+
+    /// The copy of the role's directory `dir` alone, taken out of `fetched`,
+    /// the copy of its repo: what a worker in the role starts in. Nothing
+    /// above the directory in its repo is in it or above it, and no
+    /// neighbour's. A role that is a whole repo is `fetched` itself.
+    pub fn role(&self, fetched: &Copy, dir: &RepoDir) -> Result<Copy> {
+        self.take(fetched, dir, "role", &[])
+    }
+
+    /// The copy of the team's directory `dir`, taken out of `fetched`, the
+    /// copy of its repo, without what is at each of `without`, a path from
+    /// `dir`. A team that is a whole repo holding none of them is `fetched`
+    /// itself.
+    pub fn team(&self, fetched: &Copy, dir: &RepoDir, without: &[PathBuf]) -> Result<Copy> {
+        self.take(fetched, dir, "team", without)
+    }
+
+    /// The copy of `dir` out of `fetched`, leaving out each of `without`, a
+    /// path from `dir`. It is kept beside `fetched`, named for the commit,
+    /// for `kind` — what the directory is copied as, which says what is left
+    /// out — and for its path: one already here is used as it is.
+    fn take(&self, fetched: &Copy, dir: &RepoDir, kind: &str, without: &[PathBuf]) -> Result<Copy> {
+        let from = fetched.dir.join(dir.path());
+        let there = |path: &PathBuf| from.join(path).symlink_metadata().is_ok();
+        if dir.path().is_empty() && !without.iter().any(there) {
+            return Ok(fetched.clone());
+        }
+        let repo = self.root.join(dir.repo.as_str());
+        // One name, not a path: no copy is inside another.
+        let path = dir.path().replace('%', "%25").replace('/', "%2F");
+        let name = format!("{}-{kind}-{path}", fetched.commit);
+        let kept = Copy { dir: repo.join(&name), commit: fetched.commit.clone() };
+        if kept.dir.is_dir() {
+            return Ok(kept);
+        }
+        let scratch = repo.join(format!("taking-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let taken = copy_dir(&from, &scratch, Path::new(""), without)
+            .and_then(|()| keep_whole(&scratch, &kept.dir))
+            .with_context(|| format!("{dir} cannot be copied"));
+        let _ = std::fs::remove_dir_all(&scratch);
+        taken.map(|()| kept)
     }
 
     /// Clones the head of `repo` and keeps its files, named for the commit
@@ -86,19 +134,52 @@ impl Copies {
                     "--force",
                     &kept.commit,
                 ])?;
-                // Whole or not there: moved into place in one step, then closed.
-                // Another start may have kept the same commit meanwhile: the two are alike.
-                match std::fs::rename(&files, &kept.dir) {
-                    Ok(()) => read_only(&kept.dir)?,
-                    Err(_) if kept.dir.is_dir() => {}
-                    Err(error) => bail!("cannot keep it at {}: {error}", kept.dir.display()),
-                }
+                keep_whole(&files, &kept.dir)?;
             }
             Ok(kept)
         })();
         let _ = std::fs::remove_dir_all(&scratch);
         copied
     }
+}
+
+/// Keeps the directory `files` as `kept`, whole or not there: moved into place
+/// in one step, then closed. Another start may have kept the same meanwhile:
+/// the two are alike, and `files` is left where it is.
+fn keep_whole(files: &Path, kept: &Path) -> Result<()> {
+    match std::fs::rename(files, kept) {
+        Ok(()) => read_only(kept),
+        Err(_) if kept.is_dir() => Ok(()),
+        Err(error) => bail!("cannot keep it at {}: {error}", kept.display()),
+    }
+}
+
+/// Copies what is at `under` of the directory `from` to the same place of
+/// `to`, which is made: every file, with its mode, and every symlink as the
+/// link it is — but none of `without`, each a path from `from`.
+fn copy_dir(from: &Path, to: &Path, under: &Path, without: &[PathBuf]) -> Result<()> {
+    let (source, made) = (from.join(under), to.join(under));
+    std::fs::create_dir_all(&made).with_context(|| format!("cannot create {}", made.display()))?;
+    for entry in
+        std::fs::read_dir(&source).with_context(|| format!("cannot list {}", source.display()))?
+    {
+        let entry = entry?;
+        let path = under.join(entry.file_name());
+        if without.contains(&path) {
+            continue;
+        }
+        let (kind, copied) = (entry.file_type()?, to.join(&path));
+        if kind.is_dir() {
+            copy_dir(from, to, &path, without)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(entry.path())?, &copied)
+                .with_context(|| format!("cannot link {}", copied.display()))?;
+        } else {
+            std::fs::copy(entry.path(), &copied)
+                .with_context(|| format!("cannot copy {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Takes the write permission off `path` and everything under it. A symlink

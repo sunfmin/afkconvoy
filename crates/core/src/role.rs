@@ -243,12 +243,12 @@ impl Facts<'_> {
 /// Where one worker starts, and what is added to it.
 #[derive(Debug, Clone)]
 pub struct Start<'a> {
-    /// The fleet's copy of the role's repo: the worker's working directory.
+    /// The fleet's copy of the role's directory: the worker's working directory.
     pub role_dir: &'a str,
     /// The issue's worktree, or the checkout of the base branch a patrol's
     /// worker or a proposal's is given.
     pub worktree: &'a str,
-    /// The fleet's copy of the team's repo.
+    /// The fleet's copy of the team's directory, without those of its roles.
     pub team_dir: &'a str,
     /// The stage's model, or the patrol's, when its definition names one.
     pub model: Option<&'a str>,
