@@ -14,7 +14,8 @@ WHAT IT READS AND WRITES
   `--list` reads the claims and heartbeats on the remote, and changes nothing.
   `--from` re-stamps each of that instance's claims on the remote in the name of
   `--instance`, and refreshes that instance's heartbeat when it is due. Each push is
-  refused if the claim moved since it was read. It starts no worker and changes nothing
+  refused if the claim moved since it was read. A claim taken is still the claim it
+  was created as: a verdict declared under it before it was taken is read as its. It starts no worker and changes nothing
   on GitHub.
 
 WHAT IT ANSWERS
