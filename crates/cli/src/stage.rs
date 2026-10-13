@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use crate::claims::Scan;
 use crate::copies::Copies;
 use crate::fleet::Fleet;
-use crate::gh::{Comment, GitHub, OpenIssues};
+use crate::gh::{Comment, GitHub, OpenIssues, Unreached, unreached};
 use crate::git::Repo;
 use crate::intake::came_in;
 use crate::team::{Kept, keep};
@@ -249,8 +249,16 @@ pub struct Flows {
     /// The team, or why it does not load. `None` where nothing was read:
     /// an unbound repo, or one with no issue that carries a flow label and
     /// no patrol named.
-    team: Option<Result<Kept, String>>,
+    team: Option<Result<Kept, Unkept>>,
     issues: Vec<Flowing>,
+}
+
+/// Why a rebuild has no team.
+enum Unkept {
+    /// GitHub could not be reached for it: nothing is said of the team.
+    Unreached(Unreached),
+    /// Anything else, as it was said: the team has a fault, or cannot be copied.
+    Unloaded(String),
 }
 
 impl Flows {
@@ -265,9 +273,12 @@ impl Flows {
         let Some(bound) = fleet.config.bound.as_ref().filter(read) else {
             return Ok(Flows { team: None, issues: vec![] });
         };
-        let team = Copies::here()
-            .and_then(|copies| keep(&fleet.gh, &copies, &bound.team))
-            .map_err(|error| format!("{error:#}"));
+        let team = Copies::here().and_then(|copies| keep(&fleet.gh, &copies, &bound.team)).map_err(
+            |error| match unreached(&error) {
+                Some(read) => Unkept::Unreached(read.clone()),
+                None => Unkept::Unloaded(format!("{error:#}")),
+            },
+        );
         let mut issues = vec![];
         for issue in flowing {
             let comments = open.comments(issue.number);
@@ -304,7 +315,8 @@ impl Flows {
     pub fn kept(&self) -> Result<&Kept> {
         match &self.team {
             Some(Ok(kept)) => Ok(kept),
-            Some(Err(why)) => Err(anyhow!("{why}")),
+            Some(Err(Unkept::Unreached(read))) => Err(read.clone().into()),
+            Some(Err(Unkept::Unloaded(why))) => Err(anyhow!("{why}")),
             None => Err(anyhow!("no issue of this repo follows a workflow")),
         }
     }

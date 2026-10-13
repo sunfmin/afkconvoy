@@ -161,9 +161,20 @@ pub struct Sources {
     pub workflows: Vec<File>,
     /// Every entry of the patrols directory.
     pub patrols: Vec<File>,
-    /// Each repo `role_repos` names, with what was read of it or why it could
-    /// not be read.
-    pub repos: Vec<(String, Result<RoleRepo, String>)>,
+    /// Each repo `role_repos` names, with what was read of it or why it was
+    /// not read.
+    pub repos: Vec<(String, Result<RoleRepo, Unread>)>,
+}
+
+/// Why a role's repo was not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unread {
+    /// The read was answered, and the answer is no: there is no such repo, or
+    /// none a role can be read from. A fault of the team.
+    Refused(String),
+    /// The read got no answer: nothing is known of the repo, and nothing is
+    /// wrong with the team.
+    Unreached(String),
 }
 
 /// One thing wrong with a team's definition.
@@ -250,6 +261,11 @@ pub struct Role {
     /// The head of the repo's default branch when it was read.
     pub commit: String,
     pub skills: Vec<String>,
+    /// Why its repo was not read, when the read got no answer
+    /// (`Unread::Unreached`): it then has no commit, and every skill a
+    /// workflow or a patrol names of it is taken as it is written. No worker
+    /// can be started in it; what names it still loads.
+    pub unreached: Option<String>,
 }
 
 /// One skill of one role of a team of `roles` roles: what a worker is started
@@ -788,8 +804,18 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
                 repo: repo.clone(),
                 commit: read.commit.clone(),
                 skills: read.skills.clone(),
+                unreached: None,
             }),
-            Some((_, Err(why))) => report.fault(&key, format!("{repo} cannot be read: {why}")),
+            Some((_, Err(Unread::Refused(why)))) => {
+                report.fault(&key, format!("{repo} cannot be read: {why}"))
+            }
+            Some((_, Err(Unread::Unreached(why)))) => loaded.push(Role {
+                name: name.clone(),
+                repo: repo.clone(),
+                commit: String::new(),
+                skills: vec![],
+                unreached: Some(why.clone()),
+            }),
             None => report.fault(&key, format!("{repo} was not read")),
         }
     }
@@ -845,7 +871,7 @@ fn work(
     let place = roles.place_of(role)?;
     let loaded = &roles.loaded[place];
     let skill = skill?;
-    if !loaded.skills.iter().any(|has| has == skill) {
+    if loaded.unreached.is_none() && !loaded.skills.iter().any(|has| has == skill) {
         let problem = format!(
             "`{skill}` is not a skill of the role `{role}`: {} has no {SKILLS}/{skill} at {}",
             loaded.repo, loaded.commit
@@ -1364,7 +1390,7 @@ land: { by: dev, do: land }
         }
     }
 
-    fn repo(name: &str, skills: &[&str]) -> (String, Result<RoleRepo, String>) {
+    fn repo(name: &str, skills: &[&str]) -> (String, Result<RoleRepo, Unread>) {
         let skills = skills.iter().map(|skill| skill.to_string()).collect();
         (name.to_string(), Ok(RoleRepo { commit: format!("{name}@1"), skills }))
     }
@@ -1768,13 +1794,27 @@ stages:
         unread("roles: { ops: ops }", "owner/repo");
         unread("roles: { ops: 7 }", "not a number");
         let mut sources = sources("roles: { ops: acme/ops }", &[("workflows/w.md", workflow)]);
-        sources.repos.push(("acme/ops".to_string(), Err("no such repository".to_string())));
+        let refused = Unread::Refused("no such repository".to_string());
+        sources.repos.push(("acme/ops".to_string(), Err(refused)));
         let found = load(&sources).unwrap_err();
         assert_eq!(found.len(), 1, "{found:#?}");
         assert_eq!(
             found[0].to_string(),
             "team.md: roles.ops: acme/ops cannot be read: no such repository"
         );
+        // a read that got no answer says nothing of the team: the role is
+        // loaded with nothing known of it, and what names it loads too
+        let unreached = Unread::Unreached("gh api failed".to_string());
+        *sources.repos.last_mut().unwrap() = ("acme/ops".to_string(), Err(unreached));
+        sources.workflows.push(file(
+            "workflows/ops.md",
+            "stages:\n  - { name: a, by: ops, do: anything, on: { pass: done } }",
+        ));
+        let team = load(&sources).unwrap();
+        let ops = team.roles.iter().find(|role| role.name == "ops").unwrap();
+        assert_eq!(ops.unreached.as_deref(), Some("gh api failed"));
+        assert_eq!((ops.commit.as_str(), ops.skills.len()), ("", 0));
+        assert_eq!(team.workflows.len(), 2);
         let human = faults(
             "roles: { human: acme/dev }",
             "stages:\n  - { name: a, by: human, on: { pass: done } }",
