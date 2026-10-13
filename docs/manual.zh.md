@@ -549,7 +549,7 @@ afkconvoy rule --issue 3 --text 'Ruling, by the Chief:
 |---|---|
 | Issue 2，`chore`：2 个阶段加一次落地 | 从开出到落地 18 分钟 |
 | Issue 1，`fix`：5 个阶段加一次落地 | 从开出到落地 23 分钟 |
-| Issue 3，`fix`：fellow 升级、会诊放行、人裁决一次 | 裁决之后自己继续往下走 |
+| Issue 3，`fix`：fellow 升级、会诊放行、人裁决一次，然后 5 个阶段加一次落地 | 从开出到落地 28 分钟；落地的代码与裁决一致 |
 | 人一共做了什么 | 一次 `afkconvoy rule`；一个先例 PR 留待合并 |
 | 人从没做过什么 | 指派、评审、批准、合并 |
 

@@ -545,7 +545,7 @@ It is yours to merge or close. Merged, the next stage that meets a form with no 
 |---|---|
 | Issue 2, `chore`: 2 stages and a landing | opened to landed in 18 minutes |
 | Issue 1, `fix`: 5 stages and a landing | opened to landed in 23 minutes |
-| Issue 3, `fix`: escalated by the fellow, let through by the consult, ruled once | went on by itself from the ruling |
+| Issue 3, `fix`: escalated by the fellow, let through by the consult, ruled once, then 5 stages and a landing | opened to landed in 28 minutes; the code does what the ruling says |
 | Human actions in all | one `afkconvoy rule`; one precedent PR left to merge |
 | What a human never did | assign, review, approve, merge |
 
