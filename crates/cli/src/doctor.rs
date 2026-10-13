@@ -17,6 +17,7 @@ use afkconvoy_core::patrol::Standing;
 use afkconvoy_core::plan::{LabelBar, Status, WorkingSet};
 use afkconvoy_core::team::Fault;
 use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout};
+use afkconvoy_core::waiting::{WAITED_LONG, Waiting};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::Result;
 use serde::Serialize;
@@ -590,6 +591,29 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
     found
 }
 
+/// An issue has waited for a human for long: nothing in the fleet moves it.
+fn waiting_findings(set: &WorkingSet, now: u64) -> Vec<Finding> {
+    let long = |waiting: &Waiting| {
+        let waited = waiting.waited_long(now)?;
+        Some(finding(
+            Severity::Warning,
+            format!(
+                "#{} has waited for a human for {}: {}",
+                waiting.issue,
+                lasted(waited),
+                waiting.why
+            ),
+            format!(
+                "nobody holds it and no tick moves it; it is the fleet's again once it is \
+                 answered, and it has waited longer than {}",
+                lasted(WAITED_LONG)
+            ),
+            waiting.answer.clone(),
+        ))
+    };
+    set.waiting_on_human.iter().filter_map(long).collect()
+}
+
 /// The team, or a role of it, has a fault at its head.
 fn team_findings(team: &TeamRead) -> Vec<Finding> {
     match team {
@@ -627,6 +651,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(plan_findings(seen.run, state));
             found.extend(claim_findings(seen.run, &state.held, &state.team));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
+            found.extend(waiting_findings(&state.set, seen.now));
         }
         Err(why) => found.push(finding(
             Severity::Critical,
@@ -848,8 +873,9 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
 
 /// `afkconvoy doctor`, for the fleet of `host` in the checkout it is run in:
 ///
-///   {"host", "fleet", "claims", "issues", "findings": [{"severity", "what",
-///    "evidence", "fix"}]}
+///   {"host", "fleet", "claims", "issues", "waiting_on_human": [{"issue", "title",
+///    "why", "since", "answer"}], "findings": [{"severity", "what", "evidence",
+///    "fix"}]}
 ///
 /// An answer with a `critical` finding is an `Unwell` error: the same object,
 /// and a non-zero exit. It reads only — but for the fleet's own cache, where
@@ -873,15 +899,20 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
     let seen =
         Seen { now, host: &seen_host, run: &run, state: state.as_ref().map_err(String::as_str) };
     let found = findings(&seen);
-    let (claims, issues) = match &state {
-        Ok(state) => (state.held.iter().map(held_json).collect(), issues_json(&state.set)?),
-        Err(_) => (vec![], Value::Null),
+    let (claims, issues, waiting) = match &state {
+        Ok(state) => (
+            state.held.iter().map(held_json).collect(),
+            issues_json(&state.set)?,
+            serde_json::to_value(&state.set.waiting_on_human)?,
+        ),
+        Err(_) => (vec![], Value::Null, Value::Null),
     };
     let answer = json!({
         "host": host_json(&seen_host),
         "fleet": fleet_json(&run),
         "claims": Value::Array(claims),
         "issues": issues,
+        "waiting_on_human": waiting,
         "findings": found,
     });
     if found.iter().any(|finding| finding.severity == Severity::Critical) {
@@ -947,6 +978,7 @@ mod tests {
             frontier: vec![],
             escalating: vec![],
             excluded: vec![],
+            waiting_on_human: vec![],
             mine: vec![],
             peer_live: vec![],
             stale: vec![],

@@ -189,7 +189,7 @@ Recording a dependency a worker discovered as a blocker on its issue and releasi
 _Avoid_: defer, snooze, hold
 
 **Escalate**:
-Handing an issue to a human: the reason is commented, the flow label is swapped for the escalate label, and the claim is released. Every failure escalates and nothing is retried; an `escalate` verdict escalates unless a consult rules on it first.
+Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every failure escalates and nothing is retried; an `escalate` verdict escalates unless a consult rules on it first. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
 _Avoid_: fail, retry, give up
 
 **Status board**:

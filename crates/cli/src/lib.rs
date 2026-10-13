@@ -122,7 +122,9 @@ enum Command {
     /// Draw a team's workflows as graphs, or say where one issue is in its workflow
     #[command(after_long_help = include_str!("help/show.txt"))]
     Show {
-        /// The workflow to draw [default: every workflow of the team]
+        /// The workflow to draw [default: every workflow of the team] — or an issue's
+        /// number, which is `--issue`
+        #[arg(value_name = "WORKFLOW|ISSUE")]
         workflow: Option<String>,
         /// Say instead where this issue is, from its stage records: its position, what
         /// follows, and the rework it has left
@@ -208,7 +210,10 @@ enum Command {
     #[command(after_long_help = include_str!("help/land.txt"))]
     Land {
         /// The issue the PR closes
-        #[arg(long, required_unless_present = "train", conflicts_with = "train")]
+        #[arg(value_name = "ISSUE", conflicts_with_all = ["train", "issue"])]
+        number: Option<u64>,
+        /// The same, as a flag
+        #[arg(long, required_unless_present_any = ["train", "number"], conflicts_with = "train")]
         issue: Option<u64>,
         /// Gate the landing train and land it on the base branch (the train worker's command)
         #[arg(long)]
@@ -227,8 +232,8 @@ enum Command {
         /// What the stage declares: pass, reject, blocked, already-satisfied, or escalate
         #[arg(value_parser = verdict)]
         verdict: Declared,
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         /// The stage that declares it: the one its worker was started on
         #[arg(long)]
         stage: String,
@@ -251,8 +256,8 @@ enum Command {
     /// command, and a consult's for the stage that asked it)
     #[command(after_long_help = include_str!("help/rule.txt"))]
     Rule {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         text: TextArgs,
         /// The stage whose `escalate` a consult rules on [a human names none]
@@ -268,8 +273,8 @@ enum Command {
     /// Send an issue to a named stage of its workflow (a human's command)
     #[command(after_long_help = include_str!("help/send.txt"))]
     Send {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         /// The stage to put it at
         #[arg(long)]
         stage: String,
@@ -279,9 +284,8 @@ enum Command {
     /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
     #[command(after_long_help = include_str!("help/intake.txt"))]
     Intake {
-        /// The issue to take in
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         /// The workflow it is to follow, by name: what follows `flow:` in its flow label
         #[arg(long)]
         workflow: String,
@@ -301,9 +305,8 @@ enum Command {
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
     #[command(after_long_help = include_str!("help/lock.txt"))]
     Lock {
-        /// The issue that carries the fix, and becomes the lock
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         /// The role that raises it [default: the one this worker was started in, if any]
         #[arg(long, env = ROLE_ENV)]
         role: Option<String>,
@@ -321,8 +324,8 @@ enum Command {
     /// Start a fresh worker on one issue
     #[command(after_long_help = include_str!("help/dispatch.txt"))]
     Dispatch {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
         #[command(flatten)]
@@ -334,22 +337,22 @@ enum Command {
     /// Show what `dispatch` would continue an issue from, without acting
     #[command(after_long_help = include_str!("help/recovery.txt"))]
     Recovery {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
     },
     /// Close one of my claims whose issue needed no change
     #[command(after_long_help = include_str!("help/close.txt"))]
     Close {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
     },
     /// Hand one of my claims to a human
     #[command(after_long_help = include_str!("help/escalate.txt"))]
     Escalate {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
         /// Why: what a human needs to act on it in one reply
@@ -359,24 +362,24 @@ enum Command {
     /// Leave one of my claims waiting on the issues its worker declared it blocked by
     #[command(after_long_help = include_str!("help/park.txt"))]
     Park {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
     },
     /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
     #[command(after_long_help = include_str!("help/nudge.txt"))]
     Nudge {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
     },
     /// Replace the silent worker of one of my claims whose PR is joining the train, once
     #[command(after_long_help = include_str!("help/restart.txt"))]
     Restart {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
         #[command(flatten)]
@@ -415,16 +418,16 @@ enum Command {
     /// Claim one issue for a fleet instance
     #[command(after_long_help = include_str!("help/claim.txt"))]
     Claim {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
     },
     /// Release a fleet instance's own claim on one issue
     #[command(after_long_help = include_str!("help/release.txt"))]
     Release {
-        #[arg(long)]
-        issue: u64,
+        #[command(flatten)]
+        issue: IssueArg,
         #[command(flatten)]
         who: Who,
     },
@@ -434,6 +437,26 @@ enum Command {
         #[command(flatten)]
         who: Who,
     },
+}
+
+/// The one issue a command is about: its number, as an argument or as
+/// `--issue`. One of the two, never both.
+#[derive(clap::Args)]
+#[group(required = true, multiple = false)]
+struct IssueArg {
+    /// The issue's number
+    #[arg(value_name = "ISSUE")]
+    number: Option<u64>,
+    /// The same, as a flag
+    #[arg(long = "issue", value_name = "ISSUE")]
+    flag: Option<u64>,
+}
+
+impl IssueArg {
+    fn number(&self) -> u64 {
+        // The group has clap refuse a command line that names neither.
+        self.number.or(self.flag).unwrap_or_default()
+    }
 }
 
 /// The team a command reads.
@@ -649,7 +672,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Flows => flows::flows(&Repo::here()?),
         Command::Show { workflow, issue, team } => {
             let loaded = team::load(team.from())?;
-            match issue {
+            // A workflow is not named by a number: one given is an issue's.
+            let numbered = workflow.as_deref().and_then(|named| named.parse().ok());
+            match issue.or(numbered) {
                 Some(issue) => {
                     let gh = gh::GitHub { dir: Repo::here()?.dir };
                     stage::show_issue(&gh, &loaded.team, issue)
@@ -701,11 +726,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let config = config::load(&repo.dir.join(config::FILE))?;
             gate::gate(&repo, &config, train, now, Duration::from_secs(gate_timeout))
         }
-        Command::Land { issue, gate_timeout, merged_timeout, .. } => {
+        Command::Land { number, issue, gate_timeout, merged_timeout, .. } => {
             let repo = Repo::here()?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
-            match issue {
+            match issue.or(number) {
                 Some(issue) => train::land(&repo, &config, &gh, issue, now),
                 None => {
                     let limits = landing::Limits {
@@ -727,7 +752,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             consult,
         } => {
             let declaring = stage::Declaring {
-                issue,
+                issue: issue.number(),
                 stage,
                 declared: verdict,
                 blocked_by,
@@ -738,6 +763,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             stage::verdict(&Repo::here()?, declaring)
         }
         Command::Rule { issue, text, stage, role_commit, team_commit } => {
+            let issue = issue.number();
             // With the commits it ran under, the ruling is a consult's: a
             // stage record under its claim, as a verdict is.
             if let Some(commits) = role_commit.zip(team_commit) {
@@ -763,6 +789,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             steer::rule(&Repo::here()?, &team, issue, text.read()?)
         }
         Command::Send { issue, stage, text } => {
+            let issue = issue.number();
             let team = team::load(team::From::Config)?.team;
             steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
         }
@@ -775,7 +802,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                      the environment) or the patrol (--patrol, or {PATROL_ENV})"
                 ),
             };
-            let taking = intake::Taking { issue, workflow, role, from, blocked_by };
+            let taking = intake::Taking { issue: issue.number(), workflow, role, from, blocked_by };
             intake::intake(&Repo::here()?, taking)
         }
         Command::Lock { issue, role } => {
@@ -783,7 +810,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
-            lock::lock(&repo, &config, &gh, issue, role)
+            lock::lock(&repo, &config, &gh, issue.number(), role)
         }
         Command::Over { run } => {
             if let Ok(issue) = std::env::var(ISSUE_ENV) {
@@ -796,18 +823,28 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
-        Command::Dispatch { issue, who, agent, start } => {
-            dispatch::dispatch(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue, start)
+        Command::Dispatch { issue, who, agent, start } => dispatch::dispatch(
+            &mut Fleet::open(now)?,
+            &who.me(now),
+            &agent.agent()?,
+            issue.number(),
+            start,
+        ),
+        Command::Recovery { issue } => recovery::recovery(&Fleet::open(now)?, issue.number()),
+        Command::Close { issue, who } => {
+            judge::close(&mut Fleet::open(now)?, &who.me(now), issue.number())
         }
-        Command::Recovery { issue } => recovery::recovery(&Fleet::open(now)?, issue),
-        Command::Close { issue, who } => judge::close(&mut Fleet::open(now)?, &who.me(now), issue),
         Command::Escalate { issue, who, reason } => {
-            judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue, &reason)
+            judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue.number(), &reason)
         }
-        Command::Park { issue, who } => park::park(&mut Fleet::open(now)?, &who.me(now), issue),
-        Command::Nudge { issue, who } => judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue),
+        Command::Park { issue, who } => {
+            park::park(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        }
+        Command::Nudge { issue, who } => {
+            judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        }
         Command::Restart { issue, who, agent } => {
-            watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue)
+            watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue.number())
         }
         Command::Abandon { who } => abandon::abandon_by_hand(&mut Fleet::open(now)?, &who.me(now)),
         Command::Takeover { list, from, yes, instance, host } => {
@@ -827,11 +864,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
             let repo = Repo::here()?;
-            claims::take(&repo, &mut Scan::read(&repo)?, &who.me(now), issue, Take::Fresh)
+            claims::take(&repo, &mut Scan::read(&repo)?, &who.me(now), issue.number(), Take::Fresh)
         }
         Command::Release { issue, who } => {
             let repo = Repo::here()?;
-            claims::release(&repo, &mut Scan::read(&repo)?, &who.instance, issue)
+            claims::release(&repo, &mut Scan::read(&repo)?, &who.instance, issue.number())
         }
         Command::Heartbeat { who } => {
             let repo = Repo::here()?;

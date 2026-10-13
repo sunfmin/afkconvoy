@@ -276,6 +276,16 @@ fn a_bound_repo_shows_each_workflow_as_its_stages_with_the_issues_at_each() {
     );
     assert!(page.part("dl", "gauges").contains("With a human</dt><dd>1<"));
     assert!(page.part("dl", "gauges").contains("Queued</dt><dd>3<"));
+    // What waits at a human's stage is listed with the line that answers it.
+    let with_a_human = page.part("section", "human");
+    assert_eq!(carded(with_a_human, "asked"), [7], "{with_a_human}");
+    assert!(
+        with_a_human.contains(
+            "stage sign-off is by a human — afkconvoy verdict pass|reject --issue 7 --stage \
+             sign-off --text-file &lt;file&gt;"
+        ),
+        "{with_a_human}"
+    );
 }
 
 fn get(port: u16, path: &str) -> String {

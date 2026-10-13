@@ -611,7 +611,7 @@ afkconvoy show --issue 7
 gh issue list --label ready-for-human
 ```
 
-或者面板里的「With a human」部分。afkconvoy 不发任何通知。
+或者面板里的「With a human」部分，或者 `afkconvoy doctor`：它在 `waiting_on_human` 下列出同一批 issue，每个都带着回应它的那条命令，等了超过一小时的还会算作一条 finding。把 issue 交给人的那个 tick 会在它那一行里说明：`escalated #7 (workup: consult let it through)`。issue 上的那条评论以回应它的命令结尾。afkconvoy 不发任何通知。
 
 | 发生了什么 | 评论里写了什么 | 你做什么 |
 |---|---|---|

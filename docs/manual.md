@@ -607,7 +607,7 @@ You are asked by exception, and always the same way: the issue loses its flow la
 gh issue list --label ready-for-human
 ```
 
-or the "With a human" part of the panel. afkconvoy sends no notification.
+or the "With a human" part of the panel, or `afkconvoy doctor`, which lists the same issues under `waiting_on_human` — each with the line that answers it — and counts one that has waited for more than an hour a finding. The tick that hands an issue over says so in its line: `escalated #7 (workup: consult let it through)`. The comment on the issue ends with the line that answers it. afkconvoy sends no notification.
 
 | What happened | What the comment says | What you do |
 |---|---|---|

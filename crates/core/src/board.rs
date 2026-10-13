@@ -83,6 +83,9 @@ pub struct Board<'a> {
     /// The stage a claim's verdict left the issue at, when that stage is a
     /// human's: the issue waits there for them.
     pub waits_at: Option<&'a str>,
+    /// What an escalated issue's board ends with: the lines that answer it
+    /// (`waiting::Waits::answer_lines`).
+    pub answer: Option<&'a str>,
 }
 
 /// The steps of the board's task list, in order.
@@ -127,11 +130,14 @@ fn off_ramp(board: &Board) -> Option<String> {
             "**Closed with nothing landed** — the issue needed no change, or somebody closed it."
                 .to_string(),
         ),
-        Stage::Escalated => Some(
-            "**Escalated to a human** — the comment that says why is on this issue. Its PR, \
-             branch and worktree are kept."
-                .to_string(),
-        ),
+        Stage::Escalated => {
+            let escalated = "**Escalated to a human** — the comment that says why is on this \
+                             issue. Its PR, branch and worktree are kept.";
+            Some(match board.answer {
+                Some(answer) => format!("{escalated}\n\n{answer}"),
+                None => escalated.to_string(),
+            })
+        }
         Stage::Parked => {
             let blockers: Vec<String> =
                 board.blocked_by.iter().map(|number| format!("#{number}")).collect();
@@ -219,6 +225,7 @@ mod tests {
             pr,
             blocked_by: &[3, 4],
             waits_at: None,
+            answer: None,
         }
     }
 
@@ -272,6 +279,12 @@ mod tests {
         assert_eq!(ticked(&escalated), 1);
         assert!(escalated.contains("**Escalated to a human**"));
         assert_eq!(ticked(&render(&board(Stage::Escalated, Some(70)))), 3);
+        // It ends with the lines that answer it, where it was told them.
+        let answer = Some("**To answer it**:\n- rule on it — `afkconvoy rule --issue 7`");
+        let answered = render(&Board { answer, ..board(Stage::Escalated, None) });
+        assert!(answered.ends_with(
+            "are kept.\n\n**To answer it**:\n- rule on it — `afkconvoy rule --issue 7`"
+        ));
         let parked = render(&board(Stage::Parked, None));
         assert!(parked.ends_with(
             "**Parked** — waiting on #3, #4. It returns to the frontier when they close."

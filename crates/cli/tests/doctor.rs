@@ -38,7 +38,7 @@ fn found<'a>(answer: &'a Value, what: &str) -> Vec<&'a Value> {
 }
 
 #[test]
-fn a_fleet_with_no_fault_answers_its_five_keys_and_no_finding_and_writes_nothing() {
+fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
     world.issue(5, &["bug"]);
@@ -50,7 +50,8 @@ fn a_fleet_with_no_fault_answers_its_five_keys_and_no_finding_and_writes_nothing
     // that no `run` is alive, which this world cannot have — see below
     let answer = doctor(&world, "1100").json;
     let keys: Vec<&str> = answer.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["claims", "findings", "fleet", "host", "issues"]);
+    assert_eq!(keys, ["claims", "findings", "fleet", "host", "issues", "waiting_on_human"]);
+    assert_eq!(answer["waiting_on_human"], json!([]));
 
     // nothing on the remote, probes included, and nothing on GitHub
     assert_eq!(world.probes(), [] as [String; 0]);

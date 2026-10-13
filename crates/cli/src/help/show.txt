@@ -9,6 +9,8 @@ WHEN TO RUN IT
 
       afkconvoy show --issue 7
 
+  Or `afkconvoy show 7`: a workflow is not named by a number, so one given is an issue's.
+
 WHO RUNS IT
 
   The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere

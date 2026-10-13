@@ -110,7 +110,7 @@ Nothing, by default: a workflow runs from intake to the landing train with no hu
 - **A breaker tripped.** An issue whose rework would pass one of its workflow's two breakers (`max_rework`, `max_consecutive_rework`) is escalated instead of dispatched, with every round's stage and reason in the comment.
 - **A failure.** A worker that crashed or stayed silent, a gate that could not be turned green, a stage that ended with no verdict or a verdict of another stage, a commit left by a stage marked `writes: false`, a workflow changed under an issue in flight. Nothing is retried.
 
-A human answers an escalated issue with `afkconvoy rule --issue <n> --text …`: the stage it stopped at runs again under the ruling, with both rework counts started over, and the escalate label is swapped back for the flow label. `afkconvoy send --issue <n> --stage <name> --text …` puts an issue at any stage of its workflow instead.
+The comment of an escalation ends with the line that answers it, the issue's number filled in, and `afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human` — each with that line, and as a finding once it has waited for more than an hour. A human answers an escalated issue with `afkconvoy rule <n> --text …` (or `--issue <n>`: every command about one issue takes its number either way): the stage it stopped at runs again under the ruling, with both rework counts started over, and the escalate label is swapped back for the flow label. `afkconvoy send --issue <n> --stage <name> --text …` puts an issue at any stage of its workflow instead.
 
 Two more things wait for a human, and only where the team chose them:
 
@@ -175,7 +175,7 @@ An unbound repo's command stays opaque and may start any agent.
 
 **What a start checks**, before anything else: the base branch exists and can be pushed to; where the remote keeps the fleet's refs (`refs/convoy/*`, or `convoy-*` branches on a remote that rejects those — push-triggered CI will then fire on them); whether gate runs can be put on record.
 
-**When the fleet gives an issue up** it swaps the ready label for the escalate label and says why in a comment on the issue. Fix what it names and put the ready label back.
+**When the fleet gives an issue up** it swaps the ready label for the escalate label and says why in a comment on the issue, which ends with the line that puts the ready label back. Fix what it names and run it. The tick's line says `escalated #<n>` with why in a few words, and `afkconvoy doctor` lists what waits for you under `waiting_on_human`.
 
 **Another host's claims** come free on their own when its heartbeat goes stale. `afkconvoy takeover --list` shows who holds what; `afkconvoy takeover --from <instance> --instance <yours>` takes them now.
 

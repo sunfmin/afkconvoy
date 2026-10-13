@@ -63,6 +63,15 @@ pub enum Why {
 }
 
 impl Why {
+    /// The reason in the few words a tick's line has room for.
+    pub fn brief(self) -> &'static str {
+        match self {
+            Why::Escalate => "its worker declared escalate",
+            Why::Refuted => "already-satisfied, but its branch holds work",
+            Why::UnknownPhase => "a verdict the fleet cannot read",
+        }
+    }
+
     /// The reason as the escalation states it; `said` points at what the
     /// worker wrote.
     pub fn reason(self, said: &str) -> String {

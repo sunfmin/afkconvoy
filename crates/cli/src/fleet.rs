@@ -32,6 +32,10 @@ pub struct Fleet {
     /// view was opened: what `scan` was read from.
     listing: Listing,
     pub now: u64,
+    /// The issues this view escalated, each with why in a few words: what a
+    /// tick's line says of them. Every escalation is made through
+    /// `judge::escalate_claim`, which is what adds to it.
+    pub escalated: Vec<(u64, String)>,
 }
 
 impl Fleet {
@@ -42,7 +46,7 @@ impl Fleet {
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), listing.records.clone());
         let gh = GitHub { dir: repo.dir.clone() };
-        Ok(Fleet { repo, config, gh, scan, listing, now })
+        Ok(Fleet { repo, config, gh, scan, listing, now, escalated: vec![] })
     }
 
     /// The fleet's view, opened for a rebuild → it, and what is open on
@@ -109,6 +113,7 @@ impl Fleet {
             begun: &stages.begun(),
             patrols: &patrol::seen(self, &stages, &open.issues)?,
             proposals: &precedent::seen(self, &stages)?,
+            waiting: &stages.waiting(self, open),
         };
         let set = assemble(&seen, me, self.now, &self.config);
         Ok((set, stages))

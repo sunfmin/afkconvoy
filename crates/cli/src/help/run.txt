@@ -35,8 +35,9 @@ WHAT IT ANSWERS
     tick 3: advanced #12 → review · dispatched #12 · holding 2/3 · frontier 0 · next in 90s
     tick 4: advanced #12 → land · holding 1/3 · frontier 0 · next now
     tick 5: dispatched #12 · holding 2/3 · frontier 0 · next in 90s
+    tick 6: escalated #15 (workup: consult let it through) · holding 1/3 · frontier 0 · next now
 
-  A tick's line names what it did — settled, ended, escalated, advanced, unlocked, reclaimed,
+  A tick's line names what it did — escalated, settled, ended, advanced, unlocked, reclaimed,
   dispatched, nudged, continued, restarted, tended the train, abandoned the train — then
   the claims held out of the concurrency, and the frontier left. The claims a fleet
   lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left
@@ -46,8 +47,13 @@ WHAT IT ANSWERS
 
   `advanced #12 → review`: the tick read a verdict that left #12 at `review`. Where a
   role performs that stage the same tick starts its worker, and says so: `dispatched
-  #12`. An issue advanced to no stage — its workflow ended, it was parked or handed to
-  a human — is named alone.
+  #12`. An issue advanced to no stage — its workflow ended, or it was parked — is named
+  alone.
+
+  `escalated #15 (workup: consult let it through)`: the tick handed #15 to a human,
+  whichever step did, with why in a few words — the stage first, where it was at one.
+  It is named as nothing else. The comment on the issue says why in full and ends with
+  the line that answers it; `afkconvoy doctor` lists it under `waiting_on_human`.
 
   `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one
   without starting what follows, and left a slot free, so what follows — a consult, the
