@@ -472,6 +472,17 @@ impl World {
         std::fs::write(self.root.join("shell-help"), help.unwrap_or("-")).unwrap();
     }
 
+    /// What the stand-in login shell prints when a command is asked which
+    /// models it knows, in place of failing: pi's table of them.
+    pub fn shell_models(&self, models: &[&str]) {
+        let mut table = "provider      model    context  max-out  thinking  images\n".to_string();
+        for model in models {
+            let (provider, id) = model.split_once('/').unwrap();
+            table.push_str(&format!("{provider}  {id}  272K  128K  yes  yes\n"));
+        }
+        std::fs::write(self.root.join("shell-models"), table).unwrap();
+    }
+
     /// What the stand-in login shell prints for `alias`.
     pub fn shell_aliases(&self, aliases: &str) {
         std::fs::write(self.root.join("shell-aliases"), aliases).unwrap();
@@ -519,7 +530,8 @@ impl Drop for World {
 /// The login shell a worker would get, as far as the fleet asks it anything:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does and every other command as Claude Code —
-/// and whether `gh` and `claude` are logged in. Every word is a program unless `shell-types`
+/// `shell -lic '… <command> --list-models'`, which fails unless a `shell-models` beside
+/// `bin/` holds what it prints, and whether `gh` and `claude` are logged in. Every word is a program unless `shell-types`
 /// beside `bin/` says otherwise, and both are logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
 const SHELL: &str = r#"#!/bin/sh
@@ -541,6 +553,9 @@ case "$2" in
     echo "  --skill <path>                 Load a skill file or directory"
     echo "  --no-skills, -ns               Disable skills discovery and loading"
     echo "  --approve, -a                  Trust project-local files for this run"; exit 0 ;;
+  *" --list-models")
+    if [ -f "$root/shell-models" ]; then cat "$root/shell-models"; exit 0; fi
+    echo "command not found" >&2; exit 127 ;;
   *" --help")
     if [ -f "$root/shell-help" ]; then
       if [ "$(cat "$root/shell-help")" = "-" ]; then echo "unknown option --help" >&2; exit 1; fi

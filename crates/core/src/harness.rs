@@ -38,6 +38,16 @@ pub struct Kept {
     pub files: &'static [(&'static str, &'static str)],
 }
 
+/// What a role's directory holds where its limits for one harness go
+/// (`Harness::limits`).
+pub enum Held<D> {
+    Nothing,
+    /// A file, with what reads it.
+    File(D),
+    /// A directory of this many entries.
+    Entries(usize),
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -133,6 +143,74 @@ impl Harness {
         match self {
             Harness::ClaudeCode => Kept { links: &[], files: &[] },
             Harness::Pi => pi::KEPT,
+        }
+    }
+
+    /// Where a role's limits for it are written, in the role's directory, in
+    /// its own form (docs/adr/0013).
+    pub const fn limits(self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => claude_code::LIMITS,
+            Harness::Pi => pi::LIMITS,
+        }
+    }
+
+    /// Whether a role holds limits for it, given what the role's directory
+    /// `held` at `limits`. What they refuse is not read: that a role's
+    /// limits for two harnesses refuse the same things is the role's to see
+    /// to. An error is something there that cannot be read as it must be.
+    pub fn limited<'de, D: Deserializer<'de>>(self, held: Held<D>) -> Result<bool, D::Error> {
+        match self {
+            Harness::ClaudeCode => claude_code::limited(held),
+            Harness::Pi => Ok(pi::limited(held)),
+        }
+    }
+
+    /// The files it would load, from a role's directory, in place of the
+    /// rules every harness works under (`team::RULES`). A role holds none.
+    pub const fn before_the_rules(self) -> &'static [&'static str] {
+        match self {
+            Harness::ClaudeCode => &[],
+            Harness::Pi => &pi::BEFORE_THE_RULES,
+        }
+    }
+
+    /// The shell line whose answer says which models it knows on a host,
+    /// asked of the worker launch command `command` with what the host keeps
+    /// for it in `kept` (`models` reads it). `None`: it has no way to say.
+    pub fn models_question(self, command: &str, kept: &str) -> Option<String> {
+        match self {
+            Harness::ClaudeCode => None,
+            Harness::Pi => Some(pi::models_question(command, kept)),
+        }
+    }
+
+    /// The models it knows, given what the worker's shell printed for
+    /// `models_question`. `None`: it said none, and a model named for it is
+    /// passed as written.
+    pub fn models(self, answer: &str) -> Option<Vec<String>> {
+        match self {
+            Harness::ClaudeCode => None,
+            Harness::Pi => pi::models(answer),
+        }
+    }
+
+    /// Whether `model`, its own name for one as a stage writes it, is among
+    /// `listed`, the models it said it knows (`models`). A harness with no
+    /// way to say knows whatever it is given.
+    pub fn knows(self, listed: &[String], model: &str) -> bool {
+        match self {
+            Harness::ClaudeCode => true,
+            Harness::Pi => pi::knows(listed, model),
+        }
+    }
+
+    /// Whether `model` is the whole name of one of `listed`: nothing another
+    /// harness's name for a model would be taken for.
+    pub fn names(self, listed: &[String], model: &str) -> bool {
+        match self {
+            Harness::ClaudeCode => false,
+            Harness::Pi => pi::names(listed, model),
         }
     }
 

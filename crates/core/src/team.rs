@@ -18,6 +18,9 @@ pub const PATROLS: &str = "patrols";
 pub const SKILLS: &str = ".claude/skills";
 /// The file of a team's repo that holds its precedents.
 pub const PRECEDENTS: &str = "precedents.md";
+/// A role's rules, in its directory: the file every harness loads them from,
+/// so that they are written once (docs/adr/0013).
+pub const RULES: &str = "CLAUDE.md";
 /// What a flow label is made of: this, then the workflow's name.
 pub const FLOW_LABEL: &str = "flow:";
 /// How much rework an issue may have in total, where its workflow does not say.
@@ -37,6 +40,8 @@ const PRECEDENTS_KEY: &str = "precedents";
 /// The key of a stage and of a patrol that names the harness its worker
 /// runs: a key wherever `model` is one, and nowhere else.
 const HARNESS_KEY: &str = "harness";
+/// The key under which a stage, or a patrol, names its model.
+const MODEL_KEY: &str = "model";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
 pub const TEAM_KEYS: [&str; 3] = ["escalate_label", "roles", PRECEDENTS_KEY];
@@ -161,6 +166,11 @@ pub struct RoleDir {
     /// Each `CLAUDE.md` and `.claude/` a directory above it in its repo
     /// holds, as a path from the repo's root.
     pub above: Vec<String>,
+    /// The harnesses it holds limits for (`Harness::limited`).
+    pub limits: Vec<Harness>,
+    /// Each file in it that a harness would load in place of its rules
+    /// (`Harness::before_the_rules`), with that harness.
+    pub in_place: Vec<(Harness, String)>,
 }
 
 /// Everything read of a team, and nothing yet checked.
@@ -290,6 +300,201 @@ impl Team {
         }
         called
     }
+
+    /// Holds the team to the harnesses its workers would run on, in a repo
+    /// whose default is `default`, on a host where each harness that can say
+    /// which models it knows `listed` them (`Harness::models`). A worker on
+    /// a harness its role holds no limits for, while the role holds limits
+    /// for another, is a fault: a harness is never changed into fewer limits
+    /// unseen (docs/adr/0013). So is a model its harness does not list,
+    /// where the stage or the patrol names that harness; one that takes the
+    /// default is the repo's to answer for, and is handed back.
+    pub fn held(&self, default: Harness, listed: &[(Harness, Vec<String>)]) -> Held {
+        let mut held = Held::default();
+        for run in self.runs() {
+            let harness = run.named.unwrap_or(default);
+            if let Some(problem) = run.unlimited(harness) {
+                held.faults.push(Fault { file: run.file.clone(), key: run.harness_key, problem });
+            }
+            let Some(model) = run.model else { continue };
+            let models =
+                listed.iter().find(|(lists, _)| *lists == harness).map(|(_, models)| models);
+            match (models, run.named) {
+                (Some(models), _) if harness.knows(models, &model) => {}
+                (Some(models), Some(_)) => {
+                    let problem = format!(
+                        "`{model}` is no model {} knows on this host: it lists {}. A model is \
+passed as written, and is its harness's own name for it",
+                        harness.name(),
+                        some(models)
+                    );
+                    held.faults.push(Fault { file: run.file, key: run.model_key, problem });
+                }
+                (Some(_), None) => held.unknown.push((model, run.by)),
+                (None, None) => {
+                    let other = listed
+                        .iter()
+                        .find(|(lists, models)| *lists != harness && lists.names(models, &model));
+                    if let Some((other, _)) = other {
+                        held.elsewhere.push((model, run.by, *other));
+                    }
+                }
+                (None, Some(_)) => {}
+            }
+        }
+        held
+    }
+
+    /// Every worker the team would have started, whatever the issue.
+    fn runs(&self) -> Vec<Run> {
+        let mut runs = vec![];
+        for workflow in &self.workflows {
+            runs.extend(workflow_runs(self, workflow));
+        }
+        for patrol in &self.patrols {
+            runs.push(Run {
+                file: format!("{PATROLS}/{}.md", patrol.name),
+                harness_key: HARNESS_KEY.to_string(),
+                model_key: MODEL_KEY.to_string(),
+                by: format!("the patrol `{}`", patrol.name),
+                role: self.role_of(&patrol.work).clone(),
+                named: patrol.harness,
+                model: patrol.model.clone(),
+            });
+        }
+        if let Some(precedents) = &self.precedents {
+            runs.push(Run {
+                file: TEAM_FILE.to_string(),
+                harness_key: under(PRECEDENTS_KEY, "by"),
+                model_key: String::new(),
+                by: "the proposal of a precedent".to_string(),
+                role: self.role_of(&precedents.work).clone(),
+                named: None,
+                model: None,
+            });
+        }
+        runs
+    }
+}
+
+/// What holding a team to its harnesses found (`Team::held`).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    /// What is wrong in the team's own files.
+    pub faults: Vec<Fault>,
+    /// Each model named with no harness that the default harness does not
+    /// list, with what names it: the team is written for another default.
+    pub unknown: Vec<(String, String)>,
+    /// Each model named with no harness, under a default with no way to say
+    /// which models it knows, that another harness lists under that very
+    /// name: the model, what names it, and that harness.
+    pub elsewhere: Vec<(String, String, Harness)>,
+}
+
+/// One worker a team would have started: what calls for it and where that is
+/// written, its role, and the harness and the model it is given.
+struct Run {
+    file: String,
+    /// The key its harness is, or would be, written at — or, of a worker
+    /// that always runs on the default, the key that names its role.
+    harness_key: String,
+    model_key: String,
+    /// What calls for it, in words.
+    by: String,
+    role: Role,
+    /// The harness it names. `None`: it takes the default.
+    named: Option<Harness>,
+    model: Option<String>,
+}
+
+impl Run {
+    /// Why its role is not right for `harness`, the one it runs on: the role
+    /// holds limits, and none for that. A role with no limits at all is
+    /// right for every harness, and of one that was not read nothing is
+    /// known.
+    fn unlimited(&self, harness: Harness) -> Option<String> {
+        let role = &self.role;
+        if role.limits.is_empty() || role.limits.contains(&harness) {
+            return None;
+        }
+        let holds: Vec<String> = role
+            .limits
+            .iter()
+            .map(|held| format!("`{}` (in its `{}`)", held.key(), held.limits()))
+            .collect();
+        let said = if self.named.is_some() { "" } else { ", the repo's default" };
+        Some(format!(
+            "{} runs on `{}`{said}, and its role `{}` holds limits for {} and none for `{}`: a \
+worker there would be held to none of them. Write the role's limits for `{}` in its `{}`, in \
+that harness's own form, or run this on a harness the role holds limits for",
+            self.by,
+            harness.key(),
+            role.name,
+            holds.join(" and "),
+            harness.key(),
+            harness.key(),
+            harness.limits()
+        ))
+    }
+}
+
+/// How many of the models a harness lists are said before the rest are
+/// counted.
+const SAID: usize = 8;
+
+/// `models`, as a fault says them: the first few, and how many more.
+pub fn some(models: &[String]) -> String {
+    let said: Vec<&str> = models.iter().take(SAID).map(String::as_str).collect();
+    match models.iter().skip(SAID).count() {
+        0 => said.join(", "),
+        more => format!("{} and {more} more", said.join(", ")),
+    }
+}
+
+/// The workers `workflow`, one of `team`'s, would have started: one for
+/// each stage a role performs, one for each consult, and its landing.
+#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}) -> Vec<Run>)]
+fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
+    let mut runs = vec![];
+    let file = format!("{WORKFLOWS}/{}.md", workflow.name);
+    for stage in workflow.stages() {
+        let at = format!("stages[{}]", stage.at());
+        let by = format!("the stage `{}` of the workflow `{}`", stage.name, workflow.name);
+        if let Performer::Role(work) = &stage.by {
+            runs.push(Run {
+                file: file.clone(),
+                harness_key: under(&at, HARNESS_KEY),
+                model_key: under(&at, MODEL_KEY),
+                by: by.clone(),
+                role: team.role_of(work).clone(),
+                named: stage.harness,
+                model: stage.model.clone(),
+            });
+        }
+        if let Some(consult) = &stage.consult {
+            runs.push(Run {
+                file: file.clone(),
+                harness_key: under(&under(&at, "escalate"), "to"),
+                model_key: String::new(),
+                by: format!("the consult of {by}"),
+                role: team.role_of(consult).clone(),
+                named: None,
+                model: None,
+            });
+        }
+    }
+    if let Some(land) = &workflow.land {
+        runs.push(Run {
+            file,
+            harness_key: under(LAND, "by"),
+            model_key: String::new(),
+            by: format!("the landing of the workflow `{}`", workflow.name),
+            role: team.role_of(land).clone(),
+            named: None,
+            model: None,
+        });
+    }
+    runs
 }
 
 /// What calls for a repo's default harness, where nothing names one.
@@ -317,6 +522,9 @@ pub struct Role {
     /// (`RoleDir::above`): what a session opened by hand in it loads and a
     /// worker, given the directory alone, does not.
     pub above: Vec<String>,
+    /// The harnesses it holds limits for: the ones it is right for, where it
+    /// holds any (`Team::held`).
+    pub limits: Vec<Harness>,
     /// Why its repo was not read, when the read got no answer
     /// (`Unread::Unreached`): it then has no commit, and every skill a
     /// workflow or a patrol names of it is taken as it is written. No worker
@@ -984,12 +1192,24 @@ directory alone, where such a link points at nothing",
                 );
                 report.fault(&key, problem)
             }
+            Some((_, Ok(read))) if !read.in_place.is_empty() => {
+                for (harness, file) in &read.in_place {
+                    let problem = format!(
+                        "{dir} holds `{file}`: {} loads that in place of `{RULES}`, the rules \
+every harness works under. A role's rules are written once, in `{RULES}`; what one harness needs \
+of its own is added to them, and never stands in their place",
+                        harness.name()
+                    );
+                    report.fault(&key, problem)
+                }
+            }
             Some((_, Ok(read))) => loaded.push(Role {
                 name: name.clone(),
                 dir,
                 commit: read.commit.clone(),
                 skills: read.skills.clone(),
                 above: read.above.clone(),
+                limits: read.limits.clone(),
                 unreached: None,
             }),
             Some((_, Err(Unread::Refused(why)))) => {
@@ -1001,6 +1221,7 @@ directory alone, where such a link points at nothing",
                 commit: String::new(),
                 skills: vec![],
                 above: vec![],
+                limits: vec![],
                 unreached: Some(why.clone()),
             }),
             None => report.fault(&key, format!("{dir} was not read")),
@@ -1831,6 +2052,146 @@ land: { by: dev, do: land }
         }
     }
 
+    /// The usual team, `dev` and `reviewer` holding limits for these
+    /// harnesses, with `workflow` as its one workflow, `patrol` as its one
+    /// patrol, and `reviewer` proposing its precedents.
+    fn limited(dev: &[Harness], reviewer: &[Harness], workflow: &str, patrol: &str) -> Team {
+        let team = format!("{TEAM}precedents: {{ by: reviewer, do: rule, max_open: 4 }}\n");
+        let mut sources = sources(&team, &[("workflows/feature.md", workflow)]);
+        sources.patrols = vec![file("patrols/sweep.md", patrol)];
+        for (role, limits) in [(DEV, dev), (REVIEWER, reviewer)] {
+            sources.roles[role].1.as_mut().unwrap().limits = limits.to_vec();
+        }
+        load(&sources).unwrap()
+    }
+
+    /// Where each fault is, as "file: key".
+    fn places(faults: &[Fault]) -> Vec<String> {
+        faults.iter().map(|fault| format!("{}: {}", fault.file, fault.key)).collect()
+    }
+
+    #[test]
+    fn a_worker_on_a_harness_its_role_holds_no_limits_for_while_it_holds_some_is_a_fault() {
+        use Harness::{ClaudeCode, Pi};
+        let rest = "    harness: pi\n    escalate: { to: reviewer, do: rule }\n";
+        let workflow = landed(rest, "{ by: reviewer, do: rule }");
+        let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: pi\nmax_open: 3\n";
+        let held = |dev: &[Harness], reviewer: &[Harness], default: Harness| {
+            let held = limited(dev, reviewer, &workflow, patrol).held(default, &[]);
+            assert_eq!((&held.unknown, &held.elsewhere), (&vec![], &vec![]));
+            held.faults
+        };
+        // A role with no limits at all is right for every harness.
+        for default in Harness::ALL {
+            assert_eq!(held(&[], &[], default), []);
+            assert_eq!(held(&[ClaudeCode, Pi], &[Pi, ClaudeCode], default), []);
+        }
+        // One with limits for one harness is right for that one alone: the
+        // stage and the patrol that name another are refused.
+        let faults = held(&[ClaudeCode], &[], ClaudeCode);
+        assert_eq!(
+            places(&faults),
+            ["workflows/feature.md: stages[1].harness", "patrols/sweep.md: harness"]
+        );
+        assert!(
+            faults[0].problem.starts_with(
+                "the stage `b` of the workflow `feature` runs on `pi`, and its role `dev` holds \
+                 limits for `claude-code` (in its `.claude/settings.json`) and none for `pi`: "
+            ),
+            "{}",
+            faults[0].problem
+        );
+        assert!(faults[0].problem.contains("in its `.pi/extensions`"), "{}", faults[0].problem);
+        assert!(faults[1].problem.starts_with("the patrol `sweep` runs on `pi`, and its role"));
+        // So is whatever takes a default the role holds none for.
+        let faults = held(&[ClaudeCode], &[], Pi);
+        assert_eq!(places(&faults)[0], "workflows/feature.md: stages[0].harness");
+        assert!(
+            faults[0].problem.starts_with(
+                "the stage `a` of the workflow `feature` runs on `pi`, the repo's default, and"
+            ),
+            "{}",
+            faults[0].problem
+        );
+        assert_eq!(faults.len(), 3);
+        // A consult, a landing and a proposal run on the default, whatever
+        // the stage names.
+        assert_eq!(held(&[ClaudeCode, Pi], &[ClaudeCode], ClaudeCode), []);
+        let faults = held(&[ClaudeCode, Pi], &[ClaudeCode], Pi);
+        assert_eq!(
+            places(&faults),
+            [
+                "workflows/feature.md: stages[1].escalate.to",
+                "workflows/feature.md: land.by",
+                "team.md: precedents.by"
+            ]
+        );
+        assert!(faults[0].problem.starts_with(
+            "the consult of the stage `b` of the workflow `feature` runs on `pi`, the repo's \
+             default, and its role `reviewer` holds"
+        ));
+        assert!(faults[1].problem.starts_with("the landing of the workflow `feature` runs on"));
+        assert!(faults[2].problem.starts_with("the proposal of a precedent runs on `pi`"));
+    }
+
+    #[test]
+    fn a_model_its_harness_does_not_list_is_a_fault_where_it_names_the_harness() {
+        use Harness::{ClaudeCode, Pi};
+        let workflow = landed("    harness: pi\n    model: opus\n", "{ by: reviewer, do: rule }");
+        let patrol =
+            |model: &str| format!("by: dev\ndo: plan\nevery: 6h\nmodel: {model}\nmax_open: 3\n");
+        let team = |model: &str| limited(&[], &[], &workflow, &patrol(model));
+        let lists = vec!["openai-codex/gpt-5.5".to_string(), "zai/glm-5.2".to_string()];
+        let listed = [(Pi, lists)];
+        // Under a default with no way to say, a model named with no harness
+        // is passed as written — and said, where it is another harness's.
+        let held = team("zai/glm-5.2").held(ClaudeCode, &listed);
+        assert_eq!(places(&held.faults), ["workflows/feature.md: stages[1].model"]);
+        assert_eq!(
+            held.faults[0].problem,
+            "`opus` is no model pi knows on this host: it lists openai-codex/gpt-5.5, \
+             zai/glm-5.2. A model is passed as written, and is its harness's own name for it"
+        );
+        let by = "the patrol `sweep`".to_string();
+        assert_eq!(held.elsewhere, [("zai/glm-5.2".to_string(), by.clone(), Pi)]);
+        assert_eq!(held.unknown, []);
+        let held = team("opus").held(ClaudeCode, &listed);
+        assert_eq!((held.faults.len(), held.elsewhere, held.unknown), (1, vec![], vec![]));
+        // Under a default that lists its models, one it knows is nothing, and
+        // one it does not is the repo's to answer for.
+        let held = team("glm").held(Pi, &listed);
+        assert_eq!((held.faults.len(), held.elsewhere, held.unknown), (1, vec![], vec![]));
+        let held = team("opus").held(Pi, &listed);
+        assert_eq!(places(&held.faults), ["workflows/feature.md: stages[1].model"]);
+        assert_eq!(held.unknown, [("opus".to_string(), by)]);
+        // A harness that was not asked is taken to know what it is given.
+        assert_eq!(team("opus").held(Pi, &[]), Held::default());
+
+        let many: Vec<String> = (0..10).map(|n| format!("p/m{n}")).collect();
+        assert_eq!(some(&many), "p/m0, p/m1, p/m2, p/m3, p/m4, p/m5, p/m6, p/m7 and 2 more");
+    }
+
+    #[test]
+    fn a_file_a_harness_would_load_in_place_of_a_roles_rules_is_a_fault_naming_it() {
+        let mut sources = sources(TEAM, &[]);
+        let read = sources.roles[DEV].1.as_mut().unwrap();
+        read.in_place = vec![
+            (Harness::Pi, "AGENTS.md".to_string()),
+            (Harness::Pi, "AGENTS.override.md".to_string()),
+        ];
+        let faults = load(&sources).unwrap_err();
+        assert_eq!(places(&faults), ["team.md: roles.dev", "team.md: roles.dev"]);
+        assert!(
+            faults[0].problem.starts_with(
+                "acme/dev holds `AGENTS.md`: pi loads that in place of `CLAUDE.md`, the rules \
+                 every harness works under."
+            ),
+            "{}",
+            faults[0].problem
+        );
+        assert!(faults[1].problem.starts_with("acme/dev holds `AGENTS.override.md`: "));
+    }
+
     #[test]
     fn a_fleet_could_be_asked_for_the_default_and_for_each_harness_named() {
         let runs = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
@@ -2342,6 +2703,7 @@ stages:
                 skills: vec![],
                 links: all(links),
                 above: all(above),
+                ..RoleDir::default()
             };
             let roles = vec![(dir("acme/hospital/roles/fellow"), Ok(read))];
             load(&Sources {
