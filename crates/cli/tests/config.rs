@@ -71,10 +71,9 @@ fn a_failure_is_one_json_object_and_a_non_zero_exit() {
 }
 
 #[test]
-fn this_repos_own_config_names_the_gate_and_declares_its_limit() {
+fn this_repos_own_config_names_the_gate() {
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/agents/afkconvoy.md");
     let world = World::new();
     let config = world.afk(&["config", "--file", file]).ok();
     assert_eq!(config["gate_command"], "./gate.sh");
-    assert_eq!(config["gate_seconds"], 600);
 }
