@@ -91,7 +91,12 @@ fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
     let ran = answer(&world, &RUN, false);
     assert_eq!(warnings(&ran), [] as [&str; 0], "{}", ran.stderr);
     assert_eq!(ran.ok()["stopped"], true);
-    assert_eq!(started(&world), ["claude --dangerously-skip-permissions"]);
+    assert_eq!(
+        started(&world),
+        [
+            r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}'"#
+        ]
+    );
     // checked to resolve like any other, and no alias was listed
     assert_eq!(world.shell_asked(), ["type -- 'claude'", "gh auth status", "claude auth status"]);
 }

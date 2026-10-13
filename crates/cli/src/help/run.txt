@@ -113,7 +113,9 @@ WHAT TRIPS YOU UP
     `--worker-command <harness>=<command>` is that of one harness, by its key
     (`claude-code`, `pi`). A value is the second form when its first word holds an
     `=`. A harness given none is started with its stock command: Claude Code with
-    `claude --dangerously-skip-permissions`, pi with `pi`.
+    `claude --dangerously-skip-permissions --settings
+    '{"skipDangerousModePermissionPrompt":true}'`, pi with `pi`. The setting answers the
+    warning Claude Code opens with in that mode: nobody is at a worker's terminal to.
   - In a bound repo, before any worker is started, the command of every harness the
     fleet could be asked for is checked: the repo's default, each harness a stage of
     the team's workflows names, and each a patrol the repo runs names. One that
