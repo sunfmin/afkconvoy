@@ -104,6 +104,12 @@ impl Staged {
         };
         let history = history(workflow, &records);
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
+        // The stage's harness and its model are its own worker's: a workflow
+        // names none for a consult.
+        let harness = at
+            .filter(|_| !consult)
+            .and_then(|stage| stage.harness(bound.harness))
+            .unwrap_or(bound.harness);
         Ok(Staged {
             verdicts: verdicts
                 .filter(|(_, reading)| {
@@ -118,18 +124,13 @@ impl Staged {
             skill: work.skill.clone(),
             writes: at.is_none_or(|stage| stage.writes),
             consult,
-            // The stage's harness and its model are its own worker's: a
-            // workflow names none for a consult.
-            harness: at
-                .filter(|_| !consult)
-                .and_then(|stage| stage.harness(bound.harness))
-                .unwrap_or(bound.harness),
+            harness,
             model: at.filter(|_| !consult).and_then(|stage| stage.model.clone()),
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
             joins,
-            role_copy: kept.role(role)?,
+            role_copy: kept.role(role, harness)?,
             team_copy: kept.copy.clone(),
             team_rules: kept.rules(),
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),

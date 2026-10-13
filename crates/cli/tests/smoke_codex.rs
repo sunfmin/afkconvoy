@@ -3,8 +3,8 @@
 //! the fleet builds the right line — not that Codex answers it as assumed
 //! (docs/adr/0013). This one runs that line for real, in a throwaway role
 //! with a throwaway project as its worktree, under a throwaway home that
-//! holds rules of a host user's a worker must not load, and reads which
-//! rules Codex would show the model.
+//! holds rules and skills of a host user's, and reads which rules and which
+//! skills Codex would show the model.
 //!
 //! It is off by default and outside the gate: it needs Codex installed. It
 //! needs no login and costs nothing: Codex is asked what it would show the
@@ -31,6 +31,13 @@ const PROJECT_WORD: &str = "PROJECT-5528";
 const OTHER_WORD: &str = "OTHER-3310";
 const TEAM_WORD: &str = "TEAM-8846";
 const USER_WORD: &str = "USER-9920";
+const SKILL_WORD: &str = "SKILL-4417";
+const HOME_SKILL_WORD: &str = "HOMESKILL-2075";
+
+/// A skill named `name`, whose description holds `word`.
+fn skill(name: &str, word: &str) -> String {
+    format!("---\nname: {name}\ndescription: The skill word is {word}.\n---\n\nDo it.\n")
+}
 
 fn write(dir: &Path, file: &str, text: &str) {
     let path = dir.join(file);
@@ -47,7 +54,7 @@ fn said(shown: &Value, role: &str) -> String {
 
 #[test]
 #[ignore = "runs real Codex: cargo test -p afkconvoy --test smoke_codex -- --ignored"]
-fn a_real_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rules() {
+fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_the_team_rules() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();
     let (above, project, team) = (root.join("above"), root.join("project"), root.join("team"));
@@ -58,6 +65,11 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rul
     write(&role, "CLAUDE.md", &format!("# Role rules\n\nThe role word is {ROLE_WORD}.\n"));
     write(&above, "CLAUDE.md", &format!("The word above is {ABOVE_WORD}.\n"));
     write(&above, ".git/HEAD", "ref: refs/heads/main\n");
+    // The role's skill is where every harness's is, and the link is the one
+    // the fleet's copy of a role holds for Codex (`Copies::role`).
+    write(&role, ".claude/skills/smoke-skill/SKILL.md", &skill("smoke-skill", SKILL_WORD));
+    std::fs::create_dir_all(role.join(".agents")).unwrap();
+    std::os::unix::fs::symlink("../.claude/skills", role.join(".agents/skills")).unwrap();
     // The repo's own rules are in the first file a worktree holds: the other
     // is what the fleet did not read.
     let (own, other) = (
@@ -70,6 +82,10 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rul
     write(&team, "CLAUDE.md", &team_rules);
     // The host user's own rules, which Codex loads from its user directory.
     write(&home, ".codex/AGENTS.md", &format!("The user word is {USER_WORD}.\n"));
+    // A skill of the host user's home, which Codex finds wherever its user
+    // directory is, and one of their Codex's own, which it does not.
+    write(&home, ".agents/skills/theirs/SKILL.md", &skill("theirs", HOME_SKILL_WORD));
+    write(&home, ".codex/skills/theirs-too/SKILL.md", &skill("theirs-too", USER_WORD));
 
     let launch = std::env::var("AFKCONVOY_SMOKE_CODEX_COMMAND")
         .unwrap_or_else(|_| Harness::Codex.stock().to_string());
@@ -137,4 +153,13 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rul
     // Nothing of the user's: the fleet's own user directory holds no rules.
     assert!(!all.contains(USER_WORD), "the user's rules were loaded: {all}");
     assert!(!kept.join("AGENTS.md").exists());
+    // The role's skill is found through the link, once; the skills Codex
+    // carries and those of the user's Codex are not shown.
+    let told = said(&shown, "developer");
+    assert_eq!(told.matches(SKILL_WORD).count(), 1, "the role's skill: {told}");
+    assert!(!all.contains("skills/.system"), "the skills Codex carries were shown: {all}");
+    // The known exception (docs/adr/0013): Codex has no way to be told to
+    // leave out the skills of the host user's home, and loads them. Were
+    // this to fail, Codex has learned one, and the fleet should use it.
+    assert!(told.contains(HOME_SKILL_WORD), "the skills of the user's home: {told}");
 }
