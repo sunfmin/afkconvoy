@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "codebase-design": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/codebase-design/SKILL.md",
+      "computedHash": "b2888e4f4e8c0af3bfd557575a64b905c44e6248c3101d72077816882b3a92b9"
+    },
+    "complexity-review": {
+      "source": "sunfmin/a-philosophy-of-software-design-skills",
+      "sourceType": "github",
+      "skillPath": "skills/complexity-review/SKILL.md",
+      "computedHash": "1aa871d5a7851f112cb90fd3c012a992f6cc30504c72e8bc70051bd2df17753c"
+    },
+    "single-source-of-truth": {
+      "source": "sunfmin/single-source-of-truth",
+      "sourceType": "github",
+      "skillPath": "skills/single-source-of-truth/SKILL.md",
+      "computedHash": "9200c7538846ec5b84748af6c8d5e4bd9db0075081f81374bb0af443e594a0ca"
+    }
+  }
+}

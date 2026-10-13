@@ -110,8 +110,8 @@ enum Command {
         #[command(flatten)]
         team: TeamArgs,
     },
-    /// Write the skeleton of a team with its roles, or of one role, and create its repo on
-    /// GitHub if asked
+    /// Write the skeleton of a team with its roles, or of one role, or a whole example team,
+    /// and create its repo on GitHub if asked
     #[command(after_long_help = include_str!("help/scaffold.txt"))]
     Scaffold {
         /// What to write the skeleton of
@@ -124,6 +124,11 @@ enum Command {
         /// performed by the first
         #[arg(long, value_parser = scaffold::named)]
         role: Vec<scaffold::Named>,
+        /// Of a team: write this example whole — a team the binary holds, with its roles —
+        /// in place of a skeleton. It takes no --role. `afkconvoy help example` reads the
+        /// team with you
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(scaffold::example_names()))]
+        example: Option<String>,
         /// Also commit the skeleton and create this repo on GitHub from it, as owner/repo
         #[arg(long, value_parser = repo)]
         repo: Option<RepoName>,
@@ -750,9 +755,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             Ok(serde_json::to_value(config::load(&file)?)?)
         }
         Command::Check { team } => team::check(team.from()),
-        Command::Scaffold { what, dir, role, repo, public } => {
+        Command::Scaffold { what, dir, role, example, repo, public } => {
             let create = repo.map(|repo| scaffold::Create { repo, public });
-            scaffold::scaffold(what, &dir, &role, create.as_ref())
+            // The parser took the name for one there is an example of.
+            let example = example.as_deref().and_then(scaffold::example);
+            scaffold::scaffold(what, &dir, &role, example, create.as_ref())
         }
         Command::Flows => flows::flows(&Repo::here()?),
         Command::Skill => Ok(Value::String(SKILL.to_string())),

@@ -231,3 +231,211 @@ fn a_skeleton_that_cannot_be_asked_for_or_created_is_an_error() {
     assert!(error.contains("gh repo create failed"), "{error}");
     assert!(world.root.join("b/CLAUDE.md").is_file());
 }
+
+/// What a harness's hook is handed for a `Bash` call of `command`.
+fn bash_call(command: &str) -> String {
+    json!({"tool_name": "Bash", "tool_input": {"command": command}}).to_string()
+}
+
+/// Runs every hook the role in `dir` has Claude Code run before a `Bash`
+/// call, as Claude Code does, on `command` → each one's exit code.
+fn hooked(dir: &std::path::Path, command: &str) -> Vec<Option<i32>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let settings = std::fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
+    let settings: Value = serde_json::from_str(&settings).unwrap();
+    let before = settings["hooks"]["PreToolUse"].as_array().cloned().unwrap_or_default();
+    let hooks = before.iter().flat_map(|entry| entry["hooks"].as_array().unwrap());
+    let run = |hook: &Value| {
+        let line = hook["command"].as_str().unwrap();
+        let mut sh = Command::new("sh");
+        sh.args(["-c", line]).env("CLAUDE_PROJECT_DIR", dir).current_dir(dir);
+        let mut child = sh.stdin(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(bash_call(command).as_bytes()).unwrap();
+        child.wait_with_output().unwrap().status.code()
+    };
+    hooks.map(run).collect()
+}
+
+#[test]
+fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
+    let world = World::new();
+    let team = world.root.join("made/hospital");
+    let dir = team.to_str().unwrap();
+    let hospital = afkconvoy::scaffold::example("hospital").unwrap();
+    let wrote =
+        world.afk(&["scaffold", "team", dir, "--example", "hospital", "--repo", "acme/h"]).ok();
+    let files: Vec<&str> = hospital.files.iter().map(|(path, _)| *path).collect();
+    assert_eq!(
+        wrote,
+        json!({"scaffolded": "team", "dir": team, "repo": "acme/h", "files": files,
+            "team_line": null})
+    );
+    // Each file is there as the binary holds it, and nothing else is.
+    for (path, text) in hospital.files {
+        assert_eq!(&std::fs::read_to_string(team.join(path)).unwrap(), text, "{path}");
+    }
+    assert_eq!(git(&team, &["status", "--porcelain"]), "");
+    let tracked = git(&team, &["ls-files"]);
+    assert_eq!(tracked.lines().count(), files.len(), "{tracked}");
+    let created = ["repo", "create", "acme/h", "--private", "--source", ".", "--push"];
+    assert_eq!(world.gh_calls(), [created]);
+
+    // The team's loader takes it as pushed, with no edit: seven roles in the
+    // team's own repo, three workflows, four patrols, rules and precedents.
+    let read = world.afk(&["check", "--team", "acme/h"]).ok();
+    let names = |of: &str, key: &str| -> Vec<String> {
+        let all = read[of].as_array().unwrap_or_else(|| panic!("{of}: {read}")).iter();
+        all.map(|one| one[key].as_str().unwrap().to_string()).collect()
+    };
+    let roles = names("roles", "name");
+    assert_eq!(roles.len(), 7, "{roles:?}");
+    for role in read["roles"].as_array().unwrap() {
+        let name = role["name"].as_str().unwrap();
+        assert_eq!(
+            (&role["repo"], &role["path"], &role["above"]),
+            (&json!("acme/h"), &json!(format!("roles/{name}")), &json!([])),
+        );
+        assert!(!role["skills"].as_array().unwrap().is_empty(), "{role}");
+    }
+    assert_eq!(names("workflows", "name"), ["chore", "design", "fix"]);
+    assert_eq!(names("patrols", "name"), ["research", "rounds", "safety-review", "triage"]);
+    assert_eq!(read["rules"], true);
+    assert_eq!(read["precedents"]["by"], "safety");
+    // The two roles with hooks hold limits, and the rest hold none.
+    let limited: Vec<&str> = read["roles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|role| role["limits"] != json!([]))
+        .map(|role| role["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(limited, ["fellow", "attending"]);
+    // And an issue is walked through its longest workflow.
+    let walk = ["rehearse", "--team", "acme/h", "fix", "pass", "pass", "pass", "pass", "pass"];
+    assert!(world.afk(&walk).ok()["ends"].is_object());
+}
+
+#[test]
+fn the_example_teams_hooks_are_executable_and_refuse_what_the_rules_say() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new();
+    let team = world.root.join("hospital");
+    world.afk(&["scaffold", "team", team.to_str().unwrap(), "--example", "hospital"]).ok();
+    // A file a harness runs is written executable, and no other is.
+    let hospital = afkconvoy::scaffold::example("hospital").unwrap();
+    let mut programs = Vec::new();
+    for (path, _) in hospital.files {
+        let mode = std::fs::metadata(team.join(path)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111 != 0, path.contains("/hooks/"), "{path}: {mode:o}");
+        programs.extend(path.contains("/hooks/").then_some(*path));
+    }
+    assert_eq!(programs.len(), 4, "{programs:?}");
+    // Every role's hooks run, and let through what no rule is about.
+    for role in std::fs::read_dir(team.join("roles")).unwrap() {
+        let role = role.unwrap().path();
+        let ran = hooked(&role, "git status");
+        assert!(ran.iter().all(|code| *code == Some(0)), "{}: {ran:?}", role.display());
+    }
+    // What each role's rules say it never does is refused by a hook of its own.
+    for (role, never, refused) in [
+        (
+            "fellow",
+            "`git commit --no-verify`, a forced push, a rebase",
+            &[
+                "git commit --no-verify -m x",
+                "git push --force origin HEAD",
+                "git push --force-with-lease",
+                "git rebase main",
+            ][..],
+        ),
+        ("attending", "committing, and pushing", &["git commit -m x", "git push origin HEAD"]),
+    ] {
+        let dir = team.join("roles").join(role);
+        let rules = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+        let said = rules.split("\n## What you never do\n").nth(1).expect("the section");
+        assert!(said.contains(&format!("refused by a hook, whatever you were asked: {never}.")));
+        assert_eq!(hooked(&dir, "git status").len(), 2, "{role}");
+        for command in refused {
+            let ran = hooked(&dir, command);
+            assert!(ran.contains(&Some(2)), "{role} is not refused `{command}`: {ran:?}");
+        }
+    }
+    // A fellow commits and pushes: only the attending is refused those.
+    assert!(!hooked(&team.join("roles/fellow"), "git commit -m x").contains(&Some(2)));
+}
+
+#[test]
+fn an_example_is_a_team_whole_and_its_name_is_one_there_is() {
+    let world = World::new();
+    let at = |name: &str| world.root.join(name).to_str().unwrap().to_string();
+    // A name there is no example for is refused, with the names there are.
+    let answer = world.afk(&["scaffold", "team", &at("a"), "--example", "clinic"]);
+    assert_eq!(answer.code, 2);
+    let error = answer.error();
+    assert!(error.contains("invalid value 'clinic' for '--example"), "{error}");
+    let names = afkconvoy::scaffold::example_names();
+    assert_eq!(names, ["hospital"]);
+    assert!(error.contains(&format!("[possible values: {}]", names.join(", "))), "{error}");
+    let error =
+        world.afk(&["scaffold", "team", &at("a"), "--example", "hospital", "--role", "x"]).error();
+    assert!(error.contains("--example names its own roles"), "{error}");
+    let error = world.afk(&["scaffold", "role", &at("a"), "--example", "hospital"]).error();
+    assert!(error.contains("--example is a team's"), "{error}");
+    assert!(!world.root.join("a").exists(), "nothing is written for any of them");
+
+    // Written in a checkout, the team is a directory of that repo, and each
+    // role's path is read from the repo's root.
+    let night = world.clone.join("teams/night");
+    world.afk(&["scaffold", "team", night.to_str().unwrap(), "--example", "hospital"]).ok();
+    let file = std::fs::read_to_string(night.join("team.md")).unwrap();
+    assert!(file.contains("\n  fellow: ./teams/night/roles/fellow\n"), "{file}");
+    assert!(!file.contains(": ./roles/"), "{file}");
+    assert!(night.join("roles/fellow/CLAUDE.md").is_file());
+    assert!(world.gh_calls().is_empty());
+}
+
+/// The files the topic names: the words of its lines four spaces in, each
+/// under the directory named alone on a line two spaces in above it, if one
+/// is since the last title.
+fn named_in(topic: &str) -> Vec<String> {
+    let (mut named, mut under) = (Vec::new(), "");
+    for line in topic.lines() {
+        let words = line.trim_start();
+        match line.len() - words.len() {
+            0 => under = "",
+            2 if words.ends_with('/') && !words.contains(' ') => under = words,
+            4 => named.extend(words.split_whitespace().map(|file| format!("{under}{file}"))),
+            _ => {}
+        }
+    }
+    named
+}
+
+/// What the binary prints for `args`, which is no JSON object.
+fn printed(args: &[&str]) -> String {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(args).output();
+    String::from_utf8(out.unwrap().stdout).unwrap()
+}
+
+#[test]
+fn the_topic_names_every_file_the_example_writes_and_no_other() {
+    let topic = printed(&["help", "example"]);
+    let hospital = afkconvoy::scaffold::example("hospital").unwrap();
+    let mut written: Vec<&str> = hospital.files.iter().map(|(path, _)| *path).collect();
+    let mut named = named_in(&topic);
+    assert!(named.len() > 40, "{named:?}");
+    assert!(named.contains(&"roles/fellow/.claude/hooks/refuse.sh".to_string()), "{named:?}");
+    written.sort_unstable();
+    named.sort_unstable();
+    assert_eq!(named, written);
+    // It says the line that writes them, and `scaffold --help` each name
+    // `--example` takes.
+    assert!(topic.contains("afkconvoy scaffold team hospital --example hospital --repo "));
+    let help = printed(&["scaffold", "--help"]);
+    for name in afkconvoy::scaffold::example_names() {
+        assert!(help.contains(&format!("[possible values: {name}]")), "{help}");
+        assert!(help.contains(&format!("--example {name}")), "{help}");
+    }
+    assert!(help.contains("`scaffold team <dir> --example <name>` writes an example team whole"));
+}
