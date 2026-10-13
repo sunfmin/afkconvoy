@@ -49,11 +49,11 @@ _Avoid_: trunk, main, default branch
 ### Teams and roles
 
 **Role**:
-A repo that defines one kind of worker: the rules it always works under, the limits it cannot cross, and the skills it can be asked to perform. A worker starts in it.
+A directory that defines one kind of worker: the rules it always works under, the limits it cannot cross, and the skills it can be asked to perform. It is a whole repo or a subdirectory of one. A worker starts in it, and is given nothing else of its repo.
 _Avoid_: agent, persona, profile
 
 **Team**:
-A repo that names a set of roles and holds the workflows, patrols and precedents they work by.
+A directory that names a set of roles and holds the workflows, patrols and precedents they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
 _Avoid_: org, crew, squad
 
 **Bound repo**:
