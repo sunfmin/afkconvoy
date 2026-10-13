@@ -746,6 +746,98 @@ fn a_stage_on_a_harness_its_role_holds_no_limits_for_while_it_holds_some_is_a_fa
     );
 }
 
+/// A role's limits for Codex are the hooks of its `.codex/hooks.json`: it holds
+/// some when the file names a hook at some event, whichever event that is.
+#[test]
+fn a_role_holds_limits_for_codex_when_its_hooks_file_names_a_hook_at_some_event() {
+    // Every worker of this repo is on Codex: it is the repo's default.
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
+                  harness: codex\n```\n";
+    write(&world.clone, "docs/agents/afkconvoy.md", config);
+    let limits = |world: &World| world.afk(&["check"]).ok()["roles"][0]["limits"].clone();
+    // No file, and a file that names no hook — a skeleton's, or one whose
+    // every event is empty — hold no limit.
+    assert_eq!(limits(&world), json!([]));
+    for none in ["{\n  \"hooks\": {}\n}\n", "{}", r#"{"hooks": {"PreToolUse": [], "Stop": []}}"#] {
+        commit(&dev(&world), ".codex/hooks.json", none);
+        assert_eq!(limits(&world), json!([]), "{none}");
+    }
+    // A hook at any one event is a limit.
+    for event in ["PreToolUse", "PermissionRequest", "UserPromptSubmit", "Stop"] {
+        let hooked = json!({"hooks": {"SessionStart": [], event: [
+            {"hooks": [{"type": "command", "command": "sh .codex/hooks/refuse.sh"}]}]}});
+        commit(&dev(&world), ".codex/hooks.json", &hooked.to_string());
+        assert_eq!(limits(&world), json!(["codex"]), "{event}");
+    }
+    // A file that cannot be read as hooks is an error that names it, and so
+    // is a directory where the file goes.
+    let unread = |world: &World| {
+        let answer = world.afk(&["check"]);
+        assert_eq!(faults(&answer.json), ["team.md: roles.dev"]);
+        let error = answer.error();
+        let named = "its limits for Codex, in .codex/hooks.json, cannot be read";
+        assert!(error.contains(named), "{error}");
+        error
+    };
+    for wrong in ["{ hooks", r#"{"hooks": ["PreToolUse"]}"#, r#"{"hooks": {"Stop": "refuse.sh"}}"#]
+    {
+        commit(&dev(&world), ".codex/hooks.json", wrong);
+        unread(&world);
+    }
+    git(&dev(&world), &["rm", "-q", ".codex/hooks.json"]);
+    commit(&dev(&world), ".codex/hooks.json/refuse.sh", "exit 2\n");
+    assert!(unread(&world).contains("it is a directory, not a file of hooks"));
+}
+
+/// A stage is never moved to Codex into fewer limits unseen: the message is
+/// the one every other harness gets.
+#[test]
+fn a_stage_on_codex_whose_role_holds_limits_for_another_harness_and_none_for_codex_is_refused() {
+    let on_codex = building(&["harness: codex"]);
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_codex)]);
+    let refused = |held: &str| {
+        let answer = world.afk(&["check"]);
+        assert_eq!(answer.code, 1);
+        assert_eq!(faults(&answer.json), ["workflows/feature.md: stages[0].harness"]);
+        let error = answer.error();
+        let said = format!(
+            "the stage `build` of the workflow `feature` runs on `codex`, and its role `dev` \
+             holds limits for {held} and none for `codex`: a worker there would be held to none \
+             of them. Write the role's limits for `codex` in its `.codex/hooks.json`, in that \
+             harness's own form, or run this on a harness the role holds limits for"
+        );
+        assert!(error.contains(&said), "{error}");
+    };
+    // Limits for Claude Code alone, with the skeleton of Codex's beside them.
+    commit(&dev(&world), ".claude/settings.json", HOOKED);
+    refused("`claude-code` (in its `.claude/settings.json`)");
+    commit(&dev(&world), ".codex/hooks.json", "{\n  \"hooks\": {}\n}\n");
+    refused("`claude-code` (in its `.claude/settings.json`)");
+    // Limits for pi too: still none for Codex.
+    commit(&dev(&world), ".pi/extensions/limits.ts", "export default function () {}\n");
+    refused("`claude-code` (in its `.claude/settings.json`) and `pi` (in its `.pi/extensions`)");
+    // Once it holds them for Codex, in Codex's form, the stage is right; the
+    // stages on the default harness always were.
+    commit(&dev(&world), ".codex/hooks.json", HOOKED);
+    let read = world.afk(&["check"]).ok();
+    assert_eq!(read["roles"][0]["limits"], json!(["claude-code", "pi", "codex"]));
+    assert_eq!(read["workflows"][0]["stages"][0]["harness"], "codex");
+    // And a role with limits for Codex alone is right for Codex alone.
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_codex)]);
+    commit(&dev(&world), ".codex/hooks.json", HOOKED);
+    let answer = world.afk(&["check"]);
+    assert_eq!(faults(&answer.json), ["workflows/feature.md: land.by"]);
+    let error = answer.error();
+    assert!(
+        error.contains(
+            "runs on `claude-code`, the repo's default, and its role `dev` holds limits for \
+             `codex` (in its `.codex/hooks.json`) and none for `claude-code`"
+        ),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_model_its_harness_does_not_know_is_a_fault_where_the_harness_can_say() {
     let named = |model: &str| building(&["harness: pi", &format!("model: {model}")]);
@@ -861,4 +953,11 @@ fn the_help_and_a_skeleton_say_where_a_roles_limits_for_each_harness_go() {
         }
         assert!(text.contains("written once"), "{name} never says what is written once");
     }
+    // `check` says where it looks for each harness's, and the skeleton holds
+    // Codex's beside Claude Code's.
+    let check = asked(&["check", "--help"]);
+    for harness in Harness::ALL {
+        assert!(check.contains(harness.limits()), "check --help: {}", harness.key());
+    }
+    assert!(world.root.join("dev").join(Harness::Codex.limits()).is_file());
 }

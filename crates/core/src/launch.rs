@@ -323,7 +323,7 @@ impl Trust {
 
     /// Answers the question — once: the keys that answer it, typed again, go
     /// to whatever came after it.
-    #[spec(fn(self: &strg Trust[false], answer: A) -> Result<(), E> ensures self: Trust[true])]
+    #[spec(fn(self: &mut Trust[false], answer: A) -> Result<(), E> ensures self: Trust[true])]
     fn answer<E, A: FnOnce() -> Result<(), E>>(&mut self, answer: A) -> Result<(), E> {
         self.answered = true;
         answer()

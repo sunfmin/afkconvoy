@@ -631,6 +631,98 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
     assert!(said.contains("describes no tool call"), "{said}");
 }
 
+/// Every hook the role a worker started in holds for Codex at `event`, as
+/// Codex reads them: from `.codex/hooks.json` in the directory it starts in.
+fn role_s_hooks(ran: &[String], event: &str) -> Vec<String> {
+    let held = std::fs::read_to_string(Path::new(&ran[0]).join(".codex/hooks.json")).unwrap();
+    let held: Value = serde_json::from_str(&held).unwrap();
+    let groups = held["hooks"][event].as_array().cloned().unwrap_or_default();
+    let hooks = groups.iter().flat_map(|group| group["hooks"].as_array().unwrap().clone());
+    hooks.map(|hook| hook["command"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_place() {
+    let world = bound();
+    // The role's limits for Codex, in Codex's form: one hook before each tool
+    // call, which refuses a `curl`, and one as a session ends.
+    let dev = world.root.join("github/acme/dev");
+    let limits = json!({"hooks": {
+        "PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": "sh .codex/hooks/refuse.sh"}]}],
+        "Stop": [{"hooks": [{"type": "command", "command": "echo \"$AFKCONVOY_STAGE\" is over"}]}],
+    }});
+    write(
+        &dev,
+        ".codex/hooks/refuse.sh",
+        "case \"$(cat)\" in *curl*) echo no curl here >&2; exit 2 ;; esac\n",
+    );
+    write(&dev, ".codex/hooks.json", &limits.to_string());
+    git(&dev, &["add", "."]);
+    git(&dev, &["commit", "-q", "-m", "its limits for Codex"]);
+    assert_eq!(world.afk(&["check"]).ok()["roles"][0]["limits"], json!(["codex"]));
+
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+    let line = started(&world, &worktree(&world, 7));
+    let role = copy(&world, "acme/dev");
+
+    // Codex loads a directory's hooks only where it trusts the directory and
+    // its hooks were reviewed: both are said on the line, of the role's copy,
+    // which is where the worker starts and holds the role's file as pushed.
+    let ran = under_codex(&world, &line);
+    assert_eq!(ran[0], role.to_str().unwrap());
+    let trusted = format!("projects={{\"{}\"={{trust_level=\"trusted\"}}}}", role.display());
+    assert!(ran.contains(&trusted) && ran.contains(&"--dangerously-bypass-hook-trust".to_string()));
+    let held = std::fs::read_to_string(role.join(".codex/hooks.json")).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&held).unwrap(), limits);
+
+    // The guard is said beside it, as configuration of the one run: Codex
+    // adds that to the hooks a directory holds, and the fleet writes it into
+    // no file — not the role's, and none of the user directory's.
+    assert!(!hooked(&ran).contains("refuse.sh"));
+    assert!(!held.contains("afkconvoy"), "{held}");
+    assert!(!kept(&world).join("hooks.json").exists());
+    assert!(!kept(&world).join("config.toml").exists());
+
+    // Each is run as Codex runs a hook: by a shell, in the directory the
+    // worker started in and in its environment, with the call on stdin.
+    let (worker, _) = line.split_once(" && codex ").expect("the stock command");
+    let role_s = |event: &str, call: &Value| -> Vec<(i32, String)> {
+        use std::io::Write;
+        let run = |hook: String| {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", &format!("{worker} && exec /bin/sh -c \"$STAND_IN_HOOK\"")])
+                .env_clear()
+                .env("PATH", std::env::var("PATH").unwrap())
+                .env("STAND_IN_HOOK", hook)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(call.to_string().as_bytes()).unwrap();
+            let out = child.wait_with_output().unwrap();
+            let said = [out.stdout, out.stderr].concat();
+            (out.status.code().unwrap(), String::from_utf8(said).unwrap().trim().to_string())
+        };
+        role_s_hooks(&ran, event).into_iter().map(run).collect()
+    };
+    // What the role refuses and the guard does not is refused by the role's…
+    let fetch = bash("curl https://example.com");
+    assert_eq!(role_s("PreToolUse", &fetch), [(2, "no curl here".to_string())]);
+    assert_eq!(codex_is_told(&world, &line, &fetch), (0, String::new()));
+    // …what the guard refuses and the role does not, by the guard…
+    let push = bash("git push origin main");
+    assert_eq!(role_s("PreToolUse", &push), [(0, String::new())]);
+    let (code, said) = codex_is_told(&world, &line, &push);
+    assert_eq!(code, 2, "{said}");
+    assert!(said.starts_with("afkconvoy guard: "), "{said}");
+    // …and a hook at another event reads the stage's facts as any limit does.
+    assert_eq!(role_s("Stop", &json!({})), [(0, "build is over".to_string())]);
+}
+
 #[test]
 fn a_stage_record_of_a_codex_worker_names_codex() {
     let world = bound();

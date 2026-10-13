@@ -33,7 +33,7 @@ impl Turn {
         forget()
     }
 
-    #[spec(fn(self: &strg Turn[false], tick: F) -> T ensures self: Turn[true])]
+    #[spec(fn(self: &mut Turn[false], tick: F) -> T ensures self: Turn[true])]
     fn tick<T, F: FnOnce() -> T>(&mut self, tick: F) -> T {
         self.reading = true;
         tick()

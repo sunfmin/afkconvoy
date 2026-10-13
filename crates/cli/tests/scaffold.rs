@@ -7,8 +7,12 @@ mod common;
 use common::{World, git};
 use serde_json::{Value, json};
 
-const ROLE_FILES: [&str; 3] =
-    ["CLAUDE.md", ".claude/skills/implement/SKILL.md", ".claude/settings.json"];
+const ROLE_FILES: [&str; 4] = [
+    "CLAUDE.md",
+    ".claude/skills/implement/SKILL.md",
+    ".claude/settings.json",
+    ".codex/hooks.json",
+];
 
 #[test]
 fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
@@ -151,9 +155,16 @@ fn a_role_in_a_repo_of_its_own_is_created_and_a_team_names_it() {
         json!({"scaffolded": "role", "dir": role, "repo": "acme/dev", "files": ROLE_FILES,
             "team_line": "dev: acme/dev"})
     );
-    // A role's hooks are Claude Code's settings, and its skill says what it is.
-    let hooks = std::fs::read_to_string(role.join(".claude/settings.json")).unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&hooks).unwrap(), json!({"hooks": {}}));
+    // A role's hooks are Claude Code's settings, and beside them Codex's own
+    // file of hooks: each names none yet. Its skill says what it is.
+    for limits in [".claude/settings.json", ".codex/hooks.json"] {
+        let hooks = std::fs::read_to_string(role.join(limits)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&hooks).unwrap(),
+            json!({"hooks": {}}),
+            "{limits}"
+        );
+    }
     let skill = std::fs::read_to_string(role.join(".claude/skills/implement/SKILL.md")).unwrap();
     assert!(skill.starts_with("---\nname: implement\ndescription: "), "{skill}");
     // The repo was created from the one commit that holds exactly the skeleton.

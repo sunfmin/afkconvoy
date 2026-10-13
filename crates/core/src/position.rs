@@ -223,7 +223,7 @@ impl Count {
         }
     }
 
-    #[spec(fn(&Count[@c]) -> u64{v: v == c.times && v <= c.limit})]
+    #[spec(fn(&Count[@c]) -> u64[c.times])]
     pub(crate) fn times(&self) -> u64 {
         self.times
     }
