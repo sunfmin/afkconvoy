@@ -15,6 +15,7 @@ use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
 use afkconvoy_core::patrol::Standing;
 use afkconvoy_core::plan::{LabelBar, Status, WorkingSet};
+use afkconvoy_core::slow_gate;
 use afkconvoy_core::team::Fault;
 use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout, harness_missing};
 use afkconvoy_core::waiting::{WAITED_LONG, Waiting};
@@ -142,6 +143,7 @@ kinds! {
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
     WaitedLong: Warning, "has waited for a human for";
+    SlowGate: Warning, "the gate is slow";
     Moved: Info, "moved since the stage";
     NoGateLimit: Info, "declares no gate limit";
 }
@@ -639,6 +641,23 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
                 },
             ));
         }
+    }
+    if let Some(slow) = &set.slow_gate {
+        let (stands, fix) = match slow.issue {
+            Some(issue) => {
+                (format!("#{issue} is open for it"), format!("afkconvoy show --issue {issue}"))
+            }
+            None => (
+                "no issue says so yet, and the next tick opens one".to_string(),
+                "afkconvoy tick --help".to_string(),
+            ),
+        };
+        found.push(finding(
+            Kind::SlowGate,
+            format!("the gate is slow: {stands}"),
+            slow_gate::said(slow),
+            fix,
+        ));
     }
     for lock in &set.locks {
         let claimed = set
@@ -1195,6 +1214,7 @@ mod tests {
             flowing: vec![],
             patrols: vec![],
             proposals: vec![],
+            slow_gate: None,
         }
     }
 

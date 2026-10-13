@@ -53,6 +53,7 @@ pub mod role;
 pub mod scaffold;
 pub mod serve;
 pub mod settle;
+pub mod slow_gate;
 pub mod stage;
 pub mod steer;
 pub mod stop;

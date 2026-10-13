@@ -13,6 +13,7 @@ use crate::lock;
 use crate::patrol::{self, Standing};
 use crate::precedent;
 use crate::role::{Due, flows};
+use crate::slow_gate::{Landing, Reported, SlowGate, slow};
 use crate::team::LAND;
 use crate::waiting::{Waiting, Waits};
 
@@ -209,6 +210,10 @@ pub struct WorkingSet {
     /// one for each ruling a human gave that nothing says was proposed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub proposals: Vec<precedent::Row>,
+    /// The gate is slow, with the evidence and the open issue that says so:
+    /// a pass opens one while there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slow_gate: Option<SlowGate>,
 }
 
 impl WorkingSet {
@@ -317,6 +322,11 @@ pub struct Observed<'a> {
     /// (`waiting::Waits`) and since when, where GitHub said. The reports of
     /// a patrol's failed run are not among them: `patrols` names those.
     pub waiting: &'a [(u64, Waits, Option<u64>)],
+    /// The base branch's landings with a recorded run of the gate command,
+    /// newest first.
+    pub landings: &'a [Landing],
+    /// The issues the fleet opened for a slow gate.
+    pub slow_gate: &'a Reported,
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -406,6 +416,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         flowing: vec![],
         patrols: vec![],
         proposals: vec![],
+        slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
     };
     let locked = !set.locks.is_empty();
     for patrol in seen.patrols {
@@ -598,6 +609,8 @@ mod tests {
             patrols: &[],
             proposals: &precedent::Seen::default(),
             waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -641,6 +654,8 @@ mod tests {
                 // One that closed since it was read.
                 (9, Waits::Ended, None),
             ],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let reasons: Vec<(u64, &str)> =
@@ -689,6 +704,8 @@ mod tests {
             patrols: &[],
             proposals: &none,
             waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         let claims = [claim(5, "me"), claim(6, "me")];
         let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
@@ -761,6 +778,8 @@ mod tests {
             patrols: &[],
             proposals: &precedent::Seen::default(),
             waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -867,6 +886,8 @@ mod tests {
             patrols: &[],
             proposals: &precedent::Seen::default(),
             waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -942,6 +963,8 @@ mod tests {
             patrols: &[],
             proposals: &precedent::Seen::default(),
             waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -992,6 +1015,8 @@ mod tests {
             patrols: &[],
             proposals: &precedent::Seen::default(),
             waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -1033,6 +1058,8 @@ mod tests {
             patrols: &[],
             proposals: &precedent::Seen::default(),
             waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -1067,6 +1094,8 @@ mod tests {
                     patrols: &[],
                     proposals: &precedent::Seen::default(),
                     waiting: &[],
+                    landings: &[],
+                    slow_gate: &Reported::NONE,
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };
