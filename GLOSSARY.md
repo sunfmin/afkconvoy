@@ -36,21 +36,21 @@ _Avoid_: session state
 
 **Rebuild**:
 The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open.
-_Avoid_: refresh, resync
+_Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:
 The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR. While a fleet lock stands: of these, the lock issues only.
-_Avoid_: queue, backlog
+_Avoid_: queue, backlog (all the issues a repo has open)
 
 **Base branch**:
 The one branch a repo's fleet work is cut from and lands on.
-_Avoid_: trunk, main, default branch
+_Avoid_: trunk, main, default branch (a team's or a role's repo is read at its own)
 
 ### Teams and roles
 
 **Role**:
 A directory that defines one kind of worker: the rules it always works under, the limits it cannot cross, and the skills it can be asked to perform. It is a whole repo or a subdirectory of one. A worker starts in it, and is given nothing else of its repo.
-_Avoid_: agent, persona, profile
+_Avoid_: agent (as under Worker), persona, profile
 
 **Team**:
 A directory that names a set of roles and holds the workflows, patrols and precedents they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
@@ -66,13 +66,13 @@ _Avoid_: team mode, managed repo
 
 **Guard**:
 The check made before each thing a worker does, refusing what its role or its stage may not do. It stops a worker that errs, not one that means to get past it.
-_Avoid_: permission, sandbox
+_Avoid_: permission (what a harness's own settings deny), sandbox
 
 ### Workflows
 
 **Workflow**:
 The stages one issue passes through and where each verdict leads, ending in the landing train or in nothing more to do.
-_Avoid_: pipeline, process
+_Avoid_: pipeline, process (a program that is running)
 
 **Flow label**:
 The label that names the workflow an issue follows. A bound repo's issue is the fleet's to work only while it carries one.
@@ -84,19 +84,19 @@ _Avoid_: enroll, admit, triage
 
 **Stage**:
 One step of a workflow: one skill of one role, performed by one new worker — or a decision waited for from a human.
-_Avoid_: step, phase, state
+_Avoid_: step (one thing a tick does), phase, state (fleet state and worker state are terms)
 
 **Stage record**:
 The comment a stage leaves on its issue: what it produced, its verdict, the versions of the role and team it ran under, and the harness its worker ran on. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
-_Avoid_: handoff note, log, stage label
+_Avoid_: handoff note, log (the tick log; what a gate prints), stage label
 
 **Position**:
 Where an issue is in its workflow: at a stage a worker is to perform, waiting on a human, with a consult, parked, landing, ended, or escalating. It is derived from the stage records each tick and stored nowhere.
-_Avoid_: state, status, current stage
+_Avoid_: state (as under Stage), status (the status board; a key of what a command answers), current stage
 
 **Rework**:
 A stage running again because a later stage rejected its work or a consult ruled on it. It is counted per issue from the stage records, from where a human last ruled on the issue or sent it to a stage.
-_Avoid_: retry, round, attempt
+_Avoid_: retry, round, attempt (what an issue was worked into before a fresh start)
 
 **Breaker**:
 A limit on rework — in total for an issue, or as rejections in a row by one stage — past which the issue escalates.
@@ -104,23 +104,23 @@ _Avoid_: retry limit, circuit
 
 **Consult**:
 A worker in a more senior role, asked to rule on a stage's `escalate` verdict before a human is. It rules or lets the escalation through; it writes no code.
-_Avoid_: review, second opinion, handoff
+_Avoid_: review (a stage may be named it), second opinion, handoff
 
 **Ruling**:
 What a consult or a human decides on an escalated issue. The stage that asked runs again under it; a human's also hands the issue back to the fleet.
-_Avoid_: answer, decision, override
+_Avoid_: answer (what a command prints), decision (what a `by: human` stage waits for), override
 
 **Precedent**:
 A ruling kept so that later stages follow it instead of escalating. A worker proposes it; a human accepts it.
+_Avoid_: rule (a role's rules and the team rules; the command `rule`), policy, guideline
 
 **Proposal**:
 One human's ruling put forward as a precedent: a PR on the team's repo that appends one entry to its precedents file. A ruling gets one; a human merging it is what accepts the precedent.
-_Avoid_: suggestion, draft, candidate
-_Avoid_: rule, policy, guideline
+_Avoid_: suggestion, draft, candidate (a key of what `recovery` answers)
 
 **Split**:
 Parking an issue on issues its own stage opened. When they have all closed, that stage runs again and judges the whole.
-_Avoid_: decompose, epic, fan out
+_Avoid_: decompose, epic (an issue under an epic label), fan out
 
 **Patrol**:
 A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period. Each run has a checkout of its own, removed as the run ends unless it failed.
@@ -134,11 +134,11 @@ _Avoid_: freeze, pause, kill switch
 
 **Harness**:
 The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another. A stage names the one its worker runs, or takes the fleet's default.
-_Avoid_: agent, coding agent, CLI, provider
+_Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Worker**:
 A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to join its PR to the landing train — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
-_Avoid_: agent, subagent, child
+_Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Worker launch command**:
 The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host says it, per harness, and a harness it says none for has a stock one; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it. In a bound repo the fleet adds to it what puts the worker in its role.
@@ -146,11 +146,11 @@ _Avoid_: agent command, provider profile
 
 **Worker state**:
 Whether a worker is busy or has stopped, as its harness reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
-_Avoid_: liveness, status
+_Avoid_: liveness, status (as under Position)
 
 **Verdict**:
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
-_Avoid_: outcome, result, needs-human
+_Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, or its verdict), result, needs-human
 
 **Nudge**:
 The one line the fleet types at a worker that stopped with no outcome, telling it to carry on. Sent once per worker.
@@ -172,7 +172,7 @@ _Avoid_: notification, callback, done signal
 
 **Claim**:
 The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance.
-_Avoid_: assignee, assignment, lock
+_Avoid_: assignee, assignment, lock (the fleet lock)
 
 **Heartbeat**:
 The timestamp a fleet instance publishes for itself while it holds claims, stamped with its host. A claim is live while its owner's heartbeat is within the lease. A `run` told to stop while it holds no claim removes its own; a start removes the dead ones that hold nothing: those of the instances it took from, its own host's past the lease, and anyone's older than a day.
@@ -194,11 +194,11 @@ _Avoid_: failover, stale reclaim
 
 **Park**:
 Recording a dependency a worker discovered as a blocker on its issue and releasing the claim, so the frontier holds the issue back until the blocker closes.
-_Avoid_: defer, snooze, hold
+_Avoid_: defer, snooze, hold (a fleet instance holds its claims)
 
 **Escalate**:
 Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every failure escalates and nothing is retried; an `escalate` verdict escalates unless a consult rules on it first. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
-_Avoid_: fail, retry, give up
+_Avoid_: fail (what a command, a gate or one thing a tick does may), retry, give up (a landing train is given up: Abandon)
 
 **Status board**:
 The single comment on a claimed issue that shows a human how far along it is, and what the afkconvoy that works it was built from. It is rendered from fleet state and never read back.
@@ -214,13 +214,13 @@ _Avoid_: state file, journal, history
 
 **Finding**:
 One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, and its fix: a line to run, or a file and the key in it to edit. `doctor` fixes none itself.
-_Avoid_: diagnosis, alert, warning (one of its severities), error
+_Avoid_: diagnosis, alert, warning (one of its severities), error (what a command that failed answers with)
 
 ### Landing
 
 **Gate**:
 The repo's build-and-test command. It is the only machine verification a change must pass before it lands.
-_Avoid_: CI, checks, local CI
+_Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and the startup probe make), local CI
 
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, made by the tool that saw the exit code and kept where every host can read it.
@@ -236,7 +236,7 @@ _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:
 Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed.
-_Avoid_: merge, enqueue
+_Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
 
 **Train worker**:
 The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward. It holds no claim and wrote none of the PRs it lands.
@@ -244,4 +244,4 @@ _Avoid_: merger, integrator, batch worker
 
 **Abandon**:
 Giving up a landing train whose worker stayed silent, with nothing landed; its PRs join the next train.
-_Avoid_: fail, bisect
+_Avoid_: fail (as under Escalate), bisect

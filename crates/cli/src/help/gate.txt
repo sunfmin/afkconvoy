@@ -12,7 +12,7 @@ WHAT IT READS AND WRITES
 
   It runs the config's `gate_command` in this worktree, its log streaming to stderr.
   With `--train` it first merges in what the PR will land behind — the landing train's
-  tip, or the base branch when nothing is on the train — a merge, never a rebase.
+  tip, or the base branch when nothing is on the train — a merge: nothing is rebased.
   On the remote it writes only the recorded gate run: put on record for a green run of
   a committed tree, taken off record for a red one. It pushes no branch and changes
   nothing on GitHub; after a red run it reads which fleet locks stand.

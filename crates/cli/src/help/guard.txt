@@ -10,7 +10,7 @@ WHO RUNS IT
   starts it, whatever the role's repo holds, and Claude Code runs it before each tool
   call the worker makes. A call it refuses is not made.
 
-  pi, through an extension afkconvoy carries and names on the line that starts a pi
+  pi, through an extension of afkconvoy's own, named on the line that starts a pi
   worker: pi hands it each tool call before making it, it asks this command, and a
   call this command does not allow — one it refuses, and one it could not be asked of
   — is not made. A pi worker whose extension is not there does not start.

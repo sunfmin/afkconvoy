@@ -143,6 +143,6 @@ WHAT TRIPS YOU UP
   - Only `check` holds a team to its harnesses: a tick loads the team and starts its
     workers without asking again.
   - Following `pass` alone from any stage must end. A loop back is made with `reject`,
-    which the breakers count; a round of passes nothing would ever stop.
+    which the breakers count; a loop of passes nothing would ever stop.
   - A stage nothing leads to is reported only once every `pass` and `reject` names a
     stage: fix those first and run it again.

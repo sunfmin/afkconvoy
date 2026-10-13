@@ -27,5 +27,5 @@ WHAT TRIPS YOU UP
   - It reports nothing. A worker's outcome is its PR on the train or its verdict
     comment: without one of them on GitHub, a wake only makes the fleet look sooner at a
     worker that stopped with nothing.
-  - `woke: false` needs no retry: the fleet finds the outcome at its next tick anyway.
+  - `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
   - It reaches a `run` only, on this host only. A fleet driven by `tick` hears nothing.

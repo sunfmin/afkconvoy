@@ -32,7 +32,7 @@ WHAT IT ANSWERS
   or Ctrl-C, one `stop:` line and {"stopped": true, "ticks", "instance"}, with exit 0.
 
     start: took #4, #7 stamped with this host        only when a start took or lost claims
-    start: took #4, the run of the patrol triage stamped with this host
+    start: took #4, the run of the patrol sweep stamped with this host
     start: took #4 stamped with this host · swept 1 dead heartbeat(s) that held nothing
     stop: holding no claim, it took its heartbeat with it
     stop: it left its heartbeat with the claims it holds: the next start on this host takes them

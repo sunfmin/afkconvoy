@@ -3,7 +3,7 @@ WHEN TO RUN IT
   Before opening an issue the fleet is to work, and again whenever the team gains a
   workflow: it says which workflow takes which kind of issue, what label puts an issue
   in it, and which labels to keep off — and it creates the labels that takes, so the
-  line it gives works. Run it once for a batch of issues, not once per issue.
+  line it gives works. Run it once for all the issues you open, not once per issue.
 
       afkconvoy flows
 

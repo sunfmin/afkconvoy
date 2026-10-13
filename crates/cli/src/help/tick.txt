@@ -101,7 +101,7 @@ WHAT TRIPS YOU UP
   - A `reject` does not always start the earlier stage again. Where it would pass one
     of the workflow's breakers — `max_rework`, `max_consecutive_rework` — the tick
     escalates the issue straight to a human instead, whatever consult the stage names;
-    the comment names the breaker and lists every round's stage and reason in order.
+    the comment names the breaker and lists every rework's stage and reason in order.
     `afkconvoy rehearse` trips them at the same verdict.
   - A verdict is not carried out when its stage left what it may not have: a stage
     marked `writes: false` whose branch holds a commit that was not there when its
