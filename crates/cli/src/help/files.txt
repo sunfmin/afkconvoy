@@ -1,10 +1,13 @@
   A team is a directory — a whole repo, or a subdirectory of one — that holds:
 
       team.md                 the team file
+      CLAUDE.md               the team rules: what every worker of the team works under
       workflows/<name>.md     one file per workflow; its flow label is `flow:<name>`
       patrols/<name>.md       one file per patrol; a repo runs the ones its `patrols` names
+      precedents.md           the precedents: one line per ruling a human accepted
 
-  and of each file only the first ```yaml block is read — and, of a workflow's, the prose
+  and of each definition file — the team file, a workflow's, a patrol's — only the first
+  ```yaml block is read — and, of a workflow's, the prose
   above it: what the workflow is for and what an issue of it holds, which
   `afkconvoy flows` answers to whoever opens one. The team file:
 
@@ -80,13 +83,35 @@
   `.claude/`, which Claude Code loads for a session opened by hand and a worker never
   sees. A symlink in such a role that leaves its directory would point at nothing: it is
   a fault. The team's directory is given to every worker beside its role's, without the
-  directories of its roles and without a `CLAUDE.md` and a `.claude/` at its top: a
-  worker's rules and skills are its role's, not its neighbours' and not the ones a repo
-  holds for whoever edits it.
+  directories of its roles and without a `.claude/` at its top: a worker's skills and
+  hooks are its role's, not its neighbours' and not the ones a repo holds for whoever
+  edits it.
+
+  The `CLAUDE.md` in the team's directory is the team rules, and it is optional. Every
+  worker of the team is given it, whatever its role and whatever it was started for — a
+  stage, a consult, a patrol, the proposal of a precedent, a landing — and no key turns
+  it off. It has no key the fleet reads. A role two teams name works under the rules of
+  the team whose stage it is in. A worker reads four kinds of text, and each is for one
+  thing:
+
+      the repo's own rules     the `CLAUDE.md` (or, for pi, `AGENTS.md`) of the repo an
+                               issue is of: what that one codebase asks
+      the team rules           the `CLAUDE.md` of the team's directory: how the team
+                               works, in every repo bound to it
+      a role's rules           the `CLAUDE.md` of the role's directory: what one kind of
+                               worker does, whichever stage it is in
+      the precedents           `precedents.md` of the team's directory: what a human
+                               ruled before, followed instead of asking again
+
+  The first three are loaded by the worker's harness, not copied into its brief, and
+  the brief says where each of the four is. They have no order: a team's rules and a
+  role's that contradict each other are a defect of the team's files, and nothing says
+  which holds. A `.claude/` in the team's directory is loaded by no worker — hooks and
+  skills are a role's — and `afkconvoy check` notes one.
 
   A role whose stages run on pi keeps the same rules and the same skills: pi reads
-  `CLAUDE.md` from the directory it starts in, and the fleet names `.claude/skills/` to
-  it. Its limits are the part written once per harness: pi runs no hook of
-  `.claude/settings.json`, so what such a role may never do is an extension of pi's in
-  `.pi/extensions/`, which the fleet has pi load. What a pi worker is started with:
-  `afkconvoy run --help`.
+  `CLAUDE.md` from the directory it starts in, the fleet names `.claude/skills/` to
+  it, and has it load the team rules as well. Its limits are the part written once per
+  harness: pi runs no hook of `.claude/settings.json`, so what such a role may never do
+  is an extension of pi's in `.pi/extensions/`, which the fleet has pi load. What a pi
+  worker is started with: `afkconvoy run --help`.

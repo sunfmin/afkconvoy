@@ -25,9 +25,10 @@ WHAT IT READS AND WRITES
   kept, read-only, under the user's cache directory (afkconvoy/copies/<owner>/<repo>/
   <commit>), once however many roles it holds. A role that is a subdirectory of its repo
   is copied out of that on its own (<commit>-role-<path>), and so is the team's
-  directory, without the directories of its roles and without a `CLAUDE.md` and a
-  `.claude/` at its top (<commit>-team-<path>): a worker is given its role's directory
-  and nothing else of that repo — nothing above it, and no neighbour's.
+  directory, without the directories of its roles and without a `.claude/` at its top
+  (<commit>-team+rules-<path>): a worker is given its role's directory and, of the
+  team's, the team rules (its `CLAUDE.md`) — nothing else above its role, and no
+  neighbour's.
   The terminal is opened on the worktree as ever, and the line it runs
   changes to the role's copy, puts the stage's facts in the environment (AFKCONVOY_ISSUE,
   _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT, _HARNESS), and
@@ -93,7 +94,8 @@ WHAT TRIPS YOU UP
     the ready label, with an open blocker, or past the concurrency is started all the
     same.
   - A role in a subdirectory is not the directory a human opens in a checkout: a
-    `CLAUDE.md` or a `.claude/` above it there is not in the worker's copy, nor above it.
-    `afkconvoy check` notes each role that has one above it.
+    `CLAUDE.md` or a `.claude/` above it there is not in the worker's copy, nor above it
+    — but for the `CLAUDE.md` of the team's own directory, the team rules, which every
+    worker is given. `afkconvoy check` notes each role that has another above it.
   - It does not ask after a worker already there. On a claim whose worker is at work it
     starts another in the same worktree.

@@ -135,8 +135,9 @@ WHAT TRIPS YOU UP
     else of yours — no rule, skill, setting or other extension. The extension named
     is afkconvoy's own: it asks `afkconvoy guard` before every tool call, refusing
     one the guard refuses or cannot be asked of, and loads the rules of the issue's
-    worktree (its AGENTS.md, or CLAUDE.md). A command you give for pi must take
-    `--approve`, `--no-skills`, `--skill`, `--extension` and `--model`.
+    worktree and the team rules (of each directory its AGENTS.md, or CLAUDE.md). A
+    command you give for pi must take `--approve`, `--no-skills`, `--skill`,
+    `--extension` and `--model`.
   - A stage's model is its harness's own name for it: pi's is `<provider>/<id>`. A
     stage on pi that names none gets whichever model pi picks for itself. A provider
     whose key is in your login shell's environment is reached too, and a rules file

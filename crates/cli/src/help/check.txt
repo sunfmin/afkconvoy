@@ -36,18 +36,22 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"team", "path", "commit", "files", "escalate_label", "harness", "roles", "workflows",
-  "patrols", "precedents"} — what it read.
+  {"team", "path", "commit", "files", "escalate_label", "rules", "harness", "roles",
+  "workflows", "patrols", "precedents"} — what it read.
   `team` is the team's repo and `path` its directory there, "" for a whole repo — with
   `--dir`, the directory read and null. `commit` is the team's commit read, null with
-  `--dir`; `files` the files read, each from the team's directory.
+  `--dir`; `files` the definition files read, each from the team's directory.
+  `rules` is whether the team has rules of its own: a `CLAUDE.md` in its directory,
+  which every one of its workers is given.
   `harness` is the default harness: the one the config of this checkout names, and
   claude-code where it names none — and with `--team` and `--dir`, which read no
   config. Each of
   `roles` is {"name", "repo", "path", "commit", "skills", "above"}: `path` is the role's
   directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read
   at; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its
-  repo, as a path from the repo's root. Each of `workflows` is {"name", "flow_label", "max_rework",
+  repo, as a path from the repo's root — but for the team's own `CLAUDE.md`, where the
+  team's directory is above the role: those are the team rules, which a worker is
+  given. Each of `workflows` is {"name", "flow_label", "max_rework",
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
   {"name", "by", "do", "harness", "model", "writes", "escalate", "pass", "reject"}.
   Each of `patrols` is {"name", "by", "do", "every", "harness", "model", "max_open",
@@ -84,6 +88,10 @@ WHAT IT ANSWERS
   A note, on stderr, for each role with something in `above`: a session opened by hand
   in the role's directory loads those rules too, and a worker, given the role's
   directory alone, does not. The team loads all the same, and it exits 0.
+
+  A note, on stderr, for a team whose directory holds a `.claude/`: the hooks and skills
+  there are loaded by no worker. Of a team's directory a worker is given the rules, and
+  a hook and a skill are a role's. The team loads all the same, and it exits 0.
 
   Other errors, as {"error": …}: the repo's config names no team and no flag was given;
   the config cannot be read, the error naming its file and the key — a `harness` there
