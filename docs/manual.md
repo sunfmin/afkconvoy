@@ -1,807 +1,1265 @@
-# afkconvoy user manual
+# afkconvoy manual
 
-[中文版](manual.zh.md)
-
-This manual is for the person who sets afkconvoy up and lives with it: the operator of a fleet, and whoever designs the team it works as. It goes from nothing to a repo whose issues are worked by a team of roles with no human in the loop, using one worked example throughout.
-
-The reference is the tool itself: `afkconvoy --help` and `afkconvoy <command> --help` say exactly what each command reads, writes and answers. The vocabulary is in [`GLOSSARY.md`](../GLOSSARY.md), and the reasons behind the design are in [`docs/adr/`](adr/). This manual tells you what to do, and in which order.
+> This page is generated, by `cargo run -p afkconvoy --example manual`, from afkconvoy's help topics: the texts `crates/cli/src/topic.rs` lists, each as `afkconvoy help <topic>` prints it, in the order `afkconvoy --help` lists them. Do not edit it: edit a topic, and run that command. `afkconvoy --help` is the way in, and `afkconvoy <command> --help` says what one command reads, writes and answers.
 
 ## Contents
 
-1. [What afkconvoy does](#1-what-afkconvoy-does)
-2. [Install](#2-install)
-3. [The simple way: an unbound repo](#3-the-simple-way-an-unbound-repo)
-4. [Teams: the ideas](#4-teams-the-ideas)
-5. [Worked example: a hospital for code](#5-worked-example-a-hospital-for-code)
-6. [Running a fleet](#6-running-a-fleet)
-7. [When the fleet needs you](#7-when-the-fleet-needs-you)
-8. [Writing good roles and workflows](#8-writing-good-roles-and-workflows)
-9. [Reference](#9-reference)
-10. [When something goes wrong](#10-when-something-goes-wrong)
+- [`afkconvoy help concepts`](#afkconvoy-help-concepts) — one issue from intake to landing, and the four things that carry it
+- [`afkconvoy help team`](#afkconvoy-help-team) — a team's directory, its file, how it names a role, binding a repo
+- [`afkconvoy help roles`](#afkconvoy-help-roles) — what a role is, what goes where in one, and the four kinds of text
+- [`afkconvoy help workflows`](#afkconvoy-help-workflows) — stages, verdicts, rework, a consult, a landing: a workflow's file
+- [`afkconvoy help patrols`](#afkconvoy-help-patrols) — a role run on a schedule: a patrol's file, intake, the fleet lock
+- [`afkconvoy help example`](#afkconvoy-help-example) — the team `scaffold --example hospital` writes, read file by file
+- [`afkconvoy help humans`](#afkconvoy-help-humans) — every way the fleet stops for a human, and the command that answers
+- [`afkconvoy help troubleshooting`](#afkconvoy-help-troubleshooting) — a symptom, its cause and its fix: each finding, each refusal
+- [`afkconvoy help glossary`](#afkconvoy-help-glossary) — every term the help uses, each with its one definition
 
-## 1. What afkconvoy does
+## afkconvoy help concepts
 
-You have a GitHub repo with a backlog of issues. `afkconvoy run`, started in a checkout of it, works that backlog while you are away:
-
-- it takes each issue that is ready and starts one coding agent — a **worker** — on it, in a git worktree of its own;
-- it watches the workers, nudges one that stopped, and replaces one that died;
-- it lands every finished PR on the base branch through a **landing train**, behind the repo's **gate** — the one command that says whether the tree is good;
-- when it cannot go on with an issue, it says why in a comment on the issue and hands it to you.
-
-Nothing the fleet knows is kept on your machine. Who works what, what is landing, where an issue is in its workflow: all of it is read from GitHub and the repo's remote at every **tick**. So you can kill `run` at any moment and start it again, and several machines can work one repo.
-
-There are two ways to use it:
-
-| | An unbound repo | A bound repo |
-|---|---|---|
-| The config names | no team | a team |
-| An issue is worked when it carries | the ready label | a flow label, `flow:<workflow>` |
-| One issue is worked by | one worker, from start to PR | one new worker per **stage**, each in its **role** |
-| The worker is | any agent your command starts | Claude Code |
-| Read | [section 3](#3-the-simple-way-an-unbound-repo) | sections [4](#4-teams-the-ideas) and [5](#5-worked-example-a-hospital-for-code) |
-
-Start unbound if you only want issues turned into PRs. Bind the repo to a team when you want the work reviewed by somebody other than its author before it lands.
-
-## 2. Install
-
-macOS, Apple Silicon or Intel:
-
-```sh
-brew install sunfmin/tap/afkconvoy
-afkconvoy --version
-```
-
-Homebrew brings `git` and `gh` with it. Three things are yours to set up:
-
-| What | Install | Log in |
-|---|---|---|
-| [orca](https://github.com/stablyai/orca), which every worker is started through | `brew install --cask stablyai/orca/orca` | — |
-| GitHub | (installed) | `gh auth login`, as a user who may push to the repo |
-| Claude Code, when it starts your workers | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude auth login` |
-
-Give orca's tap name in full: the cask Homebrew itself calls `orca` is another program. Orca has to be running — open the app, or `orca open`.
-
-You do not have to check any of this yourself. `plan`, `tick` and `run` check it first and, when something is missing or logged out, do nothing and print the line to run for each. afkconvoy installs nothing and logs nobody in.
-
-## 3. The simple way: an unbound repo
-
-**Step 1. Write the config.** Add `docs/agents/afkconvoy.md` to the repo's base branch. Only its first `yaml` block is read:
-
-````markdown
-```yaml
-base_branch: main          # required: workers branch from it and PRs land on it
-gate_command: ./gate.sh    # required: exits 0 only when the tree is good
-concurrency: 3             # workers at once (default 3)
-```
+````text
+What becomes of one issue, from the moment it is the fleet's to the moment it lands,
+and the four things that carry it there. Each term has its one definition in
+`afkconvoy help glossary`; each paragraph ends with what says more.
 ````
 
-**Step 2. Make the gate one command.** Formatting, lint, tests — whatever must hold before a change lands, in one script that exits 0 only when all of it does. It is the only machine check between a worker and your base branch, so it has to be worth trusting.
-
-**Step 3. Leave the base branch pushable.** The landing train lands by pushing a commit the gate passed. A branch protection that requires reviews or status checks refuses that, and the fleet refuses to start on such a repo.
-
-**Step 4. Mark the issues.** Put the label `ready-for-agent` on each issue the fleet may take. An issue GitHub records as blocked by an open issue waits for it; an issue labelled `epic` or `prd` is never taken.
-
-**Step 5. Look, then run**, in a checkout of the repo:
-
-```sh
-afkconvoy config    # what was read
-afkconvoy plan      # what a tick would start on; changes nothing
-afkconvoy run       # the fleet, until you stop it
-```
-
-Each issue ends one of three ways: its PR lands and the issue closes; the worker finds nothing to do and the issue closes; or the fleet swaps `ready-for-agent` for `ready-for-human` and says why in a comment. Fix what the comment names and put the ready label back.
-
-## 4. Teams: the ideas
-
-One worker that plans, writes, and judges its own work will pass its own work. A team splits those jobs between **roles**, and a **workflow** says in which order an issue passes through them.
-
-```
-        the project repo                    the team's repo                 a role's repo
-  docs/agents/afkconvoy.md            team.md        ── names ──▶       CLAUDE.md          rules
-     team: owner/team      ── names ▶ workflows/fix.md                  .claude/skills/*   what it can be asked to do
-                                      patrols/triage.md                 .claude/settings.json   hooks: what it may never do
-```
-
-**A role is a repo.** It is an ordinary Claude Code project directory: a `CLAUDE.md` with the rules this kind of worker always works under, skills under `.claude/skills/`, and hooks in `.claude/settings.json`. A worker in a role is Claude Code started *in that directory*, with the issue's worktree added to it. Open the role's repo by hand, and you are in the same role a worker is. A worker loads nothing of your own Claude Code configuration — a role is what its repo says, on every machine.
-
-**A team is a repo too.** It holds `team.md`, which gives each role a short name; one file per workflow under `workflows/`; and one file per patrol under `patrols/`. Of each file only the first `yaml` block is read, so the rest is yours to explain it in.
-
-**A workflow is a line of stages.** Each stage names a role, and the skill of that role to perform:
-
-```yaml
-stages:
-  - name: build
-    by: dev              # a role of the team, or `human`
-    do: implement        # a skill in that role's repo
-    on: { pass: review }
-  - name: review
-    by: reviewer
-    do: review
-    writes: false        # this stage may not commit
-    on: { pass: land, reject: build }
-land: { by: dev, do: land }
-```
-
-**An issue enters a workflow by its flow label.** The file `workflows/fix.md` is the workflow `fix`, and its flow label is `flow:fix`. Put that label on an issue and it is at the workflow's first stage. An issue with no flow label is left alone.
-
-**Every stage is a new worker, and ends with a verdict.** The fleet starts a fresh Claude Code session for each stage — a reviewer never inherits the author's reasoning. The worker ends by declaring one of five verdicts with `afkconvoy verdict`, which writes a **stage record**: a comment on the issue.
-
-| Verdict | Meaning | Where the issue goes |
-|---|---|---|
-| `pass` | the stage did its work | where the stage's `on.pass` says: a stage, `land`, or `done` |
-| `reject` | the work of an earlier stage is turned down | back to the stage `on.reject` names — always an earlier one |
-| `blocked` | it waits on other issues | parked; the same stage runs again when they close |
-| `already-satisfied` | nothing needs changing | the workflow ends |
-| `escalate` | the stage cannot decide | to the stage's consult if it names one, else to a human |
-
-Only `pass` and `reject` are written in a workflow. The other three mean the same at every stage of every workflow, so a role is taught them once.
-
-**Where an issue is, is computed, not stored.** Each tick reads the issue's stage records and the workflow, and works out the stage. The fleet also keeps a `stage:<name>` label on the issue so that you can filter by it on GitHub — but it never reads that label back. Moving a label by hand does nothing; you steer an issue with a command ([section 7](#7-when-the-fleet-needs-you)).
-
-**No human stands in a workflow.** An issue goes from its flow label to the base branch without anyone approving anything. What keeps that safe:
-
-- **Breakers.** Every `reject` is counted. `max_rework` bounds the total per issue (default 3) and `max_consecutive_rework` the rejections in a row by one stage (default 2). The rejection that would pass either hands the issue to a human instead, with every round listed.
-- **A consult.** A stage may name a more senior role to ask first — `escalate: { to: attending, do: consult }`. Its `escalate` then starts a worker in that role, which either rules (the stage runs again under the ruling) or lets the question through to a human. The chain is one role long.
-- **Guards.** Every worker of a bound repo runs under a hook the fleet adds, which refuses what no worker may do: merging a PR, pushing the base branch, moving a flow label, forging a stage record. In a stage marked `writes: false` it also refuses committing and pushing. A role adds its own limits as hooks in its own repo.
-- **The gate**, which every change still passes before it lands.
-
-**A patrol is a role on a schedule.** It owns no issue. It looks for work — unrouted issues, a broken base branch, something worth proposing — opens issues and takes them in with `afkconvoy intake`. It may not commit. `max_open` stops it once that many issues it opened are still open.
-
-**A fleet lock stops everything but one fix.** When the base branch is broken, every issue's gate is red whatever its PR holds. An open issue carrying the lock label makes the fleet work lock issues only, until it closes. A stage that declared `escalate` or went silent before it closed has met that fault and not its own: it runs again instead of going to a human, and a worker whose gate is red while a lock stands is told to wait.
-
-**A precedent is a ruling worth keeping.** When you rule on an escalated issue, a worker in the role the team names proposes your ruling as one line of the team's `precedents.md`, in a PR on the team's repo. Merge it, and every later stage reads it before it may escalate the same question again.
-
-## 5. Worked example: a hospital for code
-
-This section builds a whole team and runs it, start to finish. Every command and every output below is from a real run, and the repos it made are public: read the roles, the workflows, and the issues with every stage's record on them.
-
-| | Repo |
-|---|---|
-| The team | [`sunfmin/hospital-team`](https://github.com/sunfmin/hospital-team) |
-| The roles, each `sunfmin/hospital-<name>` | [`fellow`](https://github.com/sunfmin/hospital-fellow), [`attending`](https://github.com/sunfmin/hospital-attending), [`discharge-nurse`](https://github.com/sunfmin/hospital-discharge-nurse), [`triage-nurse`](https://github.com/sunfmin/hospital-triage-nurse), [`infection-control`](https://github.com/sunfmin/hospital-infection-control), [`research`](https://github.com/sunfmin/hospital-research), [`safety`](https://github.com/sunfmin/hospital-safety) |
-| The project | [`sunfmin/hospital-demo`](https://github.com/sunfmin/hospital-demo) |
-
-The team is modelled on the one Cockroach Labs describes in [An experiment in running a hospital for code](https://www.cockroachlabs.com/blog/experiment-running-hospital-code/): an issue is a patient, and each role does one job on it.
-
-| The article's role | Here | What it does |
-|---|---|---|
-| Fellow | role `fellow` | works an issue up into a plan; treats it under the reviewed plan |
-| Review Attending | role `attending` | reviews the plan and the code; is consulted when the fellow cannot decide |
-| Discharge Nurse | role `discharge-nurse` | audits the record before a landing, and lands |
-| Triage Nurse | role `triage-nurse`, as a patrol | routes each open issue to the workflow that fits |
-| Infection Control | role `infection-control`, as a patrol | runs the gate on the base branch; locks the fleet when it is broken |
-| Research | role `research`, as a patrol | proposes work it can show the need for |
-| Safety | role `safety` | proposes a human's ruling as a precedent; reviews how the work went |
-| Charge Nurse | no role | the fleet itself nudges a stalled worker and replaces a dead one |
-| Chief of Medicine | you | rules on what is escalated; merges precedents |
-
-### Step 1. Create a role
-
-```sh
-afkconvoy scaffold role fellow --repo sunfmin/hospital-fellow
-```
-
-```json
-{"dir":"/…/hospital/fellow","files":["CLAUDE.md",".claude/skills/implement/SKILL.md",".claude/settings.json"],"repo":"sunfmin/hospital-fellow","scaffolded":"role"}
-```
-
-This writes a skeleton, commits it and creates the repo on GitHub, private (`--public` for a public one). About seven seconds. The role comes before the team because `check` reads every role from GitHub.
-
-### Step 2. Write the role
-
-A role is three kinds of file. Here is the fellow, shortened.
-
-**`CLAUDE.md` — the rules it works under whatever it is asked:**
-
-```markdown
-# Fellow
-
-- **No code before a plan that passed review.**
-- **Don't improvise.** When the work needs something the reviewed plan does not hold, stop
-  and declare `escalate`, saying what changed.
-- **A test is evidence, not an obstacle.** Never delete, skip, loosen or rewrite a test to
-  turn it green.
-- **Stuck is a finding.** After two attempts at the same failure that did not move it,
-  declare `escalate` with a hand-off.
-- **Behaviour nobody decided is not yours to decide.** Where the issue leaves open what a
-  user of the code would see, read the precedents, and declare `escalate` for what none covers.
-```
-
-**`.claude/skills/diagnose/SKILL.md` — one job it can be asked to do.** The stage `workup` will name it with `do: diagnose`:
-
-```markdown
----
-name: diagnose
-description: Work an issue up into a treatment plan, changing no file. Use when the brief
-  you were started with names `diagnose` as the skill to perform.
----
-
-1. **Read the history.** The issue, every comment, every stage record your brief lists.
-2. **Reproduce.** Quote the command and what it printed.
-3. **Differential.** The causes that would explain it, and what rules each in or out.
-4. **Size it.** Over 1,000 changed lines: split the issue as your brief says.
-5. **Find the open questions.** What none of the precedents covers ends the workup: `escalate`.
-6. **Write the plan** — Diagnosis, Change, Tests, Risks, Out of scope — as the text of your verdict.
-7. **Declare `pass`** with the command your brief gives.
-```
-
-The skill never says which command ends the stage: the brief the fleet writes for each worker does, with the issue and the stage filled in.
-
-**`.claude/settings.json` — what it may never do**, as a hook that Claude Code runs before each tool call:
-
-```json
-{ "hooks": { "PreToolUse": [ { "matcher": "Bash",
-    "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/refuse.sh" }] } ] } }
-```
-
-```sh
-#!/bin/sh
-call=$(cat)
-case "$call" in
-  *--no-verify*) echo "fellow: a commit is never made with --no-verify" >&2; exit 2 ;;
-  *"git rebase"*) echo "fellow: a branch is never rebased; merge instead" >&2; exit 2 ;;
-esac
-exit 0
-```
-
-Exit 2 refuses the call and shows the worker the reason. A hook holds even though workers run with `--dangerously-skip-permissions`.
-
-Commit and push. **A push to the role's default branch is the only way a change reaches a worker.**
-
-The other six roles are made the same way. To add a skill somebody else wrote, run the skills installer in the role's checkout and commit what it wrote: `npx skills add <owner/repo>`.
-
-### Step 3. Create the team
-
-```sh
-afkconvoy scaffold team team --role fellow=sunfmin/hospital-fellow
-```
-
-Then edit. **`team.md`** gives each role its short name:
-
-```yaml
-escalate_label: ready-for-human
-roles:
-  fellow: sunfmin/hospital-fellow
-  attending: sunfmin/hospital-attending
-  triage-nurse: sunfmin/hospital-triage-nurse
-  discharge-nurse: sunfmin/hospital-discharge-nurse
-  infection-control: sunfmin/hospital-infection-control
-  research: sunfmin/hospital-research
-  safety: sunfmin/hospital-safety
-precedents: { by: safety, do: record-precedent, max_open: 10 }
-```
-
-**`workflows/fix.md`** — for a defect, or any change in what the code does. "No code before a plan, no plan without a review":
-
-```yaml
-max_rework: 3
-max_consecutive_rework: 2
-stages:
-  - name: workup
-    by: fellow
-    do: diagnose
-    model: fable
-    writes: false
-    escalate: { to: attending, do: consult }
-    on: { pass: plan-review }
-  - name: plan-review
-    by: attending
-    do: review-plan
-    model: opus
-    writes: false
-    on: { pass: treatment, reject: workup }
-  - name: treatment
-    by: fellow
-    do: treat
-    model: opus
-    escalate: { to: attending, do: consult }
-    on: { pass: code-review }
-  - name: code-review
-    by: attending
-    do: review-code
-    model: opus
-    writes: false
-    on: { pass: discharge, reject: treatment }
-  - name: discharge
-    by: discharge-nurse
-    do: audit
-    model: sonnet
-    writes: false
-    on: { pass: land, reject: treatment }
-land: { by: discharge-nurse, do: land }
-```
-
-**`workflows/chore.md`** — for a small change that needs no diagnosis. A second workflow is a second file:
-
-```yaml
-max_rework: 2
-stages:
-  - name: treatment
-    by: fellow
-    do: treat
-    model: sonnet
-    escalate: { to: attending, do: consult }
-    on: { pass: code-review }
-  - name: code-review
-    by: attending
-    do: review-code
-    model: sonnet
-    writes: false
-    on: { pass: land, reject: treatment }
-land: { by: discharge-nurse, do: land }
-```
-
-The same two roles, the same skills, a different line. That is why a role names no workflow.
-
-**`patrols/triage.md`** — a role on a schedule:
-
-```yaml
-by: triage-nurse
-do: triage
-every: 10m
-model: sonnet
-max_open: 10
-```
-
-### Step 4. Check it, draw it, rehearse it
-
-```sh
-afkconvoy check --dir team
-```
-
-answers what it read — every role with its skills, every workflow, every patrol — or every fault at once, each with its file and key:
-
-```json
-{"error":"…","faults":[{"file":"workflows/fix.md","key":"stages[1].on.reject","problem":"…"}]}
-```
-
-Edit and run it again until it exits 0. Then look at what you made:
-
-```sh
-afkconvoy show --dir team
-```
-
-```
-fix — flow:fix — max_rework 3, max_consecutive_rework 2
-
-    ┌─▶ workup       fellow: diagnose · harness claude-code · model fable · writes nothing · escalate → attending: consult
-    │     ↓ pass → plan-review
-    └── plan-review  attending: review-plan · harness claude-code · model opus · writes nothing · reject → workup
-          ↓ pass → treatment
-┌─┬───▶ treatment    fellow: treat · harness claude-code · model opus · escalate → attending: consult
-│ │       ↓ pass → code-review
-│ └──── code-review  attending: review-code · harness claude-code · model opus · writes nothing · reject → treatment
-│         ↓ pass → discharge
-└────── discharge    discharge-nurse: audit · harness claude-code · model sonnet · writes nothing · reject → treatment
-          ↓ pass → land
-        land         discharge-nurse: land
-```
-
-And walk an imaginary issue through it. What happens when the fellow cannot decide, and the attending cannot either?
-
-```sh
-afkconvoy rehearse --dir team fix escalate escalate ruling pass
-```
-
-| Declared | In stage | The issue is then |
-|---|---|---|
-| `escalate` | `workup` | with the consult: `attending` |
-| `escalate` | `workup` | escalating: with a human |
-| `ruling` | `workup` | at `workup` again, to be performed by `fellow` |
-| `pass` | `workup` | at `plan-review` |
-
-Nothing was started and nothing was spent. Push the team:
-
-```sh
-cd team && git init && git add -A && git commit -m "The hospital"
-gh repo create sunfmin/hospital-team --private --source . --push
-```
-
-### Step 5. Bind the project
-
-In the project's repo, `docs/agents/afkconvoy.md` on the base branch:
-
-```yaml
-base_branch: main
-gate_command: ./gate.sh
-concurrency: 3
-team: sunfmin/hospital-team
-patrols: [triage, rounds]
-```
-
-`team` is what binds it. `patrols` names which of the team's patrols run *here*: the team has four, this repo runs two. Then, in a checkout:
-
-```sh
-afkconvoy check                                   # the team, as this repo names it
-orca repo add --path "$(pwd)"                     # once per checkout: orca must know it
-```
-
-The second is easy to miss, and the fleet does not yet do or check it for you ([#119](https://github.com/sunfmin/afkconvoy/issues/119)).
-
-### Step 6. Open issues
-
-The demo project is a small Go package that reads a prescription's interval: `ParseInterval("q8h")` is eight hours, `DosesPerDay("q8h")` is 3. Three issues, opened three different ways:
-
-| # | Issue | Opened with | Why |
-|---|---|---|---|
-| 1 | `DosesPerDay` panics on `"q0h"` | the label `flow:fix` | a defect: a human takes it in |
-| 2 | README: list the interval forms | no label | left for the triage patrol to route |
-| 3 | Read `"prn"` prescriptions | the label `flow:fix` | says outright that one answer is "not decided" |
-
-`afkconvoy flows` is what to ask before opening the first one. It answers, for each workflow of the team, what it is for — the prose of its file above the yaml — the stage an issue enters at, and the line that opens an issue into it; and it creates each flow label the repo lacks, which `gh issue create --label` would otherwise refuse:
-
-```sh
-afkconvoy flows          # once per repo, and again when the team gains a workflow
-gh issue create --label 'flow:fix' --title 'DosesPerDay panics on "q0h"' --body-file i1.md
-```
-
-```sh
-afkconvoy plan
-```
-
-```json
-{"frontier":[{"number":1,"stage":"workup","title":"DosesPerDay panics on \"q0h\""},
-             {"number":3,"stage":"workup","title":"Read \"prn\" prescriptions"}],
- "excluded":[{"number":2,"reason":"no flow label","title":"README: list the interval forms ParseInterval reads"}],
- "free_slots":3,
- "intake":{"limit":50,"open":0},
- "patrols":[{"name":"triage","standing":"due","every":600,"last_run":null,"open":0,"max_open":10},
-            {"name":"rounds","standing":"due","every":1800,"last_run":null,"open":0,"max_open":1}]}
-```
-
-Two issues at `workup`, one left alone and why, two patrols due.
-
-### Step 7. Run
-
-```sh
-afkconvoy run --panel 7070
-```
-
-The fleet's own lines, lightly trimmed:
-
-```
-panel: http://127.0.0.1:7070/
-tick 2: dispatched #3 · continued #1 · holding 2/3 · frontier 0 · next in 90s
-tick 3: advanced #3 · ran the patrol triage, rounds · holding 3/3 · frontier 0 · next in 90s
-tick 4: advanced #1 · dispatched #3 · holding 3/3 · frontier 0 · next in 90s
-tick 6: advanced #3 · dispatched #1 · holding 3/3 · frontier 1 · next in 90s
-tick 7: advanced #1 · dispatched #2 · holding 3/3 · frontier 1 · next in 90s
-tick 9: advanced #2 · dispatched #1, #3 · ended the patrol triage, rounds · proposed as a precedent the ruling on #3 · holding 3/3 · frontier 0 · next in 90s
-```
-
-`dispatched` starts a worker on a stage; `advanced` is the fleet reading a verdict and ending that stage's claim. These lines are from a build in which the stage that follows was dispatched a tick later; today the tick that reads the verdict starts it, under a claim of its own, and says both: `advanced #3 → review · dispatched #3`. Here is what happened to each issue.
-
-#### Issue 2: routed by a patrol, landed by a short workflow
-
-Nobody labelled it. The `triage` patrol's worker read it, read what each workflow's file says it is for, and ran `afkconvoy intake --issue 2 --workflow chore`. That left an **intake record** on the issue and put the flow label on:
-
-> **afkconvoy** — a worker in the role `triage-nurse`, on the patrol `triage`, took this issue in to the workflow `chore`.
-
-Then `treatment` (fellow) wrote the README table and opened PR #4; `code-review` (attending) passed it; a worker in the landing role (discharge-nurse) gated the PR and joined the landing train; the train landed it and closed the issue. Three roles, no human.
-
-#### Issue 1: the whole of `fix`
-
-`workup` reproduced the panic, and found more than was reported — an hour count that overflows to exactly zero panics too:
-
-```
-DosesPerDay("q0h")  PANIC: runtime error: integer divide by zero
-DosesPerDay("q2251799813685248h") PANIC: runtime error: integer divide by zero   (2^51 hours wraps int64 to 0)
-```
-
-Its plan was to refuse a zero *duration*, not a zero hour count, so that one check closes both. `plan-review` did not take that on trust: it ran the reproduction on a copy of the tree, confirmed it, and passed the plan with four notes — two more inputs to pin, and that the tests should hold the error's prefix too. `treatment` built it, test first; `code-review` and `discharge` passed it; it landed.
-
-On the way the fellow found inputs that are wrong but do not panic (`q-8h` gives -3 doses a day). Its rules say what nobody decided is not its to decide, and the plan had put them out of scope — so it opened a new issue for them, with no label. The next `triage` run read it and did *not* take it in: the issue listed what to decide and not the decision. As its rules say, it asked once, in a comment — "This can't be worked as written: it lists what to decide but not the decision" — and left the issue for a human to answer.
-
-Ask where an issue is at any moment:
-
-```sh
-afkconvoy show --issue 1
-```
-
-```json
-{"position":{"is":"perform","stage":"discharge","by":"discharge-nurse","do":"audit"},
- "follows":{"is":"landing","by":"discharge-nurse","do":"land"},
- "rework":{"had":0,"left":3},
- "records":[{"stage":"workup","verdict":"pass","by":"worker"},
-            {"stage":"plan-review","verdict":"pass","by":"worker"},
-            {"stage":"treatment","verdict":"pass","by":"worker"},
-            {"stage":"code-review","verdict":"pass","by":"worker"}]}
-```
-
-#### Issue 3: escalated, ruled on, and made a precedent
-
-The issue said outright that what `DosesPerDay("prn")` answers was not decided. The fellow's `workup` did not pick an answer. It showed that the question could not be put off — reading `prn` as a zero duration would turn today's clean error into a panic — and declared `escalate` with a hand-off: the question, three options, and the one it would take.
-
-`workup` names a consult, so the fleet did not come to a human yet. It started a worker in the role `attending`, with the skill `consult`. The attending's rules say a value a caller sees, that nobody decided, is not its to rule on either. It checked the diagnosis, added a second question the fellow had assumed an answer to, and let it through:
-
-> **afkconvoy: escalated to a human.** The consult of the stage `workup` let its `escalate` through.
-
-The issue now carried `ready-for-human` in place of `flow:fix`. The chain is one role long: fellow, attending, you.
-
-```sh
-afkconvoy rule --issue 3 --text 'Ruling, by the Chief:
-1. `DosesPerDay("prn")` returns an error, `dose: "prn" has no doses a day`. An interval with no fixed period has no number of doses: say so with an error, never with a number.
-2. `ParseInterval("prn")` returns `0, nil`: a zero duration means "no fixed interval".
-3. `q0h` is not this issue: #1 decides it.'
-```
-
-```json
-{"issue":3,"relabelled":true,"ruled":true,"stage":"workup","woke":true,"workflow":"fix"}
-```
-
-The flow label was back, the fleet was woken, and `workup` ran again with the ruling in its brief.
-
-Because the team names who proposes precedents, the ruling had a second effect. A worker in the role `safety` opened [a PR on the team's repo](https://github.com/sunfmin/hospital-team/pull/1) that adds one line to `precedents.md`:
-
-```
-- An interval with no fixed period, such as `prn`, reads as a zero duration … and has no number of doses a
-  day: say so with an error, never with a number. **When:** a prescription form names no fixed period between
-  doses … (https://github.com/sunfmin/hospital-demo/issues/3#issuecomment-…)
-```
-
-It is yours to merge or close. Merged, the next stage that meets a form with no fixed period reads the precedent and goes on without asking.
-
-### What it came to
-
-| | |
-|---|---|
-| Issue 2, `chore`: 2 stages and a landing | opened to landed in 18 minutes |
-| Issue 1, `fix`: 5 stages and a landing | opened to landed in 23 minutes |
-| Issue 3, `fix`: escalated by the fellow, let through by the consult, ruled once, then 5 stages and a landing | opened to landed in 28 minutes; the code does what the ruling says |
-| Human actions in all | one `afkconvoy rule`; one precedent PR left to merge |
-| What a human never did | assign, review, approve, merge |
-
-Everything that happened is on the issues: open [issue 1](https://github.com/sunfmin/hospital-demo/issues/1) and read down it. Each comment is a stage's record, with the commit of the role and of the team it ran under — so when a role's rules change, you can tell which work was done under which.
-
-## 6. Running a fleet
-
-**Before the first run**, in a checkout of the repo:
-
-```sh
-afkconvoy config    # the config, defaults filled in
-afkconvoy check     # bound repos: does the team load?
-afkconvoy plan      # the frontier: what a tick would start on, and why the rest waits
-```
-
-`plan` is where you find out why an issue is not being worked: every open issue that is not on the frontier is under `excluded`, with the reason.
-
-**Start it.** `run` never returns, so give it a terminal of its own, or the background:
-
-```sh
-afkconvoy run --panel 7070
-```
-
-It prints one line per tick:
-
-```
-tick 1: dispatched #1, #3 · holding 3/3 · frontier 0 · next in 30s
-tick 2: nothing to do · holding 3/3 · frontier 0 · next in 60s
-```
-
-`holding 3/3` is claims held out of `concurrency`; `frontier` is what waits for a free slot. With a fleet lock standing, the claims it leaves alone take no slot and are shown apart: `holding 1/3 · 2 left alone`. A step that failed shows in the line as `FAILED <step> #<issue>: <why>`, and the loop goes on. One cause that stopped several steps is said once, as `FAILED 7 steps: <why>`. A read of GitHub that failed in transit (an answer cut short, a 5xx, a connection reset, a timeout) is made again twice, a second apart, before anything is said; one that still fails reads `GitHub could not be reached: <the call>: …`, and the next tick starts with no sleep.
-
-**Watch it.** With `--panel <port>`, http://127.0.0.1:port/ shows the fleet as a page that brings itself up to date after every tick: each workflow as a line of its stages, the issues at work and queued at each, the landing train, and what waits for a human. A fleet started without it serves the same page once you ask it to, with no restart: `afkconvoy panel --open` (or `--open --port 7070`), from any worktree of the repo, answers the address — and answers it again whenever you ask. Each worker is also a terminal in orca, in the issue's worktree — open it to read what the worker is doing.
-
-**Ask about one issue**:
-
-```sh
-afkconvoy show --issue 7
-```
-
-answers where it is, what a `pass` would lead to, how much rework it has left, and every stage record in order.
-
-**Stop it** with Ctrl-C, or by killing the process. It finishes the step it is in and exits. Nothing is released and no worker is stopped: the workers work on, and the next `run` on the same machine takes the claims back. A `run` that holds no claim when it is stopped removes its heartbeat from the remote; one that could not — it held claims, or was killed outright — has it removed by the next start on that machine.
-
-**Rules to remember**
-
-- One `run` per machine per repo. A second one takes the first one's claims.
-- Workers start in a fresh login shell that inherits nothing from the shell `run` was started in. The default worker launch command is `claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}'` — bypass-permissions mode, with the warning Claude Code opens in that mode answered, since nobody is at a worker's terminal to accept it; if you start Claude through a wrapper, name it: `afkconvoy run --worker-command <alias>`. That bare form is the command of the repo's default harness; `--worker-command <harness>=<command>` (as in `claude-code=<alias>`) says one harness's, once for each, and a harness given none is started with its stock command. Before any worker is started, the command of every harness the team could ask for is checked, and a start that cannot start one of them starts no worker.
-- A change to a role or to a team reaches a worker only once it is pushed to that repo's default branch. A stage starts under whatever is at the head when it starts.
-- A change to the project's config counts once it is on the base branch.
-
-## 7. When the fleet needs you
-
-You are asked by exception, and always the same way: the issue loses its flow label, gets the team's escalate label (`ready-for-human` by default), and a comment says why. So the one thing to check is:
-
-```sh
-gh issue list --label ready-for-human
-```
-
-or the "With a human" part of the panel, or `afkconvoy doctor`, which lists the same issues under `waiting_on_human` — each with the line that answers it — and counts one that has waited for more than an hour a finding. The tick that hands an issue over says so in its line: `escalated #7 (workup: consult let it through)`. The comment on the issue ends with the line that answers it. afkconvoy sends no notification.
-
-| What happened | What the comment says | What you do |
-|---|---|---|
-| A stage declared `escalate` and no consult ruled | the question, usually with options | `afkconvoy rule` |
-| A breaker tripped | which breaker, and every round's stage and reason | read the rounds; `rule`, or `send` it elsewhere |
-| A worker failed — went silent, no verdict, red gate, a commit from a stage that may not write | what failed | fix the cause; `rule` to run the stage again |
-| The workflow changed under the issue | that a record names a stage that is gone | `send` it to a stage that exists |
-
-**Answer where it stopped** — the stage runs again, with your text in its brief, and both rework counts start over:
-
-```sh
-afkconvoy rule --issue 7 --text "Keep the v1 schema; migrate in a later issue."
-```
-
-**Put it somewhere else** — at any stage of its workflow, whatever its records say:
-
-```sh
-afkconvoy send --issue 7 --stage plan --text "The approach changed: see #12."
-```
-
-**Declare the verdict of a stage that is yours** — one a workflow gives to `human`. The issue waits there, unclaimed, until you do:
-
-```sh
-afkconvoy verdict pass --issue 7 --stage sign-off --text "Approved."
-```
-
-Run all three in a checkout of the project repo. Do not move the labels by hand: that hands the issue back with no ruling on record, and the next tick escalates it again.
-
-**Precedents.** If the team names who proposes them, each `rule` you give is followed by a PR on the team's repo that appends one line to `precedents.md`. Read it as "do I want every later stage to follow this without asking?" — merge it if so, close it if the ruling was about that one issue. The fleet never merges on the team's repo.
-
-**A patrol's failed run** opens an issue of its own with the escalate label. The patrol is not run again until you close it.
-
-## 8. Writing good roles and workflows
-
-**Put each thing where it belongs.**
-
-| It is | It goes in | Because |
-|---|---|---|
-| a rule the role follows whatever it is asked | the role's `CLAUDE.md` | it is loaded for every stage the role performs |
-| how to perform one job | a skill, `.claude/skills/<name>/SKILL.md` | a stage's `do` names it |
-| something the role must never do | a hook in `.claude/settings.json` | a rule can be ignored; a hook refuses |
-| the order of the work, and who reviews whom | the workflow | a role serves many workflows and names none |
-| what must hold before any change lands | the project's gate | a role's hooks do not see the project's rules |
-| the project's own conventions | the project's `CLAUDE.md` | it is loaded from the worktree, in every role |
-
-**Name no stage and no workflow in a role.** A skill says "the plan is the last `pass` of the workup" at most; the brief the fleet writes for each stage carries the issue, the stage, the worktree, the stage records so far, and the exact commands to end with. A skill that says "end as your brief says" stays right when the workflow changes.
-
-**The brief says what; the skill says how.** The fleet's brief is a fixed form with nothing of how to do the work. Everything about quality — what a plan contains, what counts as a blocking finding, what a discharge checks — is yours to write in the skill.
-
-**Make the author and the judge different roles**, and mark every judging stage `writes: false`. A reviewer that can fix what it finds stops reporting it.
-
-**Give `reject` a bar.** A reviewer with no rule about when to reject will send work back over a name. Say what blocks and what is a note, and that notes alone are a `pass`. The breakers stop a loop; a bar keeps it from starting.
-
-**Say what is not the role's to decide.** The most useful sentence in a role is the one that tells it when to stop and ask. Without it a worker decides product behaviour by itself, and you learn of it in the diff.
-
-**Describe each workflow in its file**, above the yaml: what kind of issue it is for. A patrol that routes issues reads that text to choose.
-
-**Rehearse before you run.** `afkconvoy rehearse <workflow> <verdict>…` walks an imaginary issue through the verdicts you list and starts nothing:
-
-```sh
-afkconvoy rehearse fix pass reject pass reject pass reject    # where does the breaker trip?
-afkconvoy rehearse fix escalate ruling pass                   # who is asked, and what runs again?
-```
-
-**Start small.** One role and one stage that lands is a working team. Add the reviewer when you have read what the first role produces.
-
-## 9. Reference
-
-### The project's config — `docs/agents/afkconvoy.md`
-
-| Key | Default | Meaning |
-|---|---|---|
-| `base_branch` | — required | workers branch from it; PRs land on it |
-| `gate_command` | — required | exits 0 only when the tree is good |
-| `concurrency` | `3` | claims held at once: a worker each |
-| `epic_labels` | `[epic, prd]` | issues carrying one are never worked |
-| `lock_label` | `fleet-lock` | an open issue carrying it is a fleet lock |
-| `ready_label` | `ready-for-agent` | unbound only: an issue is worked while it carries it |
-| `escalate_label` | `ready-for-human` | unbound only: swapped in when the fleet gives an issue up |
-| `team` | — | `owner/repo` of the team; naming it binds the repo |
-| `patrols` | `[]` | bound only: which of the team's patrols run here |
-| `intake_limit` | `50` | bound only: open issues taken in by workers, at most |
-| `harness` | `claude-code` | bound only: the harness of every worker whose stage or patrol names none |
-
-### The team file — `team.md`
-
-```yaml
-escalate_label: ready-for-human                          # default
-roles:
-  <name>: owner/repo
-precedents: { by: <role>, do: <skill>, max_open: 10 }    # optional
-```
-
-### A workflow — `workflows/<name>.md`
-
-Write above the yaml what the workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
-
-```yaml
-max_rework: 3                      # default
-max_consecutive_rework: 2          # default
-stages:
-  - name: <unique; not land, done or human>
-    by: <role> | human
-    do: <skill>                    # required unless by: human
-    harness: claude-code           # optional; default: the config's `harness`
-    model: <model>                 # optional; passed to its harness as written
-    writes: false                  # optional; default true
-    escalate: { to: <role>, do: <skill> }                        # optional: the consult
-    on: { pass: <stage> | land | done, reject: <earlier stage> } # reject optional
-land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
-```
-
-`check` refuses a workflow in which a stage cannot be reached, a stage cannot reach an end, a `reject` leads forward, or a role or skill does not exist.
-
-`harness` names the harness the stage's worker is a session of. It is a key of a stage a role performs and of a patrol — wherever `model` is one — and nowhere else: on a stage `by: human`, on `escalate:`, on `land:` and on the team file's `precedents:` it is a fault. A consult, a landing and the proposal of a precedent run on the default, which is the `harness` of the project's config; a config that names none means `claude-code`, Claude Code, the only harness there is. `check`, `show` and `rehearse` say each stage's harness, and a worker's stage record names the one it ran on.
-
-### A patrol — `patrols/<name>.md`
-
-```yaml
-by: <role>
-do: <skill>
-every: 6h          # a whole number, then m, h or d
-harness: claude-code   # optional; default: the config's `harness`
-model: <model>     # optional
-max_open: 5        # not run while this many issues it opened are open
-```
-
-### A role's repo
-
-```
-CLAUDE.md                          rules
-.claude/skills/<skill>/SKILL.md    one directory per skill
-.claude/settings.json              hooks
-```
-
-### The commands, by who runs them
-
-| Who | Commands |
-|---|---|
-| The operator | `doctor` `config` `check` `plan` `run` `panel` `tick` `takeover` |
-| Whoever designs a team | `scaffold` `check` `show` `rehearse` |
-| A human an issue waits for | `rule` `send` `verdict` |
-| A worker (its brief names each) | `gate` `land` `verdict` `intake` `lock` `wake` `rule` (a consult) |
-| A worker's hook | `guard` |
-| One transition by hand | `dispatch` `recovery` `close` `escalate` `park` `nudge` `restart` `abandon` |
-| The claim plumbing | `scan` `claim` `release` `heartbeat` |
-
-Every command prints one JSON object, and `{"error": …}` with a non-zero exit on failure. The exceptions: `run` prints a line per tick, `show` a drawing, `panel` a page (with `--open`, a JSON object), and `guard` answers with its exit code.
-
-### What a worker of a bound repo has in its environment
-
-`AFKCONVOY_ISSUE`, `AFKCONVOY_FLOW`, `AFKCONVOY_STAGE`, `AFKCONVOY_ROLE`, `AFKCONVOY_SKILL`, `AFKCONVOY_WRITES`, `AFKCONVOY_CONSULT`, `AFKCONVOY_BASE_BRANCH`, `AFKCONVOY_ESCALATE_LABEL`, `AFKCONVOY_LOCK_LABEL`, `AFKCONVOY_ROLE_COMMIT`, `AFKCONVOY_TEAM_COMMIT`; a patrol's worker has `AFKCONVOY_PATROL` in place of the stage's facts. A role's hook may read them.
-
-### What the guard refuses
-
-For every worker of a bound repo: adding or removing a flow label, a `stage:` label, the escalate label or the lock label; writing a stage record or an intake record by hand; merging a PR; pushing the base branch. In a stage marked `writes: false`, for every consult and for every patrol, also: committing and pushing.
-
-The guard recognises commands. It stops a worker that errs, not one that sets out to get past it, so the fleet checks again afterwards: a commit left by a stage that may not write escalates the issue.
-
-## 10. When something goes wrong
-
-Start with one command, in the checkout the fleet runs in:
-
-```sh
-afkconvoy doctor
-```
-
-It reads everything — this host, the log `run` keeps of its ticks, GitHub, the remote, orca — changes nothing, and answers one JSON object: `host`, `fleet`, `claims`, `issues`, and `findings`. Each finding is `{severity, what, evidence, fix}`, most severe first, and `fix` is a line to run or a file and key to edit. It finds the instance id of this host's `run` itself, and it exits non-zero while a finding is `critical`, so a script can gate on it. With `"findings": []` the fleet is doing what it should, and `fleet.last_tick` says what that was.
-
-What it cannot tell you, three commands can:
-
-```sh
-afkconvoy plan --instance <id>     # what is on the frontier, what is excluded and why, what I hold
-afkconvoy show --issue <n>         # where one issue is, and its records
-afkconvoy takeover --list          # every instance id the remote remembers, on any host
-```
-
-A step that failed is in the line `run` printed and in its log, which `doctor` reads back as `fleet.failed_steps`.
-
-| What you see | Why | What to do |
-|---|---|---|
-| `could not add label: 'flow:fix' not found` | nothing has created the flow label on this repo yet | `afkconvoy flows` — it creates every flow label the repo lacks |
-| `FAILED dispatch #1: orca knows no repo at …` | orca has never been told of this checkout | `orca repo add --path <the checkout>`; the next tick recovers by itself ([#119](https://github.com/sunfmin/afkconvoy/issues/119)) |
-| An issue is not being worked | it is under `excluded` in `plan`, with the reason: no flow label, an epic label, an open blocker, a fleet lock, held by another instance | remove the cause the reason names |
-| `holding 3/3`, a frontier that is not empty, and nothing happening | every slot is taken — a patrol's run holds one for about five minutes after its worker is done ([#122](https://github.com/sunfmin/afkconvoy/issues/122)) | raise `concurrency`, or give patrols a longer `every` |
-| I changed a role and the worker did not see it | the change is not pushed to the role's default branch, or the stage had already started | push; the next stage starts under the new head |
-| I moved the labels back and it escalated again | a label is not the state: the records still say "escalating" | `afkconvoy rule` or `afkconvoy send` |
-| A stage's verdict "counts for nothing" | the record names another stage than the one its claim was dispatched to | `show --issue` says how each record was read; `send` the issue where it belongs |
-| An issue escalated with "a commit that was not there" | a stage marked `writes: false`, or a consult, committed | decide whether the commit should stay; `rule` to run the stage again |
-| `the worker launch command … does not take the flags` | in a bound repo the command must end in Claude Code | name a command or alias that reaches `claude`: `--worker-command <alias>` |
-| `… it is the worker launch command of the harness …, called for by …` | a harness a stage or a patrol names cannot be started on this machine | give that harness a command that can: `--worker-command <harness>=<command>`; or change the stage or patrol the message names |
-| `--worker-command was given twice for the harness …` | one harness was given two commands — the bare form is the default harness's | give each harness one |
-| A warning that the base branch's protection could not be read | a private repo on a free plan does not expose it | fine if the branch is unprotected; otherwise landings will be refused |
-| `run` was killed | nothing is lost | start it again on the same machine: it takes its claims back |
-| Another machine's fleet died | its claims go stale by themselves | wait, or `afkconvoy takeover --from <instance> --instance <yours>` |
-
-**To stop everything now**: kill `run`, then close the workers' terminals in orca. Issues keep their flow labels and their records, so a later `run` goes on from where each one was.
+### THE FOUR THINGS
+
+````text
+The fleet          A fleet instance is one `afkconvoy run` on one host, for one repo.
+                   It works in ticks: each reads fleet state anew from GitHub and the
+                   repo's remote, then does everything that calls for. No process
+                   holds fleet state, so a `run` that is killed loses nothing and
+                   several hosts can work one repo. `afkconvoy run --help`,
+                   `afkconvoy tick --help`.
+A worker           A session of one harness — Claude Code, or pi — started for one
+                   issue, in a git worktree of that issue's own. It reports through
+                   GitHub alone: a PR, a comment. The fleet never waits on one; it
+                   reads what the worker left at the next tick.
+                   `afkconvoy dispatch --help`.
+A claim            What marks one issue as one fleet instance's. Creating it succeeds
+                   for exactly one instance, so no issue is worked twice. It is live
+                   while its owner's heartbeat is; past that another host may take
+                   it. `afkconvoy scan --help`, `afkconvoy takeover --help`.
+The landing train  The one line of merge commits ahead of the base branch that
+                   finished PRs join, one merge commit each. One worker gates its tip
+                   and pushes it to the base branch as a fast-forward: what lands is
+                   a tree the gate passed. `afkconvoy land --help`.
+````
+
+### ONE ISSUE, IN AN UNBOUND REPO
+
+````text
+An unbound repo's config names no team: every issue takes the same path, with one
+worker from start to landing. It is where to start when issues turned into PRs is
+all you want; bind the repo to a team once the work is to be judged by another than
+the worker that wrote it before it lands.
+
+1. Intake. A human puts the ready label on the issue. It is on the frontier once it
+   is open, unclaimed, under no epic label, with no open blocker and no open PR
+   linked to it. `afkconvoy plan` shows the frontier, and why each other issue waits.
+2. Dispatch. A tick claims it and starts a worker in a new worktree, on a new branch
+   cut from the base branch, with a prompt that names the issue and every command
+   the worker ends with.
+3. The work. The worker changes the code, runs `afkconvoy gate` until the gate is
+   green on what it committed, opens a PR, and joins it to the landing train with
+   `afkconvoy land`. Then it wakes the fleet: `afkconvoy wake`.
+4. Landing. The train worker gates the train's tip and pushes it to the base
+   branch. The PR is merged by that push, the issue closes, the claim is released.
+5. Or no PR. The worker says so in a comment on the issue instead: there was
+   nothing to change, and the issue closes; it waits on other issues, and is parked
+   until they close; or it cannot go on, and the issue escalates — it is handed to a
+   human, with why. A worker that stops having left nothing is nudged once, and
+   escalated after that. Every failure escalates: `afkconvoy help humans`.
+````
+
+### ONE ISSUE, IN A BOUND REPO
+
+````text
+A bound repo's config names a team. The issue passes through the stages of one of
+the team's workflows, and each stage is performed by a new worker, started in the
+role that stage names.
+
+1. Intake. The issue is given a flow label, `flow:<workflow>`: by a human on GitHub,
+   or by a patrol's worker through `afkconvoy intake`. `afkconvoy flows` says which
+   workflow takes which issue, and creates the labels. An issue with no flow label
+   is left alone.
+2. Its position. Each tick derives where the issue is from the stage records on it —
+   comments — and from the workflow. Nothing stores it: the `stage:<name>` label the
+   fleet keeps on the issue is for a human to filter by, and is never read back.
+   `afkconvoy show --issue <n>` says where an issue is, and what led there.
+3. A stage. A tick claims the issue and starts a worker in the stage's role, in the
+   issue's worktree, to perform the skill the stage names. The worker ends by
+   declaring a verdict with `afkconvoy verdict`, which leaves the stage record:
+     pass               on to where the workflow says: a later stage, the landing,
+                        or the end of the workflow
+     reject             back to an earlier stage, which runs again: rework. Breakers
+                        bound it, and the rework past one escalates
+     blocked            parked until the issues it waits on close
+     already-satisfied  nothing needs changing: the workflow ends
+     escalate           to the stage's consult where it names one — a worker in a
+                        more senior role, who rules or lets it through — else to a
+                        human
+4. The next stage. The tick that reads a verdict ends that stage's claim and starts
+   the stage that follows, under a claim of its own, with a new worker: the one that
+   judges a piece of work never inherits the reasoning of the one that wrote it.
+5. Landing. Once the last stage passes, a new worker in the workflow's landing role
+   gates the PR and joins it to the landing train. From there it lands as an unbound
+   repo's does.
+````
+
+### WHAT HOLDS ALL THE WAY
+
+````text
+- The gate is the only machine verification between a worker and the base branch:
+  one command of the repo's, which exits 0 only on a good tree. `afkconvoy gate --help`.
+- Nothing is ever rebased. A branch is brought up to date by merging into it.
+- No human stands in a workflow unless a stage is given to one. A human is asked by
+  exception, and each way that happens has its command: `afkconvoy help humans`.
+- Every worker of a bound repo works under the guard, which refuses what no worker
+  may do — merging a PR, pushing the base branch, moving a flow label.
+  `afkconvoy guard --help`.
+- A fleet lock — an open issue under the lock label — makes the fleet work lock
+  issues only until it closes: for a fault every issue shares, as a broken base
+  branch is. `afkconvoy lock --help`.
+````
+
+### WHERE TO READ ON
+
+````text
+`afkconvoy help roles`            what a role is, and how to write a good one
+`afkconvoy help humans`           every way the fleet stops for a human
+`afkconvoy help troubleshooting`  a symptom, its cause and its fix
+`afkconvoy help team`             the files of a team and of a role, key by key
+````
+
+
+## afkconvoy help team
+
+````text
+A team is a directory — a whole repo, or a subdirectory of one — that names a set of
+roles and holds the workflows, patrols and precedents they work by. Read this to write a
+team's directory, to bind a repo to one, or when `afkconvoy check` names a fault in a
+team file or a role.
+````
+
+### WHAT ITS DIRECTORY HOLDS
+
+````text
+    team.md                 the team file
+    CLAUDE.md               the team rules: what every worker of the team works under
+    workflows/<name>.md     one file per workflow: `afkconvoy help workflows`
+    patrols/<name>.md       one file per patrol: `afkconvoy help patrols`
+    precedents.md           the precedents: one line per ruling a human accepted
+
+Of each definition file — the team file, a workflow's, a patrol's — only the first
+```yaml block is read: the rest is yours to explain it in.
+````
+
+### THE TEAM FILE
+
+````text
+    escalate_label: ready-for-human    # default
+    roles:
+      <short name>: <its directory>    # owner/repo, owner/repo/path or ./path
+    precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
+
+`escalate_label` is the label an issue handed to a human carries in place of its flow
+label. `roles` gives each role the short name a `by` or a `to` says. `precedents`
+names who proposes a human's ruling as a precedent: for each ruling a human gives an
+escalated issue (`afkconvoy rule`) the fleet starts one worker in the role `by`, with
+the skill `do`, to open a PR on the team's repo that appends one entry to
+`precedents.md`. `max_open` is required there: no proposal is started while that many
+are open. A team without the key has none proposed (`afkconvoy tick --help`).
+````
+
+### HOW IT NAMES A ROLE
+
+````text
+A role is a directory too, and the team file names it in one of three ways:
+
+    owner/repo                         a whole repo
+    owner/repo/path                    a subdirectory of a repo: the first two segments
+                                       are the repo, the rest the path from its root
+    ./path                             a subdirectory of the repo the team itself is in
+
+A `./path` is read from the root of the team's repo, not from the team's directory: a
+team and its roles in one repo name no repo at all, and two teams of one repo name the
+same role alike. Every role is read at the head of its repo's default branch, and
+nothing names a branch or a tag. A role's directory is not the team's and does not
+contain it, is not inside the team's `workflows/` or `patrols/`, and neither contains
+another role's nor is inside one. It holds:
+
+    CLAUDE.md                          its rules: what a worker in it always works under
+    .claude/skills/<skill>/SKILL.md    one directory per skill it can be asked for
+    .claude/settings.json              its limits for claude-code: hooks, and the
+                                       permissions it denies
+    .pi/extensions/                    its limits for pi: extensions
+
+None of them has a key the fleet reads. A `do` names an entry of `.claude/skills/` in
+the directory of the role beside it. The rules and the skills are written once, and
+every harness works under them: pi reads `CLAUDE.md` from the directory it starts in,
+and the fleet names `.claude/skills/` to it. The limits — what the role may never do —
+are written once for each harness the role runs on, in that harness's own form: pi
+runs no hook of `.claude/settings.json`.
+
+A worker is given its role's directory alone, and nothing else of its repo: a
+`CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
+opened there by hand, and a worker never sees it — and a symlink that leaves the
+role's directory would point at nothing. The team's directory is given to every
+worker beside its role's, without the directories of its roles and without a
+`.claude/` at its top: a worker's skills and hooks are its role's.
+````
+
+### THE TEAM RULES
+
+````text
+The `CLAUDE.md` in the team's directory, and optional. Every worker of the team is
+given it, whatever its role and whatever it was started for — a stage, a consult, a
+patrol, the proposal of a precedent, a landing — and no key turns it off. A role two
+teams name works under the rules of the team whose stage it is in.
+
+They are one of four kinds of text a worker reads, beside the repo's own rules — the
+`CLAUDE.md` (or, for pi, `AGENTS.md`) of the repo an issue is of — its role's rules
+and the precedents. The first three are loaded by the worker's harness, not copied
+into its brief, and the brief says where each of the four is. What each is for, and
+where a sentence belongs: `afkconvoy help roles`.
+````
+
+### HOW A REPO IS BOUND TO IT
+
+````text
+By its config, on its base branch (`afkconvoy config --help`):
+
+    team            owner/repo or owner/repo/path: naming it is what binds the repo
+    patrols         which of the team's patrols run here, by name; none by default
+    intake_limit    the open issues taken in by workers, at most; 50 by default
+    harness         of a worker whose stage or patrol names none; claude-code by default
+
+The team is read at the head of its repo's default branch: pushing is the only way an
+edit reaches a worker. An issue of a bound repo is the fleet's to work only while it
+carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows`.
+````
+
+### WHAT CHECK HOLDS IT TO
+
+````text
+`afkconvoy check` loads a team and answers every fault at once, each with its file and
+key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
+- A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an
+  `AGENTS.override.md` is a fault: pi loads the first of those in place of `CLAUDE.md`,
+  and the role would have two sets of rules.
+- A role that holds limits for one harness and none for another is right for the
+  first alone: a stage, a patrol, a consult, a landing or the proposal of a precedent
+  that runs it on the other is a fault. A role with no limits at all is right for
+  every harness. Whether its limits for two harnesses refuse the same things is not
+  checked: that is the role's to see to.
+- A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
+````
+
+### WHERE TO READ ON
+
+````text
+`afkconvoy help roles`      what goes where in a role, and what makes one good
+`afkconvoy help workflows`  the stages an issue passes through, and every key of them
+`afkconvoy help patrols`    a role run on a schedule, intake and the fleet lock
+`afkconvoy help glossary`   each term used here, with its one definition
+````
+
+
+## afkconvoy help roles
+
+````text
+What a role is, what goes where in one, and what makes one good. The files of a
+role, path by path and harness by harness, are in `afkconvoy help team`; a
+skeleton of one is written by `afkconvoy scaffold role`.
+````
+
+### WHAT A ROLE IS
+
+````text
+A role is a directory that defines one kind of worker. A worker of a bound repo is a
+session of its harness started in that directory, with the issue's worktree beside
+it: open the directory by hand and you are in the role a worker is in. It loads
+nothing of your own configuration, so a role is what its directory says, on every
+host. The directory holds three things:
+
+    its rules     what a worker in it always works under, whatever it is asked
+    its skills    each one thing it can be asked to perform; a stage's `do` names one
+    its limits    what it may never do, in the form its harness enforces: hooks for
+                  Claude Code, extensions for pi
+
+A role names no workflow and no stage. The workflow says in which order the work is
+done and who judges whom; a role serves as many workflows as name it.
+
+A change to a role reaches a worker only once it is pushed to the default branch of
+the role's repo: a stage starts under what is at the head when it starts.
+````
+
+### WHAT GOES WHERE
+
+````text
+a rule the role follows whatever it is asked
+    its rules: they are loaded for every stage the role performs
+how to perform one kind of work
+    a skill: a stage's `do` names it
+something the role must never do
+    a limit: a sentence can be ignored; a hook refuses
+the order of the work, and who judges whom
+    the workflow: a role serves many workflows and names none
+what must hold before any change lands
+    the repo's gate: a role's limits do not see the repo's code
+what one codebase asks of whoever changes it
+    the repo's own rules: they are loaded from the worktree, in every role
+how the team works, in every repo bound to it
+    the team rules: every worker of the team is given them
+````
+
+### WHY A LIMIT IS A HOOK AND NOT A SENTENCE
+
+````text
+A worker reads its rules and still does, now and then, what they forbid: a rule is
+text a model weighs against the task in front of it. A hook is not weighed. The
+harness runs it before each thing the worker does, and when it refuses, the thing is
+not done and the worker is shown why. It holds although a worker runs with every
+permission prompt bypassed, since nobody is at its terminal to be asked.
+
+So write as a sentence what you want done well, and as a limit what must not happen
+at all: a commit made past its hooks, a branch rebased, a test deleted. The fleet
+adds a limit of its own to every worker of a bound repo — the guard, for what no
+worker of any role may do (`afkconvoy guard --help`); a role's limits add what that
+role may not. Either stops a worker that errs, not one that sets out to get past it:
+the gate still stands between every change and the base branch.
+````
+
+### THE FOUR KINDS OF TEXT A WORKER READS
+
+````text
+A worker of a bound repo works under four kinds of text. Each is for one thing, and
+a sentence belongs in exactly one of them:
+
+    the repo's own rules   what one codebase asks: how it is built and tested, what
+                           its conventions are. True for every role that touches it,
+                           and for no other repo.
+    the team rules         how the team works: what every role holds to, in every
+                           repo bound to the team. True whatever the codebase.
+    the role's rules       what one kind of worker does and does not do, whichever
+                           stage it is in and whichever repo it is in.
+    the precedents         what a human ruled before, on a question a stage could
+                           not decide: followed instead of asking again.
+
+To place a sentence, ask whom it would still be true for. For this codebase under
+any team: the repo's own rules. For this team in any codebase: the team rules. For
+this kind of worker alone: its role's. And if nobody could have written it down
+before the question came up, it is a ruling, and becomes a precedent when a human
+accepts it (`afkconvoy help humans`). The four have no order: two that contradict
+each other are a defect of the files, and nothing says which holds.
+````
+
+### WHAT MAKES A ROLE GOOD
+
+````text
+- It names no stage and no workflow. The brief the fleet writes for each worker
+  carries the issue, the stage, the worktree, the stage records so far and the exact
+  commands to end with. A skill that says "end as your brief says" stays right when
+  the workflow changes.
+- Its skills say how; the brief says what. The brief is a fixed form with nothing of
+  how to do the work well. What a plan contains, what a judge looks for, what is
+  looked at before a landing: that is the skill's to say.
+- The one who writes and the one who judges are different roles, and every judging
+  stage is `writes: false`. A judge that can fix what it finds stops reporting it.
+- `reject` has a bar. A judge with no rule about when to reject sends work back over
+  a name. Say what blocks and what is a note, and that notes alone are a `pass`. The
+  breakers end a loop; a bar keeps it from starting.
+- It says what is not its to decide. The most useful sentence in a role is the one
+  that tells it when to stop and declare `escalate`. Without it a worker decides
+  what a user of the code will see, and you learn of it in the diff.
+- It is taught the three verdicts no workflow writes — `blocked`, `already-satisfied`
+  and `escalate` — once, in its rules: they mean the same at every stage.
+- It is small. One role and one stage that lands is a working team; add the judge
+  once you have read what the first role produces. `afkconvoy rehearse` tries a
+  workflow out with no worker started, and `afkconvoy check` holds every edit to
+  what the fleet will accept.
+````
+
+
+## afkconvoy help workflows
+
+````text
+A workflow is the stages one issue passes through and where each verdict leads, ending
+in the landing train or in nothing more to do. Read this to write a file of a team's
+`workflows/`, or to tell why an issue went where it did.
+````
+
+### A WORKFLOW'S FILE
+
+````text
+`workflows/<name>.md` is the workflow `<name>`, and its flow label is `flow:<name>`: an
+issue that carries it is at the first stage. Above the yaml block, say what the
+workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to
+whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
+
+    max_rework: 3                      # default
+    max_consecutive_rework: 2          # default
+    stages:
+      - name: <unique; not land, done or human>
+        by: <role> | human
+        do: <skill>                    # required unless by: human
+        harness: claude-code           # optional
+        model: <model>                 # optional; its harness's own name for it
+        writes: false                  # optional; default true
+        escalate: { to: <role>, do: <skill> }                  # optional: the consult
+        on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
+    land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
+````
+
+### STAGES
+
+````text
+A stage is one skill of one role, performed by one new worker: `by` is a short name of
+the team file, `do` an entry of that role's `.claude/skills/`. The worker of a stage
+knows nothing of the one before it but what the stage records say, so a stage that
+judges never inherits the reasoning of the one that wrote.
+
+`harness` names the harness the stage's worker is a session of: claude-code, Claude
+Code, or pi. It is a key of a stage a role performs and of a patrol — wherever `model`
+is one — and nowhere else. One that names none takes the default, which is the
+`harness` of the repo's config, and claude-code where that names none. `model` is
+passed to the harness; `afkconvoy check` holds it against the models pi lists.
+
+`writes: false` has the guard refuse the stage's worker a commit and a push
+(`afkconvoy guard --help`): mark every stage that judges so.
+````
+
+### VERDICTS, AND WHERE EACH LEADS
+
+````text
+A worker ends its stage with `afkconvoy verdict`, which leaves a stage record on the
+issue. Where an issue is, is derived from those records each tick and stored nowhere:
+`afkconvoy show --issue <n>` reads it.
+
+    pass               where the stage's `on.pass` says: a stage, `land` or `done`
+    reject             back to the stage `on.reject` names: always an earlier one
+    blocked            parked; the same stage runs again when its blockers close
+    already-satisfied  the workflow ends, with nothing landed
+    escalate           to the stage's consult where it names one, else to a human
+
+Only `pass` and `reject` are keys of `on`: the other three mean the same at every
+stage. `done` ends the workflow with nothing to land; `land` hands the issue's PR to
+the landing (below). A stage with no `reject` may not declare one. Following `pass`
+alone from any stage must come to `land` or `done`, and every stage must be reached
+from the first: a loop back is made with `reject` only.
+
+A stage that finds its issue too large splits it: it opens issues, takes each in
+(`afkconvoy intake --help`) and declares `blocked` on all of them. When they have all
+closed, the stage runs again and judges the whole.
+````
+
+### REWORK AND ITS BREAKERS
+
+````text
+Rework is a stage running again because a later stage rejected its work or a consult
+ruled on it. It is counted per issue from the stage records, from where a human last
+ruled on the issue or sent it to a stage. Two breakers bound it:
+
+    max_rework                 the rework of one issue, in total
+    max_consecutive_rework     the rejections in a row by one stage
+
+A count never passes its breaker: the rework that would is not started, and the issue
+escalates, the comment naming the breaker and every rework's stage and reason.
+`afkconvoy rehearse` shows which verdict trips one, with no worker started.
+````
+
+### A CONSULT
+
+````text
+`escalate: { to, do }` names a more senior role to ask before a human is. The stage's
+`escalate` verdict then starts a worker in the role `to`, with the skill `do`, which
+rules with `afkconvoy rule` — the stage that asked runs again under the ruling, as
+one more of the issue's rework in total — or lets the escalation through to a human.
+The chain is one role long, and a consult writes no code: one that left a commit has
+failed. It runs on the default harness.
+````
+
+### A STAGE BY: HUMAN
+
+````text
+No human stands in a workflow unless it names one. A stage `by: human` has no `do`,
+no `harness` and no `model`; it starts no worker and holds no claim. The issue waits
+there until a human declares the stage's verdict with `afkconvoy verdict`.
+
+Anywhere else a human is reached by an escalation: an `escalate` no consult ruled on,
+a tripped breaker, or a failure — nothing is tried a second time. The human answers
+with `afkconvoy rule`, and the stage runs again under the ruling, or puts the issue at
+a stage of their choosing with `afkconvoy send`.
+````
+
+### A LANDING
+
+````text
+A workflow in which a pass leads to `land` names who lands: `land: { by, do }`. The
+tick after that `pass` starts a new worker in the role `by`, with the skill `do`, on
+the default harness. It runs the gate on the issue's PR and joins it to the landing
+train (`afkconvoy land --help`), which lands it on the base branch as it lands any
+PR. A `land:` no pass leads to is a fault, and so is a `pass: land` with no `land:`.
+````
+
+### WHERE TO READ ON
+
+````text
+`afkconvoy help team`       the roles a `by` names, and the rest of a team's directory
+`afkconvoy help roles`      what a role is, and how to write a good one
+`afkconvoy help patrols`    how an issue comes to carry a flow label with no human
+`afkconvoy help glossary`   each term used here, with its one definition
+````
+
+
+## afkconvoy help patrols
+
+````text
+A patrol is a role run on a schedule rather than for an issue: it looks for work, opens
+issues and takes them in. Read this to add a patrol to a team, to have a repo run one,
+or to learn how work reaches the fleet with no human labelling it — and how a fleet lock
+stops everything but one fix.
+````
+
+### WHAT A PATROL IS, AND IS NOT
+
+````text
+It is a worker in one role, with one skill, started when its interval has passed, in a
+checkout of the base branch that is linked to no issue. What it finds — an issue no
+workflow has taken, a broken base branch, something worth proposing — it writes down
+as issues, and takes in the ones the fleet is to work.
+
+It is no stage: it owns no issue, belongs to no workflow and declares no verdict. It
+writes no code: a run that left a commit or opened a PR has failed. And it is no
+timer for anything else: nothing but a role's skill can be run by one.
+````
+
+### A PATROL'S FILE
+
+````text
+`patrols/<name>.md` in the team's directory is the patrol `<name>` — words of lowercase
+letters and digits, each starting with a letter, joined by `-`, 40 characters at most.
+Of the file only the first ```yaml block is read:
+
+    by: <role>
+    do: <skill>
+    every: 6h                          # required: a whole number from 1, then m, h or d
+    harness: claude-code               # optional
+    model: <model>                     # optional; its harness's own name for it
+    max_open: 5                        # required
+
+`by` is a short name of the team file and `do` a skill of that role. `every` is how
+long after its last run a patrol is due: it is due or it is not, and one that missed
+ten intervals runs once. `harness` and `model` are what they are for a stage
+(`afkconvoy help workflows`). `max_open` bounds what a patrol gives the fleet: it is
+not run while that many issues it opened are open.
+````
+
+### WHICH PATROLS A REPO RUNS
+
+````text
+The ones its config names, under `patrols` (`afkconvoy config --help`): a team's
+patrol runs in no repo that does not name it, and a name the team has no patrol for
+is a fault of `afkconvoy check`. Of several hosts one runs it: the tick that finds a
+patrol due claims the run on the remote.
+````
+
+### A RUN
+
+````text
+A run takes one slot of `concurrency` until its worker declares it over with
+`afkconvoy over`, the last line of its brief; a worker that never does is ended once
+it is gone or has stopped for a grace period. The tick that ends a run closes its
+terminal and removes its checkout. `afkconvoy plan` says how each patrol stands, and
+`afkconvoy tick --help` what a tick does about one.
+
+A run that failed keeps its checkout, and the fleet opens an issue with the team's
+escalate label that says so. The patrol is not run again until a human closes it.
+````
+
+### INTAKE
+
+````text
+Intake is putting a flow label on an issue: from then on the issue is the fleet's to
+work, at the first stage of that workflow. A human does it on GitHub, outside any
+limit. A worker — a patrol's, or a stage's that splits its issue — does it with
+`afkconvoy intake`, which records who did; the guard refuses a worker the label
+itself. To choose a workflow a patrol reads what each is for: `afkconvoy flows`.
+
+Two limits hold what workers take in. The repo's `intake_limit` bounds the open issues
+taken in by any worker, and `afkconvoy intake` refuses past it. A patrol's `max_open`
+bounds the ones it opened, and refuses nothing: the patrol is not run.
+````
+
+### THE FLEET LOCK
+
+````text
+A fault every issue shares — the base branch is broken, so every gate is red whatever
+its PR holds — is not one issue's to escalate. A patrol that finds it, or a stage,
+opens an issue for the fix and raises the lock on it with `afkconvoy lock`: an open
+issue carrying the repo's lock label is a fleet lock, in a bound repo or an unbound
+one.
+
+While one stands the fleet works lock issues only: nothing else is dispatched, no
+patrol runs, no PR of another issue joins the landing train, and workers already
+running are left alone. The lock issue is worked as any issue is: in a bound repo
+it needs a flow label too. Closing the last lock issue ends the lock; a stage that
+declared `escalate` or stayed silent before it closed then runs again, which is no
+rework. What trips you up: `afkconvoy lock --help`.
+````
+
+### WHERE TO READ ON
+
+````text
+`afkconvoy help workflows`  what an issue taken in then passes through
+`afkconvoy help team`       the roles a patrol's `by` names, and a team's other files
+`afkconvoy help roles`      what a role is, and how to write a good one
+`afkconvoy help glossary`   each term used here, with its one definition
+````
+
+
+## afkconvoy help example
+
+````text
+The binary holds one team whole, and writes it where you say:
+
+    afkconvoy scaffold team hospital --example hospital --repo <owner/repo>
+    afkconvoy check --team <owner/repo>
+
+It is the team this project demonstrates itself with, as one repo holds a team: the
+team at the root, each role under `roles/`. Read it before you design your own, or
+start from it. Every file written is named below — the lines four spaces in, a role's
+under its directory — with the decision it holds and the rule of afkconvoy's it shows.
+````
+
+### WHAT THE TEAM IS FOR
+
+````text
+It is modelled on the one Cockroach Labs describes in "An experiment in running a
+hospital for code". An issue is a patient: routed, worked up into a plan, the plan
+reviewed, treated under it, the code reviewed, its record audited, and discharged —
+its PR joins the landing train. Each is a stage a new worker performs in one role:
+none reviews what it wrote, and none writes code before the plan passed. The Chief is
+a human: an issue reaches the Chief by escalating, and a consult is asked first.
+````
+
+### THE TEAM
+
+````text
+team.md
+    Names the seven roles, each as `./roles/<name>`: a path from the root of the
+    team's own repo, so that the team names no repo and is pushed, forked or renamed
+    with no edit. Its `precedents` has the fleet start a worker in the role `safety`
+    for each ruling a human gives, to propose it as a precedent: none is asked twice.
+CLAUDE.md
+    The team rules: three, given to every worker whatever its role. They say how
+    this team works, and nothing of one codebase or of one role.
+precedents.md
+    Two precedents a human accepted, each saying when it applies. The first is about
+    the demonstration's own code: take it out when the team works yours.
+````
+
+### THE WORKFLOWS
+
+````text
+The prose above each yaml block says what its workflow is for: `afkconvoy flows`
+answers with it, and the role `triage-nurse` routes by it.
+
+  workflows/fix.md
+      Five stages, then the landing. A reviewer that writes nothing: `plan-review`
+      and `code-review` are marked `writes: false`, as `workup` and `discharge` are,
+      and the guard refuses their workers a commit and a push.
+      A stage with a consult: `workup` and `treatment` carry
+      `escalate: { to: attending, do: consult }`. Their `escalate` goes first to a
+      worker in that role, which lets through to a human only what nobody decided.
+      Rework and its breakers: a `reject` leads back to an earlier stage, and past
+      `max_rework: 3` or `max_consecutive_rework: 2` the issue escalates.
+      `land: { by: discharge-nurse, do: land }`: the join is made in the role that
+      audited the record, not by the worker that wrote the code.
+  workflows/chore.md
+      Two stages, then the landing: the fewest of any that lands, so it is where the
+      patrol `rounds` takes in the fix of a broken base branch.
+  workflows/design.md
+      A workflow that ends with a human: `proposal`, then `sign-off`, a stage
+      `by: human` whose `pass` leads to `done`. Nothing lands. No human stands in a
+      workflow unless its file says so: here the fleet waits for `afkconvoy rule`.
+````
+
+### THE PATROLS
+
+````text
+Each names a role, a skill, how often it runs and `max_open`; a repo's config says
+which of them it runs.
+
+  patrols/triage.md
+      Every ten minutes: takes each open issue that is in no workflow in to the one
+      that fits. It is how an issue opened with no flow label is worked at all.
+  patrols/rounds.md
+      A patrol that locks the fleet. Every half hour it runs the gate on the base
+      branch; red twice, it opens an issue, takes it in to `chore` and raises a fleet
+      lock on it. `max_open: 1` is one lock at a time.
+  patrols/research.md  patrols/safety-review.md
+      Daily, work proposed with its evidence; weekly, the stage records of what went
+      badly, read for what would have caught it a stage earlier. Each opens issues.
+````
+
+### THE ROLES
+
+````text
+Each holds its rules, its skills — every `do` above names one — and its limits for
+claude-code, `.claude/settings.json`. `afkconvoy help roles` says what goes where.
+
+roles/fellow/
+  CLAUDE.md  .claude/skills/diagnose/SKILL.md  .claude/skills/treat/SKILL.md
+  .claude/settings.json  .claude/hooks/refuse.sh  .claude/hooks/skills-loaded.sh
+  skills-lock.json
+      Works an issue up and treats it. Two hooks, written executable: `refuse.sh`
+      refuses what its rules say a fellow never does — `--no-verify`, a forced push,
+      `git rebase` — and `skills-loaded.sh` a `pass` or a `reject` declared before the
+      skills its skill says to load were loaded in the session.
+roles/attending/
+  CLAUDE.md  .claude/skills/review-plan/SKILL.md  .claude/skills/review-code/SKILL.md
+  .claude/skills/consult/SKILL.md  .claude/settings.json  .claude/hooks/refuse.sh
+  .claude/hooks/skills-loaded.sh  skills-lock.json
+      Reviews, and is the consult. A `reject` needs a blocking finding, which keeps
+      rework from the breaker over a name. `refuse.sh` refuses a commit and a push in
+      every stage: the role writes no code, whatever a workflow left unmarked.
+roles/discharge-nurse/
+  CLAUDE.md  .claude/skills/audit/SKILL.md  .claude/skills/land/SKILL.md
+  .claude/settings.json
+      The last check, and the landing role. `audit` is a checklist of the record, not
+      a second look at the code; `land` says only how a conflict is resolved.
+roles/safety/
+  CLAUDE.md  .claude/skills/record-precedent/SKILL.md  .claude/skills/review/SKILL.md
+  .claude/settings.json
+      `record-precedent` is asked by the team file, `review` by a patrol.
+roles/triage-nurse/
+  CLAUDE.md  .claude/skills/triage/SKILL.md  .claude/settings.json
+roles/infection-control/
+  CLAUDE.md  .claude/skills/rounds/SKILL.md  .claude/settings.json
+roles/research/
+  CLAUDE.md  .claude/skills/propose/SKILL.md  .claude/settings.json
+      The three that only patrol. The guard refuses a patrol's worker a commit and a
+      push, so their `settings.json` holds no hook, as those of the two above do.
+````
+
+### BEFORE A FLEET WORKS WITH IT
+
+````text
+`check` accepts the team as written, once it is pushed: it reads a role from GitHub.
+Three skills that the fellow's and the attending's own skills say to load are other
+authors' and are not written. Each role's `skills-lock.json` names them and where
+each is from: add them in each of the two directories, and commit them.
+
+    npx skills add <source> --skill <name> --agent claude-code
+
+Until then `skills-loaded.sh` refuses every `pass` and `reject` of those two roles.
+The hooks call `jq`: every host of the fleet needs it.
+````
+
+
+## afkconvoy help humans
+
+````text
+Every way the fleet stops for a human, and the command that answers each. A human is
+asked by exception, and nothing tells you so: you look.
+````
+
+### WHERE TO LOOK
+
+````text
+`afkconvoy doctor` lists every open issue that waits for a human under
+`waiting_on_human`, each with why, since when, and `answer`: the line that answers
+it, the issue's number filled in. `afkconvoy plan` gives the same list, and the panel
+shows it as "With a human". One that has waited for more than an hour is a finding.
+
+An escalated issue also says so itself: it carries the escalate label in place of
+its flow label — `ready-for-human`, unless the team's file names another — and the
+comment of the escalation says why and ends with the same line. Run every command
+below in a checkout of the repo the issue is of.
+````
+
+### AN ESCALATION
+
+````text
+A stage declared `escalate` and no consult ruled on it; or something failed — a
+worker went silent and its nudge changed nothing, a stage ended with no verdict, a
+gate stayed red, a stage that may not write left a commit. The comment says which,
+and for an `escalate` gives the question, often with the options.
+
+    afkconvoy rule --issue <n> --text-file <file>
+        Rule on it, where it stopped: that stage runs again with your ruling in its
+        brief, and both rework counts start over. `--text "<ruling>"` gives a
+        short one in place of a file. `afkconvoy rule --help`.
+    afkconvoy send --issue <n> --stage <stage> --text-file <file>
+        Put it at another stage of its workflow instead, whatever its stage records
+        say: when the approach changed, or the workflow changed under the issue and
+        a record names a stage that is gone. `afkconvoy send --help`.
+
+For a failure, fix what failed first: a ruling starts the same stage anew, and what
+failed it once fails it again. In an unbound repo there is no stage to run again:
+fix what the comment names and put the ready label back, with the line the comment
+ends with.
+````
+
+### A TRIPPED BREAKER
+
+````text
+Rework went past what the workflow allows — in total for the issue, or as rejections
+in a row by one stage — and the issue escalated in place of the rework that would
+have passed it. The comment names the breaker and lists every rework, each with its
+stage and why. Two stages that cannot agree are asking a question neither can
+decide. Read the list, then answer as an escalation is answered: `afkconvoy rule`
+with what settles it, or `afkconvoy send` to the stage that should take it up.
+`afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
+````
+
+### A STAGE `by: human`
+
+````text
+A workflow may give a stage to a human. An issue at one waits there, claimed by
+nobody, under its flow label and with no escalate label: only the lists above show it.
+
+    afkconvoy verdict pass --issue <n> --stage <stage> --text-file <file>
+        Declare the stage's verdict: `pass`, or `reject` where the stage has that
+        edge. The issue goes where the workflow leads from it.
+        `afkconvoy verdict --help`.
+````
+
+### A PATROL'S FAILED RUN
+
+````text
+A run of a patrol that failed opens an issue of its own, under the escalate label,
+which says what failed. The patrol is not run again while that issue is open.
+
+    gh issue close <n>
+        Once you have looked: the patrol runs again when it is next due.
+        `afkconvoy plan` gives each patrol's standing, and `afkconvoy doctor` a
+        patrol that does not run as a finding.
+````
+
+### A FLEET LOCK
+
+````text
+An open issue under the lock label is a fleet lock: the fleet works lock issues
+only, and hands no other issue to a human, until the last one closes. A worker
+raises one when the fault is one every issue shares; a human may too:
+
+    afkconvoy lock --issue <n>
+
+A lock asks nothing of you while its issue is being worked: it lands as any issue
+does, and closing it ends the lock. It asks for you when nothing can work it — it
+has no flow label, or an open blocker — because the fleet then works nothing at
+all. `afkconvoy doctor` says so as a critical finding whose `fix` is the line to
+run. To end a lock raised by mistake, close its issue. `afkconvoy lock --help`.
+````
+
+### A PRECEDENT TO ACCEPT
+
+````text
+Where the team names who proposes precedents, each ruling a human gives with
+`afkconvoy rule` is followed by a proposal: a PR on the team's repo that appends one
+entry to its precedents — the ruling in a sentence, when it applies, and a link to
+the ruling. Nothing waits on it: the stage that asked has already run again.
+
+    gh pr merge <pr> --repo <the team's repo>
+        Merging accepts the precedent: every later stage reads it, and follows it
+        in place of declaring `escalate` on the same question.
+    gh pr close <pr> --repo <the team's repo>
+        The ruling was about that one issue, and no stage should follow it unasked.
+
+The fleet never merges on the team's repo. `afkconvoy plan` lists the proposals
+under way and open under `proposals`.
+````
+
+### AN ISSUE PAST THE END OF ITS WORKFLOW
+
+````text
+A workflow that ended without a landing leaves its issue open: `gh issue close <n>`.
+````
+
+### WHAT NOT TO DO
+
+````text
+Do not move the labels by hand. A label is not where an issue is — its stage records
+are — so an issue handed back with no ruling on record is escalated again at the
+next tick. Rule on it, or send it.
+````
+
+
+## afkconvoy help troubleshooting
+
+````text
+Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads everything
+and changes nothing. Each finding has a `fix` — a line to run, or a file and key to
+edit — and `evidence`. Below, a row for each: the words its `what` holds, why, and
+what to do. Then what a start refuses with, and what neither says.
+````
+
+### WHAT `doctor` FINDS — critical: the fleet does not work until it is fixed
+
+````text
+is not installed
+    A command the fleet needs is not on this host. Run `fix`: the line that installs it.
+is not logged in
+    `gh` or `claude` is logged out, as a login shell sees it. Run `fix`.
+holds credentials for no provider
+    A stage or a patrol runs on pi, logged in nowhere. Start `pi` and type `/login`.
+is not running
+    orca is not running, and every worker is started through it. Run `fix`.
+cannot be asked about this checkout
+    orca runs but did not say which repos it knows; `evidence` says why. Run `fix`.
+does not know this checkout
+    orca was never given the checkout worktrees are cut from. Run `fix`, once.
+cannot start a worker
+    The first word of a worker launch command resolves to nothing in a login shell: an
+    alias your own shell has and a login shell lacks. Name one that resolves with
+    `--worker-command`: `afkconvoy run --help`.
+cannot start a worker in its role
+    In a bound repo the worker launch command must end in its harness, taking flags:
+    the fleet adds what puts the worker in its role. `afkconvoy run --help`.
+no `afkconvoy run` is alive
+    The `run` of this host was stopped or killed while it held claims. Start it
+    again, on the same host: it takes its claims back, and the workers worked on.
+failed in each of the last
+    One step of a tick fails tick after tick; `evidence` is its error. Run `fix`, and
+    read the error: it names what refused, GitHub or the remote or orca.
+the team this repo names cannot be read
+    The team's repo, or a role's, could not be read. `afkconvoy check` says which.
+has a fault at its head
+    A team's or a role's file is wrong on its default branch. `fix` is the file and
+    key; `afkconvoy check` gives every fault. Push the edit: no stage starts until then.
+stands and cannot be worked
+    A fleet lock is on an issue no worker can be started on, so the fleet works
+    nothing. `fix` gives the issue what it lacks; `afkconvoy help humans`.
+the fleet's state cannot be read
+    GitHub, the remote or the config failed to answer; `evidence` says which.
+````
+
+### WHAT `doctor` FINDS — warning: one issue or one patrol is held up. A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
+
+````text
+has no worker
+    A claim's worker is gone. A tick starts one on its own; `fix` is for a claim the
+    next tick leaves so.
+has been stopped for
+    A worker stopped half an hour ago and declared nothing. Read its terminal, in
+    the worktree `evidence` names; `fix` nudges it.
+the last tick started no worker
+    Slots are free, the frontier is not empty, and nothing was dispatched: `evidence`
+    is the tick's line, and `fix` the step that failed or the dispatch by hand.
+follows no workflow of the team
+    An issue's flow label names no workflow, or it has two. `afkconvoy flows` lists all.
+longer than any stage before it took
+    Nothing is wrong yet: an issue has been at one stage for long. `fix` shows it.
+is one rework from a breaker
+    The next `reject` escalates the issue. Nothing to do yet: `afkconvoy help humans`.
+does not run: its last run failed
+    The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
+have reached its `max_open`
+    A patrol is not run while that many issues it opened are open. Close some, or
+    raise `max_open` in the patrol's file.
+has waited for a human for
+    Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
+````
+
+### WHAT `doctor` FINDS — info: nothing to fix
+
+````text
+moved since the stage
+    A role or the team was pushed after a stage started: that worker goes by the
+    older one, the next stage by the head. `afkconvoy doctor --help` says what moved is.
+````
+
+### WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start nothing
+
+````text
+this host cannot work a fleet yet
+    What `doctor` finds on a host, said at once: run each line after a colon.
+cannot read the config file
+    The repo has no config on the branch checked out. `afkconvoy config --help`.
+the remote has no branch
+    The config's `base_branch` is not on the remote. Push it: the fleet creates none.
+that push would be refused
+    The base branch's protection requires a PR, checks or a named pusher, and the
+    landing train lands by pushing. Lift the rule, or pick another base branch.
+the remote rejects the fleet's refs under both
+    The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be
+    kept. A push rule of the remote's is what refuses: lift it for one of the two.
+--worker-command was given twice for the harness
+    The bare form is the default harness's. Give each harness one command.
+is no harness
+    `--worker-command <name>=<command>` named a harness there is none of.
+this fleet runs on a custom provider
+    A worker's shell inherits nothing of yours, and no terminal is here to ask on
+    what starts one. Say it: `--worker-command <harness>=<command>`.
+````
+
+### WHAT NEITHER SAYS
+
+````text
+An issue is not worked
+    `afkconvoy plan` has it under `excluded`, with why. Remove what the reason names.
+A changed role or team did not reach a worker
+    It is not pushed to its default branch, or the stage had already started.
+The labels were moved back, and the issue escalated again
+    A label is not where an issue is: `afkconvoy help humans`.
+A stage's verdict counted for nothing
+    Its record names another stage than its claim was for. `afkconvoy show --issue <n>`
+    says how each record was read; `afkconvoy send` puts the issue where it belongs.
+Another host's fleet died
+    Its claims go stale by themselves and are taken. Or: `afkconvoy takeover --help`.
+Everything must stop now
+    Kill `run`, then close the workers' terminals in orca. Every issue keeps its
+    labels and stage records: a later `run` goes on from where each one was.
+````
+
+
+## afkconvoy help glossary
+
+A command-line tool that works a repo's ready GitHub-issue backlog unattended: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).
+
+### Language
+
+#### The fleet
+
+**Fleet instance**:
+One `afkconvoy run` process and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
+_Avoid_: launcher, coordinator, node
+
+**Tick**:
+One reconciliation pass: rebuild the working set from fleet state, then perform every transition it calls for, without waiting for the workers it started.
+_Avoid_: cycle, poll, batch
+
+**Plan**:
+A tick stopped after its rebuild, which reports what an acting tick would do and leaves nothing written: its startup probe, when it makes one, is the only thing it pushes, and it deletes that.
+_Avoid_: dry run, preview
+
+**Startup probe**:
+What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, and `tick` and `plan` make none while it does.
+_Avoid_: bootstrap, preflight, health check
+
+**Ref layout**:
+One of the two ways every ref the fleet writes is named: hidden refs (`refs/convoy/*`), or — only where the remote rejects those — ordinary branches (`convoy-*`), on which push-triggered CI fires.
+_Avoid_: namespace, fallback mode
+
+**Fleet state**:
+The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
+_Avoid_: run state, memory
+
+**Working set**:
+A tick's view of the fleet at one moment, derived from fleet state and dropped when the tick ends.
+_Avoid_: session state
+
+**Rebuild**:
+The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open.
+_Avoid_: refresh (a heartbeat is refreshed), resync
+
+**Frontier**:
+The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR. While a fleet lock stands: of these, the lock issues only.
+_Avoid_: queue, backlog (all the issues a repo has open)
+
+**Base branch**:
+The one branch a repo's fleet work is cut from and lands on.
+_Avoid_: trunk, main, default branch (a team's or a role's repo is read at its own)
+
+#### Teams and roles
+
+**Role**:
+A directory that defines one kind of worker: the rules it always works under, the limits it cannot cross, and the skills it can be asked to perform. It is a whole repo or a subdirectory of one. A worker starts in it, and is given nothing else of its repo.
+_Avoid_: agent (as under Worker), persona, profile
+
+**Team**:
+A directory that names a set of roles and holds the workflows, patrols and precedents they work by. It is a whole repo or a subdirectory of one, and its roles may be directories of the same repo.
+_Avoid_: org, crew, squad
+
+**Team rules**:
+The rules every role of a team works under, whatever its own rules add. They say how the team works, and hold in any repo bound to it; what one codebase asks is that repo's to say, and what one kind of worker does is its role's.
+_Avoid_: global rules, shared rules
+
+**Bound repo**:
+A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then the landing train.
+_Avoid_: team mode, managed repo
+
+**Guard**:
+The check made before each thing a worker does, refusing what its role or its stage may not do. It stops a worker that errs, not one that means to get past it.
+_Avoid_: permission (what a harness's own settings deny), sandbox
+
+#### Workflows
+
+**Workflow**:
+The stages one issue passes through and where each verdict leads, ending in the landing train or in nothing more to do.
+_Avoid_: pipeline, process (a program that is running)
+
+**Flow label**:
+The label that names the workflow an issue follows. A bound repo's issue is the fleet's to work only while it carries one.
+_Avoid_: ready label (the unbound repo's), type label
+
+**Intake**:
+Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit.
+_Avoid_: enroll, admit, triage
+
+**Stage**:
+One step of a workflow: one skill of one role, performed by one new worker — or a decision waited for from a human.
+_Avoid_: step (one thing a tick does), phase, state (fleet state and worker state are terms)
+
+**Stage record**:
+The comment a stage leaves on its issue: what it produced, its verdict, the versions of the role and team it ran under, and the harness its worker ran on. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
+_Avoid_: handoff note, log (the tick log; what a gate prints), stage label
+
+**Position**:
+Where an issue is in its workflow: at a stage a worker is to perform, waiting on a human, with a consult, parked, landing, ended, or escalating. It is derived from the stage records each tick and stored nowhere.
+_Avoid_: state (as under Stage), status (the status board; a key of what a command answers), current stage
+
+**Rework**:
+A stage running again because a later stage rejected its work or a consult ruled on it. It is counted per issue from the stage records, from where a human last ruled on the issue or sent it to a stage.
+_Avoid_: retry, round, attempt (what an issue was worked into before a fresh start)
+
+**Breaker**:
+A limit on rework — in total for an issue, or as rejections in a row by one stage — past which the issue escalates.
+_Avoid_: retry limit, circuit
+
+**Consult**:
+A worker in a more senior role, asked to rule on a stage's `escalate` verdict before a human is. It rules or lets the escalation through; it writes no code.
+_Avoid_: review (a stage may be named it), second opinion, handoff
+
+**Ruling**:
+What a consult or a human decides on an escalated issue. The stage that asked runs again under it; a human's also hands the issue back to the fleet.
+_Avoid_: answer (what a command prints), decision (what a `by: human` stage waits for), override
+
+**Precedent**:
+A ruling kept so that later stages follow it instead of escalating. A worker proposes it; a human accepts it.
+_Avoid_: rule (a role's rules and the team rules; the command `rule`), policy, guideline
+
+**Proposal**:
+One human's ruling put forward as a precedent: a PR on the team's repo that appends one entry to its precedents file. A ruling gets one; a human merging it is what accepts the precedent.
+_Avoid_: suggestion, draft, candidate (a key of what `recovery` answers)
+
+**Split**:
+Parking an issue on issues its own stage opened. When they have all closed, that stage runs again and judges the whole.
+_Avoid_: decompose, epic (an issue under an epic label), fan out
+
+**Patrol**:
+A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period. Each run has a checkout of its own, removed as the run ends unless it failed.
+_Avoid_: cron, job, scheduled worker
+
+**Fleet lock**:
+An open issue carrying the lock label, in a bound repo or an unbound one. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
+_Avoid_: freeze, pause, kill switch
+
+#### Workers
+
+**Harness**:
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another. A stage names the one its worker runs, or takes the fleet's default.
+_Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
+
+**Worker**:
+A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to join its PR to the landing train — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
+_Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
+
+**Worker launch command**:
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host says it, per harness, and a harness it says none for has a stock one; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it. In a bound repo the fleet adds to it what puts the worker in its role.
+_Avoid_: agent command, provider profile
+
+**Worker state**:
+Whether a worker is busy or has stopped, as its harness reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
+_Avoid_: liveness, status (as under Position)
+
+**Verdict**:
+What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
+_Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, or its verdict), result, needs-human
+
+**Nudge**:
+The one line the fleet types at a worker that stopped with no outcome, telling it to carry on. Sent once per worker.
+_Avoid_: ping, reminder, retry
+
+**Restart**:
+Replacing a silent worker with a new one in the same worktree and the same role, with its PR, branch and worktree untouched. Made once, and only for a worker that is joining the landing train.
+_Avoid_: retry, re-dispatch
+
+**Continuation**:
+Recovering a claim whose worker died from the progress that survived: its worktree if still on this host, else its pushed branch, else a fresh start from the base branch.
+_Avoid_: resume, checkpoint restore
+
+**Wake**:
+A contentless signal a worker sends to its host's fleet instance once its outcome is on GitHub, ending the sleep between ticks early.
+_Avoid_: notification, callback, done signal
+
+#### Claims
+
+**Claim**:
+The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance.
+_Avoid_: assignee, assignment, lock (the fleet lock)
+
+**Heartbeat**:
+The timestamp a fleet instance publishes for itself while it holds claims, stamped with its host. A claim is live while its owner's heartbeat is within the lease. A `run` told to stop while it holds no claim removes its own; a start removes the dead ones that hold nothing: those of the instances it took from, its own host's past the lease, and anyone's older than a day.
+_Avoid_: ping, keepalive
+
+**Orphaned claim**:
+A claim of this fleet instance with no PR and no live worker. It is recovered by continuation, never released.
+_Avoid_: stuck issue, zombie
+
+**Stale claim**:
+Another fleet instance's claim whose heartbeat is past the lease. It is the only claim a fleet takes from another host unattended.
+_Avoid_: dead claim, abandoned claim
+
+**Takeover**:
+Taking another fleet instance's claims — on issues, on patrols' runs, on proposals — without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's. A claim taken — by a takeover, or as a stale claim — is still the claim it was created as: what was declared under it stands.
+_Avoid_: failover, stale reclaim
+
+#### Outcomes
+
+**Park**:
+Recording a dependency a worker discovered as a blocker on its issue and releasing the claim, so the frontier holds the issue back until the blocker closes.
+_Avoid_: defer, snooze, hold (a fleet instance holds its claims)
+
+**Escalate**:
+Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every failure escalates and nothing is retried; an `escalate` verdict escalates unless a consult rules on it first. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
+_Avoid_: fail (what a command, a gate or one thing a tick does may), retry, give up (a landing train is given up: Abandon)
+
+**Status board**:
+The single comment on a claimed issue that shows a human how far along it is, and what the afkconvoy that works it was built from. It is rendered from fleet state and never read back.
+_Avoid_: progress log, worklog
+
+**Panel**:
+The web page that shows a human where the whole fleet stands: each workflow as the line of its stages, the issues at work, queued and held back at each, and the landing train. A fleet instance serves it on its own host, made anew from what each tick read; it is never read back.
+_Avoid_: dashboard, status page, status board (the comment on one issue), UI
+
+**Tick log**:
+The file a fleet instance's `run` keeps on its own host: one line as it starts and one for each tick, cut back to its newest lines at a bound. It is a log and not fleet state: nothing reads it to decide what the fleet does.
+_Avoid_: state file, journal, history
+
+**Finding**:
+One thing `doctor` says is wrong with the fleet on this host, with how bad it is, what shows it, its fix — a line to run, or a file and the key in it to edit — and the help topic that explains it. `doctor` fixes none itself.
+_Avoid_: diagnosis, alert, warning (one of its severities), error (what a command that failed answers with)
+
+#### Landing
+
+**Gate**:
+The repo's build-and-test command. It is the only machine verification a change must pass before it lands.
+_Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and the startup probe make), local CI
+
+**Recorded gate run**:
+The evidence that the gate passed on one committed tree, made by the tool that saw the exit code and kept where every host can read it.
+_Avoid_: gate cache, CI status
+
+**Sync**:
+Bringing a branch up to date by merging into it. Nothing is ever rebased.
+_Avoid_: rebase, update branch
+
+**Landing train**:
+The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR.
+_Avoid_: merge queue, merge batch, landing turn
+
+**Join**:
+Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed.
+_Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
+
+**Train worker**:
+The one worker per repo that gates the landing train's tip and pushes it to the base branch as a fast-forward. It holds no claim and wrote none of the PRs it lands.
+_Avoid_: merger, integrator, batch worker
+
+**Abandon**:
+Giving up a landing train whose worker stayed silent, with nothing landed; its PRs join the next train.
+_Avoid_: fail (as under Escalate), bisect
