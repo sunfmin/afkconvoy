@@ -35,6 +35,7 @@ pub mod recovery;
 mod rejected;
 pub mod role;
 pub mod settle;
+pub mod slow_gate;
 pub mod stage_record;
 pub mod stopped;
 pub mod takeover;

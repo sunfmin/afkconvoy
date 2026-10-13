@@ -55,6 +55,9 @@ pub enum TickStep {
     /// Start a worker on the due proposal at this place among the working
     /// set's, into a free slot.
     Propose { proposal: usize },
+    /// Open the issue that says the gate is slow, while none is open. It
+    /// takes no slot.
+    SlowGate,
     /// Show on the issue's status board the stage a claim of mine is at.
     Board { issue: u64, stage: Stage, pr: Option<u64> },
     /// Bring the `stage:` label of an issue that follows a workflow to the
@@ -214,7 +217,7 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// human the unclaimed issues that call for one, take stale
 /// claims, then the due patrols, then frontier issues into the free slots,
 /// lowest number first, then the due proposals of precedents,
-/// bring the status boards and the `stage:` labels up to date, then refresh
+/// open the issue for a slow gate that has none, bring the status boards and the `stage:` labels up to date, then refresh
 /// the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
 /// the rest of the pass goes on.
@@ -248,6 +251,10 @@ where
     }
     let held = hand_over(set, concurrency, held, &mut did, &mut carry_out);
     let held = fill_slots(&takes(set), concurrency, held, &mut did, &mut carry_out);
+    if set.slow_gate.as_ref().is_some_and(|slow| slow.issue.is_none()) {
+        let step = TickStep::SlowGate;
+        did.push((step, carry_out(step)));
+    }
     for step in boards(set, &did) {
         did.push((step, carry_out(step)));
     }
@@ -670,6 +677,7 @@ mod tests {
             flowing: vec![],
             patrols: vec![],
             proposals: vec![],
+            slow_gate: None,
         }
     }
 
@@ -1251,6 +1259,28 @@ mod tests {
         assert!(pass.did.contains(&(Dispatch { issue: 5 }, Done)));
         assert_eq!(pass.frontier_remaining, 0);
         assert!(!pass.follow_up_due(2), "nothing is left for the tick after it");
+    }
+
+    #[test]
+    fn a_pass_opens_the_issue_for_a_slow_gate_that_has_none() {
+        use crate::slow_gate::SlowGate;
+        let slow = |issue| SlowGate { gate_seconds: 600, host: "mini".into(), runs: vec![], issue };
+        let mut unreported = set(&[5], &[]);
+        unreported.slow_gate = Some(slow(None));
+        // after the slots are filled, and in none of them
+        let pass = run_pass(&unreported, 1, 0, |_| Done);
+        assert_eq!(pass.did[..2], [(Dispatch { issue: 5 }, Done), (SlowGate, Done)]);
+        assert_eq!(pass.held, 1);
+        assert!(pass.did_work());
+        // one lost to a peer's tick did no work
+        let lost = run_pass(&unreported, 0, 0, |_| Lost);
+        assert_eq!(lost.did, [(SlowGate, Lost)]);
+        assert!(!lost.did_work());
+
+        let mut reported = set(&[], &[]);
+        reported.slow_gate = Some(slow(Some(41)));
+        assert_eq!(run_pass(&reported, 1, 0, |_| Done).did, [], "one is open: no other");
+        assert_eq!(run_pass(&set(&[], &[]), 1, 0, |_| Done).did, []);
     }
 
     #[test]
