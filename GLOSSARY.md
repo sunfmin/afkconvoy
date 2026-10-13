@@ -179,7 +179,7 @@ Another fleet instance's claim whose heartbeat is past the lease. It is the only
 _Avoid_: dead claim, abandoned claim
 
 **Takeover**:
-Taking another fleet instance's claims without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's.
+Taking another fleet instance's claims — on issues, on patrols' runs, on proposals — without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's.
 _Avoid_: failover, stale reclaim
 
 ### Outcomes

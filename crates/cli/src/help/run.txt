@@ -10,7 +10,8 @@ WHO RUNS IT
 WHAT IT READS AND WRITES
 
   Everything the fleet does. It makes the startup probe, takes every claim stamped with
-  this host, then ticks: each tick rebuilds the working set from GitHub and the remote
+  this host — on an issue, on a patrol's run, on the proposal of a precedent — then
+  ticks: each tick rebuilds the working set from GitHub and the remote
   and makes every transition it calls for — claims and heartbeats on the remote, workers
   in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the
   landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep,
@@ -27,6 +28,7 @@ WHAT IT ANSWERS
   Not one JSON object: one line on stdout per tick, until it is killed.
 
     start: took #4, #7 stamped with this host        only when a start took or lost claims
+    start: took #4, the run of the patrol triage stamped with this host
     tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s
     tick 2: nothing to do · holding 2/3 · frontier 4 · next in 60s
     tick 3: advanced #12 · holding 1/3 · frontier 0 · next now
@@ -63,6 +65,8 @@ WHAT TRIPS YOU UP
 
   - Stopping it is killing it. No claim is released on the way out and no worker is
     stopped: the workers work on, and the next `run` on this host takes the claims back.
+    A patrol's run and a proposal it takes back are ended by its first tick once their
+    worker is gone or has stopped, as any run of its own.
   - Without `--instance` it mints a new instance id, named for this host, and its lines
     never print it. `afkconvoy doctor` finds it, and says it as `fleet.instance`, for
     `plan --instance` and the commands that make one transition by hand.

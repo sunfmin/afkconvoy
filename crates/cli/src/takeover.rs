@@ -4,13 +4,14 @@
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::takeover::{
-    Licence, Remembered, Takeover, confirm_detail, plan_takeover, remembered, stamped_with,
+    Held, Licence, Remembered, Takeover, confirm_detail, held, plan_takeover, remembered,
+    stamped_with,
 };
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::claims::{Me, Take, delete, take};
+use crate::claims::{Me, Take, delete, retake_run, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 
@@ -20,6 +21,48 @@ use crate::fleet::Fleet;
 fn take_over(fleet: &mut Fleet, me: &Me, claim: &Claim, _licence: &Licence) -> Result<bool> {
     let taken = take(&fleet.repo, &mut fleet.scan, me, claim.number, Take::From(&claim.sha))?;
     Ok(taken["won"] == true)
+}
+
+/// What taking some claims came to: the issues and the runs whose claims were
+/// taken, and the ones that moved first.
+#[derive(Default)]
+struct Took {
+    taken: Vec<u64>,
+    lost: Vec<u64>,
+    taken_runs: Vec<String>,
+    lost_runs: Vec<String>,
+}
+
+impl Took {
+    /// Takes `claim` under `licence` (`take_over`), and keeps what came of
+    /// it. An issue's is continued by the next tick; a run's is ended by it
+    /// once its worker is gone or stopped.
+    fn take(&mut self, fleet: &mut Fleet, me: &Me, claim: Held, licence: &Licence) -> Result<()> {
+        match claim {
+            Held::Issue(claim) => {
+                let won = take_over(fleet, me, claim, licence)?;
+                if won { &mut self.taken } else { &mut self.lost }.push(claim.number);
+            }
+            Held::Run(run) => {
+                let won = retake_run(&fleet.repo, &mut fleet.scan, me, run)?;
+                if won { &mut self.taken_runs } else { &mut self.lost_runs }.push(run.key.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn json(&self) -> Value {
+        json!({"taken": self.taken, "lost": self.lost,
+            "taken_runs": self.taken_runs, "lost_runs": self.lost_runs})
+    }
+
+    /// The answer `action` of a takeover from `from` that came to this.
+    fn answer(&self, action: &str, from: &str) -> Value {
+        let mut answer = self.json();
+        answer["action"] = json!(action);
+        answer["instance"] = json!(from);
+        answer
+    }
 }
 
 /// The claim on `issue` as the scan has it, with the licence its holder's
@@ -50,20 +93,17 @@ pub fn unlock(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
     Ok(Outcome::Done)
 }
 
-/// What a start took: the claims stamped with this host, whatever their
-/// holder's heartbeat says (docs/adr/0003). The next tick continues each.
+/// What a start took: the claims stamped with this host — on an issue, on a
+/// patrol's run, on a proposal — whatever their holder's heartbeat says
+/// (docs/adr/0003). The next tick continues each issue, and ends each run
+/// whose worker is gone or stopped.
 pub fn at_start(fleet: &mut Fleet, me: &Me) -> Result<Value> {
-    let claims = fleet.scan.claims.clone();
-    let mut taken = vec![];
-    let mut lost = vec![];
-    for (claim, licence) in stamped_with(&claims, &me.instance, &me.host) {
-        if take_over(fleet, me, claim, &licence)? {
-            taken.push(claim.number);
-        } else {
-            lost.push(claim.number);
-        }
+    let (claims, runs) = (fleet.scan.claims.clone(), fleet.scan.runs.clone());
+    let mut took = Took::default();
+    for (claim, licence) in stamped_with(&held(&claims, &runs), &me.instance, &me.host) {
+        took.take(fleet, me, claim, &licence)?;
     }
-    Ok(json!({"taken": taken, "lost": lost}))
+    Ok(took.json())
 }
 
 fn row(remembered: &Remembered) -> Value {
@@ -71,7 +111,8 @@ fn row(remembered: &Remembered) -> Value {
         "instance": remembered.instance,
         "host": remembered.host,
         "claims": remembered.claims,
-        "claim_count": remembered.claims.len(),
+        "runs": remembered.runs,
+        "claim_count": remembered.claims.len() + remembered.runs.len(),
         "heartbeat_ts": remembered.heartbeat,
         "heartbeat_age": remembered.heartbeat_age,
         "fresh": remembered.fresh,
@@ -86,45 +127,49 @@ fn heartbeats(fleet: &Fleet) -> Vec<(String, u64)> {
 /// `afkconvoy takeover --list`: every instance the remote remembers.
 pub fn list(fleet: &Fleet, me: Option<&Me>) -> Value {
     let me = me.map(|me| &me.instance);
-    let rows = remembered(&fleet.scan.claims, &heartbeats(fleet), me, fleet.now);
+    let all = held(&fleet.scan.claims, &fleet.scan.runs);
+    let rows = remembered(&all, &heartbeats(fleet), me, fleet.now);
     json!({"instances": rows.iter().map(row).collect::<Vec<_>>(),
         "me": me.map(|me| me.as_str()), "now": fleet.now,
         "lease": afkconvoy_core::lease::LEASE})
 }
 
-/// `afkconvoy takeover --from <id>`: take that instance's claims without
-/// waiting for the lease. One whose heartbeat is fresh takes nothing until
-/// `yes`. The next tick of `me` continues each claim taken.
+/// `afkconvoy takeover --from <id>`: take that instance's claims — on issues
+/// and on runs — without waiting for the lease. One whose heartbeat is fresh
+/// takes nothing until `yes`. The next tick of `me` continues each issue
+/// taken, and ends each run.
 pub fn takeover(fleet: &mut Fleet, me: &Me, from: &str, yes: bool) -> Result<Value> {
-    let claims = fleet.scan.claims.clone();
-    match plan_takeover(&claims, &heartbeats(fleet), from, &me.instance, fleet.now, yes) {
+    let (claims, runs) = (fleet.scan.claims.clone(), fleet.scan.runs.clone());
+    let all = held(&claims, &runs);
+    let mut took = Took::default();
+    match plan_takeover(&all, &heartbeats(fleet), from, &me.instance, fleet.now, yes) {
         Takeover::Mine => {
             bail!("{from} is this fleet's own instance id: its claims are already its own")
         }
         Takeover::Nothing(detail) => {
-            Ok(json!({"action": "none", "instance": from, "taken": [], "lost": [],
-                "detail": detail}))
+            let mut answer = took.answer("none", from);
+            answer["detail"] = json!(detail);
+            Ok(answer)
         }
         Takeover::Confirm { heartbeat_age } => {
-            Ok(json!({"action": "confirm", "instance": from, "taken": [], "lost": [],
-                "heartbeat_age": heartbeat_age, "detail": confirm_detail(heartbeat_age)}))
+            let mut answer = took.answer("confirm", from);
+            answer["heartbeat_age"] = json!(heartbeat_age);
+            answer["detail"] = json!(confirm_detail(heartbeat_age));
+            Ok(answer)
         }
         Takeover::Take(theirs, licence) => {
-            let mut taken = vec![];
-            let mut lost = vec![];
             for claim in theirs {
-                if take_over(fleet, me, claim, &licence)? {
-                    taken.push(claim.number);
-                } else {
-                    lost.push(claim.number);
-                }
+                took.take(fleet, me, claim, &licence)?;
             }
-            let mut detail = format!("took {} claim(s) from {from}", taken.len());
-            if !lost.is_empty() {
+            let count = took.taken.len() + took.taken_runs.len();
+            let mut detail = format!("took {count} claim(s) from {from}");
+            if !took.lost.is_empty() || !took.lost_runs.is_empty() {
                 detail.push_str("; a lost one means that fleet is not dead — its ref moved");
             }
-            Ok(json!({"action": "taken", "instance": from, "as": me.instance.as_str(),
-                "taken": taken, "lost": lost, "detail": detail}))
+            let mut answer = took.answer("taken", from);
+            answer["as"] = json!(me.instance.as_str());
+            answer["detail"] = json!(detail);
+            Ok(answer)
         }
     }
 }

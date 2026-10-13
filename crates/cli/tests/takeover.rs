@@ -215,7 +215,7 @@ fn takeover_lists_the_instances_the_remote_remembers() {
     let rows = listed["instances"].as_array().unwrap();
     assert_eq!(
         rows[0],
-        json!({"instance": "dead", "host": "h2", "claims": [3, 9], "claim_count": 2,
+        json!({"instance": "dead", "host": "h2", "claims": [3, 9], "runs": [], "claim_count": 2,
             "heartbeat_ts": 1000, "heartbeat_age": LEASE + 1, "fresh": false, "is_me": false})
     );
     assert_eq!(rows[1]["instance"], "alpha");

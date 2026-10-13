@@ -474,3 +474,23 @@ fn a_stage_s_brief_says_where_the_precedents_are_and_to_read_them_before_an_esca
         "{brief}"
     );
 }
+
+/// #132: a proposal claimed by a fleet that was killed is taken by the start
+/// of the next one on its host, with the host's claims on issues.
+#[test]
+fn a_start_takes_a_proposal_stamped_with_its_host_and_the_next_tick_ends_it() {
+    let world = proposing(3);
+    let (comment, _) = ruled(&world, 7, 1000);
+    assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done", "propose 7 done"]);
+    let plan = world.afk(&["plan", "--instance", "omega", "--now", "1110"]).ok();
+    assert_eq!(plan["proposals"][0]["standing"], "peer_running");
+
+    worker_leaves(&world, &checkout(&world, 7, comment));
+    let args = ["run", "--instance", "omega", "--host", "h1", "--second-ms", "0"];
+    let (lines, _) = world.afk_lines(&[&args[..], &["--ticks", "1", "--now", "1160"]].concat());
+    assert_eq!(lines[0], "start: took #7, the proposal of the ruling on #7 stamped with this host");
+    assert!(lines[1].contains("ended the proposal of the ruling on #7"), "{}", lines[1]);
+    assert_eq!(claimed(&world), Vec::<String>::new());
+    let plan = world.afk(&["plan", "--instance", "omega", "--now", "1170"]).ok();
+    assert_eq!(plan["proposals"].as_array().map_or(0, Vec::len), 0, "{}", plan["proposals"]);
+}
