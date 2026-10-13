@@ -21,7 +21,8 @@ WHAT IT READS AND WRITES
   and a tick that left the next one a worker to start is followed with no sleep.
 
   It also keeps a log on this host: one line when it starts and one per tick — what
-  `tick` answers for it — in a file under your cache directory, cut back to its newest
+  `tick` answers for it — in a file under the cache directory (runs/; `afkconvoy
+  help cache` says where it is and what moves it), cut back to its newest
   lines at a bound. A line is written whole as its tick ends, so killing `run` loses
   none. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say
   what the last ticks did and which steps failed.
@@ -154,7 +155,7 @@ WHAT TRIPS YOU UP
     `--approve` answers on the line what pi would ask at its terminal, and has it
     load the role's own limits (`.pi/extensions/`). The role's skills are named and
     pi looks for no other: none of yours is loaded. pi's user directory is the
-    fleet's own (~/.cache/afkconvoy/harness/pi), not yours (~/.pi/agent): it holds
+    fleet's own (harness/pi under the cache directory), not yours (~/.pi/agent): it holds
     links to your logins and to the models you defined (auth.json, models.json), a
     link to the extension orca installed to hear of a pi session's state, and nothing
     else of yours — no rule, skill, setting or other extension. The extension named
@@ -193,7 +194,7 @@ WHAT TRIPS YOU UP
     own hooks and a worker loads none of: it is given ten seconds, and refuses no
     call, whatever it does; where orca installed none, nothing is told, and a
     worker's state is read off its terminal. Codex's user directory is the fleet's own
-    (~/.cache/afkconvoy/harness/codex), not yours (~/.codex): it holds a link to
+    (harness/codex under the cache directory), not yours (~/.codex): it holds a link to
     your login (auth.json) and nothing else of yours — no rule, skill, hook or
     configuration, so no provider you defined in config.toml. A login Codex
     keeps in a keyring is in no file, and is no worker's: the start refuses, and

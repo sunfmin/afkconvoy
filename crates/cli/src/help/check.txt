@@ -33,7 +33,8 @@ WHAT IT READS AND WRITES
   A repo on GitHub — the team's, and each role's — is asked for the commit at its head,
   and read from the fleet's copy of that commit: the one a worker's directory is taken
   out of, kept
-  read-only under the user's cache directory (afkconvoy/copies/<owner>/<repo>/<commit>).
+  read-only under the cache directory (copies/<owner>/<repo>/<commit>): `afkconvoy help
+  cache` says where that directory is on this host, and what moves it.
   Only a commit the fleet has no copy of yet is cloned, so a role pushed since the last
   run is read at its new head, and one that has not moved costs one question. A repo is
   asked and cloned once however many roles it holds, and a role in the team's own repo

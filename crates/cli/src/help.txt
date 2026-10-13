@@ -83,8 +83,7 @@ THE COMMANDS, by who runs them
 
 THE TOPICS
 
-  What belongs to no one command. `afkconvoy help <topic>` prints one: plain text, as
-  `--help` itself is, and no JSON object.
+  What belongs to no one command. `afkconvoy help <topic>` prints one, as plain text.
 
 {topics}
 

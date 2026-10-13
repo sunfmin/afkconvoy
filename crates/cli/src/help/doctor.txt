@@ -125,7 +125,7 @@ WHAT IT ANSWERS
   changes only the team's rules — the CLAUDE.md at its top, which every worker is
   given — moves the team, and one that changes a workflow moves no role. A role in a repo of its own moves with
   every push that changes a file there. The two are compared in the copies this host
-  keeps (afkconvoy/copies/ under the cache directory); where the one the stage started
+  keeps (copies/ under the cache directory); where the one the stage started
   under is no longer there, a different commit is all there is to go by, and it is
   said to have moved. `evidence` gives both commits.
 
@@ -135,7 +135,7 @@ WHAT TRIPS YOU UP
     took it and the one that starts its worker. Run it again after a tick before you
     act on one; a critical finding does not go away by waiting.
   - It says nothing of ticks nobody logged. A `run` logs under your cache directory
-    ($XDG_CACHE_HOME, else ~/.cache) on the host it runs on: run `doctor` there, as the
+    (`afkconvoy help cache` says where it is) on the host it runs on: run `doctor` there, as the
     same user. The log is a log: nothing reads it to decide anything, and deleting it
     loses only what `doctor` could say of the ticks before.
   - It makes no startup probe, so it looks for the fleet's refs where this repo's last

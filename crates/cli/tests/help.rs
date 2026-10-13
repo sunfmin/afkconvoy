@@ -928,3 +928,31 @@ fn the_help_of_check_and_of_doctor_describe_the_key_that_names_a_topic() {
         assert!(doctor.contains(part), "{part:?} is not in `doctor --help`");
     }
 }
+
+/// The topic `cache` is where the cache directory is named whole — the path,
+/// what moves it, what it holds — and every other help that speaks of it sends
+/// its reader there instead of naming a path of its own.
+#[test]
+fn one_topic_says_where_the_cache_directory_is_and_every_other_help_sends_there() {
+    let topic = asked(&["help", "cache"]);
+    for said in [
+        "$XDG_CACHE_HOME/afkconvoy",
+        "$HOME/.cache/afkconvoy",
+        "Setting XDG_CACHE_HOME, and nothing else",
+        "copies/<owner>/<repo>/<commit>",
+        "harness/pi, harness/codex",
+        "runs/ ",
+    ] {
+        assert!(topic.contains(said), "{said:?} is not in:\n{topic}");
+    }
+    let cache = topic_file("cache");
+    for (file, text) in help_texts().into_iter().filter(|(file, _)| *file != cache) {
+        for path in ["XDG_CACHE_HOME", ".cache"] {
+            assert!(!text.contains(path), "{file} names {path:?}: the topic does");
+        }
+    }
+    for command in ["check", "dispatch", "run", "doctor"] {
+        let flat = asked(&[command, "--help"]).split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("`afkconvoy help cache` says where"), "{command}");
+    }
+}

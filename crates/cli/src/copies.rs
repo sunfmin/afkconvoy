@@ -26,7 +26,10 @@ pub fn cache() -> Result<PathBuf> {
     let cache = match (set("XDG_CACHE_HOME"), set("HOME")) {
         (Some(cache), _) => PathBuf::from(cache),
         (None, Some(home)) => PathBuf::from(home).join(".cache"),
-        (None, None) => bail!("neither XDG_CACHE_HOME nor HOME says where the fleet's cache is"),
+        (None, None) => bail!(
+            "neither XDG_CACHE_HOME nor HOME says where the fleet's cache directory is: \
+             `afkconvoy help cache`"
+        ),
     };
     Ok(cache.join("afkconvoy"))
 }
