@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn a_claim_record_reads_back() {
         let owner = Owner { instance: "fleet-1".into(), host: "my mac.local".into(), ts: 99 };
-        assert_eq!(Owner::read(&owner.write()), Some(owner));
+        assert_eq!(Owner::read(&owner.write()), Some(owner.clone()));
         assert_eq!(Owner::read("convoy:claim host=x"), None, "names nobody");
         assert_eq!(Owner::read("initial commit"), None);
         let claim = Claim::read(7, &owner.write(), "abc".into());
