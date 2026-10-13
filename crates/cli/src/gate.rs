@@ -41,9 +41,14 @@ pub fn off_commit(repo: &Repo, head: Option<&str>) -> Result<Vec<String>> {
 const EXCERPT_LINES: usize = 40;
 
 /// Runs the gate command in a worktree, its log going line by line to this
-/// process's stderr → (exit code, timed out, the end of the log). A run that
-/// outlives `timeout` is killed, with everything it started.
-fn run_command(repo: &Repo, command: &str, timeout: Duration) -> Result<(i32, bool, Vec<String>)> {
+/// process's stderr → (exit code, timed out, the whole seconds it took, the
+/// end of the log). A run that outlives `timeout` is killed, with everything
+/// it started.
+fn run_command(
+    repo: &Repo,
+    command: &str,
+    timeout: Duration,
+) -> Result<(i32, bool, u64, Vec<String>)> {
     let mut child = Command::new("sh")
         // one stream, so the log reads in the order it was written
         .args(["-c", &format!("exec 2>&1\n{command}")])
@@ -89,12 +94,13 @@ fn run_command(repo: &Repo, command: &str, timeout: Duration) -> Result<(i32, bo
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    let seconds = started.elapsed().as_secs();
     // What the command wrote before it ended; something it left running may
     // hold the log open, and is not waited for.
     while let Ok(line) = read.recv_timeout(Duration::from_millis(200)) {
         keep(line);
     }
-    Ok((code, timed_out, tail.into()))
+    Ok((code, timed_out, seconds, tail.into()))
 }
 
 /// One run of the gate in a worktree, and what became of its record.
@@ -118,29 +124,31 @@ pub fn head_tree(repo: &Repo) -> Result<Tree> {
 }
 
 /// Runs the gate in a worktree and settles its tree's record: a green run on
-/// a committed tree is put on record, a red one on a committed tree takes the
-/// record away.
+/// a committed tree is put on record, with how long it took on `host`; a red
+/// one on a committed tree takes the record away.
 pub fn run_and_record(
     repo: &Repo,
     command: &GateCommand,
+    host: &str,
     now: u64,
     timeout: Duration,
 ) -> Result<GateRun> {
     let head = repo.git(&["rev-parse", "HEAD"])?;
     let tree = head_tree(repo)?;
     let before = off_commit(repo, None)?;
-    let (exit_code, timed_out, excerpt) = run_command(repo, command.text(), timeout)?;
+    let (exit_code, timed_out, seconds, excerpt) = run_command(repo, command.text(), timeout)?;
     let after = if before.is_empty() { off_commit(repo, Some(&head))? } else { vec![] };
     let ran = Ran {
         exit_code,
         timed_out,
         clean_before: before.is_empty(),
         clean_after: after.is_empty(),
+        seconds,
     };
     let refname = record_ref(repo.layout(), &tree, command);
     let strays = if before.is_empty() { after } else { before };
     let mut run = GateRun { ran, head, strays, green: None, not_recorded: None, excerpt };
-    match after_run(&tree, command, ran, now) {
+    match after_run(&tree, command, ran, host, now) {
         Recording::Write(green) => {
             // The record is a parentless commit OF the tested tree.
             let sha = repo.record_commit_of(tree.name(), &green.write(&tree, command))?;
@@ -190,10 +198,17 @@ pub enum Gated {
 }
 
 /// Answers from the green run on record for the worktree's tree and the
-/// command, else by a run made now, which is put on record in its turn. A run
-/// made now answers only when it was a run of the committed tree: otherwise
-/// this is an error, and nothing lands.
-pub fn gated(repo: &Repo, command: &GateCommand, now: u64, timeout: Duration) -> Result<Gated> {
+/// command — which is left as it is, no new record written — else by a run
+/// made now on `host`, which is put on record in its turn. A run made now
+/// answers only when it was a run of the committed tree: otherwise this is an
+/// error, and nothing lands.
+pub fn gated(
+    repo: &Repo,
+    command: &GateCommand,
+    host: &str,
+    now: u64,
+    timeout: Duration,
+) -> Result<Gated> {
     let tree = head_tree(repo)?;
     if let Some(run) = recorded(repo, &tree, command, now)? {
         return Ok(Gated::Green { run, source: "recorded" });
@@ -212,7 +227,7 @@ pub fn gated(repo: &Repo, command: &GateCommand, now: u64, timeout: Duration) ->
     if !strays.is_empty() {
         return Err(not_the_commit("it has uncommitted or untracked files", &strays));
     }
-    let run = run_and_record(repo, command, now, timeout)?;
+    let run = run_and_record(repo, command, host, now, timeout)?;
     match run.green {
         Some(green) => Ok(Gated::Green { run: green, source: "run" }),
         None if run.ran.green() => {
@@ -266,8 +281,9 @@ fn lands_behind(
 }
 
 /// `afkconvoy gate`: a worker's run of the gate, in the worktree it is called
-/// from. The log streams to the worker's terminal; the answer says whether the
-/// run is on record as a pass of the commit's tree.
+/// from, on `host`. The log streams to the worker's terminal; the answer says
+/// how long the run took and whether it is on record as a pass of the commit's
+/// tree.
 ///
 /// `train`: the branch first takes in what its PR will land behind — the
 /// train's tip, or the base branch when there is no train — by a merge, never
@@ -281,6 +297,7 @@ pub fn gate(
     repo: &Repo,
     config: &Config,
     train: bool,
+    host: &str,
     now: u64,
     timeout: Duration,
 ) -> Result<Value> {
@@ -300,11 +317,11 @@ pub fn gate(
                     merge, and run this again. No gate ran"}));
         }
     }
-    let run = run_and_record(repo, &command, now, timeout)?;
+    let run = run_and_record(repo, &command, host, now, timeout)?;
     let status = if run.ran.green() { "green" } else { "red" };
     let mut answer = json!({"status": status, "exit_code": run.ran.exit_code,
-        "timed_out": run.ran.timed_out, "command": command.text(), "head": run.head,
-        "recorded": false});
+        "timed_out": run.ran.timed_out, "seconds": run.ran.seconds, "command": command.text(),
+        "head": run.head, "recorded": false});
     if let Some(merged) = merged {
         answer["merged"] = json!(merged);
     }

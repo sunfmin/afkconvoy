@@ -21,13 +21,15 @@ fn records(world: &World) -> Vec<String> {
 #[test]
 fn a_green_run_on_a_committed_tree_is_put_on_record() {
     let (world, command) = gated();
-    let gate = world.afk(&["gate", "--now", "5000"]);
+    let gate = world.afk(&["gate", "--now", "5000", "--host", "mini"]);
     assert!(gate.stderr.contains("gate-ran"), "the log streams to the terminal: {}", gate.stderr);
     let answer = gate.ok();
     assert_eq!(answer["status"], "green");
     assert_eq!(answer["recorded"], true);
     assert_eq!(answer["command"], command.as_str());
     assert_eq!(answer["head"], git(&world.clone, &["rev-parse", "HEAD"]));
+    let seconds = answer["seconds"].as_u64().expect("the answer says how long the run took");
+    assert!(seconds < 60, "{answer}");
 
     let tree = git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
     let refs = records(&world);
@@ -36,7 +38,22 @@ fn a_green_run_on_a_committed_tree_is_put_on_record() {
     // the record is a commit of the tree it is about
     assert_eq!(world.remote(&["rev-parse", &format!("{}^{{tree}}", refs[0])]), tree);
     let subject = world.remote(&["log", "-1", "--format=%s", &refs[0]]);
-    assert!(subject.starts_with("convoy:gate tree=") && subject.ends_with(" at=5000"), "{subject}");
+    assert!(subject.starts_with("convoy:gate tree="), "{subject}");
+    // …and says when the run finished, how long it took and on which host
+    assert!(subject.ends_with(&format!(" at=5000 seconds={seconds} host=mini")), "{subject}");
+}
+
+#[test]
+fn a_run_is_timed_from_the_start_of_the_gate_command_to_its_end() {
+    let world = World::new();
+    world.set_gate("sleep 2");
+    let answer = world.afk(&["gate"]).ok();
+    assert_eq!(answer["recorded"], true, "{answer}");
+    assert!((2..30).contains(&answer["seconds"].as_u64().unwrap()), "{answer}");
+    let subject = world.remote(&["log", "-1", "--format=%s", &records(&world)[0]]);
+    let host = gethostname::gethostname().to_string_lossy().into_owned();
+    let said = format!(" seconds={} host={host}", answer["seconds"]);
+    assert!(subject.ends_with(&said), "the host is what the fleet calls this one: {subject}");
 }
 
 #[test]
@@ -50,6 +67,7 @@ fn a_red_run_records_nothing_and_takes_the_trees_record_away() {
     assert_eq!(answer["status"], "red");
     assert_eq!(answer["exit_code"], 1);
     assert_eq!(answer["recorded"], false);
+    assert!(answer["seconds"].is_u64(), "the run is timed, though no record keeps it: {answer}");
     assert_eq!(records(&world), [] as [String; 0], "the latest run of a tree is the one believed");
 }
 

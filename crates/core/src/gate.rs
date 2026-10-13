@@ -1,8 +1,9 @@
 //! The gate, and green runs of it on record.
 //!
-//! A record says: this command passed on this tree. It is one ref on the
-//! remote, named for the tree and the command, so it stands wherever the same
-//! content is about to land — in another worktree, on another machine.
+//! A record says: this command passed on this tree, and how long the run took
+//! on which host. It is one ref on the remote, named for the tree and the
+//! command, so it stands wherever the same content is about to land — in
+//! another worktree, on another machine.
 
 use flux_rs::attrs::*;
 
@@ -93,12 +94,38 @@ pub struct Ran {
     pub clean_before: bool,
     /// …and was still exactly that commit when it ended.
     pub clean_after: bool,
+    /// The whole command's wall time, in whole seconds.
+    pub seconds: u64,
 }
 
 impl Ran {
     /// Only exit 0 is green, and a run that timed out is red.
     pub fn green(&self) -> bool {
         self.exit_code == 0 && !self.timed_out
+    }
+}
+
+/// How long a green run of the gate command took, and the host it ran on. The
+/// fleet times the whole command: it does not know the gate's steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Took {
+    seconds: u64,
+    host: String,
+}
+
+impl Took {
+    /// `None` for a run on a host with no name: its record would state no
+    /// host, and read back as a run with no time.
+    fn on(host: &str, seconds: u64) -> Option<Took> {
+        if host.is_empty() { None } else { Some(Took { seconds, host: host.to_string() }) }
+    }
+
+    pub fn seconds(&self) -> u64 {
+        self.seconds
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
     }
 }
 
@@ -114,12 +141,19 @@ pub struct GreenRun {
     command: u64,
     #[field(u64[at])]
     at: u64,
+    took: Option<Took>,
 }
 
 impl GreenRun {
     #[spec(fn(&GreenRun[@g]) -> u64[g.at])]
     pub fn at(&self) -> u64 {
         self.at
+    }
+
+    /// How long the run took, and on which host; `None` for a run whose record
+    /// says neither, as every record did once. It is the green run it was.
+    pub fn took(&self) -> Option<&Took> {
+        self.took.as_ref()
     }
 
     /// Whether the run is still believed at `now`: no older than a day, and
@@ -132,7 +166,18 @@ impl GreenRun {
     /// The record that carries this run, for the commit pushed to `record_ref`.
     pub fn write(&self, tree: &Tree, command: &GateCommand) -> String {
         let at = self.at.to_string();
-        record::write(GATE, &[("tree", &tree.name), ("command", &command.text), ("at", &at)])
+        let seconds = self.took.as_ref().map(|took| took.seconds.to_string()).unwrap_or_default();
+        let host = self.took.as_ref().map(Took::host).unwrap_or_default();
+        record::write(
+            GATE,
+            &[
+                ("tree", &tree.name),
+                ("command", &command.text),
+                ("at", &at),
+                ("seconds", &seconds),
+                ("host", host),
+            ],
+        )
     }
 
     /// A commit subject read at `record_ref(tree, command)` → the run it
@@ -147,7 +192,11 @@ impl GreenRun {
             return None;
         }
         let at = fields.number("at")?;
-        Some(GreenRun { tree: tree.key, command: command.key, at })
+        let took = match (fields.number("seconds"), fields.get("host")) {
+            (Some(seconds), Some(host)) => Took::on(host, seconds),
+            _ => None,
+        };
+        Some(GreenRun { tree: tree.key, command: command.key, at, took })
     }
 }
 
@@ -263,10 +312,11 @@ pub enum Recording {
 /// A run is of the committed tree only when the worktree was exactly its
 /// commit before and after: a command that rewrites a tracked file passes on
 /// what it wrote, not on what is committed. The run it puts on record is of
-/// this command on this tree, finished at `now`.
-#[spec(fn(tree: &Tree[@t], command: &GateCommand[@c], ran: Ran, now: u64)
+/// this command on this tree, finished at `now`, and says how long it took on
+/// `host`.
+#[spec(fn(tree: &Tree[@t], command: &GateCommand[@c], ran: Ran, host: &str, now: u64)
     -> Recording{r: r.written => r.tree == t && r.command == c && r.at == now})]
-pub fn after_run(tree: &Tree, command: &GateCommand, ran: Ran, now: u64) -> Recording {
+pub fn after_run(tree: &Tree, command: &GateCommand, ran: Ran, host: &str, now: u64) -> Recording {
     if !ran.clean_before {
         Recording::Leave
     } else if !ran.green() {
@@ -274,7 +324,8 @@ pub fn after_run(tree: &Tree, command: &GateCommand, ran: Ran, now: u64) -> Reco
     } else if !ran.clean_after {
         Recording::Leave
     } else {
-        Recording::Write(GreenRun { tree: tree.key, command: command.key, at: now })
+        let took = Took::on(host, ran.seconds);
+        Recording::Write(GreenRun { tree: tree.key, command: command.key, at: now, took })
     }
 }
 
@@ -331,7 +382,7 @@ mod relied_on {
         ran: Ran,
         now: u64,
     ) -> Option<GreenRun> {
-        match after_run(tree, command, ran, now) {
+        match after_run(tree, command, ran, "host", now) {
             Recording::Write(run) => Some(run),
             Recording::Drop | Recording::Leave => None,
         }
@@ -363,11 +414,11 @@ mod tests {
     }
 
     fn ran(exit_code: i32) -> Ran {
-        Ran { exit_code, timed_out: false, clean_before: true, clean_after: true }
+        Ran { exit_code, timed_out: false, clean_before: true, clean_after: true, seconds: 42 }
     }
 
     fn written(now: u64) -> GreenRun {
-        match after_run(&tree(), &command(), ran(0), now) {
+        match after_run(&tree(), &command(), ran(0), "mini", now) {
             Recording::Write(run) => run,
             other => panic!("{other:?}"),
         }
@@ -396,22 +447,22 @@ mod tests {
     #[test]
     fn a_run_is_recorded_only_when_green_on_a_committed_tree() {
         let (tree, command) = (tree(), command());
-        assert!(matches!(after_run(&tree, &command, ran(0), 50), Recording::Write(_)));
-        assert_eq!(after_run(&tree, &command, ran(2), 50), Recording::Drop);
+        assert!(matches!(after_run(&tree, &command, ran(0), "mini", 50), Recording::Write(_)));
+        assert_eq!(after_run(&tree, &command, ran(2), "mini", 50), Recording::Drop);
         assert_eq!(
-            after_run(&tree, &command, Ran { timed_out: true, ..ran(0) }, 50),
+            after_run(&tree, &command, Ran { timed_out: true, ..ran(0) }, "mini", 50),
             Recording::Drop
         );
         let dirty_before = Ran { clean_before: false, ..ran(0) };
-        assert_eq!(after_run(&tree, &command, dirty_before, 50), Recording::Leave);
+        assert_eq!(after_run(&tree, &command, dirty_before, "mini", 50), Recording::Leave);
         let red_and_dirty = Ran { clean_before: false, ..ran(1) };
         assert_eq!(
-            after_run(&tree, &command, red_and_dirty, 50),
+            after_run(&tree, &command, red_and_dirty, "mini", 50),
             Recording::Leave,
             "it tested no commit's tree"
         );
         let rewrote = Ran { clean_after: false, ..ran(0) };
-        assert_eq!(after_run(&tree, &command, rewrote, 50), Recording::Leave);
+        assert_eq!(after_run(&tree, &command, rewrote, "mini", 50), Recording::Leave);
     }
 
     #[test]
@@ -423,6 +474,42 @@ mod tests {
         assert_eq!(GreenRun::recorded(&subject, &tree, &GateCommand::new("make  test")), None);
         assert_eq!(GreenRun::recorded("initial commit", &tree, &command), None);
         assert_eq!(GreenRun::recorded("convoy:gate tree=x", &tree, &command), None);
+    }
+
+    #[test]
+    fn a_record_says_how_long_the_run_took_and_on_which_host() {
+        let (tree, command) = (tree(), command());
+        let subject = written(1000).write(&tree, &command);
+        assert!(subject.ends_with(" at=1000 seconds=42 host=mini"), "{subject}");
+        let run = GreenRun::recorded(&subject, &tree, &command).unwrap();
+        assert_eq!(run, written(1000), "what was written reads back");
+        assert_eq!(run.took().map(|took| (took.seconds(), took.host())), Some((42, "mini")));
+    }
+
+    #[test]
+    fn a_record_with_no_seconds_or_no_host_is_a_green_run_with_no_time() {
+        let (tree, command) = (tree(), command());
+        let whole = written(1000).write(&tree, &command);
+        let before = whole.strip_suffix(" seconds=42 host=mini").unwrap();
+        for subject in [
+            before.to_string(),
+            format!("{before} seconds=42"),
+            format!("{before} host=mini"),
+            format!("{before} seconds=soon host=mini"),
+        ] {
+            let run = GreenRun::recorded(&subject, &tree, &command).expect(&subject);
+            assert_eq!((run.at(), run.took()), (1000, None), "{subject}");
+            assert!(run.stands(1000 + RECORD_TTL), "it stands as long as it would have");
+            assert!(Proven::by(&tree, &command, &run, 1000).is_some(), "{subject}");
+            assert!(!outlived(&subject, 1000 + RECORD_TTL), "{subject}");
+            assert_eq!(run.write(&tree, &command), before, "no time is written for it");
+        }
+        // a run on a host with no name is one with no time, as its record reads
+        let nameless = match after_run(&tree, &command, ran(0), "", 1000) {
+            Recording::Write(run) => run,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(nameless.took(), None);
     }
 
     #[test]

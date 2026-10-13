@@ -1254,7 +1254,7 @@ The repo's build-and-test command. It is the only machine verification a change 
 _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and the startup probe make), local CI
 
 **Recorded gate run**:
-The evidence that the gate passed on one committed tree, made by the tool that saw the exit code and kept where every host can read it.
+The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
 _Avoid_: gate cache, CI status
 
 **Sync**:
