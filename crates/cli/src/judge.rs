@@ -38,7 +38,7 @@ use crate::team::keep;
 /// never the local branch of that name, against which a worktree freshly cut
 /// from the remote would read as ahead with no work in it.
 pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
-    let repo = Repo { dir: worktree.path.clone() };
+    let repo = Repo::new(worktree.path.clone());
     let ahead = repo.try_git(&["rev-list", "--count", &format!("{base_tip}..HEAD")])?;
     let committed = repo.try_git(&["log", "-1", "--format=%ct"])?;
     let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
