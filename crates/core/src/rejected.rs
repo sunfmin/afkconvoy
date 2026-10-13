@@ -73,3 +73,31 @@ mod position {
         count.times()
     }
 }
+
+/// What callers may rely on: each is checked by Flux, and stops passing when
+/// the spec it reads is weakened.
+mod relied_on {
+    use flux_rs::attrs::*;
+
+    use crate::config::Config;
+    use crate::position::Count;
+    use crate::team::Stage;
+
+    /// A config's concurrency is a slot at least.
+    #[spec(fn(&Config) -> usize{n: n > 0})]
+    fn a_config_has_a_slot(config: &Config) -> usize {
+        config.concurrency()
+    }
+
+    /// A count is never past its breaker.
+    #[spec(fn(&Count[@c]) -> u64{v: v <= c.limit})]
+    fn a_count_is_under_its_breaker(count: &Count) -> u64 {
+        count.times()
+    }
+
+    /// A stage's reject leads to a stage of its workflow.
+    #[spec(fn(&Stage[@s]) -> Option<usize{v: v < s.n}>)]
+    fn a_reject_leads_to_a_stage(stage: &Stage) -> Option<usize> {
+        stage.reject()
+    }
+}
