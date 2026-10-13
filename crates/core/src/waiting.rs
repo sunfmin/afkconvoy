@@ -193,21 +193,19 @@ pub fn waits(
         Due::Worker(_) | Due::Consult(_) | Due::Lander(_) => None,
         Due::Human(_) => Some(Waits::Escalated(back(workflow, records, &team.escalate_label))),
         Due::Nothing(_) => {
-            let place = history(workflow?, records).place;
-            match place.position {
-                Position::Ended => Some(Waits::Ended),
-                at => {
-                    let stage = at.stage()?.name.clone();
-                    let mut verdicts = vec![];
-                    // The two a workflow leads on from: what else a stage
-                    // may declare, `afkconvoy verdict --help` says.
-                    for declared in [Declared::Pass, Declared::Reject] {
-                        if place.takes(declared) {
-                            verdicts.push(declared.word());
-                        }
-                    }
-                    Some(Waits::Verdict { stage, verdicts })
+            let read = history(workflow?, records);
+            let mut verdicts = vec![];
+            // The two a workflow leads on from: what else a stage
+            // may declare, `afkconvoy verdict --help` says.
+            for declared in [Declared::Pass, Declared::Reject] {
+                if read.place.takes(declared) {
+                    verdicts.push(declared.word());
                 }
+            }
+            let position = read.place.position;
+            match position.stage() {
+                None => matches!(position, Position::Ended).then_some(Waits::Ended),
+                Some(stage) => Some(Waits::Verdict { stage: stage.name.clone(), verdicts }),
             }
         }
     }
