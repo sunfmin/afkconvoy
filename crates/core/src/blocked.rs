@@ -163,13 +163,13 @@ impl Visits {
         Visits { read: 0 }
     }
 
-    #[spec(fn(&Visits[@v]) -> bool[v.read < 200])]
+    #[spec(fn(&Visits[@v]) -> bool[v.read < WALK_LIMIT])]
     fn has_room(&self) -> bool {
         self.read < WALK_LIMIT
     }
 
     /// One more issue is read only under the limit.
-    #[spec(fn(self: &mut Self[@v]) requires v.read < 200 ensures self: Self[v.read + 1])]
+    #[spec(fn(self: &mut Self[@v]) requires v.read < WALK_LIMIT ensures self: Self[v.read + 1])]
     fn one_more(&mut self) {
         self.read += 1;
     }

@@ -185,12 +185,11 @@ fn unreached(layout: Layout, why: &str) -> String {
 
 /// The rules of a base branch's protection that stop the fleet working on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[refined_by(reviews: bool, restricted: bool, locked: bool, checks: bool)]
+#[refined_by(reviews: bool, restricted: bool, locked: bool, checks: int)]
 pub struct Protection {
     /// The status checks a merge must have passed.
+    #[field(Vec<String>[checks])]
     pub required_checks: Vec<String>,
-    #[field(bool[checks])]
-    checks: bool,
     /// A change must come by a reviewed pull request.
     #[field(bool[reviews])]
     pub requires_reviews: bool,
@@ -210,10 +209,8 @@ impl Protection {
         restricted: bool,
         locked: bool,
     ) -> Protection {
-        let checks = !required_checks.is_empty();
         Protection {
             required_checks,
-            checks,
             requires_reviews: reviews,
             restricts_pushes: restricted,
             locked,
@@ -221,14 +218,17 @@ impl Protection {
     }
 
     /// Whether any rule stops the train landing by a push.
-    #[spec(fn(&Protection[@p]) -> bool[p.checks || p.reviews || p.restricted || p.locked])]
+    #[spec(fn(&Protection[@p]) -> bool[p.checks > 0 || p.reviews || p.restricted || p.locked])]
     pub fn bars(&self) -> bool {
-        self.checks || self.requires_reviews || self.restricts_pushes || self.locked
+        !self.required_checks.is_empty()
+            || self.requires_reviews
+            || self.restricts_pushes
+            || self.locked
     }
 
     /// The first rule that stops the fleet, in words.
     fn rule(&self) -> String {
-        if self.checks {
+        if !self.required_checks.is_empty() {
             format!("requires status checks ({})", self.required_checks.join(", "))
         } else if self.requires_reviews {
             "requires pull request reviews".to_string()

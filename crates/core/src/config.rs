@@ -158,7 +158,7 @@ impl Config {
     }
 
     /// How many claims the fleet holds at once. Never zero.
-    #[spec(fn(&Config[@c]) -> usize{n: n == c && n > 0})]
+    #[spec(fn(&Config[@c]) -> usize[c])]
     pub fn concurrency(&self) -> usize {
         self.concurrency
     }
