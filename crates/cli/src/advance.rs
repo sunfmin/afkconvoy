@@ -50,28 +50,28 @@ fn stated(reason: &str, said: Option<&str>, rounds: Option<&str>) -> String {
 }
 
 /// Ends `claim` once its stage has declared, the issue left where its stage
-/// records put it — at `waits_at`, when that is a human's stage. `ended` is
-/// given when its workflow has ended: a worktree whose branch then holds no
-/// work goes too.
+/// records put it — at `waits_at`, when that is a human's stage — and its
+/// worker with it: its terminal is closed, and `ended`, its workflow having
+/// ended, the worktree goes too.
 fn hand_on(
     fleet: &mut Fleet,
     claim: &Claim,
     waits_at: Option<&str>,
-    ended: Option<(&Worktree, &Workless)>,
+    ended: bool,
 ) -> Result<Released> {
     let issue = claim.number;
     let pr = pr_of(fleet, issue)?;
-    transition::hand_on(issue, ended.map(|(_, workless)| workless), |step| {
-        match step {
-            HandOnStep::Board => declared(fleet, claim, pr, waits_at)?,
-            HandOnStep::Release => {
+    let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
+    transition::hand_on(issue, ended, |step| {
+        match (step, &worktree) {
+            (HandOnStep::Board, _) => declared(fleet, claim, pr, waits_at)?,
+            (HandOnStep::Release, _) => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
-            HandOnStep::RemoveWorktree => {
-                if let Some((worktree, _)) = ended {
-                    worktree.remove()?;
-                }
-            }
+            (HandOnStep::RemoveWorktree, Some(worktree)) => worktree.remove()?,
+            (HandOnStep::CloseTerminal, Some(worktree)) => worktree.close_terminals()?,
+            // No worktree on this host: no worker of mine to end.
+            (HandOnStep::RemoveWorktree | HandOnStep::CloseTerminal, None) => {}
         }
         Ok(())
     })
@@ -105,7 +105,7 @@ fn run_again(
     lock: u64,
 ) -> Result<Outcome> {
     leave_lock_closed(fleet, flows, claim.number, stage, lock)?;
-    hand_on(fleet, claim, None, None)?;
+    hand_on(fleet, claim, None, false)?;
     // As after any verdict: the stage is the next tick's to start.
     let _ = wake(&fleet.repo);
     Ok(Outcome::Done)
@@ -155,7 +155,7 @@ fn ask_after(
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
     let progress = progress(&worktree, &fleet.base_tip()?)?;
-    match silence(state, &progress, worktree.nudged()?, None, fleet.now) {
+    match silence(state, &progress, worktree.nudged()?, worktree.handed(None)?, fleet.now) {
         Silence::Lively => Ok(Outcome::Nothing),
         Silence::Gone => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
@@ -198,7 +198,9 @@ fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<String>> {
 /// the claim. A verdict is carried out as soon as it is read, whatever its
 /// worker is doing: it was declared through the fleet, and a claim declares
 /// once. A stage that left what it may not have — and a consult that left a
-/// commit — is escalated instead, whatever it declared. The PR, the branch and the worktree are the issue's next stage's.
+/// commit — is escalated instead, whatever it declared. The PR, the branch
+/// and the worktree are the issue's next stage's; the terminal is not: the
+/// worker that declared is ended with its claim.
 /// `HandedOn` when the issue was left where its stage records put it, for
 /// whoever is due there: starting that worker is the pass's.
 pub fn advance(
@@ -231,7 +233,7 @@ pub fn advance(
             return ask_after(fleet, me, agent, flows, &claim, asked);
         }
         Advance::HandOn => {
-            hand_on(fleet, &claim, called.waits_at.as_deref(), None)?;
+            hand_on(fleet, &claim, called.waits_at.as_deref(), false)?;
             // What follows that this tick does not start is the next one's:
             // it need not wait out a sleep. A wake nobody hears costs only
             // that wait.
@@ -239,8 +241,7 @@ pub fn advance(
             return Ok(Outcome::HandedOn);
         }
         Advance::End => {
-            let (worktree, workless) = worktree_and_work(fleet, issue)?;
-            hand_on(fleet, &claim, None, worktree.as_ref().zip(workless.as_ref()))?;
+            hand_on(fleet, &claim, None, true)?;
             return Ok(Outcome::Done);
         }
         Advance::Close => {
@@ -260,7 +261,7 @@ pub fn advance(
             // Every blocker closed: the frontier holds the issue at the
             // stage that parked it.
             Blocked::Redispatch => {
-                hand_on(fleet, &claim, None, None)?;
+                hand_on(fleet, &claim, None, false)?;
                 return Ok(Outcome::HandedOn);
             }
             Blocked::Escalate(reason) => stated(&reason.to_string(), said, None),

@@ -135,8 +135,8 @@ pub fn dispatch(
                     staged.keep_start(cut, claim)?;
                 }
                 terminal = Some(match &staged {
-                    Some(staged) => cut.start(&staged.command(launch, cut))?,
-                    None => cut.start(launch)?,
+                    Some(staged) => cut.start(&staged.command(launch, cut), fleet.now)?,
+                    None => cut.start(launch, fleet.now)?,
                 });
             }
             DispatchStep::AwaitReady => {

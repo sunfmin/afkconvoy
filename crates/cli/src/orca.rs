@@ -26,6 +26,15 @@ const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 const TOLD_FILE: &str = "convoy-train-told";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
+/// When the worker here was started (epoch seconds), beside the brief.
+const START_FILE: &str = "convoy-started";
+/// The shell line that tells orca of a worker's state (`role::Start::report`):
+/// the hook orca installs on its host for Claude Code, which reads the event
+/// on standard input and knows its terminal from the environment orca gave
+/// it. orca puts the same line in the user's settings, which a worker in its
+/// role does not load. On a host where orca installed none, nothing is told.
+pub const REPORT_HOOK: &str = "hook=\"${HOME-}/.orca/agent-hooks/claude-hook.sh\"; if [ -x \"$hook\" ]; \
+     then ORCA_HOOK_AGENT_PID=\"$PPID\" /bin/sh \"$hook\"; else cat >/dev/null; fi";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The commit a patrol's checkout was at when its worker was started.
@@ -346,6 +355,17 @@ impl Worktree {
         Ok(())
     }
 
+    /// Closes every terminal here and keeps the worktree: the worker whose
+    /// work here is over is ended, whatever it is doing. One with no terminal
+    /// is as wanted.
+    pub fn close_terminals(&self) -> Result<()> {
+        if self.terminal()?.is_none() {
+            return Ok(());
+        }
+        orca(&["terminal", "close", "--worktree", &self.selector(), "--all"])?;
+        Ok(())
+    }
+
     /// Clears the worktree and keeps it: its terminals closed, what it held
     /// discarded for the commit `sha`, what its worker was told forgotten.
     /// What git ignores — everything a gate run built — stays.
@@ -356,6 +376,7 @@ impl Worktree {
         repo.git(&["reset", "--quiet", "--hard", sha])?;
         repo.git(&["clean", "--quiet", "-fd"])?;
         self.forget(TOLD_FILE)?;
+        self.forget(START_FILE)?;
         self.forget(NUDGE_FILE)
     }
 
@@ -451,7 +472,8 @@ impl Worktree {
         Ok(tail.iter().filter_map(|line| line.as_str().map(str::to_string)).collect())
     }
 
-    /// Has orca remove the worktree, its terminals with it.
+    /// Has orca remove the worktree, its terminals with it — and its branch,
+    /// which orca deletes unless it holds changes nothing has merged.
     pub fn remove(&self) -> Result<()> {
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
         Ok(())
@@ -478,17 +500,29 @@ impl Worktree {
     /// verbatim → its terminal's handle. Whatever terminal was here first is
     /// closed, so the worker's is the only one in the worktree: two agents in
     /// one worktree would fight, and orca opens a bare shell in every worktree
-    /// it cuts. A new worker was never nudged, whatever the one before it was.
-    pub fn start(&self, command: &str) -> Result<String> {
+    /// it cuts. A new worker was never nudged, whatever the one before it
+    /// was, and started `now`.
+    pub fn start(&self, command: &str, now: u64) -> Result<String> {
         self.forget(NUDGE_FILE)?;
         // One with no terminal is as wanted.
         let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
         let made =
             orca(&["terminal", "create", "--worktree", &self.selector(), "--command", command])?;
         let handle = made["terminal"]["handle"].as_str();
-        Ok(handle
-            .ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?
-            .to_string())
+        let handle =
+            handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
+        let file = self.note(START_FILE)?;
+        std::fs::write(&file, now.to_string())
+            .with_context(|| format!("cannot write {}", file.display()))?;
+        Ok(handle.to_string())
+    }
+
+    /// When the worker here was last handed its work by the fleet
+    /// (`stopped::silence`): started, or — `since` — whatever it was handed
+    /// after that.
+    pub fn handed(&self, since: Option<u64>) -> Result<Option<u64>> {
+        let started = std::fs::read_to_string(self.note(START_FILE)?).ok();
+        Ok(started.and_then(|at| at.trim().parse().ok()).max(since))
     }
 
     /// Waits until the agent in `terminal` is ready for a prompt, trusting

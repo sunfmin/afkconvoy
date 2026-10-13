@@ -21,7 +21,7 @@ use anyhow::{Result, anyhow};
 use crate::claims::{Me, drop_run, take_run};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
-use crate::orca::{Source, Worktree};
+use crate::orca::{REPORT_HOOK, Source, Worktree};
 use crate::stage::Flows;
 
 /// What the remote and GitHub say of the proposals of a bound repo: the
@@ -125,6 +125,7 @@ pub fn propose(
         team_dir: &kept.copy.dir.display().to_string(),
         model: None,
         guard: &crate::own_command().fixed(" guard").own(),
+        report: REPORT_HOOK,
         facts: Facts {
             on: On::Proposal { issue: ruling.issue },
             role: &role.name,
@@ -139,7 +140,7 @@ pub fn propose(
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&in_role(agent.command.as_str(), &start))?;
+    let terminal = checkout.start(&in_role(agent.command.as_str(), &start), me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
     Ok(Outcome::Done)

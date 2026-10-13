@@ -663,11 +663,6 @@ mod tests {
     use Outcome::*;
     use TickStep::*;
 
-    /// A working set of these claims of mine, with nothing on the frontier.
-    fn set_of(mine: &[(u64, Status)]) -> WorkingSet {
-        set(&[], mine)
-    }
-
     fn peers(numbers: &[u64]) -> Vec<crate::plan::PeerClaim> {
         let claim = |&number| crate::plan::PeerClaim { number, instance: None, sha: String::new() };
         numbers.iter().map(claim).collect()
@@ -851,6 +846,7 @@ mod tests {
 
     #[test]
     fn a_claim_handed_on_has_the_worker_due_on_its_issue_started_into_the_slot_it_freed() {
+        let one = due_on(set(&[], &[(4, Status::AtStage), (5, Status::NoPr)]), &[4], "review");
         let at_stage = [(4, Status::AtStage), (6, Status::AtStage), (9, Status::AtStage)];
         // A worker performs the stage #4 and #9 were left at; #6 waits for a human.
         let set = due_on(set(&[2, 5], &at_stage), &[4, 9], "review");
@@ -884,7 +880,6 @@ mod tests {
         );
 
         // A fleet over its bound starts nothing: the issue waits on the frontier.
-        let one = due_on(set_of(&[(4, Status::AtStage), (5, Status::NoPr)]), &[4], "review");
         let full = run_pass(&one, 1, 2, |step| match step {
             Advance { .. } => HandedOn,
             _ => Nothing,

@@ -182,7 +182,7 @@ pub fn run_over(claim: &RunClaim, worker: WorkerState, now: u64) -> bool {
         WorkerState::Gone => true,
         WorkerState::Busy => false,
         WorkerState::Idle { quiet: Some(quiet) } => quiet >= GRACE,
-        // A runtime that reports nothing: the run's own age decides.
+        // Neither a report nor the terminal says since when: the run's own age decides.
         WorkerState::Idle { quiet: None } => match started {
             Some(started) => stamp_age(started, now).is_none_or(|age| age >= GRACE),
             None => true,
@@ -239,7 +239,7 @@ pub fn failure_of(issues: &[Issue], name: &str, escalate_label: &str) -> Option<
 }
 
 /// The name a patrol's checkout is created under: one per patrol on a
-/// machine, kept across its runs.
+/// machine at a time, cut for a run and removed as it ends.
 pub fn checkout_name(name: &str) -> String {
     format!("convoy-patrol-{name}")
 }

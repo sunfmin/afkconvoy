@@ -174,7 +174,14 @@ fn worktree_rm(st: &mut State) -> ! {
     assert!(st.has("--force"), "{:?}", st.argv);
     if Path::new(&path).is_dir() {
         let source = st.doc["repos"][0]["path"].as_str().unwrap().to_string();
+        let branch = fake::git(&["-C", &path, "symbolic-ref", "-q", "--short", "HEAD"]);
         fake::git(&["-C", &source, "worktree", "remove", "--force", &path]);
+        // as real orca: the branch goes too, unless it holds what it cannot
+        // prove merged — here, a commit the source's checkout does not have
+        let held = ["-C", &source, "rev-list", "--count", &branch, "--not", "HEAD"];
+        if !branch.is_empty() && fake::git(&held) == "0" {
+            fake::git(&["-C", &source, "branch", "-D", &branch]);
+        }
     }
     st.list("worktrees").retain(|row| row["path"] != path.as_str());
     for terminal in st.list("terminals") {

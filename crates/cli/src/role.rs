@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use crate::copies::{Copies, Copy};
 use crate::fleet::Fleet;
 use crate::launch::Proposed;
-use crate::orca::{Under, Worktree};
+use crate::orca::{REPORT_HOOK, Under, Worktree};
 use crate::stage::records_of;
 use crate::team::keep;
 
@@ -122,6 +122,7 @@ impl Staged {
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
             guard: &crate::own_command().fixed(" guard").own(),
+            report: REPORT_HOOK,
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,

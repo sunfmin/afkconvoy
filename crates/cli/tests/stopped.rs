@@ -152,6 +152,7 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
         assert_eq!(world.claims(), []);
         assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
         assert!(dir.exists(), "the worktree is evidence");
+        assert_eq!(world.open_terminals(), Vec::<String>::new(), "its worker is ended");
         // the branch record, the verdict, the escalation
         let comments = world.comments(7);
         assert_eq!(comments.len(), 3);

@@ -302,6 +302,15 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     assert_eq!(answer["claims"][0]["worker"]["state"], "busy");
     assert_eq!(answer["findings"], json!([]), "a fleet at work has no finding");
 
+    // orca has no report of it — a worker in its role loads none of the
+    // user's hooks: one writing to its terminal is at work all the same
+    world.with_orca(|orca| orca["terminals"][0]["agent"] = json!(null));
+    let answer = doctor(&world, &now).ok();
+    assert_eq!(answer["claims"][0]["worker"]["state"], "busy");
+    world.with_orca(|orca| orca["terminals"][0]["lastOutputAt"] = json!((at - 400) * 1000));
+    let answer = doctor(&world, &now).ok();
+    assert_eq!(answer["claims"][0]["worker"], json!({"state": "stopped", "quiet": 400}));
+
     // its worker's terminal is closed under it
     world.with_orca(|orca| orca["terminals"] = json!([]));
     let answer = doctor(&world, &now).ok();

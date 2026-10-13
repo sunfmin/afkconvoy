@@ -111,11 +111,22 @@ fn brief(dir: &Path) -> String {
 
 /// The repos `gh` was asked to clone since the last look.
 /// The settings a start adds the guard with: a hook that runs this binary.
-fn guard_settings() -> String {
-    format!(
-        r#"{{"hooks":{{"PreToolUse":[{{"hooks":[{{"type":"command","command":"{} guard"}}]}}]}}}}"#,
-        env!("CARGO_BIN_EXE_afkconvoy")
-    )
+/// The settings the worker started by `command` was given beside its role's:
+/// the guard before every tool call, and orca told wherever its state changes.
+fn added_settings(command: &str) -> String {
+    let added = command.split(" --settings '").nth(1).unwrap().split('\'').next().unwrap();
+    let settings: Value = serde_json::from_str(added).unwrap();
+    let hooks = |event: &str| settings["hooks"][event][0]["hooks"].clone();
+    let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
+    assert_eq!(hooks("PreToolUse")[0], json!({"type": "command", "command": guard}));
+    for event in ["PreToolUse", "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"] {
+        let told = hooks(event);
+        let report = told.as_array().unwrap().last().unwrap();
+        let line = report["command"].as_str().unwrap();
+        assert!(line.contains("/.orca/agent-hooks/claude-hook.sh"), "{event}: {settings}");
+        assert_eq!(report["timeout"], 10, "{event}: {settings}");
+    }
+    added.to_string()
 }
 
 /// What the guard a worker was started with by `command` answers the Bash
@@ -207,7 +218,7 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
          AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' && \
          {STOCK} --add-dir '{worktree}' --add-dir '{team_dir}' --setting-sources project \
          --settings '{guard}' --model 'opus'",
-        guard = guard_settings(),
+        guard = added_settings(terminals[0]["command"].as_str().unwrap()),
         role = role_dir.display(),
         worktree = dir.display(),
         team_dir = team_dir.display(),
@@ -264,7 +275,7 @@ fn a_dispatch_answers_with_the_stage_and_the_commits_fixed_for_it() {
     let command = open_terminals(&world, &worktree(&world, 7))[0]["command"].clone();
     let command = command.as_str().unwrap();
     // …but never without the guard: the reviewer's repo holds no hook of its own.
-    let guarded = format!("--setting-sources project --settings '{}'", guard_settings());
+    let guarded = format!("--setting-sources project --settings '{}'", added_settings(command));
     assert!(command.ends_with(&guarded), "{command}");
     assert!(command.contains(" AFKCONVOY_STAGE='look' AFKCONVOY_ROLE='reviewer' "), "{command}");
     assert!(command.contains(" AFKCONVOY_WRITES='false' "), "{command}");
@@ -421,6 +432,43 @@ fn stopped(world: &World, since: u64) {
             }
         }
     });
+}
+
+/// orca has no report of the worker: its terminal last wrote at `at`.
+fn wrote(world: &World, at: u64) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["open"] == true && !terminal["command"].is_null() {
+                assert!(terminal["agent"].is_null(), "{terminal}");
+                terminal["lastOutputAt"] = json!(at * 1000);
+            }
+        }
+    });
+}
+
+#[test]
+fn a_worker_orca_has_no_report_of_is_at_work_while_its_terminal_writes_or_it_just_started() {
+    let world = bound();
+    world.issue(7, &["flow:audit"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let dir = worktree(&world, 7);
+    let nudges = || open_terminals(&world, &dir)[0]["sent"].as_array().unwrap().len() - 1;
+
+    // Just started: left alone, whatever its terminal and its worktree show.
+    wrote(&world, 1);
+    assert_eq!(did(&tick(&world, 1060).ok())[0], "advance 7 nothing");
+    assert_eq!(did(&tick(&world, 1299).ok())[0], "advance 7 nothing");
+    // A stage that writes nothing leaves no commit and no file: its
+    // terminal's output within grace is the sign that it is at work.
+    wrote(&world, 1390);
+    assert_eq!(did(&tick(&world, 1400).ok())[0], "advance 7 nothing");
+    assert_eq!(did(&tick(&world, 1689).ok())[0], "advance 7 nothing");
+    assert_eq!(nudges(), 0);
+
+    // Quiet past grace: nudged once, as ever.
+    assert_eq!(did(&tick(&world, 1690).ok())[0], "advance 7 nudged");
+    assert_eq!(did(&tick(&world, 1780).ok())[0], "advance 7 nothing");
+    assert_eq!(nudges(), 1);
 }
 
 #[test]

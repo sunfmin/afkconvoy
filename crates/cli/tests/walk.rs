@@ -171,9 +171,12 @@ fn a_pass_starts_the_next_stage_s_worker_in_the_same_worktree_and_done_ends_the_
     assert_eq!(advance.unwrap()["stage"], "review", "{advanced}");
     assert_eq!(world.claims(), [(7, "alpha".to_string())]);
     assert_eq!(frontier(&world), []);
+    // The worker that declared is ended with its claim, and the worktree
+    // kept for the stage that follows.
     assert_eq!(worktree(&world, 7), dir);
     let started = workers(&world, &dir);
-    assert_eq!(started.len(), 1, "the worker before it is gone: {started:?}");
+    assert_eq!(started.len(), 1, "the new stage's, and no other: {started:?}");
+    assert_eq!(world.open_terminals().len(), 1);
     assert!(started[0].contains(" AFKCONVOY_STAGE='review' AFKCONVOY_ROLE='reviewer' "));
     assert!(dir.join("seven.txt").is_file());
     let told = brief(&dir);
@@ -198,11 +201,50 @@ fn a_pass_starts_the_next_stage_s_worker_in_the_same_worktree_and_done_ends_the_
     declare(&world, 7, "review", "pass", &["--text", "It reads well."]);
     assert_eq!(did(&tick(&world, 1450)), ["advance 7 done"]);
     assert_eq!(world.claims(), []);
+    // Nothing will use its worktree again: it goes, its worker with it. The
+    // branch holds a commit past the base branch, and outlives it.
+    assert_eq!(world.worktrees(), Vec::<PathBuf>::new());
+    assert_eq!(world.open_terminals(), Vec::<String>::new());
+    assert!(!dir.exists());
+    assert!(git(&world.clone, &["branch", "--list", "tester/issue-7*"]).contains("issue-7"));
     assert_eq!(did(&tick(&world, 1540)), [] as [&str; 0]);
     assert_eq!(excluded(&world, 7), "its workflow has ended");
     assert_eq!(world.state(7), "open");
     assert_eq!(world.labels(8), ["ready-for-agent"]);
     assert_eq!(world.comments(8), Vec::<String>::new());
+}
+
+/// A workflow that opens no PR: its one stage's `pass` ends it.
+const TRIAGE: &str = "\
+```yaml
+stages:
+  - name: build
+    by: dev
+    do: implement
+    on: { pass: done }
+```
+";
+
+#[test]
+fn a_workflow_that_ends_with_nothing_on_its_branch_leaves_no_worktree_terminal_or_branch() {
+    let world = bound_to(TRIAGE, 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    let dir = worktree(&world, 7);
+    let branch = git(&dir, &["symbolic-ref", "--short", "HEAD"]);
+    // What its worker left uncommitted is nothing a later stage works from.
+    std::fs::write(dir.join("notes.txt"), "scratch").unwrap();
+    declare(&world, 7, "build", "pass", &["--text", "Answered on the issue."]);
+
+    // The worker sits at its prompt still: the tick that reads its verdict ends it.
+    assert_eq!(workers(&world, &dir).len(), 1);
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    assert_eq!(world.worktrees(), Vec::<PathBuf>::new());
+    assert_eq!(world.open_terminals(), Vec::<String>::new());
+    assert!(!dir.exists());
+    assert_eq!(git(&world.clone, &["branch", "--list", &branch]), "");
+    assert_eq!(world.state(7), "open", "it stays open until somebody closes it");
+    assert_eq!(world.claims(), []);
 }
 
 #[test]
@@ -266,6 +308,8 @@ fn a_commit_left_by_a_stage_marked_as_writing_nothing_escalates_the_issue() {
     assert_eq!(excluded(&world, 8), "its workflow has ended");
     assert_eq!(world.claims(), []);
     assert!(fixed.join("work.txt").is_file(), "the worktree is kept for the human");
+    assert_eq!(workers(&world, &fixed), [] as [&str; 0], "and its worker is ended");
+    assert_eq!(world.open_terminals(), Vec::<String>::new(), "nothing claimed, nothing alive");
     assert!(!world.comments(8).join("\n").contains("left a commit"));
 }
 

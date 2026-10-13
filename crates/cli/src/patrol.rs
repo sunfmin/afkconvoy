@@ -18,7 +18,7 @@ use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use crate::git::REMOTE;
-use crate::orca::{Source, Worktree};
+use crate::orca::{REPORT_HOOK, Source, Worktree};
 use crate::stage::Flows;
 use crate::team::unknown_patrols;
 
@@ -58,8 +58,10 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
 }
 
 /// Runs the patrol `row`, due as the rebuild read it: claims the run, has
-/// orca bring the patrol's checkout to the base branch as it stands, starts a
-/// worker in the patrol's role there, and records the run. `Lost` when a peer
+/// orca cut the patrol a checkout of the base branch as it stands, starts a
+/// worker in the patrol's role there, and records the run. A checkout an
+/// earlier run left — one that failed, or whose end was cut short — is
+/// removed first: a run starts in a new one. `Lost` when a peer
 /// claimed it, or ran it since the rebuild.
 ///
 /// A step that fails is an error with the claim still held and no run
@@ -85,13 +87,10 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let base = fleet.base_tip()?;
     let source = Source::of(&fleet.repo)?;
     let created_as = checkout_name(name);
-    let checkout = match Worktree::named(&source, &created_as)? {
-        Some(kept) => {
-            kept.clear(&base)?;
-            kept
-        }
-        None => Worktree::cut(&source, &created_as, &base, None)?,
-    };
+    if let Some(left) = Worktree::named(&source, &created_as)? {
+        left.remove()?;
+    }
+    let checkout = Worktree::cut(&source, &created_as, &base, None)?;
     checkout.keep_started()?;
 
     let path = checkout.path.display().to_string();
@@ -119,6 +118,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         team_dir: &kept.copy.dir.display().to_string(),
         model: patrol.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
+        report: REPORT_HOOK,
         facts: Facts {
             on: On::Patrol(name),
             role: &role.name,
@@ -132,7 +132,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&in_role(agent.command.as_str(), &start))?;
+    let terminal = checkout.start(&in_role(agent.command.as_str(), &start), me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 
@@ -147,7 +147,10 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
 /// checked for what
 /// a patrol never leaves — a commit, a PR — and unclaimed. A run that left
 /// one has failed: an issue is opened for a human, and no other is touched.
-/// `Nothing` while the worker is still at it.
+/// Its worker is ended with it: the checkout is removed, its terminal with
+/// it — but a failed run's is kept, with only the terminal closed, for the
+/// human its report gives the path to. `Nothing` while the worker is still
+/// at it.
 pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcome> {
     let Some(claim) = &row.claim else { return Ok(Outcome::Nothing) };
     let checkout = match row.standing {
@@ -169,13 +172,17 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
             .collect();
         let reason = broke(checkout.started()?.as_deref(), &checkout.tip()?, &prs);
         // One report stands for a patrol until a human closes it.
-        if let Some(reason) = reason.filter(|_| row.failure.is_none()) {
+        if let Some(reason) = reason.as_ref().filter(|_| row.failure.is_none()) {
             let path = checkout.path.display().to_string();
             fleet.gh.open_issue(
                 &failure_title(&row.name),
-                &failure_report(&row.name, &reason, &me.host, &path),
+                &failure_report(&row.name, reason, &me.host, &path),
                 &[read.kept()?.team.escalate_label.as_str()],
             )?;
+        }
+        match reason {
+            Some(_) => checkout.close_terminals()?,
+            None => checkout.remove()?,
         }
     }
     drop_run(&fleet.repo, &mut fleet.scan, claim)?;

@@ -96,17 +96,19 @@ pub enum JoinRoute {
 }
 
 /// Routes one claim whose PR is open and not on the train, from its worker's
-/// state, its worktree's progress, the nudge this host recorded, and the
-/// restart the PR records. What the worker stopped on — a join conflict it is
+/// state, its worktree's progress, the nudge this host recorded, the restart
+/// the PR records, and when the worker was last handed its work — started,
+/// or restarted. What the worker stopped on — a join conflict it is
 /// resolving, a gate it is fixing — changes nothing: the rungs are the same.
 pub fn join_route(
     state: WorkerState,
     progress: &Progress,
     nudged: Nudged,
     restarted: Option<u64>,
+    handed: Option<u64>,
     now: u64,
 ) -> JoinRoute {
-    match silence(state, progress, nudged, restarted, now) {
+    match silence(state, progress, nudged, handed, now) {
         Silence::Gone => JoinRoute::Continue,
         Silence::Lively => JoinRoute::Leave,
         Silence::Nudge(unnudged) => JoinRoute::Nudge(unnudged),
@@ -224,7 +226,7 @@ mod tests {
     }
 
     fn at(nudged: Nudged, restarted: Option<u64>) -> JoinRoute {
-        join_route(STOPPED, &work(), nudged, restarted, NOW)
+        join_route(STOPPED, &work(), nudged, restarted, restarted, NOW)
     }
 
     #[test]
@@ -249,9 +251,11 @@ mod tests {
     fn a_worker_at_work_is_left_and_one_gone_is_continued_restarted_or_not() {
         for restarted in [None, Some(1)] {
             for nudged in [Nudged::Never, Nudged::At(1)] {
-                let busy = join_route(WorkerState::Busy, &work(), nudged, restarted, NOW);
+                let busy =
+                    join_route(WorkerState::Busy, &work(), nudged, restarted, restarted, NOW);
                 assert_eq!(busy, JoinRoute::Leave);
-                let gone = join_route(WorkerState::Gone, &work(), nudged, restarted, NOW);
+                let gone =
+                    join_route(WorkerState::Gone, &work(), nudged, restarted, restarted, NOW);
                 assert_eq!(gone, JoinRoute::Continue);
             }
         }
