@@ -1,13 +1,135 @@
-//! `scaffold`: the skeleton of a role and of a team are written, created on
-//! GitHub when asked, and accepted by `check` exactly as written.
+//! `scaffold`: the skeleton of a team with its roles, and of one role, are
+//! written, created on GitHub when asked, and accepted by `check` exactly as
+//! written.
 
 mod common;
 
 use common::{World, git};
 use serde_json::{Value, json};
 
+const ROLE_FILES: [&str; 3] =
+    ["CLAUDE.md", ".claude/skills/implement/SKILL.md", ".claude/settings.json"];
+
 #[test]
-fn what_is_scaffolded_and_created_passes_check_unedited() {
+fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
+    let world = World::new();
+    let team = world.root.join("made/hospital");
+    let dir = team.to_str().unwrap();
+    let wrote = world
+        .afk(&[
+            "scaffold",
+            "team",
+            dir,
+            "--role",
+            "fellow",
+            "--role",
+            "attending",
+            "--repo",
+            "acme/hospital",
+        ])
+        .ok();
+    let held = |role: &str| ROLE_FILES.map(|file| format!("roles/{role}/{file}"));
+    let files = [vec!["team.md".to_string(), "workflows/feature.md".to_string()]];
+    let files = [&files[..], &[held("fellow").to_vec(), held("attending").to_vec()]].concat();
+    assert_eq!(
+        wrote,
+        json!({"scaffolded": "team", "dir": team, "repo": "acme/hospital",
+            "files": files.concat(), "team_line": null})
+    );
+    let file = std::fs::read_to_string(team.join("team.md")).unwrap();
+    assert!(file.contains("roles:\n  fellow: ./roles/fellow\n  attending: ./roles/attending\n"));
+    // One repo was created, from the one commit that holds exactly the skeleton.
+    assert_eq!(git(&team, &["status", "--porcelain"]), "");
+    assert_eq!(git(&team, &["rev-list", "--count", "HEAD"]), "1");
+    let created = ["repo", "create", "acme/hospital", "--private", "--source", ".", "--push"];
+    assert_eq!(world.gh_calls(), [created]);
+
+    // As the repo that was created, and as its files in their directory.
+    for from in [&["--team", "acme/hospital"][..], &["--dir", dir, "--team", "acme/hospital"]] {
+        let read = world.afk(&[&["check"], from].concat()).ok();
+        let roles = read["roles"].as_array().unwrap();
+        for (role, name) in roles.iter().zip(["fellow", "attending"]) {
+            assert_eq!(
+                (&role["name"], &role["repo"], &role["path"], &role["skills"], &role["above"]),
+                (
+                    &json!(name),
+                    &json!("acme/hospital"),
+                    &json!(format!("roles/{name}")),
+                    &json!(["implement"]),
+                    &json!([])
+                )
+            );
+        }
+        assert_eq!(roles.len(), 2);
+        // The example workflow asks the first role for the skill its skeleton holds.
+        let feature = &read["workflows"][0];
+        assert_eq!(
+            (&feature["stages"][0]["by"], &feature["stages"][0]["do"]),
+            (&json!("fellow"), &json!("implement"))
+        );
+        assert_eq!(feature["land"], json!({"by": "fellow", "do": "implement"}));
+    }
+    // And the lines the skeleton itself names run on it, as it writes them.
+    for file in ["team.md", "workflows/feature.md"] {
+        let text = std::fs::read_to_string(team.join(file)).unwrap();
+        assert!(text.contains(" --dir . --team acme/hospital"), "{file}: {text}");
+    }
+    let rehearse = ["rehearse", "--dir", ".", "--team", "acme/hospital", "feature", "pass"];
+    assert!(world.afk_in(&team, &rehearse).ok()["ends"].is_object());
+}
+
+#[test]
+fn a_team_names_a_role_written_here_and_one_that_is_elsewhere() {
+    let world = World::new();
+    let team = world.root.join("team");
+    let dir = team.to_str().unwrap();
+    let roles = ["--role", "a", "--role", "b=acme/b", "--role", "c=acme/shared/roles/c"];
+    let wrote = world.afk(&[&["scaffold", "team", dir][..], &roles].concat()).ok();
+    let files: Vec<&str> =
+        wrote["files"].as_array().unwrap().iter().flat_map(Value::as_str).collect();
+    assert_eq!(files[..2], ["team.md", "workflows/feature.md"]);
+    assert!(files[2..].iter().all(|file| file.starts_with("roles/a/")), "{files:?}");
+    assert_eq!(std::fs::read_dir(team.join("roles")).unwrap().count(), 1);
+    let file = std::fs::read_to_string(team.join("team.md")).unwrap();
+    assert!(
+        file.contains("roles:\n  a: ./roles/a\n  b: acme/b\n  c: acme/shared/roles/c\n```"),
+        "{file}"
+    );
+    // No repo was said: the lines it teaches leave the team's to be filled in.
+    assert!(file.contains("afkconvoy check --dir . --team <owner/repo>"), "{file}");
+    assert!(world.gh_calls().is_empty());
+
+    // A team written in a checkout is a directory of that repo, and a role's
+    // path is read from the repo's root.
+    let night = world.clone.join("teams/night");
+    world.afk(&["scaffold", "team", night.to_str().unwrap(), "--role", "a"]).ok();
+    let file = std::fs::read_to_string(night.join("team.md")).unwrap();
+    assert!(file.contains("  a: ./teams/night/roles/a\n"), "{file}");
+    assert!(file.contains("--team <owner/repo>/teams/night"), "{file}");
+    assert!(night.join("roles/a/CLAUDE.md").is_file());
+}
+
+#[test]
+fn a_role_written_in_a_checkout_says_what_to_add_to_the_team_file() {
+    let world = World::new();
+    let wrote = world.afk(&["scaffold", "role", "roles/reviewer"]).ok();
+    let dir = world.clone.join("roles/reviewer");
+    assert_eq!(
+        wrote,
+        json!({"scaffolded": "role", "dir": dir, "repo": null, "files": ROLE_FILES,
+            "team_line": "reviewer: ./roles/reviewer"})
+    );
+    assert!(dir.join("CLAUDE.md").is_file());
+    // Nothing is created on GitHub, and nothing is committed.
+    assert!(world.gh_calls().is_empty());
+    assert_eq!(git(&world.clone, &["status", "--porcelain"]), "?? roles/");
+    // From a directory of the checkout, the path is still the repo's.
+    let wrote = world.afk_in(&world.clone.join("roles"), &["scaffold", "role", "night"]).ok();
+    assert_eq!(wrote["team_line"], "night: ./roles/night");
+}
+
+#[test]
+fn a_role_in_a_repo_of_its_own_is_created_and_a_team_names_it() {
     let world = World::new();
     let (role, team) = (world.root.join("made/dev"), world.root.join("made/team"));
     let (role_dir, team_dir) = (role.to_str().unwrap(), team.to_str().unwrap());
@@ -15,8 +137,8 @@ fn what_is_scaffolded_and_created_passes_check_unedited() {
     let wrote = world.afk(&["scaffold", "role", role_dir, "--repo", "acme/dev"]).ok();
     assert_eq!(
         wrote,
-        json!({"scaffolded": "role", "dir": role, "repo": "acme/dev", "files":
-            ["CLAUDE.md", ".claude/skills/implement/SKILL.md", ".claude/settings.json"]})
+        json!({"scaffolded": "role", "dir": role, "repo": "acme/dev", "files": ROLE_FILES,
+            "team_line": "dev: acme/dev"})
     );
     // A role's hooks are Claude Code's settings, and its skill says what it is.
     let hooks = std::fs::read_to_string(role.join(".claude/settings.json")).unwrap();
@@ -60,6 +182,8 @@ fn without_a_repo_it_only_writes_files_and_never_over_anything() {
     std::fs::create_dir(&dir).unwrap();
     let wrote = world.afk(&["scaffold", "role", at]).ok();
     assert_eq!((&wrote["repo"], &wrote["dir"]), (&Value::Null, &json!(dir)));
+    // In no checkout, nothing says what a team would name it by.
+    assert_eq!(wrote["team_line"], Value::Null);
     assert!(!dir.join(".git").exists());
     assert!(world.gh_calls().is_empty());
     // What is there is left as it is.
@@ -76,11 +200,15 @@ fn a_skeleton_that_cannot_be_asked_for_or_created_is_an_error() {
     let world = World::new();
     let at = |name: &str| world.root.join(name).to_str().unwrap().to_string();
     let error = world.afk(&["scaffold", "team", &at("a")]).error();
-    assert!(error.contains("--role <name>=<owner/repo>"), "{error}");
+    assert!(error.contains("needs --role <name>"), "{error}");
+    let error = world.afk(&["scaffold", "team", &at("a"), "--role", "dev", "--role", "dev=a/b"]);
+    assert!(error.error().contains("names `dev` twice"));
     let error = world.afk(&["scaffold", "role", &at("a"), "--role", "dev=acme/dev"]).error();
     assert!(error.contains("--role is a team's"), "{error}");
     assert!(!world.root.join("a").exists(), "nothing is written for either");
-    for wrong in [&["--role", "dev"][..], &["--repo", "acme"], &["--public"]] {
+    for wrong in
+        [&["--role", "Dev"][..], &["--role", "dev=acme"], &["--repo", "acme"], &["--public"]]
+    {
         let answer = world.afk(&[&["scaffold", "team", &at("a")], wrong].concat());
         assert_eq!(answer.code, 2, "{wrong:?}: {}", answer.json);
     }
