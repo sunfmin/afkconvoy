@@ -44,5 +44,6 @@ pub mod tools;
 pub mod train;
 pub mod transition;
 pub mod verdict;
+pub mod waiting;
 pub mod wake;
 pub mod worker;

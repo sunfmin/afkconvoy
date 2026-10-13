@@ -20,7 +20,8 @@ use crate::claims::{Me, Take, delete, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::judge::{
-    close_claim, escalate_claim, mine, nudge_worker, progress, where_it_stopped, worktree_and_work,
+    BLOCKED_BRIEF, Handed, close_claim, escalate_claim, mine, nudge_worker, progress,
+    where_it_stopped, worktree_and_work,
 };
 use crate::lock::explaining_lock;
 use crate::orca::{Source, Worktree};
@@ -175,6 +176,8 @@ fn ask_after(
             }
             let tail = where_it_stopped(&worktree, &silent);
             let reason = stage_stalled_reason(stage, consult, &silent, &tail);
+            let brief = if consult { "its consult went silent" } else { "its worker went silent" };
+            let reason = Handed::at(Some(stage), brief, reason);
             let (pr, workless) = (pr_of(fleet, issue)?, Workless::of(&progress));
             escalate_claim(fleet, claim, &reason, pr, Some(&worktree), workless.as_ref())?;
             Ok(Outcome::Done)
@@ -213,10 +216,12 @@ pub fn advance(
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(Outcome::Nothing) };
     let called = flows.called(issue, &claim.id)?;
     let said = called.said.as_deref();
+    let stage = called.stage.as_deref();
     let declared = !matches!(called.advance, Advance::AskAfter);
     if declared && let Some(failed) = left_behind(fleet, &claim)? {
         let (worktree, workless) = worktree_and_work(fleet, issue)?;
-        let (reason, pr) = (stated(&failed, said, None), pr_of(fleet, issue)?);
+        let reason = Handed::at(stage, "left a commit it may not", stated(&failed, said, None));
+        let pr = pr_of(fleet, issue)?;
         escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
         return Ok(Outcome::Done);
     }
@@ -250,7 +255,8 @@ pub fn advance(
                 close_claim(fleet, &claim, worktree.as_ref(), &workless)?;
                 return Ok(Outcome::Done);
             }
-            Why::Refuted.reason(said.unwrap_or("(its stage record)"))
+            let reason = Why::Refuted.reason(said.unwrap_or("(its stage record)"));
+            Handed::at(stage, Why::Refuted.brief(), reason)
         }
         Advance::Blocked(named) => match blocked_route(&standings(fleet, issue, &named)?) {
             Blocked::Park(parkable) => {
@@ -264,9 +270,13 @@ pub fn advance(
                 hand_on(fleet, &claim, None, false)?;
                 return Ok(Outcome::HandedOn);
             }
-            Blocked::Escalate(reason) => stated(&reason.to_string(), said, None),
+            Blocked::Escalate(reason) => {
+                Handed::at(stage, BLOCKED_BRIEF, stated(&reason.to_string(), said, None))
+            }
         },
-        Advance::Escalate(reason) => stated(&reason, said, called.rounds.as_deref()),
+        Advance::Escalate(reason) => {
+            Handed::new(&flows.brief(issue), stated(&reason, said, called.rounds.as_deref()))
+        }
     };
     let (worktree, workless) = worktree_and_work(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
@@ -275,13 +285,14 @@ pub fn advance(
 }
 
 /// The tick's step for an unclaimed issue that calls for a human: claim it,
-/// so that one fleet instance says so once, and escalate it for `reason`,
-/// with `rounds` — every round of the rework a breaker stopped, where one did.
+/// so that one fleet instance says so once, and escalate it for `reason` —
+/// `brief`, in a few words — with `rounds`: every round of the rework a
+/// breaker stopped, where one did.
 pub fn hand_to_human(
     fleet: &mut Fleet,
     me: &Me,
     issue: u64,
-    reason: &str,
+    (brief, reason): (&str, &str),
     rounds: Option<&str>,
 ) -> Result<Outcome> {
     if take(&fleet.repo, &mut fleet.scan, me, issue, Take::Fresh)?["won"] != true {
@@ -290,7 +301,7 @@ pub fn hand_to_human(
     let claim = mine(fleet, me, issue)?.ok_or_else(|| anyhow!("issue #{issue}: no claim"))?;
     let (worktree, workless) = worktree_and_work(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
-    let reason = stated(reason, None, rounds);
+    let reason = Handed::new(brief, stated(reason, None, rounds));
     escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
     Ok(Outcome::Done)
 }

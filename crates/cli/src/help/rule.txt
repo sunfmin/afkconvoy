@@ -4,7 +4,11 @@ WHEN TO RUN IT
   issue carries the team's escalate label in place of its flow label, and the comment
   above the label says why. Answer it with the ruling:
 
-      afkconvoy rule --issue 7 --text "Keep the v1 schema; migrate in a later issue."
+      afkconvoy rule 7 --text "Keep the v1 schema; migrate in a later issue."
+
+  The issue's number is an argument, or `--issue 7`: one of the two. The comment of the
+  escalation ends with this line, the number filled in, and `afkconvoy doctor` lists it
+  for every issue that waits (`waiting_on_human`).
 
   The stage the issue stopped at runs again under the ruling, and both rework counts
   start over from it. `afkconvoy show --issue 7` says which stage that is before you

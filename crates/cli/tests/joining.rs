@@ -148,7 +148,11 @@ fn the_loop_says_which_worker_it_restarted_and_which_claim_it_escalated() {
     };
     assert_eq!(run("1390"), ["tick 1: restarted #7 · holding 1/2 · frontier 0 · next in 90s"]);
     tick(&world, 1690);
-    assert_eq!(run("1990"), ["tick 1: escalated #7 · holding 0/2 · frontier 0 · next in 90s"]);
+    assert_eq!(
+        run("1990"),
+        ["tick 1: escalated #7 (its worker went silent joining the train) · holding 0/2 · \
+             frontier 0 · next in 90s"]
+    );
 }
 
 #[test]

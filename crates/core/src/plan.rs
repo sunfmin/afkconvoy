@@ -14,6 +14,7 @@ use crate::patrol::{self, Standing};
 use crate::precedent;
 use crate::role::{Due, flows};
 use crate::team::LAND;
+use crate::waiting::{Waiting, Waits};
 
 /// One open issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +178,11 @@ pub struct WorkingSet {
     pub escalating: Vec<Excluded>,
     /// Every other open issue, with the reason it is not on the frontier.
     pub excluded: Vec<Excluded>,
+    /// Every open issue nobody holds that waits for a human, each with the
+    /// line that answers it, lowest number first: the escalated ones, those
+    /// at a stage that is a human's or past the end of their workflow, and
+    /// the reports of a patrol's failed run.
+    pub waiting_on_human: Vec<Waiting>,
     pub mine: Vec<Mine>,
     /// Claims of peers whose heartbeat is within the lease: never touched.
     pub peer_live: Vec<PeerClaim>,
@@ -307,6 +313,10 @@ pub struct Observed<'a> {
     /// The proposals of precedents (`precedent::Seen`). Nothing in an unbound
     /// repo.
     pub proposals: &'a precedent::Seen,
+    /// The open issues that wait for a human, each with what for
+    /// (`waiting::Waits`) and since when, where GitHub said. The reports of
+    /// a patrol's failed run are not among them: `patrols` names those.
+    pub waiting: &'a [(u64, Waits, Option<u64>)],
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -348,6 +358,31 @@ fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
     }
 }
 
+/// The open issues that wait for a human, lowest number first: those `seen`
+/// names and the report of each failed patrol among `patrols`. An issue a
+/// fleet instance holds waits for nobody yet: its escalation is under way.
+fn waiting(
+    seen: &Observed,
+    issues: &[&Issue],
+    claims: &[&Claim],
+    patrols: &[patrol::Row],
+) -> Vec<Waiting> {
+    let mut rows: Vec<Waiting> = vec![];
+    let failed = patrols.iter().filter_map(|patrol| {
+        Some((patrol.failure?, Waits::PatrolFailed { patrol: patrol.name.clone() }, None))
+    });
+    for (number, waits, since) in seen.waiting.iter().cloned().chain(failed) {
+        let open = issues.iter().find(|issue| issue.number == number);
+        let held = claims.iter().any(|claim| claim.number == number);
+        let listed = rows.iter().any(|row| row.issue == number);
+        if let Some(issue) = open.filter(|_| !held && !listed) {
+            rows.push(Waiting::new(number, &issue.title, waits, since));
+        }
+    }
+    rows.sort_by_key(|row| row.issue);
+    rows
+}
+
 /// Assembles the working set of the fleet instance `me` (`None`: of nobody —
 /// every claim is a peer's).
 pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Config) -> WorkingSet {
@@ -360,6 +395,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         frontier: vec![],
         escalating: vec![],
         excluded: vec![],
+        waiting_on_human: vec![],
         mine: vec![],
         peer_live: vec![],
         stale: vec![],
@@ -376,6 +412,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
     }
     set.proposals = precedent::rows(seen.proposals, me, seen.heartbeats, now, locked);
+    set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols);
     for issue in &issues {
         if config.bound.is_some() && !flows(&issue.labels).is_empty() {
             set.flowing.push((*issue).clone());
@@ -383,7 +420,10 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
         let (number, title) = (issue.number, issue.title.clone());
         let reason = if let Some(bar) = label_bar(&issue.labels, config) {
-            bar.reason()
+            // An escalated issue lost the label that bars it to the escalation.
+            let waits = set.waiting_on_human.iter().find(|waiting| waiting.issue == number);
+            let said = waits.and_then(|waiting| waiting.waits.excluded());
+            said.filter(|_| !matches!(bar, LabelBar::Epic(_))).unwrap_or_else(|| bar.reason())
         } else if claimed {
             "already claimed".to_string()
         } else if config.bound.is_some() {
@@ -555,6 +595,7 @@ mod tests {
             begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
+            waiting: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -570,6 +611,53 @@ mod tests {
                 (5, "has an open linked PR"),
                 (6, "2 open blocker(s)"),
             ]
+        );
+    }
+
+    #[test]
+    fn an_escalated_issue_is_excluded_as_escalated_and_waits_for_a_human() {
+        use crate::waiting::Back;
+        let back = || Back::Ready { ready: "ready-for-agent".into(), escalate: "stuck".into() };
+        let issues = [issue(2, &["bug"]), issue(3, &["stuck"]), issue(4, &["stuck"])];
+        let seen = Observed {
+            issues: &issues,
+            prs: &[],
+            // An escalation still under way: its claim is released last.
+            claims: &[claim(4, "peer")],
+            heartbeats: &[("peer".into(), 1000)],
+            closed: &[],
+            joined: &[],
+            landed: &[],
+            due: &[],
+            landing: &[],
+            begun: &[],
+            patrols: &[],
+            proposals: &precedent::Seen::default(),
+            waiting: &[
+                (4, Waits::Escalated(back()), Some(900)),
+                (3, Waits::Escalated(back()), Some(400)),
+                // One that closed since it was read.
+                (9, Waits::Ended, None),
+            ],
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &config(3));
+        let reasons: Vec<(u64, &str)> =
+            set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
+        assert_eq!(
+            reasons,
+            [
+                (2, "no ready-for-agent label"),
+                (3, "escalated: waits for the ready label"),
+                (4, "no ready-for-agent label"),
+            ]
+        );
+        let waiting = &set.waiting_on_human;
+        assert_eq!(waiting.len(), 1, "{waiting:?}");
+        assert_eq!((waiting[0].issue, waiting[0].since), (3, Some(400)));
+        assert_eq!(waiting[0].title, "issue 3");
+        assert_eq!(
+            waiting[0].answer,
+            "gh issue edit 3 --add-label ready-for-agent --remove-label stuck"
         );
     }
 
@@ -598,6 +686,7 @@ mod tests {
             begun: &[],
             patrols: &[],
             proposals: &none,
+            waiting: &[],
         };
         let claims = [claim(5, "me"), claim(6, "me")];
         let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
@@ -668,6 +757,7 @@ mod tests {
             begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
+            waiting: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -772,6 +862,7 @@ mod tests {
             begun: &[5, 6, 7, 8, 9, 10, 11, 12],
             patrols: &[],
             proposals: &precedent::Seen::default(),
+            waiting: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -846,6 +937,7 @@ mod tests {
             begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
+            waiting: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -895,6 +987,7 @@ mod tests {
             begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
+            waiting: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -935,6 +1028,7 @@ mod tests {
             begun: &[],
             patrols: &[],
             proposals: &precedent::Seen::default(),
+            waiting: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -968,6 +1062,7 @@ mod tests {
                     begun: &[],
                     patrols: &[],
                     proposals: &precedent::Seen::default(),
+                    waiting: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };

@@ -83,6 +83,17 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// The reason in the few words a tick's line has room for.
+    pub fn brief(self) -> String {
+        match self {
+            Reason::Verdict => "declared escalate, and names no consult".to_string(),
+            Reason::Consult => "consult let it through".to_string(),
+            Reason::NoValidVerdict => "no valid verdict".to_string(),
+            Reason::Breaker(breaker) => format!("breaker {} tripped", breaker.key()),
+            Reason::WorkflowChanged => "its workflow changed under it".to_string(),
+        }
+    }
+
     /// The reason as a human is told it, of an issue escalated at `stage`.
     pub fn said(self, stage: &Stage) -> String {
         let name = &stage.name;

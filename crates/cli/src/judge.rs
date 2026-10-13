@@ -8,7 +8,8 @@ use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
-use afkconvoy_core::role::flows;
+use afkconvoy_core::role::{flows, followed};
+use afkconvoy_core::stage_record::stage_records;
 use afkconvoy_core::stopped::{
     NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
     settled_by_state, stalled_reason, standing_verdict,
@@ -19,10 +20,11 @@ use afkconvoy_core::transition::{
     CloseStep, EscalateStep, Escalation, Relabel, Released, escalation_begun, escalation_comment,
 };
 use afkconvoy_core::verdict::{Verdict, latest_verdict};
+use afkconvoy_core::waiting::{Back, Waits, back};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::board::last_word;
+use crate::board::{escalated, last_word};
 use crate::claims::{Me, delete};
 use crate::copies::Copies;
 use crate::dispatch::{Agent, StartFrom, dispatch};
@@ -91,17 +93,43 @@ pub fn escalate(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
     let (worktree, workless) = worktree_and_work(fleet, issue)?;
     let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
-    escalate_claim(fleet, &claim, reason, pr, worktree.as_ref(), workless.as_ref())?;
+    let why = Handed { brief: "by hand".to_string(), reason: reason.to_string() };
+    escalate_claim(fleet, &claim, &why, pr, worktree.as_ref(), workless.as_ref())?;
     Ok(json!({"issue": issue, "action": "escalated", "released": true,
         "worktree": if workless.is_some() { "removed" } else { "kept" }}))
 }
 
-/// Escalates `claim`. `pr` is the issue's open PR, when it has one: the
-/// status board keeps how far the claim got.
+/// Why a claim is escalated, said twice.
+pub(crate) struct Handed {
+    /// In the few words a tick's line has room for.
+    pub brief: String,
+    /// As the comment on the issue opens.
+    pub reason: String,
+}
+
+impl Handed {
+    pub(crate) fn new(brief: &str, reason: String) -> Handed {
+        Handed { brief: brief.to_string(), reason }
+    }
+
+    /// The same of a claim at the stage `stage`, which the brief opens with.
+    pub(crate) fn at(stage: Option<&str>, brief: &str, reason: String) -> Handed {
+        match stage {
+            Some(stage) => Handed { brief: format!("{stage}: {brief}"), reason },
+            None => Handed::new(brief, reason),
+        }
+    }
+}
+
+/// Escalates `claim`, for `why`. `pr` is the issue's open PR, when it has
+/// one: the status board keeps how far the claim got. The comment and the
+/// status board end with the lines that answer the escalation
+/// (`waiting::Waits::answer_lines`), and the fleet's view notes it, for the
+/// tick's line.
 pub(crate) fn escalate_claim(
     fleet: &mut Fleet,
     claim: &Claim,
-    reason: &str,
+    why: &Handed,
     pr: Option<u64>,
     worktree: Option<&Worktree>,
     workless: Option<&Workless>,
@@ -109,23 +137,40 @@ pub(crate) fn escalate_claim(
     let issue = claim.number;
     let labels = fleet.gh.issue(issue)?.labels;
     let comments = fleet.gh.comments(issue)?;
-    let said = escalation_begun(comments.iter().map(|c| c.body.as_str()), &claim.id);
+    let bodies = || comments.iter().map(|c| c.body.as_str());
+    let said = escalation_begun(bodies(), &claim.id);
     // A bound repo's escalate label is its team's to name.
-    let team_label = match &fleet.config.bound {
-        Some(bound) => Some(keep(&fleet.gh, &Copies::here()?, &bound.team)?.team.escalate_label),
+    let kept = match &fleet.config.bound {
+        Some(bound) => Some(keep(&fleet.gh, &Copies::here()?, &bound.team)?),
         None => None,
     };
+    let team_label = kept.as_ref().map(|kept| kept.team.escalate_label.clone());
     let swap = Relabel::of(&labels, &fleet.config, team_label.as_deref());
     // The one workflow a bound repo's issue follows: a ruling puts its label back.
     let flow = match flows(&labels).as_slice() {
         [flow] if team_label.is_some() => Some(flow.to_string()),
         _ => None,
     };
+    let back = match &kept {
+        Some(kept) => {
+            // An escalation cut short after its relabel reads the workflow
+            // off what it left, as a ruling does.
+            let workflow = followed(&kept.team, &labels, bodies()).ok();
+            let records: Vec<_> = stage_records(bodies()).into_iter().map(|(_, r)| r).collect();
+            back(workflow, &records, &kept.team.escalate_label)
+        }
+        None => Back::Ready {
+            ready: fleet.config.ready_label.clone(),
+            escalate: fleet.config.escalate_label.clone(),
+        },
+    };
+    let answer = Waits::Escalated(back).answer_lines(issue);
     let begun = Escalation::read(said, swap.done());
-    transition::escalate(issue, begun, workless, |step| {
+    let released = transition::escalate(issue, begun, workless, |step| {
         match step {
             EscalateStep::Comment => {
-                fleet.gh.comment(issue, &escalation_comment(&claim.id, flow.as_deref(), reason))?
+                let reason = format!("{}\n\n{answer}", why.reason.trim());
+                fleet.gh.comment(issue, &escalation_comment(&claim.id, flow.as_deref(), &reason))?
             }
             EscalateStep::Relabel => {
                 if let Some(label) = &swap.add {
@@ -135,7 +180,7 @@ pub(crate) fn escalate_claim(
                     fleet.gh.remove_label(issue, label)?;
                 }
             }
-            EscalateStep::Board => last_word(fleet, claim, Stage::Escalated, pr, &[])?,
+            EscalateStep::Board => escalated(fleet, claim, pr, &answer)?,
             EscalateStep::Release => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
@@ -150,8 +195,10 @@ pub(crate) fn escalate_claim(
                 }
             }
         }
-        Ok(())
-    })
+        Ok::<(), anyhow::Error>(())
+    })?;
+    fleet.escalated.push((issue, why.brief.clone()));
+    Ok(released)
 }
 
 /// `afkconvoy close`: close one of my claims whose issue needed no change —
@@ -197,6 +244,9 @@ pub(crate) fn close_claim(
         Ok(())
     })
 }
+
+/// A `blocked` no park answers, in the few words a tick's line has room for.
+pub(crate) const BLOCKED_BRIEF: &str = "blocked by what the fleet does not work";
 
 /// A stopped worker of mine with no PR, and what was gathered to route it.
 struct Stopped {
@@ -345,13 +395,19 @@ pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
                     }
                     return Ok(Outcome::Continued);
                 }
-                Blocked::Escalate(reason) => {
-                    format!("{reason}: {}", said.unwrap_or("(its comment)"))
-                }
+                Blocked::Escalate(reason) => Handed::new(
+                    BLOCKED_BRIEF,
+                    format!("{reason}: {}", said.unwrap_or("(its comment)")),
+                ),
             }
         }
-        Route::Escalate(why) => why.reason(said.unwrap_or("(its comment)")),
-        Route::Stalled(silent) => stalled_reason(&silent, &where_it_stopped(&worktree, &silent)),
+        Route::Escalate(why) => {
+            Handed::new(why.brief(), why.reason(said.unwrap_or("(its comment)")))
+        }
+        Route::Stalled(silent) => Handed::new(
+            "its worker went silent",
+            stalled_reason(&silent, &where_it_stopped(&worktree, &silent)),
+        ),
     };
     // A claim the tick judges has no PR.
     escalate_claim(fleet, &claim, &reason, None, Some(&worktree), workless.as_ref())?;
