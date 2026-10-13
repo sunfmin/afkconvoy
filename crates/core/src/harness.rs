@@ -192,8 +192,9 @@ impl Harness {
     /// for it in `kept` (`models` reads it). `None`: it has no way to say.
     pub fn models_question(self, command: &str, kept: &str) -> Option<String> {
         match self {
-            Harness::ClaudeCode | Harness::Codex => None,
+            Harness::ClaudeCode => None,
             Harness::Pi => Some(pi::models_question(command, kept)),
+            Harness::Codex => Some(codex::models_question(command, kept)),
         }
     }
 
@@ -202,8 +203,9 @@ impl Harness {
     /// passed as written.
     pub fn models(self, answer: &str) -> Option<Vec<String>> {
         match self {
-            Harness::ClaudeCode | Harness::Codex => None,
+            Harness::ClaudeCode => None,
             Harness::Pi => pi::models(answer),
+            Harness::Codex => codex::models(answer),
         }
     }
 
@@ -212,8 +214,9 @@ impl Harness {
     /// way to say knows whatever it is given.
     pub fn knows(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode | Harness::Codex => true,
+            Harness::ClaudeCode => true,
             Harness::Pi => pi::knows(listed, model),
+            Harness::Codex => codex::knows(listed, model),
         }
     }
 
@@ -221,8 +224,10 @@ impl Harness {
     /// harness's name for a model would be taken for.
     pub fn names(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode | Harness::Codex => false,
+            Harness::ClaudeCode => false,
             Harness::Pi => pi::names(listed, model),
+            // Codex knows a model by its whole name and no other way.
+            Harness::Codex => codex::knows(listed, model),
         }
     }
 
