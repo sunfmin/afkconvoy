@@ -547,23 +547,55 @@ fn the_readme_says_how_a_repo_is_bound_and_how_a_role_gets_its_skills() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 44, "{short}");
+    assert!(short.lines().count() <= 45, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
+/// The skill file is one file: `skill` prints it, and `npx skills add` installs
+/// it. It says when to reach for afkconvoy and sends its reader to `--help`.
 #[test]
-fn the_skill_points_at_the_help_and_restates_none_of_it() {
-    let body = SKILL.splitn(3, "---\n").nth(2).unwrap();
+fn skill_prints_the_skill_file_which_names_no_command_but_the_help() {
+    assert_eq!(asked(&["skill"]), SKILL);
+    // The frontmatter a Claude Code skill needs.
     assert!(SKILL.starts_with("---\nname: afkconvoy\ndescription: "));
+    let mut parts = SKILL.splitn(3, "---\n").skip(1);
+    let (front, body) = (parts.next().unwrap(), parts.next().unwrap());
+    assert_eq!(front.lines().count(), 2, "{front}");
+    for when in ["GitHub issues", "unattended", "a team of roles", "waits for a human"] {
+        assert!(front.contains(when), "the description lost {when:?}");
+    }
+    // What it catches: a command that is not the help.
+    let run = |text: &'static str| text.split("afkconvoy ").skip(1).collect::<Vec<_>>();
+    assert_eq!(
+        run("`afkconvoy --help`, then `afkconvoy doctor`: x"),
+        ["--help`, then `", "doctor`: x"]
+    );
     assert!(body.contains("`afkconvoy --help`"));
-    assert!(body.contains("`afkconvoy flows`"), "it sends whoever opens issues to `flows`");
-    assert!(body.contains("`afkconvoy doctor`"), "it sends whoever asks what is wrong to `doctor`");
+    for named in SKILL.split("afkconvoy ").skip(1) {
+        assert!(named.starts_with("--help`"), "the skill names a command: afkconvoy {named}");
+    }
     let long = help("--help");
     for line in guide(&long).lines().map(str::trim).filter(|line| line.len() > 20) {
-        assert!(!body.contains(line), "the skill restates the help: {line}");
+        assert!(!SKILL.contains(line), "the skill restates the help: {line}");
     }
-    assert!(body.lines().filter(|line| !line.trim().is_empty()).count() <= 4, "{body}");
+    assert!(SKILL.lines().count() <= 10, "{SKILL}");
     assert!(README.contains("npx skills add sunfmin/afkconvoy"));
+    assert!(README.contains("afkconvoy skill > "));
+}
+
+#[test]
+fn the_help_says_skill_prints_text_and_its_own_where_to_put_the_file() {
+    let long = help("--help");
+    let answers = between(guide(&long), "WHAT A COMMAND ANSWERS", "THE COMMANDS").join(" ");
+    assert!(answers.contains("`skill` the text of a file"), "{answers}");
+    assert_eq!(group(guide(&long), "  Whoever sets an agent up"), ["skill"]);
+    let own = asked(&["skill", "--help"]);
+    assert!(own.lines().next().unwrap().ends_with("text, not JSON"));
+    let when = section(&own, "WHEN TO RUN IT");
+    let (user, project) = when.split_once("for a project").expect("both places");
+    assert!(user.contains("for a user") && user.contains(" > ~/.claude/skills/afkconvoy/SKILL.md"));
+    assert!(project.contains(" > .claude/skills/afkconvoy/SKILL.md"), "{project}");
+    assert!(section(&own, "WHAT IT ANSWERS").contains("no JSON object"));
 }
 
 /// What a subcommand's `--help` says under each of these, in this order.
@@ -627,8 +659,12 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let hands = group(guide, "  Whoever hands the fleet work");
     assert_eq!(hands, ["flows"]);
     assert!(who("flows").trim_start().starts_with("Whoever hands the fleet work: "));
+    // Nor is giving an agent of one's own the skill file.
+    let sets_up = group(guide, "  Whoever sets an agent up");
+    assert_eq!(sets_up, ["skill"]);
+    assert!(who("skill").trim_start().starts_with("Whoever sets an agent up: "));
     let operated = |command: &&str| {
-        !workers.contains(command) && !hooks.contains(command) && !hands.contains(command)
+        ![&workers, &hooks, &hands, &sets_up].iter().any(|group| group.contains(command))
     };
     for command in listed(&help("-h")).into_iter().filter(operated) {
         assert!(who(command).trim_start().starts_with("The operator, "), "{command}");

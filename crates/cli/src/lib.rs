@@ -77,6 +77,10 @@ use tick::Pacing;
 /// `build.rs`.
 pub const VERSION: &str = env!("AFKCONVOY_VERSION");
 
+/// The skill file `skill` prints, and the one `npx skills add` installs: a
+/// user's own agent learns from it that afkconvoy is there.
+const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
+
 /// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
 /// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
 /// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
@@ -130,6 +134,9 @@ enum Command {
     /// Say how to open an issue the fleet will work, and create the labels that takes
     #[command(after_long_help = include_str!("help/flows.txt"))]
     Flows,
+    /// Print the skill file that sends an agent of your own to `--help`: text, not JSON
+    #[command(after_long_help = include_str!("help/skill.txt"))]
+    Skill,
     /// Draw a team's workflows as graphs, or say where one issue is in its workflow
     #[command(after_long_help = include_str!("help/show.txt"))]
     Show {
@@ -680,7 +687,7 @@ impl AgentArgs {
 /// Runs one command line. Prints exactly one JSON object on stdout: the
 /// command's answer, or `{"error": …}` with a non-zero exit — `doctor` exits
 /// non-zero with its answer, when that holds a critical finding. An answer that
-/// is text — a drawing — is printed as it is. `guard` answers the
+/// is text — a drawing, the skill file — is printed as it is. `guard` answers the
 /// harness that asks it, in that harness's way: for Claude Code, a hook's,
 /// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
@@ -748,6 +755,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             scaffold::scaffold(what, &dir, &role, create.as_ref())
         }
         Command::Flows => flows::flows(&Repo::here()?),
+        Command::Skill => Ok(Value::String(SKILL.to_string())),
         Command::Show { workflow, issue, team } => {
             let loaded = team::load(team.from())?;
             // A workflow is not named by a number: one given is an issue's.
