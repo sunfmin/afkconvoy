@@ -44,6 +44,17 @@ pub fn yaml_block(markdown: &str) -> Option<String> {
     None
 }
 
+/// What a markdown text says above its first ```` ```yaml ```` block, with no
+/// space around it; nothing where it has no such block.
+pub fn prose(markdown: &str) -> String {
+    let above: Vec<&str> =
+        markdown.lines().take_while(|line| line.trim_end() != "```yaml").collect();
+    if above.len() == markdown.lines().count() {
+        return String::new();
+    }
+    above.join("\n").trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +69,15 @@ mod tests {
         let config = parse(text).unwrap();
         assert_eq!(config.base_branch, "main");
         assert_eq!(config.gate_command, "make");
+    }
+
+    #[test]
+    fn the_prose_is_what_stands_above_the_yaml_block() {
+        let text = "\n# Fix\n\nFor a defect.\n\n```yaml\nstages: []\n```\nnot this\n";
+        assert_eq!(prose(text), "# Fix\n\nFor a defect.");
+        assert_eq!(prose("```yaml\nstages: []\n```\nafter\n"), "");
+        assert_eq!(prose("  \n```yaml\n```\n"), "");
+        assert_eq!(prose("no block here\n"), "", "a file with no block says nothing");
     }
 
     #[test]

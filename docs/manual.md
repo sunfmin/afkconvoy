@@ -414,10 +414,9 @@ patrols: [triage, rounds]
 ```sh
 afkconvoy check                                   # the team, as this repo names it
 orca repo add --path "$(pwd)"                     # once per checkout: orca must know it
-gh label create flow:fix && gh label create flow:chore   # once per repo
 ```
 
-The last two are easy to miss, and the fleet does not yet do or check either for you ([#119](https://github.com/sunfmin/afkconvoy/issues/119), [#118](https://github.com/sunfmin/afkconvoy/issues/118)).
+The second is easy to miss, and the fleet does not yet do or check it for you ([#119](https://github.com/sunfmin/afkconvoy/issues/119)).
 
 ### Step 6. Open issues
 
@@ -429,8 +428,11 @@ The demo project is a small Go package that reads a prescription's interval: `Pa
 | 2 | README: list the interval forms | no label | left for the triage patrol to route |
 | 3 | Read `"prn"` prescriptions | the label `flow:fix` | says outright that one answer is "not decided" |
 
+`afkconvoy flows` is what to ask before opening the first one. It answers, for each workflow of the team, what it is for — the prose of its file above the yaml — the stage an issue enters at, and the line that opens an issue into it; and it creates each flow label the repo lacks, which `gh issue create --label` would otherwise refuse:
+
 ```sh
-gh issue create --title 'DosesPerDay panics on "q0h"' --body-file i1.md --label flow:fix
+afkconvoy flows          # once per repo, and again when the team gains a workflow
+gh issue create --label 'flow:fix' --title 'DosesPerDay panics on "q0h"' --body-file i1.md
 ```
 
 ```sh
@@ -700,6 +702,8 @@ precedents: { by: <role>, do: <skill>, max_open: 10 }    # optional
 
 ### A workflow — `workflows/<name>.md`
 
+Write above the yaml what the workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
+
 ```yaml
 max_rework: 3                      # default
 max_consecutive_rework: 2          # default
@@ -772,7 +776,7 @@ and the lines `run` printed: a step that failed is reported there and nowhere el
 
 | What you see | Why | What to do |
 |---|---|---|
-| `could not add label: 'flow:fix' not found` | nothing has created the flow label on this repo yet | `gh label create flow:fix` — once per workflow per repo ([#118](https://github.com/sunfmin/afkconvoy/issues/118)) |
+| `could not add label: 'flow:fix' not found` | nothing has created the flow label on this repo yet | `afkconvoy flows` — it creates every flow label the repo lacks |
 | `FAILED dispatch #1: orca knows no repo at …` | orca has never been told of this checkout | `orca repo add --path <the checkout>`; the next tick recovers by itself ([#119](https://github.com/sunfmin/afkconvoy/issues/119)) |
 | An issue is not being worked | it is under `excluded` in `plan`, with the reason: no flow label, an epic label, an open blocker, a fleet lock, held by another instance | remove the cause the reason names |
 | `holding 3/3`, a frontier that is not empty, and nothing happening | every slot is taken — a patrol's run holds one for about five minutes after its worker is done ([#122](https://github.com/sunfmin/afkconvoy/issues/122)) | raise `concurrency`, or give patrols a longer `every` |

@@ -164,7 +164,7 @@ fn the_readme_says_how_a_repo_is_bound_and_how_a_role_gets_its_skills() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 41, "{short}");
+    assert!(short.lines().count() <= 42, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -173,6 +173,7 @@ fn the_skill_points_at_the_help_and_restates_none_of_it() {
     let body = SKILL.splitn(3, "---\n").nth(2).unwrap();
     assert!(SKILL.starts_with("---\nname: afkconvoy\ndescription: "));
     assert!(body.contains("`afkconvoy --help`"));
+    assert!(body.contains("`afkconvoy flows`"), "it sends whoever opens issues to `flows`");
     let long = help("--help");
     for line in guide(&long).lines().map(str::trim).filter(|line| line.len() > 20) {
         assert!(!body.contains(line), "the skill restates the help: {line}");
@@ -238,7 +239,13 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let hooks = group(guide, "  A worker's hook");
     assert_eq!(hooks, ["guard"]);
     assert!(who("guard").trim_start().starts_with("Claude Code, as a hook"));
-    let operated = |command: &&str| !workers.contains(command) && !hooks.contains(command);
+    // Nor is opening issues the operator's: whoever has work for the fleet does.
+    let hands = group(guide, "  Whoever hands the fleet work");
+    assert_eq!(hands, ["flows"]);
+    assert!(who("flows").trim_start().starts_with("Whoever hands the fleet work: "));
+    let operated = |command: &&str| {
+        !workers.contains(command) && !hooks.contains(command) && !hands.contains(command)
+    };
     for command in listed(&help("-h")).into_iter().filter(operated) {
         assert!(who(command).trim_start().starts_with("The operator, "), "{command}");
     }
@@ -293,6 +300,7 @@ fn a_help_names_every_key_its_command_answers_with() {
     check(&["check", "--team", "acme/team"], &["workflows"]);
     check(&["rehearse", "--team", "acme/team", "note", "pass"], &["steps"]);
     check(&["scaffold", "role", world.root.join("role").to_str().unwrap()], &["scaffolded"]);
+    check(&["flows"], &["ready_label"]);
     check(&["plan"], &["frontier"]);
     check(&["scan"], &["claims"]);
     check(&["takeover", "--list"], &["instances"]);

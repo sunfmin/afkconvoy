@@ -25,6 +25,7 @@ pub mod config;
 pub mod copies;
 pub mod dispatch;
 pub mod fleet;
+pub mod flows;
 pub mod gate;
 pub mod gh;
 pub mod git;
@@ -109,6 +110,9 @@ enum Command {
         #[arg(long, requires = "repo")]
         public: bool,
     },
+    /// Say how to open an issue the fleet will work, and create the labels that takes
+    #[command(after_long_help = include_str!("help/flows.txt"))]
+    Flows,
     /// Draw a team's workflows as graphs, or say where one issue is in its workflow
     #[command(after_long_help = include_str!("help/show.txt"))]
     Show {
@@ -610,6 +614,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let create = repo.map(|repo| scaffold::Create { repo, public });
             scaffold::scaffold(what, &dir, role.as_ref(), create.as_ref())
         }
+        Command::Flows => flows::flows(&Repo::here()?),
         Command::Show { workflow, issue, team } => {
             let loaded = team::load(team.from())?;
             match issue {

@@ -172,14 +172,15 @@ impl Tree {
         }
     }
 
-    /// The definition file at `path`: the first yaml block of its markdown.
+    /// The definition file at `path`: the first yaml block of its markdown,
+    /// and the prose above it.
     fn file(&self, path: &str) -> File {
-        let yaml = match self.read(path) {
-            Ok(Some(markdown)) => yaml(&markdown),
-            Ok(None) => Err("is not there, or is no file".to_string()),
-            Err(error) => Err(format!("{error:#}")),
+        let (prose, yaml) = match self.read(path) {
+            Ok(Some(markdown)) => (config::prose(&markdown), yaml(&markdown)),
+            Ok(None) => (String::new(), Err("is not there, or is no file".to_string())),
+            Err(error) => (String::new(), Err(format!("{error:#}"))),
         };
-        File { path: path.to_string(), yaml }
+        File { path: path.to_string(), prose, yaml }
     }
 }
 
@@ -203,9 +204,18 @@ pub struct Loaded {
 }
 
 /// Reads the team `from` names and every role's repo, and loads it → what was
-/// read. A team with a fault fails with `Refused`.
+/// read, with a warning for each workflow whose file says nothing of what it
+/// is for. A team with a fault fails with `Refused`.
 pub fn check(from: From) -> Result<Value> {
-    Ok(answer(&load(from)?))
+    let loaded = load(from)?;
+    for workflow in loaded.team.workflows.iter().filter(|w| w.description.is_empty()) {
+        eprintln!(
+            "warning: {WORKFLOWS}/{}.md says nothing of what the workflow is for: whoever hands \
+             the fleet work reads the prose above its yaml block, in `afkconvoy flows`",
+            workflow.name
+        );
+    }
+    Ok(answer(&loaded))
 }
 
 /// Reads the team `from` names and every role's repo, and loads it. A team

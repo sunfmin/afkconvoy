@@ -418,7 +418,11 @@ land: { by: boss, do: implement }
 ";
 
     fn file(path: &str, yaml: &str) -> File {
-        File { path: path.to_string(), yaml: serde_yaml::from_str(yaml).map_err(|e| e.to_string()) }
+        File {
+            path: path.to_string(),
+            prose: String::new(),
+            yaml: serde_yaml::from_str(yaml).map_err(|e| e.to_string()),
+        }
     }
 
     fn team() -> Team {

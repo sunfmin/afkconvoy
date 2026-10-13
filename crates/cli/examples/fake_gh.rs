@@ -2,7 +2,7 @@
 //! as one JSON file (`CONVOY_FAKE_GH`), the code in the bare repo it names.
 //!
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?,
-//! blocked_by?, id?}], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
+//! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url}]}, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail. `repos` {owner/repo: the git repo that
 //! stands in for it}: the other repos GitHub holds, which `repo clone` clones and
@@ -13,7 +13,7 @@
 
 mod fake;
 
-use afkconvoy::gh::{BLOCKED_BY_JQ, COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, PR_FIELDS};
+use afkconvoy::gh::{BLOCKED_BY_JQ, COMMENTS_JQ, ISSUE_JQ, ISSUES_JQ, LABELS_JQ, PR_FIELDS};
 use fake::State;
 use serde_json::{Value, json};
 
@@ -49,6 +49,7 @@ fn main() {
             st.finish(&head, 0, "")
         }
         ["api", ..] => api(&mut st),
+        ["issue", "create", ..] => issue_create(&mut st),
         ["repo", "clone", repo, into, "--", flags @ ..] => {
             let Some(from) = st.doc["repos"][*repo].as_str() else {
                 st.finish(
@@ -194,6 +195,36 @@ fn pr_close(st: &mut State, number: &str) -> ! {
     st.finish("", 0, "")
 }
 
+/// The labels the repo has: those under `labels`, and — GitHub creating a
+/// label the API puts on an issue — every one an issue carries.
+fn repo_labels(st: &State) -> Vec<String> {
+    let made = st.doc["labels"].as_array().into_iter().flatten();
+    let issues = st.doc["issues"].as_array().into_iter().flatten();
+    let carried = issues.flat_map(|issue| issue["labels"].as_array().into_iter().flatten());
+    let mut names: Vec<String> = vec![];
+    for name in made.chain(carried).filter_map(Value::as_str) {
+        if !names.iter().any(|had| had.eq_ignore_ascii_case(name)) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// `gh issue create`: unlike the API, it refuses a label the repo lacks.
+fn issue_create(st: &mut State) -> ! {
+    let title = st.opt("--title").expect("an issue has a title").to_string();
+    let labels = st.opts("--label");
+    let has = repo_labels(st);
+    if let Some(lacked) = labels.iter().find(|label| !has.iter().any(|had| had == *label)) {
+        st.finish("", 1, &format!("could not add label: '{lacked}' not found\n"))
+    }
+    let rows = st.doc["issues"].as_array().unwrap();
+    let number = rows.iter().filter_map(|row| row["number"].as_u64()).max().unwrap_or(0) + 1;
+    let issue = json!({"number": number, "title": title, "labels": labels, "state": "open"});
+    st.doc["issues"].as_array_mut().unwrap().push(issue);
+    st.finish(&format!("https://gh/issues/{number}"), 0, "")
+}
+
 fn api(st: &mut State) -> ! {
     let Some(endpoint) = st.argv.iter().find_map(|a| a.strip_prefix(REPO)).map(str::to_string)
     else {
@@ -207,6 +238,20 @@ fn api(st: &mut State) -> ! {
     let jq = st.opt("--jq").map(str::to_string);
     let jq = jq.as_deref();
     match parts.as_slice() {
+        ["labels"] if method == "POST" => {
+            let name = st.argv.iter().find_map(|a| a.strip_prefix("name=")).expect("a name");
+            let name = name.to_string();
+            if repo_labels(st).iter().any(|had| had.eq_ignore_ascii_case(&name)) {
+                st.finish("", 1, "gh: Validation Failed (HTTP 422)\n")
+            }
+            st.list("labels").push(json!(name));
+            st.finish("", 0, "")
+        }
+        ["labels"] => {
+            assert_eq!(jq, Some(LABELS_JQ), "fake gh: unsupported jq");
+            assert!(st.has("--paginate"), "{:?}", st.argv);
+            st.finish(&repo_labels(st).join("\n"), 0, "")
+        }
         ["issues"] if method == "POST" => {
             let field = |name: &str| {
                 let prefix = format!("{name}=");

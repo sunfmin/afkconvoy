@@ -248,6 +248,7 @@ fn verdicts() -> impl Strategy<Value = Vec<Step>> {
 fn team_of(definition: &Definition) -> Result<Team, Vec<Fault>> {
     let file = |path: &str, yaml: &str| File {
         path: path.to_string(),
+        prose: String::new(),
         yaml: serde_yaml::from_str(yaml).map_err(|error| error.to_string()),
     };
     let repo = |name: &str, skills: &[&str]| {
