@@ -38,7 +38,8 @@ stages:
 ```
 ";
 const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
-const STOCK: &str = "claude --dangerously-skip-permissions";
+/// Claude Code's stock command: unattended, and its warning answered.
+const STOCK: &str = r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}'"#;
 
 /// A world whose repo is bound to a team of two roles and two workflows.
 fn bound() -> World {
@@ -115,7 +116,8 @@ fn brief(dir: &Path) -> String {
 /// the guard before every tool call, orca told wherever its state changes, and
 /// the warning Claude Code would stop at answered.
 fn added_settings(command: &str) -> String {
-    let added = command.split(" --settings '").nth(1).unwrap().split('\'').next().unwrap();
+    // The last `--settings` is the one Claude Code takes: the fleet's.
+    let added = command.rsplit(" --settings '").next().unwrap().split('\'').next().unwrap();
     let settings: Value = serde_json::from_str(added).unwrap();
     let hooks = |event: &str| settings["hooks"][event][0]["hooks"].clone();
     let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
@@ -140,7 +142,7 @@ fn guarded(command: &str, line: &str) -> (i32, String) {
     use std::process::{Command, Stdio};
     let mut steps = command.split(" && ");
     let (enter, facts, start) = (steps.next().unwrap(), steps.next().unwrap(), steps.next());
-    let settings = start.unwrap().split(" --settings '").nth(1).unwrap();
+    let settings = start.unwrap().rsplit(" --settings '").next().unwrap();
     let settings: Value = serde_json::from_str(settings.split('\'').next().unwrap()).unwrap();
     let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(hooks.len(), 1, "{settings}");

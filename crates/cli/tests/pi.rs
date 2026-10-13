@@ -154,7 +154,11 @@ fn a_stage_and_a_patrol_name_pi_and_pi_has_a_stock_worker_launch_command() {
     world.issue(7, &["flow:feature"]);
     assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
     let asked = world.shell_asked();
-    for question in ["type -- 'pi'", "pi --help", "claude --dangerously-skip-permissions --help"] {
+    for question in [
+        "type -- 'pi'",
+        "pi --help",
+        r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}' --help"#,
+    ] {
         assert!(asked.contains(&question.to_string()), "{question:?} is not in {asked:?}");
     }
     assert!(started(&world, &worktree(&world, 7)).contains(" && pi --approve "));
@@ -400,7 +404,8 @@ fn a_stage_that_names_no_harness_starts_its_worker_as_before() {
     );
     assert!(line.starts_with(&begins), "{line}");
     let adds = format!(
-        " AFKCONVOY_HARNESS='claude-code' && claude --dangerously-skip-permissions --add-dir \
+        " AFKCONVOY_HARNESS='claude-code' && claude --dangerously-skip-permissions --settings \
+         '{{\"skipDangerousModePermissionPrompt\":true}}' --add-dir \
          '{}' --add-dir '{}' --setting-sources project --settings '{{\"hooks\":",
         worktree(&world, 7).display(),
         team.display()
