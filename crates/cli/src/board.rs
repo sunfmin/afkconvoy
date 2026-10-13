@@ -67,7 +67,7 @@ pub fn last_word(
     post(
         fleet,
         claim,
-        &Board { instance, version: VERSION, stage, pr, blocked_by, waits_at: None },
+        &Board { instance, version: VERSION, stage, pr, blocked_by, waits_at: None, answer: None },
     )?;
     Ok(())
 }
@@ -85,7 +85,21 @@ pub fn declared(
     post(
         fleet,
         claim,
-        &Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at },
+        &Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at, answer: None },
+    )?;
+    Ok(())
+}
+
+/// The last word of a claim that was escalated: `answer` is the lines that
+/// answer the escalation (`waiting::Waits::answer_lines`), which the board
+/// ends with as the comment that says why does.
+pub fn escalated(fleet: &Fleet, claim: &Claim, pr: Option<u64>, answer: &str) -> Result<()> {
+    let (instance, stage) = (instance_of(claim), Stage::Escalated);
+    let answer = Some(answer);
+    post(
+        fleet,
+        claim,
+        &Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at: None, answer },
     )?;
     Ok(())
 }
@@ -102,6 +116,14 @@ pub fn show(fleet: &Fleet, me: &Me, issue: u64, stage: Stage, pr: Option<u64>) -
         return Ok(Outcome::Nothing);
     };
     let instance = me.instance.as_str();
-    let board = Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at: None };
+    let board = Board {
+        instance,
+        version: VERSION,
+        stage,
+        pr,
+        blocked_by: &[],
+        waits_at: None,
+        answer: None,
+    };
     Ok(if post(fleet, &claim, &board)? { Outcome::Done } else { Outcome::Nothing })
 }

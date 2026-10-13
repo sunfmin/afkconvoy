@@ -590,6 +590,20 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
     let plan = planned(&world, "alpha", 90_000);
     assert_eq!(plan["patrols"][0]["standing"], "failed");
     assert_eq!(plan["patrols"][0]["failure"], number);
+    // The report waits for a human, and says what answers it.
+    let waiting = &plan["waiting_on_human"];
+    assert_eq!(waiting.as_array().unwrap().len(), 1, "{waiting}");
+    assert_eq!(
+        (&waiting[0]["issue"], &waiting[0]["why"], &waiting[0]["answer"]),
+        (
+            &json!(number),
+            &json!("reports a failed run of the patrol `sweep`"),
+            &json!(format!("gh issue close {number}"))
+        )
+    );
+    let excluded = plan["excluded"].as_array().unwrap();
+    let reason = excluded.iter().find(|issue| issue["number"] == number).unwrap();
+    assert_eq!(reason["reason"], "reports a failed run of the patrol `sweep`: waits to be closed");
     assert_eq!(patrolled(&tick(&world, 90_000)), Vec::<String>::new());
     assert_eq!(world.gh()["issues"].as_array().unwrap().len(), 2, "one report, not one a tick");
     // …and is once a human closed it, in a new checkout: the one that was

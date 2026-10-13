@@ -108,7 +108,8 @@ pub struct Panel {
     pub lanes: Vec<Lane>,
     /// The issues whose PR is on the landing train.
     pub train: Vec<Card>,
-    /// The issues a human is asked about.
+    /// The issues that wait for a human, each with why and the line that
+    /// answers it: the working set's `waiting_on_human`, as `doctor` gives it.
     pub to_human: Vec<Card>,
     /// Every other open issue, with why the fleet leaves it.
     pub off: Vec<Card>,
@@ -216,9 +217,9 @@ impl Panel {
         }
     }
 
-    /// Puts every open issue of `seen` where the page shows it. Each is shown
-    /// once: at work or queued at its stage, held back there, on the train,
-    /// with a human, or left.
+    /// Puts every open issue of `seen` where the page shows it: at work or
+    /// queued at its stage, held back there, on the train, or left — and,
+    /// whatever stage it is held at, with a human when it waits for one.
     pub fn show(mut self, seen: &Seen) -> Panel {
         let set = seen.set;
         self.lanes = lanes(seen);
@@ -253,13 +254,19 @@ impl Panel {
             let card = Card::new(issue.number, &issue.title);
             put.at(issue.stage.as_deref(), card, List::Queued);
         }
-        for Excluded { number, title, reason } in &set.escalating {
-            put.panel.to_human.push(Card::new(*number, title).noted(reason));
+        for waiting in &set.waiting_on_human {
+            let note = format!("{} — {}", waiting.why, waiting.answer);
+            put.panel.to_human.push(Card::new(waiting.issue, &waiting.title).noted(&note));
         }
         for Excluded { number, title, reason } in &set.excluded {
             if set.mine.iter().any(|mine| mine.number == *number)
                 || set.peer_live.iter().chain(&set.stale).any(|peer| peer.number == *number)
             {
+                continue;
+            }
+            // One that waits for a human at no stage is with them, and nowhere else.
+            let waits = set.waiting_on_human.iter().any(|waiting| waiting.issue == *number);
+            if waits && !(seen.bound_repo && put.at_a_node(*number)) {
                 continue;
             }
             let card = Card::new(*number, title).noted(reason);
@@ -299,12 +306,9 @@ impl Panel {
         }
     }
 
-    /// How many issues wait for a human: those handed over, and those held at
-    /// a stage that is a human's.
+    /// How many issues wait for a human.
     pub fn with_a_human(&self) -> usize {
-        let nodes = self.lanes.iter().flat_map(|lane| &lane.nodes);
-        let held: usize = nodes.filter(|node| node.human).map(|node| node.held.len()).sum();
-        held + self.to_human.len()
+        self.to_human.len()
     }
 
     /// How many issues wait for a free slot.
@@ -334,6 +338,15 @@ struct Put<'p, 'a> {
 }
 
 impl Put<'_, '_> {
+    /// Whether the issue `number` is at a stage the page draws.
+    fn at_a_node(&self, number: u64) -> bool {
+        let placed = place(self.seen, number);
+        placed.is_some_and(|(lane, at)| {
+            let lane = self.panel.lanes.iter().find(|found| found.name == lane);
+            at.zip(lane).is_some_and(|(at, lane)| lane.nodes.iter().any(|node| node.name == at))
+        })
+    }
+
     /// Puts `card` on the list `list` picks of the node its issue is at — the
     /// node named `stage`, when the caller knows it — or, for an issue at no
     /// node the page draws, among the issues the fleet leaves.

@@ -646,6 +646,7 @@ mod tests {
                 .collect(),
             escalating: vec![],
             excluded: vec![],
+            waiting_on_human: vec![],
             mine: mine
                 .iter()
                 .map(|&(number, status)| Mine { number, title: None, status, pr: None, due: None })

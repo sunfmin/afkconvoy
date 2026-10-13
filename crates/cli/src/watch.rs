@@ -17,7 +17,7 @@ use crate::claims::Me;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::gh::Comment;
-use crate::judge::{escalate_claim, mine, nudge_worker, progress, where_it_stopped};
+use crate::judge::{Handed, escalate_claim, mine, nudge_worker, progress, where_it_stopped};
 use crate::orca::{Source, Worktree};
 
 /// A joining worker of mine that stopped, and what was gathered to route it.
@@ -181,6 +181,7 @@ pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
         JoinRoute::Stalled(silent) => {
             let tail = where_it_stopped(&found.worktree, &silent);
             let reason = stalled_reason(found.pr, &silent, &tail);
+            let reason = Handed::new("its worker went silent joining the train", reason);
             // No proof of a workless branch is offered: the worktree is kept.
             let pr = Some(found.pr);
             escalate_claim(fleet, &found.claim, &reason, pr, Some(&found.worktree), None)?;

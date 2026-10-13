@@ -7,7 +7,7 @@
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::Bound;
 use afkconvoy_core::intake::{opened_by, taken_in};
-use afkconvoy_core::plan::{Issue, PullRequest, closing_pr};
+use afkconvoy_core::plan::{Issue, PullRequest, closing_pr, label_bar};
 use afkconvoy_core::position::{Declared, Position};
 use afkconvoy_core::precedent::{Ruling, proposed, rulings};
 use afkconvoy_core::role::{Due, due, flows, followed, workflow_of};
@@ -16,13 +16,15 @@ use afkconvoy_core::stage_record::{
 };
 use afkconvoy_core::team::{FLOW_LABEL, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
+use afkconvoy_core::transition::escalated_at;
+use afkconvoy_core::waiting::{Back, Waits, back, waits};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
 
 use crate::claims::Scan;
 use crate::copies::Copies;
 use crate::fleet::Fleet;
-use crate::gh::{Comment, GitHub, OpenIssues, Unreached, unreached};
+use crate::gh::{Comment, GitHub, Open, OpenIssues, Unreached, unreached};
 use crate::git::Repo;
 use crate::intake::came_in;
 use crate::team::{Kept, keep};
@@ -247,8 +249,8 @@ pub struct Stood {
 /// derives of a position, it derives from this one read.
 pub struct Flows {
     /// The team, or why it does not load. `None` where nothing was read:
-    /// an unbound repo, or one with no issue that carries a flow label and
-    /// no patrol named.
+    /// an unbound repo, or one with no issue that carries a flow label, none
+    /// that was escalated, and no patrol named.
     team: Option<Result<Kept, Unkept>>,
     issues: Vec<Flowing>,
 }
@@ -269,7 +271,13 @@ impl Flows {
     pub fn read(fleet: &Fleet, open: &OpenIssues) -> Result<Flows> {
         let flowing: Vec<&Issue> =
             open.rows.iter().filter(|issue| !flows(&issue.labels).is_empty()).collect();
-        let read = |bound: &&Bound| !flowing.is_empty() || !bound.patrols.is_empty();
+        // An escalated issue carries no flow label, and what answers it is
+        // the team's to say all the same.
+        let escalated = open.rows.iter().any(|issue| {
+            let bodies = open.comments(issue.number).iter().map(|comment| comment.body.as_str());
+            flows(&issue.labels).is_empty() && escalated_at(bodies).is_some()
+        });
+        let read = |bound: &&Bound| !flowing.is_empty() || !bound.patrols.is_empty() || escalated;
         let Some(bound) = fleet.config.bound.as_ref().filter(read) else {
             return Ok(Flows { team: None, issues: vec![] });
         };
@@ -510,6 +518,72 @@ impl Flows {
         let issue = self.issues.iter().find(|issue| issue.number == number)?;
         let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
         history(workflow, &issue.records).rounds_said(&issue.records, &issue.urls)
+    }
+
+    /// Why the stage records of issue `number` hand it to a human, in the few
+    /// words a tick's line has room for: the stage it stopped at, where it
+    /// is at one, and what stopped it there.
+    pub fn brief(&self, number: u64) -> String {
+        let issue = self.issues.iter().find(|issue| issue.number == number);
+        let workflow = issue
+            .zip(self.team().ok())
+            .map(|(issue, team)| (workflow_of(team, &issue.labels), &issue.records));
+        let Some((Ok(workflow), records)) = workflow else {
+            return "it follows no one workflow".to_string();
+        };
+        match history(workflow, records).place.position {
+            Position::Escalating(stage, reason) => format!("{}: {}", stage.name, reason.brief()),
+            Position::Landing => "nothing to join the landing train with".to_string(),
+            at => match at.stage() {
+                Some(stage) => format!("{}: its stage cannot be carried on", stage.name),
+                None => "its workflow has ended".to_string(),
+            },
+        }
+    }
+
+    /// The open issues nobody is to start a worker on that wait for a human,
+    /// each with what for and since when (`plan::Observed::waiting`): those
+    /// read here by what is due on them, and — among `open` — the escalated
+    /// ones, which carry no flow label and were not. An escalated issue is
+    /// one that carries the escalate label and the comment of an escalation:
+    /// the label alone may be a human's own.
+    pub fn waiting(&self, fleet: &Fleet, open: &Open) -> Vec<(u64, Waits, Option<u64>)> {
+        let mut found = vec![];
+        let team = self.team().ok();
+        for issue in &self.issues {
+            let pr = closing_pr(&open.prs, issue.number).map(|pr| pr.number);
+            let waits = team.and_then(|team| waits(team, &issue.labels, &issue.records, pr));
+            if let Some(waits) = waits {
+                found.push((issue.number, waits, issue.at.last().copied().flatten()));
+            }
+        }
+        let config = &fleet.config;
+        let escalate = match (&config.bound, team) {
+            (None, _) => Some(config.escalate_label.as_str()),
+            (Some(_), Some(team)) => Some(team.escalate_label.as_str()),
+            // What the team calls its escalate label was not read.
+            (Some(_), None) => None,
+        };
+        for issue in &open.issues.rows {
+            let comments = open.issues.comments(issue.number);
+            let bodies = || comments.iter().map(|comment| comment.body.as_str());
+            let handed = escalate.is_some_and(|label| issue.labels.iter().any(|l| l == label))
+                && label_bar(&issue.labels, config).is_some();
+            let Some(at) = escalated_at(bodies()).filter(|_| handed) else { continue };
+            let back = match (team, escalate) {
+                (Some(team), Some(escalate)) if config.bound.is_some() => {
+                    let workflow = followed(team, &issue.labels, bodies()).ok();
+                    back(workflow, &records_in(comments).0, escalate)
+                }
+                _ => Back::Ready {
+                    ready: config.ready_label.clone(),
+                    escalate: config.escalate_label.clone(),
+                },
+            };
+            let since = comments.get(at).and_then(|comment| comment.at);
+            found.push((issue.number, Waits::Escalated(back), since));
+        }
+        found
     }
 
     /// Brings the `stage:` label of issue `number` to the position its stage

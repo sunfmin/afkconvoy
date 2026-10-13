@@ -19,7 +19,7 @@ use crate::dispatch::write_join_brief;
 use crate::fleet::Fleet;
 use crate::gh::{Comment, IssueRead};
 use crate::git::REMOTE;
-use crate::judge::{escalate_claim, nudge_worker, progress};
+use crate::judge::{Handed, escalate_claim, nudge_worker, progress};
 use crate::orca::{Source, Worktree};
 use crate::train::Train;
 use crate::watch::{join_record, record_join};
@@ -115,7 +115,8 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
                 let worktree = Worktree::of_issue(&source, issue)?;
                 let claim = of(issue)?.claim.clone();
                 // No proof of a workless branch is offered: the worktree is kept.
-                let reason = abandoned_reason(pr);
+                let reason =
+                    Handed::new("its landing train was given up twice", abandoned_reason(pr));
                 escalate_claim(fleet, &claim, &reason, Some(pr), worktree.as_ref(), None)?;
             }
         }
