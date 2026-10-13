@@ -41,6 +41,7 @@ pub mod landing;
 pub mod launch;
 pub mod lock;
 pub mod log;
+pub mod opening;
 pub mod orca;
 pub mod panel;
 pub mod park;
@@ -202,7 +203,7 @@ enum Command {
         #[arg(long, hide = true, default_value_t = 1000)]
         second_ms: u64,
     },
-    /// Print the panel — the fleet as a web page — as one rebuild shows it now
+    /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
     #[command(after_long_help = include_str!("help/panel.txt"))]
     Panel {
         /// The fleet instance whose claims are its own [default: nobody's]
@@ -210,6 +211,13 @@ enum Command {
         instance: Option<InstanceId>,
         #[arg(long)]
         host: Option<String>,
+        /// Have this host's `run` for this repo serve its panel, live, and say where:
+        /// it is not restarted, and one already serving it says the address it has
+        #[arg(long, conflicts_with_all = ["instance", "host"])]
+        open: bool,
+        /// With --open: the port of this host to serve it on [default: any free one]
+        #[arg(long, value_name = "PORT", requires = "open")]
+        port: Option<u16>,
     },
     /// Run one reconciliation pass and exit
     #[command(after_long_help = include_str!("help/tick.txt"))]
@@ -799,7 +807,8 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let agent = agent.start(now, false)?;
             tick::run(&mut me, &agent, &pacing, panel, || fixed_now.unwrap_or_else(clock))
         }
-        Command::Panel { instance, host } => {
+        Command::Panel { open: true, port, .. } => opening::open(&Repo::here()?, port),
+        Command::Panel { instance, host, .. } => {
             let (fleet, open) = Fleet::read(now)?;
             let host = host.unwrap_or_else(this_host);
             let me = instance.map(|instance| Me { instance, host, now });

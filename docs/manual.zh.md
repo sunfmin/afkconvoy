@@ -584,7 +584,7 @@ tick 2: nothing to do · holding 3/3 · frontier 0 · next in 60s
 
 `holding 3/3` 是当前持有的认领数与 `concurrency` 之比；`frontier` 是在等空位的数量。机群锁还在的时候，被它搁置的认领不占槽位，单独显示：`holding 1/3 · 2 left alone`。某一步失败会在这一行里显示为 `FAILED <步骤> #<issue>: <原因>`，循环照常继续。同一个原因挡住了好几步，只说一次：`FAILED 7 steps: <原因>`。读 GitHub 时在传输途中失败（应答被截断、5xx、连接被重置、超时），会先隔一秒再试两次，这期间什么也不说；还是失败就显示 `GitHub could not be reached: <那次调用>: …`，下一个 tick 不睡直接开始。
 
-**观察。** 带上 `--panel <端口>` 后，http://127.0.0.1:端口/ 是一个每个 tick 之后自动刷新的页面：每个工作流画成一串阶段，每个阶段上正在处理和排队的 issue、落地列车、以及在等人的 issue。每个 worker 同时也是 orca 里的一个终端，位于该 issue 的 worktree——打开它就能看到 worker 正在做什么。
+**观察。** 带上 `--panel <端口>` 后，http://127.0.0.1:端口/ 是一个每个 tick 之后自动刷新的页面：每个工作流画成一串阶段，每个阶段上正在处理和排队的 issue、落地列车、以及在等人的 issue。启动时没带这个参数也不用重启：在该仓库的任意 worktree 里跑 `afkconvoy panel --open`（或 `--open --port 7070`），正在运行的机群就开始提供同一个页面，并回答它的地址——之后再问，回答的还是这个地址。每个 worker 同时也是 orca 里的一个终端，位于该 issue 的 worktree——打开它就能看到 worker 正在做什么。
 
 **查询一张 issue**：
 
@@ -759,7 +759,7 @@ CLAUDE.md                          规则
 | 手动执行某一次状态迁移 | `dispatch` `recovery` `close` `escalate` `park` `nudge` `restart` `abandon` |
 | 认领的底层管道 | `scan` `claim` `release` `heartbeat` |
 
-每条命令打印一个 JSON 对象；失败时是 `{"error": …}` 并以非零退出。例外：`run` 每个 tick 打印一行，`show` 打印一幅图，`panel` 打印一个页面，`guard` 用退出码回答。
+每条命令打印一个 JSON 对象；失败时是 `{"error": …}` 并以非零退出。例外：`run` 每个 tick 打印一行，`show` 打印一幅图，`panel` 打印一个页面（带 `--open` 时是一个 JSON 对象），`guard` 用退出码回答。
 
 ### 绑定仓库的 worker 的环境变量
 

@@ -20,10 +20,11 @@ use crate::gh::unreached;
 use crate::git::Repo;
 use crate::judge::judge;
 use crate::log::{self, Log};
+use crate::opening;
 use crate::panel::{self, Panel};
 use crate::patrol;
 use crate::precedent;
-use crate::serve::Served;
+use crate::serve::{self, Live};
 use crate::settle::settle;
 use crate::stage::Flows;
 use crate::stop::Stop;
@@ -524,8 +525,9 @@ impl Said {
 /// finishes the step it is in and exits: no claim is released on the way out,
 /// and the next start on this host takes them back (docs/adr/0003); holding
 /// none, it removes its heartbeat. A start removes the heartbeats left by the
-/// runs that could not (`at_start`). With a `panel_port` it serves the panel there, a new page
-/// after every tick. It keeps a line of each tick in its log (`log::Log`),
+/// runs that could not (`at_start`). It serves the panel once that is opened — at the start,
+/// on a `panel_port`, or later by `afkconvoy panel --open` (`opening`) — a new page after
+/// every tick. It keeps a line of each tick in its log (`log::Log`),
 /// which nothing here ever reads.
 pub fn run(
     me: &mut Me,
@@ -535,19 +537,17 @@ pub fn run(
     clock: impl Fn() -> u64,
 ) -> Result<Value> {
     let mut shown = Panel::empty(&Fleet::open(me.now)?, Some(me));
-    let served = match panel_port {
-        Some(port) => {
-            let served = Served::open(port, panel::render(&shown))?;
-            println!("panel: http://127.0.0.1:{}/", served.port);
-            Some(served)
-        }
-        None => None,
-    };
+    let live = Live::new(panel::render(&shown));
+    if let Some(port) = panel_port {
+        println!("panel: {}", serve::address(live.open(port)?.0));
+    }
     let mut streak = 0;
     let mut skipped = 0;
     let mut count = 0;
     let mut started = false;
-    let wakes = Listener::open(&Repo::here()?);
+    let repo = Repo::here()?;
+    let wakes = Listener::open(&repo);
+    opening::listen(&repo, live.clone(), me.instance.as_str());
     let stop = Stop::listen();
     let said = Said::open(me, agent);
     loop {
@@ -565,12 +565,15 @@ pub fn run(
                 Err(error) => println!("start: FAILED to take this host's claims: {error:#}"),
             }
         }
+        // Asked once a turn: a panel opened while the tick runs is the next
+        // tick's to fill, which the wake its opening sends starts at once.
+        let served = live.served();
         // A tick that could not even rebuild is a line, not the end of the loop.
         let ticked = turn(
             || wakes.forget(),
             || {
                 let (ticked, fleet) = tick(me, agent, &stop)?;
-                let panel = served.as_ref().map(|_| ticked.panel(&fleet, me));
+                let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },
         );
@@ -604,10 +607,10 @@ pub fn run(
         let (bound, answer, error) = logged;
         let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
         said.keep(me, clock(), log::What::Tick(tick));
-        if let Some(served) = &served {
+        if served {
             // A tick that failed leaves the page as the last one found it.
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
-            served.show(panel::render(&shown));
+            live.show(panel::render(&shown));
         }
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));

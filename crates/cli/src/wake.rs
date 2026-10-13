@@ -15,8 +15,9 @@ use serde_json::{Value, json};
 
 use crate::git::Repo;
 
-/// The directory a repo's wake socket is in.
-fn home(repo: &Repo) -> Result<PathBuf> {
+/// The directory a repo's wake socket is in: where a `run` keeps every socket
+/// it listens on.
+pub(crate) fn home(repo: &Repo) -> Result<PathBuf> {
     let common = repo.git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     Ok(PathBuf::from(common))
 }
@@ -26,9 +27,19 @@ fn home(repo: &Repo) -> Result<PathBuf> {
 /// dir's any length, so the socket is only ever named from inside its
 /// directory.
 fn inside<T>(dir: &Path, with: impl FnOnce(&str) -> std::io::Result<T>) -> Result<T> {
+    named_inside(dir, SOCKET, with)
+}
+
+/// The same, for a socket called `name`. It moves the whole process: only a
+/// process with one thread at work calls it — a `run` before its first tick.
+pub(crate) fn named_inside<T>(
+    dir: &Path,
+    name: &str,
+    with: impl FnOnce(&str) -> std::io::Result<T>,
+) -> Result<T> {
     let back = std::env::current_dir().context("this process has no working directory")?;
     std::env::set_current_dir(dir).with_context(|| format!("cannot enter {}", dir.display()))?;
-    let made = with(SOCKET);
+    let made = with(name);
     std::env::set_current_dir(&back).with_context(|| format!("cannot go back to {back:?}"))?;
     Ok(made?)
 }
@@ -94,6 +105,31 @@ impl Listener {
     }
 }
 
+/// The sending end of a `run`'s own listener, for a thread of that `run` to end
+/// its sleep with: made once the listener is open, and before any tick.
+pub struct Waker {
+    socket: UnixDatagram,
+}
+
+impl Waker {
+    /// `None` where this run cannot be woken (`Listener::open` said so).
+    pub fn of(repo: &Repo) -> Option<Waker> {
+        let connected = |name: &str| {
+            let socket = UnixDatagram::unbound()?;
+            socket.connect(name)?;
+            socket.set_nonblocking(true)?;
+            Ok(socket)
+        };
+        let socket = home(repo).and_then(|dir| inside(&dir, connected)).ok()?;
+        Some(Waker { socket })
+    }
+
+    /// A wake that cannot be sent is lost, as any is.
+    pub fn wake(&self) {
+        let _ = self.socket.send(SIGNAL);
+    }
+}
+
 /// Whether a `run` listens for the wakes of the repo `repo` is a checkout of:
 /// the one sign on this host that one is alive. Nothing is sent, so it is not
 /// woken.
@@ -130,13 +166,13 @@ pub fn wake(repo: &Repo) -> Result<Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Instant;
 
     use super::*;
 
     /// Tests share one working directory, and `inside` moves it.
-    static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn send(dir: &Path) -> bool {
         let sent = inside(dir, |name| UnixDatagram::unbound()?.send_to(SIGNAL, name));
