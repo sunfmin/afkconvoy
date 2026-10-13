@@ -26,6 +26,7 @@ use crate::patrol;
 use crate::precedent;
 use crate::serve::{self, Live};
 use crate::settle::settle;
+use crate::slow_gate;
 use crate::stage::Flows;
 use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
@@ -144,6 +145,10 @@ fn carry_out(
             let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
+        TickStep::SlowGate => match &read.set.slow_gate {
+            Some(slow) => slow_gate::open(fleet, me, slow),
+            None => Ok(Outcome::Nothing),
+        },
         TickStep::Board { issue, stage, pr } => show(fleet, me, issue, stage, pr),
         TickStep::StageLabel { issue } => read.flows.bring(fleet, issue),
         TickStep::Heartbeat => {
@@ -168,6 +173,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
+        TickStep::SlowGate => ("slow_gate", None),
         TickStep::Board { issue, .. } => ("board", Some(issue)),
         TickStep::StageLabel { issue } => ("stage_label", Some(issue)),
         TickStep::Heartbeat => ("heartbeat", None),
@@ -400,6 +406,9 @@ impl Ticked {
             if self.pass.did.contains(&(TickStep::TendTrain, outcome)) {
                 parts.push(said.to_string());
             }
+        }
+        if self.pass.did.contains(&(TickStep::SlowGate, Outcome::Done)) {
+            parts.push("opened an issue for the slow gate".to_string());
         }
         // A tick whose every step failed had things to do: its failures say so.
         if parts.len() == lead && self.failures.is_empty() {

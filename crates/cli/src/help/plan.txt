@@ -29,12 +29,15 @@ WHAT IT READS AND WRITES
   The rebuild asks GitHub twice, side by side with one listing of the remote, however
   many issues are open: one query for the open issues with their comments (an issue
   with more than a hundred comments is asked about once more), one for the open PRs.
+  It asks once more — for the issues that carry the label `slow-gate` — only while the
+  recorded gate runs of the base branch's landings say the gate is slow.
 
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale",
    "stale_closed", "free_slots", "now", "locks"} — and in a bound repo "intake", "patrols" where it names some, and
-   "proposals" while a ruling is proposed as a precedent or waits to be
+   "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate"
+   while the gate is slow
 
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage},
@@ -104,6 +107,13 @@ WHAT IT ANSWERS
                      running       its worker, started by `--instance`, may still be at it
                      peer_running  a live peer started its worker
                      stale_run     it is claimed by a peer presumed dead: a tick ends it
+    slow_gate      while the gate is slow: {gate_seconds, host, runs, issue}. On `host`,
+                   the last 5 landings on the base branch that have a recorded run of
+                   the config's `gate_command` with a time all took more than 80% of
+                   the gate limit, `gate_seconds`. runs are those 5, newest first:
+                   {commit, seconds}. issue is the open issue that says so — the
+                   lowest open one carrying the label `slow-gate` — or null: a tick
+                   opens one (`afkconvoy tick --help`)
 
   The probe's warnings go to stderr. Errors: a command the fleet needs is missing or
   logged out, or orca is not running or does not know this checkout (the error names
@@ -129,6 +139,10 @@ WHAT TRIPS YOU UP
     `--instance` the lock leaves alone: a lock issue does not wait for them.
   - "Changes nothing" is about fleet state. When it probes it still pushes to the
     remote, and deletes there: it needs push access, and it is not a read-only command.
+  - A slow gate is read off the recorded gate runs the remote still has: a record is
+    swept a day after its run, a landing with no record or with a record that states
+    no time is passed over, and 5 landings spread over hosts none of which has 5 say
+    nothing. After an issue for a slow gate closed, only the landings made since count.
   - A probe that stands is trusted, not checked: a command uninstalled or logged out
     since, or a rule the remote gained, shows as the error of whatever runs into it —
     or, for the ref layout, not until the next probe. `run` probes at every start.

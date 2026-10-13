@@ -20,6 +20,7 @@ use crate::git::{Listing, Repo};
 use crate::patrol;
 use crate::precedent;
 use crate::settle::cut_landing_of;
+use crate::slow_gate;
 use crate::stage::Flows;
 use crate::train::Train;
 
@@ -99,6 +100,7 @@ impl Fleet {
         }
         let joined: Vec<u64> = on_train(&joins, prs).iter().map(|join| join.issue).collect();
         let heartbeats = self.scan.beats();
+        let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
         let seen = Observed {
             issues,
             prs,
@@ -113,6 +115,8 @@ impl Fleet {
             patrols: &patrol::seen(self, &stages, &open.issues)?,
             proposals: &precedent::seen(self, &stages)?,
             waiting: &stages.waiting(self, open),
+            landings: &landings,
+            slow_gate: &slow_gate,
         };
         let set = assemble(&seen, me, self.now, &self.config);
         Ok((set, stages))

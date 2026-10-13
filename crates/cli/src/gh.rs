@@ -40,6 +40,9 @@ pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].
 /// What is read of each closed issue that carries one label.
 pub const CLOSED_JQ: &str = ".[] | select(.pull_request == null) | \
     {number, at: (.closed_at | fromdateiso8601? // null)}";
+/// What is read of each issue that carries one label, open or closed.
+pub const CARRYING_JQ: &str = ".[] | select(.pull_request == null) | \
+    {number, open: (.state == \"open\"), closed_at: (.closed_at | fromdateiso8601? // null)}";
 /// What is read of each comment on an issue or a PR.
 pub const COMMENTS_JQ: &str =
     ".[] | {id, body, url: .html_url, at: (.created_at | fromdateiso8601? // null)}";
@@ -364,6 +367,29 @@ impl GitHub {
             closed.extend(row.at.map(|at| (row.number, at)));
         }
         Ok(closed)
+    }
+
+    /// Every issue that carries `label`, open or closed, each with when it
+    /// closed, in epoch seconds — `None`: it is open, `Some(None)`: GitHub
+    /// gives no time for it.
+    pub fn carrying(&self, label: &str) -> Result<Vec<(u64, Option<Option<u64>>)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            open: bool,
+            closed_at: Option<u64>,
+        }
+        let label = crate::judge::label_segment(label);
+        let endpoint =
+            format!("repos/{{owner}}/{{repo}}/issues?state=all&labels={label}&per_page=100");
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", CARRYING_JQ])?;
+        let mut carrying = vec![];
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let row: Row =
+                serde_json::from_str(line).context("gh api issues: unexpected answer")?;
+            carrying.push((row.number, (!row.open).then_some(row.closed_at)));
+        }
+        Ok(carrying)
     }
 
     /// Every open pull request.
