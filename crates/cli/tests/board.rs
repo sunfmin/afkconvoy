@@ -95,7 +95,9 @@ fn one_comment_follows_a_claim_from_claimed_to_merged() {
     let id = board_id(&world);
     let claimed = board(&world);
     assert!(claimed.starts_with("<!--convoy:status-->\n"), "{claimed}");
-    assert!(claimed.contains("is being worked by fleet instance `alpha`"));
+    let by =
+        format!("is being worked by fleet instance `alpha`, afkconvoy `{}`.", afkconvoy::VERSION);
+    assert!(claimed.contains(&by), "{claimed}");
     assert_eq!(ticked(&claimed), ["Claimed"]);
 
     // its PR opens

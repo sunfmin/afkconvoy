@@ -193,7 +193,7 @@ Handing an issue to a human: the reason is commented, the flow label is swapped 
 _Avoid_: fail, retry, give up
 
 **Status board**:
-The single comment on a claimed issue that shows a human how far along it is. It is rendered from fleet state and never read back.
+The single comment on a claimed issue that shows a human how far along it is, and what the afkconvoy that works it was built from. It is rendered from fleet state and never read back.
 _Avoid_: progress log, worklog
 
 **Panel**:

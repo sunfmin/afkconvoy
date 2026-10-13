@@ -8,6 +8,7 @@ use afkconvoy_core::claims::Claim;
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Context, Result};
 
+use crate::VERSION;
 use crate::claims::Me;
 use crate::fleet::Fleet;
 use crate::judge::mine;
@@ -63,7 +64,11 @@ pub fn last_word(
     blocked_by: &[u64],
 ) -> Result<()> {
     let instance = instance_of(claim);
-    post(fleet, claim, &Board { instance, stage, pr, blocked_by, waits_at: None })?;
+    post(
+        fleet,
+        claim,
+        &Board { instance, version: VERSION, stage, pr, blocked_by, waits_at: None },
+    )?;
     Ok(())
 }
 
@@ -77,7 +82,11 @@ pub fn declared(
     waits_at: Option<&str>,
 ) -> Result<()> {
     let (instance, stage) = (instance_of(claim), Stage::Declared);
-    post(fleet, claim, &Board { instance, stage, pr, blocked_by: &[], waits_at })?;
+    post(
+        fleet,
+        claim,
+        &Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at },
+    )?;
     Ok(())
 }
 
@@ -92,7 +101,7 @@ pub fn show(fleet: &Fleet, me: &Me, issue: u64, stage: Stage, pr: Option<u64>) -
     let Some(claim) = mine(fleet, me, issue).ok().flatten() else {
         return Ok(Outcome::Nothing);
     };
-    let board =
-        Board { instance: me.instance.as_str(), stage, pr, blocked_by: &[], waits_at: None };
+    let instance = me.instance.as_str();
+    let board = Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at: None };
     Ok(if post(fleet, &claim, &board)? { Outcome::Done } else { Outcome::Nothing })
 }

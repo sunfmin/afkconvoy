@@ -73,6 +73,8 @@ impl Stage {
 pub struct Board<'a> {
     /// The fleet instance the claim is, or was, held by.
     pub instance: &'a str,
+    /// What the afkconvoy that writes the board was built from.
+    pub version: &'a str,
     pub stage: Stage,
     /// The issue's PR, when it has one.
     pub pr: Option<u64>,
@@ -157,7 +159,10 @@ pub fn render(board: &Board) -> String {
     let who = if board.stage.ends() { "was worked" } else { "is being worked" };
     let mut lines = vec![
         record::marker(STATUS, &[]),
-        format!("**afkconvoy** — this issue {who} by fleet instance `{}`.", board.instance),
+        format!(
+            "**afkconvoy** — this issue {who} by fleet instance `{}`, afkconvoy `{}`.",
+            board.instance, board.version
+        ),
         String::new(),
     ];
     let done = steps_done(board.stage, board.pr.is_some());
@@ -207,7 +212,14 @@ mod tests {
     use super::*;
 
     fn board(stage: Stage, pr: Option<u64>) -> Board<'static> {
-        Board { instance: "alpha", stage, pr, blocked_by: &[3, 4], waits_at: None }
+        Board {
+            instance: "alpha",
+            version: "0.2.0+11.g9f58035",
+            stage,
+            pr,
+            blocked_by: &[3, 4],
+            waits_at: None,
+        }
     }
 
     fn ticked(text: &str) -> usize {
@@ -221,7 +233,7 @@ mod tests {
             let text = render(&board(stage, Some(70)));
             assert!(text.starts_with("<!--convoy:status-->\n**afkconvoy** — "), "{text}");
             assert_eq!(text.lines().filter(|line| line.starts_with("- [")).count(), 5, "{text}");
-            assert!(text.contains("fleet instance `alpha`"));
+            assert!(text.contains("fleet instance `alpha`, afkconvoy `0.2.0+11.g9f58035`."));
             assert!(!seen.contains(&text), "{stage:?} renders as another stage does");
             seen.push(text);
         }
