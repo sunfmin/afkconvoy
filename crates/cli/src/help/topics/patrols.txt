@@ -1,0 +1,88 @@
+PATROLS
+
+  A patrol is a role run on a schedule rather than for an issue: it looks for work, opens
+  issues and takes them in. Read this to add a patrol to a team, to have a repo run one,
+  or to learn how work reaches the fleet with no human labelling it — and how a fleet lock
+  stops everything but one fix.
+
+WHAT A PATROL IS, AND IS NOT
+
+  It is a worker in one role, with one skill, started when its interval has passed, in a
+  checkout of the base branch that is linked to no issue. What it finds — an issue no
+  workflow has taken, a broken base branch, something worth proposing — it writes down
+  as issues, and takes in the ones the fleet is to work.
+
+  It is no stage: it owns no issue, belongs to no workflow and declares no verdict. It
+  writes no code: a run that left a commit or opened a PR has failed. And it is no
+  timer for anything else: nothing but a role's skill can be run by one.
+
+A PATROL'S FILE
+
+  `patrols/<name>.md` in the team's directory is the patrol `<name>` — words of lowercase
+  letters and digits, each starting with a letter, joined by `-`, 40 characters at most.
+  Of the file only the first ```yaml block is read:
+
+      by: <role>
+      do: <skill>
+      every: 6h                          # required: a whole number from 1, then m, h or d
+      harness: claude-code               # optional
+      model: <model>                     # optional; its harness's own name for it
+      max_open: 5                        # required
+
+  `by` is a short name of the team file and `do` a skill of that role. `every` is how
+  long after its last run a patrol is due: it is due or it is not, and one that missed
+  ten intervals runs once. `harness` and `model` are what they are for a stage
+  (`afkconvoy help workflows`). `max_open` bounds what a patrol gives the fleet: it is
+  not run while that many issues it opened are open.
+
+WHICH PATROLS A REPO RUNS
+
+  The ones its config names, under `patrols` (`afkconvoy config --help`): a team's
+  patrol runs in no repo that does not name it, and a name the team has no patrol for
+  is a fault of `afkconvoy check`. Of several hosts one runs it: the tick that finds a
+  patrol due claims the run on the remote.
+
+A RUN
+
+  A run takes one slot of `concurrency` until its worker declares it over with
+  `afkconvoy over`, the last line of its brief; a worker that never does is ended once
+  it is gone or has stopped for a grace period. The tick that ends a run closes its
+  terminal and removes its checkout. `afkconvoy plan` says how each patrol stands, and
+  `afkconvoy tick --help` what a tick does about one.
+
+  A run that failed keeps its checkout, and the fleet opens an issue with the team's
+  escalate label that says so. The patrol is not run again until a human closes it.
+
+INTAKE
+
+  Intake is putting a flow label on an issue: from then on the issue is the fleet's to
+  work, at the first stage of that workflow. A human does it on GitHub, outside any
+  limit. A worker — a patrol's, or a stage's that splits its issue — does it with
+  `afkconvoy intake`, which records who did; the guard refuses a worker the label
+  itself. To choose a workflow a patrol reads what each is for: `afkconvoy flows`.
+
+  Two limits hold what workers take in. The repo's `intake_limit` bounds the open issues
+  taken in by any worker, and `afkconvoy intake` refuses past it. A patrol's `max_open`
+  bounds the ones it opened, and refuses nothing: the patrol is not run.
+
+THE FLEET LOCK
+
+  A fault every issue shares — the base branch is broken, so every gate is red whatever
+  its PR holds — is not one issue's to escalate. A patrol that finds it, or a stage,
+  opens an issue for the fix and raises the lock on it with `afkconvoy lock`: an open
+  issue carrying the repo's lock label is a fleet lock, in a bound repo or an unbound
+  one.
+
+  While one stands the fleet works lock issues only: nothing else is dispatched, no
+  patrol runs, no PR of another issue joins the landing train, and workers already
+  running are left alone. The lock issue is worked as any issue is: in a bound repo
+  it needs a flow label too. Closing the last lock issue ends the lock; a stage that
+  declared `escalate` or stayed silent before it closed then runs again, which is no
+  rework. What trips you up: `afkconvoy lock --help`.
+
+WHERE TO READ ON
+
+  `afkconvoy help workflows`  what an issue taken in then passes through
+  `afkconvoy help team`       the roles a patrol's `by` names, and a team's other files
+  `afkconvoy help roles`      what a role is, and how to write a good one
+  `afkconvoy help glossary`   each term used here, with its one definition

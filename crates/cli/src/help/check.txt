@@ -14,9 +14,10 @@ WHAT IT READS AND WRITES
   It writes nothing but a copy the fleet has not got yet (below), and what this host
   keeps for pi before pi is asked a question (`afkconvoy run --help`). It reads a
   team's files, and of each role's directory which skills it holds, which harnesses it
-  holds limits for, and whether a file of it would have a harness load other rules:
+  holds limits for, and whether a file of it would have a harness load other rules.
+  What those files are, and every key of each: `afkconvoy help team`,
+  `afkconvoy help workflows` and `afkconvoy help patrols`.
 
-{files}
   Without a flag it reads the config of this checkout for `team`, and that directory
   from GitHub at the head of its repo's default branch — and holds the config's
   `patrols` against the patrols that team has, and takes its `harness` as the default.

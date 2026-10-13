@@ -114,7 +114,9 @@ DESIGNING A TEAM, for a bound repo
   text files — a whole repo, or a subdirectory of one, so that one repo can hold a team
   and every role it names — and designing one is editing them. Nothing else holds any of it.
 
-{files}
+  What those files are, and every key of them, is three topics: `afkconvoy help team`
+  for a team's directory, its file, its rules and a role's directory, then
+  `afkconvoy help workflows` and `afkconvoy help patrols`.
 
   The loop, from nothing:
 

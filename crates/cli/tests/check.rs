@@ -343,35 +343,6 @@ fn a_bound_repos_config_answers_its_four_keys_more() {
     assert_eq!(config("concurrency: 1").ok()["lock_label"], "fleet-lock");
 }
 
-/// The help is where an agent learns a team's files: it names every key the
-/// loader reads.
-#[test]
-fn the_help_names_every_key_of_a_definition() {
-    use afkconvoy_core::team::{
-        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PRECEDENTS_KEYS, STAGE_KEYS, TEAM_KEYS,
-        WORKFLOW_KEYS,
-    };
-    let world = World::new();
-    let out = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root)
-        .args(["check", "--help"])
-        .output();
-    let help = String::from_utf8(out.unwrap().stdout).unwrap();
-    let keys = [
-        &TEAM_KEYS[..],
-        &WORKFLOW_KEYS,
-        &STAGE_KEYS,
-        &ON_KEYS,
-        &ESCALATE_KEYS,
-        &LAND_KEYS,
-        &PATROL_KEYS,
-        &PRECEDENTS_KEYS,
-    ];
-    for key in keys.concat() {
-        assert!(help.contains(&format!(" {key}:")), "`check --help` never shows the key {key}");
-    }
-}
-
 /// A workflow of one stage, which the role `fellow` performs.
 const WARD: &str = "\
 # Ward
@@ -831,10 +802,10 @@ fn a_repo_bound_to_a_team_whose_models_fit_another_default_harness_is_told_so() 
 }
 
 /// Where a role's limits for each harness go is said wherever a role's files
-/// are: in the manual, in `scaffold`'s help and in the rules a skeleton is
+/// are: in the topic `team`, in `scaffold`'s help and in the rules a skeleton is
 /// written with — beside what is written once.
 #[test]
-fn the_manual_and_a_skeleton_say_where_a_roles_limits_for_each_harness_go() {
+fn the_help_and_a_skeleton_say_where_a_roles_limits_for_each_harness_go() {
     use afkconvoy_core::harness::Harness;
     let world = World::new();
     let asked = |args: &[&str]| {
@@ -844,8 +815,7 @@ fn the_manual_and_a_skeleton_say_where_a_roles_limits_for_each_harness_go() {
     world.afk_in(&world.root, &["scaffold", "role", "dev"]).ok();
     let rules = std::fs::read_to_string(world.root.join("dev/CLAUDE.md")).unwrap();
     let said = [
-        ("--help", asked(&["--help"])),
-        ("check --help", asked(&["check", "--help"])),
+        ("help team", asked(&["help", "team"])),
         ("scaffold --help", asked(&["scaffold", "--help"])),
         ("a skeleton's rules", rules),
     ];
