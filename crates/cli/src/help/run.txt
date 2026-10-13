@@ -170,14 +170,19 @@ WHAT TRIPS YOU UP
           <the stage's facts> && <worker launch command> --add-dir <the worktree>
           --dangerously-bypass-hook-trust
           --config 'projects={"<the role's copy>"={trust_level="trusted"}}'
-          --config 'hooks={PreToolUse=[<what asks afkconvoy guard>]}'
+          --config 'hooks={PreToolUse=[<what asks afkconvoy guard, and orca's status
+            report>], <each other event a session's state changes at>=[<the report>]}'
           --config features.memories=false [--model <the stage's>]
     `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex
     would ask at its terminal — whether it trusts the folder, and a review of its
     hooks — and have it load the role's own limits (`.codex/hooks.json`). The hook
     named asks `afkconvoy guard` before every tool call: one the guard refuses, or
     cannot be asked of, is not made. It is on the line and in no file, so no worker
-    starts without it. Codex's user directory is the fleet's own
+    starts without it. The report is the hook orca installed to hear of a Codex
+    session's state (~/.orca/agent-hooks/codex-hook.sh), which orca names in your
+    own hooks and a worker loads none of: it is given ten seconds, and refuses no
+    call, whatever it does; where orca installed none, nothing is told, and a
+    worker's state is read off its terminal. Codex's user directory is the fleet's own
     (~/.cache/afkconvoy/harness/codex), not yours (~/.codex): it holds a link to
     your login (auth.json) and nothing else of yours — no rule, skill, hook or
     configuration, so no provider you defined in config.toml. A login Codex
