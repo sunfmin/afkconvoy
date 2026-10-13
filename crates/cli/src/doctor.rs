@@ -652,7 +652,10 @@ fn read_host(config: Option<&Config>, started_with: Option<&str>) -> Host {
         command: proposed.as_str().to_string(),
         of_run: started_with.is_some(),
         fault: proposed.fault(),
-        flags_fault: role::probe(&proposed).err().filter(|_| bound).map(|why| format!("{why:#}")),
+        flags_fault: role::starts(proposed.as_str())
+            .err()
+            .filter(|_| bound)
+            .map(|why| format!("{why:#}")),
     });
     Host { tools: looked.found, gh_host: looked.host, orca_unasked: looked.orca_unasked, launch }
 }

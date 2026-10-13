@@ -3,7 +3,7 @@
 //! fault with the line that fixes it; the tool itself never installs anything
 //! and logs nobody in.
 
-use crate::launch::first_word;
+use crate::launch::{PI, first_word};
 use crate::line::quoted;
 
 /// A command the fleet, or a worker it starts, runs.
@@ -55,7 +55,7 @@ impl Tool {
             Tool::Gh => "gh",
             Tool::Orca => "orca",
             Tool::Claude => "claude",
-            Tool::Pi => "pi",
+            Tool::Pi => PI,
         }
     }
 

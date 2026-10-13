@@ -37,12 +37,6 @@ impl Proposed {
         self.resolution.is_some()
     }
 
-    /// What the login shell prints when the command is asked which flags it
-    /// takes (`flags`); `None` when that failed.
-    pub fn flags(&self) -> Option<String> {
-        flags(&self.command)
-    }
-
     /// Why it cannot start a worker, when it cannot.
     pub fn fault(&self) -> Option<String> {
         checked(&self.command, self.resolution.as_deref()).err()

@@ -21,7 +21,6 @@ use serde_json::{Value, json};
 use crate::copies::{Copies, Copy};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
-use crate::launch::Proposed;
 use crate::orca::{REPORT_HOOK, Under, Worktree, pi_report};
 use crate::stage::records_of;
 use crate::team::keep;
@@ -293,15 +292,9 @@ impl Staged {
     }
 }
 
-/// The coding agent the worker launch command `launch` starts: the one whose
+/// The coding agent the worker launch command `command` starts: the one whose
 /// flags — what a bound repo's fleet adds to it — the command takes, asking
 /// the login shell a worker gets. An error names what it does not take.
-pub fn probe(launch: &Proposed) -> Result<CodingAgent> {
-    afkconvoy_core::role::starts(launch.as_str(), launch.flags().as_deref())
-        .map_err(|why| anyhow!(why))
-}
-
-/// The same, of a command a worker is about to be started with.
 pub fn starts(command: &str) -> Result<CodingAgent> {
     afkconvoy_core::role::starts(command, crate::launch::flags(command).as_deref())
         .map_err(|why| anyhow!(why))

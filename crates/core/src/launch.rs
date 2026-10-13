@@ -138,7 +138,7 @@ fn unattended(command: &str, word: &str, resolution: &str) -> Option<bool> {
 }
 
 /// The word pi is run by.
-const PI: &str = "pi";
+pub(crate) const PI: &str = "pi";
 
 /// Whether a word of `text` — an alias's expansion, or what `type` said of
 /// one — is pi, by its name or by a path to it.

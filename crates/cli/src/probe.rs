@@ -108,7 +108,7 @@ pub fn standing(now: u64, launch: Option<&Proposed>) -> Option<Vec<String>> {
 /// In order: every command the fleet needs is here and logged in
 /// (`tools::check`), before anything is read or written; in a bound repo, the
 /// worker launch command takes what starts a worker in its role
-/// (`role::probe`); the base branch exists (none is ever created); no rule of its
+/// (`role::starts`); the base branch exists (none is ever created); no rule of its
 /// protection refuses the train's push; where the remote takes the fleet's
 /// refs — noted for every later command (`Repo::layout`); whether it takes
 /// gate records, and the ones past their day are swept. A probe that passed is
@@ -119,7 +119,7 @@ pub fn startup(now: u64, launch: Option<&Proposed>) -> Result<Vec<String>> {
     let config = config::load(&repo.dir.join(config::FILE))?;
     // A bound repo's workers start in their roles: the command must take that.
     if let (Some(_), Some(launch)) = (&config.bound, launch) {
-        role::probe(launch)?;
+        role::starts(launch.as_str())?;
     }
     let branch = &config.base_branch;
     let mut warnings = vec![];
