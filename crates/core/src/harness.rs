@@ -13,6 +13,7 @@ use crate::line::Line;
 use crate::role::{HARNESS_ENV, Start};
 
 mod claude_code;
+mod codex;
 mod pi;
 
 /// A file of the host user's that a directory the host keeps for a harness
@@ -53,6 +54,7 @@ pub enum Held<D> {
 pub enum Harness {
     ClaudeCode,
     Pi,
+    Codex,
 }
 
 /// A harness is written, wherever the fleet answers with one, as its key.
@@ -71,13 +73,14 @@ impl Harness {
     pub const UNNAMED: Harness = Harness::ClaudeCode;
 
     /// Every harness there is.
-    pub const ALL: [Harness; 2] = [Harness::ClaudeCode, Harness::Pi];
+    pub const ALL: [Harness; 3] = [Harness::ClaudeCode, Harness::Pi, Harness::Codex];
 
     /// What a team, a config and a stage record write it as.
     pub const fn key(self) -> &'static str {
         match self {
             Harness::ClaudeCode => claude_code::KEY,
             Harness::Pi => pi::KEY,
+            Harness::Codex => codex::KEY,
         }
     }
 
@@ -97,6 +100,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::NAME,
             Harness::Pi => pi::NAME,
+            Harness::Codex => codex::NAME,
         }
     }
 
@@ -105,6 +109,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::PROGRAM,
             Harness::Pi => pi::PROGRAM,
+            Harness::Codex => codex::PROGRAM,
         }
     }
 
@@ -114,17 +119,20 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::STOCK,
             Harness::Pi => pi::STOCK,
+            Harness::Codex => codex::STOCK,
         }
     }
 
     /// The variable that points it at a custom provider, where one does. A
     /// worker's shell inherits none of the fleet's, so the stock command
     /// would start a worker on another provider than the fleet's own. pi
-    /// has none: its providers are read from its user directory.
+    /// has none: its providers are read from its user directory. Codex has
+    /// none either: it keeps a custom provider in its user's configuration,
+    /// which a worker is given none of.
     pub const fn provider_variable(self) -> Option<&'static str> {
         match self {
             Harness::ClaudeCode => Some(claude_code::PROVIDER),
-            Harness::Pi => None,
+            Harness::Pi | Harness::Codex => None,
         }
     }
 
@@ -134,6 +142,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => &claude_code::FLAGS,
             Harness::Pi => &pi::FLAGS,
+            Harness::Codex => &codex::FLAGS,
         }
     }
 
@@ -143,6 +152,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => Kept { links: &[], files: &[] },
             Harness::Pi => pi::KEPT,
+            Harness::Codex => codex::KEPT,
         }
     }
 
@@ -152,6 +162,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::LIMITS,
             Harness::Pi => pi::LIMITS,
+            Harness::Codex => codex::LIMITS,
         }
     }
 
@@ -163,6 +174,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::limited(held),
             Harness::Pi => Ok(pi::limited(held)),
+            Harness::Codex => codex::limited(held),
         }
     }
 
@@ -170,7 +182,7 @@ impl Harness {
     /// rules every harness works under (`team::RULES`). A role holds none.
     pub const fn before_the_rules(self) -> &'static [&'static str] {
         match self {
-            Harness::ClaudeCode => &[],
+            Harness::ClaudeCode | Harness::Codex => &[],
             Harness::Pi => &pi::BEFORE_THE_RULES,
         }
     }
@@ -180,7 +192,7 @@ impl Harness {
     /// for it in `kept` (`models` reads it). `None`: it has no way to say.
     pub fn models_question(self, command: &str, kept: &str) -> Option<String> {
         match self {
-            Harness::ClaudeCode => None,
+            Harness::ClaudeCode | Harness::Codex => None,
             Harness::Pi => Some(pi::models_question(command, kept)),
         }
     }
@@ -190,7 +202,7 @@ impl Harness {
     /// passed as written.
     pub fn models(self, answer: &str) -> Option<Vec<String>> {
         match self {
-            Harness::ClaudeCode => None,
+            Harness::ClaudeCode | Harness::Codex => None,
             Harness::Pi => pi::models(answer),
         }
     }
@@ -200,7 +212,7 @@ impl Harness {
     /// way to say knows whatever it is given.
     pub fn knows(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode => true,
+            Harness::ClaudeCode | Harness::Codex => true,
             Harness::Pi => pi::knows(listed, model),
         }
     }
@@ -209,7 +221,7 @@ impl Harness {
     /// harness's name for a model would be taken for.
     pub fn names(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode => false,
+            Harness::ClaudeCode | Harness::Codex => false,
             Harness::Pi => pi::names(listed, model),
         }
     }
@@ -229,6 +241,7 @@ impl Harness {
         let mut line = match self {
             Harness::ClaudeCode => line,
             Harness::Pi => pi::environment(line, start),
+            Harness::Codex => codex::environment(line, start),
         };
         for (name, value) in start.facts.env() {
             line = line.fixed(" ").fixed(name).fixed("=").word(&value);
@@ -238,6 +251,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::added(line, start),
             Harness::Pi => pi::added(line, start),
+            Harness::Codex => codex::added(line, start),
         }
         .done()
     }
@@ -248,7 +262,7 @@ impl Harness {
     const fn environment(self) -> &'static [&'static str] {
         match self {
             Harness::ClaudeCode => &claude_code::ENVIRONMENT,
-            Harness::Pi => &[],
+            Harness::Pi | Harness::Codex => &[],
         }
     }
 
@@ -259,6 +273,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::asked_its_flags(line),
             Harness::Pi => pi::asked_its_flags(line),
+            Harness::Codex => codex::asked_its_flags(line),
         }
         .done()
     }
@@ -296,6 +311,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::call(described),
             Harness::Pi => pi::call(described),
+            Harness::Codex => codex::call(described),
         }
     }
 
@@ -306,6 +322,7 @@ impl Harness {
         match self {
             Harness::ClaudeCode => claude_code::REFUSED,
             Harness::Pi => pi::REFUSED,
+            Harness::Codex => codex::REFUSED,
         }
     }
 }

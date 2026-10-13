@@ -128,8 +128,11 @@ fn a_command_given_twice_for_one_harness_or_for_no_harness_is_an_error() {
             let error = error.error();
             assert!(error.contains("given twice for the harness `claude-code`"), "{error}");
         }
-        let error = answer(&world, &with(start, &[flag, "codex=agent"]), false).error();
-        assert!(error.contains("`codex` is no harness; the harnesses are: claude-code"), "{error}");
+        let error = answer(&world, &with(start, &[flag, "aider=agent"]), false).error();
+        assert!(
+            error.contains("`aider` is no harness; the harnesses are: claude-code, pi, codex"),
+            "{error}"
+        );
     }
     assert_eq!(world.shell_asked(), [] as [String; 0], "refused before anything was asked");
     assert_eq!(started(&world), [] as [String; 0]);

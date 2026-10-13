@@ -2080,7 +2080,7 @@ land: { by: dev, do: land }
 
     #[test]
     fn a_worker_on_a_harness_its_role_holds_no_limits_for_while_it_holds_some_is_a_fault() {
-        use Harness::{ClaudeCode, Pi};
+        use Harness::{ClaudeCode, Codex, Pi};
         let rest = "    harness: pi\n    escalate: { to: reviewer, do: rule }\n";
         let workflow = landed(rest, "{ by: reviewer, do: rule }");
         let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: pi\nmax_open: 3\n";
@@ -2092,7 +2092,7 @@ land: { by: dev, do: land }
         // A role with no limits at all is right for every harness.
         for default in Harness::ALL {
             assert_eq!(held(&[], &[], default), []);
-            assert_eq!(held(&[ClaudeCode, Pi], &[Pi, ClaudeCode], default), []);
+            assert_eq!(held(&[ClaudeCode, Pi, Codex], &[Codex, Pi, ClaudeCode], default), []);
         }
         // One with limits for one harness is right for that one alone: the
         // stage and the patrol that name another are refused.
@@ -2236,7 +2236,7 @@ land: { by: dev, do: land }
     #[test]
     fn a_harness_is_named_only_where_a_model_is_and_only_by_its_key() {
         let usual = "{ by: dev, do: land }";
-        for none in ["codex", "Claude Code", "claude"] {
+        for none in ["aider", "Claude Code", "claude"] {
             let (key, problem) = fault(&landed(&format!("    harness: {none}\n"), usual));
             assert_eq!(key, "stages[1].harness");
             assert!(problem.contains(none) && problem.contains("claude-code"), "{problem}");
@@ -2257,7 +2257,7 @@ land: { by: dev, do: land }
         let human =
             two("{ pass: b }", "    by: human\n    harness: claude-code\n    on: { pass: done }\n");
         assert_eq!(fault(&human).0, "stages[1].harness");
-        let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: codex\nmax_open: 3\n";
+        let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: aider\nmax_open: 3\n";
         let faults = patrolled(&[("patrols/a.md", patrol)]).unwrap_err();
         assert_eq!(faults, [("patrols/a.md".to_string(), "harness".to_string())]);
     }

@@ -61,7 +61,8 @@ WHAT IT ANSWERS
   where the team's directory is above the role: those are the team rules, which a
   worker is given; `limits` the harnesses the role holds
   limits for — a hook or a denied permission in its `.claude/settings.json` for
-  claude-code, an entry of its `.pi/extensions/` for pi. Each of `workflows` is {"name", "flow_label", "max_rework",
+  claude-code, an entry of its `.pi/extensions/` for pi, a hook in its
+  `.codex/hooks.json` for codex. Each of `workflows` is {"name", "flow_label", "max_rework",
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
   {"name", "by", "do", "harness", "model", "writes", "escalate", "pass", "reject"}.
   Each of `patrols` is {"name", "by", "do", "every", "harness", "model", "max_open",
