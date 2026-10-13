@@ -5,10 +5,11 @@
 //! user's configuration out, so it is given a user directory of the fleet's
 //! own (docs/adr/0013). It writes its configuration file in that directory
 //! by itself: what the fleet says to it is said on the line that starts it,
-//! and in no file — the hook that asks the guard among it. It loads rules
-//! from the directory it starts in and from no directory added to it: a
-//! role's it is told to load from the file every harness does, and the repo's
-//! own and the team rules are said on the line too.
+//! and in no file — the hooks that ask the guard and tell the worker backend
+//! among it. It loads rules from the directory it starts in and from no
+//! directory added to it: a role's it is told to load from the file every
+//! harness does, and the repo's own and the team rules are said on the line
+//! too.
 
 use std::collections::BTreeMap;
 
@@ -78,6 +79,22 @@ const DIRECTORIES: &str = "projects";
 const HOOKS: &str = "hooks";
 /// The event of Codex before each tool call: where the guard is asked.
 const BEFORE_A_CALL: &str = "PreToolUse";
+/// The events of Codex at which a worker's state changes, the one before
+/// each tool call apart (`BEFORE_A_CALL`): what the worker backend hears of,
+/// to report it (`REPORT`). With the user's hooks left out, nothing else
+/// tells it.
+const STATE_EVENTS: [&str; 7] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "PostToolUse",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+];
+/// How long Codex waits on one report, in seconds: a worker backend that
+/// does not answer holds no tool call up.
+const REPORT_TIMEOUT: u64 = 10;
 /// Keeps Codex from carrying what one worker learned to the next on this
 /// host: a role is what its repo says, the same on every host.
 const NO_MEMORY: &str = "features.memories=false";
@@ -118,6 +135,16 @@ const GUARD_ASKED: (&str, &str) = (
     " 2>&1 >/dev/null) && exit 0; \
      printf '%s\\n' \"${said:-afkconvoy guard: it could not be asked}\" >&2; exit 2",
 );
+
+/// The shell line that tells orca of a worker's state: the hook orca installs
+/// on its host for Codex, which reads the event on standard input and knows
+/// its terminal from the environment orca gave it. orca names it in the
+/// user's hooks, which a worker is given none of. On a host where orca
+/// installed none, nothing is told. Whatever the hook does, the line says
+/// nothing and succeeds: Codex takes what a hook says for an answer, and a
+/// report has none to give — only the guard refuses a call.
+const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/codex-hook.sh\"; if [ -x \"$hook\" ]; \
+     then /bin/sh \"$hook\"; else cat; fi >/dev/null 2>&1; exit 0";
 
 /// The tool Codex runs shell lines with. Its tool that edits files is handed
 /// a `command` too — the text of a patch — and is another tool.
@@ -175,14 +202,24 @@ fn trusted(dir: &str) -> String {
     format!("{DIRECTORIES}={{{}={{trust_level=\"trusted\"}}}}", toml_text(dir))
 }
 
-/// The hook that asks the guard before every tool call, with the line
-/// `guard`, as one key of Codex's configuration. Codex adds it to the hooks a
-/// role holds, so a role's run beside it and no role is without the guard
-/// (docs/adr/0012).
-fn guard_hook(guard: &str) -> String {
+/// The hooks added to a worker's, as one key of Codex's configuration: the
+/// guard, asked before every tool call with the line `guard`, and the report,
+/// the line `report` run wherever the worker's state changes. Codex adds them
+/// to the hooks a role holds, so a role's run beside them and no role is
+/// without the guard (docs/adr/0012) — or unheard of by the worker backend,
+/// which would read a worker it has no report of off its terminal alone.
+fn added_hooks(guard: &str, report: &str) -> String {
     let (before, after) = GUARD_ASKED;
-    let asked = toml_text(&format!("{before}{guard}{after}"));
-    format!("{HOOKS}={{{BEFORE_A_CALL}=[{{hooks=[{{type=\"command\",command={asked}}}]}}]}}")
+    let guard =
+        format!("{{type=\"command\",command={}}}", toml_text(&format!("{before}{guard}{after}")));
+    let report =
+        format!("{{type=\"command\",command={},timeout={REPORT_TIMEOUT}}}", toml_text(report));
+    let mut hooks = format!("{HOOKS}={{{BEFORE_A_CALL}=[{{hooks=[{guard},{report}]}}]");
+    for event in STATE_EVENTS {
+        hooks.push_str(&format!(",{event}=[{{hooks=[{report}]}}]"));
+    }
+    hooks.push('}');
+    hooks
 }
 
 /// The file Codex is told to load a directory's rules from, as one key of
@@ -219,8 +256,8 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 /// `line`, which starts the worker launch command, with what Codex is given
 /// to put a worker in its role: the worktree added, the review of its hooks
 /// and the question about its role's directory answered, the role's rules
-/// and none from above them, the repo's own and the team rules, the guard,
-/// no memory, and the stage's model.
+/// and none from above them, the repo's own and the team rules, the guard and
+/// the report, no memory, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
     let line = line
@@ -250,7 +287,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(CONFIG)
         .fixed(" ")
-        .word(&guard_hook(start.guard))
+        .word(&added_hooks(start.guard, REPORT))
         .fixed(" ")
         .fixed(CONFIG)
         .fixed(" ")
@@ -330,7 +367,20 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
 mod tests {
     use super::*;
     use crate::harness::Harness;
+    use crate::line::quoted;
     use crate::role::{Facts, On, Told};
+
+    /// The hooks that add the guard `/bin/afkconvoy guard` and the report.
+    fn added() -> String {
+        let report = format!(r#"{{type="command",command={},timeout=10}}"#, toml_text(REPORT));
+        let mut added = format!(
+            r#"hooks={{PreToolUse=[{{hooks=[{{type="command",command="said=$(/bin/afkconvoy guard 2>&1 >/dev/null) && exit 0; printf '%s\\n' \"${{said:-afkconvoy guard: it could not be asked}}\" >&2; exit 2"}},{report}]}}]"#
+        );
+        for event in STATE_EVENTS {
+            added.push_str(&format!(",{event}=[{{hooks=[{report}]}}]"));
+        }
+        added + "}"
+    }
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
@@ -360,7 +410,8 @@ mod tests {
     fn the_line_changes_to_the_role_first_and_adds_a_fixed_set() {
         assert_eq!(
             Harness::Codex.in_role(STOCK, &start(Some("gpt-5.5"))),
-            "cd '/copies/acme/dev/abc' && export CODEX_HOME='/cache/harness/codex' \
+            format!(
+                "cd '/copies/acme/dev/abc' && export CODEX_HOME='/cache/harness/codex' \
              AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
              AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
@@ -369,13 +420,12 @@ mod tests {
              AFKCONVOY_HARNESS='codex' && \
              codex --dangerously-bypass-approvals-and-sandbox --add-dir '/wt/issue 7' \
              --dangerously-bypass-hook-trust \
-             --config 'projects={\"/copies/acme/dev/abc\"={trust_level=\"trusted\"}}' \
+             --config 'projects={{\"/copies/acme/dev/abc\"={{trust_level=\"trusted\"}}}}' \
              --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
              --config 'project_root_markers=[]' \
-             --config 'hooks={PreToolUse=[{hooks=[{type=\"command\",command=\"said=$(/bin/afkconvoy \
-             guard 2>&1 >/dev/null) && exit 0; printf '\\''%s\\\\n'\\'' \\\"${said:-afkconvoy \
-             guard: it could not be asked}\\\" >&2; exit 2\"}]}]}' \
-             --config features.memories=false --model 'gpt-5.5'"
+             --config {} --config features.memories=false --model 'gpt-5.5'",
+                quoted(&added())
+            )
         );
     }
 
@@ -396,9 +446,37 @@ mod tests {
             trusted(odd.role_dir),
             r#"projects={"/it's \"here\"/a\\b/$HOME"={trust_level="trusted"}}"#
         );
-        let hook = guard_hook(odd.guard);
-        assert!(hook.contains(r#"command="said=$(/it's \"here\"/afkconvoy guard 2>&1 "#), "{hook}");
+        let hooks = added_hooks(odd.guard, r#"tell "$HOME""#);
+        assert!(
+            hooks.contains(r#"command="said=$(/it's \"here\"/afkconvoy guard 2>&1 "#),
+            "{hooks}"
+        );
+        assert!(hooks.contains(r#"command="tell \"$HOME\"",timeout=10"#), "{hooks}");
         assert_eq!(toml_text("a\tb\u{7f}"), r#""a\u0009b\u007F""#);
+    }
+
+    #[test]
+    fn the_worker_backend_is_told_wherever_a_worker_s_state_changes_and_refuses_nothing() {
+        let hooks = added_hooks("/bin/afkconvoy guard", REPORT);
+        assert_eq!(hooks, added());
+        // At every event orca itself names its hook at, each with the timeout.
+        let report = format!("{{type=\"command\",command={},timeout=10}}", toml_text(REPORT));
+        assert!(REPORT.contains("/.orca/agent-hooks/codex-hook.sh"));
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PermissionRequest",
+            "PostToolUse",
+            "SubagentStart",
+            "SubagentStop",
+            "Stop",
+        ] {
+            assert!(hooks.contains(&format!(",{event}=[{{hooks=[{report}]}}]")), "{event}");
+        }
+        // Before a tool call it is told beside the guard, which alone has no
+        // timeout — and alone can end in the code that refuses.
+        assert!(hooks.contains(&format!("exit 2\"}},{report}]}}],SessionStart=")), "{hooks}");
+        assert!(REPORT.ends_with(">/dev/null 2>&1; exit 0"));
     }
 
     #[test]
