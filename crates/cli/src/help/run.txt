@@ -111,11 +111,33 @@ WHAT TRIPS YOU UP
     `--worker-command <command>` is the worker launch command of the default harness:
     the one the repo's config names, Claude Code where it names none.
     `--worker-command <harness>=<command>` is that of one harness, by its key
-    (`claude-code`). A value is the second form when its first word holds an `=`.
-    A harness given none is started with its stock command.
+    (`claude-code`, `pi`). A value is the second form when its first word holds an
+    `=`. A harness given none is started with its stock command: Claude Code with
+    `claude --dangerously-skip-permissions`, pi with `pi`.
   - In a bound repo, before any worker is started, the command of every harness the
     fleet could be asked for is checked: the repo's default, each harness a stage of
     the team's workflows names, and each a patrol the repo runs names. One that
     cannot be started refuses the start, named with its harness and the stage or
     patrol that calls for it, and no worker at all is started: no harness is ever
     started in another's place.
+  - A pi worker — of a stage or a patrol that says `harness: pi` — starts in its
+    role's directory like any other, with what pi does not load from there added:
+        cd <the role's copy> && export PI_CODING_AGENT_DIR=<the fleet's own>
+          <the stage's facts> && <worker launch command> --approve --no-skills
+          --skill <the role's copy>/.claude/skills
+          --extension <the fleet's own>/afkconvoy.js [--model <the stage's>]
+    `--approve` answers on the line what pi would ask at its terminal, and has it
+    load the role's own limits (`.pi/extensions/`). The role's skills are named and
+    pi looks for no other: none of yours is loaded. pi's user directory is the
+    fleet's own (~/.cache/afkconvoy/harness/pi), not yours (~/.pi/agent): it holds
+    links to your logins and to the models you defined (auth.json, models.json), a
+    link to the extension orca installed to hear of a pi session's state, and nothing
+    else of yours — no rule, skill, setting or other extension. The extension named
+    is afkconvoy's own: it asks `afkconvoy guard` before every tool call, refusing
+    one the guard refuses or cannot be asked of, and loads the rules of the issue's
+    worktree (its AGENTS.md, or CLAUDE.md). A command you give for pi must take
+    `--approve`, `--no-skills`, `--skill`, `--extension` and `--model`.
+  - A stage's model is its harness's own name for it: pi's is `<provider>/<id>`. A
+    stage on pi that names none gets whichever model pi picks for itself. A provider
+    whose key is in your login shell's environment is reached too, and a rules file
+    in a directory above the fleet's copies (~/AGENTS.md) is one pi loads.

@@ -146,7 +146,7 @@ impl Launches {
     }
 
     fn propose(&self, harness: Harness) -> Result<Option<Proposed>> {
-        let provider = std::env::var(harness.provider_variable()).ok();
+        let provider = harness.provider_variable().and_then(|name| std::env::var(name).ok());
         let terminal =
             self.starts && std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
         let command =

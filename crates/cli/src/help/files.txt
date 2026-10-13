@@ -43,8 +43,8 @@
   is a key of a stage a role performs and of a patrol — wherever `model` is one — and
   nowhere else: a consult, a landing and the proposal of a precedent run on the
   default. One that names none takes the default too, which is the `harness` of the
-  repo's config, and claude-code where that names none. claude-code, Claude Code, is the
-  only harness there is.
+  repo's config, and claude-code where that names none. The harnesses are claude-code,
+  Claude Code, and pi.
 
   `precedents` names who proposes a human's ruling as a precedent: the fleet starts one
   worker in that role, with that skill, for each ruling a human gives an escalated issue
@@ -80,3 +80,10 @@
   `.claude/`, which Claude Code loads for a session opened by hand and a worker never
   sees. A symlink in such a role that leaves its directory would point at nothing: it is
   a fault.
+
+  A role whose stages run on pi keeps the same rules and the same skills: pi reads
+  `CLAUDE.md` from the directory it starts in, and the fleet names `.claude/skills/` to
+  it. Its limits are the part written once per harness: pi runs no hook of
+  `.claude/settings.json`, so what such a role may never do is an extension of pi's in
+  `.pi/extensions/`, which the fleet has pi load. What a pi worker is started with:
+  `afkconvoy run --help`.

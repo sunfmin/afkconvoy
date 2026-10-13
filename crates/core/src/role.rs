@@ -254,10 +254,9 @@ pub struct Start<'a> {
     pub model: Option<&'a str>,
     /// The shell line that runs the guard: this tool's `guard` subcommand.
     pub guard: &'a str,
-    /// The shell line that tells the worker backend of the worker's state: it
-    /// is given what the worker's harness says of an event on standard input
-    /// (`Harness::report`).
-    pub report: &'a str,
+    /// The directory this host keeps for the worker's harness, holding what
+    /// that harness is given of the fleet's own (`Harness::kept`).
+    pub kept: &'a str,
     pub facts: Facts<'a>,
 }
 

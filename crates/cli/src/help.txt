@@ -33,7 +33,7 @@ WHAT A COMMAND ANSWERS
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
   a non-zero exit. Warnings go to stderr. `run` instead prints one line per tick until
   it is stopped, `show` a drawing unless it is asked about an issue, and `guard` answers
-  Claude Code as a hook does: with its exit code.
+  the harness that asks it as a hook does: with its exit code.
 
 THE COMMANDS, by who runs them
 
@@ -63,7 +63,7 @@ THE COMMANDS, by who runs them
   to put an issue at a stage of your choosing, or to see what a `by: human` stage asks:
       rule  send
 
-  A worker's hook — Claude Code runs it before each thing a bound repo's worker does.
+  A worker's hook — its harness asks it before each thing a bound repo's worker does.
   Nobody runs it by hand. Read it to learn what a worker is refused, and why one was:
       guard
 
@@ -87,11 +87,12 @@ RULES TO KNOW BEFORE YOU START
     `--worker-command <command>` says the default harness's, and
     `--worker-command <harness>=<command>` one harness's, by its key: once for each.
     A harness nobody said one for is started with its stock command.
-  - In a bound repo the worker launch command must end in Claude Code taking flags: the
-    fleet adds to it what starts each worker in its role and under the guard, and a
-    start refuses a command whose `--help` does not name those flags. Every harness
-    the team could ask for is checked before any worker is started, and none is
-    ever started in another's place.
+  - In a bound repo the worker launch command must end in its harness — Claude Code,
+    or pi — taking flags: the fleet adds to it what starts each worker in its role and
+    under the guard, and a start refuses a command whose `--help` does not name those
+    flags. Every harness the team could ask for is checked before any worker is
+    started, and none is ever started in another's place. What each harness's worker
+    is started with: `afkconvoy run --help`.
 
 DESIGNING A TEAM, for a bound repo
 

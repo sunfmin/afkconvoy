@@ -122,7 +122,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         team_dir: &kept.copy.dir.display().to_string(),
         model: patrol.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
-        report: harness.report(),
+        kept: &crate::kept::keep(harness)?.display().to_string(),
         facts: Facts {
             on: On::Patrol(name),
             role: &role.name,

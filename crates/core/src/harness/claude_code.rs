@@ -39,7 +39,7 @@ const SOURCES: &str = "project";
 /// The event of Claude Code before each tool call: where the guard is asked.
 const BEFORE_A_CALL: &str = "PreToolUse";
 /// The events of Claude Code at which a worker's state changes: what the
-/// worker backend hears of, to report it (`Start::report`). With the user's
+/// worker backend hears of, to report it (`REPORT`). With the user's
 /// settings left out, nothing else tells it.
 const STATE_EVENTS: [&str; 12] = [
     "SessionStart",
@@ -72,7 +72,7 @@ pub(super) const ENVIRONMENT: [&str; 2] = [ADDED_RULES, NO_MEMORY];
 /// knows its terminal from the environment orca gave it. orca puts the same
 /// line in the user's settings, which a worker in its role does not load. On
 /// a host where orca installed none, nothing is told.
-pub(super) const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/claude-hook.sh\"; if [ -x \"$hook\" ]; \
+const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/claude-hook.sh\"; if [ -x \"$hook\" ]; \
      then ORCA_HOOK_AGENT_PID=\"$PPID\" /bin/sh \"$hook\"; else cat >/dev/null; fi";
 
 /// The tool Claude Code runs shell lines with.
@@ -141,7 +141,7 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(SETTINGS)
         .fixed(" ")
-        .word(&added_settings(start.guard, start.report));
+        .word(&added_settings(start.guard, REPORT));
     match start.model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
@@ -198,10 +198,10 @@ mod tests {
         Harness::ClaudeCode.takes(command, answer)
     }
 
-    /// The settings that add the guard `/bin/afkconvoy guard` and the report
-    /// `tell "$HOME"`.
+    /// The settings that add the guard `/bin/afkconvoy guard` and the report.
     fn added() -> String {
-        let report = r#"{"type":"command","command":"tell \"$HOME\"","timeout":10}"#;
+        let report =
+            format!(r#"{{"type":"command","command":{},"timeout":10}}"#, json_text(REPORT));
         let mut added = format!(
             r#"{{"hooks":{{"PreToolUse":[{{"hooks":[{{"type":"command","command":"/bin/afkconvoy guard"}},{report}]}}]"#
         );
@@ -218,7 +218,7 @@ mod tests {
             team_dir: "/copies/acme/team/def",
             model,
             guard: "/bin/afkconvoy guard",
-            report: r#"tell "$HOME""#,
+            kept: "/cache/harness/claude-code",
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },
                 role: "dev",
@@ -272,9 +272,10 @@ mod tests {
         assert!(line.ends_with("--model 'a b;c'"), "{line}");
         // Nor by Claude Code, of the line that runs the guard.
         let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
-        let settings = added_settings(odd.guard, odd.report);
+        let settings = added_settings(odd.guard, r#"tell "$HOME""#);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
         assert!(settings.contains(r#""command":"tell \"$HOME\"","timeout":10"#), "{settings}");
+        let settings = added_settings(odd.guard, REPORT);
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
     }
 

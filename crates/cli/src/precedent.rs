@@ -131,7 +131,7 @@ pub fn propose(
         team_dir: &kept.copy.dir.display().to_string(),
         model: None,
         guard: &crate::own_command().fixed(" guard").own(),
-        report: harness.report(),
+        kept: &crate::kept::keep(harness)?.display().to_string(),
         facts: Facts {
             on: On::Proposal { issue: ruling.issue },
             role: &role.name,
