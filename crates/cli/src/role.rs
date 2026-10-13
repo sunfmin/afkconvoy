@@ -117,7 +117,7 @@ impl Staged {
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
             joins,
-            role_copy: kept.role(role)?.clone(),
+            role_copy: kept.role(role)?,
             team_copy: kept.copy.clone(),
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })

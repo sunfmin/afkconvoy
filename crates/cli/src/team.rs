@@ -352,6 +352,12 @@ fn role_dir(copy: &Copy, dir: &RepoDir) -> Result<RoleDir, Unread> {
     read().map_err(|error: anyhow::Error| Unread::Refused(format!("{error:#}")))
 }
 
+/// What Claude Code loads from a directory a session is started in or under,
+/// and from one added to it: its rules, and the directory of its skills and
+/// settings.
+const RULES: &str = "CLAUDE.md";
+const SETTINGS: &str = ".claude";
+
 /// Each `CLAUDE.md` and `.claude/` a directory above `dir` holds in `copy`,
 /// the copy of its repo, as a path from the repo's root: what Claude Code
 /// loads for a session started in `dir` of a checkout, and a worker is not
@@ -360,7 +366,7 @@ fn above(copy: &Copy, dir: &RepoDir) -> Vec<String> {
     let mut found = vec![];
     let mut at = PathBuf::new();
     for segment in dir.path().split('/').filter(|segment| !segment.is_empty()) {
-        let (rules, settings) = (at.join("CLAUDE.md"), at.join(".claude"));
+        let (rules, settings) = (at.join(RULES), at.join(SETTINGS));
         if copy.dir.join(&rules).is_file() {
             found.push(rules.display().to_string());
         }
@@ -430,50 +436,60 @@ fn read_kept(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<(Copy, Sour
 /// needs no worker in that role is carried out all the same.
 pub struct Kept {
     pub team: Team,
-    /// The team's own directory, in the copy of its repo, and that repo's
-    /// commit.
+    /// The copy of the team's own directory, without the directories of its
+    /// roles, and its repo's commit.
     pub copy: Copy,
     /// What reading each role's repo came to.
     roles: RoleReads,
+    /// Where each role's directory is taken out of the copy of its repo.
+    copies: Copies,
 }
 
 impl Kept {
-    /// The copy of the repo of `role`: what a worker in it starts in.
-    /// `Unreached` of a role GitHub could not be reached for. A role that is
-    /// a subdirectory of its repo is refused: a worker started in the copy of
-    /// the whole repo would be given more than its role (docs/adr/0014).
-    pub fn role(&self, role: &team::Role) -> Result<&Copy> {
+    /// The copy of the directory of `role`, and of nothing else of its repo:
+    /// what a worker in it starts in, taken out of the copy of its repo
+    /// unless one of that commit is here (docs/adr/0014). `Unreached` of a
+    /// role GitHub could not be reached for.
+    pub fn role(&self, role: &team::Role) -> Result<Copy> {
         let repo = &role.dir.repo;
-        if !role.dir.path().is_empty() {
-            bail!(
-                "the role `{}` is a subdirectory of its repo ({}), and the fleet on this host \
-                 cannot start a role in a subdirectory yet: this afkconvoy copies a role's whole \
-                 repo, not its directory alone (sunfmin/afkconvoy#174). Until one that does is \
-                 installed, only a role that is a whole repo can be started",
-                role.name,
-                role.dir
-            );
-        }
         if let Some((_, unreached)) = self.roles.unreached.iter().find(|(read, _)| read == repo) {
             return Err(unreached.clone().into());
         }
         let mut copies = self.roles.copies.iter();
-        let kept = copies.find(|(read, copy)| read == repo && copy.commit == role.commit);
-        kept.map(|(_, copy)| copy).ok_or_else(|| anyhow!("no copy of {repo} was kept"))
+        let fetched = copies.find(|(read, copy)| read == repo && copy.commit == role.commit);
+        let (_, fetched) = fetched.ok_or_else(|| anyhow!("no copy of {repo} was kept"))?;
+        self.copies.role(fetched, &role.dir)
     }
+}
+
+/// What the copy of the team `loaded` from the directory `dir` leaves out,
+/// each a path from `dir`: the directory of every role in it, and the
+/// `CLAUDE.md` and `.claude/` at its top. The team's copy is added to every
+/// worker, and Claude Code loads those two from an added directory as it does
+/// from one above the worker's: a worker's rules are its role's, and neither
+/// its neighbours' nor those a repo's root holds for a human (docs/adr/0014).
+fn left_out(dir: &RepoDir, loaded: &Team) -> Vec<PathBuf> {
+    let inside = loaded.roles.iter().filter(|role| dir.holds(&role.dir) && role.dir != *dir);
+    let roles = inside.map(|role| {
+        let under = role.dir.path().strip_prefix(dir.path()).unwrap_or(role.dir.path());
+        PathBuf::from(under.trim_start_matches('/'))
+    });
+    roles.chain([PathBuf::from(RULES), PathBuf::from(SETTINGS)]).collect()
 }
 
 /// Loads the team at `team` as it stands now: the head of its repo and of
 /// each role's, each read from the fleet's copy of that commit and fetched
-/// only when no copy of it is here. A team with a fault fails with `Refused`,
-/// and one whose own repo GitHub could not be reached for with `Unreached`.
+/// only when no copy of it is here — and the team's directory taken out of
+/// its repo's. A team with a fault fails with `Refused`, and one whose own
+/// repo GitHub could not be reached for with `Unreached`.
 pub fn keep(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<Kept> {
-    let (copy, sources, roles) = read_kept(gh, copies, team)?;
-    let copy = Copy { dir: within(&copy, team), commit: copy.commit };
-    match team::load(&sources) {
-        Ok(team) => Ok(Kept { team, copy, roles }),
-        Err(faults) => Err(Refused { team: team.to_string(), faults }.into()),
-    }
+    let (fetched, sources, roles) = read_kept(gh, copies, team)?;
+    let loaded = match team::load(&sources) {
+        Ok(loaded) => loaded,
+        Err(faults) => return Err(Refused { team: team.to_string(), faults }.into()),
+    };
+    let copy = copies.team(&fetched, team, &left_out(team, &loaded))?;
+    Ok(Kept { team: loaded, copy, roles, copies: copies.clone() })
 }
 
 fn answer(loaded: &Loaded) -> Value {
