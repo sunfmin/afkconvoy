@@ -33,7 +33,7 @@ fn main() {
     if injected {
         st.finish("", 1, "fake gh: injected failure\n");
     }
-    let cut_short = st.doc["cut_short"].as_object_mut().and_then(|cuts| {
+    let cut_short = st.doc.get_mut("cut_short").and_then(Value::as_object_mut).and_then(|cuts| {
         cuts.iter_mut().find(|(part, left)| line.contains(part.as_str()) && left.as_u64() > Some(0))
     });
     if let Some((_, left)) = cut_short {
