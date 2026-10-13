@@ -116,7 +116,14 @@ WHAT TRIPS YOU UP
     is not on the landing train: no judge, no watch, no advance, no nudge. What those
     workers declared is acted on by the first tick after the last lock issue closed.
     Their claims take no slot meanwhile, so `held` may pass the config's
-    `concurrency` by as many. What landed is still settled, and the train still tended.
+    `concurrency` by as many; the line of `run` shows them apart, as `left alone`.
+  - What a closed lock explains is run again, not carried out. In a bound repo, a stage
+    whose own worker declared `escalate` before the lock closed and was not acted on
+    since — and one whose worker stayed silent past a nudge sent before it closed — is
+    not handed to its consult or to a human: the fleet leaves a stage record
+    (`verdict=lock-closed by=fleet`), the claim is released (`advance`, `done`), and the
+    next tick starts a worker on that stage, whose brief says a lock stood. It is no
+    rework. A `pass`, a `blocked` and an `already-satisfied` stand as they are. What landed is still settled, and the train still tended.
   - A step that failed is not a failed command: the exit is 0 and the failure is in
     `errors`. Read `errors`, not the exit code.
   - It does not take the claims stamped with this host: only `run` does that, at its

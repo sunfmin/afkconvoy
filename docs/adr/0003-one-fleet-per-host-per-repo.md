@@ -7,4 +7,5 @@ That makes "one fleet per host per repo" a rule: a second `afkconvoy run` on the
 ## Consequences
 
 - There is no drain. Stopping is exiting; the claims stay on the remote and the next start on this host takes them back and continues them.
+- A claim is one whatever it is on: an issue, a patrol's run, the proposal of a precedent. A start takes all three. An issue taken is continued; a run taken is ended by the next tick once its worker is gone or has stopped, as any run of the instance's own.
 - Another host waits for the lease, or uses the explicit `takeover` command, which is kept for that case only.

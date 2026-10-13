@@ -7,9 +7,9 @@ use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::stage_nudge_line;
-use afkconvoy_core::stage_record::Advance;
+use afkconvoy_core::stage_record::{Advance, StageRecord};
 use afkconvoy_core::stopped::{
-    Route, Silence, Why, Workless, settled_by_state, silence, stage_stalled_reason,
+    Nudged, Route, Silence, Why, Workless, settled_by_state, silence, stage_stalled_reason,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{self, HandOnStep, Released};
@@ -22,6 +22,7 @@ use crate::fleet::Fleet;
 use crate::judge::{
     close_claim, escalate_claim, mine, nudge_worker, progress, where_it_stopped, worktree_and_work,
 };
+use crate::lock::explaining_lock;
 use crate::orca::{Source, Worktree};
 use crate::park::{park_claim, standings};
 use crate::stage::Flows;
@@ -76,14 +77,63 @@ fn hand_on(
     })
 }
 
+/// Leaves on `issue` the record that its stage `stage` runs again, the
+/// closed lock `lock` having explained what stopped it — once: a tick cut
+/// short after it leaves no second.
+fn leave_lock_closed(
+    fleet: &Fleet,
+    flows: &Flows,
+    issue: u64,
+    stage: &str,
+    lock: u64,
+) -> Result<()> {
+    let record = StageRecord::lock_closed(stage, lock);
+    if !flows.ends_with(issue, &record) {
+        fleet.gh.comment(issue, &record.comment())?;
+    }
+    Ok(())
+}
+
+/// Ends `claim` with its stage `stage` to run again, not escalated: the
+/// closed lock `lock` explains what stopped it. The frontier holds the issue
+/// at that stage, for a worker whose brief says a lock stood.
+fn run_again(
+    fleet: &mut Fleet,
+    flows: &Flows,
+    claim: &Claim,
+    stage: &str,
+    lock: u64,
+) -> Result<Outcome> {
+    leave_lock_closed(fleet, flows, claim.number, stage, lock)?;
+    hand_on(fleet, claim, None, None)?;
+    // As after any verdict: the stage is the next tick's to start.
+    let _ = wake(&fleet.repo);
+    Ok(Outcome::Done)
+}
+
+/// The tick's step for an unclaimed issue that calls for a human, when a
+/// closed lock explains the `escalate` that put it there: its stage runs
+/// again instead → whether one did. Nothing is claimed: the record is all
+/// there is to leave, and the frontier holds the issue from the next tick.
+pub fn run_again_unclaimed(fleet: &Fleet, flows: &Flows, issue: u64) -> Result<bool> {
+    let Some((stage, at)) = flows.stage_escalate(issue) else { return Ok(false) };
+    let Some(lock) = explaining_lock(&fleet.gh, &fleet.config, at)? else { return Ok(false) };
+    leave_lock_closed(fleet, flows, issue, &stage, lock)?;
+    let _ = wake(&fleet.repo);
+    Ok(true)
+}
+
 /// Asks after the worker of `claim`, whose stage `stage` has declared
 /// nothing — or, `consult`, whose consult has neither ruled nor let its
 /// `escalate` through: one that is gone is continued, one that stopped is nudged once,
-/// and one silent past its nudge is escalated, as a silent worker ever is.
+/// and one silent past its nudge is escalated, as a silent worker ever is —
+/// unless a lock that closed since the nudge explains the silence of a
+/// stage's own worker: that stage runs again.
 fn ask_after(
     fleet: &mut Fleet,
     me: &Me,
     agent: &Agent,
+    flows: &Flows,
     claim: &Claim,
     (stage, consult): (&str, bool),
 ) -> Result<Outcome> {
@@ -116,6 +166,13 @@ fn ask_after(
             Ok(Outcome::Nudged)
         }
         Silence::Stalled(silent) => {
+            let nudged = match worktree.nudged()? {
+                Nudged::At(at) if !consult => Some(at),
+                _ => None,
+            };
+            if let Some(lock) = explaining_lock(&fleet.gh, &fleet.config, nudged)? {
+                return run_again(fleet, flows, claim, stage, lock);
+            }
             let tail = where_it_stopped(&worktree, &silent);
             let reason = stage_stalled_reason(stage, consult, &silent, &tail);
             let (pr, workless) = (pr_of(fleet, issue)?, Workless::of(&progress));
@@ -159,10 +216,17 @@ pub fn advance(
         escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
         return Ok(Outcome::Done);
     }
+    // What a fleet lock explains is run again, not carried out: its stage's
+    // `escalate` goes neither to a consult nor to a human.
+    if let Some((stage, at)) = flows.stage_escalate(issue).filter(|_| declared)
+        && let Some(lock) = explaining_lock(&fleet.gh, &fleet.config, at)?
+    {
+        return run_again(fleet, flows, &claim, &stage, lock);
+    }
     let reason = match called.advance {
         Advance::AskAfter => {
             let asked = (called.stage.as_deref().unwrap_or("?"), called.consulted);
-            return ask_after(fleet, me, agent, &claim, asked);
+            return ask_after(fleet, me, agent, flows, &claim, asked);
         }
         Advance::HandOn => {
             hand_on(fleet, &claim, called.waits_at.as_deref(), None)?;

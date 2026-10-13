@@ -747,7 +747,9 @@ fn read_held(fleet: &Fleet, set: &WorkingSet, stood: &[Stood]) -> Vec<Held> {
 /// The fleet instance the claims stamped with `host` name: the one stamped
 /// last, for a host whose `run` left no log.
 fn stamped_instance(fleet: &Fleet, host: &str) -> Option<String> {
-    let owners = fleet.scan.claims.iter().filter_map(|claim| claim.owner.as_ref());
+    let on_issues = fleet.scan.claims.iter().filter_map(|claim| claim.owner.as_ref());
+    let on_runs = fleet.scan.runs.iter().filter_map(|run| run.owner.as_ref());
+    let owners = on_issues.chain(on_runs);
     let newest = owners.filter(|owner| owner.host == host).max_by_key(|owner| owner.ts);
     newest.map(|owner| owner.instance.clone())
 }

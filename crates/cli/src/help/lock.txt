@@ -50,6 +50,10 @@ WHAT TRIPS YOU UP
   - Workers already running are left alone, and nobody asks after them: what they
     declare — a verdict, a PR — is acted on once no lock stands. Their claims take no
     slot meanwhile, so a lock issue is started even by a fleet at its bound.
+  - Once the last lock has closed, a bound repo's stage that declared `escalate` or
+    stayed silent past its nudge before then runs again, on the base branch as it is
+    now: a broken base branch is what such a lock is raised for, and a human could
+    only answer "run the gate again". Every other verdict stands.
   - What was on the landing train before the lock is not taken off it. The lock
     issue's PR joins behind it.
   - A lock issue nothing makes dispatchable — no ready label, no flow label, an epic

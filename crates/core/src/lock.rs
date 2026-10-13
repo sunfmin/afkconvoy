@@ -40,6 +40,39 @@ pub fn reason(locks: &[u64]) -> String {
     format!("a fleet lock stands ({})", named(locks))
 }
 
+/// A fleet lock that has ended: its issue, and when that closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed {
+    pub number: u64,
+    /// When its issue closed, in epoch seconds.
+    pub at: u64,
+}
+
+/// The lock that explains an `escalate` or a failure declared at `at` and not
+/// acted on since: one that closed no earlier — it stood when that was
+/// declared, or was raised before anybody read it. A broken base branch is
+/// what such a lock is raised for, and what it explains is run again, not
+/// carried out. Of several, the last to close; `None` where none explains it.
+pub fn explains(closed: &[Closed], at: u64) -> Option<u64> {
+    let mut last: Option<Closed> = None;
+    for lock in closed {
+        if lock.at >= at && last.is_none_or(|found| lock.at > found.at) {
+            last = Some(*lock);
+        }
+    }
+    last.map(|lock| lock.number)
+}
+
+/// What the stage record of a stage that runs again says, the lock `lock`
+/// having explained what stopped it.
+pub fn closed_text(lock: u64) -> String {
+    format!(
+        "A fleet lock stood (#{lock}) and has closed. What this stage declared, or how it \
+         stopped, may be the fault that lock was raised for and not this issue's: it is not \
+         carried out. The stage runs again, which counts as no rework."
+    )
+}
+
 /// The comment a raised lock leaves on its issue: the record of the role that
 /// raised it — `None`: a worker of an unbound repo, which has none — and
 /// what the lock does, for whoever reads the issue.
@@ -105,6 +138,17 @@ mod tests {
         assert!(!keeps_off(&[4, 9], 9));
         assert!(!keeps_off(&[], 2), "no lock stands: nothing is kept off");
         assert_eq!(reason(&[4, 9]), "a fleet lock stands (#4, #9)");
+    }
+
+    #[test]
+    fn a_closed_lock_explains_what_was_declared_before_it_closed() {
+        let closed = [Closed { number: 13, at: 500 }, Closed { number: 4, at: 100 }];
+        assert_eq!(explains(&closed, 450), Some(13), "declared while #13 stood");
+        assert_eq!(explains(&closed, 500), Some(13));
+        assert_eq!(explains(&closed, 90), Some(13), "of several, the last to close");
+        assert_eq!(explains(&closed, 501), None, "declared once the last lock had closed");
+        assert_eq!(explains(&[], 90), None);
+        assert!(closed_text(13).starts_with("A fleet lock stood (#13) and has closed."));
     }
 
     #[test]

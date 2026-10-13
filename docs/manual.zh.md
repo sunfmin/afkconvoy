@@ -149,7 +149,7 @@ land: { by: dev, do: land }
 
 **巡查（patrol）是按时间表运行的角色。** 它不拥有任何 issue。它去找活——没人分流的 issue、坏掉的主干、值得提出的改进——开 issue 并用 `afkconvoy intake` 收进工作流。它不允许提交代码。`max_open` 规定：它开的 issue 还有这么多张未关闭时，就不再运行它。
 
-**机群锁（fleet lock）让一切停下，只做一件修复。** 主干坏了的时候，每张 issue 的门禁都是红的，不管它的 PR 里是什么。一张带着锁标签的未关闭 issue，会让 fleet 只处理锁 issue，直到它关闭。
+**机群锁（fleet lock）让一切停下，只做一件修复。** 主干坏了的时候，每张 issue 的门禁都是红的，不管它的 PR 里是什么。一张带着锁标签的未关闭 issue，会让 fleet 只处理锁 issue，直到它关闭。在锁关闭之前宣告了 `escalate` 或者沉默下去的阶段，撞上的是主干的毛病而不是它自己的：锁关闭后它会重跑，而不是交给人；锁还在的时候门禁是红的，worker 会被告知先等着。
 
 **先例（precedent）是值得留下的裁决。** 你对一张被升级的 issue 下裁决后，团队指定的那个角色的 worker 会把你的裁决提成团队仓库 `precedents.md` 里的一行，以一个 PR 的形式提交到团队仓库。合并它，此后每个阶段在想为同一个问题升级之前，都会先读到它。
 
@@ -582,7 +582,7 @@ tick 1: dispatched #1, #3 · holding 3/3 · frontier 0 · next in 30s
 tick 2: nothing to do · holding 3/3 · frontier 0 · next in 60s
 ```
 
-`holding 3/3` 是当前持有的认领数与 `concurrency` 之比；`frontier` 是在等空位的数量。某一步失败会在这一行里显示为 `FAILED <步骤> #<issue>: <原因>`，循环照常继续。
+`holding 3/3` 是当前持有的认领数与 `concurrency` 之比；`frontier` 是在等空位的数量。机群锁还在的时候，被它搁置的认领不占槽位，单独显示：`holding 1/3 · 2 left alone`。某一步失败会在这一行里显示为 `FAILED <步骤> #<issue>: <原因>`，循环照常继续。
 
 **观察。** 带上 `--panel <端口>` 后，http://127.0.0.1:端口/ 是一个每个 tick 之后自动刷新的页面：每个工作流画成一串阶段，每个阶段上正在处理和排队的 issue、落地列车、以及在等人的 issue。每个 worker 同时也是 orca 里的一个终端，位于该 issue 的 worktree——打开它就能看到 worker 正在做什么。
 

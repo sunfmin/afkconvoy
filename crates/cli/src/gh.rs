@@ -36,6 +36,9 @@ pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
 pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].name], \
     pull_request: (.pull_request != null)}";
+/// What is read of each closed issue that carries one label.
+pub const CLOSED_JQ: &str = ".[] | select(.pull_request == null) | \
+    {number, at: (.closed_at | fromdateiso8601? // null)}";
 /// What is read of each comment on an issue or a PR.
 pub const COMMENTS_JQ: &str =
     ".[] | {id, body, url: .html_url, at: (.created_at | fromdateiso8601? // null)}";
@@ -267,6 +270,27 @@ impl GitHub {
             (self.open_issues(), beside(prs))
         });
         Ok(Open { issues: issues?, prs: prs? })
+    }
+
+    /// Every closed issue that carries `label`, each with when it closed, in
+    /// epoch seconds — but for one GitHub gives no time for.
+    pub fn closed_with(&self, label: &str) -> Result<Vec<(u64, u64)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            at: Option<u64>,
+        }
+        let label = crate::judge::label_segment(label);
+        let endpoint =
+            format!("repos/{{owner}}/{{repo}}/issues?state=closed&labels={label}&per_page=100");
+        let out = self.gh(&["api", "--paginate", &endpoint, "--jq", CLOSED_JQ])?;
+        let mut closed = vec![];
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let row: Row =
+                serde_json::from_str(line).context("gh api issues: unexpected answer")?;
+            closed.extend(row.at.map(|at| (row.number, at)));
+        }
+        Ok(closed)
     }
 
     /// Every open pull request.

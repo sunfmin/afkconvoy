@@ -83,7 +83,7 @@ One step of a workflow: one skill of one role, performed by one new worker — o
 _Avoid_: step, phase, state
 
 **Stage record**:
-The comment a stage leaves on its issue: what it produced, its verdict, and the versions of the role and team it ran under. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did. The stage an issue is at is derived from these and stored nowhere.
+The comment a stage leaves on its issue: what it produced, its verdict, and the versions of the role and team it ran under. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
 _Avoid_: handoff note, log, stage label
 
 **Position**:
@@ -123,7 +123,7 @@ A role run on a schedule rather than for an issue. It opens issues and takes the
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:
-An open issue carrying the lock label, in a bound repo or an unbound one. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it.
+An open issue carrying the lock label, in a bound repo or an unbound one. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
 _Avoid_: freeze, pause, kill switch
 
 ### Workers
@@ -179,7 +179,7 @@ Another fleet instance's claim whose heartbeat is past the lease. It is the only
 _Avoid_: dead claim, abandoned claim
 
 **Takeover**:
-Taking another fleet instance's claims without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's. A claim taken — by a takeover, or as a stale claim — is still the claim it was created as: what was declared under it stands.
+Taking another fleet instance's claims — on issues, on patrols' runs, on proposals — without waiting for the lease. It happens unconditionally at start for claims stamped with this host, and by explicit command for another host's. A claim taken — by a takeover, or as a stale claim — is still the claim it was created as: what was declared under it stands.
 _Avoid_: failover, stale reclaim
 
 ### Outcomes
