@@ -63,6 +63,7 @@ impl World {
         git(&clone, &["push", "-q", "origin", BASE]);
 
         std::fs::create_dir(&bin).unwrap();
+        std::fs::create_dir(root.join("home")).unwrap();
         let built = Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap().join("examples");
         for (name, example) in [("gh", "fake_gh"), ("orca", "fake_orca")] {
             std::os::unix::fs::symlink(built.join(example), bin.join(name)).unwrap();
@@ -99,9 +100,15 @@ impl World {
             .env("CONVOY_FAKE_ORCA", &self.orca_file)
             .env("SHELL", self.bin.join("shell"))
             .env("XDG_CACHE_HOME", self.cache())
+            .env("HOME", self.home())
             .envs(GIT_ENV)
             .env_remove("ANTHROPIC_BASE_URL");
         cmd
+    }
+
+    /// The home of this world's user: nothing of the caller's own is read.
+    pub fn home(&self) -> PathBuf {
+        self.root.join("home")
     }
 
     /// Where this world's fleet keeps what it caches on its host: the copies
@@ -452,7 +459,7 @@ impl World {
         std::fs::remove_file(only.join(name)).unwrap();
     }
 
-    /// Has the stand-in login shell report `tool` (`gh` or `claude`) as
+    /// Has the stand-in login shell report `tool` (`gh`, `claude` or `pi`) as
     /// logged out.
     pub fn logged_out(&self, tool: &str) {
         std::fs::write(self.root.join(format!("logged-out-{tool}")), "").unwrap();
@@ -511,8 +518,8 @@ impl Drop for World {
 
 /// The login shell a worker would get, as far as the fleet asks it anything:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'`,
-/// and whether `gh` and `claude` are logged in. Every word is a program unless `shell-types`
-/// beside `bin/` says otherwise, and both are logged in unless a
+/// and whether `gh`, `claude` and `pi` are logged in. Every word is a program unless `shell-types`
+/// beside `bin/` says otherwise, and each is logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
 const SHELL: &str = r#"#!/bin/sh
 root=${0%/*}/..
@@ -525,6 +532,9 @@ case "$2" in
     # Its exit status says nothing either way: the field does.
     if [ -e "$root/logged-out-claude" ]; then echo '{ "loggedIn": false }'; exit 0; fi
     echo 'a line an rc file printed'; echo '{'; echo '  "loggedIn": true'; echo '}'; exit 1 ;;
+  "pi --list-models")
+    if [ -e "$root/logged-out-pi" ]; then echo "No models available. Use /login"; exit 0; fi
+    echo "provider  model"; echo "zai       glm-5.3"; exit 0 ;;
   alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
   *" --help")
     if [ -f "$root/shell-help" ]; then

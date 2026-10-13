@@ -564,7 +564,7 @@ impl AgentArgs {
     /// started on one that resolves to nothing.
     fn agent(self) -> anyhow::Result<Agent> {
         let command = launch::settle(self.worker_command.as_deref())?;
-        Ok(Agent { command, ready_timeout: self.ready_timeout })
+        Ok(Agent::new(command, self.ready_timeout))
     }
 
     /// Makes the startup probe of a start that starts workers → what it
@@ -580,7 +580,7 @@ impl AgentArgs {
             None => probe::startup(now, Some(&proposed))?,
         };
         probe::announce(&warnings);
-        Ok(Agent { command: proposed.settle()?, ready_timeout: self.ready_timeout })
+        Ok(Agent::new(proposed.settle()?, self.ready_timeout))
     }
 }
 

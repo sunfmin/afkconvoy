@@ -10,8 +10,13 @@ WHO RUNS IT
   starts it, whatever the role's repo holds, and Claude Code runs it before each tool
   call the worker makes. A call it refuses is not made.
 
+  Under pi, which has no hooks, the extension the fleet starts every worker with runs
+  it before each tool call, and describes the call in Claude Code's words: pi's `bash`
+  is judged as `Bash`.
+
   A role's own limits are hooks in the role's repo. They load because the worker starts
-  there, run beside this one, and refuse in the same way.
+  there, run beside this one, and refuse in the same way. Under pi the same extension
+  runs the role's `PreToolUse` hooks.
 
 WHAT IT READS AND WRITES
 

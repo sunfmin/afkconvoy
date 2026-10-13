@@ -266,9 +266,11 @@ fn host_findings(host: &Host) -> Vec<Finding> {
         found.push(finding(Severity::Critical, what, evidence, fix));
     }
     if let Some(launch) = &host.launch {
-        let claude_missing = host.tools.contains(&(Tool::Claude, Found::Missing));
+        let agent_missing = [Tool::Claude, Tool::Pi]
+            .into_iter()
+            .any(|agent| host.tools.contains(&(agent, Found::Missing)));
         let faults = [
-            (launch.fault.as_ref().filter(|_| !claude_missing), "cannot start a worker"),
+            (launch.fault.as_ref().filter(|_| !agent_missing), "cannot start a worker"),
             (launch.flags_fault.as_ref(), "cannot start a worker in its role"),
         ];
         for (why, what) in faults {

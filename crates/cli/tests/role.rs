@@ -364,7 +364,7 @@ fn a_start_refuses_a_launch_command_that_does_not_take_the_flags() {
         assert!(refused.contains("bound to a team"), "{refused}");
         assert!(
             refused
-                .contains(&format!("`{STOCK} --help` names no --setting-sources, no --settings.")),
+                .contains(&format!("`{STOCK} --help` names, of Claude Code's flags, no --setting-sources, no --settings; of pi's flags, no --no-extensions,")),
             "{refused}"
         );
     }
@@ -523,7 +523,7 @@ fn a_worker_that_is_gone_is_started_again_in_its_role() {
 
 #[test]
 fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
-    use afkconvoy_core::role::{FLAGS, Facts, On};
+    use afkconvoy_core::role::{CodingAgent, Facts, On};
     let readme = include_str!("../../../README.md");
     let facts = Facts {
         on: On::Stage { issue: 7, flow: "f", stage: "s" },
@@ -537,8 +537,247 @@ fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
         role_commit: "a",
         team_commit: "b",
     };
-    let named = FLAGS.iter().map(|flag| flag.to_string());
+    let flags = CodingAgent::ALL.into_iter().flat_map(CodingAgent::flags);
+    let named = flags.map(|flag| flag.to_string());
     for name in named.chain(facts.env().into_iter().map(|(name, _)| name.to_string())) {
         assert!(readme.contains(&format!("`{name}`")), "the README does not name {name}");
+    }
+}
+
+/// What pi's `--help` names of the flags a start adds to it.
+const PI_HELP: &str = "Usage:\n  pi [options]\n  --model <pattern>\n  --extension, -e <path>\n  \
+                       --no-extensions, -ne\n  --skill <path>\n  --no-skills, -ns\n  \
+                       --no-prompt-templates, -np\n  --no-themes\n  --no-context-files, -nc\n  \
+                       --approve, -a\n  --no-approve, -na\n";
+
+fn tick_with_pi(world: &World, now: u64) -> common::Answer {
+    let now = now.to_string();
+    let who = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];
+    world.afk(&[&who[..], &["--worker-command", "pi"]].concat())
+}
+
+#[test]
+fn a_command_that_starts_pi_puts_the_worker_in_its_role_in_pi_s_way() {
+    let world = bound();
+    world.shell_help(Some(PI_HELP));
+    // orca's own extension for pi, where orca installs it.
+    let report = world.home().join(".pi/agent/extensions/orca-agent-status.ts");
+    write(&world.home(), ".pi/agent/extensions/orca-agent-status.ts", "// orca's\n");
+    world.issue(7, &["flow:feature"]);
+
+    let ticked = tick_with_pi(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+    let asked = world.shell_asked();
+    assert!(
+        asked.contains(&"pi --list-models".to_string()),
+        "pi is asked for its login: {asked:?}"
+    );
+
+    let (dev, team) = (head(&world, "acme/dev"), head(&world, "acme/team"));
+    let (role_dir, team_dir) = (copy(&world, "acme/dev", &dev), copy(&world, "acme/team", &team));
+    let dir = worktree(&world, 7);
+    let git_dir = PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]));
+    let extension = git_dir.join("convoy-pi-extension.ts");
+    let terminals = open_terminals(&world, &dir);
+    assert_eq!(
+        terminals[0]["command"],
+        format!(
+            "cd '{role}' && export AFKCONVOY_GUARD='{guard} guard' AFKCONVOY_WORKTREE='{worktree}' \
+             AFKCONVOY_TEAM_DIR='{team_dir}' AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+             AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
+             AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
+             AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
+             AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' && \
+             pi --no-extensions --no-skills --no-prompt-templates --no-themes \
+             --no-context-files --no-approve --extension '{extension}' --extension '{report}' \
+             --skill '{role}/.claude/skills' --model 'opus'",
+            guard = env!("CARGO_BIN_EXE_afkconvoy"),
+            role = role_dir.display(),
+            worktree = dir.display(),
+            team_dir = team_dir.display(),
+            extension = extension.display(),
+            report = report.display(),
+        )
+    );
+    // The fleet's extension is beside the brief: git never stages it.
+    assert_eq!(
+        std::fs::read_to_string(&extension).unwrap(),
+        include_str!("../src/pi-extension.ts")
+    );
+    assert_eq!(git(&dir, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_pi_worker_on_a_host_where_orca_installed_no_extension_is_started_with_the_fleet_s_alone() {
+    let world = bound();
+    world.shell_help(Some(PI_HELP));
+    world.issue(7, &["flow:audit"]);
+    assert_eq!(did(&tick_with_pi(&world, 1000).ok())[0], "dispatch 7 done");
+    let terminals = open_terminals(&world, &worktree(&world, 7));
+    let command = terminals[0]["command"].as_str().unwrap();
+    assert_eq!(command.matches(" --extension ").count(), 1, "{command}");
+    assert!(command.ends_with("/.claude/skills'"), "a stage that names no model: {command}");
+}
+
+#[test]
+fn a_host_where_pi_has_credentials_for_no_model_starts_nothing() {
+    let world = bound();
+    world.shell_help(Some(PI_HELP));
+    world.logged_out("pi");
+    world.issue(7, &["flow:feature"]);
+    let why = tick_with_pi(&world, 1000).error();
+    assert!(why.contains("  pi is not logged in: pi  (then /login at its prompt)"), "{why}");
+    assert!(world.worktrees().is_empty());
+}
+
+/// Whether this host's `node` runs a TypeScript file as it is, which is how
+/// the extension is run here in place of pi.
+fn node_runs_typescript() -> bool {
+    use std::process::Command;
+    let probe = "const n: number = 1; console.log(n)";
+    let ran = Command::new("node").args(["--input-type=module-typescript", "-e", probe]).output();
+    ran.is_ok_and(|out| out.status.success())
+}
+
+/// Stands in for pi: loads the extension, hands it each tool call it was
+/// given, then asks it for the system prompt → what it answered.
+const DRIVE: &str = r#"
+import { pathToFileURL } from "node:url"
+const [extension, calls] = process.argv.slice(2)
+const handlers = {}
+const loaded = await import(pathToFileURL(extension).href)
+loaded.default({ on: (name, handler) => { handlers[name] = handler } })
+const ctx = { cwd: process.cwd() }
+const answer = (call) => {
+  try {
+    return handlers.tool_call({ toolName: call.tool, input: call.input }, ctx) ?? null
+  } catch (error) {
+    return { threw: String(error.message) }
+  }
+}
+const answers = JSON.parse(calls).map(answer)
+const prompt = handlers.before_agent_start({ systemPrompt: "PI'S OWN" }, ctx)
+console.log(JSON.stringify({ answers, prompt: prompt?.systemPrompt ?? null }))
+"#;
+
+/// What the extension a pi worker was started with by `command` answers the
+/// tool calls `calls` and makes of the system prompt: run as pi runs it, in
+/// the worker's directory and environment — but for `without`, a variable
+/// taken out of it.
+fn under_pi(world: &World, command: &str, calls: &Value, without: Option<&str>) -> Value {
+    use std::process::Command;
+    let mut steps = command.split(" && ");
+    let (enter, facts, start) = (steps.next().unwrap(), steps.next().unwrap(), steps.next());
+    let extension = start.unwrap().split(" --extension '").nth(1).unwrap();
+    let extension = extension.split('\'').next().unwrap();
+    let drive = world.root.join("drive.mjs");
+    std::fs::write(&drive, DRIVE).unwrap();
+    let unset = without.map(|name| format!(" && unset {name}")).unwrap_or_default();
+    let line = format!("{enter} && {facts}{unset} && node \"$DRIVE\" \"$EXTENSION\" \"$CALLS\"");
+    let out = Command::new("/bin/sh")
+        .args(["-c", &line])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("DRIVE", &drive)
+        .env("EXTENSION", extension)
+        .env("CALLS", calls.to_string())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn the_extension_puts_a_pi_worker_under_the_guard_its_role_s_limits_and_the_rules() {
+    if !node_runs_typescript() {
+        eprintln!("skipped: no `node` on PATH that runs TypeScript, to stand in for pi");
+        return;
+    }
+    let world = World::new();
+    // A role whose own limits are two hooks: one refuses by its exit code,
+    // on Bash alone; one denies in what it prints, on every tool.
+    let hooks = json!({"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command":
+            "if grep -q role-forbidden; then echo THE-ROLE-SAYS-NO >&2; exit 2; fi"}]},
+        {"hooks": [{"type": "command", "command": "if grep -q '\"file_path\":\"/etc/' ; then \
+            echo '{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\",\
+            \"permissionDecisionReason\":\"NOT-IN-ETC\"}}'; fi"}]},
+    ]}});
+    world.repo(
+        "acme/reviewer",
+        &[
+            ("CLAUDE.md", "the rules of a reviewer\n"),
+            (".claude/skills/review/SKILL.md", "review\n"),
+            (".claude/settings.json", &hooks.to_string()),
+        ],
+    );
+    world.repo("acme/dev", &[(".claude/skills/implement/SKILL.md", "build\n")]);
+    world.repo(
+        "acme/team",
+        &[("team.md", TEAM), ("workflows/audit.md", AUDIT), ("AGENTS.md", "the team's rules\n")],
+    );
+    write(&world.clone, "docs/agents/afkconvoy.md", CONFIG);
+    write(&world.clone, "CLAUDE.md", "the project's rules\n");
+    git(&world.clone, &["add", "."]);
+    git(&world.clone, &["commit", "-q", "-m", "bind the repo"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.shell_help(Some(PI_HELP));
+    world.issue(7, &["flow:audit"]);
+    assert_eq!(did(&tick_with_pi(&world, 1000).ok())[0], "dispatch 7 done");
+    let dir = worktree(&world, 7);
+    let terminals = open_terminals(&world, &dir);
+    let command = terminals[0]["command"].as_str().unwrap();
+
+    let bash = |line: &str| json!({"tool": "bash", "input": {"command": line}});
+    let calls = json!([
+        bash("ls"),
+        // The guard's: `look` is marked `writes: false`.
+        bash("git commit -am step"),
+        // The role's own, by exit code and by what a hook prints.
+        bash("echo role-forbidden"),
+        {"tool": "write", "input": {"path": "/etc/hosts", "content": "x"}},
+        // A hook that matches Bash is not asked about another tool.
+        {"tool": "read", "input": {"path": "role-forbidden.md"}},
+    ]);
+    let said = under_pi(&world, command, &calls, None);
+    let answers = said["answers"].as_array().unwrap();
+    assert_eq!(answers[0], Value::Null, "{said}");
+    assert_eq!(answers[1]["block"], true, "{said}");
+    let why = answers[1]["reason"].as_str().unwrap();
+    assert!(why.contains("afkconvoy guard: the stage `look` is marked `writes: false`"), "{why}");
+    assert_eq!(answers[2], json!({"block": true, "reason": "THE-ROLE-SAYS-NO"}));
+    assert_eq!(answers[3], json!({"block": true, "reason": "NOT-IN-ETC"}));
+    assert_eq!(answers[4], Value::Null, "{said}");
+
+    // The rules: the role's, the worktree's and the team's, after pi's own
+    // prompt — and nothing else.
+    let team = copy(&world, "acme/team", &head(&world, "acme/team"));
+    let role = copy(&world, "acme/reviewer", &head(&world, "acme/reviewer"));
+    assert_eq!(
+        said["prompt"],
+        format!(
+            "PI'S OWN\n\n# Rules: {}/CLAUDE.md\n\nthe rules of a reviewer\n\n\
+             # Rules: {}/CLAUDE.md\n\nthe project's rules\n\n\
+             # Rules: {}/AGENTS.md\n\nthe team's rules",
+            role.display(),
+            dir.display(),
+            team.display()
+        )
+    );
+
+    // A guard that cannot be asked allows nothing.
+    let said = under_pi(&world, command, &json!([bash("ls")]), Some("AFKCONVOY_GUARD"));
+    let threw = said["answers"][0]["threw"].as_str().unwrap();
+    assert!(threw.contains("AFKCONVOY_GUARD is not set"), "{said}");
+    let said = under_pi(&world, command, &json!([bash("ls")]), Some("AFKCONVOY_STAGE"));
+    assert_eq!(said["answers"][0]["block"], true, "{said}");
+}
+
+#[test]
+fn the_extension_reads_its_facts_where_a_start_puts_them() {
+    use afkconvoy_core::role::{GUARD_ENV, TEAM_DIR_ENV, WORKTREE_ENV};
+    let extension = include_str!("../src/pi-extension.ts");
+    for name in [GUARD_ENV, WORKTREE_ENV, TEAM_DIR_ENV] {
+        assert!(extension.contains(&format!("\"{name}\"")), "the extension reads no {name}");
     }
 }

@@ -1,6 +1,7 @@
 //! Starting a worker in its role (docs/adr/0009): the stage a bound repo's
 //! issue is dispatched to, the copies its worker starts among, and what a
-//! start asks of the worker launch command.
+//! start asks of the worker launch command — which coding agent it starts
+//! (docs/adr/0013), and what this host has for a start of that one.
 
 use std::path::PathBuf;
 
@@ -11,18 +12,56 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
-use afkconvoy_core::role::{Due, Facts, On, Start, due, in_role, takes_flags};
+use afkconvoy_core::role::{CodingAgent, Due, Facts, On, Start, With, due, in_role};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
 use afkconvoy_core::team::{LAND, PRECEDENTS};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::copies::{Copies, Copy};
+use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::launch::Proposed;
-use crate::orca::{REPORT_HOOK, Under, Worktree};
+use crate::orca::{REPORT_HOOK, Under, Worktree, pi_report};
 use crate::stage::records_of;
 use crate::team::keep;
+
+/// The fleet's extension for pi: the guard, a role's own limits and the
+/// rules, which pi is given by no flag.
+const PI_EXTENSION: &str = include_str!("pi-extension.ts");
+
+/// What a start is given that only the coding agent it starts takes, as this
+/// host has it.
+pub enum Added {
+    ClaudeCode,
+    Pi {
+        /// The fleet's extension, written beside the worker's brief.
+        extension: String,
+        /// orca's own, which tells it of the worker's state.
+        report: Option<String>,
+    },
+}
+
+impl Added {
+    /// What the start of a worker in `worktree` is given for the coding
+    /// agent `agent` starts. For pi, the fleet's extension is written there.
+    pub fn at(agent: &Agent, worktree: &Worktree) -> Result<Added> {
+        Ok(match agent.coding()? {
+            CodingAgent::ClaudeCode => Added::ClaudeCode,
+            CodingAgent::Pi => Added::Pi {
+                extension: worktree.keep_extension(PI_EXTENSION)?.display().to_string(),
+                report: pi_report(),
+            },
+        })
+    }
+
+    pub fn with(&self) -> With<'_> {
+        match self {
+            Added::ClaudeCode => With::ClaudeCode { report: REPORT_HOOK },
+            Added::Pi { extension, report } => With::Pi { extension, report: report.as_deref() },
+        }
+    }
+}
 
 /// One stage of one issue, as its worker is started on it — or its consult,
 /// or the join that follows the last one: the role and the team at the
@@ -114,15 +153,16 @@ impl Staged {
     }
 
     /// The line the terminal on `worktree` runs to start the worker with the
-    /// worker launch command `launch`.
-    pub fn command(&self, launch: &str, worktree: &Worktree) -> String {
+    /// worker launch command of `agent`.
+    pub fn command(&self, agent: &Agent, worktree: &Worktree) -> Result<String> {
+        let added = Added::at(agent, worktree)?;
         let start = Start {
             role_dir: &self.role_copy.dir.display().to_string(),
             worktree: &worktree.path.display().to_string(),
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
             guard: &crate::own_command().fixed(" guard").own(),
-            report: REPORT_HOOK,
+            with: added.with(),
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
                 role: &self.role,
@@ -136,7 +176,7 @@ impl Staged {
                 team_commit: &self.team_copy.commit,
             },
         };
-        in_role(launch, &start)
+        Ok(in_role(agent.command.as_str(), &start))
     }
 
     /// Keeps, for a stage that writes nothing and for a consult, where the
@@ -253,9 +293,16 @@ impl Staged {
     }
 }
 
-/// Checks that the worker launch command `launch` takes what a bound repo's
-/// fleet adds to it, asking the login shell a worker gets. An error names
-/// what it does not take.
-pub fn probe(launch: &Proposed) -> Result<()> {
-    takes_flags(launch.as_str(), launch.flags().as_deref()).map_err(|why| anyhow!(why))
+/// The coding agent the worker launch command `launch` starts: the one whose
+/// flags — what a bound repo's fleet adds to it — the command takes, asking
+/// the login shell a worker gets. An error names what it does not take.
+pub fn probe(launch: &Proposed) -> Result<CodingAgent> {
+    afkconvoy_core::role::starts(launch.as_str(), launch.flags().as_deref())
+        .map_err(|why| anyhow!(why))
+}
+
+/// The same, of a command a worker is about to be started with.
+pub fn starts(command: &str) -> Result<CodingAgent> {
+    afkconvoy_core::role::starts(command, crate::launch::flags(command).as_deref())
+        .map_err(|why| anyhow!(why))
 }

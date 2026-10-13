@@ -127,7 +127,8 @@ fn unattended(command: &str, word: &str, resolution: &str) -> Option<bool> {
     let whole = resolution.contains(" is an alias for ")
         || resolution.contains(" is aliased to ")
         || word == "claude";
-    if visible {
+    // pi asks nothing before it acts: it has no such flag to show.
+    if visible || word == PI || starts_pi(resolution) {
         Some(true)
     } else if whole {
         Some(false)
@@ -136,7 +137,18 @@ fn unattended(command: &str, word: &str, resolution: &str) -> Option<bool> {
     }
 }
 
-/// A login shell's alias that starts Claude: what a human is offered.
+/// The word pi is run by.
+const PI: &str = "pi";
+
+/// Whether a word of `text` — an alias's expansion, or what `type` said of
+/// one — is pi, by its name or by a path to it.
+fn starts_pi(text: &str) -> bool {
+    let words = text.split(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == '=');
+    words.into_iter().any(|word| word == PI || word.ends_with("/pi"))
+}
+
+/// A login shell's alias that starts a coding agent — Claude Code or pi: what
+/// a human is offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub name: String,
@@ -144,7 +156,7 @@ pub struct Candidate {
     pub expansion: String,
 }
 
-/// The aliases a shell's `alias` printed that start Claude, by name. Reads
+/// The aliases a shell's `alias` printed that start Claude or pi, by name. Reads
 /// zsh's `name='value'` and bash's `alias name='value'`.
 pub fn candidates(aliases: &str) -> Vec<Candidate> {
     let mut found: Vec<Candidate> = vec![];
@@ -156,7 +168,7 @@ pub fn candidates(aliases: &str) -> Vec<Candidate> {
             continue;
         }
         let expansion = unquoted(value.trim());
-        if expansion.contains("claude") {
+        if expansion.contains("claude") || starts_pi(expansion) {
             found.push(Candidate { name: name.to_string(), expansion: expansion.to_string() });
         }
     }
@@ -180,9 +192,9 @@ pub fn question(provider: &str, candidates: &[Candidate]) -> String {
          it.\n"
     );
     if candidates.is_empty() {
-        text.push_str("The login shell has no alias that starts Claude.\n");
+        text.push_str("The login shell has no alias that starts Claude or pi.\n");
     } else {
-        text.push_str("The login shell's aliases that start Claude:\n");
+        text.push_str("The login shell's aliases that start Claude or pi:\n");
         for (index, candidate) in candidates.iter().enumerate() {
             text.push_str(&format!(
                 "  {}. {} = {}\n",
@@ -418,6 +430,11 @@ mod tests {
         // a script could carry one inside: unknown is not a warning
         assert_eq!(warned("agent", "agent is /usr/local/bin/agent"), None);
         assert_eq!(warned("kim", "kim is a shell function from /home/u/.zshrc"), None);
+        // pi asks nothing before it acts: by its name, a path, or an alias
+        assert_eq!(warned("pi", "pi is /opt/homebrew/bin/pi"), None);
+        assert_eq!(warned("glm", "glm is an alias for ZAI_KEY=x pi --model glm"), None);
+        assert_eq!(warned("glm", "glm is aliased to `/opt/pi/bin/pi'"), None);
+        assert!(warned("pip", "pip is an alias for claude --model pi-like").is_some());
     }
 
     #[test]
@@ -434,6 +451,10 @@ mod tests {
             [Candidate { name: "glm".into(), expansion: "claude --model glm".into() }]
         );
         assert_eq!(candidates(""), []);
+        // …and those that start pi, by its name or a path to it
+        let pi = "glm='ZAI_KEY=x pi --model glm'\np=/opt/homebrew/bin/pi\npy='pip install'\n";
+        let names: Vec<String> = candidates(pi).into_iter().map(|c| c.name).collect();
+        assert_eq!(names, ["glm", "p"]);
     }
 
     #[test]

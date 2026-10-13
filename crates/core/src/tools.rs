@@ -14,7 +14,16 @@ pub enum Tool {
     Orca,
     /// Claude Code: needed only when it is what starts a worker.
     Claude,
+    /// pi: needed only when it is what starts a worker.
+    Pi,
 }
+
+/// The coding agents among the tools: each needed only as the first word of
+/// the worker launch command.
+const AGENTS: [Tool; 2] = [Tool::Claude, Tool::Pi];
+
+/// What pi says in place of its models when it has credentials for none.
+const PI_NO_MODELS: &str = "No models available";
 
 /// What a start found of one tool: the first thing in its way. A missing one
 /// is never also logged out, and one not running is asked nothing more.
@@ -46,18 +55,20 @@ impl Tool {
             Tool::Gh => "gh",
             Tool::Orca => "orca",
             Tool::Claude => "claude",
+            Tool::Pi => "pi",
         }
     }
 
     /// The line that installs it. Homebrew's own `orca` cask is another
     /// program, so orca's names its tap; Claude Code's is its native
-    /// installer, which keeps itself up to date.
+    /// installer, which keeps itself up to date; pi's is its npm package.
     pub fn install(self) -> &'static str {
         match self {
             Tool::Git => "brew install git",
             Tool::Gh => "brew install gh",
             Tool::Orca => "brew install --cask stablyai/orca/orca",
             Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+            Tool::Pi => "npm install -g @earendil-works/pi-coding-agent",
         }
     }
 
@@ -69,26 +80,33 @@ impl Tool {
             Tool::Git | Tool::Orca => None,
             Tool::Gh => Some(format!("gh auth status{}", hostname(host))),
             Tool::Claude => Some("claude auth status".to_string()),
+            // pi logs in to providers, and lists the models of those it has
+            // credentials for: which one a worker uses is the command's to say.
+            Tool::Pi => Some("pi --list-models".to_string()),
         }
     }
 
     /// Whether the answer to `login_question` says it is logged in: `gh` by
     /// its exit status, Claude Code by the `loggedIn` field of the JSON it
-    /// prints — whatever else the shell printed around it.
+    /// prints — whatever else the shell printed around it — and pi by listing
+    /// a model at all.
     pub fn logged_in(self, succeeded: bool, printed: &str) -> bool {
         match self {
             Tool::Claude => {
                 let dense: String = printed.split_whitespace().collect();
                 dense.contains("\"loggedIn\":true")
             }
+            Tool::Pi => succeeded && !printed.trim().is_empty() && !printed.contains(PI_NO_MODELS),
             Tool::Git | Tool::Gh | Tool::Orca => succeeded,
         }
     }
 
-    /// The line that logs it in.
+    /// The line that logs it in. pi's starts it: `/login` is typed at its
+    /// prompt.
     pub fn login(self, host: Option<&str>) -> String {
         match self {
             Tool::Claude => "claude auth login".to_string(),
+            Tool::Pi => "pi  (then /login at its prompt)".to_string(),
             // github.com is where `gh auth login` logs in unasked.
             _ => format!("gh auth login{}", hostname(host.filter(|host| *host != "github.com"))),
         }
@@ -100,13 +118,12 @@ fn hostname(host: Option<&str>) -> String {
 }
 
 /// The tools a start needs. `launch` is the worker launch command, when the
-/// start knows it: Claude Code is needed only as its first word — what a
+/// start knows it: a coding agent is needed only as its first word — what a
 /// wrapper or another agent runs and logs in to is its own business.
 pub fn needed(launch: Option<&str>) -> Vec<Tool> {
     let mut tools = vec![Tool::Git, Tool::Gh, Tool::Orca];
-    if launch.and_then(first_word) == Some(Tool::Claude.name()) {
-        tools.push(Tool::Claude);
-    }
+    let word = launch.and_then(first_word);
+    tools.extend(AGENTS.into_iter().filter(|agent| word == Some(agent.name())));
     tools
 }
 
@@ -128,20 +145,20 @@ pub fn remote_host(url: &str) -> Option<&str> {
 /// Why a start refuses, or `None` when it has all it needs: every fault in
 /// `found`, each with the line that fixes it, and `launch_fault` — why the
 /// worker launch command cannot start a worker — unless that only says again
-/// that Claude Code is missing. `host` is the one `gh` was asked about.
+/// that the coding agent is missing. `host` is the one `gh` was asked about.
 pub fn refusal(
     found: &[(Tool, Found)],
     host: Option<&str>,
     launch_fault: Option<&str>,
 ) -> Option<String> {
     let mut faults: Vec<String> = vec![];
-    let mut claude_missing = false;
+    let mut agent_missing = false;
     for (tool, found) in found {
         let name = tool.name();
         match found {
             Found::Ready => {}
             Found::Missing => {
-                claude_missing = claude_missing || *tool == Tool::Claude;
+                agent_missing = agent_missing || AGENTS.contains(tool);
                 faults.push(format!("  {name} is not installed: {}", tool.install()));
             }
             Found::LoggedOut => {
@@ -154,7 +171,7 @@ pub fn refusal(
             }
         }
     }
-    let launch_fault = launch_fault.filter(|_| !claude_missing);
+    let launch_fault = launch_fault.filter(|_| !agent_missing);
     if faults.is_empty() {
         return launch_fault.map(str::to_string);
     }
@@ -196,6 +213,36 @@ mod tests {
             assert_eq!(needed(Some(other)), always, "{other:?}");
         }
         assert_eq!(needed(None), always);
+    }
+
+    #[test]
+    fn pi_is_needed_only_as_the_first_word_of_the_launch_command() {
+        assert_eq!(needed(Some("pi --model opus")), [Tool::Git, Tool::Gh, Tool::Orca, Tool::Pi]);
+        for other in ["wrap pi", "pip install", "/opt/homebrew/bin/pi", "claude"] {
+            assert!(!needed(Some(other)).contains(&Tool::Pi), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn pi_is_logged_in_when_it_lists_a_model() {
+        let pi = Tool::Pi;
+        assert_eq!(pi.login_question(Some("github.com")).unwrap(), "pi --list-models");
+        let listed = "provider      model    context\nopenai-codex  gpt-5.5  272K\n";
+        assert!(pi.logged_in(true, listed));
+        assert!(!pi.logged_in(false, listed));
+        let none = "No models available. Use /login to log into a provider via OAuth or API key.";
+        assert!(!pi.logged_in(true, none));
+        assert!(!pi.logged_in(true, " \n"));
+        let said = refusal(&[(pi, Found::LoggedOut), (pi, Found::Missing)], None, Some("fault"));
+        let said = said.unwrap();
+        assert!(
+            said.contains("  pi is not logged in: pi  (then /login at its prompt)\n"),
+            "{said}"
+        );
+        assert!(
+            said.ends_with("  pi is not installed: npm install -g @earendil-works/pi-coding-agent"),
+            "no second word that the agent is missing: {said}"
+        );
     }
 
     #[test]

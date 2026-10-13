@@ -39,7 +39,7 @@ pub fn look(launch: Option<&Proposed>) -> Looked {
     for tool in needed(launch.map(Proposed::as_str)) {
         let present = match tool {
             // What starts a worker is looked up where a worker is started.
-            Tool::Claude => launch.is_some_and(Proposed::resolves),
+            Tool::Claude | Tool::Pi => launch.is_some_and(Proposed::resolves),
             Tool::Git | Tool::Gh | Tool::Orca => on_path(tool.name()),
         };
         let state = match tool.login_question(host) {

@@ -19,6 +19,7 @@ Homebrew installs `git` and `gh` with it. Three things are yours to set up:
 - **orca** — afkconvoy starts every worker through [orca](https://github.com/stablyai/orca): `brew install --cask stablyai/orca/orca`. Give the tap's name: the cask Homebrew itself calls `orca` is another program. Then start it — `orca open` — and, in each checkout a fleet is to work, give it the repo once: `orca repo add --path "$PWD"`.
 - **GitHub** — `gh auth login`, as a user who may push to the repo.
 - **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`.
+- **pi**, when it is what starts your workers — `npm install -g @earendil-works/pi-coding-agent`, then `pi` and `/login` at its prompt, for the provider your workers use.
 
 `run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing, logged out, not running or not given the checkout. afkconvoy installs nothing, starts and adds nothing, and logs nobody in.
 
@@ -154,9 +155,9 @@ afkconvoy run     # the fleet: tick after tick, until you stop it
 afkconvoy run --worker-command kim
 ```
 
-Without `--worker-command`, `run` lists your login shell's aliases that start Claude and asks. The command is handed to orca exactly as given; it must resolve in a login shell, or nothing is started.
+Without `--worker-command`, `run` lists your login shell's aliases that start Claude or pi and asks. The command is handed to orca exactly as given; it must resolve in a login shell, or nothing is started.
 
-**In a bound repo** a worker starts in its role, so the worker launch command is no longer opaque: it must end in Claude Code taking flags, because the fleet appends to it. The terminal is opened on the issue's worktree as ever, and the line it runs is:
+**In a bound repo** a worker starts in its role, so the worker launch command is no longer opaque: it must end in a coding agent the fleet knows — Claude Code or [pi](https://github.com/earendil-works/pi-mono) — taking flags, because the fleet appends to it. Which of the two a command starts is read off the command itself (below), one for the whole fleet. The terminal is opened on the issue's worktree as ever, and for Claude Code the line it runs is:
 
 ```sh
 cd <the role's copy> && export <the stage's facts> && <worker launch command> \
@@ -164,12 +165,30 @@ cd <the role's copy> && export <the stage's facts> && <worker launch command> \
   --settings <the guard and orca's status report, as hooks> [--model <the stage's>]
 ```
 
-- The command must take `--add-dir`, `--setting-sources`, `--settings` and `--model`. A start runs `<worker launch command> --help` in a login shell and refuses, naming what is missing, when the answer does not name all four. An alias or a wrapper is fine as long as what follows it reaches Claude Code: `kim`, not `kim ; true`.
+- A start runs `<worker launch command> --help` in a login shell. A command whose answer names `--add-dir`, `--setting-sources`, `--settings` and `--model` starts Claude Code; one whose answer names pi's flags (below) starts pi; any other is refused, naming what is missing of each. An alias or a wrapper is fine as long as what follows it reaches the coding agent: `kim`, not `kim ; true`.
 - What is added is fixed, and nothing of it is configurable. The role's rules, skills and hooks load because the worker starts in the role's directory; the repo's own rules (`CLAUDE.md`) load from the added worktree, its hooks do not — what a repo must enforce belongs in its gate; your own Claude Code settings, rules, skills and hooks are not loaded at all.
 - The role's and the team's directories are the fleet's own read-only copies, one per commit, under `~/.cache/afkconvoy/copies/` (or `$XDG_CACHE_HOME`). A stage starts under the commit at the head of each repo's default branch; a copy already there is not fetched again. Pushing is the only way a change to a role reaches a worker.
 - The stage's facts are in the worker's environment: `AFKCONVOY_ISSUE`, `AFKCONVOY_FLOW`, `AFKCONVOY_STAGE`, `AFKCONVOY_ROLE`, `AFKCONVOY_SKILL`, `AFKCONVOY_WRITES`, `AFKCONVOY_CONSULT`, `AFKCONVOY_BASE_BRANCH`, `AFKCONVOY_ESCALATE_LABEL`, `AFKCONVOY_LOCK_LABEL`, `AFKCONVOY_ROLE_COMMIT` and `AFKCONVOY_TEAM_COMMIT`.
-- Every worker is started with the guard: `afkconvoy guard`, added as a hook that Claude Code runs before each tool call, whatever the role's repo holds. It refuses, with a reason the worker is shown, what no worker may do — add or remove a flow, stage, escalate or lock label, write a stage record by hand, merge a PR, push the base branch — and, in a stage marked `writes: false` and for every consult, committing and pushing. A role's own limits are hooks in its repo; they run beside the guard. A guard recognises commands, so it stops a worker that errs, not one that means to get past it: after a stage marked `writes: false`, and after a consult, the fleet checks the branch, and a commit that was not there before escalates the issue. `afkconvoy guard --help` lists what is refused.
+- Every worker is started with the guard: `afkconvoy guard`, added as a hook that Claude Code runs before each tool call — or, under pi, asked by the fleet's extension — whatever the role's repo holds. It refuses, with a reason the worker is shown, what no worker may do — add or remove a flow, stage, escalate or lock label, write a stage record by hand, merge a PR, push the base branch — and, in a stage marked `writes: false` and for every consult, committing and pushing. A role's own limits are hooks in its repo; they run beside the guard. A guard recognises commands, so it stops a worker that errs, not one that means to get past it: after a stage marked `writes: false`, and after a consult, the fleet checks the branch, and a commit that was not there before escalates the issue. `afkconvoy guard --help` lists what is refused.
 - Every worker is started reporting to orca too. orca hears whether an agent is working or has stopped through hooks it keeps in your own Claude Code settings, which a worker in its role does not load; the fleet adds the same hook (`~/.orca/agent-hooks/claude-hook.sh`, where orca installed it) beside the guard, so `orca worktree ps` shows an agent for a stage's worker as it does for the train's. Where orca has no report all the same — a host whose orca installed no hook, a runtime that sends none — the worker's terminal speaks for it: one that wrote within the grace period (five minutes) is at work, and one quiet longer has stopped. A worker is also left a grace period from its start, whatever its terminal and its worktree show.
+
+**With pi** the worker starts in its role all the same, under the same guard and the same facts, and the line is:
+
+```sh
+cd <the role's copy> && export AFKCONVOY_GUARD=<the guard> AFKCONVOY_WORKTREE=<the issue's worktree> \
+  AFKCONVOY_TEAM_DIR=<the team's copy> <the stage's facts> && <worker launch command> \
+  --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve \
+  --extension <the fleet's extension> [--extension <orca's status report>] \
+  --skill <the role's copy>/.claude/skills [--model <the stage's>]
+```
+
+- The command must take `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`, `--no-context-files`, `--no-approve`, `--extension`, `--skill` and `--model`: its `--help` naming all nine is what says it starts pi.
+- pi puts no role into effect by itself: it finds skills in `.pi/skills`, runs no hooks file, and reads the rules of the directory it starts in together with your own `~/.pi/agent/AGENTS.md`. So it is started discovering nothing, and one extension the fleet writes beside the worker's brief carries the role: it asks the guard before every tool call, runs the `PreToolUse` hooks of the role's `.claude/settings.json` as Claude Code would — a call described in Claude Code's words (`Bash`, `tool_input.command`, `file_path`), refused by exit code 2 or by a `deny` printed — and adds to the prompt the rules (`CLAUDE.md`, else `AGENTS.md`) of the role, of the worktree and of the team. A role is written once and is the same role under either agent. A role's hooks on any other event are not run under pi.
+- The role's skills are named with `--skill`, since pi does not look in `.claude/skills`. A `.pi` directory in a role is not loaded, and pi asks no trust question (`--no-approve`).
+- Your own extensions, skills, prompt templates, themes and `AGENTS.md` are not loaded. pi's settings file, its credentials and a `SYSTEM.md` or `APPEND_SYSTEM.md` in `~/.pi/agent` still are: pi has no flag that leaves them out.
+- A workflow's `model` is handed to `--model` as written, and pi reads it as a pattern over the models of its providers: `opus` under pi is whichever of them matches. A team whose workers are started with pi names models pi knows.
+- orca hears of a pi worker through the extension it installs at `~/.pi/agent/extensions/orca-agent-status.ts`; the start names it, where orca installed it.
+- pi has no permission prompts, so its command needs no unattended flag.
 
 An unbound repo's command stays opaque and may start any agent.
 

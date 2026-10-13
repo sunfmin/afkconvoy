@@ -50,5 +50,7 @@
       .claude/settings.json              its hooks: the limits it cannot cross
 
   Claude Code loads all three from the directory a worker starts in, so a role opened by
-  hand is the role a worker gets; none of them has a key the fleet reads. A `do` names
+  hand is the role a worker gets; none of them has a key the fleet reads. A worker
+  started with pi gets the same three, carried by the fleet — of the hooks, those that
+  run before a tool call (`PreToolUse`): a role is written once. A `do` names
   an entry of `.claude/skills/` in the repo of the role beside it.

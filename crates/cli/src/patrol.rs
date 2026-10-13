@@ -18,7 +18,8 @@ use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use crate::git::REMOTE;
-use crate::orca::{REPORT_HOOK, Source, Worktree};
+use crate::orca::{Source, Worktree};
+use crate::role::Added;
 use crate::stage::Flows;
 use crate::team::unknown_patrols;
 
@@ -112,13 +113,14 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         over_command: &own().fixed(" over --run ").word(&claim.key).own(),
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
+    let added = Added::at(agent, &checkout)?;
     let start = Start {
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
         team_dir: &kept.copy.dir.display().to_string(),
         model: patrol.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
-        report: REPORT_HOOK,
+        with: added.with(),
         facts: Facts {
             on: On::Patrol(name),
             role: &role.name,

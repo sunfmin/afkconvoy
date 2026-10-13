@@ -1,10 +1,12 @@
 //! Starting a worker on an issue.
 
+use std::cell::OnceCell;
 use std::path::PathBuf;
 
 use afkconvoy_core::launch::LaunchCommand;
 use afkconvoy_core::prompt::{WorkerFields, worker_prompt};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
+use afkconvoy_core::role::CodingAgent;
 use afkconvoy_core::worker::{
     DispatchStep, branch_comment, dispatch_steps, recorded_branches, worktree_name,
 };
@@ -27,6 +29,26 @@ pub struct Agent {
     pub command: LaunchCommand,
     /// How long an agent is given to be ready for its prompt, in seconds.
     pub ready_timeout: u64,
+    /// The coding agent the command starts, once a bound repo's start asked.
+    coding: OnceCell<CodingAgent>,
+}
+
+impl Agent {
+    pub fn new(command: LaunchCommand, ready_timeout: u64) -> Agent {
+        Agent { command, ready_timeout, coding: OnceCell::new() }
+    }
+
+    /// The coding agent the worker launch command starts: what a bound
+    /// repo's start adds to the command is that agent's own. The login shell
+    /// is asked once, at the first such start. An error is a command that
+    /// takes no coding agent's flags.
+    pub fn coding(&self) -> Result<CodingAgent> {
+        if let Some(coding) = self.coding.get() {
+            return Ok(*coding);
+        }
+        let coding = crate::role::starts(self.command.as_str())?;
+        Ok(*self.coding.get_or_init(|| coding))
+    }
 }
 
 /// Where a dispatch starts from.
@@ -130,13 +152,12 @@ pub fn dispatch(
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                let launch = agent.command.as_str();
                 if let Some((staged, claim)) = staged.as_ref().zip(fleet.scan.claim_of(number)) {
                     staged.keep_start(cut, claim)?;
                 }
                 terminal = Some(match &staged {
-                    Some(staged) => cut.start(&staged.command(launch, cut), fleet.now)?,
-                    None => cut.start(launch, fleet.now)?,
+                    Some(staged) => cut.start(&staged.command(agent, cut)?, fleet.now)?,
+                    None => cut.start(agent.command.as_str(), fleet.now)?,
                 });
             }
             DispatchStep::AwaitReady => {

@@ -35,6 +35,13 @@ const START_FILE: &str = "convoy-started";
 /// role does not load. On a host where orca installed none, nothing is told.
 pub const REPORT_HOOK: &str = "hook=\"${HOME-}/.orca/agent-hooks/claude-hook.sh\"; if [ -x \"$hook\" ]; \
      then ORCA_HOOK_AGENT_PID=\"$PPID\" /bin/sh \"$hook\"; else cat >/dev/null; fi";
+/// The fleet's extension for pi, as the worker here was started with it
+/// (`role::With::Pi`), beside the brief.
+const EXTENSION_FILE: &str = "convoy-pi-extension.ts";
+/// Where orca installs, under the home of its host's user, the extension that
+/// tells it of a pi worker's state. pi loads it unasked from there; a worker
+/// in its role discovers no extension, so its start names it.
+const PI_REPORT: &str = ".pi/agent/extensions/orca-agent-status.ts";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
 /// The commit a patrol's checkout was at when its worker was started.
@@ -95,6 +102,15 @@ impl Asked {
         };
         anyhow!("orca {} failed: {said}", self.what)
     }
+}
+
+/// The extension that tells orca of a pi worker's state, as a file on this
+/// host (`role::With::Pi`). `None` where orca installed none: nothing is told,
+/// and the worker is read off its terminal alone.
+pub fn pi_report() -> Option<String> {
+    let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
+    let file = Path::new(&home).join(PI_REPORT);
+    file.is_file().then(|| file.display().to_string())
 }
 
 /// What a start finds of an installed orca: whether it is running, and then
@@ -494,6 +510,15 @@ impl Worktree {
         std::fs::write(&brief, prompt)
             .with_context(|| format!("cannot write the worker's brief {}", brief.display()))?;
         Ok(brief)
+    }
+
+    /// Writes the fleet's extension for pi, `source`, where the start of the
+    /// worker here names it → the file.
+    pub fn keep_extension(&self, source: &str) -> Result<PathBuf> {
+        let file = self.note(EXTENSION_FILE)?;
+        std::fs::write(&file, source)
+            .with_context(|| format!("cannot write pi's extension {}", file.display()))?;
+        Ok(file)
     }
 
     /// Starts a worker here with the worker launch command, handed to orca

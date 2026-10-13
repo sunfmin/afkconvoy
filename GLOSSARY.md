@@ -136,6 +136,10 @@ _Avoid_: agent, subagent, child
 The one shell string every worker of a fleet instance is started with. In an unbound repo it is opaque: the fleet never parses it or appends to it. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
+**Coding agent**:
+The program a bound repo's worker launch command starts: Claude Code or pi. The fleet tells which from the flags the command takes, one for the whole fleet instance, and what it adds to the command is that agent's own. An unbound repo's is never asked.
+_Avoid_: provider, runtime, backend (the worker backend is orca)
+
 **Worker state**:
 Whether a worker is busy or has stopped, as its agent reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.
 _Avoid_: liveness, status

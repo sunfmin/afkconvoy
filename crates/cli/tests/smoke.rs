@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use afkconvoy_core::launch::STOCK;
-use afkconvoy_core::role::{Facts, On, Start, in_role};
+use afkconvoy_core::role::{Facts, On, Start, With, in_role};
 use serde_json::Value;
 
 const ROLE_WORD: &str = "ROLE-7391";
@@ -108,7 +108,7 @@ fn real_claude_code_started_in_a_role_sees_the_role_and_the_project_and_nothing_
         team_dir: &text(&team),
         model: Some("haiku"),
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
-        report: "cat >/dev/null",
+        with: With::ClaudeCode { report: "cat >/dev/null" },
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },
             role: "dev",

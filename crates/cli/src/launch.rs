@@ -38,9 +38,9 @@ impl Proposed {
     }
 
     /// What the login shell prints when the command is asked which flags it
-    /// takes (`role::flags_question`); `None` when that failed.
+    /// takes (`flags`); `None` when that failed.
     pub fn flags(&self) -> Option<String> {
-        login_shell(&flags_question(&self.command))
+        flags(&self.command)
     }
 
     /// Why it cannot start a worker, when it cannot.
@@ -94,6 +94,13 @@ pub fn foreseen() -> Option<Proposed> {
         Source::Given(command) => Some(resolved(command)),
         Source::Ask | Source::Refuse(_) => None,
     }
+}
+
+/// What the login shell prints when the worker launch command `command` is
+/// asked which flags it takes (`role::flags_question`); `None` when that
+/// failed.
+pub fn flags(command: &str) -> Option<String> {
+    login_shell(&flags_question(command))
 }
 
 fn resolved(command: String) -> Proposed {

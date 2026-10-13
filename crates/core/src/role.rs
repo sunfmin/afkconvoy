@@ -1,6 +1,7 @@
 //! A worker's start in its role (docs/adr/0009): the stage an issue's worker
 //! is to be started on, what the fleet adds to the worker launch command of a
-//! bound repo, and whether the command takes it. What is added is fixed: nothing here is
+//! bound repo, and which coding agent the command starts (docs/adr/0013).
+//! What is added is fixed for each coding agent: nothing here is
 //! configurable, and an unbound repo's command never comes this way.
 
 use flux_rs::attrs::*;
@@ -10,7 +11,7 @@ use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::precedent::PROPOSAL_ENV;
 use crate::stage_record::{StageRecord, history};
-use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
+use crate::team::{FLOW_LABEL, Role, SKILLS, Stage, Team, Work, Workflow};
 use crate::transition::escalated_from;
 
 /// Claude Code's flag for a directory added to the one it was started in.
@@ -21,8 +22,71 @@ pub const SETTING_SOURCES: &str = "--setting-sources";
 pub const MODEL: &str = "--model";
 /// Claude Code's flag for settings added to those it loads.
 pub const SETTINGS: &str = "--settings";
-/// Every flag the fleet adds: what a bound repo's worker launch command must take.
-pub const FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
+/// Every flag the fleet adds to Claude Code.
+const CLAUDE_FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
+
+/// pi's flag for an extension it is to load, whatever it discovers.
+pub const EXTENSION: &str = "--extension";
+/// pi's flag for a directory of skills it is to load, whatever it discovers.
+pub const SKILL: &str = "--skill";
+/// pi's flags that leave out what it discovers on its host and in the
+/// directory it starts in: extensions, skills, prompt templates, themes, and
+/// the rules — the host user's own among them, which nothing leaves out
+/// alone, so the fleet's extension loads the role's (`RULES_OF`).
+const PI_DISCOVERS_NOTHING: [&str; 5] = [
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--no-themes",
+    "--no-context-files",
+];
+/// pi's flag that answers its folder-trust question: no. What it would have
+/// trusted — a `.pi` directory — is no part of a role.
+const PI_TRUSTS_NOTHING: &str = "--no-approve";
+/// Every flag the fleet adds to pi.
+const PI_FLAGS: [&str; 9] = [
+    PI_DISCOVERS_NOTHING[0],
+    PI_DISCOVERS_NOTHING[1],
+    PI_DISCOVERS_NOTHING[2],
+    PI_DISCOVERS_NOTHING[3],
+    PI_DISCOVERS_NOTHING[4],
+    PI_TRUSTS_NOTHING,
+    EXTENSION,
+    SKILL,
+    MODEL,
+];
+
+/// The coding agent a bound repo's worker launch command starts
+/// (docs/adr/0013): what the fleet adds to the command to put a worker in
+/// its role is that agent's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodingAgent {
+    ClaudeCode,
+    Pi,
+}
+
+impl CodingAgent {
+    /// Every coding agent a bound repo's worker can be started with, in the
+    /// order a command is asked which it starts.
+    pub const ALL: [CodingAgent; 2] = [CodingAgent::ClaudeCode, CodingAgent::Pi];
+
+    /// What a human calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            CodingAgent::ClaudeCode => "Claude Code",
+            CodingAgent::Pi => "pi",
+        }
+    }
+
+    /// Every flag the fleet adds to it: what a worker launch command that
+    /// starts it must take.
+    pub fn flags(self) -> &'static [&'static str] {
+        match self {
+            CodingAgent::ClaudeCode => &CLAUDE_FLAGS,
+            CodingAgent::Pi => &PI_FLAGS,
+        }
+    }
+}
 
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's.
@@ -69,6 +133,13 @@ pub const CONSULT_ENV: &str = "AFKCONVOY_CONSULT";
 pub const BASE_BRANCH_ENV: &str = "AFKCONVOY_BASE_BRANCH";
 pub const ESCALATE_LABEL_ENV: &str = "AFKCONVOY_ESCALATE_LABEL";
 pub const LOCK_LABEL_ENV: &str = "AFKCONVOY_LOCK_LABEL";
+/// The variables the fleet's extension for pi reads what Claude Code is told
+/// by flags in: the shell line that runs the guard, and the directories
+/// added to the role's — the worktree and the team's copy — whose rules it
+/// loads beside the role's.
+pub const GUARD_ENV: &str = "AFKCONVOY_GUARD";
+pub const WORKTREE_ENV: &str = "AFKCONVOY_WORKTREE";
+pub const TEAM_DIR_ENV: &str = "AFKCONVOY_TEAM_DIR";
 
 /// The stage an issue is dispatched to, and who performs it — or, of a
 /// consult, the stage that asked and who rules on its `escalate`.
@@ -287,10 +358,40 @@ pub struct Start<'a> {
     pub model: Option<&'a str>,
     /// The shell line that runs the guard: this tool's `guard` subcommand.
     pub guard: &'a str,
-    /// The shell line that tells the worker backend of the worker's state: it
-    /// is given what Claude Code says of an event on standard input.
-    pub report: &'a str,
+    /// The coding agent the worker launch command starts, with what only a
+    /// start of that agent is given.
+    pub with: With<'a>,
     pub facts: Facts<'a>,
+}
+
+/// What a start is given that only one coding agent takes.
+#[derive(Debug, Clone, Copy)]
+pub enum With<'a> {
+    ClaudeCode {
+        /// The shell line that tells the worker backend of the worker's
+        /// state: it is given what Claude Code says of an event on standard
+        /// input.
+        report: &'a str,
+    },
+    Pi {
+        /// The fleet's extension for pi, as a file on this host: the guard,
+        /// the role's own limits, and the rules of the role and of what is
+        /// added to it.
+        extension: &'a str,
+        /// The extension that tells the worker backend of the worker's
+        /// state, as a file on this host. `None` where the backend
+        /// installed none: nothing is told.
+        report: Option<&'a str>,
+    },
+}
+
+impl With<'_> {
+    pub fn agent(&self) -> CodingAgent {
+        match self {
+            With::ClaudeCode { .. } => CodingAgent::ClaudeCode,
+            With::Pi { .. } => CodingAgent::Pi,
+        }
+    }
 }
 
 /// `text` as a JSON string, quotes and all.
@@ -334,39 +435,59 @@ fn added_settings(guard: &str, report: &str) -> String {
 /// The line a terminal opened on the issue's worktree runs to start a worker
 /// in its role with the worker launch command `command`: change to the role's
 /// copy, put the stage's facts in the environment, and start the command with
-/// the worktree and the team's copy added, the user's settings left out, the
-/// guard and the report added, and the stage's model.
+/// the worktree and the team's copy added, the user's configuration left
+/// out, the guard and the report added, and the stage's model — each in the
+/// way of the coding agent the command starts.
 pub fn in_role(command: &str, start: &Start) -> String {
-    let mut line = Line::new()
-        .fixed("cd ")
-        .word(start.role_dir)
-        .fixed(" && export ")
-        .fixed(ADDED_RULES)
-        .fixed("=1 ")
-        .fixed(NO_MEMORY)
-        .fixed("=1");
+    let mut line = Line::new().fixed("cd ").word(start.role_dir).fixed(" && export");
+    line = match start.with {
+        With::ClaudeCode { .. } => {
+            line.fixed(" ").fixed(ADDED_RULES).fixed("=1 ").fixed(NO_MEMORY).fixed("=1")
+        }
+        // What Claude Code is told by flags, pi's extension reads here.
+        With::Pi { .. } => {
+            let line = line.fixed(" ").fixed(GUARD_ENV).fixed("=").word(start.guard);
+            let line = line.fixed(" ").fixed(WORKTREE_ENV).fixed("=").word(start.worktree);
+            line.fixed(" ").fixed(TEAM_DIR_ENV).fixed("=").word(start.team_dir)
+        }
+    };
     for (name, value) in start.facts.env() {
         line = line.fixed(" ").fixed(name).fixed("=").word(&value);
     }
-    line = line
-        .fixed(" && ")
-        .launch(command)
-        .fixed(" ")
-        .fixed(ADD_DIR)
-        .fixed(" ")
-        .word(start.worktree)
-        .fixed(" ")
-        .fixed(ADD_DIR)
-        .fixed(" ")
-        .word(start.team_dir)
-        .fixed(" ")
-        .fixed(SETTING_SOURCES)
-        .fixed(" ")
-        .fixed(SOURCES)
-        .fixed(" ")
-        .fixed(SETTINGS)
-        .fixed(" ")
-        .word(&added_settings(start.guard, start.report));
+    let mut line = line.fixed(" && ").launch(command);
+    match start.with {
+        With::ClaudeCode { report } => {
+            line = line
+                .fixed(" ")
+                .fixed(ADD_DIR)
+                .fixed(" ")
+                .word(start.worktree)
+                .fixed(" ")
+                .fixed(ADD_DIR)
+                .fixed(" ")
+                .word(start.team_dir)
+                .fixed(" ")
+                .fixed(SETTING_SOURCES)
+                .fixed(" ")
+                .fixed(SOURCES)
+                .fixed(" ")
+                .fixed(SETTINGS)
+                .fixed(" ")
+                .word(&added_settings(start.guard, report));
+        }
+        With::Pi { extension, report } => {
+            for flag in PI_DISCOVERS_NOTHING {
+                line = line.fixed(" ").fixed(flag);
+            }
+            line = line.fixed(" ").fixed(PI_TRUSTS_NOTHING);
+            for extension in [Some(extension), report].into_iter().flatten() {
+                line = line.fixed(" ").fixed(EXTENSION).fixed(" ").word(extension);
+            }
+            // pi discovers no skills where a role keeps them.
+            let skills = format!("{}/{SKILLS}", start.role_dir.trim_end_matches('/'));
+            line = line.fixed(" ").fixed(SKILL).fixed(" ").word(&skills);
+        }
+    }
     if let Some(model) = start.model {
         line = line.fixed(" ").fixed(MODEL).fixed(" ").word(model);
     }
@@ -374,33 +495,38 @@ pub fn in_role(command: &str, start: &Start) -> String {
 }
 
 /// The shell line whose answer says which flags `command` takes
-/// (`takes_flags` reads it).
+/// (`starts` reads it).
 pub fn flags_question(command: &str) -> String {
     Line::new().launch(command).fixed(" --help").done()
 }
 
-/// Whether the worker launch command `command` takes what a bound repo adds
-/// to it, given what the worker's shell printed for `flags_question` (`None`:
-/// it failed, or printed nothing). An error names the reason: used anyway,
-/// every worker would start outside its role, or not at all.
-pub fn takes_flags(command: &str, answer: Option<&str>) -> Result<(), String> {
+/// The coding agent the worker launch command `command` starts, given what
+/// the worker's shell printed for `flags_question` (`None`: it failed, or
+/// printed nothing): the first whose every flag the answer names. An error
+/// is a command that takes no agent's, naming the reason: used anyway, every
+/// worker would start outside its role, or not at all.
+pub fn starts(command: &str, answer: Option<&str>) -> Result<CodingAgent, String> {
     let refused = |why: String| {
         Err(format!(
             "this repo is bound to a team, whose workers are started in their roles, and the \
              worker launch command {command:?} cannot do that: {why}. A bound repo's worker \
-             launch command must end in Claude Code taking flags"
+             launch command must end in Claude Code or pi taking flags"
         ))
     };
     let question = flags_question(command);
     let Some(answer) = answer.filter(|answer| !answer.trim().is_empty()) else {
         return refused(format!("`{question}` failed in a login shell, or said nothing"));
     };
-    let missing: Vec<&str> = FLAGS.iter().copied().filter(|flag| !answer.contains(flag)).collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        refused(format!("`{question}` names no {}", missing.join(", no ")))
+    let mut missing: Vec<String> = vec![];
+    for agent in CodingAgent::ALL {
+        let lacks: Vec<&str> =
+            agent.flags().iter().copied().filter(|flag| !answer.contains(flag)).collect();
+        if lacks.is_empty() {
+            return Ok(agent);
+        }
+        missing.push(format!("of {}'s flags, no {}", agent.name(), lacks.join(", no ")));
     }
+    refused(format!("`{question}` names, {}", missing.join("; ")))
 }
 
 #[cfg(test)]
@@ -669,7 +795,7 @@ land: { by: boss, do: implement }
             team_dir: "/copies/acme/team/def",
             model,
             guard: "/bin/afkconvoy guard",
-            report: r#"tell "$HOME""#,
+            with: With::ClaudeCode { report: r#"tell "$HOME""# },
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },
                 role: "dev",
@@ -722,7 +848,8 @@ land: { by: boss, do: implement }
         assert!(line.ends_with("--model 'a b;c'"), "{line}");
         // Nor by Claude Code, of the line that runs the guard.
         let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
-        let settings = added_settings(odd.guard, odd.report);
+        let With::ClaudeCode { report } = odd.with else { panic!("a start of Claude Code") };
+        let settings = added_settings(odd.guard, report);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
         assert!(settings.contains(r#""command":"tell \"$HOME\"","timeout":10"#), "{settings}");
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
@@ -730,21 +857,91 @@ land: { by: boss, do: implement }
 
     const HELP: &str = "Usage: claude [options]\n  --add-dir <directories...>\n  --model <model>\n  \
                         --setting-sources <sources>\n  --settings <file-or-json>\n";
+    const PI_HELP: &str = "Usage:\n  pi [options]\n  --model <pattern>\n  --extension, -e <path>\n  \
+                           --no-extensions, -ne\n  --skill <path>\n  --no-skills, -ns\n  \
+                           --no-prompt-templates, -np\n  --no-themes\n  --no-context-files, -nc\n  \
+                           --approve, -a\n  --no-approve, -na\n";
 
-    #[test]
-    fn a_command_that_takes_the_flags_is_not_refused() {
-        assert_eq!(flags_question("kim --yolo"), "kim --yolo --help");
-        assert_eq!(takes_flags("kim --yolo", Some(HELP)), Ok(()));
+    fn pi<'a>(model: Option<&'a str>, report: Option<&'a str>) -> Start<'a> {
+        Start { with: With::Pi { extension: "/wt/.git/ext's.ts", report }, ..start(model) }
     }
 
     #[test]
-    fn a_command_that_does_not_take_the_flags_is_refused_naming_the_reason() {
+    fn a_start_of_pi_adds_what_pi_takes_and_hands_its_extension_the_rest() {
+        let line = in_role("pi", &pi(Some("opus"), Some("/home/kim/.pi/orca.ts")));
+        assert_eq!(
+            line,
+            "cd '/copies/acme/dev/abc' && export AFKCONVOY_GUARD='/bin/afkconvoy guard' \
+             AFKCONVOY_WORKTREE='/wt/issue 7' AFKCONVOY_TEAM_DIR='/copies/acme/team/def' \
+             AFKCONVOY_ISSUE='7' AFKCONVOY_FLOW='feature' \
+             AFKCONVOY_STAGE='build' AFKCONVOY_ROLE='dev' AFKCONVOY_SKILL='implement' \
+             AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
+             AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
+             AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' && \
+             pi --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files \
+             --no-approve --extension '/wt/.git/ext'\\''s.ts' --extension '/home/kim/.pi/orca.ts' \
+             --skill '/copies/acme/dev/abc/.claude/skills' --model 'opus'"
+        );
+        // Nothing of Claude Code's is in it.
+        for claude in [ADD_DIR, SETTINGS, ADDED_RULES, NO_MEMORY] {
+            assert!(!line.contains(claude), "{claude}: {line}");
+        }
+    }
+
+    #[test]
+    fn a_start_of_pi_with_no_report_and_no_model_names_neither() {
+        let line = in_role("pi", &pi(None, None));
+        assert!(
+            line.ends_with(
+                "--no-approve --extension '/wt/.git/ext'\\''s.ts' --skill \
+                 '/copies/acme/dev/abc/.claude/skills'"
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn every_flag_added_to_a_coding_agent_is_one_its_command_is_asked_for() {
+        let starts = [start(Some("opus")), pi(Some("opus"), Some("/orca.ts"))];
+        for start in starts {
+            let agent = start.with.agent();
+            let line = in_role("agent", &start);
+            let added = line.split(" && agent ").nth(1).unwrap();
+            let flags = added.split(' ').filter(|word| word.starts_with("--"));
+            let mut flags: Vec<&str> = flags.collect();
+            flags.sort_unstable();
+            flags.dedup();
+            let mut asked = agent.flags().to_vec();
+            asked.sort_unstable();
+            assert_eq!(flags, asked, "{}", agent.name());
+        }
+    }
+
+    #[test]
+    fn a_command_is_told_by_the_flags_it_takes_which_coding_agent_it_starts() {
+        assert_eq!(flags_question("kim --yolo"), "kim --yolo --help");
+        assert_eq!(starts("kim --yolo", Some(HELP)), Ok(CodingAgent::ClaudeCode));
+        assert_eq!(starts("glm", Some(PI_HELP)), Ok(CodingAgent::Pi));
+    }
+
+    #[test]
+    fn a_command_that_takes_no_coding_agent_s_flags_is_refused_naming_the_reason() {
         let old = HELP.replace("--setting-sources", "--settings").replace("--add-dir", "--dir");
-        let why = takes_flags("agent", Some(&old)).unwrap_err();
-        assert!(why.contains("`agent --help` names no --add-dir, no --setting-sources."), "{why}");
+        let why = starts("agent", Some(&old)).unwrap_err();
+        assert!(
+            why.contains(
+                "`agent --help` names, of Claude Code's flags, no --add-dir, no \
+                 --setting-sources; of pi's flags, no --no-extensions, no --no-skills"
+            ),
+            "{why}"
+        );
         assert!(why.contains("bound to a team") && why.contains("\"agent\""), "{why}");
+        // A pi too old to leave its discovery out is not pi enough.
+        let old = PI_HELP.replace("  --no-context-files, -nc\n", "");
+        let why = starts("pi", Some(&old)).unwrap_err();
+        assert!(why.contains("of pi's flags, no --no-context-files."), "{why}");
         for silent in [None, Some(""), Some(" \n")] {
-            let why = takes_flags("agent ; true", silent).unwrap_err();
+            let why = starts("agent ; true", silent).unwrap_err();
             assert!(why.contains("`agent ; true --help` failed in a login shell"), "{why}");
         }
     }
