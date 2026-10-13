@@ -109,6 +109,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         room: row.max_open.saturating_sub(row.open),
         intake_command: &own().fixed(" intake --issue <number> --workflow <name>").own(),
         lock_command: &own().fixed(" lock --issue <number>").own(),
+        over_command: &own().fixed(" over --run ").word(&claim.key).own(),
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let start = Start {
@@ -141,7 +142,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
 }
 
 /// Ends the run of the patrol `row` once it is over: a peer's presumed dead
-/// is only unclaimed; mine, its worker gone or stopped, is checked for what
+/// is only unclaimed; mine, declared over or its worker gone or stopped, is
+/// checked for what
 /// a patrol never leaves — a commit, a PR — and unclaimed. A run that left
 /// one has failed: an issue is opened for a human, and no other is touched.
 /// `Nothing` while the worker is still at it.
@@ -153,8 +155,7 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
         _ => return Ok(Outcome::Nothing),
     };
     if let Some(checkout) = checkout {
-        let started = claim.owner.as_ref().map(|owner| owner.ts);
-        if !run_over(checkout.state(me.now)?, started, me.now) {
+        if !run_over(claim, checkout.state(me.now)?, me.now) {
             return Ok(Outcome::Nothing);
         }
         let on = checkout.branch_now()?;

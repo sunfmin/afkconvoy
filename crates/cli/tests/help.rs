@@ -164,7 +164,7 @@ fn the_readme_says_how_a_repo_is_bound_and_how_a_role_gets_its_skills() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 42, "{short}");
+    assert!(short.lines().count() <= 43, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -230,7 +230,7 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let guide = guide(&long);
     let who = |command: &str| section(&asked(&[command, "--help"]), "WHO RUNS IT");
     let workers = group(guide, "  A worker");
-    assert_eq!(workers, ["gate", "land", "verdict", "intake", "lock", "wake"]);
+    assert_eq!(workers, ["gate", "land", "verdict", "intake", "lock", "over", "wake"]);
     for command in &workers {
         let who = who(command);
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");

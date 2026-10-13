@@ -82,9 +82,11 @@ WHAT TRIPS YOU UP
     takes one slot of `concurrency`. A patrol is not run while its open issues have
     reached its `max_open`, nor while a fleet lock stands; one that missed runs is run
     once. `afkconvoy plan` says how each stands.
-  - A patrol declares nothing. A later tick ends its run (`end_patrol`) once its worker
-    is gone or has stopped. A run that left a commit in its checkout, or opened a PR,
-    has failed: the tick opens an issue that says so, with the team's escalate label,
+  - A patrol's worker declares no verdict: it declares its run over (`afkconvoy over
+    --help`), with the line its brief ends with, and the next tick ends the run
+    (`end_patrol`) and frees its slot. One that never does is ended once its worker is
+    gone, or has been stopped for the grace period. Either way a run that left a commit
+    in its checkout, or opened a PR, has failed: the tick opens an issue that says so, with the team's escalate label,
     and touches no other issue. The patrol is not run again until a human closes it.
   - A human's ruling on an escalated issue is proposed as a precedent, where the team
     names who proposes (`precedents`, `afkconvoy check --help`): a tick starts one
@@ -100,8 +102,9 @@ WHAT TRIPS YOU UP
     worker is started — and none is started while the open proposals on the team's
     repo have reached `max_open`, nor while a fleet lock stands. `afkconvoy plan`
     says how each stands.
-  - A later tick ends a proposal (`end_proposal`) once its worker is gone or has
-    stopped: a PR from its branch that changes anything but `precedents.md`, or does
+  - A proposal's worker declares its run over as a patrol's does, and the next tick
+    ends the proposal (`end_proposal`) — or a later one does, once its worker is gone
+    or has been stopped for the grace period: a PR from its branch that changes anything but `precedents.md`, or does
     anything there but append that one entry, is closed with the reason in a comment;
     one that is a proposal is left for a human. The checkout is removed.
   - With a fleet lock standing a tick works lock issues only (`afkconvoy lock --help`).

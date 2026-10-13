@@ -23,6 +23,27 @@ pub fn run_ref(layout: Layout, key: &str) -> String {
     layout.under(&format!("{CLAIM_KIND}{key}"))
 }
 
+/// The kind of ref that says a run's worker declared it over, named as the
+/// run's claim is.
+pub const OVER_KIND: &str = "over/";
+const OVER: &str = "convoy:run-over";
+
+/// The ref that says the run keyed `key` was declared over.
+pub fn over_ref(layout: Layout, key: &str) -> String {
+    layout.under(&format!("{OVER_KIND}{key}"))
+}
+
+/// The record that the run whose claim is at `claim` is over: it names the
+/// claim, so that it says nothing of a later run under the same key.
+pub fn write_over(claim: &str) -> String {
+    record::write(OVER, &[("claim", claim)])
+}
+
+/// A commit subject → the sha of the claim on the run it declares over.
+pub fn read_over(subject: &str) -> Option<String> {
+    record::read(OVER, subject)?.get("claim").map(str::to_string)
+}
+
 /// The ref that carries `instance`'s heartbeat.
 pub fn heartbeat_ref(layout: Layout, instance: &InstanceId) -> String {
     layout.under(&format!("{HEARTBEAT_KIND}{instance}"))
@@ -133,6 +154,8 @@ pub struct RunClaim {
     pub owner: Option<Owner>,
     /// What a delete of the claim is leased to.
     pub sha: String,
+    /// Its worker declared the run over (`over_ref`).
+    pub over: bool,
 }
 
 /// Whose a run still claimed is.
