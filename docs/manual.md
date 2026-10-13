@@ -200,6 +200,13 @@ None of them has a key the fleet reads. A `do` names an entry of `.claude/skills
 the directory of the role beside it. The rules and the skills are written once, and
 every harness works under them: pi reads `CLAUDE.md` from the directory it starts in,
 Codex does once the fleet tells it to, and the fleet names `.claude/skills/` to pi.
+Codex finds skills in `.agents/skills/` and `.codex/skills/` and not in
+`.claude/skills/`: the fleet's copy of a role that a Codex worker starts in links the
+first to the role's skills, and a role holds nothing for it. A role that holds one of
+the two itself is left as it is, and a Codex worker is shown the skills there and no
+other of the role's — `check` notes a `do` that is not among them. A Codex worker is
+also shown the skills of the host user's home (~/.agents/skills), which Codex has no
+way to be told to leave out: the one thing of a host user's a worker loads.
 The limits — what the role may never do — are written once for each harness the role
 runs on, in that harness's own form: pi and Codex run no hook of
 `.claude/settings.json`.

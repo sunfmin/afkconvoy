@@ -174,7 +174,8 @@ WHAT TRIPS YOU UP
           --config 'project_root_markers=[]'
           [--config 'developer_instructions="<the repo's own rules, the team rules>"']
           --config 'hooks={PreToolUse=[<what asks afkconvoy guard>]}'
-          --config features.memories=false [--model <the stage's>]
+          --config features.memories=false
+          --config skills.bundled.enabled=false [--model <the stage's>]
     `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex
     would ask at its terminal — whether it trusts the folder, and a review of its
     hooks — and have it load the role's own limits (`.codex/hooks.json`). The next
@@ -191,7 +192,19 @@ WHAT TRIPS YOU UP
     your login (auth.json) and nothing else of yours — no rule, skill, hook or
     configuration, so no provider you defined in config.toml. A login Codex
     keeps in a keyring is in no file, and is no worker's: the start refuses, and
-    `doctor` says so. Its memories are off. The stock command runs Codex in no
+    `doctor` says so. Its memories are off. Codex finds skills in `.agents/skills/`
+    and `.codex/skills/` of the directory it starts in, and not in `.claude/skills/`,
+    where a role's are: the role's copy a Codex worker starts in is Codex's own
+    (<commit>-role+codex-<path>), and holds a link, `.agents/skills` to
+    `../.claude/skills`, made once with the copy. The role's repo holds nothing for
+    it; a role that holds either directory itself is left as it is, and a worker is
+    shown the skills there. The last key leaves out the skills Codex carries. One
+    thing of yours a Codex worker does load: the skills of your home
+    (~/.agents/skills). Codex finds them wherever its user directory is and has no
+    way to be told to leave them out, and the fleet does not work around it — so on
+    two hosts a Codex worker may be shown different skills besides its role's. Keep
+    none there on a host whose Codex workers must be shown their role's alone. The
+    stock command runs Codex in no
     sandbox: a worker is limited by the guard, and a host that wants a sandbox says
     a command of its own. A command you give for Codex must take `--add-dir`,
     `--dangerously-bypass-hook-trust`, `--config` and `--model`.

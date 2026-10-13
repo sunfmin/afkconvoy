@@ -135,6 +135,13 @@ WHAT IT ANSWERS
   in the role's directory loads those rules too, and a worker, given the role's
   directory alone, does not. The team loads all the same, and it exits 0.
 
+  A note, on stderr, for each worker on codex whose role holds an `.agents/skills/` or
+  a `.codex/skills/` itself, the skill the worker is asked to perform not in either:
+  Codex finds skills there and not in `.claude/skills/`, the fleet leaves what a role
+  holds there as it is, and the worker would not be shown that skill. A role that holds
+  neither is given a link to its skills, in the fleet's copy, and nothing is noted. The
+  team loads all the same, and it exits 0.
+
   A note, on stderr, for a team whose directory holds a `.claude/`: the hooks and skills
   there are loaded by no worker. Of a team's directory a worker is given the rules, and
   a hook and a skill are a role's. The team loads all the same, and it exits 0.
