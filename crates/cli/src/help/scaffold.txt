@@ -50,7 +50,8 @@ WHAT IT READS AND WRITES
   `afkconvoy help example` goes through file by file. It takes no `--role` — the team
   file names its own, each as `./roles/<name>` — and is a team's alone. A hook, like
   any file written that starts with `#!`, is written executable. Skills by other
-  authors that the example's roles load are not written: `help example` says which.
+  authors that the example's roles load are not written, and one of its stages runs
+  on pi: `afkconvoy help example-run` says what a host needs before a fleet works with it.
 
   `scaffold role <dir>` writes a role's three kinds of file, and takes no `--role`:
 

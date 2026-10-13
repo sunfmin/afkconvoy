@@ -16,7 +16,8 @@ stages:
   - name: plan-review
     by: attending
     do: review-plan
-    model: opus
+    harness: pi
+    model: openai-codex/gpt-5.5
     writes: false
     on: { pass: treatment, reject: workup }
   - name: treatment
