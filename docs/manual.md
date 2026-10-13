@@ -469,7 +469,7 @@ tick 7: advanced #1 · dispatched #2 · holding 3/3 · frontier 1 · next in 90s
 tick 9: advanced #2 · dispatched #1, #3 · ended the patrol triage, rounds · proposed as a precedent the ruling on #3 · holding 3/3 · frontier 0 · next in 90s
 ```
 
-`dispatched` starts a worker on a stage; `advanced` is the fleet reading a verdict and ending that stage's claim. The stage that follows is dispatched a tick later, under a claim of its own. Here is what happened to each issue.
+`dispatched` starts a worker on a stage; `advanced` is the fleet reading a verdict and ending that stage's claim. The stage that follows is dispatched a tick later, under a claim of its own; where a slot is free for it, `run` starts that tick with no sleep and the line ends `next now`. Here is what happened to each issue.
 
 #### Issue 2: routed by a patrol, landed by a short workflow
 
@@ -780,7 +780,6 @@ and the lines `run` printed: a step that failed is reported there and nowhere el
 | `FAILED dispatch #1: orca knows no repo at …` | orca has never been told of this checkout | `orca repo add --path <the checkout>`; the next tick recovers by itself ([#119](https://github.com/sunfmin/afkconvoy/issues/119)) |
 | An issue is not being worked | it is under `excluded` in `plan`, with the reason: no flow label, an epic label, an open blocker, a fleet lock, held by another instance | remove the cause the reason names |
 | `holding 3/3`, a frontier that is not empty, and nothing happening | every slot is taken — a patrol's run holds one for about five minutes after its worker is done ([#122](https://github.com/sunfmin/afkconvoy/issues/122)) | raise `concurrency`, or give patrols a longer `every` |
-| Each stage starts a minute or two after the one before it ended | the tick that reads a verdict and the tick that starts the next stage are two, with a sleep between ([#123](https://github.com/sunfmin/afkconvoy/issues/123)) | nothing yet; it is latency, not a fault |
 | I changed a role and the worker did not see it | the change is not pushed to the role's default branch, or the stage had already started | push; the next stage starts under the new head |
 | I moved the labels back and it escalated again | a label is not the state: the records still say "escalating" | `afkconvoy rule` or `afkconvoy send` |
 | A stage's verdict "counts for nothing" | the record names another stage than the one its claim was dispatched to | `show --issue` says how each record was read; `send` the issue where it belongs |

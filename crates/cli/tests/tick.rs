@@ -197,6 +197,22 @@ fn run_goes_idle_after_three_empty_ticks() {
 }
 
 #[test]
+fn run_follows_a_tick_that_settled_a_claim_with_no_sleep_and_sleeps_after_one_that_did_nothing() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    world.close_issue(3);
+    let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "2", "--now", "1090"]);
+    assert_eq!(
+        lines,
+        [
+            // what the landing unblocked is the next tick's to find
+            "tick 1: settled #3 · holding 0/2 · frontier 0 · next now",
+            "tick 2: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+        ]
+    );
+}
+
+#[test]
 fn run_mints_an_instance_id_named_for_the_host() {
     let world = backlog(&[3]);
     let (_, stopped) = run(&world, &["--ticks", "1"]);

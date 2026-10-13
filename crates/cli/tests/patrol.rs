@@ -527,3 +527,23 @@ fn the_line_of_a_tick_names_the_patrols_it_ran_and_ended() {
     let lines = run("10000", "1");
     assert!(lines.iter().any(|line| line.contains("ran the patrol sweep")), "{lines:?}");
 }
+
+#[test]
+fn the_slot_a_patrol_s_end_frees_is_filled_by_the_tick_that_ended_it() {
+    let world = bound("[sweep]");
+    tick(&world, 10_000);
+    workers_leave(&world);
+    for issue in [5, 6, 7] {
+        world.issue(issue, &["flow:feature"]);
+    }
+    // The frontier was not empty as the slot came free: the same tick started
+    // a worker in it, and left `run` nothing to skip its sleep for.
+    let args = ["run", "--instance", "alpha", "--host", "h1", "--second-ms", "0"];
+    let (lines, _) = world.afk_lines(&[&args[..], &["--ticks", "1", "--now", "10400"]].concat());
+    assert_eq!(
+        lines,
+        [
+            "tick 1: dispatched #5, #6 · ended the patrol sweep · holding 2/2 · frontier 1 · next in 90s"
+        ]
+    );
+}

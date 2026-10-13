@@ -52,6 +52,10 @@ WHAT TRIPS YOU UP
     the tick after a `pass` that leads to `land` starts a worker in the workflow's
     landing role, which gates the PR and joins the landing train; a `pass` to `land`
     with no open PR to join is handed to a human.
+  - `run` does not sleep across that hop: after a tick that advanced an issue or
+    settled one and left a slot free, it starts the next tick at once (`next now` in
+    its line), at most 4 ticks back to back. Ticking by hand, the next `tick` is yours
+    to run.
   - An `escalate` does not always hand the issue to a human. From a stage that names a
     consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim,
     and the next one starts a worker in the consult's role — under a claim of its

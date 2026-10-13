@@ -549,14 +549,18 @@ pub fn render(panel: &Panel) -> String {
 
     match &panel.tick {
         Some(tick) => {
+            // With no sleep after it, the next tick started as this page was made.
+            let next = match tick.sleep {
+                0 => "a tick is running".to_string(),
+                sleep => format!("next tick in {}", lasted(sleep)),
+            };
             let _ = writeln!(
                 out,
                 "<p class=\"tick\"><b>Tick {}</b> <span class=\"did\">{}</span> \
-                 <time class=\"next\" data-next=\"{}\">next tick in {}</time></p>",
+                 <time class=\"next\" data-next=\"{}\">{next}</time></p>",
                 tick.count,
                 esc(&tick.line),
                 tick.ended.saturating_add(tick.sleep),
-                lasted(tick.sleep),
             );
         }
         None if panel.lanes.is_empty() => out.push_str(
