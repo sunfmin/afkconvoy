@@ -42,6 +42,9 @@ THE WORKFLOWS
         Five stages, then the landing. A reviewer that writes nothing: `plan-review`
         and `code-review` are marked `writes: false`, as `workup` and `discharge` are,
         and the guard refuses their workers a commit and a push.
+        A stage on another harness: `plan-review` names `harness: pi` and pi's own name
+        for its model, so the plan is reviewed by something other than what wrote it.
+        It is the stage chosen because it writes nothing.
         A stage with a consult: `workup` and `treatment` carry
         `escalate: { to: attending, do: consult }`. Their `escalate` goes first to a
         worker in that role, which lets through to a human only what nobody decided.
@@ -89,10 +92,14 @@ THE ROLES
   roles/attending/
     CLAUDE.md  .claude/skills/review-plan/SKILL.md  .claude/skills/review-code/SKILL.md
     .claude/skills/consult/SKILL.md  .claude/settings.json  .claude/hooks/refuse.sh
-    .claude/hooks/skills-loaded.sh  skills-lock.json
+    .claude/hooks/skills-loaded.sh  .pi/extensions/limits.ts  skills-lock.json
         Reviews, and is the consult. A `reject` needs a blocking finding, which keeps
         rework from the breaker over a name. `refuse.sh` refuses a commit and a push in
         every stage: the role writes no code, whatever a workflow left unmarked.
+        `limits.ts` is both hooks again, as a pi extension: pi runs no hook of
+        `.claude/settings.json`, so a limit held under two harnesses is written twice.
+        Under pi a skill is loaded by reading its `SKILL.md`, which is what it counts.
+        Without it `check` refuses `plan-review`: its role would hold no limits there.
   roles/discharge-nurse/
     CLAUDE.md  .claude/skills/audit/SKILL.md  .claude/skills/land/SKILL.md
     .claude/settings.json
@@ -111,14 +118,7 @@ THE ROLES
         The three that only patrol. The guard refuses a patrol's worker a commit and a
         push, so their `settings.json` holds no hook, as those of the two above do.
 
-BEFORE A FLEET WORKS WITH IT
+WHERE TO READ ON
 
-  `check` accepts the team as written, once it is pushed: it reads a role from GitHub.
-  Three skills that the fellow's and the attending's own skills say to load are other
-  authors' and are not written. Each role's `skills-lock.json` names them and where
-  each is from: add them in each of the two directories, and commit them.
-
-      npx skills add <source> --skill <name> --agent claude-code
-
-  Until then `skills-loaded.sh` refuses every `pass` and `reject` of those two roles.
-  The hooks call `jq`: every host of the fleet needs it.
+  `afkconvoy help example-run`  what a host needs before a fleet works with this team,
+                                and one issue followed from its label to the base branch

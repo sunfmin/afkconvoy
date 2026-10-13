@@ -10,6 +10,7 @@
 - [`afkconvoy help workflows`](#afkconvoy-help-workflows) — stages, verdicts, rework, a consult, a landing: a workflow's file
 - [`afkconvoy help patrols`](#afkconvoy-help-patrols) — a role run on a schedule: a patrol's file, intake, the fleet lock
 - [`afkconvoy help example`](#afkconvoy-help-example) — the team `scaffold --example hospital` writes, read file by file
+- [`afkconvoy help example-run`](#afkconvoy-help-example-run) — that team at work: what a host needs, and one issue's run
 - [`afkconvoy help humans`](#afkconvoy-help-humans) — every way the fleet stops for a human, and the command that answers
 - [`afkconvoy help troubleshooting`](#afkconvoy-help-troubleshooting) — a symptom, its cause and its fix: each finding, each refusal
 - [`afkconvoy help glossary`](#afkconvoy-help-glossary) — every term the help uses, each with its one definition
@@ -684,6 +685,9 @@ answers with it, and the role `triage-nurse` routes by it.
       Five stages, then the landing. A reviewer that writes nothing: `plan-review`
       and `code-review` are marked `writes: false`, as `workup` and `discharge` are,
       and the guard refuses their workers a commit and a push.
+      A stage on another harness: `plan-review` names `harness: pi` and pi's own name
+      for its model, so the plan is reviewed by something other than what wrote it.
+      It is the stage chosen because it writes nothing.
       A stage with a consult: `workup` and `treatment` carry
       `escalate: { to: attending, do: consult }`. Their `escalate` goes first to a
       worker in that role, which lets through to a human only what nobody decided.
@@ -735,10 +739,14 @@ roles/fellow/
 roles/attending/
   CLAUDE.md  .claude/skills/review-plan/SKILL.md  .claude/skills/review-code/SKILL.md
   .claude/skills/consult/SKILL.md  .claude/settings.json  .claude/hooks/refuse.sh
-  .claude/hooks/skills-loaded.sh  skills-lock.json
+  .claude/hooks/skills-loaded.sh  .pi/extensions/limits.ts  skills-lock.json
       Reviews, and is the consult. A `reject` needs a blocking finding, which keeps
       rework from the breaker over a name. `refuse.sh` refuses a commit and a push in
       every stage: the role writes no code, whatever a workflow left unmarked.
+      `limits.ts` is both hooks again, as a pi extension: pi runs no hook of
+      `.claude/settings.json`, so a limit held under two harnesses is written twice.
+      Under pi a skill is loaded by reading its `SKILL.md`, which is what it counts.
+      Without it `check` refuses `plan-review`: its role would hold no limits there.
 roles/discharge-nurse/
   CLAUDE.md  .claude/skills/audit/SKILL.md  .claude/skills/land/SKILL.md
   .claude/settings.json
@@ -758,6 +766,23 @@ roles/research/
       push, so their `settings.json` holds no hook, as those of the two above do.
 ````
 
+### WHERE TO READ ON
+
+````text
+`afkconvoy help example-run`  what a host needs before a fleet works with this team,
+                              and one issue followed from its label to the base branch
+````
+
+
+## afkconvoy help example-run
+
+````text
+The team `afkconvoy help example` reads file by file, pushed, bound to a repo and
+run. First what must be in place; then one issue of its `fix` workflow, followed
+from its flow label to the base branch, with how long each stage took and what it
+cost.
+````
+
 ### BEFORE A FLEET WORKS WITH IT
 
 ````text
@@ -768,8 +793,78 @@ each is from: add them in each of the two directories, and commit them.
 
     npx skills add <source> --skill <name> --agent claude-code
 
-Until then `skills-loaded.sh` refuses every `pass` and `reject` of those two roles.
-The hooks call `jq`: every host of the fleet needs it.
+Until then `skills-loaded.sh` refuses every `pass` and `reject` of those two roles,
+and the attending's `limits.ts` does under pi. The hooks call `jq`: every host of
+the fleet needs it.
+
+`plan-review` runs on pi, so every host needs `pi`, logged in to the provider of the
+stage's model: `openai-codex/gpt-5.5`, as written. `check` holds that name against
+the models pi lists on the host. Write another of them — or take `harness` and
+`model` out of the stage, and it runs on the repo's default harness as the others
+do. A host without pi starts nothing: `plan`, `tick` and `run` refuse, `doctor`
+finds the same, and each names the stage that calls for it and the line that
+installs it:
+
+    pi is not installed, called for by the stage `plan-review` of the workflow `fix`
+````
+
+### ONE ISSUE, FROM ITS LABEL TO THE BASE BRANCH
+
+````text
+A repo holding one small Go package was bound to the team; its gate formats, vets
+and tests. One issue was opened with the label `flow:fix`: a named form the package
+was to read, with what each call should give written out. Nobody touched it again.
+One fleet instance on one laptop worked it, `concurrency: 3`:
+
+    stage         role             harness      model                 worked    cost
+    workup        fellow           claude-code  fable                 1m 44s   $1.39
+    plan-review   attending        pi           openai-codex/gpt-5.5     51s   $0.41
+    treatment     fellow           claude-code  opus                  1m 06s   $0.45
+    code-review   attending        claude-code  opus                  1m 02s   $0.47
+    discharge     discharge-nurse  claude-code  sonnet                   28s   $0.14
+    the landing   discharge-nurse  claude-code  its default              31s   $0.19
+
+From opened to merged on the base branch: 9 minutes 29 seconds and $3.05, with no
+rework and no human. The repo's two patrols, `triage` and `rounds`, ran three times
+beside it, for $0.23 more.
+
+`worked` is a worker's session, from its first word to its last. The rest of the
+nine minutes is the fleet's: one tick reads a verdict and starts the next stage's
+worker, and a worker's `wake` ends the sleep between two. `cost` is what each
+harness reckoned for its session at its provider's listed prices: under a
+subscription login nothing is billed by the call.
+
+Every stage left its record on the issue, a comment that names the harness it ran
+on beside the commits of the role and of the team it ran under:
+
+    <!--convoy:stage stage=plan-review verdict=pass … harness=pi-->
+````
+
+### WHAT HELD THE PI WORKER
+
+````text
+The issue asked the plan's reviewer to try one commit, so that the refusal could be
+seen. pi made the call, it was refused, and the worker quoted the refusal in the
+text of its verdict:
+
+    afkconvoy guard: the stage `plan-review` is marked `writes: false`: `git commit`
+    is refused. A stage that writes nothing leaves no commit and pushes nothing; say
+    what you found in the text of your verdict
+
+That is the fleet's guard, which a pi worker asks through the extension the fleet
+adds to it (`afkconvoy run --help`). It answered before the role's own limits were
+reached, so `limits.ts` refused nothing in this run: it is what refuses the same
+commit in a stage a workflow left unmarked. Its other limit was met and let the
+worker through — the reviewer read the `SKILL.md` of both skills its skill names
+before it declared `pass`.
+````
+
+### WHERE TO READ ON
+
+````text
+`afkconvoy help example`    the team's files, each with the decision it holds
+`afkconvoy help workflows`  `harness` and `model`, and every other key of a stage
+`afkconvoy help team`       where a role's limits for each harness go
 ````
 
 

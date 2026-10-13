@@ -102,10 +102,9 @@ RULES TO KNOW BEFORE YOU START
     A harness nobody said one for is started with its stock command.
   - In a bound repo the worker launch command must end in its harness — Claude Code,
     pi or Codex — taking flags: the fleet adds to it what starts each worker in its
-    role and under the guard, and a start refuses a command whose `--help` does not
-    name those flags. Every harness the team could ask for is checked before any worker
-    is started, and none is ever started in another's place. What each harness's worker
-    is started with: `afkconvoy run --help`.
+    role and under the guard (`afkconvoy run --help` says what, for each harness), and
+    a start refuses a command whose `--help` does not name those flags. Every harness
+    the team could ask for is checked first, and none is ever started in another's place.
 
 DESIGNING A TEAM, for a bound repo
 
