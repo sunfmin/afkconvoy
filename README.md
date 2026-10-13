@@ -18,7 +18,8 @@ Homebrew installs `git` and `gh` with it. Three things are yours to set up:
 
 - **orca** — afkconvoy starts every worker through [orca](https://github.com/stablyai/orca): `brew install --cask stablyai/orca/orca`. Give the tap's name: the cask Homebrew itself calls `orca` is another program. Then start it — `orca open` — and, in each checkout a fleet is to work, give it the repo once: `orca repo add --path "$PWD"`.
 - **GitHub** — `gh auth login`, as a user who may push to the repo.
-- **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`. A team that puts a stage on **pi** needs pi installed and logged in to the provider of that stage's model, as you would use it yourself.
+- **Claude Code**, when it is what starts your workers — `curl -fsSL https://claude.ai/install.sh | bash`, then `claude auth login`.
+- **pi**, when a stage or a patrol your fleet runs is on it — `curl -fsSL https://pi.dev/install.sh | sh`, then `pi`, and `/login` at its prompt. A team that names no pi stage is asked nothing about pi. What is checked is that pi holds credentials for a provider (`pi --list-models` lists a model): that it is the provider of each stage's model is yours to see to.
 
 `run`, `tick` and `plan` check all of this before anything else, and refuse with the line to run for each thing missing, logged out, not running or not given the checkout. afkconvoy installs nothing, starts and adds nothing, and logs nobody in.
 

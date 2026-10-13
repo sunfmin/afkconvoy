@@ -36,6 +36,11 @@ pub struct Proposed {
 }
 
 impl Proposed {
+    /// The harness whose workers it would start.
+    pub fn harness(&self) -> Harness {
+        self.harness
+    }
+
     /// The command, exactly as it was given.
     pub fn as_str(&self) -> &str {
         &self.command

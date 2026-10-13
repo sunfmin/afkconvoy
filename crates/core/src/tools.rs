@@ -3,6 +3,7 @@
 //! fault with the line that fixes it; the tool itself never installs anything
 //! and logs nobody in.
 
+use crate::harness::Harness;
 use crate::launch::first_word;
 use crate::line::quoted;
 
@@ -14,7 +15,13 @@ pub enum Tool {
     Orca,
     /// Claude Code: needed only when it is what starts a worker.
     Claude,
+    /// pi: needed only when it is what starts a worker.
+    Pi,
 }
+
+/// What pi lists in place of its models when it holds credentials for no
+/// provider.
+const PI_NO_MODELS: &str = "No models available";
 
 /// What a start found of one tool: the first thing in its way. A missing one
 /// is never also logged out, and one not running is asked nothing more.
@@ -45,19 +52,38 @@ impl Tool {
             Tool::Git => "git",
             Tool::Gh => "gh",
             Tool::Orca => "orca",
-            Tool::Claude => "claude",
+            Tool::Claude => Harness::ClaudeCode.program(),
+            Tool::Pi => Harness::Pi.program(),
         }
     }
 
+    /// The tool the workers of `harness` are sessions of, when `launch`,
+    /// their worker launch command, runs it by its own name: a harness is
+    /// looked for only as that command's first word — what a wrapper runs
+    /// and logs in to is its own business.
+    pub fn of(harness: Harness, launch: &str) -> Option<Tool> {
+        let tool = match harness {
+            Harness::ClaudeCode => Tool::Claude,
+            Harness::Pi => Tool::Pi,
+        };
+        (first_word(launch) == Some(tool.name())).then_some(tool)
+    }
+
+    /// Whether it is a harness: what a worker launch command starts.
+    fn starts_workers(self) -> bool {
+        matches!(self, Tool::Claude | Tool::Pi)
+    }
+
     /// The line that installs it. Homebrew's own `orca` cask is another
-    /// program, so orca's names its tap; Claude Code's is its native
-    /// installer, which keeps itself up to date.
+    /// program, so orca's names its tap; Claude Code's and pi's are their
+    /// native installers, which keep them up to date.
     pub fn install(self) -> &'static str {
         match self {
             Tool::Git => "brew install git",
             Tool::Gh => "brew install gh",
             Tool::Orca => "brew install --cask stablyai/orca/orca",
             Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+            Tool::Pi => "curl -fsSL https://pi.dev/install.sh | sh",
         }
     }
 
@@ -69,26 +95,43 @@ impl Tool {
             Tool::Git | Tool::Orca => None,
             Tool::Gh => Some(format!("gh auth status{}", hostname(host))),
             Tool::Claude => Some("claude auth status".to_string()),
+            // pi logs in to providers, and lists the models of those it
+            // holds credentials for: which one a worker uses is its stage's
+            // to say.
+            Tool::Pi => Some("pi --list-models".to_string()),
         }
     }
 
     /// Whether the answer to `login_question` says it is logged in: `gh` by
     /// its exit status, Claude Code by the `loggedIn` field of the JSON it
-    /// prints — whatever else the shell printed around it.
+    /// prints — whatever else the shell printed around it — and pi by
+    /// listing a model at all.
     pub fn logged_in(self, succeeded: bool, printed: &str) -> bool {
         match self {
             Tool::Claude => {
                 let dense: String = printed.split_whitespace().collect();
                 dense.contains("\"loggedIn\":true")
             }
+            Tool::Pi => succeeded && !printed.trim().is_empty() && !printed.contains(PI_NO_MODELS),
             Tool::Git | Tool::Gh | Tool::Orca => succeeded,
         }
     }
 
-    /// The line that logs it in.
+    /// What it is said to be when it is not logged in. pi logs in to a
+    /// provider, at its own prompt: its words say how, since no line does.
+    pub fn logged_out(self) -> &'static str {
+        match self {
+            Tool::Pi => "holds credentials for no provider (`/login` at its prompt logs it in)",
+            Tool::Git | Tool::Gh | Tool::Orca | Tool::Claude => "is not logged in",
+        }
+    }
+
+    /// The line that logs it in — pi's starts it, and `/login` is typed at
+    /// its prompt.
     pub fn login(self, host: Option<&str>) -> String {
         match self {
             Tool::Claude => "claude auth login".to_string(),
+            Tool::Pi => "pi".to_string(),
             // github.com is where `gh auth login` logs in unasked.
             _ => format!("gh auth login{}", hostname(host.filter(|host| *host != "github.com"))),
         }
@@ -99,16 +142,8 @@ fn hostname(host: Option<&str>) -> String {
     host.map(|host| format!(" --hostname {host}")).unwrap_or_default()
 }
 
-/// The tools a start needs. `launch` is the worker launch command, when the
-/// start knows it: Claude Code is needed only as its first word — what a
-/// wrapper or another agent runs and logs in to is its own business.
-pub fn needed(launch: Option<&str>) -> Vec<Tool> {
-    let mut tools = vec![Tool::Git, Tool::Gh, Tool::Orca];
-    if launch.and_then(first_word) == Some(Tool::Claude.name()) {
-        tools.push(Tool::Claude);
-    }
-    tools
-}
+/// The tools every start needs, whatever starts its workers.
+pub const ALWAYS: [Tool; 3] = [Tool::Git, Tool::Gh, Tool::Orca];
 
 /// The host a remote's URL names, for `gh`: of `https://host/o/r`,
 /// `ssh://git@host:22/o/r` and `git@host:o/r`. `None` for a path, and for
@@ -125,36 +160,38 @@ pub fn remote_host(url: &str) -> Option<&str> {
     (plain && host.contains('.') && !host.starts_with('-')).then_some(host)
 }
 
-/// Why a start refuses, or `None` when it has all it needs: every fault in
-/// `found`, each with the line that fixes it, and `launch_fault` — why the
-/// worker launch command cannot start a worker — unless that only says again
-/// that Claude Code is missing. `host` is the one `gh` was asked about.
-pub fn refusal(
-    found: &[(Tool, Found)],
-    host: Option<&str>,
-    launch_fault: Option<&str>,
-) -> Option<String> {
-    let mut faults: Vec<String> = vec![];
-    let mut claude_missing = false;
-    for (tool, found) in found {
-        let name = tool.name();
-        match found {
-            Found::Ready => {}
-            Found::Missing => {
-                claude_missing = claude_missing || *tool == Tool::Claude;
-                faults.push(format!("  {name} is not installed: {}", tool.install()));
-            }
-            Found::LoggedOut => {
-                faults.push(format!("  {name} is not logged in: {}", tool.login(host)));
-            }
-            Found::NotRunning => faults.push(format!("  {name} is not running: {START_ORCA}")),
-            Found::KnowsNoCheckout(path) => {
-                faults
-                    .push(format!("  {name} does not know this checkout: {}", add_checkout(path)));
-            }
+/// The line of a refusal that names what is in the way of `tool`, with the
+/// line that fixes it; `None` when nothing is. `host` is the one `gh` was
+/// asked about, and `callers` what calls for the harness the tool is, where
+/// the start knows: a stage or a patrol that names it.
+pub fn fault(tool: Tool, found: &Found, host: Option<&str>, callers: &[String]) -> Option<String> {
+    let name = tool.name();
+    let (what, line) = match found {
+        Found::Ready => return None,
+        Found::Missing => ("is not installed".to_string(), tool.install().to_string()),
+        Found::LoggedOut => (tool.logged_out().to_string(), tool.login(host)),
+        Found::NotRunning => ("is not running".to_string(), START_ORCA.to_string()),
+        Found::KnowsNoCheckout(path) => {
+            ("does not know this checkout".to_string(), add_checkout(path))
         }
-    }
-    let launch_fault = launch_fault.filter(|_| !claude_missing);
+    };
+    let called = match callers {
+        [] => String::new(),
+        callers => format!(", called for by {}", callers.join(", ")),
+    };
+    Some(format!("  {name} {what}{called}: {line}"))
+}
+
+/// Whether a harness in `found` is missing: that its worker launch command
+/// cannot start a worker then says the same thing a second time.
+pub fn harness_missing(found: &[(Tool, Found)]) -> bool {
+    found.iter().any(|(tool, found)| tool.starts_workers() && *found == Found::Missing)
+}
+
+/// Why a start refuses, or `None` when it has all it needs: every line in
+/// `faults` (`fault`), and `launch_fault` — why a worker launch command
+/// cannot start a worker.
+pub fn refused(faults: &[String], launch_fault: Option<&str>) -> Option<String> {
     if faults.is_empty() {
         return launch_fault.map(str::to_string);
     }
@@ -170,6 +207,20 @@ pub fn refusal(
     Some(text)
 }
 
+/// Why a start refuses, or `None` when it has all it needs: every fault in
+/// `found`, each with the line that fixes it, and `launch_fault` — why the
+/// worker launch command cannot start a worker — unless that only says again
+/// that its harness is missing. `host` is the one `gh` was asked about.
+pub fn refusal(
+    found: &[(Tool, Found)],
+    host: Option<&str>,
+    launch_fault: Option<&str>,
+) -> Option<String> {
+    let faults: Vec<String> =
+        found.iter().filter_map(|(tool, found)| fault(*tool, found, host, &[])).collect();
+    refused(&faults, launch_fault.filter(|_| !harness_missing(found)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,19 +234,60 @@ mod tests {
     ];
 
     #[test]
-    fn claude_is_needed_only_as_the_first_word_of_the_launch_command() {
-        let always = [Tool::Git, Tool::Gh, Tool::Orca];
-        assert_eq!(
-            needed(Some("claude --dangerously-skip-permissions")),
-            [Tool::Git, Tool::Gh, Tool::Orca, Tool::Claude]
-        );
-        assert_eq!(needed(Some("  claude")).len(), 4);
+    fn a_harness_is_looked_for_only_as_the_first_word_of_its_launch_command() {
+        let claude = |launch| Tool::of(Harness::ClaudeCode, launch);
+        assert_eq!(claude("claude --dangerously-skip-permissions"), Some(Tool::Claude));
+        assert_eq!(claude("  claude"), Some(Tool::Claude));
         // a wrapper, an alias that ends in claude, another agent, a path
         for other in ["kim --yolo", "wrap claude", "codex", "/usr/local/bin/claude", "claudex", ""]
         {
-            assert_eq!(needed(Some(other)), always, "{other:?}");
+            assert_eq!(claude(other), None, "{other:?}");
         }
-        assert_eq!(needed(None), always);
+        assert_eq!(Tool::of(Harness::Pi, "pi --thinking high"), Some(Tool::Pi));
+        for other in ["wrap pi", "pip install", "/opt/homebrew/bin/pi", "claude"] {
+            assert_eq!(Tool::of(Harness::Pi, other), None, "{other:?}");
+        }
+        // …and only as its own harness's: pi starts no Claude Code worker
+        assert_eq!(claude("pi"), None);
+    }
+
+    #[test]
+    fn pi_holds_credentials_when_it_lists_a_model() {
+        let pi = Tool::Pi;
+        assert_eq!(pi.login_question(Some("github.com")).unwrap(), "pi --list-models");
+        let listed = "provider      model    context\nopenai-codex  gpt-5.5  272K\n";
+        assert!(pi.logged_in(true, listed));
+        assert!(!pi.logged_in(false, listed));
+        let none = "No models available. Use /login to log into a provider via OAuth or API key.";
+        assert!(!pi.logged_in(true, none));
+        assert!(!pi.logged_in(true, " \n"));
+    }
+
+    #[test]
+    fn a_harness_a_stage_calls_for_is_named_with_the_stage_and_the_line_that_fixes_it() {
+        let callers = ["the stage `build` of the workflow `feature`".to_string()];
+        assert_eq!(
+            fault(Tool::Pi, &Found::Missing, None, &callers).unwrap(),
+            "  pi is not installed, called for by the stage `build` of the workflow `feature`: \
+             curl -fsSL https://pi.dev/install.sh | sh"
+        );
+        assert_eq!(
+            fault(Tool::Pi, &Found::LoggedOut, Some("github.com"), &[]).unwrap(),
+            "  pi holds credentials for no provider (`/login` at its prompt logs it in): pi"
+        );
+        assert_eq!(fault(Tool::Pi, &Found::Ready, None, &callers), None);
+        // …under the words every refusal starts with, and beside a command's own fault
+        let lines = [fault(Tool::Pi, &Found::LoggedOut, None, &callers).unwrap()];
+        let said = refused(&lines, Some("the command of another harness takes no flag")).unwrap();
+        assert!(said.contains("nothing was started"), "{said}");
+        assert!(
+            said.contains(" of the workflow `feature`: pi\nand the command of another"),
+            "{said}"
+        );
+        assert_eq!(refused(&[], None), None);
+        // a missing pi is not said a second time as a command that resolves to nothing
+        let said = refusal(&[(Tool::Pi, Found::Missing)], None, Some("pi resolves to nothing"));
+        assert!(!said.unwrap().contains("resolves to nothing"));
     }
 
     #[test]

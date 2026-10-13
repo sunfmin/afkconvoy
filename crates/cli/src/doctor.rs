@@ -16,7 +16,7 @@ use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
 use afkconvoy_core::patrol::Standing;
 use afkconvoy_core::plan::{LabelBar, Status, WorkingSet};
 use afkconvoy_core::team::Fault;
-use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout};
+use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout, harness_missing};
 use afkconvoy_core::waiting::{WAITED_LONG, Waiting};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::Result;
@@ -236,22 +236,38 @@ fn numbered(issues: &[u64]) -> String {
     issues.iter().map(|issue| format!("#{issue}")).collect::<Vec<_>>().join(", ")
 }
 
+impl Host {
+    /// Every tool looked for on this host, each with what calls for it: the
+    /// ones every fleet needs and the default harness, which nothing names,
+    /// then each other harness a stage or a patrol names.
+    fn looked_for(&self) -> impl Iterator<Item = (&(Tool, Found), &[String])> {
+        let named = self.launches.iter().filter_map(|launch| {
+            launch.checked.tool.as_ref().map(|tool| (tool, &launch.checked.callers[..]))
+        });
+        self.tools.iter().map(|tool| (tool, &[][..])).chain(named)
+    }
+}
+
 fn host_findings(host: &Host) -> Vec<Finding> {
     let mut found = vec![];
     let gh_host = host.gh_host.as_deref();
-    for (tool, state) in &host.tools {
+    for ((tool, state), callers) in host.looked_for() {
         let name = tool.name();
+        let called = match callers {
+            [] => String::new(),
+            callers => format!("; it is called for by {}", callers.join(", ")),
+        };
         let (what, evidence, fix) = match state {
             Found::Ready => continue,
             Found::Missing => (
                 format!("`{name}` is not installed: the fleet cannot work without it"),
-                format!("no `{name}` was found on this host"),
+                format!("no `{name}` was found on this host{called}"),
                 tool.install().to_string(),
             ),
             Found::LoggedOut => (
-                format!("`{name}` is not logged in"),
+                format!("`{name}` {}", tool.logged_out()),
                 format!(
-                    "`{}` says so, in a login shell",
+                    "`{}` says so, in a login shell{called}",
                     tool.login_question(gh_host).unwrap_or_default()
                 ),
                 tool.login(gh_host),
@@ -279,9 +295,13 @@ fn host_findings(host: &Host) -> Vec<Finding> {
         found.push(finding(Severity::Critical, what, evidence, fix));
     }
     for Launch { checked, .. } in &host.launches {
-        let claude_missing = host.tools.contains(&(Tool::Claude, Found::Missing));
+        // A harness that is missing is one finding: its command's are the same.
+        if checked.missing() {
+            continue;
+        }
+        let default_missing = harness_missing(&host.tools);
         let faults = [
-            (checked.fault.as_ref().filter(|_| !claude_missing), "cannot start a worker"),
+            (checked.fault.as_ref().filter(|_| !default_missing), "cannot start a worker"),
             (checked.flags_fault.as_ref(), "cannot start a worker in its role"),
         ];
         for (why, what) in faults {
@@ -848,7 +868,7 @@ fn host_json(host: &Host) -> Value {
         json!({"name": tool.name(), "state": state})
     };
     json!({
-        "tools": host.tools.iter().map(tool).collect::<Vec<_>>(),
+        "tools": host.looked_for().map(|(looked, _)| tool(looked)).collect::<Vec<_>>(),
         "worker_commands": host.launches.iter().map(|Launch { checked, of_run }| json!({
             // An unbound repo knows of no harness: nothing calls for one.
             "harness": (!checked.callers.is_empty()).then_some(checked.harness),
@@ -992,6 +1012,7 @@ mod tests {
                     harness: afkconvoy_core::harness::Harness::ClaudeCode,
                     callers: vec![],
                     command: "claude".into(),
+                    tool: None,
                     fault: None,
                     flags_fault: None,
                 },
@@ -1119,7 +1140,8 @@ mod tests {
             let fix = &finding.fix;
             let line = ["afkconvoy ", "gh ", "orca ", "brew ", "curl ", "claude "]
                 .iter()
-                .any(|program| fix.starts_with(program));
+                .any(|program| fix.starts_with(program))
+                || fix == "pi";
             let file = fix.split(": ").next().is_some_and(|file| file.ends_with(".md"));
             assert!(line || file, "a fix that is neither a line nor a file and key: {fix:?}");
             assert!(!fix.contains('\n') && !finding.evidence.is_empty(), "{finding:?}");
@@ -1178,6 +1200,45 @@ mod tests {
         flagless.launches[0].checked.flags_fault = Some("it takes no --settings".into());
         let found = self::found(&flagless, &run(vec![]), &state());
         assert_eq!(fixes(&found, "cannot start a worker in its role"), ["afkconvoy run --help"]);
+    }
+
+    #[test]
+    fn a_harness_a_stage_calls_for_is_found_as_the_default_one_is_with_what_calls_for_it() {
+        let pi = |found: Found| {
+            let mut host = host();
+            host.launches.push(Launch {
+                checked: Checked {
+                    harness: afkconvoy_core::harness::Harness::Pi,
+                    callers: vec!["the stage `build` of the workflow `feature`".into()],
+                    command: "pi".into(),
+                    tool: Some((Tool::Pi, found)),
+                    fault: Some("\"pi\" resolves to nothing in a login shell".into()),
+                    flags_fault: Some("`pi --help` failed in a login shell".into()),
+                },
+                of_run: false,
+            });
+            host
+        };
+        let missing = pi(Found::Missing);
+        let found = self::found(&missing, &run(vec![]), &state());
+        assert_eq!(fixes(&found, "`pi` is not installed"), [Tool::Pi.install()]);
+        assert_eq!(found.len(), 1, "said once, and not again of its command: {found:?}");
+        assert!(
+            found[0]
+                .evidence
+                .ends_with("called for by the stage `build` of the workflow `feature`")
+        );
+        assert_eq!(found[0].severity, Severity::Critical);
+        assert_eq!(host_json(&missing)["tools"][3], json!({"name": "pi", "state": "missing"}));
+
+        let mut logged_out = pi(Found::LoggedOut);
+        logged_out.launches[1].checked.fault = None;
+        logged_out.launches[1].checked.flags_fault = None;
+        let found = self::found(&logged_out, &run(vec![]), &state());
+        assert_eq!(fixes(&found, "`pi` holds credentials for no provider"), ["pi"]);
+        assert!(found[0].what.contains("`/login` at its prompt logs it in"), "{found:?}");
+        assert!(found[0].evidence.starts_with("`pi --list-models` says so"), "{found:?}");
+        assert_eq!(self::found(&pi(Found::Ready), &run(vec![]), &state()).len(), 2);
     }
 
     #[test]
