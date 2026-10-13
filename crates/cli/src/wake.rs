@@ -94,6 +94,15 @@ impl Listener {
     }
 }
 
+/// Whether a `run` listens for the wakes of the repo `repo` is a checkout of:
+/// the one sign on this host that one is alive. Nothing is sent, so it is not
+/// woken.
+pub fn listening(repo: &Repo) -> bool {
+    let reached =
+        home(repo).and_then(|dir| inside(&dir, |name| UnixDatagram::unbound()?.connect(name)));
+    reached.is_ok()
+}
+
 /// `afkconvoy wake`: tells the `run` of this host for this repo to open its
 /// next tick now. With none running it does nothing, and whatever goes wrong
 /// sending it is not an error: the fleet finds the outcome at its next tick
@@ -174,9 +183,16 @@ mod tests {
     fn a_socket_nobody_listens_on_takes_no_wake() {
         let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
+        let listening =
+            |dir: &Path| inside(dir, |name| UnixDatagram::unbound()?.connect(name)).is_ok();
         assert!(!send(dir.path()), "no run ever listened here");
-        drop(Listener::at(dir.path()).unwrap());
+        assert!(!listening(dir.path()));
+        let listener = Listener::at(dir.path()).unwrap();
+        assert!(listening(dir.path()));
+        assert!(!listener.rest(Duration::ZERO), "asking whether one listens wakes nobody");
+        drop(listener);
         assert!(!send(dir.path()), "the run that listened here ended");
+        assert!(!listening(dir.path()));
         // the next run listens over what the last one left
         let listener = Listener::at(dir.path()).unwrap();
         assert!(send(dir.path()));

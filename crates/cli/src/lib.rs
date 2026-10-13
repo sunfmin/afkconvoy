@@ -35,6 +35,7 @@ pub mod judge;
 pub mod landing;
 pub mod launch;
 pub mod lock;
+pub mod log;
 pub mod orca;
 pub mod panel;
 pub mod park;
