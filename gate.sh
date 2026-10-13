@@ -19,7 +19,7 @@ FLUXFLAGS="-Ftimings -Flog-dir=$PWD/target/flux-log"
 export FLUXFLAGS
 ./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
 flux_pid=$!
-trap 'kill "$flux_pid" 2>/dev/null; rm -f "$flux_log"' EXIT
+trap 'kill "$flux_pid" 2>/dev/null || :; rm -f "$flux_log"' EXIT
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 # The manual is the help topics as one page, and is never edited: a topic
 # changed and the page not written again fails here, with the command to run.
