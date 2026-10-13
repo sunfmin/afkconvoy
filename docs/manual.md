@@ -590,7 +590,7 @@ afkconvoy show --issue 7
 
 answers where it is, what a `pass` would lead to, how much rework it has left, and every stage record in order.
 
-**Stop it** with Ctrl-C, or by killing the process. Nothing is released and no worker is stopped: the workers work on, and the next `run` on the same machine takes the claims back.
+**Stop it** with Ctrl-C, or by killing the process. It finishes the step it is in and exits. Nothing is released and no worker is stopped: the workers work on, and the next `run` on the same machine takes the claims back. A `run` that holds no claim when it is stopped removes its heartbeat from the remote; one that could not — it held claims, or was killed outright — has it removed by the next start on that machine.
 
 **Rules to remember**
 

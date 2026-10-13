@@ -676,7 +676,11 @@ fn a_start_takes_the_run_of_a_patrol_stamped_with_its_host_and_the_next_tick_end
     // One that starts here takes it, and its worker still at it, the run goes on as its own…
     workers_work(&world, 10_020);
     let lines = run("alpha", "h1", "10020");
-    assert_eq!(lines[0], "start: took the run of the patrol sweep stamped with this host");
+    assert_eq!(
+        lines[0],
+        "start: took the run of the patrol sweep stamped with this host · swept 1 dead \
+         heartbeat(s) that held nothing"
+    );
     assert!(!lines[1].contains("the patrol"), "{}", lines[1]);
     assert_eq!(runner(&world), "alpha");
     assert_eq!(standing(&world, 10_030), ["sweep running"]);

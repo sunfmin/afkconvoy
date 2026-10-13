@@ -4,13 +4,14 @@
 use std::collections::BTreeMap;
 
 use afkconvoy_core::claims::{
-    CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, OVER_KIND, Owner, RunClaim,
+    Beat, CLAIM_KIND, Claim, ClaimStep, HEARTBEAT_KIND, InstanceId, OVER_KIND, Owner, RunClaim,
     claim_ref, claim_steps, heartbeat_ref, over_ref, read_heartbeat, read_over, releasable,
     run_ref, write_heartbeat, write_over,
 };
 use afkconvoy_core::layout::Layout;
 use afkconvoy_core::patrol::{RUN_KIND, read_run};
 use afkconvoy_core::record::fleet_number;
+use afkconvoy_core::takeover::{held, holds};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
@@ -29,7 +30,7 @@ pub struct Me {
 #[derive(Debug, Default)]
 pub struct Scan {
     pub claims: Vec<Claim>,
-    pub heartbeats: BTreeMap<String, u64>,
+    pub heartbeats: BTreeMap<String, Beat>,
     /// The claims on runs — a patrol's, the proposal of a precedent: one for
     /// each still going.
     pub runs: Vec<RunClaim>,
@@ -63,9 +64,9 @@ impl Scan {
                     scan.runs.push(RunClaim { key, owner, sha, over: false });
                 }
             } else if let Some(instance) = kept.strip_prefix(HEARTBEAT_KIND)
-                && let Some(ts) = read_heartbeat(&record.subject)
+                && let Some(beat) = read_heartbeat(&record.subject, record.sha.clone())
             {
-                scan.heartbeats.insert(instance.to_string(), ts);
+                scan.heartbeats.insert(instance.to_string(), beat);
             } else if let Some(patrol) = kept.strip_prefix(RUN_KIND)
                 && let Some(ts) = read_run(&record.subject)
             {
@@ -87,6 +88,16 @@ impl Scan {
         self.claims.iter().find(|claim| claim.number == number)
     }
 
+    /// When `instance` last beat, as far as this scan knows.
+    pub fn last_beat(&self, instance: &str) -> Option<u64> {
+        self.heartbeats.get(instance).map(|beat| beat.ts)
+    }
+
+    /// instance → the time of its heartbeat, for every one the remote has.
+    pub fn beats(&self) -> Vec<(String, u64)> {
+        self.heartbeats.iter().map(|(instance, beat)| (instance.clone(), beat.ts)).collect()
+    }
+
     fn written(&mut self, number: u64, claim: Option<Claim>) {
         self.claims.retain(|claim| claim.number != number);
         self.claims.extend(claim);
@@ -96,7 +107,7 @@ impl Scan {
     pub fn json(&self) -> Value {
         json!({
             "claims": self.claims.iter().map(claim_json).collect::<Vec<_>>(),
-            "heartbeats": self.heartbeats,
+            "heartbeats": self.beats().into_iter().collect::<BTreeMap<_, _>>(),
         })
     }
 }
@@ -114,17 +125,48 @@ pub fn claim_json(claim: &Claim) -> Value {
 
 /// Refreshes my heartbeat ref, whatever its age.
 fn push_heartbeat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<()> {
-    let sha = repo.record_commit(&write_heartbeat(&me.instance, me.now))?;
+    let sha = repo.record_commit(&write_heartbeat(&me.instance, &me.host, me.now))?;
     let refname = heartbeat_ref(repo.layout(), &me.instance);
     repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
-    scan.heartbeats.insert(me.instance.to_string(), me.now);
+    let beat = Beat { ts: me.now, host: me.host.clone(), sha };
+    scan.heartbeats.insert(me.instance.to_string(), beat);
     Ok(())
+}
+
+/// Deletes `instance`'s heartbeat ref, only while it still points where this
+/// scan read it → whether it is gone. One that moved is its owner beating
+/// again, and is left alone; so is one the push could not delete, which the
+/// next start finds again.
+pub fn drop_heartbeat(repo: &Repo, scan: &mut Scan, instance: &InstanceId) -> Result<bool> {
+    let Some(beat) = scan.heartbeats.get(instance.as_str()) else { return Ok(true) };
+    let refname = heartbeat_ref(repo.layout(), instance);
+    let lease = format!("--force-with-lease={refname}:{}", beat.sha);
+    let pushed = repo.try_git(&["push", "--quiet", REMOTE, &lease, &format!(":{refname}")])?;
+    if pushed.ok {
+        scan.heartbeats.remove(instance.as_str());
+    }
+    Ok(pushed.ok)
+}
+
+/// What a `run` told to stop leaves of `me` on the remote, read anew: holding
+/// no claim — on an issue or on a run — it takes its heartbeat with it;
+/// holding one, it leaves the heartbeat with the claims, which the next start
+/// on this host takes (docs/adr/0003) → whether no heartbeat of it is left.
+pub fn goodbye(repo: &Repo, me: &Me) -> Result<bool> {
+    let mut scan = Scan::read(repo)?;
+    if holds(&held(&scan.claims, &scan.runs), me.instance.as_str()) {
+        return Ok(false);
+    }
+    if !drop_heartbeat(repo, &mut scan, &me.instance)? {
+        bail!("the remote kept {}", heartbeat_ref(repo.layout(), &me.instance));
+    }
+    Ok(true)
 }
 
 /// `afkconvoy heartbeat`: refresh my heartbeat if it is due.
 pub fn beat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<Value> {
     let refname = heartbeat_ref(repo.layout(), &me.instance);
-    let last = scan.heartbeats.get(me.instance.as_str()).copied();
+    let last = scan.last_beat(me.instance.as_str());
     if !afkconvoy_core::lease::heartbeat_due(last, me.now) {
         return Ok(json!({"refreshed": false, "reason": "not due", "ts": last, "ref": refname}));
     }
@@ -180,7 +222,7 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
         Take::From(taken) => owner.write_over(taken),
     };
     let sha = repo.record_commit(&subject)?;
-    let last_beat = scan.heartbeats.get(me.instance.as_str()).copied();
+    let last_beat = scan.last_beat(me.instance.as_str());
     let mut pushed = None;
     for step in claim_steps(last_beat, me.now) {
         match step {

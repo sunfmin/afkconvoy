@@ -94,8 +94,7 @@ impl Fleet {
             }
         }
         let joined: Vec<u64> = on_train(&joins, prs).iter().map(|join| join.issue).collect();
-        let heartbeats: Vec<(String, u64)> =
-            self.scan.heartbeats.iter().map(|(instance, ts)| (instance.clone(), *ts)).collect();
+        let heartbeats = self.scan.beats();
         let seen = Observed {
             issues,
             prs,

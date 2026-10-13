@@ -2,17 +2,17 @@
 //! reclaims, the ones stamped with this host that a start takes, and a
 //! takeover by hand.
 
-use afkconvoy_core::claims::Claim;
+use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::takeover::{
     Held, Licence, Remembered, Takeover, confirm_detail, held, plan_takeover, remembered,
-    stamped_with,
+    stamped_with, swept_at_start,
 };
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::advance::advance;
-use crate::claims::{Me, Take, delete, retake_run, take};
+use crate::claims::{Me, Take, delete, drop_heartbeat, retake_run, take};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::stage::Flows;
@@ -73,7 +73,7 @@ impl Took {
 fn lapsed(fleet: &Fleet, me: &Me, issue: u64) -> Option<(Claim, Licence)> {
     let claim = fleet.scan.claim_of(issue).filter(|claim| !claim.is_held_by(&me.instance))?;
     let holder = claim.owner.as_ref().map(|owner| owner.instance.as_str());
-    let beat = holder.and_then(|holder| fleet.scan.heartbeats.get(holder).copied());
+    let beat = holder.and_then(|holder| fleet.scan.last_beat(holder));
     Some((claim.clone(), Licence::lapsed(beat, fleet.now)?))
 }
 
@@ -112,13 +112,45 @@ pub fn unlock(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Outcome> {
 /// patrol's run, on a proposal — whatever their holder's heartbeat says
 /// (docs/adr/0003). The next tick continues each issue, and ends each run
 /// whose worker is gone or stopped.
+///
+/// It then removes the heartbeats that are dead to it and hold nothing
+/// (`swept_at_start`) — the ones of the instances it just took from among
+/// them — and says whose, as `swept`.
 pub fn at_start(fleet: &mut Fleet, me: &Me) -> Result<Value> {
     let (claims, runs) = (fleet.scan.claims.clone(), fleet.scan.runs.clone());
     let mut took = Took::default();
+    let mut taken_from = vec![];
     for (claim, licence) in stamped_with(&held(&claims, &runs), &me.instance, &me.host) {
+        taken_from.extend(claim.owner().map(|owner| owner.instance.clone()));
         took.take(fleet, me, claim, &licence)?;
     }
-    Ok(took.json())
+    let mut answer = took.json();
+    answer["swept"] = json!(sweep(fleet, me, &taken_from)?);
+    Ok(answer)
+}
+
+/// Removes the heartbeats a start as `me` finds dead, having taken the claims
+/// of `taken_from` → the instances whose heartbeat is gone.
+fn sweep(fleet: &mut Fleet, me: &Me, taken_from: &[String]) -> Result<Vec<String>> {
+    let beats: Vec<_> = fleet
+        .scan
+        .heartbeats
+        .iter()
+        .map(|(instance, beat)| (instance.clone(), beat.clone()))
+        .collect();
+    let dead: Vec<InstanceId> = {
+        let held = held(&fleet.scan.claims, &fleet.scan.runs);
+        let dead = swept_at_start(&held, &beats, taken_from, &me.instance, &me.host, fleet.now);
+        // A ref that names no instance is no heartbeat of the fleet's to remove.
+        dead.into_iter().filter_map(|instance| InstanceId::parse(instance).ok()).collect()
+    };
+    let mut swept = vec![];
+    for instance in dead {
+        if drop_heartbeat(&fleet.repo, &mut fleet.scan, &instance)? {
+            swept.push(instance.to_string());
+        }
+    }
+    Ok(swept)
 }
 
 fn row(remembered: &Remembered) -> Value {
@@ -135,15 +167,11 @@ fn row(remembered: &Remembered) -> Value {
     })
 }
 
-fn heartbeats(fleet: &Fleet) -> Vec<(String, u64)> {
-    fleet.scan.heartbeats.iter().map(|(instance, ts)| (instance.clone(), *ts)).collect()
-}
-
 /// `afkconvoy takeover --list`: every instance the remote remembers.
 pub fn list(fleet: &Fleet, me: Option<&Me>) -> Value {
     let me = me.map(|me| &me.instance);
     let all = held(&fleet.scan.claims, &fleet.scan.runs);
-    let rows = remembered(&all, &heartbeats(fleet), me, fleet.now);
+    let rows = remembered(&all, &fleet.scan.beats(), me, fleet.now);
     json!({"instances": rows.iter().map(row).collect::<Vec<_>>(),
         "me": me.map(|me| me.as_str()), "now": fleet.now,
         "lease": afkconvoy_core::lease::LEASE})
@@ -157,7 +185,7 @@ pub fn takeover(fleet: &mut Fleet, me: &Me, from: &str, yes: bool) -> Result<Val
     let (claims, runs) = (fleet.scan.claims.clone(), fleet.scan.runs.clone());
     let all = held(&claims, &runs);
     let mut took = Took::default();
-    match plan_takeover(&all, &heartbeats(fleet), from, &me.instance, fleet.now, yes) {
+    match plan_takeover(&all, &fleet.scan.beats(), from, &me.instance, fleet.now, yes) {
         Takeover::Mine => {
             bail!("{from} is this fleet's own instance id: its claims are already its own")
         }

@@ -490,7 +490,11 @@ fn a_start_takes_a_proposal_stamped_with_its_host_and_the_next_tick_ends_it() {
     worker_leaves(&world, &checkout(&world, 7, comment));
     let args = ["run", "--instance", "omega", "--host", "h1", "--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &["--ticks", "1", "--now", "1160"]].concat());
-    assert_eq!(lines[0], "start: took #7, the proposal of the ruling on #7 stamped with this host");
+    assert_eq!(
+        lines[0],
+        "start: took #7, the proposal of the ruling on #7 stamped with this host · swept 1 dead \
+         heartbeat(s) that held nothing"
+    );
     assert!(lines[1].contains("ended the proposal of the ruling on #7"), "{}", lines[1]);
     assert_eq!(claimed(&world), Vec::<String>::new());
     let plan = world.afk(&["plan", "--instance", "omega", "--now", "1170"]).ok();

@@ -50,6 +50,7 @@ pub mod serve;
 pub mod settle;
 pub mod stage;
 pub mod steer;
+pub mod stop;
 pub mod takeover;
 pub mod team;
 pub mod tend;
@@ -694,7 +695,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Tick { who, agent } => {
             let agent = agent.start(now, true)?;
-            Ok(tick::tick(&who.me(now), &agent)?.0.json())
+            Ok(tick::tick(&who.me(now), &agent, &stop::Stop::never())?.0.json())
         }
         Command::Gate { gate_timeout, train } => {
             let repo = Repo::here()?;

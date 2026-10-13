@@ -78,6 +78,7 @@ fn a_fleet_with_no_fault_answers_its_five_keys_and_no_finding_and_writes_nothing
     assert_eq!(fleet["instance"], "alpha");
     assert_eq!(fleet["alive"], false);
     assert_eq!(fleet["heartbeat_age"], 100);
+    assert_eq!(fleet["heartbeats"], json!({"found": 1, "live": ["alpha"]}));
     assert_eq!(fleet["last_tick"]["count"], 1);
     assert_eq!(fleet["last_tick"]["line"], "dispatched #3 · holding 1/2 · frontier 0");
     assert_eq!(fleet["last_tick"]["did"][0]["do"], "dispatch");

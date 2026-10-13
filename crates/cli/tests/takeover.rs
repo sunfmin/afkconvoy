@@ -174,7 +174,11 @@ fn a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat() {
     let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
     let (lines, _) = world
         .afk_lines(&[&args[..], &["--second-ms", "0", "--ticks", "2", "--now", "1060"]].concat());
-    assert_eq!(lines[0], "start: took #3, #7, #9 stamped with this host");
+    assert_eq!(
+        lines[0],
+        "start: took #3, #7, #9 stamped with this host · swept 1 dead heartbeat(s) that held \
+         nothing"
+    );
     // over its bound of two, it continues what it took and takes nothing new
     assert_eq!(
         lines[1],
