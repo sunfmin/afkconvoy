@@ -602,9 +602,9 @@ fn a_worker_that_is_gone_is_started_again_in_its_role() {
 }
 
 #[test]
-fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
+fn the_help_of_run_names_what_a_bound_repo_requires_of_the_launch_command() {
     use afkconvoy_core::role::{FLAGS, Facts, On};
-    let readme = include_str!("../../../README.md");
+    let help = include_str!("../src/help/run.txt");
     let facts = Facts {
         on: On::Stage { issue: 7, flow: "f", stage: "s" },
         role: "r",
@@ -617,9 +617,11 @@ fn the_readme_names_what_a_bound_repo_requires_of_the_launch_command() {
         role_commit: "a",
         team_commit: "b",
     };
-    let named = FLAGS.iter().map(|flag| flag.to_string());
-    for name in named.chain(facts.env().into_iter().map(|(name, _)| name.to_string())) {
-        assert!(readme.contains(&format!("`{name}`")), "the README does not name {name}");
+    for flag in FLAGS {
+        assert!(help.contains(&format!("`{flag}`")), "the help of run does not name {flag}");
+    }
+    for (name, _) in facts.env() {
+        assert!(help.contains(name), "the help of run does not name {name}");
     }
 }
 
