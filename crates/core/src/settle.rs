@@ -47,40 +47,40 @@ impl SettleOrder {
         SettleOrder { closed, dropped: false, removed: false, boarded: false, steps: Vec::new() }
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[true, o.dropped, o.removed, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) ensures self: Self[{ closed: true, ..o }])]
     fn close_issue(&mut self) {
         self.steps.push(SettleStep::CloseIssue);
         self.closed = true;
     }
 
-    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.dropped, o.removed, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed)]
     fn close_pr(&mut self) {
         self.steps.push(SettleStep::ClosePr);
     }
 
     /// Before the worktree goes: its branch is one of the issue's own only
     /// while orca still links the two.
-    #[spec(fn(self: &mut Self[@o]) requires o.closed && !o.removed ensures self: Self[o.closed, true, o.removed, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed && !o.removed ensures self: Self[{ dropped: true, ..o }])]
     fn drop_branches(&mut self) {
         self.steps.push(SettleStep::DropBranches);
         self.dropped = true;
     }
 
     /// An open issue's worktree is never touched: it may hold work.
-    #[spec(fn(self: &mut Self[@o]) requires o.closed && o.dropped ensures self: Self[o.closed, o.dropped, true, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed && o.dropped ensures self: Self[{ removed: true, ..o }])]
     fn remove_worktree(&mut self) {
         self.steps.push(SettleStep::RemoveWorktree);
         self.removed = true;
     }
 
-    #[spec(fn(self: &mut Self[@o]) ensures self: Self[o.closed, o.dropped, o.removed, o.boarded])]
+    #[spec(fn(self: &mut Self[@o]))]
     fn follow_base(&mut self) {
         self.steps.push(SettleStep::FollowBase);
     }
 
     /// The board's last word, once the issue is closed: it never says merged
     /// over an issue still open.
-    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[o.closed, o.dropped, o.removed, true])]
+    #[spec(fn(self: &mut Self[@o]) requires o.closed ensures self: Self[{ boarded: true, ..o }])]
     fn board(&mut self) {
         self.steps.push(SettleStep::Board);
         self.boarded = true;

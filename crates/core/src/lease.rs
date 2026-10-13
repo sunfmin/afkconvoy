@@ -17,25 +17,29 @@ pub const FORGOTTEN: u64 = 86_400;
 /// than the lease, or stamped further ahead of `now` than `SKEW` — a stamp ahead
 /// by no more than that is ordinary skew between two hosts and reads as just now. The fleet's one lease
 /// comparison: a heartbeat exactly `LEASE` old is live to everyone.
-#[spec(fn(stamp: u64, now: u64) -> bool[
-    (stamp > now && stamp - now > SKEW) || (stamp <= now && now - stamp > LEASE)])]
+#[spec(fn(stamp: u64, now: u64) -> bool[older_than(stamp, now, LEASE)])]
 pub fn stamp_stale(stamp: u64, now: u64) -> bool {
     if stamp <= now { now - stamp > LEASE } else { stamp - now > SKEW }
 }
 
 /// Whether an owner whose heartbeat is stamped `stamp` must refresh it at `now`.
-#[spec(fn(stamp: u64, now: u64) -> bool[
-    (stamp > now && stamp - now > SKEW) || (stamp <= now && now - stamp > BEAT_EVERY)])]
+#[spec(fn(stamp: u64, now: u64) -> bool[older_than(stamp, now, BEAT_EVERY)])]
 pub fn stamp_due(stamp: u64, now: u64) -> bool {
     if stamp <= now { now - stamp > BEAT_EVERY } else { stamp - now > SKEW }
 }
 
 /// Whether a heartbeat stamped `stamp` is forgotten at `now`: older than
 /// `FORGOTTEN`, or stamped further ahead of `now` than `SKEW`.
-#[spec(fn(stamp: u64, now: u64) -> bool[
-    (stamp > now && stamp - now > SKEW) || (stamp <= now && now - stamp > FORGOTTEN)])]
+#[spec(fn(stamp: u64, now: u64) -> bool[older_than(stamp, now, FORGOTTEN)])]
 pub fn stamp_forgotten(stamp: u64, now: u64) -> bool {
     if stamp <= now { now - stamp > FORGOTTEN } else { stamp - now > SKEW }
+}
+
+// A stamp is older than `limit` at `now`, or further ahead of it than `SKEW`.
+defs! {
+    fn older_than(stamp: int, now: int, limit: int) -> bool {
+        (stamp > now && stamp - now > SKEW) || (stamp <= now && now - stamp > limit)
+    }
 }
 
 /// A heartbeat that is missing is an owner that never beat: stale.
