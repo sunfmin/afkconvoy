@@ -426,7 +426,7 @@ fn in_a_repo_of_several_roles_a_role_moved_only_when_its_own_directory_changed()
     // its own: the role moved, and the team did not
     let head = commit(&hospital, "roles/fellow/CLAUDE.md", "be careful\n");
     let role = ("the role `fellow`".to_string(), said(&head));
-    assert_eq!(moved(&doctor(&world, "1100").json, "build"), [role.clone()]);
+    assert_eq!(moved(&doctor(&world, "1100").json, "build"), std::slice::from_ref(&role));
 
     // a workflow: the team moved too
     let head = commit(&hospital, "workflows/fix.md", &format!("{fix}\nSaid again.\n"));
