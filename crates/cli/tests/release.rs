@@ -1,11 +1,16 @@
 //! What a release is made of: the version the binary prints, and
-//! `packaging/release.sh`, which the release workflow runs step by step.
+//! `packaging/release.sh`, which the release workflow runs step by step and
+//! the README gives for a release cut by hand.
 
 use std::path::Path;
 use std::process::{Command, Output};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/release.sh");
+
+const WORKFLOW: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.github/workflows/release.yml"));
+const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"));
 
 /// The build script, for what it makes of a checkout.
 #[allow(dead_code)]
@@ -75,6 +80,40 @@ fn the_formula_installs_what_was_packaged_and_depends_on_git_and_gh() {
     std::fs::write(&file, &formula).unwrap();
     if let Ok(checked) = Command::new("ruby").arg("-c").arg(&file).output() {
         assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    }
+}
+
+#[test]
+fn a_build_with_no_stable_toolchain_says_how_to_get_it() {
+    let home = tempfile::tempdir().unwrap();
+    let refused = Command::new(SCRIPT)
+        .arg("build")
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "there is no rustup to build with");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("no rustup is installed (https://rustup.rs)"), "{said}");
+    let install = "rustup toolchain install stable --profile minimal \
+                   --target aarch64-apple-darwin x86_64-apple-darwin";
+    assert!(said.contains(install), "{said}");
+    // the line it gives is the one the workflow installs its toolchain with
+    assert!(WORKFLOW.contains(install), "{WORKFLOW}");
+}
+
+#[test]
+fn the_workflow_runs_what_the_readme_gives_and_stores_no_artifact() {
+    assert!(!WORKFLOW.contains("artifact@"), "nothing is handed from job to job");
+    let token = WORKFLOW.find("HOMEBREW_TAP_TOKEN }}").unwrap();
+    let mut last = token;
+    for step in ["build", "package", "publish"] {
+        let line = format!("packaging/release.sh {step}\n");
+        let at = WORKFLOW.find(&line).unwrap_or_else(|| panic!("the workflow runs no {step}"));
+        assert!(at > last, "{step} is out of order, or runs before the tap's token is looked for");
+        last = at;
+        assert!(README.contains(&format!("\npackaging/release.sh {step} ")), "{step}: the README");
     }
 }
 

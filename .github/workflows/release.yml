@@ -1,14 +1,17 @@
 # A release: pushing the tag v<version> builds `afkconvoy` on stable Rust for
 # Apple Silicon and Intel macOS and publishes both, with the Homebrew formula
-# that installs them. Every step is `packaging/release.sh`, so it can be run
-# by hand as well.
+# that installs them. It is `packaging/release.sh` build, package and publish,
+# which is the release cut by hand as well (README, "Cutting a release").
+#
+# One job does it all, the Intel binary cross-compiled: nothing is handed from
+# job to job, so nothing is kept in artifact storage, which a private
+# repository has a quota of.
 #
 # This repository is private, and Homebrew downloads with no login: what it
 # installs is published to the tap (sunfmin/homebrew-tap) — the archives to a
 # release there, the formula to Formula/afkconvoy.rb. That takes the secret
 # HOMEBREW_TAP_TOKEN, a token that may write the tap's contents; without it
-# the run fails after the release here is made, and `packaging/release.sh
-# publish` finishes it by hand.
+# the run fails at its first step, before anything is built.
 
 name: release
 
@@ -21,65 +24,41 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: build (${{ matrix.arch }})
-    runs-on: macos-14
-    strategy:
-      matrix:
-        include:
-          - arch: arm64
-            target: aarch64-apple-darwin
-          - arch: x86_64
-            target: x86_64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
-      - name: Stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add ${{ matrix.target }}
-      - name: The tag is the version
-        run: packaging/release.sh check "$GITHUB_REF_NAME"
-      - name: Build
-        run: cargo build --release --locked -p afkconvoy --target ${{ matrix.target }}
-      - name: Package
-        run: packaging/release.sh package ${{ matrix.target }} ${{ matrix.arch }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: afkconvoy-${{ matrix.arch }}
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
-  publish:
-    name: publish
-    needs: build
+  release:
+    name: release
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Formula
-        run: |
-          packaging/release.sh formula > dist/afkconvoy.rb
-          ruby -c dist/afkconvoy.rb
-          (cd dist && shasum -a 256 *.tar.gz > SHA256SUMS)
-      - name: Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
-            dist/*.tar.gz dist/SHA256SUMS dist/afkconvoy.rb
-      - name: Tap
+      - name: The tap can be written
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::No HOMEBREW_TAP_TOKEN: nothing was published to sunfmin/homebrew-tap, so Homebrew cannot install this release. Build it and run packaging/release.sh publish by hand, or set the secret and run this workflow again."
+            echo "::error::No HOMEBREW_TAP_TOKEN: nothing can be published to sunfmin/homebrew-tap, so nothing was built. Set the secret and run this workflow again, or cut the release by hand (README, Cutting a release)."
             exit 1
           fi
+      - uses: actions/checkout@v4
+      - name: Stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-darwin x86_64-apple-darwin
+          rustup default stable
+      - name: The tag is the version
+        run: packaging/release.sh check "$GITHUB_REF_NAME"
+      - name: Build
+        run: packaging/release.sh build
+      - name: Package
+        run: packaging/release.sh package
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
           gh auth setup-git
           git config --global user.name afkconvoy-release
           git config --global user.email afkconvoy-release@users.noreply.github.com
           packaging/release.sh publish
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && shasum -a 256 *.tar.gz > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            dist/*.tar.gz dist/SHA256SUMS dist/afkconvoy.rb
