@@ -8,12 +8,12 @@ use afkconvoy_core::plan::WorkingSet;
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::wake::turn;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use crate::advance::{advance, hand_to_human, run_again_unclaimed};
 use crate::board::show;
-use crate::claims::{Me, beat};
+use crate::claims::{Me, beat, goodbye};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::gh::unreached;
@@ -26,6 +26,7 @@ use crate::precedent;
 use crate::serve::Served;
 use crate::settle::settle;
 use crate::stage::Flows;
+use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
 use crate::wake::Listener;
@@ -52,16 +53,21 @@ pub struct Ticked {
 
 /// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
 /// for the workers it started, and leaves nothing on this host a later tick
-/// needs: the next one rebuilds from GitHub and the remote.
-pub fn tick(me: &Me, agent: &Agent) -> Result<(Ticked, Fleet)> {
+/// needs: the next one rebuilds from GitHub and the remote. Told to `stop`, it
+/// finishes the step it is in and makes none of those left, which fail.
+pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
     let (mut fleet, open) = Fleet::read(me.now)?;
     let (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
     let bound = set.bound(fleet.config.concurrency());
     let mut failures = vec![];
     let read = Read { set: &set, flows: &flows };
     let pass = run_pass(&set, bound, set.held(), |step| {
+        let made = match stop.told() {
+            true => Err(anyhow!("this run was told to stop before it made the step")),
+            false => carry_out(&mut fleet, me, agent, &read, step),
+        };
         // Whatever a step raised, the rest of the tick is still owed.
-        carry_out(&mut fleet, me, agent, &read, step).unwrap_or_else(|error| {
+        made.unwrap_or_else(|error| {
             let unreached = unreached(&error).is_some();
             failures.push(Failure { step, error: format!("{error:#}"), unreached });
             Outcome::Failed
@@ -398,6 +404,7 @@ fn start_line(took: &Value) -> Option<String> {
         let keys = took[key].as_array().into_iter().flatten();
         keys.filter_map(|key| key.as_str()).map(run_said).collect()
     };
+    let swept = runs("swept").len();
     let taken = [issues("taken"), runs("taken_runs")].concat();
     let lost = [issues("lost"), runs("lost_runs")].concat();
     let mut parts = vec![];
@@ -407,7 +414,37 @@ fn start_line(took: &Value) -> Option<String> {
     if !lost.is_empty() {
         parts.push(format!("lost {} to a peer", lost.join(", ")));
     }
+    if swept > 0 {
+        parts.push(format!("swept {swept} dead heartbeat(s) that held nothing"));
+    }
     if parts.is_empty() { None } else { Some(parts.join(" · ")) }
+}
+
+/// The longest a `run` that sleeps goes without hearing that it was told to
+/// stop.
+const HEARS_WITHIN: Duration = Duration::from_millis(250);
+
+/// Sleeps for `sleep`, or until a wake, or until this run is told to stop.
+fn rest(wakes: &Listener, stop: &Stop, sleep: Duration) {
+    let mut left = sleep;
+    while !stop.told() {
+        let nap = left.min(HEARS_WITHIN);
+        if wakes.rest(nap) || nap == left {
+            return;
+        }
+        left -= nap;
+    }
+}
+
+/// What a `run` told to stop says of its heartbeat as it goes (`goodbye`).
+fn stop_line(me: &Me) -> String {
+    match Repo::here().and_then(|repo| goodbye(&repo, me)) {
+        Ok(true) => "holding no claim, it took its heartbeat with it".to_string(),
+        Ok(false) => "it left its heartbeat with the claims it holds: the next start on this \
+                      host takes them"
+            .to_string(),
+        Err(error) => format!("FAILED to take its heartbeat with it: {error:#}"),
+    }
 }
 
 /// The log a `run` keeps of itself (`log::Log`). One that cannot be written
@@ -449,9 +486,11 @@ impl Said {
 /// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
 /// `afkconvoy wake` ends early, and that is skipped after a tick that left the
 /// next one a worker to start (`Pass::follow_up_due`) or that failed on a read
-/// GitHub could not be reached for. Stopping it is just exiting: no claim is
-/// released on the way out, and the next start on this host takes them back
-/// (docs/adr/0003). With a `panel_port` it serves the panel there, a new page
+/// GitHub could not be reached for. Told to stop — SIGTERM, SIGINT — it
+/// finishes the step it is in and exits: no claim is released on the way out,
+/// and the next start on this host takes them back (docs/adr/0003); holding
+/// none, it removes its heartbeat. A start removes the heartbeats left by the
+/// runs that could not (`at_start`). With a `panel_port` it serves the panel there, a new page
 /// after every tick. It keeps a line of each tick in its log (`log::Log`),
 /// which nothing here ever reads.
 pub fn run(
@@ -475,6 +514,7 @@ pub fn run(
     let mut count = 0;
     let mut started = false;
     let wakes = Listener::open(&Repo::here()?);
+    let stop = Stop::listen();
     let said = Said::open(me, agent);
     loop {
         count += 1;
@@ -495,7 +535,7 @@ pub fn run(
         let ticked = turn(
             || wakes.forget(),
             || {
-                let (ticked, fleet) = tick(me, agent)?;
+                let (ticked, fleet) = tick(me, agent, &stop)?;
                 let panel = served.as_ref().map(|_| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },
@@ -538,6 +578,10 @@ pub fn run(
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
-        wakes.rest(pacing.second * sleep as u32);
+        rest(&wakes, &stop, pacing.second * sleep as u32);
+        if stop.told() {
+            println!("stop: {}", stop_line(me));
+            return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
+        }
     }
 }

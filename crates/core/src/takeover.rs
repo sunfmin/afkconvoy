@@ -3,8 +3,8 @@
 
 use flux_rs::attrs::*;
 
-use crate::claims::{Claim, InstanceId, Owner, RunClaim};
-use crate::lease::{LEASE, is_stale, stamp_age};
+use crate::claims::{Beat, Claim, InstanceId, Owner, RunClaim};
+use crate::lease::{LEASE, is_stale, stamp_age, stamp_forgotten, stamp_stale};
 use crate::patrol;
 use crate::precedent::Ruling;
 
@@ -121,6 +121,45 @@ pub fn stamped_with<'a>(
         }
     }
     mine
+}
+
+/// Whether `instance` holds any of `held`: a claim on an issue or on a run.
+pub fn holds(held: &[Held], instance: &str) -> bool {
+    for claim in held {
+        if claim.is_held_by(instance) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The instances whose heartbeats a fleet starting as `me` on `host` removes:
+/// each that holds none of `held` and is dead to it — this start took its
+/// claims (`taken_from`), or its heartbeat is stamped with this host and past
+/// the lease, or is forgotten, whichever host stamped it. A live peer's is
+/// never one, and neither is its own.
+pub fn swept_at_start<'a>(
+    held: &[Held],
+    heartbeats: &'a [(String, Beat)],
+    taken_from: &[String],
+    me: &InstanceId,
+    host: &str,
+    now: u64,
+) -> Vec<&'a str> {
+    let mut swept: Vec<&str> = Vec::new();
+    for (instance, beat) in heartbeats {
+        if instance == me.as_str() || holds(held, instance) {
+            continue;
+        }
+        let own_host = !host.is_empty() && beat.host == host;
+        let dead = taken_from.contains(instance)
+            || (own_host && stamp_stale(beat.ts, now))
+            || stamp_forgotten(beat.ts, now);
+        if dead {
+            swept.push(instance);
+        }
+    }
+    swept
 }
 
 /// One fleet instance the remote remembers.
@@ -384,6 +423,37 @@ mod tests {
             "not my own, not another host's, not nobody's"
         );
         assert!(stamped_with(&all, &id("me"), "").is_empty(), "a host with no name owns nothing");
+    }
+
+    #[test]
+    fn a_start_sweeps_the_heartbeats_that_are_dead_to_it_and_hold_nothing() {
+        use crate::lease::FORGOTTEN;
+        let beat = |instance: &str, host: &str, ts: u64| {
+            (instance.to_string(), Beat { ts, host: host.into(), sha: format!("sha-{instance}") })
+        };
+        let stale = NOW - LEASE - 1;
+        let beats = [
+            beat("me", "h1", stale),
+            beat("gone", "h1", stale),
+            beat("idle", "h1", NOW - LEASE),
+            beat("taken", "h1", NOW - 60),
+            beat("kept", "h1", stale),
+            beat("peer", "h2", stale),
+            beat("old-peer", "h2", NOW - FORGOTTEN - 1),
+            beat("old-holder", "h2", NOW - FORGOTTEN - 1),
+            beat("hostless", "", stale),
+            beat("old-hostless", "", NOW - FORGOTTEN - 1),
+        ];
+        // What is held once the start took what it could: `kept` won a race.
+        let claims = [claim(3, "me", "h1"), claim(4, "kept", "h1")];
+        let runs = [run("patrol-triage", "old-holder", "h2")];
+        let all = held(&claims, &runs);
+        let taken_from = ["taken".to_string(), "kept".to_string()];
+        let swept = swept_at_start(&all, &beats, &taken_from, &id("me"), "h1", NOW);
+        assert_eq!(swept, ["gone", "taken", "old-peer", "old-hostless"]);
+        // A host with no name has no heartbeat of its own to sweep.
+        let nameless = swept_at_start(&all, &beats, &[], &id("me"), "", NOW);
+        assert_eq!(nameless, ["old-peer", "old-hostless"]);
     }
 
     #[test]

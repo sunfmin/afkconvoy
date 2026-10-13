@@ -146,13 +146,28 @@ impl Owner {
     }
 }
 
-pub fn write_heartbeat(instance: &InstanceId, ts: u64) -> String {
-    record::write(HEARTBEAT, &[("instance", instance.as_str()), ("ts", &ts.to_string())])
+/// One heartbeat ref as the remote has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Beat {
+    pub ts: u64,
+    /// The host its instance runs on; empty where its record names none.
+    pub host: String,
+    /// The commit its ref points at now: what a delete of it is leased to.
+    pub sha: String,
 }
 
-/// A commit subject → the time of the heartbeat it carries.
-pub fn read_heartbeat(subject: &str) -> Option<u64> {
-    record::read(HEARTBEAT, subject)?.number("ts")
+/// The record of the heartbeat `instance`, running on `host`, stamps at `ts`.
+pub fn write_heartbeat(instance: &InstanceId, host: &str, ts: u64) -> String {
+    let ts = ts.to_string();
+    record::write(HEARTBEAT, &[("instance", instance.as_str()), ("host", host), ("ts", &ts)])
+}
+
+/// The heartbeat whose ref points at `sha`, a commit with the subject
+/// `subject`; `None` when it carries no time.
+pub fn read_heartbeat(subject: &str, sha: String) -> Option<Beat> {
+    let fields: Fields = record::read(HEARTBEAT, subject)?;
+    let host = fields.get("host").unwrap_or("").to_string();
+    Some(Beat { ts: fields.number("ts")?, host, sha })
 }
 
 /// One claim ref as the remote has it. The ref is the lock, so a ref whose
@@ -385,8 +400,12 @@ mod tests {
         }
         let nobodys = Claim::read(8, "initial commit", "def".into());
         assert_eq!((nobodys.owner, nobodys.id.as_str(), nobodys.since), (None, "def", None));
-        assert_eq!(read_heartbeat(&write_heartbeat(&id("a"), 5)), Some(5));
-        assert_eq!(read_heartbeat("convoy:heartbeat instance=a"), None);
+        let beat = read_heartbeat(&write_heartbeat(&id("a"), "my mac.local", 5), "abc".into());
+        assert_eq!(beat, Some(Beat { ts: 5, host: "my mac.local".into(), sha: "abc".into() }));
+        assert_eq!(read_heartbeat("convoy:heartbeat instance=a", "abc".into()), None);
+        // One stamped before a heartbeat named its host is nobody's host's.
+        let hostless = read_heartbeat("convoy:heartbeat instance=a ts=5", "abc".into());
+        assert_eq!(hostless.map(|beat| beat.host), Some(String::new()));
     }
 
     #[test]

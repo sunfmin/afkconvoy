@@ -146,7 +146,7 @@ afkconvoy plan    # what a tick would act on; changes nothing
 afkconvoy run     # the fleet: tick after tick, until you stop it
 ```
 
-`run` prints one line per tick. Stop it with Ctrl-C: no claim is released on the way out, and the next `run` on the same host takes its claims back.
+`run` prints one line per tick. Stop it with Ctrl-C: it finishes the step it is in, no claim is released on the way out, and the next `run` on the same host takes its claims back. Holding no claim, it takes its heartbeat off the remote as it goes.
 
 **The worker launch command.** A worker starts in a fresh login shell that inherits nothing from the shell `run` was started in. With no `ANTHROPIC_BASE_URL` set, workers are started with `claude --dangerously-skip-permissions`. If you run Claude through a provider wrapper, say what starts a worker the same way:
 

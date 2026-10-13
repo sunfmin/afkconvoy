@@ -40,6 +40,12 @@ WHAT IT ANSWERS
                                  one the claims stamped with this host name; null when
                                  this host never ran one
                 heartbeat_age    seconds since its heartbeat; null: it has none
+                heartbeats       {found, live}: how many heartbeats the remote has,
+                                 whoever stamped them, and the instance ids of those
+                                 within the lease. A `run` told to stop removes its
+                                 own, and a start removes the dead ones that hold
+                                 nothing: more than one found and not live is fleets
+                                 nobody started again
                 log              the file its ticks are logged in, or "no log": no `run`
                                  of this version ran here
                 last_tick        {count, ended, next_due, line, did, error}: when its

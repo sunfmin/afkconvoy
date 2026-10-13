@@ -9,6 +9,10 @@ pub const SKEW: u64 = 300;
 /// An owner refreshes its heartbeat once it is older than this: a third of the lease.
 pub const BEAT_EVERY: u64 = 1500;
 
+/// A heartbeat that holds nothing is forgotten once it is this old, in seconds:
+/// a day, whichever host stamped it.
+pub const FORGOTTEN: u64 = 86_400;
+
 /// Whether a heartbeat stamped `stamp` says its owner is dead at `now`: older
 /// than the lease, or stamped further ahead of `now` than `SKEW` — a stamp ahead
 /// by no more than that is ordinary skew between two hosts and reads as just now. The fleet's one lease
@@ -24,6 +28,14 @@ pub fn stamp_stale(stamp: u64, now: u64) -> bool {
     (stamp > now && stamp - now > SKEW) || (stamp <= now && now - stamp > BEAT_EVERY)])]
 pub fn stamp_due(stamp: u64, now: u64) -> bool {
     if stamp <= now { now - stamp > BEAT_EVERY } else { stamp - now > SKEW }
+}
+
+/// Whether a heartbeat stamped `stamp` is forgotten at `now`: older than
+/// `FORGOTTEN`, or stamped further ahead of `now` than `SKEW`.
+#[spec(fn(stamp: u64, now: u64) -> bool[
+    (stamp > now && stamp - now > SKEW) || (stamp <= now && now - stamp > FORGOTTEN)])]
+pub fn stamp_forgotten(stamp: u64, now: u64) -> bool {
+    if stamp <= now { now - stamp > FORGOTTEN } else { stamp - now > SKEW }
 }
 
 /// A heartbeat that is missing is an owner that never beat: stale.
@@ -82,6 +94,14 @@ mod tests {
         assert!(is_stale(None, 5), "an owner that never beat");
         assert!(is_stale(Some(1301), 1000), "stamped from the future");
         assert!(!is_stale(Some(1300), 1000), "skew reads as just now");
+    }
+
+    #[test]
+    fn a_heartbeat_is_forgotten_after_a_day() {
+        assert!(!stamp_forgotten(1000, 1000 + FORGOTTEN));
+        assert!(stamp_forgotten(1000, 1001 + FORGOTTEN));
+        assert!(stamp_forgotten(1301, 1000), "stamped from the future");
+        assert!(!stamp_forgotten(1300, 1000), "skew reads as just now");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::GateCommand;
-use afkconvoy_core::lease::{LEASE, stamp_age};
+use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
 use afkconvoy_core::patrol::Standing;
 use afkconvoy_core::plan::{LabelBar, Status, WorkingSet};
 use afkconvoy_core::team::Fault;
@@ -116,6 +116,15 @@ pub struct Host {
     pub launch: Option<Launch>,
 }
 
+/// The heartbeats found on the remote: a start sweeps the dead ones that hold
+/// nothing, so more than a few is fleets that were never started again.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct Heartbeats {
+    pub found: usize,
+    /// The instances whose heartbeat is within the lease.
+    pub live: Vec<String>,
+}
+
 /// The `run` of this host for this repo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Run {
@@ -127,6 +136,8 @@ pub struct Run {
     pub host: String,
     /// How old its heartbeat is; `None`: it has none on the remote.
     pub heartbeat_age: Option<u64>,
+    /// Every heartbeat the remote has, whoever stamped it.
+    pub heartbeats: Heartbeats,
     /// Where its log is; `None`: this host has no cache directory.
     pub log_file: Option<PathBuf>,
     /// The ticks its log has of that instance, oldest first, each with when
@@ -760,8 +771,14 @@ fn read_state(now: u64, run: &mut Run) -> Result<State> {
         run.instance = stamped_instance(&fleet, &run.host);
     }
     let instance = run.instance.as_deref().and_then(|instance| InstanceId::parse(instance).ok());
-    let beat = run.instance.as_ref().and_then(|instance| fleet.scan.heartbeats.get(instance));
-    run.heartbeat_age = beat.and_then(|beat| stamp_age(*beat, now));
+    let beat = run.instance.as_ref().and_then(|instance| fleet.scan.last_beat(instance));
+    run.heartbeat_age = beat.and_then(|beat| stamp_age(beat, now));
+    let beats = fleet.scan.beats();
+    let live = beats.iter().filter(|(_, beat)| !stamp_stale(*beat, now));
+    run.heartbeats = Heartbeats {
+        found: beats.len(),
+        live: live.map(|(instance, _)| instance.clone()).collect(),
+    };
     let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
     let stood = flows.stood();
     let held = read_held(&fleet, &set, &stood);
@@ -814,6 +831,7 @@ fn fleet_json(run: &Run) -> Value {
         "instance": run.instance,
         "host": run.host,
         "heartbeat_age": run.heartbeat_age,
+        "heartbeats": run.heartbeats,
         // Said in words: an agent that finds no ticks here should not look for a file.
         "log": match run.ticks.as_ref().and(run.log_file.as_ref()) {
             Some(file) => json!(file),
@@ -866,6 +884,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         instance,
         host: host.to_string(),
         heartbeat_age: None,
+        heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
         ticks: entries.map(|_| ticks),
     };
@@ -939,6 +958,7 @@ mod tests {
             instance: Some("alpha".into()),
             host: "h1".into(),
             heartbeat_age: Some(60),
+            heartbeats: Heartbeats { found: 1, live: vec!["alpha".into()] },
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
         }

@@ -11,7 +11,9 @@ WHAT IT READS AND WRITES
 
   Everything the fleet does. It makes the startup probe — at every start, whatever
   probe passed before — takes every claim stamped with this host — on an issue, on a
-  patrol's run, on the proposal of a precedent — then ticks: each tick rebuilds the
+  patrol's run, on the proposal of a precedent — removes the heartbeats that are dead
+  and hold nothing (those of the instances it took from, this host's past the lease,
+  anyone's older than a day) — then ticks: each tick rebuilds the
   working set from GitHub and the remote
   and makes every transition it calls for — claims and heartbeats on the remote, workers
   in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the
@@ -26,10 +28,14 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  Not one JSON object: one line on stdout per tick, until it is killed.
+  One line on stdout per tick, until it is stopped; then, told to stop with SIGTERM
+  or Ctrl-C, one `stop:` line and {"stopped": true, "ticks", "instance"}, with exit 0.
 
     start: took #4, #7 stamped with this host        only when a start took or lost claims
     start: took #4, the run of the patrol triage stamped with this host
+    start: took #4 stamped with this host · swept 1 dead heartbeat(s) that held nothing
+    stop: holding no claim, it took its heartbeat with it
+    stop: it left its heartbeat with the claims it holds: the next start on this host takes them
     tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s
     tick 2: nothing to do · holding 2/3 · frontier 4 · next in 60s
     tick 3: advanced #12 → review · dispatched #12 · holding 2/3 · frontier 0 · next in 90s
@@ -76,8 +82,13 @@ WHAT IT ANSWERS
 
 WHAT TRIPS YOU UP
 
-  - Stopping it is killing it. No claim is released on the way out and no worker is
-    stopped: the workers work on, and the next `run` on this host takes the claims back.
+  - Stop it with SIGTERM or Ctrl-C: it finishes the step it is in, makes none of the
+    steps left in its tick, and exits — within a second when it sleeps. No claim is
+    released on the way out and no worker is stopped: the workers work on, and the
+    next `run` on this host takes the claims back. Holding no claim, it removes its
+    heartbeat from the remote; holding one, it leaves it, and that next `run` removes
+    it. A second signal ends it at once, as SIGKILL does, with no goodbye: what that
+    leaves, a later start on this host removes once it is past the lease.
     A patrol's run and a proposal it takes back are ended by its first tick once their
     worker is gone or has stopped, as any run of its own.
   - Without `--instance` it mints a new instance id, named for this host, and its lines
