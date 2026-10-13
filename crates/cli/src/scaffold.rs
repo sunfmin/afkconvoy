@@ -5,8 +5,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use afkconvoy_core::config::{RepoDir, RepoName};
-pub use afkconvoy_core::team::RULES;
-use afkconvoy_core::team::{HUMAN, SKILLS, TEAM_FILE, WORKFLOWS};
+use afkconvoy_core::harness::Harness;
+use afkconvoy_core::team::{HUMAN, RULES, SKILLS, TEAM_FILE, WORKFLOWS};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
@@ -18,10 +18,9 @@ use crate::git::Repo;
 pub const EXAMPLE_SKILL: &str = "implement";
 /// The example workflow of a team's skeleton.
 pub const EXAMPLE_WORKFLOW: &str = "feature";
-/// A role's hooks: where Claude Code reads them from in the directory a
-/// worker starts in. Its rules are beside them (`RULES`), and a team's are in
-/// the file of that name in the team's directory.
-pub const HOOKS: &str = ".claude/settings.json";
+/// The harness a role's skeleton holds a file of limits for, with none in
+/// it yet: the one a team that names no harness runs on.
+const LIMITED: Harness = Harness::DEFAULT;
 /// Where a team's skeleton writes the roles it holds, in the team's directory.
 pub const ROLES: &str = "roles";
 
@@ -77,7 +76,7 @@ fn role_files() -> Vec<(String, String)> {
     vec![
         (RULES.to_string(), include_str!("scaffold/rules.md").to_string()),
         (format!("{SKILLS}/{EXAMPLE_SKILL}/SKILL.md"), skill),
-        (HOOKS.to_string(), include_str!("scaffold/settings.json").to_string()),
+        (LIMITED.limits().to_string(), include_str!("scaffold/settings.json").to_string()),
     ]
 }
 

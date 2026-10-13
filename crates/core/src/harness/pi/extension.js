@@ -23,6 +23,8 @@ const TEAM_ENV = "AFKCONVOY_TEAM_DIR"
 // Where a directory keeps its rules: the first of these it has, as pi reads
 // the directory it starts in.
 const RULES = ["AGENTS.md", "CLAUDE.md"]
+// Where a team keeps its rules, for every harness (`afkconvoy_core::team`).
+const TEAM_RULES = ["CLAUDE.md"]
 // How long the guard is given to answer one call, in milliseconds.
 const GUARD_TIMEOUT = 60000
 
@@ -52,8 +54,12 @@ export default function (pi) {
 
   pi.on("before_agent_start", (event) => {
     const loaded = event.systemPromptOptions.contextFiles
-    for (const dir of [fact(WORKTREE_ENV), fact(TEAM_ENV)]) {
-      for (const name of RULES) {
+    const kept = [
+      [fact(WORKTREE_ENV), RULES],
+      [fact(TEAM_ENV), TEAM_RULES],
+    ]
+    for (const [dir, names] of kept) {
+      for (const name of names) {
         const path = join(dir, name)
         if (!existsSync(path)) continue
         if (!loaded.some((file) => file.path === path)) {

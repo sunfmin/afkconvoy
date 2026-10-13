@@ -107,14 +107,16 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
 /// the files of a team and of a role, every key, and the loop.
 #[test]
 fn the_guide_teaches_the_files_of_a_team_and_a_role_and_the_loop() {
-    use afkconvoy::scaffold::{HOOKS, RULES};
+    use afkconvoy_core::harness::Harness;
     use afkconvoy_core::team::{
-        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PATROLS, SKILLS, STAGE_KEYS, TEAM_FILE,
-        TEAM_KEYS, WORKFLOW_KEYS, WORKFLOWS,
+        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PATROLS, RULES, SKILLS, STAGE_KEYS,
+        TEAM_FILE, TEAM_KEYS, WORKFLOW_KEYS, WORKFLOWS,
     };
     let long = help("--help");
     let guide = guide(&long);
-    for file in [TEAM_FILE, WORKFLOWS, PATROLS, RULES, SKILLS, HOOKS] {
+    // A role's limits are laid out once for each harness.
+    let limits = Harness::ALL.map(Harness::limits);
+    for file in [&[TEAM_FILE, WORKFLOWS, PATROLS, RULES, SKILLS][..], &limits].concat() {
         assert!(guide.contains(&format!("      {file}")), "the guide lays out no {file}");
     }
     // The team rules are a file of the team's, and the four kinds of text a

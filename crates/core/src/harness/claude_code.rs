@@ -4,9 +4,13 @@
 //! fleet adds is the rest: the directories beside the role's, the settings it
 //! may load, and the hooks that ask the guard and tell the worker backend.
 
+use std::collections::BTreeMap;
+
 use flux_rs::attrs::*;
+use serde::de::{Error, IgnoredAny};
 use serde::{Deserialize, Deserializer};
 
+use super::Held;
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
@@ -80,6 +84,42 @@ const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/claude-hook.sh\"; if [ -
 const SHELL_TOOL: &str = "Bash";
 /// The exit code that tells Claude Code a hook refuses the call.
 pub(super) const REFUSED: u8 = 2;
+
+/// Where a role's limits for Claude Code are written, in its directory: the
+/// settings Claude Code loads from the directory it starts in.
+pub(super) const LIMITS: &str = ".claude/settings.json";
+
+/// A role's settings, as far as they say whether they limit a worker.
+#[derive(Deserialize)]
+struct Settings {
+    /// Each event of Claude Code's, with the hooks it runs at it.
+    #[serde(default)]
+    hooks: BTreeMap<String, Vec<IgnoredAny>>,
+    #[serde(default)]
+    permissions: Permissions,
+}
+
+#[derive(Default, Deserialize)]
+struct Permissions {
+    /// What a session may never do, whatever it is started with.
+    #[serde(default)]
+    deny: Vec<IgnoredAny>,
+}
+
+/// Whether what a role's directory holds at `LIMITS` limits a worker: a file
+/// of settings that names a hook at some event, or denies a permission. One
+/// that names neither — a skeleton's — holds no limit.
+pub(super) fn limited<'de, D: Deserializer<'de>>(held: Held<D>) -> Result<bool, D::Error> {
+    match held {
+        Held::Nothing => Ok(false),
+        Held::Entries(_) => Err(D::Error::custom("it is a directory, not a file of settings")),
+        Held::File(settings) => {
+            let settings = Settings::deserialize(settings)?;
+            let hooked = settings.hooks.values().any(|hooks| !hooks.is_empty());
+            Ok(hooked || !settings.permissions.deny.is_empty())
+        }
+    }
+}
 
 /// `text` as a JSON string, quotes and all.
 fn json_text(text: &str) -> String {
@@ -301,6 +341,27 @@ mod tests {
 
     const HELP: &str = "Usage: claude [options]\n  --add-dir <directories...>\n  --model <model>\n  \
                         --setting-sources <sources>\n  --settings <file-or-json>\n";
+
+    #[test]
+    fn settings_limit_a_worker_where_they_name_a_hook_or_deny_a_permission() {
+        let limited = |settings: &str| {
+            Harness::ClaudeCode.limited(Held::File(serde_yaml::Deserializer::from_str(settings)))
+        };
+        for none in ["{}", r#"{"hooks": {}}"#, r#"{"hooks": {"PreToolUse": []}, "model": "opus"}"#]
+        {
+            assert!(!limited(none).unwrap(), "{none}");
+        }
+        for some in [
+            r#"{"hooks": {"Stop": [], "PreToolUse": [{"matcher": "Bash", "hooks": []}]}}"#,
+            r#"{"permissions": {"deny": ["Bash(git push --force:*)"]}}"#,
+        ] {
+            assert!(limited(some).unwrap(), "{some}");
+        }
+        assert!(limited(r#"{"hooks": ["PreToolUse"]}"#).is_err());
+        let held = |held: Held<serde_yaml::Deserializer>| Harness::ClaudeCode.limited(held);
+        assert!(!held(Held::Nothing).unwrap());
+        assert!(held(Held::Entries(1)).unwrap_err().to_string().contains("a directory"));
+    }
 
     #[test]
     fn a_command_that_takes_the_flags_is_not_refused() {

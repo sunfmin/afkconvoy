@@ -11,8 +11,10 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  It writes nothing but a copy the fleet has not got yet (below). It reads a team's
-  files, and of each role's directory which skills it holds:
+  It writes nothing but a copy the fleet has not got yet (below), and what this host
+  keeps for pi before pi is asked a question (`afkconvoy run --help`). It reads a
+  team's files, and of each role's directory which skills it holds, which harnesses it
+  holds limits for, and whether a file of it would have a harness load other rules:
 
 {files}
   Without a flag it reads the config of this checkout for `team`, and that directory
@@ -34,6 +36,11 @@ WHAT IT READS AND WRITES
   asked and cloned once however many roles it holds, and a role in the team's own repo
   is read at the team's commit. The repos are read at once, not one after another.
 
+  Where the team names a `model`, each harness that can say which models it knows is
+  asked, in a login shell — the one a worker gets: pi, with `pi --list-models`, under
+  the user directory the fleet keeps for it. It lists the models pi has a login for on
+  this host. Claude Code has no such answer, and is asked nothing.
+
 WHAT IT ANSWERS
 
   {"team", "path", "commit", "files", "escalate_label", "rules", "harness", "roles",
@@ -46,12 +53,14 @@ WHAT IT ANSWERS
   `harness` is the default harness: the one the config of this checkout names, and
   claude-code where it names none — and with `--team` and `--dir`, which read no
   config. Each of
-  `roles` is {"name", "repo", "path", "commit", "skills", "above"}: `path` is the role's
-  directory in `repo`, "" for a whole repo; `commit` the one the role's repo was read
-  at; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its
-  repo, as a path from the repo's root — but for the team's own `CLAUDE.md`, where the
-  team's directory is above the role: those are the team rules, which a worker is
-  given. Each of `workflows` is {"name", "flow_label", "max_rework",
+  `roles` is {"name", "repo", "path", "commit", "skills", "above", "limits"}: `path` is
+  the role's directory in `repo`, "" for a whole repo; `commit` the one the role's repo
+  was read at; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds
+  in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`,
+  where the team's directory is above the role: those are the team rules, which a
+  worker is given; `limits` the harnesses the role holds
+  limits for — a hook or a denied permission in its `.claude/settings.json` for
+  claude-code, an entry of its `.pi/extensions/` for pi. Each of `workflows` is {"name", "flow_label", "max_rework",
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
   {"name", "by", "do", "harness", "model", "writes", "escalate", "pass", "reject"}.
   Each of `patrols` is {"name", "by", "do", "every", "harness", "model", "max_open",
@@ -74,16 +83,42 @@ WHAT IT ANSWERS
   is no directory at its head; a role's directory that is the team's or contains it, or
   is inside the team's `workflows/` or `patrols/`; a role's directory that contains
   another role's or is inside one — two names for one directory are none; a symlink in
-  a role in a subdirectory that leaves the role's directory; a skill its role's
-  directory does not hold; a
+  a role in a subdirectory that leaves the role's directory; a file in a role's
+  directory that pi would load in place of `CLAUDE.md` — `AGENTS.md`, `AGENTS.MD`,
+  `AGENTS.override.md` — the fault naming the file; a role's limits that cannot be
+  read; a skill its role's directory does not hold; a
   missing `by`, `do` or `on`; a `harness` that names no harness, or one on a stage a
   human performs; a patrol file whose name is not a patrol's; an `every`
   that is no duration; a missing `every` or `max_open`; and — in the config,
   docs/agents/afkconvoy.md, under `patrols` — a name the team has no patrol for.
 
+  A team that loads is then held to its harnesses, and these are faults too, each with
+  its file and key, all at once:
+
+  - A worker on a harness its role holds no limits for, while the role holds limits for
+    another: the fault names what runs it, the role and both harnesses. Its key is the
+    `harness` of the stage (`stages[1].harness`) or of the patrol, written there or
+    not; for a worker that always runs on the default, the key that names its role —
+    `stages[1].escalate.to`, `land.by`, and `precedents.by` in team.md. A role with no
+    limits at all is no fault.
+  - A `model` its harness does not know, where the stage or the patrol names that
+    harness and the harness could be asked: the key is the `model`. pi knows a model
+    it lists by its `provider/id`, its id or a part of its id, with a thinking level
+    after a `:` or not. A model named for a harness that cannot say — claude-code — or
+    could not be asked is passed as written.
+  - In the config, docs/agents/afkconvoy.md, under `harness`: a team that names models
+    and no harness for them, none of which the repo's default harness knows. Such a team
+    is written for another default; the fault lists each model and what names it.
+
   A warning, on stderr, for each workflow whose file says nothing above its yaml block:
   that prose is what `afkconvoy flows` answers as what the workflow is for, and whoever
   hands the fleet work chooses a workflow by it. The team loads all the same.
+
+  A warning, on stderr, for each model named with no harness that reads as another
+  harness's — pi's whole `provider/id` for a model it lists — while the default harness
+  cannot say which models it knows: the team may be written for another default. And a
+  note for a harness a model is named for that could not be asked: its command failed
+  in a login shell, or listed no model. The team loads all the same.
 
   A note, on stderr, for each role with something in `above`: a session opened by hand
   in the role's directory loads those rules too, and a worker, given the role's
@@ -103,6 +138,10 @@ WHAT TRIPS YOU UP
   - From GitHub it reads what is pushed to the default branch. An edit in a checkout
     of the team is checked with `--dir`; a role's is checked only once it is pushed,
     wherever the role is — in the team's own repo too.
+  - Which models pi knows is this host's answer: the ones pi has a login for here,
+    asked of the stock command `pi`. Run `check` on the host the fleet runs on.
+  - Only `check` holds a team to its harnesses: a tick loads the team and starts its
+    workers without asking again.
   - Following `pass` alone from any stage must end. A loop back is made with `reject`,
     which the breakers count; a round of passes nothing would ever stop.
   - A stage nothing leads to is reported only once every `pass` and `reject` names a
