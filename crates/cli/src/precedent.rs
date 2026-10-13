@@ -81,7 +81,7 @@ pub fn propose(
         .ok_or_else(|| anyhow!("the team names nobody who proposes precedents"))?
         .work;
     let role = kept.team.role_of(work);
-    let role_copy = kept.role(role)?;
+    let role_copy = kept.role(role, harness)?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &ruling.claim_key())? else {
         return Ok(Outcome::Lost);
     };

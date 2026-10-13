@@ -106,6 +106,13 @@ fn copy(world: &World, repo: &str) -> PathBuf {
     world.cache().join("afkconvoy/copies").join(repo).join(head(world, repo))
 }
 
+/// Where the fleet keeps the copy of the role `repo` at its head that a
+/// Codex worker starts in: Codex's own, with the link to the role's skills.
+fn role_copy(world: &World, repo: &str) -> PathBuf {
+    let copies = world.cache().join("afkconvoy/copies").join(repo);
+    copies.join(format!("{}-role+codex-", head(world, repo)))
+}
+
 /// The directory the fleet keeps for Codex on this world's host.
 fn kept(world: &World) -> PathBuf {
     world.cache().join("afkconvoy/harness/codex")
@@ -346,7 +353,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     let ticked = tick(&world, 1000).ok();
     assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
 
-    let (role, dir, kept) = (copy(&world, "acme/dev"), worktree(&world, 7), kept(&world));
+    let (role, dir, kept) = (role_copy(&world, "acme/dev"), worktree(&world, 7), kept(&world));
     let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
     let line = started(&world, &dir);
     assert_eq!(
@@ -363,7 +370,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
              --config 'projects={{\"{role}\"={{trust_level=\"trusted\"}}}}' \
              --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
              --config 'project_root_markers=[]' \
-             --config '{hook}' --config features.memories=false --model 'gpt-5.5'",
+             --config '{hook}' --config features.memories=false \
+             --config skills.bundled.enabled=false --model 'gpt-5.5'",
             role = role.display(),
             kept = kept.display(),
             worktree = dir.display(),
@@ -414,6 +422,8 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
             &hook(&guard),
             "--config",
             "features.memories=false",
+            "--config",
+            "skills.bundled.enabled=false",
             "--model",
             "gpt-5.5",
         ])
@@ -428,7 +438,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     assert!(ticked.contains(&"dispatch 8 done".to_string()), "{ticked:?}");
     assert_eq!(held(&kept), [] as [&str; 0], "a link to no login is left");
     let line = started(&world, &worktree(&world, 8));
-    assert!(line.ends_with(" --config features.memories=false"), "{line}");
+    assert!(line.ends_with(" --config skills.bundled.enabled=false"), "{line}");
 }
 
 /// What the stand-in Codex was told in `ran` as a developer's: the rules the
@@ -456,7 +466,7 @@ fn a_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rules() 
     assert_eq!(told(&ran), None);
     // Its role's rules are the `CLAUDE.md` of the directory it starts in,
     // which Codex is told to load — and nothing of a directory above it.
-    let role = copy(&world, "acme/dev");
+    let role = role_copy(&world, "acme/dev");
     assert_eq!(ran[0], role.to_str().unwrap());
     assert_eq!(std::fs::read_to_string(role.join("CLAUDE.md")).unwrap(), "the rules of a dev\n");
     for said in ["project_doc_fallback_filenames=[\"CLAUDE.md\"]", "project_root_markers=[]"] {
@@ -753,7 +763,7 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
     let ticked = tick(&world, 1000).ok();
     assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
     let line = started(&world, &worktree(&world, 7));
-    let role = copy(&world, "acme/dev");
+    let role = role_copy(&world, "acme/dev");
 
     // Codex loads a directory's hooks only where it trusts the directory and
     // its hooks were reviewed: both are said on the line, of the role's copy,
@@ -949,4 +959,93 @@ fn a_codex_worker_that_is_working_is_seen_as_busy_and_one_that_has_stopped_as_st
     wrote(&world, 1780);
     assert_eq!(did(&tick(&world, 1790).ok())[0], "advance 7 nothing");
     assert_eq!(sent(), 2);
+}
+
+/// The entries of the directory `dir`, sorted.
+fn entries(dir: &Path) -> Vec<String> {
+    let entries = std::fs::read_dir(dir).unwrap().flatten();
+    let mut names: Vec<String> =
+        entries.map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_codex_worker_finds_its_role_s_skills_through_a_link_in_the_fleet_s_copy() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let line = started(&world, &worktree(&world, 7));
+    let (role, repo) = (role_copy(&world, "acme/dev"), copy(&world, "acme/dev"));
+    assert!(line.starts_with(&format!("cd '{}' && ", role.display())), "{line}");
+
+    // Codex finds skills in `.agents/skills` of the directory it starts in:
+    // there, the copy links to the role's skills, every one of them.
+    let link = role.join(".agents/skills");
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("../.claude/skills"));
+    assert_eq!(entries(&link), entries(&repo.join(".claude/skills")));
+    assert_eq!(std::fs::read_to_string(link.join("implement/SKILL.md")).unwrap(), "build\n");
+    // The role's repo holds nothing for Codex, and neither does the copy of
+    // it another harness's worker starts in.
+    assert_eq!(entries(&repo), [".claude", "CLAUDE.md"]);
+    assert_eq!(entries(&role), [".agents", ".claude", "CLAUDE.md"]);
+    // The skills Codex carries are left out, on the line.
+    let ran = under_codex(&world, &line);
+    assert!(ran.contains(&"skills.bundled.enabled=false".to_string()), "{ran:?}");
+
+    // A second worker is started from the same copy, which is as it was.
+    world.issue(8, &["flow:feature"]);
+    let ticked = did(&tick(&world, 1100).ok());
+    assert!(ticked.contains(&"dispatch 8 done".to_string()), "{ticked:?}");
+    let again = started(&world, &worktree(&world, 8));
+    assert!(again.starts_with(&format!("cd '{}' && ", role.display())), "{again}");
+    assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("../.claude/skills"));
+    let head = head(&world, "acme/dev");
+    assert_eq!(entries(role.parent().unwrap()), [head.clone(), format!("{head}-role+codex-")]);
+}
+
+#[test]
+fn a_role_that_holds_skills_for_codex_itself_is_left_as_it_is_and_noted_not_refused() {
+    let world = bound();
+    let dev = world.root.join("github/acme/dev");
+    write(&dev, ".agents/skills/tidy/SKILL.md", "tidy\n");
+    git(&dev, &["add", "."]);
+    git(&dev, &["commit", "-q", "-m", "a skill for Codex alone"]);
+
+    // `check` passes, and notes each worker on Codex whose skill Codex would
+    // not find: the fleet adds nothing where the role holds a directory.
+    let checked = world.afk(&["check"]);
+    let notes: Vec<&str> =
+        checked.stderr.lines().filter(|line| line.contains("holds skills of its own")).collect();
+    assert_eq!(notes.len(), 2, "{}", checked.stderr);
+    assert!(
+        notes[0].starts_with(
+            "note: the stage `build` of the workflow `feature` runs on `codex`, and its role \
+             `dev` holds skills of its own for Codex (`.agents/skills/` or `.codex/skills/`), \
+             `implement` not among them: "
+        ),
+        "{}",
+        notes[0]
+    );
+    assert!(notes[1].starts_with("note: the patrol `sweep` runs on `codex`"), "{}", notes[1]);
+    checked.ok();
+
+    // A worker starts all the same, in the copy every harness's worker
+    // starts in: what the role holds is as it was pushed.
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000).ok())[0], "dispatch 7 done");
+    let role = copy(&world, "acme/dev");
+    let line = started(&world, &worktree(&world, 7));
+    assert!(line.starts_with(&format!("cd '{}' && ", role.display())), "{line}");
+    assert!(role.join(".agents/skills").symlink_metadata().unwrap().is_dir());
+    assert_eq!(entries(&role.join(".agents/skills")), ["tidy"]);
+    assert!(!role_copy(&world, "acme/dev").exists());
+
+    // The skill held where Codex finds it, in either directory: nothing is noted.
+    write(&dev, ".codex/skills/implement/SKILL.md", "build\n");
+    git(&dev, &["add", "."]);
+    git(&dev, &["commit", "-q", "-m", "the skill, for Codex"]);
+    let checked = world.afk(&["check"]);
+    assert!(!checked.stderr.contains("holds skills of its own"), "{}", checked.stderr);
+    checked.ok();
 }
