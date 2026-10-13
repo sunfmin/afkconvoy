@@ -109,7 +109,7 @@ pub(crate) fn escalate_claim(
     let issue = claim.number;
     let labels = fleet.gh.issue(issue)?.labels;
     let comments = fleet.gh.comments(issue)?;
-    let said = escalation_begun(comments.iter().map(|c| c.body.as_str()), &claim.sha);
+    let said = escalation_begun(comments.iter().map(|c| c.body.as_str()), &claim.id);
     // A bound repo's escalate label is its team's to name.
     let team_label = match &fleet.config.bound {
         Some(bound) => Some(keep(&fleet.gh, &Copies::here()?, &bound.team)?.team.escalate_label),
@@ -125,7 +125,7 @@ pub(crate) fn escalate_claim(
     transition::escalate(issue, begun, workless, |step| {
         match step {
             EscalateStep::Comment => {
-                fleet.gh.comment(issue, &escalation_comment(&claim.sha, flow.as_deref(), reason))?
+                fleet.gh.comment(issue, &escalation_comment(&claim.id, flow.as_deref(), reason))?
             }
             EscalateStep::Relabel => {
                 if let Some(label) = &swap.add {

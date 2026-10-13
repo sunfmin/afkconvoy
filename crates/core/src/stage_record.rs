@@ -52,8 +52,8 @@ pub enum Author {
     Worker {
         /// Whether it is the stage's consult.
         consult: bool,
-        /// The claim it declared under: the commit of the claim's ref, which
-        /// is written once.
+        /// The claim it declared under: the commit the claim was created
+        /// at, which it keeps through every takeover (`Claim::id`).
         claim: String,
         /// The commits of the role's repo and of the team's the stage ran under.
         role_commit: String,

@@ -108,9 +108,31 @@ const CLAIM: &str = "convoy:claim";
 const HEARTBEAT: &str = "convoy:heartbeat";
 
 impl Owner {
+    /// The record of a claim created in this owner's name.
     pub fn write(&self) -> String {
+        self.record("", "")
+    }
+
+    /// The record of the claim `taken` once it is this owner's: it is still
+    /// the claim it was created as.
+    pub fn write_over(&self, taken: &Claim) -> String {
+        let since = taken.since.map(|since| since.to_string()).unwrap_or_default();
+        self.record(&taken.id, &since)
+    }
+
+    fn record(&self, first: &str, since: &str) -> String {
         let ts = self.ts.to_string();
-        record::write(CLAIM, &[("instance", &self.instance), ("host", &self.host), ("ts", &ts)])
+        let (instance, host) = (self.instance.as_str(), self.host.as_str());
+        record::write(
+            CLAIM,
+            &[
+                ("instance", instance),
+                ("host", host),
+                ("ts", &ts),
+                ("first", first),
+                ("since", since),
+            ],
+        )
     }
 
     /// A commit subject → the owner it names; `None` when it names nobody.
@@ -140,7 +162,15 @@ pub fn read_heartbeat(subject: &str) -> Option<u64> {
 pub struct Claim {
     pub number: u64,
     pub owner: Option<Owner>,
+    /// The commit its ref points at now: what a takeover or a delete of it is
+    /// leased to. Every takeover moves it.
     pub sha: String,
+    /// The commit it was created at, which every takeover carries on: what is
+    /// declared or kept under a claim names this, so it is found whoever
+    /// holds the claim now.
+    pub id: String,
+    /// When it was created, where its record says.
+    pub since: Option<u64>,
 }
 
 /// The claim on a run: work a fleet instance does for no issue — a patrol's
@@ -192,6 +222,16 @@ impl RunClaim {
 }
 
 impl Claim {
+    /// The claim on issue `number` whose ref points at `sha`, a commit with
+    /// the subject `subject`.
+    pub fn read(number: u64, subject: &str, sha: String) -> Claim {
+        let owner = Owner::read(subject);
+        let fields = record::read(CLAIM, subject).unwrap_or_default();
+        let id = fields.get("first").map_or_else(|| sha.clone(), str::to_string);
+        let since = fields.number("since").or(owner.as_ref().map(|owner| owner.ts));
+        Claim { number, owner, sha, id, since }
+    }
+
     pub fn is_held_by(&self, instance: &InstanceId) -> bool {
         self.owner.as_ref().is_some_and(|owner| owner.instance == instance.as_str())
     }
@@ -329,6 +369,22 @@ mod tests {
         assert_eq!(Owner::read(&owner.write()), Some(owner));
         assert_eq!(Owner::read("convoy:claim host=x"), None, "names nobody");
         assert_eq!(Owner::read("initial commit"), None);
+        let claim = Claim::read(7, &owner.write(), "abc".into());
+        assert_eq!((claim.id.as_str(), claim.since), ("abc", Some(99)));
+        assert_eq!(claim.owner, Some(owner));
+        // Taken over twice, it is still the claim it was created as.
+        let mut taken = claim;
+        for (sha, ts) in [("def", 500), ("ghi", 900)] {
+            let peer = Owner { instance: "fleet-2".into(), host: "h".into(), ts };
+            taken = Claim::read(7, &peer.write_over(&taken), sha.into());
+            assert_eq!(
+                (taken.sha.as_str(), taken.id.as_str(), taken.since),
+                (sha, "abc", Some(99))
+            );
+            assert_eq!(taken.owner, Some(peer));
+        }
+        let nobodys = Claim::read(8, "initial commit", "def".into());
+        assert_eq!((nobodys.owner, nobodys.id.as_str(), nobodys.since), (None, "def", None));
         assert_eq!(read_heartbeat(&write_heartbeat(&id("a"), 5)), Some(5));
         assert_eq!(read_heartbeat("convoy:heartbeat instance=a"), None);
     }
@@ -343,12 +399,9 @@ mod tests {
 
     #[test]
     fn only_my_own_claim_is_releasable() {
-        let mine = Claim {
-            number: 7,
-            owner: Some(Owner { instance: "me".into(), host: "h".into(), ts: 1 }),
-            sha: "abc".into(),
-        };
-        let nobodys = Claim { number: 8, owner: None, sha: "def".into() };
+        let owner = Owner { instance: "me".into(), host: "h".into(), ts: 1 };
+        let mine = Claim::read(7, &owner.write(), "abc".into());
+        let nobodys = Claim::read(8, "", "def".into());
         assert_eq!(releasable(Some(&mine), &id("me")), Ok(Some(&mine)));
         assert_eq!(releasable(None, &id("me")), Ok(None));
         assert_eq!(releasable(Some(&mine), &id("peer")).unwrap_err().holder, "me");

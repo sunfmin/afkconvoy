@@ -151,8 +151,8 @@ where
 }
 
 /// The comment an escalation leaves on the issue, under the record of whose
-/// it is: the claim it ends, by its sha — a claim ref is written once, so each
-/// claim of an issue has its own. `flow` is the workflow a bound repo's issue
+/// it is: the claim it ends, by the commit it was created at (`Claim::id`) —
+/// each claim of an issue has its own, and keeps it through a takeover. `flow` is the workflow a bound repo's issue
 /// follows as it is handed over: its flow label comes off, and this is what
 /// says which to put back.
 pub fn escalation_comment(claim: &str, flow: Option<&str>, reason: &str) -> String {

@@ -52,6 +52,11 @@ fn bound(feature: &str, concurrency: u64) -> World {
 
 /// One tick at `now`, every worker that has not stopped being at work.
 fn tick(world: &World, now: u64) -> Value {
+    tick_as(world, "alpha", now)
+}
+
+/// The same, of the fleet instance `instance`.
+fn tick_as(world: &World, instance: &str, now: u64) -> Value {
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
             let at_work = terminal["agent"].is_null() || terminal["agent"]["state"] == "working";
@@ -62,7 +67,49 @@ fn tick(world: &World, now: u64) -> Value {
         }
     });
     let now = now.to_string();
-    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok()
+    world.afk(&["tick", "--instance", instance, "--host", "h1", "--now", &now]).ok()
+}
+
+/// The fleet instance `beta` takes every claim of `alpha` by hand at `now`.
+fn taken_over(world: &World, now: u64) {
+    let now = now.to_string();
+    let from = ["takeover", "--from", "alpha", "--instance", "beta", "--host", "h1", "--yes"];
+    let taken = world.afk(&[&from[..], &["--now", &now]].concat()).ok();
+    assert_eq!((&taken["taken"], &taken["lost"]), (&json!([7]), &json!([])), "{taken}");
+}
+
+/// The worker of the last terminal opened reports that it stopped at `at`.
+fn stop(world: &World, at: u64) {
+    world.with_orca(|orca| {
+        let terminal = orca["terminals"].as_array_mut().unwrap().last_mut().unwrap();
+        terminal["agent"] = json!({"state": "idle", "stateStartedAt": at * 1000});
+    })
+}
+
+/// How each stage record of issue 7 reads.
+fn reads(world: &World) -> Vec<String> {
+    let read = shown(world);
+    let records = read["records"].as_array().unwrap().iter();
+    records.map(|record| record["reads"].as_str().unwrap().to_string()).collect()
+}
+
+/// Issue 7 of `world`, its `build` dispatched by `alpha`, having declared
+/// `escalate` and stopped — and no tick having read that.
+fn declared_unread(world: &World) {
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(world, 1000)), ["dispatch 7 done"]);
+    declare(world, "build", "escalate", "Which schema: v1 or v2?");
+    stop(world, 1010);
+}
+
+/// What `declared_unread` comes to once the verdict is read: the claim is
+/// ended and the issue is with its consult, nothing handed to a human.
+fn read_as_declared(world: &World) {
+    assert_eq!(world.claims(), []);
+    assert_eq!(shown(world)["position"]["is"], "consult");
+    assert_eq!(reads(world), ["verdict"]);
+    assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
+    assert_eq!(started(world).len(), 1, "nobody was started in its place");
 }
 
 /// What a tick did that came to anything, but for the boards and the
@@ -332,12 +379,6 @@ fn a_silent_consult_is_nudged_once_and_then_escalated() {
     let world = bound(FEATURE, 2);
     asked(&world);
     tick(&world, 1180);
-    let stop = |world: &World, at: u64| {
-        world.with_orca(|orca| {
-            let terminal = orca["terminals"].as_array_mut().unwrap().last_mut().unwrap();
-            terminal["agent"] = json!({"state": "idle", "stateStartedAt": at * 1000});
-        })
-    };
     stop(&world, 1200);
     assert_eq!(did(&tick(&world, 2000)), ["advance 7 nudged"]);
     stop(&world, 2100);
@@ -348,4 +389,92 @@ fn a_silent_consult_is_nudged_once_and_then_escalated() {
         "{said}"
     );
     assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+}
+
+#[test]
+fn a_verdict_declared_before_run_is_started_again_is_read_by_its_first_tick() {
+    let world = bound(FEATURE, 2);
+    declared_unread(&world);
+    // `run` was killed before a tick read the verdict, and is started again:
+    // the start takes the claim, and it is still the claim `build` declared under.
+    let run =
+        ["run", "--instance", "beta", "--host", "h1", "--second-ms", "0", "--ticks", "1", "--now"];
+    let (lines, _) = world.afk_lines(&[&run[..], &["2000"]].concat());
+    assert!(lines.iter().any(|line| line.contains("took #7 stamped with this host")), "{lines:?}");
+    let tick = lines.iter().find(|line| line.starts_with("tick 1:")).expect("a tick's line");
+    assert!(tick.contains("advanced #7") && !tick.contains("nudged"), "{tick}");
+    read_as_declared(&world);
+}
+
+#[test]
+fn a_verdict_declared_before_a_takeover_by_hand_is_read_by_the_next_tick() {
+    let world = bound(FEATURE, 2);
+    declared_unread(&world);
+    taken_over(&world, 1060);
+    // Its worker, asked again, finds its verdict standing under the claim.
+    let line = ["verdict", "escalate", "--issue", "7", "--stage", "build", "--text", "Again."];
+    let again = world.afk(&[&line[..], &COMMITS].concat()).ok();
+    assert_eq!((&again["declared"], &again["standing"]), (&json!(false), &json!("escalate")));
+    assert_eq!(did(&tick_as(&world, "beta", 2000)), ["advance 7 done"]);
+    read_as_declared(&world);
+}
+
+#[test]
+fn a_verdict_declared_under_a_claim_gone_stale_is_read_by_the_tick_that_reclaims_it() {
+    let world = bound(FEATURE, 2);
+    declared_unread(&world);
+    // The lease of `alpha` lapses, and a peer's tick takes its claim.
+    assert_eq!(did(&tick_as(&world, "beta", 1000 + 4500 + 1)), ["reclaim 7 done"]);
+    read_as_declared(&world);
+}
+
+#[test]
+fn a_verdict_declared_after_its_claim_was_taken_over_is_read() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    taken_over(&world, 1060);
+    declare(&world, "build", "escalate", "Which schema: v1 or v2?");
+    stop(&world, 1070);
+    assert_eq!(did(&tick_as(&world, "beta", 2000)), ["advance 7 done"]);
+    read_as_declared(&world);
+}
+
+#[test]
+fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
+    let world = bound(FEATURE, 2);
+    asked(&world);
+    tick(&world, 1180);
+    rule(&world, "Keep the v1 schema.");
+    stop(&world, 1190);
+    taken_over(&world, 1200);
+    assert_eq!(did(&tick_as(&world, "beta", 3000)), ["advance 7 done"]);
+    assert_eq!(world.claims(), []);
+    let read = shown(&world);
+    assert_eq!(
+        (&read["position"]["is"], &read["position"]["stage"]),
+        (&json!("perform"), &json!("build"))
+    );
+    assert_eq!(reads(&world), ["verdict", "verdict"]);
+    // Nobody is told the consult stayed silent: it ruled.
+    assert_eq!(world.labels(7), ["flow:feature", "stage:build"]);
+    assert!(!world.comments(7).join("\n").contains("stopped with no ruling"));
+}
+
+#[test]
+fn a_silent_stage_whose_claim_was_taken_over_is_not_called_a_consult() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    stop(&world, 1010);
+    taken_over(&world, 1060);
+    assert_eq!(did(&tick_as(&world, "beta", 2000)), ["advance 7 nudged"]);
+    stop(&world, 2100);
+    assert_eq!(did(&tick_as(&world, "beta", 3000)), ["advance 7 done"]);
+    let said = world.comments(7).join("\n");
+    assert!(
+        said.contains("The worker of the stage `build` stopped with no valid verdict"),
+        "{said}"
+    );
+    assert!(!said.contains("The consult of the stage"), "{said}");
 }

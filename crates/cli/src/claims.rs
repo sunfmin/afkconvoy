@@ -48,10 +48,10 @@ impl Scan {
         for record in repo.remote_records(&layout.every(""))? {
             let Some(kept) = layout.kept(&record.name) else { continue };
             if let Some(name) = kept.strip_prefix(CLAIM_KIND) {
-                let owner = Owner::read(&record.subject);
                 if let Some(number) = fleet_number(name) {
-                    scan.claims.push(Claim { number, owner, sha: record.sha });
+                    scan.claims.push(Claim::read(number, &record.subject, record.sha));
                 } else {
+                    let owner = Owner::read(&record.subject);
                     let (key, sha) = (name.to_string(), record.sha);
                     scan.runs.push(RunClaim { key, owner, sha, over: false });
                 }
@@ -129,8 +129,9 @@ pub fn beat(repo: &Repo, scan: &mut Scan, me: &Me) -> Result<Value> {
 pub enum Take<'a> {
     /// Create it: the remote rejects a ref that already exists.
     Fresh,
-    /// Re-stamp one that exists, only while it still points at this sha.
-    From(&'a str),
+    /// Take this one over, only while its ref still points where it was
+    /// read: it stays the claim it was created as.
+    From(&'a Claim),
 }
 
 /// What putting a claim ref in my name came to.
@@ -138,13 +139,12 @@ enum Put {
     Won {
         owner: Owner,
         sha: String,
+        /// The record the ref now carries.
+        subject: String,
     },
     /// Somebody else's claim is where mine would be: the ref as it is now,
     /// when it is there, and what git said.
-    Lost {
-        there: Option<RemoteRecord>,
-        detail: String,
-    },
+    Lost { there: Option<RemoteRecord>, detail: String },
 }
 
 /// Puts the claim ref `refname` in my name with one atomic push, behind a
@@ -152,7 +152,11 @@ enum Put {
 /// is an error.
 fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Result<Put> {
     let owner = Owner { instance: me.instance.to_string(), host: me.host.clone(), ts: me.now };
-    let sha = repo.record_commit(&owner.write())?;
+    let subject = match how {
+        Take::Fresh => owner.write(),
+        Take::From(taken) => owner.write_over(taken),
+    };
+    let sha = repo.record_commit(&subject)?;
     let last_beat = scan.heartbeats.get(me.instance.as_str()).copied();
     let mut pushed = None;
     for step in claim_steps(last_beat, me.now) {
@@ -162,8 +166,8 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
                 let target = format!("{sha}:{refname}");
                 let lease;
                 let mut args = vec!["push", "--quiet", REMOTE];
-                if let Take::From(expected) = how {
-                    lease = format!("--force-with-lease={refname}:{expected}");
+                if let Take::From(taken) = how {
+                    lease = format!("--force-with-lease={refname}:{}", taken.sha);
                     args.push(&lease);
                 }
                 args.push(&target);
@@ -173,7 +177,7 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
     }
     let pushed = pushed.expect("every claim order ends in the push");
     if pushed.ok {
-        return Ok(Put::Won { owner, sha });
+        return Ok(Put::Won { owner, sha, subject });
     }
     // Lost only if somebody else's claim is where ours would be.
     let detail = pushed.stderr.trim().to_string();
@@ -182,7 +186,7 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
         (None, Take::Fresh) => false,
         (None, Take::From(_)) => true,
         (Some(_), Take::Fresh) => true,
-        (Some(now), Take::From(expected)) => now.sha != *expected,
+        (Some(now), Take::From(taken)) => now.sha != taken.sha,
     };
     if !moved {
         bail!("the push of {refname} failed and this is not a lost race: {detail}");
@@ -196,14 +200,13 @@ fn put(repo: &Repo, scan: &mut Scan, me: &Me, refname: &str, how: Take) -> Resul
 pub fn take(repo: &Repo, scan: &mut Scan, me: &Me, number: u64, how: Take) -> Result<Value> {
     let refname = claim_ref(repo.layout(), number);
     match put(repo, scan, me, &refname, how)? {
-        Put::Won { owner, sha } => {
-            scan.written(number, Some(Claim { number, owner: Some(owner), sha: sha.clone() }));
+        Put::Won { sha, subject, .. } => {
+            scan.written(number, Some(Claim::read(number, &subject, sha.clone())));
             Ok(json!({"won": true, "issue": number, "ref": refname, "sha": sha,
                 "instance": me.instance.as_str()}))
         }
         Put::Lost { there, detail } => {
-            let claim =
-                there.map(|now| Claim { number, owner: Owner::read(&now.subject), sha: now.sha });
+            let claim = there.map(|now| Claim::read(number, &now.subject, now.sha));
             let holder = claim.as_ref().map_or(Value::Null, claim_json);
             scan.written(number, claim);
             Ok(json!({"won": false, "issue": number, "ref": refname, "owner": holder,
@@ -218,7 +221,7 @@ pub fn take_run(repo: &Repo, scan: &mut Scan, me: &Me, key: &str) -> Result<Opti
     let refname = run_ref(repo.layout(), key);
     scan.runs.retain(|run| run.key != key);
     let (claim, won) = match put(repo, scan, me, &refname, Take::Fresh)? {
-        Put::Won { owner, sha } => {
+        Put::Won { owner, sha, .. } => {
             (Some(RunClaim { key: key.to_string(), owner: Some(owner), sha, over: false }), true)
         }
         Put::Lost { there, .. } => {

@@ -134,7 +134,7 @@ fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<String>> {
         return Ok(None);
     };
     let Some(started) = worktree.writes_nothing()? else { return Ok(None) };
-    Ok(started.broken(&claim.sha, &worktree.tip()?))
+    Ok(started.broken(&claim.id, &worktree.tip()?))
 }
 
 /// The tick's look at one claim of mine at a stage → `Done` when that ended
@@ -150,7 +150,7 @@ pub fn advance(
     issue: u64,
 ) -> Result<Outcome> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(Outcome::Nothing) };
-    let called = flows.called(issue, &claim.sha)?;
+    let called = flows.called(issue, &claim.id)?;
     let said = called.said.as_deref();
     let declared = !matches!(called.advance, Advance::AskAfter);
     if declared && let Some(failed) = left_behind(fleet, &claim)? {
