@@ -311,7 +311,7 @@ fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
         .map(|role| role["name"].as_str().unwrap())
         .collect();
     assert_eq!(limited, ["fellow", "attending"]);
-    // And what the topic says to run on it does.
+    // And an issue is walked through its longest workflow.
     let walk = ["rehearse", "--team", "acme/h", "fix", "pass", "pass", "pass", "pass", "pass"];
     assert!(world.afk(&walk).ok()["ends"].is_object());
 }
@@ -395,10 +395,21 @@ fn an_example_is_a_team_whole_and_its_name_is_one_there_is() {
     assert!(world.gh_calls().is_empty());
 }
 
-/// The files the topic names: each on a line of its own, six spaces in.
-fn named_in(topic: &str) -> Vec<&str> {
-    let lines = topic.lines().filter_map(|line| line.strip_prefix("      "));
-    lines.filter(|line| !line.starts_with(' ') && !line.contains(' ')).collect()
+/// The files the topic names: the words of its lines four spaces in, each
+/// under the directory named alone on a line two spaces in above it, if one
+/// is since the last title.
+fn named_in(topic: &str) -> Vec<String> {
+    let (mut named, mut under) = (Vec::new(), "");
+    for line in topic.lines() {
+        let words = line.trim_start();
+        match line.len() - words.len() {
+            0 => under = "",
+            2 if words.ends_with('/') && !words.contains(' ') => under = words,
+            4 => named.extend(words.split_whitespace().map(|file| format!("{under}{file}"))),
+            _ => {}
+        }
+    }
+    named
 }
 
 /// What the binary prints for `args`, which is no JSON object.
@@ -414,6 +425,7 @@ fn the_topic_names_every_file_the_example_writes_and_no_other() {
     let mut written: Vec<&str> = hospital.files.iter().map(|(path, _)| *path).collect();
     let mut named = named_in(&topic);
     assert!(named.len() > 40, "{named:?}");
+    assert!(named.contains(&"roles/fellow/.claude/hooks/refuse.sh".to_string()), "{named:?}");
     written.sort_unstable();
     named.sort_unstable();
     assert_eq!(named, written);
