@@ -240,7 +240,8 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
     let said = said.filter(|_| verdict.is_some());
-    let route = route(state, &progress, verdict.as_ref(), worktree.nudged()?, fleet.now);
+    let handed = worktree.handed(None)?;
+    let route = route(state, &progress, verdict.as_ref(), worktree.nudged()?, handed, fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, progress, verdict, said, route }))))
 }
 

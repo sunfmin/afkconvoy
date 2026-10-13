@@ -161,7 +161,7 @@ Without `--worker-command`, `run` lists your login shell's aliases that start Cl
 ```sh
 cd <the role's copy> && export <the stage's facts> && <worker launch command> \
   --add-dir <the issue's worktree> --add-dir <the team's copy> --setting-sources project \
-  --settings <the guard, as a hook> [--model <the stage's>]
+  --settings <the guard and orca's status report, as hooks> [--model <the stage's>]
 ```
 
 - The command must take `--add-dir`, `--setting-sources`, `--settings` and `--model`. A start runs `<worker launch command> --help` in a login shell and refuses, naming what is missing, when the answer does not name all four. An alias or a wrapper is fine as long as what follows it reaches Claude Code: `kim`, not `kim ; true`.
@@ -169,6 +169,7 @@ cd <the role's copy> && export <the stage's facts> && <worker launch command> \
 - The role's and the team's directories are the fleet's own read-only copies, one per commit, under `~/.cache/afkconvoy/copies/` (or `$XDG_CACHE_HOME`). A stage starts under the commit at the head of each repo's default branch; a copy already there is not fetched again. Pushing is the only way a change to a role reaches a worker.
 - The stage's facts are in the worker's environment: `AFKCONVOY_ISSUE`, `AFKCONVOY_FLOW`, `AFKCONVOY_STAGE`, `AFKCONVOY_ROLE`, `AFKCONVOY_SKILL`, `AFKCONVOY_WRITES`, `AFKCONVOY_CONSULT`, `AFKCONVOY_BASE_BRANCH`, `AFKCONVOY_ESCALATE_LABEL`, `AFKCONVOY_LOCK_LABEL`, `AFKCONVOY_ROLE_COMMIT` and `AFKCONVOY_TEAM_COMMIT`.
 - Every worker is started with the guard: `afkconvoy guard`, added as a hook that Claude Code runs before each tool call, whatever the role's repo holds. It refuses, with a reason the worker is shown, what no worker may do — add or remove a flow, stage, escalate or lock label, write a stage record by hand, merge a PR, push the base branch — and, in a stage marked `writes: false` and for every consult, committing and pushing. A role's own limits are hooks in its repo; they run beside the guard. A guard recognises commands, so it stops a worker that errs, not one that means to get past it: after a stage marked `writes: false`, and after a consult, the fleet checks the branch, and a commit that was not there before escalates the issue. `afkconvoy guard --help` lists what is refused.
+- Every worker is started reporting to orca too. orca hears whether an agent is working or has stopped through hooks it keeps in your own Claude Code settings, which a worker in its role does not load; the fleet adds the same hook (`~/.orca/agent-hooks/claude-hook.sh`, where orca installed it) beside the guard, so `orca worktree ps` shows an agent for a stage's worker as it does for the train's. Where orca has no report all the same — a host whose orca installed no hook, a runtime that sends none — the worker's terminal speaks for it: one that wrote within the grace period (five minutes) is at work, and one quiet longer has stopped. A worker is also left a grace period from its start, whatever its terminal and its worktree show.
 
 An unbound repo's command stays opaque and may start any agent.
 

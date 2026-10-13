@@ -20,16 +20,17 @@ pub enum TrainRoute {
 }
 
 /// Routes the train worker from its state, its worktree's progress, the nudge
-/// this host recorded and when it was last told of the train's tip. The train
-/// worker holds no claim and declares no verdict: its silence is all there is.
+/// this host recorded and when it was last handed its work: started, or told
+/// of the train's tip. The train worker holds no claim and declares no
+/// verdict: its silence is all there is.
 pub fn train_route(
     state: WorkerState,
     progress: &Progress,
     nudged: Nudged,
-    told_at: Option<u64>,
+    handed: Option<u64>,
     now: u64,
 ) -> TrainRoute {
-    match silence(state, progress, nudged, told_at, now) {
+    match silence(state, progress, nudged, handed, now) {
         Silence::Gone | Silence::Lively => TrainRoute::Leave,
         Silence::Nudge(unnudged) => TrainRoute::Nudge(unnudged),
         Silence::Stalled(silent) => TrainRoute::Abandon(silent),

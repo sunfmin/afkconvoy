@@ -155,7 +155,7 @@ fn ask_after(
         bail!("issue #{issue}: a worker that stopped has a worktree and a state");
     };
     let progress = progress(&worktree, &fleet.base_tip()?)?;
-    match silence(state, &progress, worktree.nudged()?, None, fleet.now) {
+    match silence(state, &progress, worktree.nudged()?, worktree.handed(None)?, fleet.now) {
         Silence::Lively => Ok(Outcome::Nothing),
         Silence::Gone => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;

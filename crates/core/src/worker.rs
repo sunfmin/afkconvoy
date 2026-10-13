@@ -246,11 +246,11 @@ pub struct AgentReport {
 pub enum WorkerState {
     /// No live terminal in the worktree: the worker is gone.
     Gone,
-    /// It reports `working`, and its terminal produced output within grace.
+    /// Its terminal produced output within grace, and it does not report
+    /// that it stopped: it reports `working`, or orca has no report of it.
     Busy,
-    /// Anything else, with how long it has been quiet — unknown for a runtime
-    /// that reports no state: its idle screen redraws on a timer, so its
-    /// output says nothing.
+    /// Anything else, with how long it has been quiet — unknown where
+    /// neither a report nor the terminal says since when.
     Idle { quiet: Option<u64> },
 }
 
@@ -275,7 +275,9 @@ pub fn lead(agents: &[AgentReport]) -> Option<AgentReport> {
 /// the `lead` report.
 ///
 /// Busy takes both the report and recent output: a stop report the runtime
-/// lost would otherwise read `working` forever.
+/// lost would otherwise read `working` forever. With no report the output
+/// alone speaks: orca hears nothing of a worker whose session loads no hook
+/// of orca's, and one writing to its terminal is at work all the same.
 pub fn worker_state(
     terminals: u64,
     last_output: Option<u64>,
@@ -290,18 +292,17 @@ pub fn worker_state(
         None => None,
     };
     match lead {
-        Some(agent) if agent.working => match output_quiet {
-            Some(quiet) if quiet < GRACE => WorkerState::Busy,
-            _ => WorkerState::Idle { quiet: output_quiet },
-        },
-        Some(agent) => {
+        Some(agent) if !agent.working => {
             let stopped = match agent.since {
                 Some(at) => stamp_age(at, now),
                 None => None,
             };
             WorkerState::Idle { quiet: if stopped.is_some() { stopped } else { output_quiet } }
         }
-        None => WorkerState::Idle { quiet: None },
+        _ => match output_quiet {
+            Some(quiet) if quiet < GRACE => WorkerState::Busy,
+            _ => WorkerState::Idle { quiet: output_quiet },
+        },
     }
 }
 
@@ -433,7 +434,14 @@ mod tests {
             WorkerState::Idle { quiet: Some(60) },
             "timed from when it said it stopped"
         );
-        assert_eq!(worker_state(1, Some(990), None, 1000), WorkerState::Idle { quiet: None });
+        // no report: the terminal's last output is the sign of life
+        assert_eq!(worker_state(1, Some(990), None, 1000), WorkerState::Busy);
+        assert_eq!(
+            worker_state(1, Some(1000 - GRACE), None, 1000),
+            WorkerState::Idle { quiet: Some(GRACE) },
+            "quiet since that output"
+        );
+        assert_eq!(worker_state(1, None, None, 1000), WorkerState::Idle { quiet: None });
         assert_eq!(lead(&[stopped, working]), Some(stopped), "the newest report speaks");
         assert_eq!(lead(&[]), None);
     }

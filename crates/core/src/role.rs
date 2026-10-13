@@ -27,6 +27,26 @@ pub const FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's.
 const SOURCES: &str = "project";
+/// The events of Claude Code at which a worker's state changes: what the
+/// worker backend hears of, to report it (`Start::report`). With the user's
+/// settings left out, nothing else tells it.
+const STATE_EVENTS: [&str; 12] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "SubagentStart",
+    "SubagentStop",
+    "TeammateIdle",
+    "PostCompact",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
+];
+/// How long Claude Code waits on one report, in seconds: a worker backend
+/// that does not answer holds no tool call up.
+const REPORT_TIMEOUT: u64 = 10;
 /// Has Claude Code load the rules of the directories added to it. Their hooks
 /// are not loaded: what a repo must enforce belongs in its gate.
 const ADDED_RULES: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
@@ -267,36 +287,55 @@ pub struct Start<'a> {
     pub model: Option<&'a str>,
     /// The shell line that runs the guard: this tool's `guard` subcommand.
     pub guard: &'a str,
+    /// The shell line that tells the worker backend of the worker's state: it
+    /// is given what Claude Code says of an event on standard input.
+    pub report: &'a str,
     pub facts: Facts<'a>,
 }
 
-/// The settings that add the guard to a worker: a hook Claude Code runs
-/// before every tool call, with the line `guard`. They are added to the
-/// role's own, so a role's hooks run beside it and no role is without it
-/// (docs/adr/0012).
-fn guard_settings(guard: &str) -> String {
-    let mut line = String::new();
-    for c in guard.chars() {
+/// `text` as a JSON string, quotes and all.
+fn json_text(text: &str) -> String {
+    let mut json = String::from("\"");
+    for c in text.chars() {
         match c {
             '"' | '\\' => {
-                line.push('\\');
-                line.push(c);
+                json.push('\\');
+                json.push(c);
             }
-            // A path holds no control character worth carrying.
-            c if c.is_control() => line.push(' '),
-            c => line.push(c),
+            // A shell line holds no control character worth carrying.
+            c if c.is_control() => json.push(' '),
+            c => json.push(c),
         }
     }
-    format!(
-        "{{\"hooks\":{{\"PreToolUse\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{line}\"}}]}}]}}}}"
-    )
+    json.push('"');
+    json
+}
+
+/// The settings added to a worker's: the guard, a hook Claude Code runs
+/// before every tool call with the line `guard`, and the report, a hook it
+/// runs with the line `report` wherever the worker's state changes. They are
+/// added to the role's own, so a role's hooks run beside them and no role is
+/// without the guard (docs/adr/0012) — or unheard of by the worker backend,
+/// which would read a worker it has no report of off its terminal alone.
+fn added_settings(guard: &str, report: &str) -> String {
+    let guard = format!("{{\"type\":\"command\",\"command\":{}}}", json_text(guard));
+    let report = format!(
+        "{{\"type\":\"command\",\"command\":{},\"timeout\":{REPORT_TIMEOUT}}}",
+        json_text(report)
+    );
+    let mut settings = format!("{{\"hooks\":{{\"PreToolUse\":[{{\"hooks\":[{guard},{report}]}}]");
+    for event in STATE_EVENTS {
+        settings.push_str(&format!(",\"{event}\":[{{\"hooks\":[{report}]}}]"));
+    }
+    settings.push_str("}}");
+    settings
 }
 
 /// The line a terminal opened on the issue's worktree runs to start a worker
 /// in its role with the worker launch command `command`: change to the role's
 /// copy, put the stage's facts in the environment, and start the command with
 /// the worktree and the team's copy added, the user's settings left out, the
-/// guard added, and the stage's model.
+/// guard and the report added, and the stage's model.
 pub fn in_role(command: &str, start: &Start) -> String {
     let mut line = Line::new()
         .fixed("cd ")
@@ -327,7 +366,7 @@ pub fn in_role(command: &str, start: &Start) -> String {
         .fixed(" ")
         .fixed(SETTINGS)
         .fixed(" ")
-        .word(&guard_settings(start.guard));
+        .word(&added_settings(start.guard, start.report));
     if let Some(model) = start.model {
         line = line.fixed(" ").fixed(MODEL).fixed(" ").word(model);
     }
@@ -610,8 +649,18 @@ land: { by: boss, do: implement }
         assert!(name(&[], &[left.as_str(), silent.as_str()]).is_err());
     }
 
-    /// The settings that add the guard `/bin/afkconvoy guard`.
-    const GUARD: &str = r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/bin/afkconvoy guard"}]}]}}"#;
+    /// The settings that add the guard `/bin/afkconvoy guard` and the report
+    /// `tell "$HOME"`.
+    fn added() -> String {
+        let report = r#"{"type":"command","command":"tell \"$HOME\"","timeout":10}"#;
+        let mut added = format!(
+            r#"{{"hooks":{{"PreToolUse":[{{"hooks":[{{"type":"command","command":"/bin/afkconvoy guard"}},{report}]}}]"#
+        );
+        for event in STATE_EVENTS {
+            added.push_str(&format!(r#","{event}":[{{"hooks":[{report}]}}]"#));
+        }
+        added + "}}"
+    }
 
     fn start<'a>(model: Option<&'a str>) -> Start<'a> {
         Start {
@@ -620,6 +669,7 @@ land: { by: boss, do: implement }
             team_dir: "/copies/acme/team/def",
             model,
             guard: "/bin/afkconvoy guard",
+            report: r#"tell "$HOME""#,
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },
                 role: "dev",
@@ -649,7 +699,7 @@ land: { by: boss, do: implement }
              kim --yolo --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' \
              --setting-sources project --settings '"
                 .to_string()
-                + GUARD
+                + &added()
                 + "' --model 'opus'"
         );
     }
@@ -658,7 +708,7 @@ land: { by: boss, do: implement }
     fn a_stage_with_no_model_names_none() {
         let line = in_role("claude", &start(None));
         assert!(
-            line.ends_with(&format!("--setting-sources project --settings '{GUARD}'")),
+            line.ends_with(&format!("--setting-sources project --settings '{}'", added())),
             "{line}"
         );
         assert!(!line.contains("--model"), "{line}");
@@ -672,8 +722,9 @@ land: { by: boss, do: implement }
         assert!(line.ends_with("--model 'a b;c'"), "{line}");
         // Nor by Claude Code, of the line that runs the guard.
         let odd = Start { guard: "/it's \"here\"/afk\\convoy guard", ..start(None) };
-        let settings = guard_settings(odd.guard);
+        let settings = added_settings(odd.guard, odd.report);
         assert!(settings.contains(r#""command":"/it's \"here\"/afk\\convoy guard""#), "{settings}");
+        assert!(settings.contains(r#""command":"tell \"$HOME\"","timeout":10"#), "{settings}");
         assert!(in_role("claude", &odd).ends_with(&format!("{SETTINGS} {}", quoted(&settings))));
     }
 

@@ -65,7 +65,9 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     };
     let (record, comments) = join_record(fleet, pr)?;
     let progress = progress(&worktree, &fleet.base_tip()?)?;
-    let route = join_route(state, &progress, worktree.nudged()?, record.restarted, fleet.now);
+    let handed = worktree.handed(record.restarted)?;
+    let route =
+        join_route(state, &progress, worktree.nudged()?, record.restarted, handed, fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, record, comments, route }))))
 }
 

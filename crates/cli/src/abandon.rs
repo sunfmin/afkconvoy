@@ -62,7 +62,8 @@ pub fn stopped_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn) -> Result<
 fn route(fleet: &Fleet, stopped: &StoppedOn) -> Result<TrainRoute> {
     let progress = progress(stopped.worktree, &stopped.train.base)?;
     let nudged = stopped.worktree.nudged()?;
-    Ok(train_route(stopped.state, &progress, nudged, stopped.told_at, fleet.now))
+    let handed = stopped.worktree.handed(stopped.told_at)?;
+    Ok(train_route(stopped.state, &progress, nudged, handed, fleet.now))
 }
 
 /// Gives the train up with nothing landed: its refs deleted — only while the

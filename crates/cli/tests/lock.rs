@@ -98,13 +98,14 @@ fn running_workers_are_left_alone_and_what_they_declared_is_acted_on_once_the_lo
     let typed = world.orca_calls().iter().any(|call| common::asked(call) == "terminal send");
     assert!(typed, "the lock issue's worker was handed its brief");
 
-    // Still locked: only the lock issue's worker is asked after (silent, with
-    // no clock to read, it is nudged), and #9 stays where it is.
-    assert_eq!(did(&tick(&world, 1480)), ["judge 7 nudged", "heartbeat done"]);
+    // Still locked: only the lock issue's worker is asked after (silent a
+    // grace period from its start, it is nudged), and #9 stays where it is.
+    assert_eq!(did(&tick(&world, 1480)), ["judge 7 nothing", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 1690)), ["judge 7 nudged", "heartbeat done"]);
 
     // The fix landed: #7 is closed, and the next tick resumes everything.
     world.close_issue(7);
-    let resumed = tick(&world, 1570);
+    let resumed = tick(&world, 1780);
     assert_eq!(resumed["locks"], json!([]));
     let did = did(&resumed);
     assert_eq!(did[..2], ["settle 7 done", "judge 3 done"], "{did:?}");
