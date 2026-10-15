@@ -43,9 +43,11 @@ WHAT IT ANSWERS
     tick 4: advanced #12 → land · holding 1/3 · frontier 0 · next now
     tick 5: dispatched #12 · holding 2/3 · frontier 0 · next in 90s
     tick 6: escalated #15 (workup: consult let it through) · holding 1/3 · frontier 0 · next now
+    tick 7: dispatched #71 · skipped #68 (blocked by #71) · holding 2/3 · frontier 0 · next in 90s
 
   A tick's line names what it did — escalated, settled, ended, advanced, unlocked, reclaimed,
-  dispatched, nudged, continued, restarted, tended the train, abandoned the train — then
+  dispatched, skipped (a frontier issue found blocked just before its claim, with what
+  blocks it), nudged, continued, restarted, tended the train, abandoned the train — then
   the claims held out of the concurrency, and the frontier left. The claims a fleet
   lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left
   alone`), and so are those whose worker declared a verdict not acted on yet

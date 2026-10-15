@@ -95,6 +95,10 @@ pub enum Outcome {
     /// A peer holds the issue — it won the race, or its heartbeat came back:
     /// nothing was started, and no slot was taken.
     Lost,
+    /// `Dispatch` read an open blocker on the issue just before its claim —
+    /// one added since the rebuild: nothing was claimed or started, and no
+    /// slot was taken.
+    Blocked,
     /// It failed. Whatever claim it was about is still held.
     Failed,
 }
@@ -376,7 +380,7 @@ where
             let outcome = carry_out(step);
             did.push((step, outcome));
             // A start that failed after its claim was won still holds the claim.
-            if outcome != Outcome::Lost {
+            if outcome != Outcome::Lost && outcome != Outcome::Blocked {
                 slots.take();
             }
         }
@@ -592,7 +596,7 @@ where
         let outcome = carry_out(*step);
         did.push((*step, outcome));
         // A start that failed after its claim was won still holds the claim.
-        if outcome != Outcome::Lost {
+        if outcome != Outcome::Lost && outcome != Outcome::Blocked {
             slots.take();
         }
     }
@@ -1189,6 +1193,27 @@ mod tests {
             [Dispatch { issue: 5 }, Dispatch { issue: 6 }, Dispatch { issue: 7 }, Heartbeat]
         );
         assert_eq!((pass.held, pass.frontier_remaining), (2, 1));
+    }
+
+    #[test]
+    fn an_issue_found_blocked_before_its_claim_gives_its_slot_to_the_next_frontier_issue() {
+        // #68–#70 gained a blocker after the rebuild; #71, what blocks them, did not
+        let set = set(&[68, 69, 70, 71], &[]);
+        let pass = run_pass(&set, 3, 0, |step| match step {
+            Dispatch { issue: 68..=70 } => Blocked,
+            _ => Done,
+        });
+        assert_eq!(
+            acts(&pass),
+            [
+                (Dispatch { issue: 68 }, Blocked),
+                (Dispatch { issue: 69 }, Blocked),
+                (Dispatch { issue: 70 }, Blocked),
+                (Dispatch { issue: 71 }, Done),
+                (Heartbeat, Done),
+            ]
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (1, 0));
     }
 
     #[test]

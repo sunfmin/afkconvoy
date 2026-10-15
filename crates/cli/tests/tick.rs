@@ -189,6 +189,24 @@ fn run_ticks_until_stopped_and_says_what_each_tick_did() {
 }
 
 #[test]
+fn a_tick_says_which_issue_it_skipped_for_a_blocker_read_after_its_rebuild() {
+    let world = backlog(&[3, 5]);
+    // the rebuild reads no blocker of #3: GitHub records it as it answers the dispatch
+    world.with_gh(|gh| {
+        gh["edges"]["3"] = json!([5]);
+        gh["issues"][0]["blocked_by"] = json!(0);
+    });
+    let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+    assert_eq!(
+        lines,
+        [
+            "tick 1: dispatched #5 · skipped #3 (blocked by #5) · holding 1/2 · frontier 0 · next in 90s"
+        ]
+    );
+    assert_eq!(world.claims(), alpha(&[5]));
+}
+
+#[test]
 fn run_goes_idle_after_three_empty_ticks() {
     let world = World::new();
     let (lines, _) = run(&world, &["--ticks", "4"]);

@@ -58,6 +58,8 @@ pub enum StartFrom {
 ///    worktree, branch, terminal}   and, in a bound repo, the `stage` it performs
 ///                                  — `land` for the join that follows the last
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
+///   {"started": false, "skipped": "blocked", "blocked_by": [n…]}
+///                                  an open blocker, read just before the claim
 ///
 /// A step that fails is an error with the claim still held: the next tick
 /// finds a claim with no worker and continues it. Nothing is torn down unless
@@ -102,6 +104,14 @@ pub fn dispatch(
     for step in dispatch_steps(held, by_hand) {
         match step {
             DispatchStep::Claim => {
+                // A tick's rebuild can be minutes older than this: a blocker
+                // added since holds the issue back all the same.
+                let mut blockers = fleet.gh.open_blockers(number)?;
+                if !blockers.is_empty() {
+                    blockers.sort_unstable();
+                    return Ok(json!({"issue": number, "started": false, "skipped": "blocked",
+                        "blocked_by": blockers}));
+                }
                 let claim = take(&fleet.repo, &mut fleet.scan, me, number, Take::Fresh)?;
                 if claim["won"] != true {
                     return Ok(json!({"issue": number, "started": false, "claim": "lost",

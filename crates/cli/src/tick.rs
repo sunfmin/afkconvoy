@@ -52,6 +52,9 @@ pub struct Ticked {
     /// The issues the pass escalated, each with why in a few words
     /// (`Fleet::escalated`): whichever step did.
     escalated: Vec<(u64, String)>,
+    /// The issues a dispatch skipped, each with the open blockers it read
+    /// just before the claim.
+    blocked: Vec<(u64, Vec<u64>)>,
     /// The config's `concurrency`.
     concurrency: usize,
     /// The claims the pass could hold as it ended (`Pass::bound`).
@@ -70,11 +73,12 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
     let (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
     let bound = set.bound(fleet.config.concurrency());
     let mut failures = vec![];
+    let mut blocked = vec![];
     let read = Read { set: &set, flows: &flows };
     let pass = run_pass(&set, bound, set.held(), |step| {
         let made = match stop.told() {
             true => Err(anyhow!("this run was told to stop before it made the step")),
-            false => carry_out(&mut fleet, me, agent, &read, step),
+            false => carry_out(&mut fleet, (me, agent), &read, step, &mut blocked),
         };
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
@@ -86,7 +90,7 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
     });
     let escalated = std::mem::take(&mut fleet.escalated);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
-    let ticked = Ticked { pass, failures, escalated, concurrency, bound, set, flows };
+    let ticked = Ticked { pass, failures, escalated, blocked, concurrency, bound, set, flows };
     Ok((ticked, fleet))
 }
 
@@ -97,12 +101,14 @@ struct Read<'r> {
     flows: &'r Flows,
 }
 
+/// Carries out `step` → how it ended. A dispatch that read an open blocker
+/// adds the issue and its blockers to `blocked`.
 fn carry_out(
     fleet: &mut Fleet,
-    me: &Me,
-    agent: &Agent,
+    (me, agent): (&Me, &Agent),
     read: &Read,
     step: TickStep,
+    blocked: &mut Vec<(u64, Vec<u64>)>,
 ) -> Result<Outcome> {
     match step {
         TickStep::Settle { issue } => {
@@ -146,6 +152,10 @@ fn carry_out(
         TickStep::Reclaim { issue } => reclaim(fleet, me, agent, read.flows, issue),
         TickStep::Dispatch { issue } => {
             let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            if let Some(blockers) = started["blocked_by"].as_array() {
+                blocked.push((issue, blockers.iter().filter_map(Value::as_u64).collect()));
+                return Ok(Outcome::Blocked);
+            }
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
         TickStep::SlowGate => match &read.set.slow_gate {
@@ -229,6 +239,12 @@ impl Ticked {
         self.escalated.iter().find(|(number, _)| *number == issue).map(|(_, why)| why.as_str())
     }
 
+    /// The open blockers a dispatch of `issue` read just before its claim,
+    /// when it skipped the issue for them.
+    fn blocked_by(&self, issue: u64) -> Option<&[u64]> {
+        self.blocked.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
+    }
+
     fn named(&self, step: TickStep) -> Value {
         let (word, issue) = words(step);
         let mut named = json!({"do": word, "issue": issue.or(self.proposal(step))});
@@ -298,6 +314,7 @@ impl Ticked {
                     Outcome::Abandoned => "abandoned",
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
+                    Outcome::Blocked => "blocked",
                     Outcome::Failed => "failed",
                 };
                 let mut did = self.named(*step);
@@ -309,6 +326,11 @@ impl Ticked {
                 }
                 if let Some(why) = self.escalated_by(*step, *outcome) {
                     did["escalated"] = json!(why);
+                }
+                if let (TickStep::Dispatch { issue }, Outcome::Blocked) = (step, outcome)
+                    && let Some(blockers) = self.blocked_by(*issue)
+                {
+                    did["blocked_by"] = json!(blockers);
                 }
                 did
             })
@@ -370,6 +392,17 @@ impl Ticked {
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
+        }
+        let skipped: Vec<String> = self
+            .blocked
+            .iter()
+            .map(|(issue, by)| {
+                let by: Vec<String> = by.iter().map(|blocker| format!("#{blocker}")).collect();
+                format!("#{issue} (blocked by {})", by.join(", "))
+            })
+            .collect();
+        if !skipped.is_empty() {
+            parts.push(format!("skipped {}", skipped.join(", ")));
         }
         for (verb, kept) in [
             ("nudged", Outcome::Nudged),
