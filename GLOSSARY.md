@@ -171,7 +171,7 @@ _Avoid_: notification, callback, done signal
 ### Claims
 
 **Claim**:
-The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance.
+The atomic lock marking one issue as owned by one fleet instance. Its creation succeeds for exactly one instance. It takes one slot of the `concurrency` while its worker is at work, and none once a verdict is declared under it: it is still held until that verdict is acted on, and a worker started under it again takes a slot as any start does.
 _Avoid_: assignee, assignment, lock (the fleet lock)
 
 **Heartbeat**:
