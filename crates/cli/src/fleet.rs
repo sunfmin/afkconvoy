@@ -6,10 +6,12 @@
 //! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
 //! grows with the issues in flight.
 
-use afkconvoy_core::claims::InstanceId;
+use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::plan::{Observed, WorkingSet, assemble};
+use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::train::on_train;
+use afkconvoy_core::verdict::latest_verdict;
 use anyhow::{Result, anyhow};
 use std::thread;
 
@@ -17,6 +19,7 @@ use crate::claims::Scan;
 use crate::config;
 use crate::gh::{GitHub, Open, beside};
 use crate::git::{Listing, Repo};
+use crate::orca::{Source, Worktree};
 use crate::patrol;
 use crate::precedent;
 use crate::settle::cut_landing_of;
@@ -99,6 +102,18 @@ impl Fleet {
             }
         }
         let joined: Vec<u64> = on_train(&joins, prs).iter().map(|join| join.issue).collect();
+        let mut declared = vec![];
+        for claim in
+            self.scan.claims.iter().filter(|claim| me.is_some_and(|me| claim.is_held_by(me)))
+        {
+            let under = match &self.config.bound {
+                Some(_) => stages.declared(claim.number, &claim.id),
+                None => self.declared_since(open, claim),
+            };
+            if under {
+                declared.push(claim.number);
+            }
+        }
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
         let seen = Observed {
@@ -109,6 +124,7 @@ impl Fleet {
             closed: &closed,
             joined: &joined,
             landed: &landed,
+            declared: &declared,
             due: &stages.due(prs),
             landing: &stages.landing(&self.scan.claims),
             begun: &stages.begun(),
@@ -120,5 +136,29 @@ impl Fleet {
         };
         let set = assemble(&seen, me, self.now, &self.config);
         Ok((set, stages))
+    }
+
+    /// Whether the worker of `claim`, in an unbound repo, declared a verdict
+    /// that stands: the latest on the issue, written since the claim was
+    /// created — one from an earlier claim is not its own — and not answered
+    /// by a worker started on the issue again (`stopped::standing_verdict`).
+    /// What cannot be read says no: the claim then takes a slot.
+    fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
+        let comments = open.issues.comments(claim.number);
+        let Some(verdict) = latest_verdict(comments.iter().map(|c| c.body.as_str())) else {
+            return false;
+        };
+        let Some(said) = comments.get(verdict.comment) else { return false };
+        let since = said.at.zip(claim.since).is_some_and(|(at, since)| at >= since);
+        // Only a verdict that is the claim's own is looked for in its worktree.
+        let answered = || -> Option<Option<String>> {
+            let worktree =
+                Worktree::of_issue(&Source::of(&self.repo).ok()?, claim.number).ok()??;
+            worktree.answered().ok()
+        };
+        since
+            && answered().is_some_and(|answered| {
+                standing_verdict(Some(verdict), Some(&said.url), answered.as_deref()).is_some()
+            })
     }
 }

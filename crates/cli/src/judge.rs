@@ -352,10 +352,19 @@ pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
 
 /// The tick's look at one PR-less claim of mine: a worker that is gone is
 /// continued, one that stopped is routed (`stopped::route`) → `Done` when that
-/// ended the claim.
-pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Outcome> {
+/// ended the claim. `start` false: no worker is started under the claim — its
+/// worker declared, and no slot is free — and what would start one is left
+/// for a later tick, as `Nothing`.
+pub fn judge(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    issue: u64,
+    start: bool,
+) -> Result<Outcome> {
     let found = match ask_after(fleet, me, issue)? {
         None | Some(Asked::Settled(Route::Leave)) => return Ok(Outcome::Nothing),
+        Some(Asked::Settled(_)) if !start => return Ok(Outcome::Nothing),
         Some(Asked::Settled(_)) => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
@@ -367,6 +376,7 @@ pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
     let said = said.as_deref();
     let reason = match route {
         Route::Leave => return Ok(Outcome::Nothing),
+        Route::Continue if !start => return Ok(Outcome::Nothing),
         Route::Continue => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
@@ -386,6 +396,7 @@ pub fn judge(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
                     park_claim(fleet, &claim, &parkable, Some(&worktree), workless.as_ref())?;
                     return Ok(Outcome::Done);
                 }
+                Blocked::Redispatch if !start => return Ok(Outcome::Nothing),
                 Blocked::Redispatch => {
                     // Every blocker closed: the issue is worked again, from what is here.
                     dispatch(fleet, me, agent, issue, StartFrom::Auto)?;

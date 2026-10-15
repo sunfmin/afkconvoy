@@ -52,7 +52,9 @@ pub struct Ticked {
     /// The issues the pass escalated, each with why in a few words
     /// (`Fleet::escalated`): whichever step did.
     escalated: Vec<(u64, String)>,
-    /// The claims the pass could hold (`WorkingSet::bound`).
+    /// The config's `concurrency`.
+    concurrency: usize,
+    /// The claims the pass could hold as it ended (`Pass::bound`).
     bound: usize,
     /// What its rebuild read: the pass was made over these.
     set: WorkingSet,
@@ -83,7 +85,8 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
         })
     });
     let escalated = std::mem::take(&mut fleet.escalated);
-    let ticked = Ticked { pass, failures, escalated, bound, set, flows };
+    let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
+    let ticked = Ticked { pass, failures, escalated, concurrency, bound, set, flows };
     Ok((ticked, fleet))
 }
 
@@ -107,7 +110,7 @@ fn carry_out(
             Ok(Outcome::Done)
         }
         TickStep::TendTrain => tend_train(fleet, me, agent),
-        TickStep::Judge { issue } => judge(fleet, me, agent, issue),
+        TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
         TickStep::Watch { issue } => watch(fleet, me, agent, issue),
         TickStep::Advance { issue } => advance(fleet, me, agent, read.flows, issue),
         TickStep::Escalate { issue } => {
@@ -162,7 +165,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
     match step {
         TickStep::Settle { issue } => ("settle", Some(issue)),
         TickStep::TendTrain => ("tend_train", None),
-        TickStep::Judge { issue } => ("judge", Some(issue)),
+        TickStep::Judge { issue, .. } => ("judge", Some(issue)),
         TickStep::Watch { issue } => ("watch", Some(issue)),
         TickStep::Advance { issue } => ("advance", Some(issue)),
         TickStep::Escalate { issue } => ("escalate", Some(issue)),
@@ -239,8 +242,16 @@ impl Ticked {
     /// pass did since.
     pub fn panel(&self, fleet: &Fleet, me: &Me) -> Panel {
         let mut panel = panel::read(fleet, Some(me), &self.set, &self.flows, &self.pass.did);
-        panel.held = self.pass.held;
+        panel.declared = self.declared().min(self.pass.held);
+        panel.held = self.pass.held - panel.declared;
+        panel.bound = self.bound - panel.declared;
         panel
+    }
+
+    /// The claims whose worker declared a verdict that the pass left held:
+    /// what its bound was raised by and still is (`Pass::bound`).
+    fn declared(&self) -> usize {
+        self.bound.saturating_sub(self.concurrency.saturating_add(self.set.left_alone()))
     }
 
     /// Whether a step of the tick failed on a read GitHub could not be
@@ -251,16 +262,21 @@ impl Ticked {
 
     /// The claims held, as the line says them: those that take a slot against
     /// the `concurrency` they are held under, then the ones a fleet lock has
-    /// the tick leave alone, which take none, then those past the bound — a
+    /// the tick leave alone and those whose worker declared a verdict not
+    /// acted on yet, which take none, then those past the bound — a
     /// start takes every claim stamped with its host, whatever the bound. So
     /// the first never shows more held than its bound.
     fn holding(&self) -> Vec<String> {
-        let left_alone = self.set.left_alone().min(self.pass.held);
-        let concurrency = self.bound.saturating_sub(self.set.left_alone());
-        let taking = self.pass.held - left_alone;
+        let (held, concurrency) = (self.pass.held, self.concurrency);
+        let left_alone = self.set.left_alone().min(held);
+        let declared = self.declared().min(held - left_alone);
+        let taking = held - left_alone - declared;
         let mut parts = vec![format!("holding {}/{concurrency}", taking.min(concurrency))];
         if left_alone > 0 {
             parts.push(format!("{left_alone} left alone"));
+        }
+        if declared > 0 {
+            parts.push(format!("{declared} declared"));
         }
         if taking > concurrency {
             parts.push(format!("{} past the bound", taking - concurrency));

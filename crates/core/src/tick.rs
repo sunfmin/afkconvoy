@@ -22,8 +22,10 @@ pub enum TickStep {
     /// The train worker holds no claim and takes no slot.
     TendTrain,
     /// Ask after the worker of a claim of mine with no PR, and settle what it
-    /// declared when it stopped.
-    Judge { issue: u64 },
+    /// declared when it stopped. `start`: whether a worker may be started
+    /// under the claim again — false only for a claim whose worker declared,
+    /// which takes no slot, while no slot is free.
+    Judge { issue: u64, start: bool },
     /// Ask after the worker of a claim of mine whose PR is open and not on the
     /// train yet.
     Watch { issue: u64 },
@@ -128,9 +130,31 @@ impl Slots {
         self.held -= 1;
     }
 
+    /// A claim that took no slot ended: it is held no more, and the bound
+    /// raised for it falls with it.
+    #[spec(fn(self: &mut Self[@s]) requires s.held > 0 && s.limit > 0
+        ensures self: Self[s.held - 1, s.limit - 1])]
+    fn drop_declared(&mut self) {
+        self.held -= 1;
+        self.limit -= 1;
+    }
+
+    /// A worker was started again under a claim that took no slot: it takes
+    /// one now, so the bound raised for it falls. Only into a free slot.
+    #[spec(fn(self: &mut Self[@s]) requires s.held < s.limit
+        ensures self: Self[s.held, s.limit - 1])]
+    fn restart_declared(&mut self) {
+        self.limit -= 1;
+    }
+
     #[spec(fn(&Slots[@s]) -> usize[s.held])]
     fn held(&self) -> usize {
         self.held
+    }
+
+    #[spec(fn(&Slots[@s]) -> usize[s.limit])]
+    fn limit(&self) -> usize {
+        self.limit
     }
 }
 
@@ -143,6 +167,10 @@ pub struct Pass {
     /// The claims held as the pass ended.
     #[field(usize[held])]
     pub held: usize,
+    /// The claims it could hold as it ended: the bound it was run under, less
+    /// one for each claim whose worker declared that it ended or started a
+    /// worker under again.
+    pub bound: usize,
     /// Frontier issues the pass left undispatched.
     pub frontier_remaining: usize,
 }
@@ -237,13 +265,15 @@ where
     F: FnMut(TickStep) -> Outcome,
 {
     let mut did = Vec::new();
-    let held = end_claims(set, Sweep::Landed, concurrency, held, &mut did, &mut carry_out);
+    let slots = Slots::new(concurrency, held);
+    let slots = end_claims(set, Sweep::Landed, slots, &mut did, &mut carry_out);
     if set.mine.iter().any(|mine| mine.status == Status::Joined) {
         let step = TickStep::TendTrain;
         did.push((step, carry_out(step)));
     }
-    let held = end_claims(set, Sweep::Stopped, concurrency, held, &mut did, &mut carry_out);
-    let held = end_patrols(set, held, &mut did, &mut carry_out);
+    let slots = end_claims(set, Sweep::Stopped, slots, &mut did, &mut carry_out);
+    let concurrency = slots.limit();
+    let held = end_patrols(set, slots.held(), &mut did, &mut carry_out);
     let held = end_proposals(set, held, &mut did, &mut carry_out);
     for lock in &set.stale_closed {
         let step = TickStep::Unlock { issue: lock.number };
@@ -267,7 +297,7 @@ where
         did.push((step, carry_out(step)));
     }
     let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
-    Pass { did, held, frontier_remaining: left }
+    Pass { did, held, bound: concurrency, frontier_remaining: left }
 }
 
 /// Which of my claims one sweep of a pass looks at.
@@ -281,10 +311,11 @@ enum Sweep {
 }
 
 /// The step `sweep` takes for a claim of mine in `status`, when it takes one.
-fn ending_step(sweep: Sweep, issue: u64, status: Status) -> Option<TickStep> {
+/// `start`: whether a worker may be started under it again (`TickStep::Judge`).
+fn ending_step(sweep: Sweep, issue: u64, status: Status, start: bool) -> Option<TickStep> {
     match (sweep, status) {
         (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
-        (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue }),
+        (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue, start }),
         (Sweep::Stopped, Status::Joining) => Some(TickStep::Watch { issue }),
         (Sweep::Stopped, Status::AtStage) => Some(TickStep::Advance { issue }),
         _ => None,
@@ -292,39 +323,54 @@ fn ending_step(sweep: Sweep, issue: u64, status: Status) -> Option<TickStep> {
 }
 
 /// Carries out the step that may end each claim of mine `sweep` looks at →
-/// the claims still held, under a bound of `concurrency`. A claim handed on
+/// the claims still held, and the bound left. A claim handed on
 /// with a worker due on its issue has that worker started into the slot it
 /// freed, when the bound leaves that slot free: ahead of everything else the
 /// pass takes a slot for, and of an issue that was never started.
-#[spec(fn(set: &WorkingSet, sweep: Sweep, concurrency: usize, held: usize,
+///
+/// A claim whose worker declared took no slot: the bound was raised for it
+/// (`WorkingSet::bound`), and falls as it ends. A worker is started under it
+/// again — its own, or the one due on its issue — only into a free slot,
+/// which it then takes.
+#[spec(fn(set: &WorkingSet, sweep: Sweep, slots: Slots[@s],
         did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
-    -> usize{after: after <= held})]
+    -> Slots{after: after.held <= s.held && after.limit <= s.limit})]
 fn end_claims<F>(
     set: &WorkingSet,
     sweep: Sweep,
-    concurrency: usize,
-    held: usize,
+    mut slots: Slots,
     did: &mut Vec<(TickStep, Outcome)>,
     carry_out: &mut F,
-) -> usize
+) -> Slots
 where
     F: FnMut(TickStep) -> Outcome,
 {
-    let mut slots = Slots::new(concurrency, held);
     for mine in &set.mine {
+        // What stays true on every turn, which Flux does not find alone.
+        qualifier!(before: int, now: int; now <= before);
         if sweep == Sweep::Stopped && set.locked_out(mine.number) {
             continue;
         }
-        let Some(step) = ending_step(sweep, mine.number, mine.status) else {
+        let start = !mine.declared || slots.has_free();
+        let Some(step) = ending_step(sweep, mine.number, mine.status, start) else {
             continue;
         };
         let outcome = carry_out(step);
         did.push((step, outcome));
+        if mine.declared && outcome == Outcome::Continued && slots.has_free() {
+            slots.restart_declared();
+        }
         let ended = outcome == Outcome::Done || outcome == Outcome::HandedOn;
         if !ended || slots.held() == 0 {
             continue;
         }
-        slots.free();
+        if !mine.declared {
+            slots.free();
+        } else if slots.limit() > 0 {
+            slots.drop_declared();
+        } else {
+            continue;
+        }
         if outcome == Outcome::HandedOn && mine.due.is_some() && slots.has_free() {
             let step = TickStep::Dispatch { issue: mine.number };
             let outcome = carry_out(step);
@@ -335,7 +381,7 @@ where
             }
         }
     }
-    slots.held()
+    slots
 }
 
 /// Carries out the step that ends each patrol run that may be over → the
@@ -405,7 +451,7 @@ fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
     for (step, how) in did {
         let about = match step {
             TickStep::Settle { issue }
-            | TickStep::Judge { issue }
+            | TickStep::Judge { issue, .. }
             | TickStep::Watch { issue }
             | TickStep::Advance { issue }
             | TickStep::Dispatch { issue } => Some(*issue),
@@ -610,6 +656,14 @@ mod rejected {
         let mut slots = Slots::new(concurrency, held);
         slots.take();
     }
+
+    /// A worker started again under a claim whose worker declared, with no
+    /// look at the bound.
+    #[should_fail]
+    fn a_declared_claim_restarted_past_the_bound(concurrency: usize, held: usize) {
+        let mut slots = Slots::new(concurrency, held);
+        slots.restart_declared();
+    }
 }
 
 /// What callers may rely on: each is checked by Flux, and stops passing when
@@ -666,7 +720,14 @@ mod tests {
             waiting_on_human: vec![],
             mine: mine
                 .iter()
-                .map(|&(number, status)| Mine { number, title: None, status, pr: None, due: None })
+                .map(|&(number, status)| Mine {
+                    number,
+                    title: None,
+                    status,
+                    pr: None,
+                    due: None,
+                    declared: false,
+                })
                 .collect(),
             peer_live: vec![],
             stale: vec![],
@@ -819,7 +880,7 @@ mod tests {
         assert_eq!(
             did,
             [
-                Judge { issue: 4 },
+                Judge { issue: 4, start: true },
                 Board { issue: 4, stage: Stage::Claimed, pr: None },
                 StageLabel { issue: 4 },
                 StageLabel { issue: 9 },
@@ -905,7 +966,10 @@ mod tests {
             Advance { .. } => HandedOn,
             _ => Nothing,
         });
-        assert_eq!(steps(&full), [Advance { issue: 4 }, Judge { issue: 5 }, Heartbeat]);
+        assert_eq!(
+            steps(&full),
+            [Advance { issue: 4 }, Judge { issue: 5, start: true }, Heartbeat]
+        );
         assert_eq!(full.held, 1);
 
         // A claim that ended any other way leaves nothing to start, whatever was due…
@@ -966,7 +1030,7 @@ mod tests {
         assert_eq!(
             steps,
             [
-                Judge { issue: 1 },
+                Judge { issue: 1, start: true },
                 Unlock { issue: 8 },
                 Reclaim { issue: 3 },
                 Reclaim { issue: 6 },
@@ -1003,7 +1067,7 @@ mod tests {
             [
                 Settle { issue: 4 },
                 TendTrain,
-                Judge { issue: 7 },
+                Judge { issue: 7, start: true },
                 Reclaim { issue: 6 },
                 Dispatch { issue: 8 },
                 Heartbeat
@@ -1020,7 +1084,7 @@ mod tests {
             [
                 Settle { issue: 4 },
                 TendTrain,
-                Judge { issue: 1 },
+                Judge { issue: 1, start: true },
                 Watch { issue: 2 },
                 Advance { issue: 3 }
             ]
@@ -1047,7 +1111,15 @@ mod tests {
         // three held under a bound of one — a takeover: only the settle frees anything
         let pass = run_pass(&set, 1, 3, left_at_work);
         let steps = steps(&pass);
-        assert_eq!(steps, [Settle { issue: 7 }, Judge { issue: 1 }, Judge { issue: 5 }, Heartbeat]);
+        assert_eq!(
+            steps,
+            [
+                Settle { issue: 7 },
+                Judge { issue: 1, start: true },
+                Judge { issue: 5, start: true },
+                Heartbeat
+            ]
+        );
         assert_eq!(pass.held, 2);
     }
 
@@ -1074,7 +1146,7 @@ mod tests {
             steps,
             [
                 Settle { issue: 2 },
-                Judge { issue: 1 },
+                Judge { issue: 1, start: true },
                 Dispatch { issue: 5 },
                 Dispatch { issue: 6 },
                 Heartbeat
@@ -1128,7 +1200,13 @@ mod tests {
         let steps = steps(&pass);
         assert_eq!(
             steps,
-            [TendTrain, Judge { issue: 1 }, Watch { issue: 3 }, Dispatch { issue: 5 }, Heartbeat]
+            [
+                TendTrain,
+                Judge { issue: 1, start: true },
+                Watch { issue: 3 },
+                Dispatch { issue: 5 },
+                Heartbeat
+            ]
         );
         assert_eq!(pass.held, 3);
         let left = run_pass(&set, 3, 3, left_at_work);
@@ -1136,7 +1214,7 @@ mod tests {
             acts(&left),
             [
                 (TendTrain, Nothing),
-                (Judge { issue: 1 }, Nothing),
+                (Judge { issue: 1, start: true }, Nothing),
                 (Watch { issue: 3 }, Nothing),
                 (Heartbeat, Done)
             ]
@@ -1235,7 +1313,7 @@ mod tests {
         assert!(started.did.contains(&(Dispatch { issue: 1 }, Done)));
         assert!(!started.follow_up_due(2), "a slot is free, and nothing is left to start");
         // A claim that ended for good leaves nothing to start…
-        assert!(!only(Judge { issue: 3 }).follow_up_due(3));
+        assert!(!only(Judge { issue: 3, start: true }).follow_up_due(3));
         // …and neither does a tick that only looked, or whose step failed.
         assert!(!only(Heartbeat).follow_up_due(3));
         let failed = run_pass(&set(&[], &mine), 3, 3, |step| match step {
@@ -1312,5 +1390,100 @@ mod tests {
         }
         assert_eq!(empty_streak(3, false, 0, 1), 0, "an undispatched frontier is not quiet");
         assert_eq!(empty_streak(3, true, 0, 0), 0);
+    }
+
+    /// A set of three claims with no PR, the last of which declared.
+    fn one_declared(frontier: &[u64]) -> WorkingSet {
+        let mut set = set(frontier, &[(1, Status::NoPr), (2, Status::NoPr), (3, Status::NoPr)]);
+        set.mine[2].declared = true;
+        set
+    }
+
+    #[test]
+    fn a_claim_whose_worker_declared_takes_no_slot() {
+        let set = one_declared(&[7, 8]);
+        assert_eq!(set.declared(), 1);
+        let bound = set.bound(3);
+        assert_eq!(bound, 4, "the declared claim takes none of the three slots");
+        // Its worker is within grace: the claim is held, and one more is dispatched.
+        let pass = run_pass(&set, bound, set.held(), |_| Nothing);
+        assert_eq!(
+            steps(&pass),
+            [
+                Judge { issue: 1, start: true },
+                Judge { issue: 2, start: true },
+                Judge { issue: 3, start: true },
+                Dispatch { issue: 7 },
+                Heartbeat
+            ]
+        );
+        assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (4, 4, 1));
+    }
+
+    #[test]
+    fn a_declared_claim_that_ends_frees_no_slot_it_did_not_take() {
+        let set = one_declared(&[7, 8]);
+        let pass = run_pass(&set, set.bound(3), set.held(), |step| match step {
+            Judge { issue: 3, .. } => Done,
+            Judge { .. } => Nothing,
+            _ => Done,
+        });
+        assert_eq!(
+            steps(&pass),
+            [
+                Judge { issue: 1, start: true },
+                Judge { issue: 2, start: true },
+                Judge { issue: 3, start: true },
+                Dispatch { issue: 7 },
+                Heartbeat
+            ],
+            "routed as before; the one slot free is the one it never took"
+        );
+        assert_eq!((pass.held, pass.bound), (3, 3));
+    }
+
+    #[test]
+    fn a_worker_started_again_under_a_declared_claim_waits_for_a_free_slot() {
+        // With a slot free, the start is made, and takes it.
+        let free = one_declared(&[]);
+        let restarted = run_pass(&free, free.bound(4) - 1, 2, |step| match step {
+            Judge { issue: 3, start: true } => Continued,
+            _ => Nothing,
+        });
+        assert!(restarted.did.contains(&(Judge { issue: 3, start: true }, Continued)));
+        assert_eq!((restarted.held, restarted.bound), (2, 3));
+        // With none, it is told not to start, and the claim stays as it is.
+        let full = one_declared(&[7]);
+        let pass = run_pass(&full, full.bound(2), 3, |step| match step {
+            Judge { issue: 3, start: true } => Continued,
+            _ => Nothing,
+        });
+        assert!(pass.did.contains(&(Judge { issue: 3, start: false }, Nothing)));
+        assert_eq!((pass.held, pass.bound, pass.frontier_remaining), (3, 3, 1));
+    }
+
+    #[test]
+    fn the_worker_due_after_a_declared_claim_waits_for_a_free_slot() {
+        let mut set = set(&[7], &[(1, Status::AtStage), (2, Status::AtStage)]);
+        set.mine[1].declared = true;
+        set.mine[1].due = Some("review".to_string());
+        // At the bound: the issue is handed on, and its next worker is not started.
+        let full = run_pass(&set, set.bound(1), 2, |step| match step {
+            Advance { issue: 2 } => HandedOn,
+            _ => Nothing,
+        });
+        assert!(!dispatched(&full.did, 2));
+        assert_eq!((full.held, full.bound), (1, 1));
+        // A slot free: it is started into it, ahead of the frontier.
+        let free = run_pass(&set, set.bound(2), 2, |step| match step {
+            Advance { issue: 2 } => HandedOn,
+            Dispatch { .. } => Done,
+            _ => Nothing,
+        });
+        assert_eq!(
+            steps(&free)[..3],
+            [Advance { issue: 1 }, Advance { issue: 2 }, Dispatch { issue: 2 }]
+        );
+        assert_eq!((free.held, free.bound, free.frontier_remaining), (2, 2, 1));
     }
 }

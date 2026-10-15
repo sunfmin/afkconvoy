@@ -101,9 +101,12 @@ pub struct Panel {
     pub who: Option<(String, String)>,
     /// `None` of a panel no `run` made: it shows a rebuild, not a tick.
     pub tick: Option<Tick>,
-    /// The claims held, of the `bound` the fleet may hold.
+    /// The claims held that take a slot, of the `bound` the fleet may hold.
     pub held: usize,
     pub bound: usize,
+    /// The claims held whose worker declared a verdict not acted on yet: they
+    /// take no slot, and are counted apart.
+    pub declared: usize,
     pub locks: Vec<u64>,
     pub lanes: Vec<Lane>,
     /// The issues whose PR is on the landing train.
@@ -175,7 +178,7 @@ fn place(seen: &Seen, number: u64) -> Option<(String, Option<String>)> {
 /// `outcome`; `None` for a step that shows on no card.
 fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
     let issue = match step {
-        TickStep::Judge { issue }
+        TickStep::Judge { issue, .. }
         | TickStep::Watch { issue }
         | TickStep::Advance { issue }
         | TickStep::Escalate { issue }
@@ -209,6 +212,7 @@ impl Panel {
             tick: None,
             held: 0,
             bound: fleet.config.concurrency(),
+            declared: 0,
             locks: vec![],
             lanes: vec![],
             train: vec![],
@@ -400,8 +404,9 @@ pub fn read(
         did,
     };
     let mut panel = Panel::empty(fleet, me).show(&seen);
-    panel.held = set.mine.len();
-    panel.bound = set.bound(fleet.config.concurrency());
+    panel.declared = set.declared();
+    panel.held = set.mine.len() - panel.declared;
+    panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     panel
 }
 
@@ -551,6 +556,9 @@ pub fn render(panel: &Panel) -> String {
         repo = esc(&panel.repo),
     );
     gauge(&mut out, "Claims held", panel.held, Some(panel.bound));
+    if panel.declared > 0 {
+        gauge(&mut out, "Declared", panel.declared, None);
+    }
     gauge(&mut out, "Queued", panel.queued(), None);
     gauge(&mut out, "On the train", panel.train.len(), None);
     gauge(&mut out, "With a human", panel.with_a_human(), None);
@@ -658,6 +666,7 @@ mod tests {
             tick: None,
             held: 0,
             bound: 2,
+            declared: 0,
             locks: vec![],
             lanes: vec![],
             train: vec![Card::new(7, "<script>alert(\"x\")</script> & more")],

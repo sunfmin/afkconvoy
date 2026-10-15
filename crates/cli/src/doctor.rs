@@ -1645,8 +1645,14 @@ mod tests {
             vec![PeerClaim { number: 9, instance: Some("beta".into()), sha: "c9".into() }];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
         state.set.peer_live = vec![];
-        state.set.mine =
-            vec![Mine { number: 9, title: None, status: Status::NoPr, pr: None, due: None }];
+        state.set.mine = vec![Mine {
+            number: 9,
+            title: None,
+            status: Status::NoPr,
+            pr: None,
+            due: None,
+            declared: false,
+        }];
         state.held = vec![held(9)];
         assert_eq!(self::found(&host(), &run(vec![]), &state), []);
     }
