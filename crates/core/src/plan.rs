@@ -154,6 +154,10 @@ pub struct Mine {
     /// (`tick::Outcome::HandedOn`) leaves that worker for the pass to start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
+    /// A verdict was declared under this claim — not before it was created —
+    /// and is not acted on yet: the claim is held until it is, and takes no
+    /// slot meanwhile. Only of a claim with no PR, or at a stage.
+    pub declared: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -253,13 +257,29 @@ impl WorkingSet {
         left_alone
     }
 
+    /// How many claims of mine take no slot because a verdict was declared
+    /// under each (`Mine::declared`). Not those a fleet lock has the pass
+    /// leave alone: they are counted there.
+    pub fn declared(&self) -> usize {
+        let mut declared: usize = 0;
+        for mine in &self.mine {
+            if mine.declared && !self.locked_out(mine.number) {
+                declared = declared.saturating_add(1);
+            }
+        }
+        declared
+    }
+
     /// The claims a pass may hold, in a fleet whose config allows
-    /// `concurrency`: with a fleet lock standing, one more for each claim of
-    /// mine the pass leaves alone. Nothing reads what their workers declare
-    /// until the lock ends, so a lock issue that waited for one of their
-    /// slots would wait for the lock it is there to end.
+    /// `concurrency`: one more for each claim of mine whose worker declared a
+    /// verdict, which is held only until the grace of its worker runs out —
+    /// the frontier does not wait that out — and, with a fleet lock standing,
+    /// one more for each claim of mine the pass leaves alone. Nothing reads
+    /// what their workers declare until the lock ends, so a lock issue that
+    /// waited for one of their slots would wait for the lock it is there to
+    /// end.
     pub fn bound(&self, concurrency: usize) -> usize {
-        concurrency.saturating_add(self.left_alone())
+        concurrency.saturating_add(self.left_alone()).saturating_add(self.declared())
     }
 }
 
@@ -303,6 +323,9 @@ pub struct Observed<'a> {
     pub joined: &'a [u64],
     /// My open issues the landing train landed under my claim.
     pub landed: &'a [u64],
+    /// My claimed issues with a verdict declared under the claim and not
+    /// acted on yet (`Mine::declared`).
+    pub declared: &'a [u64],
     /// What is due on each open issue of a bound repo that carries a flow
     /// label (`role::due`). Empty in an unbound repo.
     pub due: &'a [(u64, Due<'a>)],
@@ -491,7 +514,9 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                 Call::Start(stage, Due::Worker(_)) => Some(stage),
                 _ => None,
             });
-            set.mine.push(Mine { number: claim.number, title, status, pr, due });
+            let at_work = matches!(status, Status::NoPr | Status::AtStage);
+            let declared = at_work && seen.declared.contains(&claim.number);
+            set.mine.push(Mine { number: claim.number, title, status, pr, due, declared });
             continue;
         }
         let instance = claim.owner.as_ref().map(|owner| owner.instance.clone());
@@ -603,6 +628,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            declared: &[],
             due: &[],
             landing: &[],
             begun: &[],
@@ -643,6 +669,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            declared: &[],
             due: &[],
             landing: &[],
             begun: &[],
@@ -698,6 +725,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            declared: &[],
             due: &[],
             landing: &[],
             begun: &[],
@@ -772,6 +800,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            declared: &[],
             due: &due,
             landing: &[],
             begun: &[],
@@ -880,6 +909,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            declared: &[],
             due: &due,
             landing: &[],
             begun: &[5, 6, 7, 8, 9, 10, 11, 12],
@@ -956,6 +986,7 @@ mod tests {
             closed: &[6],
             joined: &[8],
             landed: &[],
+            declared: &[],
             due: &[],
             // #10's PR is gone: its landing worker has nothing to join.
             landing: &[8, 9, 10],
@@ -1009,6 +1040,7 @@ mod tests {
             closed: &[4, 6],
             joined: &[8],
             landed: &[9],
+            declared: &[],
             due: &[],
             landing: &[],
             begun: &[],
@@ -1052,6 +1084,7 @@ mod tests {
             closed: &[],
             joined: &[],
             landed: &[],
+            declared: &[],
             due: &[],
             landing: &[],
             begun: &[],
@@ -1088,6 +1121,7 @@ mod tests {
                     closed: &[9],
                     joined: &[],
                     landed: &[],
+                    declared: &[],
                     due: &[],
                     landing: &[],
                     begun: &[],

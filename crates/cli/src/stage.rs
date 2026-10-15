@@ -455,6 +455,18 @@ impl Flows {
         }
     }
 
+    /// Whether a stage declared a verdict on issue `number` under the claim
+    /// `claim` (`History::verdict_under`): what is declared under a claim is
+    /// carried out as it is read, and ends it.
+    pub fn declared(&self, number: u64, claim: &str) -> bool {
+        let Some(issue) = self.issues.iter().find(|issue| issue.number == number) else {
+            return false;
+        };
+        let Ok(team) = self.team() else { return false };
+        let Ok(workflow) = workflow_of(team, &issue.labels) else { return false };
+        history(workflow, &issue.records).verdict_under(&issue.records, claim).is_some()
+    }
+
     /// The issues read that are among `claims` under a landing worker's
     /// claim (`stage_record::lands`).
     pub fn landing(&self, claims: &[Claim]) -> Vec<u64> {

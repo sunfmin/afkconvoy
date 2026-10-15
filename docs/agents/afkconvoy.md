@@ -8,7 +8,7 @@ base_branch: main                 # workers cut from it, open their PR against i
 gate_command: ./gate.sh           # what must pass before a PR lands
 ready_label: ready-for-agent      # an issue is dispatchable while it carries this
 epic_labels: [epic, prd]          # never dispatched
-concurrency: 3                    # claims held at once, a worker each
+concurrency: 3                    # claims at work at once, a worker each
 escalate_label: ready-for-human   # swapped in for ready_label when the fleet gives an issue up
 ```
 

@@ -173,6 +173,14 @@ WHAT TRIPS YOU UP
     workers declared is acted on by the first tick after the last lock issue closed.
     Their claims take no slot meanwhile, so `held` may pass the config's
     `concurrency` by as many; the line of `run` shows them apart, as `left alone`.
+  - A claim whose worker declared a verdict under it takes no slot either: the slot
+    is free the tick it is read, though the claim is held until the verdict is acted
+    on — once its worker has been quiet the grace period, as ever. A verdict on the
+    issue from before the claim was created is not one declared under it. So `held`
+    may pass the config's `concurrency` by as many, and the line of `run` shows them
+    apart, as `declared`. Where acting on the verdict starts a worker under the claim
+    again — every blocker closed, a gone worker continued — that start waits for a
+    free slot as any dispatch does, and is made by a later tick while none is free.
   - What a closed lock explains is run again, not carried out. In a bound repo, a stage
     whose own worker declared `escalate` before the lock closed and was not acted on
     since — and one whose worker stayed silent past a nudge sent before it closed — is

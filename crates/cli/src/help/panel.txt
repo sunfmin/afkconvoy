@@ -40,7 +40,9 @@ WHAT IT ANSWERS
   Not a JSON object: one HTML document on stdout, complete in itself, with no address
   in it that a browser would fetch. The same fleet state gives the same document.
 
-    Claims held    the claims of `--instance`, of the concurrency
+    Claims held    the claims of `--instance` that take a slot, of the concurrency
+    Declared       shown while there are any: the claims whose worker declared a
+                   verdict not acted on yet, which take no slot
     a lane         one per workflow; an unbound repo has one, `backlog`, with the two
                    stages `work` and `land`
     a stage        the number in its stop is the workers at it; under it the issues at

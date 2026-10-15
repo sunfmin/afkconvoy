@@ -50,7 +50,8 @@ WHAT IT ANSWERS
   blocks it), nudged, continued, restarted, tended the train, abandoned the train — then
   the claims held out of the concurrency, and the frontier left. The claims a fleet
   lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left
-  alone`), as are those a start took past the bound (`holding 3/3 · 1 past the bound`). A step that failed is
+  alone`), and so are those whose worker declared a verdict not acted on yet
+  (`holding 3/3 · 1 declared`), as are those a start took past the bound (`holding 3/3 · 1 past the bound`). A step that failed is
   in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as
   `tick N: FAILED: <why>`; the loop goes on either way. One cause that stopped several
   steps is said once: `FAILED 7 steps: <why>`.

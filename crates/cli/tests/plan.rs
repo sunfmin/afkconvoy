@@ -66,9 +66,9 @@ fn plan_assembles_the_working_set() {
     assert_eq!(
         plan["mine"],
         json!([
-            {"number": 1, "title": "issue 1", "status": "no_pr", "pr": null},
-            {"number": 4, "title": "issue 4", "status": "joining", "pr": 40},
-            {"number": 6, "title": null, "status": "closed", "pr": null},
+            {"number": 1, "title": "issue 1", "status": "no_pr", "pr": null, "declared": false},
+            {"number": 4, "title": "issue 4", "status": "joining", "pr": 40, "declared": false},
+            {"number": 6, "title": null, "status": "closed", "pr": null, "declared": false},
         ])
     );
     assert_eq!(numbers(&plan["peer_live"]), [2]);

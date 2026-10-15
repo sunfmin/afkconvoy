@@ -58,7 +58,9 @@ WHAT IT ANSWERS
                    that is still open, and the report of a patrol's failed run
     escalating     in a bound repo, when there are any: the unclaimed issues a tick
                    hands to a human, with why: {number, title, reason}
-    mine           the claims of `--instance`: {number, title, status, pr} — in a bound
+    mine           the claims of `--instance`: {number, title, status, pr, declared} —
+                   `declared` is true while a verdict declared under the claim waits to
+                   be acted on: the claim takes no slot meanwhile. In a bound
                    repo with `due`, the stage a worker is to be started on once the
                    claim's stage has declared, where a role performs one. status is
                    no_pr, joining, joined, landed or closed — in a bound repo at_stage,
@@ -140,6 +142,9 @@ WHAT TRIPS YOU UP
     still going takes one slot of `concurrency`, like a claim on an issue.
   - With a lock standing, `free_slots` counts as free the slot of every claim of
     `--instance` the lock leaves alone: a lock issue does not wait for them.
+  - `free_slots` counts as free the slot of every claim of `--instance` that is
+    `declared`: `mine` may hold more claims than the concurrency, and the frontier
+    does not wait out the grace period of a worker that already declared.
   - "Changes nothing" is about fleet state. When it probes it still pushes to the
     remote, and deletes there: it needs push access, and it is not a read-only command.
   - A slow gate is read off the recorded gate runs the remote still has: a record is
