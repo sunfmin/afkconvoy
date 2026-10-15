@@ -25,14 +25,16 @@ WHAT IT ANSWERS
                         judge, watch, advance, escalate, end_patrol, patrol,
                         end_proposal, propose, unlock, reclaim, dispatch, slow_gate,
                         board, stage_label or heartbeat; outcome is done, nudged, continued,
-                        restarted, abandoned, nothing, lost or failed. A step on a
+                        restarted, abandoned, nothing, lost, blocked or failed. A step on a
                         patrol has a null issue and names it: {do, issue, patrol,
                         outcome}. A step on the proposal of a precedent names the
                         issue that was ruled on. An `advance` that read a verdict and
                         left the issue at a stage names it: {do, issue, outcome,
                         stage} — `land` once the last stage passed to the landing train.
                         A step that escalated its issue says why, in a few words:
-                        {do, issue, outcome, escalated}
+                        {do, issue, outcome, escalated}. A `dispatch` that found
+                        an open blocker says which: {do, issue, outcome: "blocked",
+                        blocked_by}
     errors              each step that failed: {do, issue, error}, with `patrol` as
                         in `did` — and `see`, where a help topic explains what
                         refused it: the command that prints the topic
@@ -63,6 +65,12 @@ WHAT TRIPS YOU UP
     everything else the tick takes a slot for. Only a fleet over its `concurrency`
     has no slot for it: the issue is then on the frontier of the tick after, ahead
     of the issues no stage has declared on yet.
+  - A dispatch reads the issue's blockers once more, just before its claim: the
+    rebuild can be minutes older (settling and tending the train run in between), and
+    a blocker added since holds the issue back. Nothing is claimed, no worker starts
+    and no status board is shown; the step says `blocked`, the line `skipped #68
+    (blocked by #71)`, and the slot it would have taken goes to the next issue on the
+    frontier, in the same tick. The rebuild's own requests are as many as ever.
   - The last stage is different: the tick after a `pass` that leads to `land` starts a
     worker in the workflow's landing role, which gates the PR and joins the landing
     train; a `pass` to `land` with no open PR to join is handed to a human. A consult

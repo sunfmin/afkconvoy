@@ -231,3 +231,69 @@ fn the_branch_is_recorded_once_however_often_it_is_asked() {
     dispatch(&world, "7").ok();
     assert_eq!(world.comments(7).len(), 1);
 }
+
+#[test]
+fn an_open_blocker_read_before_the_claim_claims_and_starts_nothing() {
+    let world = ready_world();
+    world.issue(71, &["bug"]);
+    world.issue(72, &["bug"]);
+    world.with_gh(|gh| gh["edges"]["7"] = json!([72, 71]));
+    let skipped = dispatch(&world, "7").ok();
+    assert_eq!(
+        skipped,
+        json!({"issue": 7, "started": false, "skipped": "blocked", "blocked_by": [71, 72]})
+    );
+    assert_eq!(world.claims(), [] as [(u64, String); 0]);
+    assert_eq!(world.orca_calls(), [] as [Vec<String>; 0]);
+    assert_eq!(world.comments(7), [] as [String; 0]);
+
+    // a blocker that closed holds nothing back
+    world.close(71, "completed");
+    world.close(72, "completed");
+    assert_eq!(dispatch(&world, "7").ok()["started"], true);
+}
+
+#[test]
+fn a_blocker_added_after_the_rebuild_gives_the_slot_to_the_next_frontier_issue() {
+    let world = World::new();
+    for n in [68, 69, 70, 71] {
+        world.issue(n, &["ready-for-agent"]);
+    }
+    // the rebuild reads no blocker of #68–#70: GitHub records them as it answers the dispatch
+    world.with_gh(|gh| {
+        for n in ["68", "69", "70"] {
+            gh["edges"][n] = json!([71]);
+        }
+        for row in gh["issues"].as_array_mut().unwrap() {
+            row["blocked_by"] = json!(0);
+        }
+    });
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
+    let frontier: Vec<&Value> = plan["frontier"].as_array().unwrap().iter().collect();
+    assert_eq!(frontier.len(), 4, "{plan}");
+    let read: Vec<Vec<String>> = world.gh_calls();
+    let dependencies =
+        read.iter().filter(|call| call.iter().any(|arg| arg.contains("dependencies")));
+    assert_eq!(dependencies.count(), 0, "plan reads nothing more: {read:?}");
+
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    let ticked = world.afk(&[&args[..], &["--worker-command", COMMAND]].concat()).ok();
+    let did = ticked["did"].as_array().unwrap();
+    let dispatches: Vec<&Value> = did.iter().filter(|step| step["do"] == "dispatch").collect();
+    assert_eq!(
+        dispatches,
+        [
+            &json!({"do": "dispatch", "issue": 68, "outcome": "blocked", "blocked_by": [71]}),
+            &json!({"do": "dispatch", "issue": 69, "outcome": "blocked", "blocked_by": [71]}),
+            &json!({"do": "dispatch", "issue": 70, "outcome": "blocked", "blocked_by": [71]}),
+            &json!({"do": "dispatch", "issue": 71, "outcome": "done"}),
+        ]
+    );
+    assert_eq!(world.claims(), [(71, "alpha".to_string())]);
+    assert_eq!((&ticked["held"], &ticked["frontier_remaining"]), (&json!(1), &json!(0)));
+    for n in [68, 69, 70] {
+        assert_eq!(world.comments(n), [] as [String; 0], "no branch, no status board on #{n}");
+    }
+    assert_eq!(world.boards(71).len(), 1);
+    assert_eq!(world.open_terminals().len(), 1);
+}

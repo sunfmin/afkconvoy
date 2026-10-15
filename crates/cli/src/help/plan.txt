@@ -133,6 +133,9 @@ WHAT TRIPS YOU UP
     it would be without the lock: with the ready label in an unbound repo, a flow label
     in a bound one, no epic label, no open blocker, no claim. `excluded` says which
     of these keeps it off — and the lock stands until the issue is closed.
+  - `frontier` is what the rebuild read, and `plan` reads nothing more. An issue that
+    gains an open blocker after it is still listed; a tick reads each issue's blockers
+    once more just before it claims it, and skips the issue then.
   - A patrol is due or it is not: one that missed ten intervals runs once. And a run
     still going takes one slot of `concurrency`, like a claim on an issue.
   - With a lock standing, `free_slots` counts as free the slot of every claim of
