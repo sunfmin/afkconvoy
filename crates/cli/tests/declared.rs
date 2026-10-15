@@ -37,12 +37,19 @@ fn full(more: &[u64]) -> World {
     world
 }
 
-/// The worker of #8 declares `marker` at `at`, epoch seconds.
+/// The worker of #8 declares `marker` at `at`, epoch seconds, and every
+/// worker stops then: the grace of each runs from there.
 fn declare(world: &World, marker: &str, at: u64) {
     world.comment(8, &format!("<!--convoy:verdict {marker}-->\nwhat the worker says"));
     world.with_gh(|gh| {
         let rows = gh["comments"]["8"].as_array_mut().unwrap();
         rows.last_mut().unwrap()["at"] = json!(at);
+    });
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": at * 1000});
+            terminal["lastOutputAt"] = json!(at * 1000);
+        }
     });
 }
 
@@ -75,11 +82,16 @@ fn a_claim_whose_worker_declared_frees_its_slot_for_the_frontier() {
     assert_eq!(declared, [(7, false), (8, true), (9, false)]);
     assert_eq!(plan["free_slots"], 0, "the two slots are taken by #7 and #9");
 
-    let panel = world.afk(&["panel", "--instance", "alpha", "--host", "h1", "--now", "1110"]);
-    let page = panel.ok();
-    let page = page.as_str().unwrap();
-    assert!(page.contains("<dt>Claims held</dt><dd>2 <small>of 2</small></dd>"), "{page}");
-    assert!(page.contains("<dt>Declared</dt><dd>1</dd>"), "{page}");
+    let panel = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["panel", "--instance", "alpha", "--host", "h1", "--now", "1110"])
+        .output()
+        .unwrap();
+    let page = String::from_utf8(panel.stdout).unwrap();
+    let gauges = page.split("<dl class=\"gauges\">").nth(1).unwrap().split("</dl>").next();
+    let gauges = gauges.unwrap();
+    assert!(gauges.contains("<dt>Claims held</dt><dd>2 <small>of 2</small></dd>"), "{gauges}");
+    assert!(gauges.contains("<dt>Declared</dt><dd>1</dd>"), "{gauges}");
 
     // The line says the three claims apart: two of two slots, and one declared.
     assert_eq!(
