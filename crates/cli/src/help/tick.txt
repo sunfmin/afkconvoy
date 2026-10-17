@@ -96,9 +96,14 @@ WHAT TRIPS YOU UP
                           was uncommitted in it. Its branch goes with it when it holds no
                           commit past the base branch, and is kept when it does. The
                           issue stays open until somebody closes it.
-      an escalation       The terminal is closed. The PR, the branch and the worktree
-                          are kept for the human — but for a worktree whose branch
-                          holds no work, which is removed. A park does the same.
+      an escalation       The terminal is closed and the worktree removed when the
+                          remote holds all of it — a clean tree, every commit pushed
+                          or on the base branch — or kept, when it holds what only
+                          this host has: the comment and the status board say what,
+                          the comment naming each commit the remote lacks. The PR
+                          and the branch are kept for the human. A park does the
+                          same, and a later dispatch recreates a removed worktree
+                          at the pushed tip.
     An issue that lands loses its worktree, and its worker with it, as it is settled.
   - An `escalate` does not always hand the issue to a human. From a stage that names a
     consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim,

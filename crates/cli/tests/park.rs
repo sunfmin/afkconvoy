@@ -288,3 +288,82 @@ fn park_reads_the_verdict_again_and_refuses_what_is_not_parkable_now() {
     let again = park(&world, "alpha").ok();
     assert!(again["detail"].as_str().unwrap().contains("no claim is held"));
 }
+
+#[test]
+fn a_parked_worktree_the_remote_holds_all_of_is_removed_and_recreated_at_the_pushed_tip() {
+    let world = fleet();
+    let dir = worktree(&world);
+    let pushed = commit(&dir, "work.txt", "x\n");
+    common::git(&dir, &["push", "-q", "origin", "HEAD"]);
+    in_flight(&world, 41);
+    blocked_by(&world, "41");
+
+    assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
+    assert_eq!(world.claims(), []);
+    assert!(!dir.exists(), "a commit the remote holds is no reason to keep it");
+    let board = world.boards(7).join("\n");
+    assert!(board.contains("**Parked**") && !board.contains("worktree"), "{board}");
+
+    // its blocker closes: the issue is worked again from the pushed branch
+    world.close(41, "completed");
+    assert_eq!(did(&tick(&world, 1180)), ["dispatch 7 done", "heartbeat done"]);
+    let again = worktree(&world);
+    assert_eq!(common::git(&again, &["rev-parse", "HEAD"]), pushed, "recreated at the pushed tip");
+    assert_eq!(common::git(&again, &["log", "-1", "--format=%s"]), "work.txt");
+}
+
+#[test]
+fn a_parked_worktree_holding_what_the_remote_does_not_is_kept_saying_why() {
+    for (dirty, because, unpushed) in [(true, "dirty", 0), (false, "unpushed", 1)] {
+        let world = fleet();
+        let dir = worktree(&world);
+        if dirty {
+            // a pushed commit, and something uncommitted beside it
+            commit(&dir, "work.txt", "x\n");
+            common::git(&dir, &["push", "-q", "origin", "HEAD"]);
+            std::fs::write(dir.join("scratch.txt"), "x").unwrap();
+        } else {
+            commit(&dir, "work.txt", "x\n");
+        }
+        in_flight(&world, 41);
+        blocked_by(&world, "41");
+
+        let answer = park(&world, "alpha").ok();
+        assert_eq!(answer["worktree"], "kept", "{answer}");
+        assert_eq!(answer["kept_because"], because, "{answer}");
+        assert_eq!(answer["unpushed"], unpushed, "{answer}");
+        assert!(dir.exists());
+        let board = world.boards(7).join("\n");
+        let holds = if dirty { "uncommitted changes" } else { "1 commit the remote does not have" };
+        assert!(
+            board.contains(&format!(
+                "Its worktree is kept on the host that worked it: it holds {holds}"
+            )),
+            "{board}"
+        );
+    }
+}
+
+#[test]
+fn escalate_says_what_a_kept_worktree_holds_and_lists_its_unpushed_commits() {
+    let world = fleet();
+    let dir = worktree(&world);
+    commit(&dir, "pushed.txt", "x\n");
+    common::git(&dir, &["push", "-q", "origin", "HEAD"]);
+    commit(&dir, "first.txt", "x\n");
+    commit(&dir, "second.txt", "x\n");
+    let args = ["escalate", "--issue", "7", "--instance", "alpha", "--reason", "stuck"];
+    let answer = world.afk(&[&args[..], &["--now", "1100"]].concat()).ok();
+    assert_eq!(
+        (&answer["worktree"], &answer["kept_because"], &answer["unpushed"]),
+        (&json!("kept"), &json!("unpushed"), &json!(2)),
+        "{answer}"
+    );
+    assert!(dir.exists());
+    let said = escalation(&world);
+    assert!(
+        said.contains("it holds 2 commits the remote does not have.\n- second.txt\n- first.txt")
+    );
+    assert!(!said.contains("pushed.txt"), "{said}");
+    assert!(world.boards(7).join("\n").contains("it holds 2 commits"));
+}

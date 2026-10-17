@@ -551,3 +551,46 @@ fn a_lock_that_cannot_be_worked_is_critical() {
     world.with_gh(|gh| gh["issues"][1]["labels"] = json!(["fleet-lock", "ready-for-agent"]));
     assert_eq!(doctor(&world, "1000").ok()["findings"], json!([]));
 }
+
+#[test]
+fn a_worktree_kept_with_no_claim_is_named_with_what_it_holds_and_how_to_remove_it() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.issue(8, &["ready-for-agent"]);
+    let tick = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    world.afk(&[&tick[..], &["--worker-command", "agent"]].concat()).ok();
+    let orca = world.orca();
+    let of = |issue: u64| {
+        let rows = orca["worktrees"].as_array().unwrap();
+        let row = rows.iter().find(|row| row["linkedIssue"] == issue).unwrap();
+        PathBuf::from(row["path"].as_str().unwrap())
+    };
+    let (seven, eight) = (of(7), of(8));
+    // #7 holds a commit only it has; #8 held only what an older release kept it for
+    commit(&seven, "work.txt", "x\n");
+    write(&eight, "scratch.txt", "x");
+    for issue in ["7", "8"] {
+        let args = ["escalate", "--issue", issue, "--instance", "alpha", "--reason", "stuck"];
+        assert_eq!(world.afk(&[&args[..], &["--now", "1100"]].concat()).ok()["worktree"], "kept");
+    }
+    std::fs::remove_file(eight.join("scratch.txt")).unwrap();
+
+    let answer = doctor(&world, "1200").json;
+    let kept = found(&answer, "is kept with no claim");
+    assert_eq!(kept.len(), 2, "{answer}");
+    let of_issue = |issue: &str| kept.iter().find(|f| f["what"].as_str().unwrap().contains(issue));
+    let seven_found = of_issue("#7").unwrap();
+    assert_eq!(seven_found["severity"], "info");
+    assert!(
+        seven_found["what"].as_str().unwrap().ends_with("1 commit the remote does not have"),
+        "{seven_found}"
+    );
+    let fix = seven_found["fix"].as_str().unwrap();
+    let remove =
+        |dir: &PathBuf| format!("orca worktree rm --worktree path:{} --force", dir.display());
+    assert!(fix.contains(&format!("git -C {} push origin HEAD:", seven.display())), "{fix}");
+    assert!(fix.ends_with(&remove(&seven)), "{fix}");
+    let eight_found = of_issue("#8").unwrap();
+    assert!(eight_found["what"].as_str().unwrap().ends_with("nothing the remote does not"));
+    assert_eq!(eight_found["fix"], remove(&eight), "nothing to push first");
+}

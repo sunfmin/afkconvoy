@@ -13,6 +13,7 @@ use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
+use afkconvoy_core::left::{Kept, KeptBecause};
 use afkconvoy_core::patrol::Standing;
 use afkconvoy_core::plan::{LabelBar, Status, WorkingSet};
 use afkconvoy_core::slow_gate;
@@ -28,6 +29,7 @@ use crate::config;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
 use crate::git::Repo;
+use crate::judge::leaving;
 use crate::launch::Launches;
 use crate::log::{Entry, Failed, Log, Tick, What, by_cause};
 use crate::orca::{Source, Under, Worktree};
@@ -145,6 +147,7 @@ kinds! {
     WaitedLong: Warning, "has waited for a human for";
     SlowGate: Warning, "the gate is slow";
     Moved: Info, "moved since the stage";
+    KeptWorktree: Info, "is kept with no claim";
     NoGateLimit: Info, "declares no gate limit";
 }
 
@@ -296,6 +299,19 @@ pub struct State {
     pub stood: Vec<Stood>,
     pub team: TeamRead,
     pub ready_label: String,
+    /// The worktrees on this host whose issue holds no claim.
+    pub unclaimed: Vec<Unclaimed>,
+}
+
+/// A worktree on this host whose issue holds no claim: one a park or an
+/// escalation kept, or an older afkconvoy left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unclaimed {
+    pub issue: u64,
+    pub path: PathBuf,
+    pub branch: String,
+    /// Why it is kept; `None` when it holds nothing the remote does not.
+    pub kept: Option<Kept>,
 }
 
 /// Everything `doctor` read.
@@ -748,6 +764,34 @@ fn waiting_findings(set: &WorkingSet, now: u64) -> Vec<Finding> {
     set.waiting_on_human.iter().filter_map(long).collect()
 }
 
+/// A worktree kept on this host with no claim on its issue: what it holds
+/// that the remote does not, and the line that removes it — pushing first
+/// whatever only it holds.
+fn unclaimed_finding(unclaimed: &Unclaimed) -> Finding {
+    let (path, branch) = (unclaimed.path.display(), &unclaimed.branch);
+    let remove = format!("orca worktree rm --worktree path:{path} --force");
+    let push = format!("git -C {path} push origin HEAD:{branch}");
+    let (holds, fix) = match &unclaimed.kept {
+        None => ("nothing the remote does not".to_string(), remove),
+        Some(kept) => {
+            let fix = match kept.because {
+                KeptBecause::Dirty => format!(
+                    "git -C {path} add -A && git -C {path} commit -m 'Work kept from {path}' && \
+                     {push} && {remove}"
+                ),
+                KeptBecause::Unpushed | KeptBecause::Unread => format!("{push} && {remove}"),
+            };
+            (kept.holds(), fix)
+        }
+    };
+    finding(
+        Kind::KeptWorktree,
+        format!("the worktree of #{} is kept with no claim: it holds {holds}", unclaimed.issue),
+        format!("{path}, on the branch {branch}"),
+        fix,
+    )
+}
+
 /// The team, or a role of it, has a fault at its head.
 fn team_findings(team: &TeamRead) -> Vec<Finding> {
     match team {
@@ -805,6 +849,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(claim_findings(seen.run, &state.held));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
             found.extend(waiting_findings(&state.set, seen.now));
+            found.extend(state.unclaimed.iter().map(unclaimed_finding));
         }
         Err(why) => found.push(finding(
             Kind::StateUnread,
@@ -998,7 +1043,30 @@ fn read_state(now: u64, run: &mut Run) -> Result<State> {
     let stood = flows.stood();
     let (team, loaded) = read_team(fleet.config.bound.is_some());
     let held = read_held(&fleet, &set, &stood, loaded.as_ref());
-    Ok(State { set, held, stood, team, ready_label: fleet.config.ready_label.clone() })
+    let unclaimed = read_unclaimed(&fleet);
+    let ready_label = fleet.config.ready_label.clone();
+    Ok(State { set, held, stood, team, ready_label, unclaimed })
+}
+
+/// The worktrees on this host whose issue holds no claim, each with what it
+/// holds that the remote does not. One that cannot be read is left out.
+fn read_unclaimed(fleet: &Fleet) -> Vec<Unclaimed> {
+    let Some(linked) = Source::of(&fleet.repo).and_then(|source| Worktree::linked(&source)).ok()
+    else {
+        return vec![];
+    };
+    let unclaimed = linked.into_iter().filter(|(issue, _)| fleet.scan.claim_of(*issue).is_none());
+    unclaimed
+        .filter_map(|(issue, worktree)| {
+            let left = leaving(fleet, &worktree).ok()?.left;
+            Some(Unclaimed {
+                issue,
+                kept: left.kept().copied(),
+                path: worktree.path,
+                branch: worktree.branch,
+            })
+        })
+        .collect()
 }
 
 fn host_json(host: &Host) -> Value {
@@ -1225,6 +1293,7 @@ mod tests {
             stood: vec![],
             team: TeamRead::Unbound,
             ready_label: "ready-for-agent".into(),
+            unclaimed: vec![],
         }
     }
 

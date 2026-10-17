@@ -12,14 +12,20 @@ WHAT IT READS AND WRITES
 
   It reads the worker's latest verdict on the issue and where each issue it names
   stands. On GitHub it records each blocker as a blocked-by edge of the issue and writes
-  the status board's last word. On the remote it releases the claim. It removes the
-  worktree only when its branch holds no work; in one that is kept it closes the
-  terminal of the issue's worker.
+  the status board's last word. On the remote it releases the claim. Then the
+  worktree: when its tree is clean and every commit of its branch is on the remote —
+  pushed, or on the base branch — it is removed, and a later dispatch recreates it at
+  the pushed tip. Otherwise it is kept, with the terminal of the issue's worker
+  closed, and the status board says what it holds that exists on this host only.
 
 WHAT IT ANSWERS
 
-  {"issue", "action": "parked", "blocked_by", "released": true, "worktree"} — blocked_by
-  is the issues it waits on; worktree is "removed" or "kept".
+  {"issue", "action": "parked", "blocked_by", "released": true, "worktree",
+   "kept_because", "unpushed"} — blocked_by is the issues it waits on; worktree is
+  "removed", "kept", or "none" when the issue has none on this host. A kept one says
+  why: kept_because is "dirty" (something uncommitted), "unpushed" (commits the remote
+  does not have) or "unread" (its commits could not be checked against the remote),
+  and unpushed is how many commits only it holds (null when unread).
   {"issue", "released": true, "detail"} — no claim is held on the issue: nothing was done.
 
   Errors, each with nothing changed: the claim is another instance's; "is not parkable"
