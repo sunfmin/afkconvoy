@@ -198,7 +198,7 @@ fn what_the_train_already_landed_is_settled_from_the_base_branch_not_abandoned()
 }
 
 #[test]
-fn a_pr_taken_off_an_abandoned_train_a_second_time_is_escalated_with_everything_kept() {
+fn a_pr_taken_off_an_abandoned_train_a_second_time_is_escalated_with_its_branch_kept() {
     let world = train(&[7]);
     tick(&world, 1390);
     assert_eq!(did(&tick(&world, 1690))[0], "tend_train abandoned");
@@ -222,7 +222,8 @@ fn a_pr_taken_off_an_abandoned_train_a_second_time_is_escalated_with_everything_
     assert!(records[0].starts_with("<!--convoy:join abandoned=1690-->\n"), "{records:?}");
     assert_eq!(pr_state(&world, 70), "open");
     assert_eq!(world.state(7), "open");
-    assert!(worktree.is_dir());
+    // everything in the worktree is on the pushed branch: only the branch is kept
+    assert!(!worktree.is_dir());
     assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
 }
 

@@ -313,7 +313,9 @@ mod tests {
         for stage in [Stage::Parked, Stage::Escalated] {
             let text = render(&Board { kept, ..board(stage, None) });
             assert!(
-                text.contains("Its worktree is kept on the host that worked it: it holds 2 commits"),
+                text.contains(
+                    "Its worktree is kept on the host that worked it: it holds 2 commits"
+                ),
                 "{text}"
             );
             assert!(!render(&board(stage, None)).contains("worktree"), "{stage:?}");

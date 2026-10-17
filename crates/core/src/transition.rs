@@ -16,8 +16,8 @@ use flux_rs::attrs::*;
 
 use crate::blocked::Parkable;
 use crate::config::Config;
-use crate::record;
 use crate::left::Spare;
+use crate::record;
 use crate::stopped::Workless;
 use crate::team::FLOW_LABEL;
 

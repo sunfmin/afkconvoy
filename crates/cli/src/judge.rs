@@ -6,6 +6,7 @@ use std::time::UNIX_EPOCH;
 use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
+use afkconvoy_core::left::{Held, Left};
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::role::{flows, followed};
@@ -68,13 +69,64 @@ pub(crate) fn nothing_held(issue: u64) -> Value {
     json!({"issue": issue, "released": true, "detail": "no claim is held on it: nothing was done"})
 }
 
+/// The worktree of `issue` on this machine.
+pub(crate) fn worktree_of(fleet: &Fleet, issue: u64) -> Result<Option<Worktree>> {
+    Worktree::of_issue(&Source::of(&fleet.repo)?, issue)
+}
+
+/// What a released claim leaves of its worktree, and the subjects of the
+/// commits only it holds, newest first.
+pub(crate) struct Leaving {
+    pub left: Left,
+    pub unpushed: Vec<String>,
+}
+
+/// What `worktree` holds that the remote does not: anything uncommitted, and
+/// the commits of its branch on neither the branch the remote has of that
+/// name nor the base branch → what becomes of it as its claim ends.
+pub(crate) fn leaving(fleet: &Fleet, worktree: &Worktree) -> Result<Leaving> {
+    let mut known = vec![fleet.base_tip()?];
+    known.extend(fleet.repo.fetched(&format!("refs/heads/{}", worktree.branch))?);
+    let repo = Repo::new(worktree.path.clone());
+    let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
+    let mut args = vec!["log", "--format=%s", "HEAD", "--not"];
+    args.extend(known.iter().map(String::as_str));
+    let logged = repo.try_git(&args)?;
+    let unpushed: Vec<String> = match logged.ok {
+        true => logged.stdout.lines().map(str::to_string).collect(),
+        false => vec![],
+    };
+    let count = logged.ok.then_some(unpushed.len() as u64);
+    Ok(Leaving { left: Left::of(&Held { dirty, unpushed: count }), unpushed })
+}
+
+/// What a released claim left of its worktree here, as a command answers it:
+/// `worktree` is "removed", "kept" or "none" — none on this host — and one
+/// kept says why (`kept_because`) and how many commits only it holds.
+pub(crate) fn left_json(left: Option<&Left>) -> Value {
+    match left {
+        None => json!({"worktree": "none"}),
+        Some(Left::Removed(_)) => json!({"worktree": "removed"}),
+        Some(Left::Kept(kept)) => json!({"worktree": "kept",
+            "kept_because": kept.because.key(), "unpushed": kept.unpushed}),
+    }
+}
+
+/// Adds what `left_json` says to the object `answer`.
+pub(crate) fn with_left(mut answer: Value, left: Option<&Left>) -> Value {
+    if let (Some(answer), Value::Object(said)) = (answer.as_object_mut(), left_json(left)) {
+        answer.extend(said);
+    }
+    answer
+}
+
 /// The worktree of `issue` on this machine, and the proof that its branch
 /// holds no work when it does not.
 pub(crate) fn worktree_and_work(
     fleet: &Fleet,
     issue: u64,
 ) -> Result<(Option<Worktree>, Option<Workless>)> {
-    let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, issue)?;
+    let worktree = worktree_of(fleet, issue)?;
     let workless = match &worktree {
         Some(worktree) => Workless::of(&progress(worktree, &fleet.base_tip()?)?),
         None => None,
@@ -87,16 +139,16 @@ pub(crate) fn worktree_and_work(
 /// reason, swap what hands the issue to the fleet for the escalate label
 /// (`transition::Relabel`), release the claim last —
 /// so it can be run again from wherever it was cut, and posts one comment.
-/// The PR, the branch and the worktree are kept, except a worktree whose
-/// branch holds no work; the terminal of its worker is closed.
+/// The PR and the branch are kept, and so is the worktree when it holds what
+/// the remote does not; the terminal of its worker is closed.
 pub fn escalate(fleet: &mut Fleet, me: &Me, issue: u64, reason: &str) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
-    let (worktree, workless) = worktree_and_work(fleet, issue)?;
+    let worktree = worktree_of(fleet, issue)?;
     let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
     let why = Handed { brief: "by hand".to_string(), reason: reason.to_string() };
-    escalate_claim(fleet, &claim, &why, pr, worktree.as_ref(), workless.as_ref())?;
-    Ok(json!({"issue": issue, "action": "escalated", "released": true,
-        "worktree": if workless.is_some() { "removed" } else { "kept" }}))
+    let left = escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    let answer = json!({"issue": issue, "action": "escalated", "released": true});
+    Ok(with_left(answer, left.as_ref()))
 }
 
 /// Why a claim is escalated, said twice.
@@ -125,16 +177,18 @@ impl Handed {
 /// one: the status board keeps how far the claim got. The comment and the
 /// status board end with the lines that answer the escalation
 /// (`waiting::Waits::answer_lines`), and the fleet's view notes it, for the
-/// tick's line.
+/// tick's line. `worktree` is the issue's on this host, when it has one: it
+/// is removed when it holds nothing the remote does not, and kept otherwise —
+/// the comment then names what only it holds → what became of it.
 pub(crate) fn escalate_claim(
     fleet: &mut Fleet,
     claim: &Claim,
     why: &Handed,
     pr: Option<u64>,
     worktree: Option<&Worktree>,
-    workless: Option<&Workless>,
-) -> Result<Released> {
+) -> Result<Option<Left>> {
     let issue = claim.number;
+    let leaving = worktree.map(|worktree| leaving(fleet, worktree)).transpose()?;
     let labels = fleet.gh.issue(issue)?.labels;
     let comments = fleet.gh.comments(issue)?;
     let bodies = || comments.iter().map(|c| c.body.as_str());
@@ -166,10 +220,18 @@ pub(crate) fn escalate_claim(
     };
     let answer = Waits::Escalated(back).answer_lines(issue);
     let begun = Escalation::read(said, swap.done());
-    let released = transition::escalate(issue, begun, workless, |step| {
+    let spare = leaving.as_ref().and_then(|leaving| leaving.left.spare());
+    let only_here = match (&leaving, worktree) {
+        (Some(leaving), Some(worktree)) => only_here(claim, worktree, leaving),
+        _ => None,
+    };
+    transition::escalate(issue, begun, spare, |step| {
         match step {
             EscalateStep::Comment => {
-                let reason = format!("{}\n\n{answer}", why.reason.trim());
+                let reason = match &only_here {
+                    Some(only_here) => format!("{}\n\n{only_here}\n\n{answer}", why.reason.trim()),
+                    None => format!("{}\n\n{answer}", why.reason.trim()),
+                };
                 fleet.gh.comment(issue, &escalation_comment(&claim.id, flow.as_deref(), &reason))?
             }
             EscalateStep::Relabel => {
@@ -180,7 +242,10 @@ pub(crate) fn escalate_claim(
                     fleet.gh.remove_label(issue, label)?;
                 }
             }
-            EscalateStep::Board => escalated(fleet, claim, pr, &answer)?,
+            EscalateStep::Board => {
+                let kept = leaving.as_ref().and_then(|leaving| leaving.left.kept().copied());
+                escalated(fleet, claim, pr, &answer, kept)?
+            }
             EscalateStep::Release => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
@@ -198,7 +263,22 @@ pub(crate) fn escalate_claim(
         Ok::<(), anyhow::Error>(())
     })?;
     fleet.escalated.push((issue, why.brief.clone()));
-    Ok(released)
+    Ok(leaving.map(|leaving| leaving.left))
+}
+
+/// What an escalation says of a worktree kept for what only it holds, so that
+/// whoever answers knows that work is on one host alone: what it holds, and
+/// each commit the remote lacks by its subject. `None` of one that goes.
+fn only_here(claim: &Claim, worktree: &Worktree, leaving: &Leaving) -> Option<String> {
+    let kept = leaving.left.kept()?;
+    let host = claim.owner.as_ref().map(|owner| owner.host.as_str()).unwrap_or("its host");
+    let mut lines = vec![format!(
+        "**Work only one host holds**: the worktree `{}` on `{host}` is kept — it holds {}.",
+        worktree.path.display(),
+        kept.holds()
+    )];
+    lines.extend(leaving.unpushed.iter().map(|subject| format!("- {subject}")));
+    Some(lines.join("\n"))
 }
 
 /// `afkconvoy close`: close one of my claims whose issue needed no change —
@@ -252,7 +332,6 @@ pub(crate) const BLOCKED_BRIEF: &str = "blocked by what the fleet does not work"
 struct Stopped {
     claim: Claim,
     worktree: Worktree,
-    progress: Progress,
     /// The verdict that stands for the worker here.
     verdict: Option<Verdict>,
     /// The URL of the comment that verdict is in.
@@ -292,7 +371,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let said = said.filter(|_| verdict.is_some());
     let handed = worktree.handed(None)?;
     let route = route(state, &progress, verdict.as_ref(), worktree.nudged()?, handed, fleet.now);
-    Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, progress, verdict, said, route }))))
+    Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, said, route }))))
 }
 
 /// Types a nudge at the worker in `worktree` — `line` makes it from where the
@@ -371,8 +450,7 @@ pub fn judge(
         }
         Some(Asked::Stopped(found)) => *found,
     };
-    let Stopped { claim, worktree, progress, verdict, said, route } = found;
-    let workless = Workless::of(&progress);
+    let Stopped { claim, worktree, verdict, said, route } = found;
     let said = said.as_deref();
     let reason = match route {
         Route::Leave => return Ok(Outcome::Nothing),
@@ -393,7 +471,7 @@ pub fn judge(
             let named = verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
             match blocked_route(&standings(fleet, issue, &named)?) {
                 Blocked::Park(parkable) => {
-                    park_claim(fleet, &claim, &parkable, Some(&worktree), workless.as_ref())?;
+                    park_claim(fleet, &claim, &parkable, Some(&worktree))?;
                     return Ok(Outcome::Done);
                 }
                 Blocked::Redispatch if !start => return Ok(Outcome::Nothing),
@@ -421,7 +499,7 @@ pub fn judge(
         ),
     };
     // A claim the tick judges has no PR.
-    escalate_claim(fleet, &claim, &reason, None, Some(&worktree), workless.as_ref())?;
+    escalate_claim(fleet, &claim, &reason, None, Some(&worktree))?;
     Ok(Outcome::Done)
 }
 

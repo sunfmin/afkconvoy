@@ -252,7 +252,13 @@ fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
     let answer = "- fix what the comment names, and put the ready label back — `gh issue edit 7 \
                   --add-label ready-for-agent --remove-label ready-for-human`\n- close it: the \
                   fleet leaves a closed issue alone — `gh issue close 7`";
-    assert!(said.contains(&format!("{screen}\n\n**To answer it**")), "{said}");
+    // …then the work only this host holds, each commit the remote lacks by its subject…
+    let only_here = format!(
+        "**Work only one host holds**: the worktree `{}` on `h1` is kept — it holds 1 commit \
+         the remote does not have.\n- work.txt",
+        dir.display()
+    );
+    assert!(said.contains(&format!("{screen}\n\n{only_here}\n\n**To answer it**")), "{said}");
     assert!(said.trim_end().ends_with(answer), "{said}");
     // An unbound repo's escalated issue is excluded as escalated, and waits for a human.
     let plan = world.afk(&["plan", "--now", "1700"]).ok();
