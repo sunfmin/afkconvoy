@@ -333,7 +333,7 @@ fn a_silent_landing_worker_is_nudged_restarted_in_its_role_nudged_and_then_escal
     assert!(started.contains(" AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander' "), "{started}");
     assert!(brief(&dir).contains("**Your role:** `lander`"));
 
-    // → grace → nudge → grace → escalate, with everything kept
+    // → grace → nudge → grace → escalate, with the PR and its branch kept
     stopped(&world, now + 800);
     assert_eq!(did(&tick(&world, now + 890)), [] as [&str; 0]);
     assert_eq!(did(&tick(&world, now + 1200)), ["watch 7 nudged"]);
@@ -346,7 +346,10 @@ fn a_silent_landing_worker_is_nudged_restarted_in_its_role_nudged_and_then_escal
     assert!(said.contains("a nudge, one restart, and a second nudge"), "{said}");
     assert!(said.contains("Shall I go on? [y/n]"), "{said}");
     assert_eq!(world.gh()["prs"][0]["state"], "open");
-    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    // everything in its worktree is on the pushed branch: the worktree goes
+    assert!(!dir.exists());
+    let branch = world.gh()["prs"][0]["headRefName"].as_str().unwrap().to_string();
+    assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
 
     // It is a human's now: nobody is started on it again.
     assert_eq!(frontier(&world), []);

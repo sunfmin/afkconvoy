@@ -22,6 +22,7 @@ pub mod joining;
 pub mod launch;
 pub mod layout;
 pub mod lease;
+pub mod left;
 pub mod line;
 pub mod lock;
 pub mod patrol;

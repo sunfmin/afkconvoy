@@ -114,10 +114,9 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
             AbandonStep::Escalate { issue, pr } => {
                 let worktree = Worktree::of_issue(&source, issue)?;
                 let claim = of(issue)?.claim.clone();
-                // No proof of a workless branch is offered: the worktree is kept.
                 let reason =
                     Handed::new("its landing train was given up twice", abandoned_reason(pr));
-                escalate_claim(fleet, &claim, &reason, Some(pr), worktree.as_ref(), None)?;
+                escalate_claim(fleet, &claim, &reason, Some(pr), worktree.as_ref())?;
             }
         }
         Ok::<(), anyhow::Error>(())

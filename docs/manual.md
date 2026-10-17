@@ -1185,8 +1185,7 @@ the fleet's state cannot be read
 
 ````text
 has no worker
-    A claim's worker is gone. A tick starts one on its own; `fix` is for a claim the
-    next tick leaves so.
+    A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
 has been stopped for
     A worker stopped half an hour ago and declared nothing. Read its terminal, in
     the worktree `evidence` names; `fix` nudges it.
@@ -1202,8 +1201,7 @@ is one rework from a breaker
 does not run: its last run failed
     The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
 have reached its `max_open`
-    A patrol is not run while that many issues it opened are open. Close some, or
-    raise `max_open` in the patrol's file.
+    A patrol is not run while that many of its issues are open. Close some, or raise it.
 has waited for a human for
     Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
 the gate is slow
@@ -1219,9 +1217,11 @@ moved since the stage
     A role or the team was pushed after a stage started: that worker goes by the
     older one, the next stage by the head. `afkconvoy doctor --help` says what moved is.
 declares no gate limit
-    The repo's config sets no `gate_seconds`: the gate may run 3600 seconds before
-    anything ends it. Set it to what the gate should take at most: `fix` names the
-    file and the key, and `afkconvoy config --help` says what the key is.
+    The config sets no `gate_seconds`: the gate may run 3600 seconds before anything
+    ends it. Set it to the most the gate should take: `fix` names the file and key.
+is kept with no claim
+    A worktree holds what the remote lacks, or an earlier release kept it. `fix`
+    removes it, pushing first what only it holds: read `what` before you run it.
 ````
 
 ### WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start nothing

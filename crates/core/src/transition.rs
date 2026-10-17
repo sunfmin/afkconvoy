@@ -16,6 +16,7 @@ use flux_rs::attrs::*;
 
 use crate::blocked::Parkable;
 use crate::config::Config;
+use crate::left::Spare;
 use crate::record;
 use crate::stopped::Workless;
 use crate::team::FLOW_LABEL;
@@ -118,22 +119,22 @@ pub enum EscalateStep {
     Board,
     /// Delete the claim.
     Release,
-    /// Remove the worktree: only one whose branch holds no work.
+    /// Remove the worktree: only one holding nothing the remote does not.
     RemoveWorktree,
     /// Close the worker's terminal, in a worktree that is kept.
     CloseTerminal,
 }
 
 /// Escalates issue `issue` from wherever `begun` says it got: does what is
-/// left, in order, and releases last. The PR, the branch and the worktree are
-/// kept as evidence — except a worktree whose branch holds no work
-/// (`workless`), which goes once the claim has; one that is kept has its
+/// left, in order, and releases last. The PR and the branch are kept as
+/// evidence, and so is the worktree — except one holding nothing the remote
+/// does not (`spare`), which goes once the claim has; one that is kept has its
 /// worker's terminal closed. A step that fails ends it there, the claim still
 /// held unless it was the last.
 pub fn escalate<E, F>(
     issue: u64,
     mut begun: Escalation,
-    workless: Option<&Workless>,
+    spare: Option<&Spare>,
     mut carry_out: F,
 ) -> Result<Released, E>
 where
@@ -152,7 +153,7 @@ where
     word.write();
     carry_out(EscalateStep::Release)?;
     let released = begun.release(&word, issue);
-    carry_out(match workless {
+    carry_out(match spare {
         Some(_) => EscalateStep::RemoveWorktree,
         None => EscalateStep::CloseTerminal,
     })?;
@@ -317,14 +318,15 @@ impl Parking {
 }
 
 /// Parks the claim on `issue`: an edge to every open blocker its worker named
-/// → release the claim → remove the worktree, when its branch holds no work,
-/// and close its worker's terminal when it does.
+/// → release the claim → remove the worktree, when it holds nothing the remote
+/// does not (`spare`) — a later dispatch recreates it at the pushed tip — and
+/// close its worker's terminal when it does.
 /// `ready_label` is not touched: the edges hold the issue back, and it returns
 /// to the frontier by itself once the last blocker closes.
 pub fn park<E, F>(
     issue: u64,
     parkable: &Parkable,
-    workless: Option<&Workless>,
+    spare: Option<&Spare>,
     mut carry_out: F,
 ) -> Result<Released, E>
 where
@@ -340,8 +342,8 @@ where
     word.write();
     carry_out(ParkStep::Release)?;
     let released = parking.release(&word, issue);
-    // A worktree with work in it is what a later continuation starts from.
-    carry_out(match workless {
+    // A worktree holding what only it has is what a later continuation starts from.
+    carry_out(match spare {
         Some(_) => ParkStep::RemoveWorktree,
         None => ParkStep::CloseTerminal,
     })?;
@@ -436,18 +438,18 @@ mod tests {
     use super::*;
     use crate::blocked::{Blocked, Standing, blocked_route};
     use crate::config::Settings;
+    use crate::left::{Held, Left};
     use crate::stopped::Progress;
 
     fn steps(
         begun: Escalation,
-        workless: bool,
+        spare: bool,
         fail_at: Option<EscalateStep>,
     ) -> (Vec<EscalateStep>, bool) {
-        let clean =
-            Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
-        let proof = Workless::of(&clean).filter(|_| workless);
+        let left = Left::of(&Held { dirty: false, unpushed: Some(0) });
+        let proof = left.spare().filter(|_| spare);
         let mut did = vec![];
-        let ended = escalate(7, begun, proof.as_ref(), |step| {
+        let ended = escalate(7, begun, proof, |step| {
             if fail_at == Some(step) {
                 return Err(());
             }
@@ -599,16 +601,16 @@ mod tests {
     fn park_writes_every_edge_before_it_releases() {
         let waiting = [(41, Standing::Waiting), (42, Standing::Closed), (43, Standing::Waiting)];
         let Blocked::Park(parkable) = blocked_route(&waiting) else { panic!() };
-        let run = |workless: Option<&Workless>, fail_at: Option<ParkStep>| {
+        let run = |spare: Option<&Spare>, fail_at: Option<ParkStep>| {
             let mut steps = vec![];
-            let done = park(7, &parkable, workless, |step| {
+            let done = park(7, &parkable, spare, |step| {
                 steps.push(step);
                 if Some(step) == fail_at { Err("cut") } else { Ok(()) }
             });
             (done.map(|released| released.issue), steps)
         };
         let edges = [ParkStep::Edge { blocker: 41 }, ParkStep::Edge { blocker: 43 }];
-        // a branch with work on it keeps its worktree
+        // a worktree holding what the remote does not is kept
         let (done, steps) = run(None, None);
         assert_eq!(done, Ok(7));
         assert_eq!(
@@ -616,10 +618,8 @@ mod tests {
             [edges[0], edges[1], ParkStep::Board, ParkStep::Release, ParkStep::CloseTerminal],
             "its worker's terminal is closed"
         );
-        let empty =
-            Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
-        let workless = Workless::of(&empty).unwrap();
-        let (_, steps) = run(Some(&workless), None);
+        let left = Left::of(&Held { dirty: false, unpushed: Some(0) });
+        let (_, steps) = run(left.spare(), None);
         assert_eq!(
             steps,
             [edges[0], edges[1], ParkStep::Board, ParkStep::Release, ParkStep::RemoveWorktree]

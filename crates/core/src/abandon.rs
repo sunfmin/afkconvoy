@@ -168,7 +168,7 @@ where
 pub fn abandoned_reason(pr: u64) -> String {
     format!(
         "PR #{pr} was on a landing train that was given up — its worker stayed silent — for the \
-         second time. The PR, its branch and the worktree are kept."
+         second time. The PR and its branch are kept."
     )
 }
 

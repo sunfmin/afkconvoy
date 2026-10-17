@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use afkconvoy_core::board::{Board, Stage, board_comment, render};
 use afkconvoy_core::claims::Claim;
+use afkconvoy_core::left::Kept;
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Context, Result};
 
@@ -66,7 +67,38 @@ pub fn last_word(
     post(
         fleet,
         claim,
-        &Board { instance, version: VERSION, stage, pr, blocked_by, waits_at: None, answer: None },
+        &Board {
+            instance,
+            version: VERSION,
+            stage,
+            pr,
+            blocked_by,
+            waits_at: None,
+            answer: None,
+            kept: None,
+        },
+    )?;
+    Ok(())
+}
+
+/// The last word of a claim that was parked on `blocked_by`: `kept` is its
+/// worktree, when that is kept for what only it holds.
+pub fn parked(fleet: &Fleet, claim: &Claim, blocked_by: &[u64], kept: Option<Kept>) -> Result<()> {
+    let (instance, stage) = (instance_of(claim), Stage::Parked);
+    let answer = None;
+    post(
+        fleet,
+        claim,
+        &Board {
+            instance,
+            version: VERSION,
+            stage,
+            pr: None,
+            blocked_by,
+            waits_at: None,
+            answer,
+            kept,
+        },
     )?;
     Ok(())
 }
@@ -84,21 +116,46 @@ pub fn declared(
     post(
         fleet,
         claim,
-        &Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at, answer: None },
+        &Board {
+            instance,
+            version: VERSION,
+            stage,
+            pr,
+            blocked_by: &[],
+            waits_at,
+            answer: None,
+            kept: None,
+        },
     )?;
     Ok(())
 }
 
 /// The last word of a claim that was escalated: `answer` is the lines that
 /// answer the escalation (`waiting::Waits::answer_lines`), which the board
-/// ends with as the comment that says why does.
-pub fn escalated(fleet: &Fleet, claim: &Claim, pr: Option<u64>, answer: &str) -> Result<()> {
+/// ends with as the comment that says why does. `kept` is its worktree, when
+/// that is kept for what only it holds.
+pub fn escalated(
+    fleet: &Fleet,
+    claim: &Claim,
+    pr: Option<u64>,
+    answer: &str,
+    kept: Option<Kept>,
+) -> Result<()> {
     let (instance, stage) = (instance_of(claim), Stage::Escalated);
     let answer = Some(answer);
     post(
         fleet,
         claim,
-        &Board { instance, version: VERSION, stage, pr, blocked_by: &[], waits_at: None, answer },
+        &Board {
+            instance,
+            version: VERSION,
+            stage,
+            pr,
+            blocked_by: &[],
+            waits_at: None,
+            answer,
+            kept,
+        },
     )?;
     Ok(())
 }
@@ -123,6 +180,7 @@ pub fn show(fleet: &Fleet, me: &Me, issue: u64, stage: Stage, pr: Option<u64>) -
         blocked_by: &[],
         waits_at: None,
         answer: None,
+        kept: None,
     };
     Ok(if post(fleet, &claim, &board)? { Outcome::Done } else { Outcome::Nothing })
 }

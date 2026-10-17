@@ -114,7 +114,10 @@ WHAT IT ANSWERS
   `afkconvoy plan` has them, and the issue open for it when there is one (all warning) — the
   role or the team a stage in flight started under has moved since; and the repo's
   config declares no gate limit, so the gate has the default's 3600 seconds before
-  anything ends it: `fix` is the file and the key, `gate_seconds` (both info).
+  anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on
+  this host is kept with no claim on its issue — said with what it holds that the
+  remote does not (uncommitted changes, commits only it has, or nothing), its `fix`
+  the line that removes it, pushing first whatever only it holds (all info).
 
   Moved: the role's directory holds something else at the head of its repo than at the
   commit the stage started under — a file added, removed or changed. A new commit is

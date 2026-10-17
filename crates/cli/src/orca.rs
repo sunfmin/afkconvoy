@@ -237,6 +237,27 @@ impl Worktree {
         }))
     }
 
+    /// Every worktree orca links to an issue of this checkout on this machine,
+    /// with that issue.
+    pub fn linked(source: &Source) -> Result<Vec<(u64, Worktree)>> {
+        let listed = orca(&["worktree", "list"])?;
+        let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+        Ok(rows
+            .iter()
+            .filter(|row| {
+                row["repoId"].as_str() == Some(source.id.as_str())
+                    && row["isMainWorktree"] != true
+                    && row["isArchived"] != true
+            })
+            .filter_map(|row| {
+                let path = PathBuf::from(row["path"].as_str()?);
+                let branch = short_branch(row["branch"].as_str().unwrap_or("")).to_string();
+                Some((row["linkedIssue"].as_u64()?, Worktree::at(path, branch)))
+            })
+            .filter(|(_, worktree)| worktree.path.is_dir())
+            .collect())
+    }
+
     /// The worktree orca links to issue `number`, and what the worker in it
     /// is doing: gone, where there is no worktree.
     pub fn worker_of(

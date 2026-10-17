@@ -178,8 +178,8 @@ where
 pub fn stalled_reason(pr: u64, _silent: &Silent, tail: &Tail) -> String {
     let why = format!(
         "The worker opened PR #{pr} and stopped before it was on the landing train. It stayed \
-         silent after a nudge, one restart, and a second nudge. The PR, its branch and the \
-         worktree are kept."
+         silent after a nudge, one restart, and a second nudge. The PR and its branch are \
+         kept."
     );
     if tail.is_empty() {
         return why;

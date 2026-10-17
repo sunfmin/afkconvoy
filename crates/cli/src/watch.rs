@@ -152,8 +152,9 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
 
 /// The tick's look at one claim of mine whose PR is joining: a worker that is
 /// gone is continued onto the join, one that stopped climbs the ladder
-/// (`joining::join_route`) → `Done` when that ended the claim. The PR, the
-/// branch and the worktree are never touched.
+/// (`joining::join_route`) → `Done` when that ended the claim. The PR and the
+/// branch are never touched; the worktree goes only with an escalation, and
+/// only when the remote holds all of it.
 pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Outcome> {
     let found = match ask_after(fleet, me, issue)? {
         None | Some(Asked::AtWork | Asked::NoPr) => return Ok(Outcome::Nothing),
@@ -182,9 +183,8 @@ pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
             let tail = where_it_stopped(&found.worktree, &silent);
             let reason = stalled_reason(found.pr, &silent, &tail);
             let reason = Handed::new("its worker went silent joining the train", reason);
-            // No proof of a workless branch is offered: the worktree is kept.
             let pr = Some(found.pr);
-            escalate_claim(fleet, &found.claim, &reason, pr, Some(&found.worktree), None)?;
+            escalate_claim(fleet, &found.claim, &reason, pr, Some(&found.worktree))?;
             Ok(Outcome::Done)
         }
     }

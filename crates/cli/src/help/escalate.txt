@@ -15,14 +15,20 @@ WHAT IT READS AND WRITES
   `escalate_label`, and writes the status board's last word. In a bound repo it swaps
   the issue's flow label for the `escalate_label` of the team instead, and the comment
   records which workflow the issue left: `afkconvoy rule` puts that label back. On the remote it releases
-  the claim. The PR and the branch are kept, and so is the worktree, unless its branch
-  holds no work. In orca it closes the terminal of the issue's worker: a worktree that
-  is kept has no worker left in it.
+  the claim. The PR and the branch are kept. The worktree is removed when its tree is
+  clean and every commit of its branch is on the remote — pushed, or on the base
+  branch: a later dispatch recreates it at the pushed tip. Otherwise it is kept, and
+  the comment and the status board say what it holds that exists on this host only,
+  the comment listing each commit the remote does not have by its subject. In orca it
+  closes the terminal of the issue's worker: a worktree that is kept has no worker
+  left in it.
 
 WHAT IT ANSWERS
 
-  {"issue", "action": "escalated", "released": true, "worktree"} — worktree is "removed"
-  or "kept".
+  {"issue", "action": "escalated", "released": true, "worktree", "kept_because",
+   "unpushed"} — worktree is "removed", "kept", or "none" when the issue has none on
+  this host. A kept one says why: kept_because is "dirty", "unpushed" or "unread", and
+  unpushed is how many commits only it holds (null when unread).
   {"issue", "released": true, "detail"} — no claim is held on the issue: nothing was done.
 
   Errors: the claim is another instance's ("is not this fleet's claim").

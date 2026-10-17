@@ -5,19 +5,18 @@ use afkconvoy_core::blocked::{
     Blocked, BlockerRead, Named, Parkable, Standing, WalkError, blocked_route, standing, walk,
     walk_from,
 };
-use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::Claim;
+use afkconvoy_core::left::Left;
 use afkconvoy_core::plan::closing_pr;
-use afkconvoy_core::stopped::Workless;
-use afkconvoy_core::transition::{self, ParkStep, Released};
+use afkconvoy_core::transition::{self, ParkStep};
 use afkconvoy_core::verdict::{Phase, latest_verdict};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::board::last_word;
+use crate::board::parked;
 use crate::claims::{Me, delete};
 use crate::fleet::Fleet;
-use crate::judge::{mine, nothing_held, worktree_and_work};
+use crate::judge::{leaving, mine, nothing_held, with_left, worktree_of};
 use crate::orca::Worktree;
 
 /// Where each issue `named` by the `blocked` verdict on `issue` stands, in
@@ -62,25 +61,29 @@ pub fn standings(fleet: &Fleet, issue: u64, named: &[u64]) -> Result<Vec<(u64, S
 }
 
 /// Parks `claim`: a native blocked-by edge to every blocker in `parkable`
-/// GitHub does not record yet → release → remove a worktree with no work, or
-/// close the terminal of its worker in one that is kept.
+/// GitHub does not record yet → release → remove the worktree, `worktree`
+/// here, when it holds nothing the remote does not, or close the terminal of
+/// its worker in one kept for what only it holds, which the board names →
+/// what became of it.
 pub fn park_claim(
     fleet: &mut Fleet,
     claim: &Claim,
     parkable: &Parkable,
     worktree: Option<&Worktree>,
-    workless: Option<&Workless>,
-) -> Result<Released> {
+) -> Result<Option<Left>> {
     let issue = claim.number;
+    let left = worktree.map(|worktree| leaving(fleet, worktree)).transpose()?.map(|l| l.left);
     let recorded = fleet.gh.blocked_by(issue)?;
-    transition::park(issue, parkable, workless, |step| {
+    let spare = left.as_ref().and_then(Left::spare);
+    let kept = left.as_ref().and_then(Left::kept).copied();
+    transition::park(issue, parkable, spare, |step| {
         match step {
             ParkStep::Edge { blocker } => {
                 if !recorded.iter().any(|edge| edge.number == blocker) {
                     fleet.gh.add_blocker(issue, fleet.gh.issue(blocker)?.id)?;
                 }
             }
-            ParkStep::Board => last_word(fleet, claim, Stage::Parked, None, &parkable.blockers())?,
+            ParkStep::Board => parked(fleet, claim, &parkable.blockers(), kept)?,
             ParkStep::Release => {
                 delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
             }
@@ -95,8 +98,9 @@ pub fn park_claim(
                 }
             }
         }
-        Ok(())
-    })
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(left)
 }
 
 /// `afkconvoy park`: leave one of my claims waiting on the issues its worker
@@ -119,8 +123,9 @@ pub fn park(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
             bail!("{}", refused(&format!("{reason} — escalate it instead")))
         }
     };
-    let (worktree, workless) = worktree_and_work(fleet, issue)?;
-    park_claim(fleet, &claim, &parkable, worktree.as_ref(), workless.as_ref())?;
-    Ok(json!({"issue": issue, "action": "parked", "blocked_by": parkable.blockers(),
-        "released": true, "worktree": if workless.is_some() { "removed" } else { "kept" }}))
+    let worktree = worktree_of(fleet, issue)?;
+    let left = park_claim(fleet, &claim, &parkable, worktree.as_ref())?;
+    let answer = json!({"issue": issue, "action": "parked", "blocked_by": parkable.blockers(),
+        "released": true});
+    Ok(with_left(answer, left.as_ref()))
 }

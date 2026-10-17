@@ -9,7 +9,7 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::stage_nudge_line;
 use afkconvoy_core::stage_record::{Advance, StageRecord};
 use afkconvoy_core::stopped::{
-    Nudged, Route, Silence, Why, Workless, settled_by_state, silence, stage_stalled_reason,
+    Nudged, Route, Silence, Why, settled_by_state, silence, stage_stalled_reason,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{self, HandOnStep, Released};
@@ -21,7 +21,7 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::judge::{
     BLOCKED_BRIEF, Handed, close_claim, escalate_claim, mine, nudge_worker, progress,
-    where_it_stopped, worktree_and_work,
+    where_it_stopped, worktree_and_work, worktree_of,
 };
 use crate::lock::explaining_lock;
 use crate::orca::{Source, Worktree};
@@ -178,8 +178,7 @@ fn ask_after(
             let reason = stage_stalled_reason(stage, consult, &silent, &tail);
             let brief = if consult { "its consult went silent" } else { "its worker went silent" };
             let reason = Handed::at(Some(stage), brief, reason);
-            let (pr, workless) = (pr_of(fleet, issue)?, Workless::of(&progress));
-            escalate_claim(fleet, claim, &reason, pr, Some(&worktree), workless.as_ref())?;
+            escalate_claim(fleet, claim, &reason, pr_of(fleet, issue)?, Some(&worktree))?;
             Ok(Outcome::Done)
         }
     }
@@ -219,10 +218,10 @@ pub fn advance(
     let stage = called.stage.as_deref();
     let declared = !matches!(called.advance, Advance::AskAfter);
     if declared && let Some(failed) = left_behind(fleet, &claim)? {
-        let (worktree, workless) = worktree_and_work(fleet, issue)?;
+        let worktree = worktree_of(fleet, issue)?;
         let reason = Handed::at(stage, "left a commit it may not", stated(&failed, said, None));
         let pr = pr_of(fleet, issue)?;
-        escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
+        escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
         return Ok(Outcome::Done);
     }
     // What a fleet lock explains is run again, not carried out: its stage's
@@ -260,8 +259,8 @@ pub fn advance(
         }
         Advance::Blocked(named) => match blocked_route(&standings(fleet, issue, &named)?) {
             Blocked::Park(parkable) => {
-                let (worktree, workless) = worktree_and_work(fleet, issue)?;
-                park_claim(fleet, &claim, &parkable, worktree.as_ref(), workless.as_ref())?;
+                let worktree = worktree_of(fleet, issue)?;
+                park_claim(fleet, &claim, &parkable, worktree.as_ref())?;
                 return Ok(Outcome::Done);
             }
             // Every blocker closed: the frontier holds the issue at the
@@ -278,9 +277,9 @@ pub fn advance(
             Handed::new(&flows.brief(issue), stated(&reason, said, called.rounds.as_deref()))
         }
     };
-    let (worktree, workless) = worktree_and_work(fleet, issue)?;
+    let worktree = worktree_of(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
-    escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
+    escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
     Ok(Outcome::Done)
 }
 
@@ -299,9 +298,9 @@ pub fn hand_to_human(
         return Ok(Outcome::Lost);
     }
     let claim = mine(fleet, me, issue)?.ok_or_else(|| anyhow!("issue #{issue}: no claim"))?;
-    let (worktree, workless) = worktree_and_work(fleet, issue)?;
+    let worktree = worktree_of(fleet, issue)?;
     let pr = pr_of(fleet, issue)?;
     let reason = Handed::new(brief, stated(reason, None, rounds));
-    escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref(), workless.as_ref())?;
+    escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
     Ok(Outcome::Done)
 }

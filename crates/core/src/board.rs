@@ -4,6 +4,7 @@
 
 use flux_rs::attrs::*;
 
+use crate::left::Kept;
 use crate::plan::Status;
 use crate::record;
 
@@ -86,6 +87,9 @@ pub struct Board<'a> {
     /// What an escalated issue's board ends with: the lines that answer it
     /// (`waiting::Waits::answer_lines`).
     pub answer: Option<&'a str>,
+    /// The worktree an escalated or parked claim left on its host, when it
+    /// holds what the remote does not: the board says so.
+    pub kept: Option<Kept>,
 }
 
 /// The steps of the board's task list, in order.
@@ -131,19 +135,23 @@ fn off_ramp(board: &Board) -> Option<String> {
                 .to_string(),
         ),
         Stage::Escalated => {
-            let escalated = "**Escalated to a human** — the comment that says why is on this \
-                             issue. Its PR, branch and worktree are kept.";
+            let escalated = format!(
+                "**Escalated to a human** — the comment that says why is on this issue. Its PR \
+                 and branch are kept.{}",
+                kept_line(board)
+            );
             Some(match board.answer {
                 Some(answer) => format!("{escalated}\n\n{answer}"),
-                None => escalated.to_string(),
+                None => escalated,
             })
         }
         Stage::Parked => {
             let blockers: Vec<String> =
                 board.blocked_by.iter().map(|number| format!("#{number}")).collect();
             Some(format!(
-                "**Parked** — waiting on {}. It returns to the frontier when they close.",
-                blockers.join(", ")
+                "**Parked** — waiting on {}. It returns to the frontier when they close.{}",
+                blockers.join(", "),
+                kept_line(board)
             ))
         }
         Stage::Declared => Some(match board.waits_at {
@@ -156,6 +164,15 @@ fn off_ramp(board: &Board) -> Option<String> {
                  held until they declare its verdict with `afkconvoy verdict`."
             ),
         }),
+    }
+}
+
+/// The line that says a worktree is kept, with the space that leads it; empty
+/// when none is.
+fn kept_line(board: &Board) -> String {
+    match &board.kept {
+        Some(kept) => format!(" {}", kept.board_line()),
+        None => String::new(),
     }
 }
 
@@ -216,6 +233,7 @@ mod rejected {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::left::KeptBecause;
 
     fn board(stage: Stage, pr: Option<u64>) -> Board<'static> {
         Board {
@@ -226,6 +244,7 @@ mod tests {
             blocked_by: &[3, 4],
             waits_at: None,
             answer: None,
+            kept: None,
         }
     }
 
@@ -289,6 +308,18 @@ mod tests {
         assert!(parked.ends_with(
             "**Parked** — waiting on #3, #4. It returns to the frontier when they close."
         ));
+        // A worktree kept on its host is said, with what only it holds.
+        let kept = Some(Kept { because: KeptBecause::Unpushed, unpushed: Some(2) });
+        for stage in [Stage::Parked, Stage::Escalated] {
+            let text = render(&Board { kept, ..board(stage, None) });
+            assert!(
+                text.contains(
+                    "Its worktree is kept on the host that worked it: it holds 2 commits"
+                ),
+                "{text}"
+            );
+            assert!(!render(&board(stage, None)).contains("worktree"), "{stage:?}");
+        }
         assert!(render(&board(Stage::Closed, None)).contains("**Closed with nothing landed**"));
         assert_eq!(ticked(&render(&board(Stage::Closed, Some(70)))), 3);
         let declared = render(&board(Stage::Declared, Some(70)));
