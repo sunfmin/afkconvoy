@@ -10,35 +10,6 @@ PATH="$HOME/.cargo/bin:$PATH"
 RUSTUP_TOOLCHAIN=nightly-2026-09-25
 export PATH RUSTUP_TOOLCHAIN
 cargo fmt --all --check
-# Flux takes about a minute on one core and builds under a directory of its
-# own, so it checks the core crate while everything below runs: what it came
-# to is read at the end. It times every function it checks (`-Ftimings`),
-# and keeps the file it writes of them out of the tree.
-flux_log=$(mktemp)
-FLUXFLAGS="-Ftimings -Flog-dir=$PWD/target/flux-log"
-export FLUXFLAGS
-./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
-flux_pid=$!
-# A process and everything it started: Flux runs as cargo, its driver and
-# the solver under it, and stopping cargo alone leaves the solver running.
-stop_tree() {
-    for child in $(pgrep -P "$1"); do stop_tree "$child"; done
-    kill "$1" 2>/dev/null || true
-}
-# Flux is given three minutes, and no caller can give it more: one that runs
-# past them — a solver query that never ends, a host too busy to
-# give it a core — is stopped, and the gate fails saying so, instead of
-# waiting for it however long it takes.
-flux_limit=180
-(
-    sleep "$flux_limit"
-    touch "$flux_log.late"
-    stop_tree "$flux_pid"
-) &
-watch_pid=$!
-# Flux has usually ended by then, and a kill that finds nothing fails: under
-# `set -e` that would be the gate's exit, whatever passed.
-trap 'stop_tree "$watch_pid"; stop_tree "$flux_pid"; rm -f "$flux_log" "$flux_log.late"' EXIT
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 # The manual is the help topics as one page, and is never edited: a topic
 # changed and the page not written again fails here, with the command to run.
@@ -68,6 +39,37 @@ fi
 # reports back and ends with the core's, green or red, so the end of its
 # output names the functions that are slow to check. The core's is the last
 # report: a crate that fails is the last one checked.
+#
+# Flux runs after the tests, alone: run beside them it shares the cores with
+# every test, and how long it took says more of them than of it. It takes
+# about a minute on one core, builds under a directory of its own, times every
+# function it checks (`-Ftimings`) and keeps the file it writes of them out of
+# the tree.
+flux_log=$(mktemp)
+FLUXFLAGS="-Ftimings -Flog-dir=$PWD/target/flux-log"
+export FLUXFLAGS
+./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
+flux_pid=$!
+# A process and everything it started: Flux runs as cargo, its driver and
+# the solver under it, and stopping cargo alone leaves the solver running.
+stop_tree() {
+    for child in $(pgrep -P "$1"); do stop_tree "$child"; done
+    kill "$1" 2>/dev/null || true
+}
+# Flux is given three minutes, and no caller can give it more: one that runs
+# past them — a solver query that never ends, a host too busy to give it a
+# core — is stopped, and the gate fails saying so, instead of waiting for it
+# however long it takes.
+flux_limit=180
+(
+    sleep "$flux_limit"
+    touch "$flux_log.late"
+    stop_tree "$flux_pid"
+) &
+watch_pid=$!
+# A kill that finds nothing fails: under `set -e` that would be the gate's
+# exit, whatever passed.
+trap 'stop_tree "$watch_pid"; stop_tree "$flux_pid"; rm -f "$flux_log" "$flux_log.late"' EXIT
 wait "$flux_pid" && flux_status=0 || flux_status=$?
 stop_tree "$watch_pid"
 # Reaped here, the watch stopped says nothing of being stopped.
