@@ -1,8 +1,10 @@
 mod common;
 
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use common::World;
 use serde_json::Value;
@@ -220,4 +222,54 @@ fn an_idle_peer_is_asked_to_tick_and_a_socket_nobody_listens_on_is_removed() {
     assert_eq!(checked["slept"], true, "{checked}");
     assert_eq!(world.pmset_calls(), ["sleepnow"]);
     drop(peer);
+}
+
+/// Listens as `delta` where every `run` of `world`'s host does: idle since the
+/// epoch, it answers how it stands, and never answers once asked to tick.
+fn never_ticks(world: &World) {
+    let listener = bind(world, "delta.sock");
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut asked = String::new();
+                BufReader::new(&stream).read_line(&mut asked).unwrap();
+                if asked.trim() == "standing" {
+                    let standing = r#"{"instance":"delta","repo":"o/r","version":"0.4.3","no_host_sleep":false,"idle":true,"since":0,"worked":null}"#;
+                    writeln!(&stream, "{standing}").unwrap();
+                }
+                // asked to tick: it holds on, answering nothing
+                std::thread::sleep(Duration::from_secs(300));
+            });
+        }
+    });
+}
+
+#[test]
+fn a_run_told_to_stop_while_a_check_waits_for_the_ticks_stops_at_once() {
+    let world = worked();
+    never_ticks(&world);
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    world.host_sleeps(&mut command);
+    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let pacing = ["--second-ms", "0", "--host-sleep-after", "0"];
+    let mut run = command.args(args).args(pacing).stdout(Stdio::piped()).spawn().unwrap();
+    let mut lines = BufReader::new(run.stdout.take().unwrap()).lines();
+    // the check asked delta to tick, and its own second tick has ended
+    for line in lines.by_ref() {
+        if line.unwrap().starts_with("tick 2:") {
+            break;
+        }
+    }
+    let told = Instant::now();
+    let pid = run.id().to_string();
+    assert!(Command::new("kill").args(["-TERM", &pid]).status().unwrap().success());
+    let rest: Vec<String> = lines.map(|line| line.unwrap()).collect();
+    assert!(run.wait().unwrap().success(), "{rest:?}");
+    assert!(told.elapsed() < Duration::from_secs(5), "it waited {:?}", told.elapsed());
+    assert!(rest.iter().any(|line| line.starts_with("stop:")), "{rest:?}");
+    assert_eq!(
+        world.pmset_calls(),
+        Vec::<String>::new(),
+        "a run told to stop puts nothing to sleep"
+    );
 }

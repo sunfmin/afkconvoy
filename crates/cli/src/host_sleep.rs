@@ -11,7 +11,7 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -24,10 +24,24 @@ use afkconvoy_core::host_sleep::{
 use anyhow::{Context, Result, bail};
 
 use crate::copies::cache;
+use crate::stop::Stop;
 use crate::wake::{Waker, named_inside};
 
 /// How a socket is named: for its instance, with this after it.
 const SUFFIX: &str = ".sock";
+
+/// Runs `with` on the socket `name` in `dir`: by its whole path where that
+/// fits in a socket's address — under the cache directory of a home it does —
+/// and else named from inside `dir` (`named_inside`), which moves the whole
+/// process while it is named.
+fn at<T>(dir: &Path, name: &str, with: impl Fn(&Path) -> std::io::Result<T>) -> Result<T> {
+    match with(&dir.join(name)) {
+        Err(error) if error.kind() == ErrorKind::InvalidInput => {
+            named_inside(dir, name, |name| with(Path::new(name)))
+        }
+        made => Ok(made?),
+    }
+}
 
 /// The directory every instance on this host listens in.
 fn home() -> Result<PathBuf> {
@@ -51,6 +65,9 @@ pub enum Checked {
     Slept,
     /// Nothing kept the host awake, and `pmset sleepnow` failed.
     Failed(String),
+    /// The `run` was told to stop while the check waited: it ended there,
+    /// with the host left awake.
+    Stopped,
 }
 
 /// A `run`'s part in host sleep: it listens from `open` until it is dropped,
@@ -91,10 +108,10 @@ impl HostSleep {
         let listener = home().and_then(|dir| {
             std::fs::create_dir_all(&dir)
                 .with_context(|| format!("cannot make {}", dir.display()))?;
-            named_inside(&dir, &name, |name| {
+            at(&dir, &name, |path| {
                 // What a `run` of the same instance that ended left.
-                let _ = std::fs::remove_file(name);
-                UnixListener::bind(name)
+                let _ = std::fs::remove_file(path);
+                UnixListener::bind(path)
             })
         });
         let listening = match listener {
@@ -155,9 +172,11 @@ impl HostSleep {
     /// every instance how it stands; if nothing keeps the host awake, it has
     /// each — this one too — tick first (`Checked::TickNow`), and ends with the
     /// call after this instance's tick, by putting the host to sleep or not.
-    pub fn check(&mut self, now: u64, clock: impl Fn() -> u64) -> Option<Checked> {
+    /// A `run` told to stop (`stop`) while a check waits is not held up by it,
+    /// and does not put the host to sleep.
+    pub fn check(&mut self, now: u64, clock: impl Fn() -> u64, stop: &Stop) -> Option<Checked> {
         if let Some(asking) = self.asking.take() {
-            return Some(self.end(asking, clock));
+            return Some(self.end(asking, clock, stop));
         }
         if self.due().is_none_or(|due| due > now) {
             return None;
@@ -165,7 +184,11 @@ impl HostSleep {
         self.checked = Some(now);
         let standing = self.standing();
         let mut asked = vec![Asked::Answered(standing.clone())];
-        asked.extend(wait_for(self.ask("standing"), Duration::from_secs(ANSWERS_WITHIN), || {}));
+        let answers = Duration::from_secs(ANSWERS_WITHIN);
+        asked.extend(wait_for(self.ask("standing"), answers, || {}, || stop.told()));
+        if stop.told() {
+            return Some(Checked::Stopped);
+        }
         let awake = awake(standing.worked, &read_host(), &asked, now, self.wait);
         if !awake.is_empty() {
             return Some(Checked::Awake(awake));
@@ -176,9 +199,13 @@ impl HostSleep {
 
     /// Ends a check after this instance ticked: waits for the others it asked
     /// to tick, answering any that asks it meanwhile with how it stands now.
-    fn end(&mut self, asking: Vec<Asking>, clock: impl Fn() -> u64) -> Checked {
+    fn end(&mut self, asking: Vec<Asking>, clock: impl Fn() -> u64, stop: &Stop) -> Checked {
         let answering = || self.ticked_again();
-        let others = wait_for(asking, Duration::from_secs(TICKS_WITHIN), answering);
+        let ticks = Duration::from_secs(TICKS_WITHIN);
+        let others = wait_for(asking, ticks, answering, || stop.told());
+        if stop.told() {
+            return Checked::Stopped;
+        }
         let now = clock();
         self.checked = Some(now);
         let standing = self.standing();
@@ -216,15 +243,14 @@ impl HostSleep {
                 continue;
             }
             let instance = instance.to_string();
-            let connected =
-                named_inside(&self.dir, &name, |name| match UnixStream::connect(name) {
-                    Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
-                        // What a `run` killed with no goodbye left.
-                        let _ = std::fs::remove_file(name);
-                        Err(error)
-                    }
-                    connected => connected,
-                });
+            let connected = at(&self.dir, &name, |path| match UnixStream::connect(path) {
+                Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
+                    // What a `run` killed with no goodbye left.
+                    let _ = std::fs::remove_file(path);
+                    Err(error)
+                }
+                connected => connected,
+            });
             let Ok(stream) = connected else { continue };
             let what = what.to_string();
             let answer = std::thread::spawn(move || asked(stream, &what).ok());
@@ -243,11 +269,19 @@ impl Drop for HostSleep {
 }
 
 /// Waits up to `within` for every one of `asking` to answer, calling `meanwhile`
-/// as it waits → each as asking it came out: one that has not answered by then
-/// is silent.
-fn wait_for(asking: Vec<Asking>, within: Duration, meanwhile: impl Fn()) -> Vec<Asked> {
+/// as it waits, and no longer once `given_up` → each as asking it came out:
+/// one that has not answered by then is silent.
+fn wait_for(
+    asking: Vec<Asking>,
+    within: Duration,
+    meanwhile: impl Fn(),
+    given_up: impl Fn() -> bool,
+) -> Vec<Asked> {
     let started = Instant::now();
-    while started.elapsed() < within && asking.iter().any(|one| !one.answer.is_finished()) {
+    while started.elapsed() < within
+        && !given_up()
+        && asking.iter().any(|one| !one.answer.is_finished())
+    {
         meanwhile();
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -359,6 +393,25 @@ fn sleep_now() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_socket_is_reached_by_its_whole_path_and_from_inside_a_directory_too_deep_for_it() {
+        let _cwd = crate::wake::tests::CWD.lock().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let back = std::env::current_dir().unwrap();
+        let deep = root.path().join("d".repeat(120)).join("e".repeat(120));
+        for dir in [root.path().to_path_buf(), deep] {
+            std::fs::create_dir_all(&dir).unwrap();
+            let _listener = at(&dir, "alpha.sock", |path| UnixListener::bind(path)).unwrap();
+            assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
+            assert!(at(&dir, "alpha.sock", |path| UnixStream::connect(path)).is_ok());
+            assert_eq!(
+                std::env::current_dir().unwrap(),
+                back,
+                "the working directory is left alone"
+            );
+        }
+    }
 
     #[test]
     fn the_host_is_read_as_sysctl_and_ioreg_say_it() {

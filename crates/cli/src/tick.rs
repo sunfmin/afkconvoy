@@ -670,10 +670,16 @@ impl Said {
 /// Makes the check for host sleep that is due, if one is (`HostSleep::check`),
 /// and says how it ended: on stdout when it put the host to sleep, and in the
 /// log either way → whether the next tick is due now, the check waiting on it.
-fn check_host(host: &mut HostSleep, said: &Said, me: &Me, clock: &impl Fn() -> u64) -> bool {
-    let Some(checked) = host.check(clock(), clock) else { return false };
+fn check_host(
+    host: &mut HostSleep,
+    (said, me): (&Said, &Me),
+    stop: &Stop,
+    clock: &impl Fn() -> u64,
+) -> bool {
+    let Some(checked) = host.check(clock(), clock, stop) else { return false };
     let (slept, awake) = match checked {
         Checked::TickNow => return true,
+        Checked::Stopped => return false,
         Checked::Awake(awake) => (false, awake.iter().map(|awake| awake.said()).collect()),
         Checked::Slept => {
             println!(
@@ -802,7 +808,7 @@ pub fn run(
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
             live.show(panel::render(&shown));
         }
-        let mut due_now = check_host(&mut host, &said, me, &clock);
+        let mut due_now = check_host(&mut host, (&said, me), &stop, &clock);
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
@@ -816,7 +822,7 @@ pub fn run(
                 break;
             }
             left -= nap;
-            due_now = check_host(&mut host, &said, me, &clock);
+            due_now = check_host(&mut host, (&said, me), &stop, &clock);
         }
         if stop.told() {
             println!("stop: {}", stop_line(me));
