@@ -9,7 +9,7 @@ use flux_rs::{attrs::*, macros::qualifier};
 
 use crate::board::Stage;
 use crate::patrol::Standing;
-use crate::plan::{Status, WorkingSet};
+use crate::plan::{Mine, Status, WorkingSet};
 use crate::precedent;
 
 /// One thing a pass does.
@@ -365,34 +365,56 @@ where
         if sweep == Sweep::Stopped && set.locked_out(mine.number) {
             continue;
         }
-        let start = !mine.declared || slots.has_free();
-        let Some(step) = ending_step(sweep, mine.number, mine.status, start) else {
-            continue;
-        };
+        slots = end_claim(sweep, mine, slots, did, carry_out);
+    }
+    slots
+}
+
+/// One turn of `end_claims`: the step that may end `mine`, and the worker
+/// due on its issue started into the slot it freed → the slots after it.
+/// Apart from the loop, so that Flux checks each on its own: as one, the
+/// turn's every branch and what holds across turns were one query, which
+/// took the solver longer than the gate gives one.
+#[spec(fn(sweep: Sweep, mine: &Mine, slots: Slots[@s],
+        did: &mut Vec<(TickStep, Outcome)>, carry_out: &mut F)
+    -> Slots{after: after.held <= s.held && after.limit <= s.limit})]
+fn end_claim<F>(
+    sweep: Sweep,
+    mine: &Mine,
+    mut slots: Slots,
+    did: &mut Vec<(TickStep, Outcome)>,
+    carry_out: &mut F,
+) -> Slots
+where
+    F: FnMut(TickStep) -> Outcome,
+{
+    let start = !mine.declared || slots.has_free();
+    let Some(step) = ending_step(sweep, mine.number, mine.status, start) else {
+        return slots;
+    };
+    let outcome = carry_out(step);
+    did.push((step, outcome));
+    if mine.declared && outcome == Outcome::Continued && slots.has_free() {
+        slots.restart_declared();
+    }
+    let ended = outcome == Outcome::Done || outcome == Outcome::HandedOn;
+    if !ended || slots.held() == 0 {
+        return slots;
+    }
+    if !mine.declared {
+        slots.free();
+    } else if slots.limit() > 0 {
+        slots.drop_declared();
+    } else {
+        return slots;
+    }
+    if outcome == Outcome::HandedOn && mine.due.is_some() && slots.has_free() {
+        let step = TickStep::Dispatch { issue: mine.number };
         let outcome = carry_out(step);
         did.push((step, outcome));
-        if mine.declared && outcome == Outcome::Continued && slots.has_free() {
-            slots.restart_declared();
-        }
-        let ended = outcome == Outcome::Done || outcome == Outcome::HandedOn;
-        if !ended || slots.held() == 0 {
-            continue;
-        }
-        if !mine.declared {
-            slots.free();
-        } else if slots.limit() > 0 {
-            slots.drop_declared();
-        } else {
-            continue;
-        }
-        if outcome == Outcome::HandedOn && mine.due.is_some() && slots.has_free() {
-            let step = TickStep::Dispatch { issue: mine.number };
-            let outcome = carry_out(step);
-            did.push((step, outcome));
-            // A start that failed after its claim was won still holds the claim.
-            if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone) {
-                slots.take();
-            }
+        // A start that failed after its claim was won still holds the claim.
+        if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone) {
+            slots.take();
         }
     }
     slots
@@ -722,7 +744,7 @@ mod relied_on {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{Dispatchable, Mine};
+    use crate::plan::Dispatchable;
 
     fn set(frontier: &[u64], mine: &[(u64, Status)]) -> WorkingSet {
         WorkingSet {
