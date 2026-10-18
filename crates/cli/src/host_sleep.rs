@@ -58,6 +58,8 @@ pub enum Checked {
 pub struct HostSleep {
     dir: PathBuf,
     name: String,
+    /// Whether it listens there: what it removes as it is dropped.
+    listening: bool,
     shared: Arc<Mutex<Shared>>,
     /// Whether this instance puts the host to sleep: not told `--no-host-sleep`.
     on: bool,
@@ -95,17 +97,21 @@ impl HostSleep {
                 UnixListener::bind(name)
             })
         });
-        match listener {
+        let listening = match listener {
             Ok(listener) => {
                 let shared = shared.clone();
                 std::thread::spawn(move || serve(listener, shared, waker));
+                true
             }
-            Err(error) => eprintln!(
-                "warning: the other fleets on this host cannot see this run, which they do not \
-                 wait for to put the host to sleep: {error:#}"
-            ),
-        }
-        HostSleep { dir, name, shared, on, wait, checked: None, asking: None }
+            Err(error) => {
+                eprintln!(
+                    "warning: the other fleets on this host cannot see this run, which they do \
+                     not wait for to put the host to sleep: {error:#}"
+                );
+                false
+            }
+        };
+        HostSleep { dir, name, listening, shared, on, wait, checked: None, asking: None }
     }
 
     /// Says how this instance stands after a tick at `now`: idle or not, and
@@ -230,7 +236,9 @@ impl HostSleep {
 
 impl Drop for HostSleep {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.dir.join(&self.name));
+        if self.listening {
+            let _ = std::fs::remove_file(self.dir.join(&self.name));
+        }
     }
 }
 
