@@ -68,7 +68,7 @@ pub fn survey(fleet: &Fleet, number: u64) -> Result<Survey> {
 pub fn recovery(fleet: &Fleet, number: u64) -> Result<Value> {
     let mut found = survey(fleet, number)?;
     if fleet.scan.claim_of(number).is_none() {
-        found.plan = found.plan.resumed();
+        found.plan = found.plan.taken_up();
     }
     let names: Vec<&str> = found.candidates.iter().map(|pushed| pushed.name.as_str()).collect();
     Ok(json!({

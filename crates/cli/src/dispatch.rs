@@ -124,7 +124,7 @@ pub fn dispatch(
             DispatchStep::Survey => {
                 let surveyed = survey(fleet, number)?;
                 // An open PR on an issue no claim held is one a released claim kept.
-                plan = if held { surveyed.plan.clone() } else { surveyed.plan.clone().resumed() };
+                plan = if held { surveyed.plan.clone() } else { surveyed.plan.clone().taken_up() };
                 found = Some(surveyed);
             }
             DispatchStep::Discard => discarded = Some(discard_attempt(fleet, number)?),

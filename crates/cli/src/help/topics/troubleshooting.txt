@@ -22,9 +22,8 @@ WHAT `doctor` FINDS — critical: the fleet does not work until it is fixed
   does not know this checkout
       orca was never given the checkout worktrees are cut from. Run `fix`, once.
   cannot start a worker
-      The first word of a worker launch command resolves to nothing in a login shell: an
-      alias your own shell has and a login shell lacks. Name one that resolves with
-      `--worker-command`: `afkconvoy run --help`.
+      The first word of a worker launch command resolves to nothing in a login shell, as
+      an alias of your own shell's may. Name one that does: `afkconvoy run --help`.
   cannot start a worker in its role
       In a bound repo the worker launch command must end in its harness, taking flags:
       the fleet adds what puts the worker in its role. `afkconvoy run --help`.
@@ -51,8 +50,7 @@ fleet mid-step: run `doctor` again after a tick before you act on one.
   has no worker
       A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
   has been stopped for
-      A worker stopped half an hour ago and declared nothing. Read its terminal, in
-      the worktree `evidence` names; `fix` nudges it.
+      A worker stopped half an hour ago and declared nothing: read its terminal; `fix`.
   the last tick started no worker
       Slots are free, the frontier is not empty, and nothing was dispatched: `evidence`
       is the tick's line, and `fix` the step that failed or the dispatch by hand.
@@ -68,6 +66,8 @@ fleet mid-step: run `doctor` again after a tick before you act on one.
       A patrol is not run while that many of its issues are open. Close some, or raise it.
   has waited for a human for
       Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
+  is held off by a PR not the fleet's
+      No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
   the gate is slow
       On one host, the last 5 landings with a recorded gate run all took more than 80%
       of the gate limit. A tick opens one issue for the fleet to make the gate faster:

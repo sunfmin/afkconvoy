@@ -331,7 +331,7 @@ pub struct Observed<'a> {
     pub joined: &'a [u64],
     /// The open issues whose open PR is the fleet's own: its branch is one
     /// the fleet recorded on the issue. Unclaimed, it is a PR an escalation
-    /// or a park kept, which a worker resumes.
+    /// or a park kept, which a worker takes up.
     pub kept: &'a [u64],
     /// My open issues the landing train landed under my claim.
     pub landed: &'a [u64],
@@ -695,7 +695,7 @@ mod tests {
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
-        assert_eq!(frontier, [1], "an escalation or a park kept its PR: it is resumed");
+        assert_eq!(frontier, [1], "an escalation or a park kept its PR: it is taken up");
         let reasons: Vec<(u64, &str)> =
             set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
         assert_eq!(reasons, [(2, "already claimed"), (3, ON_TRAIN), (4, NOT_OURS)]);

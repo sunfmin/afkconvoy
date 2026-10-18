@@ -38,7 +38,9 @@ ONE ISSUE, IN AN UNBOUND REPO
 
   1. Intake. A human puts the ready label on the issue. It is on the frontier once it
      is open, unclaimed, under no epic label, with no open blocker and no open PR
-     linked to it. `afkconvoy plan` shows the frontier, and why each other issue waits.
+     linked to it but one of the fleet's own that an escalation or a park kept, off the
+     landing train: its worker takes that PR up. `afkconvoy plan` shows the frontier,
+     and why each other issue waits.
   2. Dispatch. A tick claims it and starts a worker in a new worktree, on a new branch
      cut from the base branch, with a prompt that names the issue and every command
      the worker ends with.

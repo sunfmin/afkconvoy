@@ -103,10 +103,10 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
 
-/// The brief of a worker that resumes a PR a released claim kept: the issue
+/// The brief of a worker that takes up a PR a released claim kept: the issue
 /// went to a human, or was parked, and is the fleet's again.
-const RESUMER: &str = "\
-You are an afkconvoy worker resuming an issue that is the fleet's again: PR #{pr} is open for it,
+const TAKER: &str = "\
+You are an afkconvoy worker taking up an issue that is the fleet's again: PR #{pr} is open for it,
 kept when an earlier worker's claim was released — the issue was escalated or parked — and is not
 on the landing train. The PR already exists: your job is to finish it and get it on the train. Open
 no other PR. Nobody reads this terminal: never wait for an answer.
@@ -895,9 +895,9 @@ fn prompt(
             let joiner = JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" });
             (steps(&joiner, "2", "3", " — your PR is on the landing train"), pr.to_string())
         }
-        Variant::Resume { pr } => {
+        Variant::TakeUp { pr } => {
             let outcomes = " — your PR is on the landing train, or your comment is posted";
-            (steps(RESUMER, "3", "4", outcomes), pr.to_string())
+            (steps(TAKER, "3", "4", outcomes), pr.to_string())
         }
     };
     fill(
@@ -1071,8 +1071,8 @@ mod tests {
     }
 
     #[test]
-    fn a_resuming_worker_is_told_its_pr_exists_and_to_merge_the_base_gate_and_land() {
-        let prompt = worker_prompt(&fields(), Variant::Resume { pr: 70 }).unwrap();
+    fn a_worker_taking_up_a_pr_is_told_its_pr_exists_and_to_merge_the_base_gate_and_land() {
+        let prompt = worker_prompt(&fields(), Variant::TakeUp { pr: 70 }).unwrap();
         assert!(prompt.contains("PR #70 is open for it"));
         assert!(prompt.contains("The PR already exists"));
         assert!(prompt.contains("**Your PR:** #70, from the branch `tester/issue-7-add`"));
