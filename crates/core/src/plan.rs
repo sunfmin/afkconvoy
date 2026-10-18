@@ -143,6 +143,9 @@ pub enum Status {
     Landed,
     /// The issue is closed: the claim is to be settled and released.
     Closed,
+    /// GitHub says the issue was deleted, or transferred to another repo:
+    /// nothing is left to settle, and the claim is let go.
+    Gone,
     /// A bound repo's claim on an open issue that is not a landing worker's:
     /// it was dispatched to a stage, and what that stage declares is what
     /// ends it. An open PR says nothing.
@@ -152,7 +155,7 @@ pub enum Status {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Mine {
     pub number: u64,
-    /// `None` when the issue is closed: only open issues are gathered.
+    /// `None` when the issue is closed or gone: only open issues are gathered.
     pub title: Option<String>,
     pub status: Status,
     pub pr: Option<u64>,
@@ -201,8 +204,13 @@ pub struct WorkingSet {
     pub peer_live: Vec<PeerClaim>,
     /// Claims of peers presumed dead, on open issues: work to take.
     pub stale: Vec<PeerClaim>,
-    /// Claims of peers presumed dead, on closed issues: locks to delete.
+    /// Claims of peers presumed dead, on closed or gone issues: locks to
+    /// delete.
     pub stale_closed: Vec<PeerClaim>,
+    /// The claimed issues GitHub says were deleted or transferred, whoever
+    /// holds the claim, lowest number first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gone: Vec<u64>,
     /// How many more claims this fleet may take.
     pub free_slots: usize,
     pub now: u64,
@@ -327,6 +335,8 @@ pub struct Observed<'a> {
     pub heartbeats: &'a [(String, u64)],
     /// The claimed issues that are closed (`issues` holds only open ones).
     pub closed: &'a [u64],
+    /// The claimed issues GitHub says were deleted or transferred.
+    pub gone: &'a [u64],
     /// The issues whose open PR is on the landing train at its current head.
     pub joined: &'a [u64],
     /// The open issues whose open PR is the fleet's own: its branch is one
@@ -445,6 +455,11 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         peer_live: vec![],
         stale: vec![],
         stale_closed: vec![],
+        gone: claims
+            .iter()
+            .map(|claim| claim.number)
+            .filter(|number| seen.gone.contains(number))
+            .collect(),
         free_slots: 0,
         now,
         locks: lock::standing(seen.issues, config),
@@ -499,10 +514,13 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     // Stable: lowest number first on either side.
     set.frontier.sort_by_key(|issue| !seen.begun.contains(&issue.number));
     for claim in claims {
-        let closed = seen.closed.contains(&claim.number);
+        let gone = seen.gone.contains(&claim.number);
+        let closed = gone || seen.closed.contains(&claim.number);
         if me.is_some_and(|me| claim.is_held_by(me)) {
             let pr = closing_pr(seen.prs, claim.number).map(|pr| pr.number);
-            let status = if closed {
+            let status = if gone {
+                Status::Gone
+            } else if closed {
                 Status::Closed
             } else if seen.landed.contains(&claim.number) {
                 Status::Landed
@@ -640,6 +658,7 @@ mod tests {
             claims: &[claim(4, "peer")],
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
+            gone: &[],
             joined: &[],
             kept: &[],
             landed: &[],
@@ -679,6 +698,7 @@ mod tests {
             claims: &[claim(2, "peer")],
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
+            gone: &[],
             joined: &[3],
             // #1's, #2's and #3's PRs are the fleet's; #4's is somebody else's.
             kept: &[1, 2, 3],
@@ -713,6 +733,7 @@ mod tests {
             claims: &[claim(4, "peer")],
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
+            gone: &[],
             joined: &[],
             kept: &[],
             landed: &[],
@@ -770,6 +791,7 @@ mod tests {
             claims,
             heartbeats: &[],
             closed: &[],
+            gone: &[],
             joined: &[],
             kept: &[],
             landed: &[],
@@ -846,6 +868,7 @@ mod tests {
             claims: &[],
             heartbeats: &[],
             closed: &[],
+            gone: &[],
             joined: &[],
             kept: &[],
             landed: &[],
@@ -956,6 +979,7 @@ mod tests {
             claims: &[claim(10, "peer")],
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
+            gone: &[],
             joined: &[],
             kept: &[],
             landed: &[],
@@ -1034,6 +1058,7 @@ mod tests {
             claims: &[&claims[..], &[claim(10, "me")]].concat(),
             heartbeats: &[],
             closed: &[6],
+            gone: &[],
             joined: &[8],
             kept: &[],
             landed: &[],
@@ -1089,6 +1114,7 @@ mod tests {
                 ("me".into(), 1),
             ],
             closed: &[4, 6],
+            gone: &[],
             joined: &[8],
             kept: &[],
             landed: &[9],
@@ -1134,6 +1160,7 @@ mod tests {
             claims: &[claim(1, "peer")],
             heartbeats: &[("peer".into(), 5000)],
             closed: &[],
+            gone: &[],
             joined: &[],
             kept: &[],
             landed: &[],
@@ -1172,6 +1199,7 @@ mod tests {
                     claims,
                     heartbeats: beats,
                     closed: &[9],
+                    gone: &[],
                     joined: &[],
                     kept: &[],
                     landed: &[],

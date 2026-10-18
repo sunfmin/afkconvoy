@@ -12,6 +12,9 @@
 //! `prs_of` {owner/repo: [{number, headRefName, state, closed_with?}]}: the
 //! PRs of those, each from a branch of the repo that stands in; what one
 //! changes is that branch against the default one.
+//! `deleted` and `transferred` {number: how many more calls about it are
+//! answered}: past those, each call about the issue answers 410 — or 404 —
+//! as GitHub does for an issue deleted, or transferred to another repo.
 
 mod fake;
 
@@ -248,6 +251,18 @@ fn api(st: &mut State) -> ! {
     let body = st.argv.iter().find_map(|a| a.strip_prefix("body=")).map(str::to_string);
     let (path, query) = endpoint.split_once('?').unwrap_or((endpoint, ""));
     let parts: Vec<&str> = path.split('/').collect();
+    if let ["issues", number, ..] = parts.as_slice() {
+        for (key, said) in [
+            ("deleted", "gh: This issue was deleted (HTTP 410)\n"),
+            ("transferred", "gh: Not Found (HTTP 404)\n"),
+        ] {
+            let Some(left) = st.doc[key].get_mut(*number) else { continue };
+            match left.as_u64().unwrap_or(0) {
+                0 => st.finish("", 1, said),
+                more => *left = json!(more - 1),
+            }
+        }
+    }
     let jq = st.opt("--jq").map(str::to_string);
     let jq = jq.as_deref();
     match parts.as_slice() {

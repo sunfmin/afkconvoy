@@ -68,6 +68,9 @@ fleet mid-step: run `doctor` again after a tick before you act on one.
       Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
   is held off by a PR not the fleet's
       No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
+  is claimed but GitHub has it no more
+      The issue was deleted or transferred. Its fleet's next tick releases the claim;
+      `fix` deletes it by hand, for a fleet that is not running.
   the gate is slow
       On one host, the last 5 landings with a recorded gate run all took more than 80%
       of the gate limit. A tick opens one issue for the fleet to make the gate faster:

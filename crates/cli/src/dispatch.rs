@@ -6,6 +6,7 @@ use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
 use afkconvoy_core::prompt::{WorkerFields, worker_prompt};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
+use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::worker::{
     DispatchStep, branch_comment, dispatch_steps, recorded_branches, worktree_name,
 };
@@ -14,7 +15,8 @@ use serde_json::{Value, json};
 
 use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
-use crate::gh::IssueRead;
+use crate::forget::forget;
+use crate::gh::{IssueRead, gone};
 use crate::git::REMOTE;
 use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
@@ -60,9 +62,13 @@ pub enum StartFrom {
 ///   {"started": false, "claim": "lost", "owner": {…}}   a peer holds the issue
 ///   {"started": false, "skipped": "blocked", "blocked_by": [n…]}
 ///                                  an open blocker, read just before the claim
+///   {"started": false, "gone": "deleted"|"transferred", "released": bool}
+///                                  GitHub says the issue is gone: a claim held
+///                                  on it is let go (`forget`)
 ///
 /// A step that fails is an error with the claim still held: the next tick
-/// finds a claim with no worker and continues it. Nothing is torn down unless
+/// finds a claim with no worker and continues it — but on an issue that is
+/// gone, which no worker is started on again. Nothing is torn down unless
 /// `from` is `Fresh`.
 pub fn dispatch(
     fleet: &mut Fleet,
@@ -71,6 +77,23 @@ pub fn dispatch(
     number: u64,
     from: StartFrom,
 ) -> Result<Value> {
+    let started = start(fleet, me, agent, number, from);
+    let Some(how) = started.as_ref().err().and_then(gone).cloned() else { return started };
+    let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
+    let released = held && forget(fleet, me, number)? == Outcome::Done;
+    if held && !released {
+        // GitHub has it after all: the failure is as it was.
+        return started;
+    }
+    if !released {
+        fleet.forgotten.push((how.clone(), false));
+    }
+    let said = if how.deleted { "deleted" } else { "transferred" };
+    Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
+}
+
+/// `dispatch`, but for an issue found gone on the way, which it fails on.
+fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom) -> Result<Value> {
     let issue = fleet.gh.issue(number)?;
     if issue.is_closed() {
         // before the claim: never lock a closed issue

@@ -261,3 +261,99 @@ fn a_failed_step_shows_in_the_line() {
     assert!(!lines[0].contains("nothing to do"), "{lines:?}");
     assert!(lines[0].starts_with("tick 1: holding 1/2 · frontier 0 · FAILED"), "{lines:?}");
 }
+
+/// Takes issue `number` off the stand-in GitHub as `how` — `deleted` or
+/// `transferred` — once `calls` more calls about it are answered.
+fn gone(world: &World, number: u64, how: &str, calls: u64) {
+    world.with_gh(|gh| {
+        if calls == 0 {
+            gh["issues"].as_array_mut().unwrap().retain(|issue| issue["number"] != number);
+        }
+        gh[how] = json!({ number.to_string(): calls });
+    });
+}
+
+#[test]
+fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
+    for (how, said) in [("deleted", "#3 was deleted"), ("transferred", "#3 is gone from this repo")]
+    {
+        let world = backlog(&[3, 5, 9]);
+        tick(&world, "1000");
+        let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
+        gone(&world, 3, how, 0);
+
+        let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1090"]);
+        assert_eq!(
+            lines,
+            [format!(
+                "tick 1: {said}: released its claim · dispatched #9 · holding 2/2 · frontier 0 · \
+                 next in 90s"
+            )],
+            "{how}"
+        );
+        assert_eq!(world.claims(), alpha(&[5, 9]), "{how}");
+        // it held nothing the remote does not
+        assert!(!std::path::Path::new(&worktree).exists(), "{how}: the worktree is removed");
+        // nothing is written on an issue that is gone
+        assert_eq!(world.boards(3).len(), 1, "{how}: only the board of its dispatch");
+    }
+}
+
+#[test]
+fn a_tick_lets_go_of_a_deleted_issue_in_its_answer_with_no_error() {
+    let world = backlog(&[3, 5]);
+    tick(&world, "1000");
+    gone(&world, 3, "deleted", 0);
+    let ticked = tick(&world, "1090");
+    assert_eq!(did(&ticked), ["forget 3 done", "heartbeat done"]);
+    assert_eq!(ticked["errors"], json!([]));
+}
+
+#[test]
+fn an_issue_deleted_during_its_own_dispatch_leaves_no_claim_behind() {
+    let world = backlog(&[3, 5]);
+    // answered as the dispatch reads it and its blockers; deleted once it is claimed
+    gone(&world, 3, "deleted", 2);
+    let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+    assert_eq!(
+        lines,
+        ["tick 1: #3 was deleted: released its claim · dispatched #5 · holding 1/2 · frontier \
+             0 · next in 90s"]
+    );
+    assert_eq!(world.claims(), alpha(&[5]));
+}
+
+#[test]
+fn an_issue_deleted_before_its_dispatch_claims_nothing_and_takes_no_slot() {
+    let world = backlog(&[3, 5, 9]);
+    gone(&world, 3, "deleted", 0);
+    // the rebuild's list still had it
+    world.with_gh(|gh| {
+        gh["issues"].as_array_mut().unwrap().push(json!({"number": 3,
+        "title": "Issue 3", "labels": ["ready-for-agent"], "state": "open"}))
+    });
+    let ticked = tick(&world, "1000");
+    assert_eq!(
+        did(&ticked),
+        ["dispatch 3 gone", "dispatch 5 done", "dispatch 9 done", "heartbeat done"]
+    );
+    assert_eq!(world.claims(), alpha(&[5, 9]));
+}
+
+#[test]
+fn a_claimed_issue_the_rebuild_cannot_read_is_an_error_of_that_tick_alone() {
+    let world = backlog(&[3, 5, 9]);
+    tick(&world, "1000");
+    world.with_gh(|gh| {
+        gh["issues"].as_array_mut().unwrap().retain(|issue| issue["number"] != 3);
+        gh["fail"] = json!(["issues/3 --jq"]);
+    });
+    world.close_issue(5);
+    let ticked = tick(&world, "1090");
+    assert_eq!(ticked["errors"][0]["do"], "read");
+    assert_eq!(ticked["errors"][0]["issue"], 3);
+    assert!(ticked["errors"][0]["error"].as_str().unwrap().contains("injected failure"));
+    // the rest of the tick is still made
+    assert_eq!(did(&ticked)[..2], ["settle 5 done", "dispatch 9 done"]);
+    assert_eq!(world.claims(), alpha(&[3, 9]));
+}

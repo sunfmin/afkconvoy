@@ -30,6 +30,7 @@ pub mod dispatch;
 pub mod doctor;
 pub mod fleet;
 pub mod flows;
+pub mod forget;
 pub mod gate;
 pub mod gh;
 pub mod git;
@@ -792,7 +793,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 None => probe::startup(now, &launches)?,
             };
             probe::announce(&warnings);
-            let (fleet, open) = Fleet::read(now)?;
+            let (mut fleet, open) = Fleet::read(now)?;
             let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
             let mut plan = serde_json::to_value(set)?;
             if let Some(bound) = &fleet.config.bound {
@@ -811,7 +812,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Panel { open: true, port, .. } => opening::open(&Repo::here()?, port),
         Command::Panel { instance, host, .. } => {
-            let (fleet, open) = Fleet::read(now)?;
+            let (mut fleet, open) = Fleet::read(now)?;
             let host = host.unwrap_or_else(this_host);
             let me = instance.map(|instance| Me { instance, host, now });
             let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
