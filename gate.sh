@@ -25,11 +25,11 @@ stop_tree() {
     for child in $(pgrep -P "$1"); do stop_tree "$child"; done
     kill "$1" 2>/dev/null || true
 }
-# Flux is given FLUX_SECONDS, two minutes unless the caller says otherwise:
-# one that runs past it — a solver query that never ends, a host too busy to
+# Flux is given three minutes, and no caller can give it more: one that runs
+# past them — a solver query that never ends, a host too busy to
 # give it a core — is stopped, and the gate fails saying so, instead of
 # waiting for it however long it takes.
-flux_limit=${FLUX_SECONDS:-120}
+flux_limit=180
 (
     sleep "$flux_limit"
     touch "$flux_log.late"
@@ -73,7 +73,7 @@ stop_tree "$watch_pid"
 # Reaped here, the watch stopped says nothing of being stopped.
 wait "$watch_pid" 2>/dev/null || true
 if [ -e "$flux_log.late" ]; then
-    echo "gate: Flux ran past its limit of ${flux_limit}s on the core crate and was stopped. Flux says what each function took only once it ends, so none is known; this host's load was $(uptime | sed 's/.*load averages*: //') on $(getconf _NPROCESSORS_ONLN) cores. Check part of the crate with ./verify.sh <name>, or give Flux longer with FLUX_SECONDS=<seconds>" >&2
+    echo "gate: Flux ran past its limit of ${flux_limit}s on the core crate and was stopped. Flux says what each function took only once it ends, so none is known; this host's load was $(uptime | sed 's/.*load averages*: //') on $(getconf _NPROCESSORS_ONLN) cores. Check part of the crate with ./verify.sh <name>" >&2
     exit 1
 fi
 core_summary=$(awk '
