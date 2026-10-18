@@ -1153,6 +1153,37 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_on_an_issue_that_is_gone_is_let_go_by_its_holder_and_unlocked_if_stale() {
+        let claims = [claim(1, "me"), claim(2, "live"), claim(3, "dead"), claim(4, "me")];
+        let seen = Observed {
+            issues: &[],
+            prs: &[],
+            claims: &claims,
+            heartbeats: &[("live".into(), 10_000), ("dead".into(), 9_999 - LEASE)],
+            closed: &[4],
+            gone: &[1, 2, 3],
+            joined: &[],
+            kept: &[],
+            landed: &[],
+            declared: &[],
+            due: &[],
+            landing: &[],
+            begun: &[],
+            patrols: &[],
+            proposals: &precedent::Seen::default(),
+            waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
+        };
+        let set = assemble(&seen, Some(&me()), 10_000, &config(5));
+        let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.title.clone())).collect();
+        assert_eq!(mine, [(1, Status::Gone, None), (4, Status::Closed, None)]);
+        assert_eq!(set.peer_live.iter().map(|c| c.number).collect::<Vec<_>>(), [2]);
+        assert_eq!(set.stale_closed.iter().map(|c| c.number).collect::<Vec<_>>(), [3]);
+        assert_eq!(set.gone, [1, 2, 3]);
+    }
+
+    #[test]
     fn a_heartbeat_from_the_future_is_stale() {
         let seen = Observed {
             issues: &[issue(1, READY)],

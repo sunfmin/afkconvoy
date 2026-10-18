@@ -632,6 +632,23 @@ mod tests {
     }
 
     #[test]
+    fn forgetting_releases_first_writes_no_board_and_removes_only_a_spare_worktree() {
+        use ForgetStep::*;
+        let run = |spare: Option<&Spare>, fail_at: Option<ForgetStep>| {
+            let mut steps = vec![];
+            let done = forget(7, spare, |step| {
+                steps.push(step);
+                if Some(step) == fail_at { Err("cut") } else { Ok(()) }
+            });
+            (done.map(|released| released.issue), steps)
+        };
+        assert_eq!(run(None, None), (Ok(7), vec![Release, CloseTerminal]));
+        let left = Left::of(&Held { dirty: false, unpushed: Some(0) });
+        assert_eq!(run(left.spare(), None), (Ok(7), vec![Release, RemoveWorktree]));
+        assert_eq!(run(None, Some(Release)), (Err("cut"), vec![Release]), "still held");
+    }
+
+    #[test]
     fn park_writes_every_edge_before_it_releases() {
         let waiting = [(41, Standing::Waiting), (42, Standing::Closed), (43, Standing::Waiting)];
         let Blocked::Park(parkable) = blocked_route(&waiting) else { panic!() };

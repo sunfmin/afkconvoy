@@ -1173,6 +1173,37 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_whose_issue_is_gone_is_let_go_first_and_its_slot_refilled() {
+        let set = set(&[5, 6], &[(1, Status::NoPr), (2, Status::Gone)]);
+        let pass = run_pass(&set, 2, 2, left_at_work);
+        assert_eq!(
+            steps(&pass),
+            [
+                Forget { issue: 2 },
+                Judge { issue: 1, start: true },
+                Dispatch { issue: 5 },
+                Heartbeat
+            ]
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (2, 1));
+    }
+
+    #[test]
+    fn an_issue_a_dispatch_finds_gone_gives_its_slot_to_the_next_frontier_issue() {
+        let set = set(&[5, 6, 7], &[]);
+        let pass = run_pass(&set, 2, 0, |step| match step {
+            Dispatch { issue: 5 } => Gone,
+            _ => Done,
+        });
+        let steps = steps(&pass);
+        assert_eq!(
+            steps,
+            [Dispatch { issue: 5 }, Dispatch { issue: 6 }, Dispatch { issue: 7 }, Heartbeat]
+        );
+        assert_eq!(pass.held, 2);
+    }
+
+    #[test]
     fn a_claim_is_taken_only_into_a_free_slot() {
         let over = set(&[5, 6], &[(1, Status::NoPr), (2, Status::NoPr), (3, Status::NoPr)]);
         let pass = run_pass(&over, 2, 3, left_at_work);
