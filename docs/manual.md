@@ -62,7 +62,9 @@ the worker that wrote it before it lands.
 
 1. Intake. A human puts the ready label on the issue. It is on the frontier once it
    is open, unclaimed, under no epic label, with no open blocker and no open PR
-   linked to it. `afkconvoy plan` shows the frontier, and why each other issue waits.
+   linked to it but one of the fleet's own that an escalation or a park kept, off the
+   landing train: its worker takes that PR up. `afkconvoy plan` shows the frontier,
+   and why each other issue waits.
 2. Dispatch. A tick claims it and starts a worker in a new worktree, on a new branch
    cut from the base branch, with a prompt that names the issue and every command
    the worker ends with.
@@ -1042,7 +1044,9 @@ and for an `escalate` gives the question, often with the options.
 For a failure, fix what failed first: a ruling starts the same stage anew, and what
 failed it once fails it again. In an unbound repo there is no stage to run again:
 fix what the comment names and put the ready label back, with the line the comment
-ends with.
+ends with. A PR the escalation kept is not started anew: the next worker takes it up
+— it reads the issue's comments, merges the base branch, gates and joins the
+landing train — so say on the issue what is to be done on it.
 ````
 
 ### A TRIPPED BREAKER
@@ -1157,9 +1161,8 @@ cannot be asked about this checkout
 does not know this checkout
     orca was never given the checkout worktrees are cut from. Run `fix`, once.
 cannot start a worker
-    The first word of a worker launch command resolves to nothing in a login shell: an
-    alias your own shell has and a login shell lacks. Name one that resolves with
-    `--worker-command`: `afkconvoy run --help`.
+    The first word of a worker launch command resolves to nothing in a login shell, as
+    an alias of your own shell's may. Name one that does: `afkconvoy run --help`.
 cannot start a worker in its role
     In a bound repo the worker launch command must end in its harness, taking flags:
     the fleet adds what puts the worker in its role. `afkconvoy run --help`.
@@ -1187,8 +1190,7 @@ the fleet's state cannot be read
 has no worker
     A claim's worker is gone; a tick starts one. `fix` is for a claim it leaves so.
 has been stopped for
-    A worker stopped half an hour ago and declared nothing. Read its terminal, in
-    the worktree `evidence` names; `fix` nudges it.
+    A worker stopped half an hour ago and declared nothing: read its terminal; `fix`.
 the last tick started no worker
     Slots are free, the frontier is not empty, and nothing was dispatched: `evidence`
     is the tick's line, and `fix` the step that failed or the dispatch by hand.
@@ -1204,6 +1206,8 @@ have reached its `max_open`
     A patrol is not run while that many of its issues are open. Close some, or raise it.
 has waited for a human for
     Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
+is held off by a PR not the fleet's
+    No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
 the gate is slow
     On one host, the last 5 landings with a recorded gate run all took more than 80%
     of the gate limit. A tick opens one issue for the fleet to make the gate faster:
@@ -1309,7 +1313,7 @@ The read-only pass at the top of every tick that derives the working set. Any fl
 _Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:
-The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR. While a fleet lock stands: of these, the lock issues only.
+The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, off the landing train — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
 _Avoid_: queue, backlog (all the issues a repo has open)
 
 **Base branch**:

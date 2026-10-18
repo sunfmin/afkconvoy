@@ -67,9 +67,10 @@ WHAT IT ANSWERS
                1 reuse_worktree — the worktree is still on this host; 2 recreate_at_tip
                — a new worktree at the issue's pushed branch; 3 dispatch_fresh — a new
                worktree at the base branch
-    prompt     the brief the worker got: fresh, continue, or join (its PR is open: only
-               the join is left) — in a bound repo, stage, consult, or join for a
-               landing worker
+    prompt     the brief the worker got: fresh, continue, join (its PR is open: only
+               the join is left), or take_up (its PR is open and no claim held it: an
+               escalation or a park kept it — merge the base branch, gate, join) — in a
+               bound repo, stage, consult, or join for a landing worker
     stage      in a bound repo: {flow, name, role, skill, writes, consult, harness, model,
                role_commit, role_dir, team_commit, team_dir} — the stage the worker
                performs, and the copies and commits fixed for it; name is `land` for a

@@ -34,7 +34,9 @@ AN ESCALATION
   For a failure, fix what failed first: a ruling starts the same stage anew, and what
   failed it once fails it again. In an unbound repo there is no stage to run again:
   fix what the comment names and put the ready label back, with the line the comment
-  ends with.
+  ends with. A PR the escalation kept is not started anew: the next worker takes it up
+  — it reads the issue's comments, merges the base branch, gates and joins the
+  landing train — so say on the issue what is to be done on it.
 
 A TRIPPED BREAKER
 

@@ -62,6 +62,14 @@ pub fn closing_pr(prs: &[PullRequest], number: u64) -> Option<&PullRequest> {
     latest
 }
 
+/// Why an unclaimed issue of an unbound repo is held off when an open PR it
+/// is closed by is not the fleet's: a worker would open a second one.
+pub const NOT_OURS: &str = "has an open linked PR";
+
+/// Why an unclaimed issue of an unbound repo is held off when its open PR is
+/// on the landing train: the train lands it.
+pub const ON_TRAIN: &str = "its open PR is on the landing train";
+
 /// Why an issue's labels keep a fleet from dispatching it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LabelBar {
@@ -321,6 +329,10 @@ pub struct Observed<'a> {
     pub closed: &'a [u64],
     /// The issues whose open PR is on the landing train at its current head.
     pub joined: &'a [u64],
+    /// The open issues whose open PR is the fleet's own: its branch is one
+    /// the fleet recorded on the issue. Unclaimed, it is a PR an escalation
+    /// or a park kept, which a worker takes up.
+    pub kept: &'a [u64],
     /// My open issues the landing train landed under my claim.
     pub landed: &'a [u64],
     /// My claimed issues with a verdict declared under the claim and not
@@ -472,8 +484,10 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                     continue;
                 }
             }
-        } else if closing_pr(seen.prs, number).is_some() {
-            "has an open linked PR".to_string()
+        } else if closing_pr(seen.prs, number).is_some() && seen.joined.contains(&number) {
+            ON_TRAIN.to_string()
+        } else if closing_pr(seen.prs, number).is_some() && !seen.kept.contains(&number) {
+            NOT_OURS.to_string()
         } else if issue.open_blockers > 0 {
             format!("{} open blocker(s)", issue.open_blockers)
         } else {
@@ -627,6 +641,7 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             joined: &[],
+            kept: &[],
             landed: &[],
             declared: &[],
             due: &[],
@@ -656,6 +671,37 @@ mod tests {
     }
 
     #[test]
+    fn an_unclaimed_issue_whose_kept_pr_nothing_live_owns_is_on_the_frontier() {
+        let issues = [issue(1, READY), issue(2, READY), issue(3, READY), issue(4, READY)];
+        let seen = Observed {
+            issues: &issues,
+            prs: &[pr(10, 1), pr(20, 2), pr(30, 3), pr(40, 4)],
+            claims: &[claim(2, "peer")],
+            heartbeats: &[("peer".into(), 1000)],
+            closed: &[],
+            joined: &[3],
+            // #1's, #2's and #3's PRs are the fleet's; #4's is somebody else's.
+            kept: &[1, 2, 3],
+            landed: &[],
+            declared: &[],
+            due: &[],
+            landing: &[],
+            begun: &[],
+            patrols: &[],
+            proposals: &precedent::Seen::default(),
+            waiting: &[],
+            landings: &[],
+            slow_gate: &Reported::NONE,
+        };
+        let set = assemble(&seen, Some(&me()), 1000, &config(3));
+        let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
+        assert_eq!(frontier, [1], "an escalation or a park kept its PR: it is taken up");
+        let reasons: Vec<(u64, &str)> =
+            set.excluded.iter().map(|e| (e.number, e.reason.as_str())).collect();
+        assert_eq!(reasons, [(2, "already claimed"), (3, ON_TRAIN), (4, NOT_OURS)]);
+    }
+
+    #[test]
     fn an_escalated_issue_is_excluded_as_escalated_and_waits_for_a_human() {
         use crate::waiting::Back;
         let back = || Back::Ready { ready: "ready-for-agent".into(), escalate: "stuck".into() };
@@ -668,6 +714,7 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             joined: &[],
+            kept: &[],
             landed: &[],
             declared: &[],
             due: &[],
@@ -724,6 +771,7 @@ mod tests {
             heartbeats: &[],
             closed: &[],
             joined: &[],
+            kept: &[],
             landed: &[],
             declared: &[],
             due: &[],
@@ -799,6 +847,7 @@ mod tests {
             heartbeats: &[],
             closed: &[],
             joined: &[],
+            kept: &[],
             landed: &[],
             declared: &[],
             due: &due,
@@ -908,6 +957,7 @@ mod tests {
             heartbeats: &[("peer".into(), 1000)],
             closed: &[],
             joined: &[],
+            kept: &[],
             landed: &[],
             declared: &[],
             due: &due,
@@ -985,6 +1035,7 @@ mod tests {
             heartbeats: &[],
             closed: &[6],
             joined: &[8],
+            kept: &[],
             landed: &[],
             declared: &[],
             due: &[],
@@ -1039,6 +1090,7 @@ mod tests {
             ],
             closed: &[4, 6],
             joined: &[8],
+            kept: &[],
             landed: &[9],
             declared: &[],
             due: &[],
@@ -1083,6 +1135,7 @@ mod tests {
             heartbeats: &[("peer".into(), 5000)],
             closed: &[],
             joined: &[],
+            kept: &[],
             landed: &[],
             declared: &[],
             due: &[],
@@ -1120,6 +1173,7 @@ mod tests {
                     heartbeats: beats,
                     closed: &[9],
                     joined: &[],
+                    kept: &[],
                     landed: &[],
                     declared: &[],
                     due: &[],

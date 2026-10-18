@@ -15,7 +15,7 @@ use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
 use afkconvoy_core::left::{Kept, KeptBecause};
 use afkconvoy_core::patrol::Standing;
-use afkconvoy_core::plan::{LabelBar, Status, WorkingSet};
+use afkconvoy_core::plan::{LabelBar, NOT_OURS, Status, WorkingSet, closing_pr};
 use afkconvoy_core::slow_gate;
 use afkconvoy_core::team::Fault;
 use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout, harness_missing};
@@ -145,6 +145,7 @@ kinds! {
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
     WaitedLong: Warning, "has waited for a human for";
+    NotOurs: Warning, "is held off by a PR not the fleet's";
     SlowGate: Warning, "the gate is slow";
     Moved: Info, "moved since the stage";
     KeptWorktree: Info, "is kept with no claim";
@@ -301,6 +302,19 @@ pub struct State {
     pub ready_label: String,
     /// The worktrees on this host whose issue holds no claim.
     pub unclaimed: Vec<Unclaimed>,
+    /// The open ready issues held off, with no claim, only by an open PR
+    /// that is not the fleet's (`plan::NOT_OURS`).
+    pub not_ours: Vec<NotOurs>,
+}
+
+/// An open ready issue no claim holds, kept off the frontier by an open PR
+/// from a branch the fleet never recorded on it: no worker is started on it,
+/// and nothing else moves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotOurs {
+    pub issue: u64,
+    pub pr: u64,
+    pub branch: String,
 }
 
 /// A worktree on this host whose issue holds no claim: one a park or an
@@ -792,6 +806,20 @@ fn unclaimed_finding(unclaimed: &Unclaimed) -> Finding {
     )
 }
 
+/// An open ready issue held off by a PR not the fleet's: the
+/// fleet never starts a second PR, and takes up only one of its own.
+fn not_ours_finding(held_off: &NotOurs) -> Finding {
+    let NotOurs { issue, pr, branch } = held_off;
+    finding(
+        Kind::NotOurs,
+        format!("#{issue} is held off by a PR not the fleet's: #{pr} is open and closes it"),
+        format!(
+            "no claim holds it, and #{pr}'s branch {branch} is not one the fleet recorded on it"
+        ),
+        format!("gh pr close {pr}"),
+    )
+}
+
 /// The team, or a role of it, has a fault at its head.
 fn team_findings(team: &TeamRead) -> Vec<Finding> {
     match team {
@@ -850,6 +878,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
             found.extend(waiting_findings(&state.set, seen.now));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
+            found.extend(state.not_ours.iter().map(not_ours_finding));
         }
         Err(why) => found.push(finding(
             Kind::StateUnread,
@@ -1045,7 +1074,16 @@ fn read_state(now: u64, run: &mut Run) -> Result<State> {
     let held = read_held(&fleet, &set, &stood, loaded.as_ref());
     let unclaimed = read_unclaimed(&fleet);
     let ready_label = fleet.config.ready_label.clone();
-    Ok(State { set, held, stood, team, ready_label, unclaimed })
+    let not_ours = set
+        .excluded
+        .iter()
+        .filter(|excluded| excluded.reason == NOT_OURS)
+        .filter_map(|excluded| {
+            let pr = closing_pr(&open.prs, excluded.number)?;
+            Some(NotOurs { issue: excluded.number, pr: pr.number, branch: pr.head_branch.clone() })
+        })
+        .collect();
+    Ok(State { set, held, stood, team, ready_label, unclaimed, not_ours })
 }
 
 /// The worktrees on this host whose issue holds no claim, each with what it
@@ -1294,6 +1332,7 @@ mod tests {
             team: TeamRead::Unbound,
             ready_label: "ready-for-agent".into(),
             unclaimed: vec![],
+            not_ours: vec![],
         }
     }
 
@@ -1646,6 +1685,19 @@ mod tests {
         state.set.free_slots = 2;
         state.set.frontier = vec![];
         assert_eq!(self::found(&host(), &run(vec![left(1)]), &state), []);
+    }
+
+    #[test]
+    fn a_ready_issue_held_off_by_a_pr_the_fleet_did_not_open_names_closing_it() {
+        let mut state = state();
+        state.not_ours = vec![NotOurs { issue: 45, pr: 155, branch: "someone/fix".into() }];
+        let found = found(&host(), &run(vec![]), &state);
+        assert_eq!(
+            fixes(&found, "#45 is held off by a PR not the fleet's: #155"),
+            ["gh pr close 155"]
+        );
+        assert_eq!(found[0].severity, Severity::Warning);
+        assert!(found[0].evidence.contains("someone/fix"), "{found:?}");
     }
 
     #[test]

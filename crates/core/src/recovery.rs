@@ -45,6 +45,10 @@ pub enum Variant {
     Continue,
     /// The issue's PR is open: nothing is left but joining it to the train.
     Join { pr: u64 },
+    /// The issue's PR is open and no claim held it: a released claim kept
+    /// it. What it was released for is to be read, the base merged, and the
+    /// PR joined to the train.
+    TakeUp { pr: u64 },
 }
 
 impl Variant {
@@ -53,6 +57,7 @@ impl Variant {
             Variant::Fresh => "fresh",
             Variant::Continue => "continue",
             Variant::Join { .. } => "join",
+            Variant::TakeUp { .. } => "take_up",
         }
     }
 }
@@ -74,6 +79,19 @@ pub struct Recovery {
 }
 
 impl Recovery {
+    /// This start, on an issue no claim held before it: an open PR it would
+    /// only join was kept by a released claim, and is taken up instead.
+    pub fn taken_up(self) -> Recovery {
+        match self.variant {
+            Variant::Join { pr } => Recovery {
+                variant: Variant::TakeUp { pr },
+                reason: format!("{}; no claim held it — take it up", self.reason),
+                ..self
+            },
+            _ => self,
+        }
+    }
+
     /// The start that follows a discard: nothing is left to continue.
     pub fn discarded() -> Recovery {
         Recovery {
@@ -261,6 +279,17 @@ mod tests {
         let nothing = select_recovery(None, None, Some(70));
         assert_eq!((nothing.tier, nothing.variant), (Tier::Fresh, Variant::Fresh));
         assert_eq!(Variant::Join { pr: 70 }.word(), "join");
+    }
+
+    #[test]
+    fn a_pr_no_claim_held_is_taken_up_and_anything_else_is_left_as_it_was() {
+        let branch = pushed("u/a", Some(2));
+        let kept = select_recovery(None, Some(&branch), Some(70)).taken_up();
+        assert_eq!((kept.tier, kept.variant), (Tier::Recreate, Variant::TakeUp { pr: 70 }));
+        assert!(kept.reason.ends_with("no claim held it — take it up"));
+        assert_eq!(Variant::TakeUp { pr: 70 }.word(), "take_up");
+        let continued = select_recovery(None, Some(&branch), None);
+        assert_eq!(continued.clone().taken_up(), continued);
     }
 
     #[test]
