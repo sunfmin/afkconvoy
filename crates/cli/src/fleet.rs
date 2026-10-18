@@ -8,10 +8,11 @@
 
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
-use afkconvoy_core::plan::{Observed, WorkingSet, assemble};
+use afkconvoy_core::plan::{Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::train::on_train;
 use afkconvoy_core::verdict::latest_verdict;
+use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Result, anyhow};
 use std::thread;
 
@@ -102,6 +103,16 @@ impl Fleet {
             }
         }
         let joined: Vec<u64> = on_train(&joins, prs).iter().map(|join| join.issue).collect();
+        // A PR is the fleet's own when its branch is one recorded on the issue.
+        let mut kept = vec![];
+        for issue in issues {
+            let bodies = open.issues.comments(issue.number).iter().map(|c| c.body.as_str());
+            if closing_pr(prs, issue.number)
+                .is_some_and(|pr| recorded_branches(bodies).contains(&pr.head_branch))
+            {
+                kept.push(issue.number);
+            }
+        }
         let mut declared = vec![];
         for claim in
             self.scan.claims.iter().filter(|claim| me.is_some_and(|me| claim.is_held_by(me)))
@@ -123,6 +134,7 @@ impl Fleet {
             heartbeats: &heartbeats,
             closed: &closed,
             joined: &joined,
+            kept: &kept,
             landed: &landed,
             declared: &declared,
             due: &stages.due(prs),
