@@ -210,14 +210,15 @@ impl HostSleep {
                 continue;
             }
             let instance = instance.to_string();
-            let connected = named_inside(&self.dir, &name, |name| match UnixStream::connect(name) {
-                Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
-                    // What a `run` killed with no goodbye left.
-                    let _ = std::fs::remove_file(name);
-                    Err(error)
-                }
-                connected => connected,
-            });
+            let connected =
+                named_inside(&self.dir, &name, |name| match UnixStream::connect(name) {
+                    Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
+                        // What a `run` killed with no goodbye left.
+                        let _ = std::fs::remove_file(name);
+                        Err(error)
+                    }
+                    connected => connected,
+                });
             let Ok(stream) = connected else { continue };
             let what = what.to_string();
             let answer = std::thread::spawn(move || asked(stream, &what).ok());

@@ -44,7 +44,7 @@ _Avoid_: queue, backlog (all the issues a repo has open)
 
 **Idle**:
 A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or the proposal of a precedent — nothing is on its landing train, and its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
-_Avoid_: drained, done, finished
+_Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
 A fleet instance putting its host to sleep: every fleet instance on the host has been idle for ten minutes, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and no instance on the host was told not to. A host woken stays awake until some instance on it has worked again.

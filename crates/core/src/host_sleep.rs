@@ -55,7 +55,9 @@ pub fn worked(held: usize, on_train: bool) -> bool {
 pub enum Asked {
     Answered(Standing),
     /// Something listens on its socket, and did not answer in time.
-    Silent { instance: String },
+    Silent {
+        instance: String,
+    },
 }
 
 /// One thing that keeps the host awake.
@@ -68,26 +70,34 @@ pub enum Awake {
     /// How long the keyboard and mouse have gone untouched could not be read.
     TouchUnread,
     /// The keyboard or mouse was touched this long ago, in seconds.
-    Touched { untouched: u64 },
-    Silent { instance: String },
+    Touched {
+        untouched: u64,
+    },
+    Silent {
+        instance: String,
+    },
     /// It was told `--no-host-sleep`.
-    Told { instance: String },
-    Busy { instance: String },
+    Told {
+        instance: String,
+    },
+    Busy {
+        instance: String,
+    },
     /// Idle, for this long only, in seconds.
-    NotLongIdle { instance: String, idle_for: u64 },
+    NotLongIdle {
+        instance: String,
+        idle_for: u64,
+    },
 }
 
 impl Awake {
     /// The thing, as a line and `doctor` say it.
     pub fn said(&self) -> String {
         match self {
-            Awake::NotWorked => {
-                "this instance has not worked since the host last woke".to_string()
-            }
+            Awake::NotWorked => "this instance has not worked since the host last woke".to_string(),
             Awake::WakeUnread => "when the host last woke could not be read".to_string(),
             Awake::TouchUnread => {
-                "how long the keyboard and mouse have gone untouched could not be read"
-                    .to_string()
+                "how long the keyboard and mouse have gone untouched could not be read".to_string()
             }
             Awake::Touched { untouched } => {
                 format!("the keyboard or mouse was used {untouched}s ago")
@@ -121,9 +131,7 @@ pub fn awake(worked: Option<u64>, host: &Host, asked: &[Asked], now: u64, wait: 
     let mut awake = vec![];
     match host.woke {
         None => awake.push(Awake::WakeUnread),
-        Some(woke) if !worked.is_some_and(|worked| worked >= woke) => {
-            awake.push(Awake::NotWorked)
-        }
+        Some(woke) if !worked.is_some_and(|worked| worked >= woke) => awake.push(Awake::NotWorked),
         Some(_) => {}
     }
     match host.untouched {

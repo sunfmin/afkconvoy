@@ -701,7 +701,9 @@ fn check_host(host: &mut HostSleep, said: &Said, me: &Me, clock: &impl Fn() -> u
 /// runs that could not (`at_start`). It serves the panel once that is opened — at the start,
 /// on a `panel_port`, or later by `afkconvoy panel --open` (`opening`) — a new page after
 /// every tick. It keeps a line of each tick in its log (`log::Log`),
-/// which nothing here ever reads.
+/// which nothing here ever reads. Unless told `--no-host-sleep`, it puts the
+/// host to sleep once every fleet on it has been idle long enough
+/// (`HostSleep`, docs/adr/0016).
 pub fn run(
     me: &mut Me,
     agent: &Agent,

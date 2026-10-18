@@ -125,7 +125,10 @@ fn a_host_woken_since_the_fleet_last_worked_is_not_put_back_to_sleep() {
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     let checked = last_check(&world);
     assert_eq!(checked["slept"], false, "{checked}");
-    assert_eq!(checked["kept_awake_by"][0], "this instance has not worked since the host last woke");
+    assert_eq!(
+        checked["kept_awake_by"][0],
+        "this instance has not worked since the host last woke"
+    );
 
     // the host woke after it last worked
     let world = worked();
@@ -133,7 +136,10 @@ fn a_host_woken_since_the_fleet_last_worked_is_not_put_back_to_sleep() {
     run(&world, "2");
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     let checked = last_check(&world);
-    assert_eq!(checked["kept_awake_by"][0], "this instance has not worked since the host last woke");
+    assert_eq!(
+        checked["kept_awake_by"][0],
+        "this instance has not worked since the host last woke"
+    );
 }
 
 #[test]
@@ -155,10 +161,13 @@ fn an_instance_idle_less_than_ten_minutes_makes_no_check() {
     let out = command.args(args).args(["--second-ms", "0", "--ticks", "3"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
-    assert!(stdout.starts_with(
-        "start: puts this host to sleep once every fleet on it has been idle ten minutes \
+    assert!(
+        stdout.starts_with(
+            "start: puts this host to sleep once every fleet on it has been idle ten minutes \
          (`--no-host-sleep` keeps it awake)\n"
-    ), "{stdout}");
+        ),
+        "{stdout}"
+    );
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     assert_eq!(last_check(&world), Value::Null);
 }

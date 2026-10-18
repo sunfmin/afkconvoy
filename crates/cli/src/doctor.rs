@@ -2007,6 +2007,29 @@ mod tests {
     }
 
     #[test]
+    fn the_last_check_for_host_sleep_is_read_for_the_instance_this_host_ran_last() {
+        let entry = |at: u64, instance: &str, slept: bool, awake: &[&str]| Entry {
+            at,
+            instance: instance.into(),
+            host: "h1".into(),
+            what: What::HostSleep { slept, awake: awake.iter().map(|a| a.to_string()).collect() },
+        };
+        let ticked =
+            Entry { what: What::Tick(tick(1, json!([])).1), ..entry(40, "alpha", false, &[]) };
+        let entries = [
+            entry(10, "old", true, &[]),
+            entry(20, "alpha", false, &["beta is not idle"]),
+            entry(30, "alpha", false, &["the keyboard or mouse was used 30s ago"]),
+            ticked,
+        ];
+        let checked = read_host_sleep(&entries, "h1").unwrap();
+        assert_eq!(checked.at, 30);
+        assert_eq!(checked.awake, ["the keyboard or mouse was used 30s ago"]);
+        assert_eq!(read_host_sleep(&entries[..1], "h1").map(|checked| checked.slept), Some(true));
+        assert_eq!(read_host_sleep(&entries, "h2"), None);
+    }
+
+    #[test]
     fn the_log_is_read_for_the_instance_this_host_ran_last() {
         let entry = |at: u64, instance: &str, host: &str, what: What| Entry {
             at,
