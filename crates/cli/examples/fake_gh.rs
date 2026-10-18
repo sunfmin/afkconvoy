@@ -256,7 +256,9 @@ fn api(st: &mut State) -> ! {
             ("deleted", "gh: This issue was deleted (HTTP 410)\n"),
             ("transferred", "gh: Not Found (HTTP 404)\n"),
         ] {
-            let Some(left) = st.doc[key].get_mut(*number) else { continue };
+            let Some(left) = st.doc.get_mut(key).and_then(|calls| calls.get_mut(*number)) else {
+                continue;
+            };
             match left.as_u64().unwrap_or(0) {
                 0 => st.finish("", 1, said),
                 more => *left = json!(more - 1),
