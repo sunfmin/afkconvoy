@@ -25,9 +25,12 @@ cargo fmt --all --check
 # it shares the cores with every one of them, and how long it took says more of
 # them than of it. It takes about a minute on one core, builds under a
 # directory of its own, times every function it checks (`-Ftimings`) and keeps
-# the file it writes of them out of the tree.
+# the file it writes of them out of the tree. A solver query of one function
+# past twenty seconds is stopped, and is an error naming that function
+# (`-Ffixpoint-timeout`); Flux checks on past an error (`-Fcatch-bugs`), so a
+# run names every function that is slow, and still ends with its timings.
 flux_log=$(mktemp)
-FLUXFLAGS="-Ftimings -Flog-dir=$PWD/target/flux-log"
+FLUXFLAGS="-Ftimings -Ffixpoint-timeout=20 -Fcatch-bugs -Flog-dir=$PWD/target/flux-log"
 export FLUXFLAGS
 ./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
 flux_pid=$!
