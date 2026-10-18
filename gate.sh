@@ -19,9 +19,26 @@ FLUXFLAGS="-Ftimings -Flog-dir=$PWD/target/flux-log"
 export FLUXFLAGS
 ./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
 flux_pid=$!
+# A process and everything it started: Flux runs as cargo, its driver and
+# the solver under it, and stopping cargo alone leaves the solver running.
+stop_tree() {
+    for child in $(pgrep -P "$1"); do stop_tree "$child"; done
+    kill "$1" 2>/dev/null || true
+}
+# Flux is given FLUX_SECONDS, two minutes unless the caller says otherwise:
+# one that runs past it — a solver query that never ends, a host too busy to
+# give it a core — is stopped, and the gate fails saying so, instead of
+# waiting for it however long it takes.
+flux_limit=${FLUX_SECONDS:-120}
+(
+    sleep "$flux_limit"
+    touch "$flux_log.late"
+    stop_tree "$flux_pid"
+) &
+watch_pid=$!
 # Flux has usually ended by then, and a kill that finds nothing fails: under
 # `set -e` that would be the gate's exit, whatever passed.
-trap 'kill "$flux_pid" 2>/dev/null || true; rm -f "$flux_log"' EXIT
+trap 'stop_tree "$watch_pid"; stop_tree "$flux_pid"; rm -f "$flux_log" "$flux_log.late"' EXIT
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 # The manual is the help topics as one page, and is never edited: a topic
 # changed and the page not written again fails here, with the command to run.
@@ -52,6 +69,13 @@ fi
 # output names the functions that are slow to check. The core's is the last
 # report: a crate that fails is the last one checked.
 wait "$flux_pid" && flux_status=0 || flux_status=$?
+stop_tree "$watch_pid"
+# Reaped here, the watch stopped says nothing of being stopped.
+wait "$watch_pid" 2>/dev/null || true
+if [ -e "$flux_log.late" ]; then
+    echo "gate: Flux ran past its limit of ${flux_limit}s on the core crate and was stopped. Flux says what each function took only once it ends, so none is known; this host's load was $(uptime | sed 's/.*load averages*: //') on $(getconf _NPROCESSORS_ONLN) cores. Check part of the crate with ./verify.sh <name>, or give Flux longer with FLUX_SECONDS=<seconds>" >&2
+    exit 1
+fi
 core_summary=$(awk '
     /^\{/ { if (/"reason":"compiler-artifact"/) { core = last; last = "" }; next }
     /Timing Report/ { timings = ""; in_timings = 1 }
