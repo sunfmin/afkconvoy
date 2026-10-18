@@ -66,7 +66,10 @@ pub fn survey(fleet: &Fleet, number: u64) -> Result<Survey> {
 /// `afkconvoy recovery`: the tier `dispatch` would continue issue `number`
 /// from, without acting.
 pub fn recovery(fleet: &Fleet, number: u64) -> Result<Value> {
-    let found = survey(fleet, number)?;
+    let mut found = survey(fleet, number)?;
+    if fleet.scan.claim_of(number).is_none() {
+        found.plan = found.plan.resumed();
+    }
     let names: Vec<&str> = found.candidates.iter().map(|pushed| pushed.name.as_str()).collect();
     Ok(json!({
         "issue": number,

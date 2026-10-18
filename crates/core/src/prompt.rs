@@ -103,6 +103,48 @@ open no other PR. Nobody reads this terminal: never wait for an answer.
 - Never edit files outside your worktree, and never push to `{base_branch}`.
 ";
 
+/// The brief of a worker that resumes a PR a released claim kept: the issue
+/// went to a human, or was parked, and is the fleet's again.
+const RESUMER: &str = "\
+You are an afkconvoy worker resuming an issue that is the fleet's again: PR #{pr} is open for it,
+kept when an earlier worker's claim was released — the issue was escalated or parked — and is not
+on the landing train. The PR already exists: your job is to finish it and get it on the train. Open
+no other PR. Nobody reads this terminal: never wait for an answer.
+
+**Your issue:** #{n} — {title}
+**Your PR:** #{pr}, from the branch `{branch}` (already checked out; the base is `{base_branch}`).
+**Your worktree:** `{worktree_path}` — work only here.
+
+## Steps
+
+1. **Read why it stopped.** `gh issue view {n} --comments`: its latest comments say why the issue
+   left the fleet and, where a human answered, what is to be done on this PR — do that, on this
+   branch. Then run `git status`: a merge left in progress is a conflict the worker before you was
+   resolving — resolve it and commit the merge.
+2. **Merge the base branch.** `git fetch origin && git merge origin/{base_branch}`. Resolve every
+   conflicting file so both sides' intent survives, `git add` it, and commit the merge. Commit
+   whatever else belongs to the PR, then `git push origin HEAD`.
+<gate_step>
+<join_step>
+
+## If you cannot finish it
+
+After a genuine effort, post a comment on the issue instead (`gh issue comment {n} --body \"...\"`),
+wake the fleet (below) and stop. Its **first line** must be exactly this marker, with `phase=escalate`,
+on one line, followed by where you are stuck, so that a human can act on it in one reply:
+```
+{verdict_marker}
+```
+
+<wake>
+
+## Hard rules
+
+- End with your PR on the landing train, or with that comment — never just stop.
+- Never close the PR, never open another, never rebase.
+- Never edit files outside your worktree, and never push to `{base_branch}`.
+";
+
 const WORKER: &str = "\
 <opening>
 Nobody reads this terminal: never wait for an answer.
@@ -853,6 +895,10 @@ fn prompt(
             let joiner = JOINER.replace("<landing>", if landing.is_some() { LANDING } else { "" });
             (steps(&joiner, "2", "3", " — your PR is on the landing train"), pr.to_string())
         }
+        Variant::Resume { pr } => {
+            let outcomes = " — your PR is on the landing train, or your comment is posted";
+            (steps(RESUMER, "3", "4", outcomes), pr.to_string())
+        }
     };
     fill(
         &template,
@@ -1022,6 +1068,26 @@ mod tests {
         assert!(whole.contains("\n3. **Gate.**") && whole.contains("\n5. **Join the landing"));
         assert!(whole.contains("go back to step 3, and run this again"));
         assert!(!whole.contains("<g>") && !whole.contains("_step>"));
+    }
+
+    #[test]
+    fn a_resuming_worker_is_told_its_pr_exists_and_to_merge_the_base_gate_and_land() {
+        let prompt = worker_prompt(&fields(), Variant::Resume { pr: 70 }).unwrap();
+        assert!(prompt.contains("PR #70 is open for it"));
+        assert!(prompt.contains("The PR already exists"));
+        assert!(prompt.contains("**Your PR:** #70, from the branch `tester/issue-7-add`"));
+        assert!(prompt.contains("\n1. **Read why it stopped.** `gh issue view 7 --comments`"));
+        assert!(prompt.contains(
+            "\n2. **Merge the base branch.** `git fetch origin && git merge origin/develop`"
+        ));
+        assert!(prompt.contains("\n3. **Gate.**") && prompt.contains("\n4. **Join the landing"));
+        assert!(prompt.contains("   /opt/bin/afkconvoy land --issue 7\n"));
+        assert!(prompt.contains("go back to step 3, and run this again"));
+        assert!(prompt.contains("never open another"));
+        assert!(prompt.contains(&verdict::marker_format()));
+        for absent in ["**Implement**", "gh pr create", "<g>", "<j>", "_step>"] {
+            assert!(!prompt.contains(absent), "{absent}");
+        }
     }
 
     #[test]
