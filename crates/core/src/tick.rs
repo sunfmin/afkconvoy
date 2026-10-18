@@ -18,6 +18,9 @@ pub enum TickStep {
     /// Settle a claim of mine whose work has landed — its issue is closed, or
     /// the landing was cut short of closing it: clean up, release it last.
     Settle { issue: u64 },
+    /// Let go of a claim of mine whose issue GitHub says was deleted or
+    /// transferred: release it, and end its worker.
+    Forget { issue: u64 },
     /// Keep a train worker on the landing train while a PR of mine is on it.
     /// The train worker holds no claim and takes no slot.
     TendTrain,
@@ -72,7 +75,7 @@ pub enum TickStep {
 /// How a step ended, as the pass reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// It did what it names. For `Settle`, `Judge`, `Watch` and `Advance`
+    /// It did what it names. For `Settle`, `Forget`, `Judge`, `Watch` and `Advance`
     /// that ends the claim: its slot is free.
     Done,
     /// `Advance` ended the claim once its stage had declared, and left the
@@ -99,6 +102,10 @@ pub enum Outcome {
     /// one added since the rebuild: nothing was claimed or started, and no
     /// slot was taken.
     Blocked,
+    /// `Dispatch` found the issue gone — GitHub says it was deleted or
+    /// transferred: nothing was started, a claim it had won was released
+    /// again, and no slot was taken.
+    Gone,
     /// It failed. Whatever claim it was about is still held.
     Failed,
 }
@@ -196,6 +203,7 @@ impl Pass {
                     | Outcome::Continued
                     | Outcome::Restarted
                     | Outcome::Abandoned
+                    | Outcome::Gone
             )
         })
     }
@@ -307,7 +315,8 @@ where
 /// Which of my claims one sweep of a pass looks at.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Sweep {
-    /// Those whose work has landed: settled.
+    /// Those whose work has landed: settled — and those whose issue is gone:
+    /// let go.
     Landed,
     /// Those not on the train yet — no PR, or one still joining: their
     /// workers asked after.
@@ -319,6 +328,7 @@ enum Sweep {
 fn ending_step(sweep: Sweep, issue: u64, status: Status, start: bool) -> Option<TickStep> {
     match (sweep, status) {
         (Sweep::Landed, Status::Closed | Status::Landed) => Some(TickStep::Settle { issue }),
+        (Sweep::Landed, Status::Gone) => Some(TickStep::Forget { issue }),
         (Sweep::Stopped, Status::NoPr) => Some(TickStep::Judge { issue, start }),
         (Sweep::Stopped, Status::Joining) => Some(TickStep::Watch { issue }),
         (Sweep::Stopped, Status::AtStage) => Some(TickStep::Advance { issue }),
@@ -380,7 +390,7 @@ where
             let outcome = carry_out(step);
             did.push((step, outcome));
             // A start that failed after its claim was won still holds the claim.
-            if outcome != Outcome::Lost && outcome != Outcome::Blocked {
+            if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone) {
                 slots.take();
             }
         }
@@ -455,6 +465,7 @@ fn ended(did: &[(TickStep, Outcome)], issue: u64, outcome: Outcome) -> bool {
     for (step, how) in did {
         let about = match step {
             TickStep::Settle { issue }
+            | TickStep::Forget { issue }
             | TickStep::Judge { issue, .. }
             | TickStep::Watch { issue }
             | TickStep::Advance { issue }
@@ -596,7 +607,7 @@ where
         let outcome = carry_out(*step);
         did.push((*step, outcome));
         // A start that failed after its claim was won still holds the claim.
-        if outcome != Outcome::Lost && outcome != Outcome::Blocked {
+        if !matches!(outcome, Outcome::Lost | Outcome::Blocked | Outcome::Gone) {
             slots.take();
         }
     }
@@ -736,6 +747,7 @@ mod tests {
             peer_live: vec![],
             stale: vec![],
             stale_closed: vec![],
+            gone: vec![],
             free_slots: 0,
             now: 0,
             locks: vec![],
@@ -1158,6 +1170,37 @@ mod tests {
         );
         assert_eq!((pass.held, pass.frontier_remaining), (3, 1));
         assert!(pass.did_work());
+    }
+
+    #[test]
+    fn a_claim_whose_issue_is_gone_is_let_go_first_and_its_slot_refilled() {
+        let set = set(&[5, 6], &[(1, Status::NoPr), (2, Status::Gone)]);
+        let pass = run_pass(&set, 2, 2, left_at_work);
+        assert_eq!(
+            steps(&pass),
+            [
+                Forget { issue: 2 },
+                Judge { issue: 1, start: true },
+                Dispatch { issue: 5 },
+                Heartbeat
+            ]
+        );
+        assert_eq!((pass.held, pass.frontier_remaining), (2, 1));
+    }
+
+    #[test]
+    fn an_issue_a_dispatch_finds_gone_gives_its_slot_to_the_next_frontier_issue() {
+        let set = set(&[5, 6, 7], &[]);
+        let pass = run_pass(&set, 2, 0, |step| match step {
+            Dispatch { issue: 5 } => Gone,
+            _ => Done,
+        });
+        let steps = steps(&pass);
+        assert_eq!(
+            steps,
+            [Dispatch { issue: 5 }, Dispatch { issue: 6 }, Dispatch { issue: 7 }, Heartbeat]
+        );
+        assert_eq!(pass.held, 2);
     }
 
     #[test]

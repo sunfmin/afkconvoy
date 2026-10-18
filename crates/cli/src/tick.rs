@@ -16,7 +16,8 @@ use crate::board::show;
 use crate::claims::{Me, beat, goodbye};
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
-use crate::gh::unreached;
+use crate::forget::forget;
+use crate::gh::{Gone, unreached};
 use crate::git::Repo;
 use crate::judge::judge;
 use crate::log::{self, Log};
@@ -35,9 +36,16 @@ use crate::topic::{self, See};
 use crate::wake::Listener;
 use crate::watch::watch;
 
+/// What failed: a step, or the rebuild's read of one claimed issue.
+#[derive(Clone, Copy)]
+enum Failed {
+    Step(TickStep),
+    Read(u64),
+}
+
 /// One step that failed, and why.
 struct Failure {
-    step: TickStep,
+    step: Failed,
     error: String,
     /// The topic that explains it, where one does.
     see: Option<See>,
@@ -55,6 +63,9 @@ pub struct Ticked {
     /// The issues a dispatch skipped, each with the open blockers it read
     /// just before the claim.
     blocked: Vec<(u64, Vec<u64>)>,
+    /// The issues the pass found gone, each with whether it released a claim
+    /// on it (`Fleet::forgotten`).
+    forgotten: Vec<(Gone, bool)>,
     /// The config's `concurrency`.
     concurrency: usize,
     /// The claims the pass could hold as it ended (`Pass::bound`).
@@ -72,7 +83,12 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
     let (mut fleet, open) = Fleet::read(me.now)?;
     let (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
     let bound = set.bound(fleet.config.concurrency());
-    let mut failures = vec![];
+    // A claimed issue the rebuild could not read is this tick's error, and
+    // only its own.
+    let mut failures: Vec<Failure> = std::mem::take(&mut fleet.unread)
+        .into_iter()
+        .map(|(issue, error)| Failure::of(Failed::Read(issue), &error))
+        .collect();
     let mut blocked = vec![];
     let read = Read { set: &set, flows: &flows };
     let pass = run_pass(&set, bound, set.held(), |step| {
@@ -82,16 +98,24 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
         };
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
-            let unreached = unreached(&error).is_some();
-            let see = topic::explains(&error);
-            failures.push(Failure { step, error: format!("{error:#}"), see, unreached });
+            failures.push(Failure::of(Failed::Step(step), &error));
             Outcome::Failed
         })
     });
     let escalated = std::mem::take(&mut fleet.escalated);
+    let forgotten = std::mem::take(&mut fleet.forgotten);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
-    let ticked = Ticked { pass, failures, escalated, blocked, concurrency, bound, set, flows };
+    let ticked =
+        Ticked { pass, failures, escalated, blocked, forgotten, concurrency, bound, set, flows };
     Ok((ticked, fleet))
+}
+
+impl Failure {
+    fn of(step: Failed, error: &anyhow::Error) -> Failure {
+        let unreached = unreached(error).is_some();
+        let see = topic::explains(error);
+        Failure { step, error: format!("{error:#}"), see, unreached }
+    }
 }
 
 /// What the tick's rebuild read: its steps act on this, and read nothing of
@@ -115,6 +139,7 @@ fn carry_out(
             settle(fleet, me, issue)?;
             Ok(Outcome::Done)
         }
+        TickStep::Forget { issue } => forget(fleet, me, issue),
         TickStep::TendTrain => tend_train(fleet, me, agent),
         TickStep::Judge { issue, start } => judge(fleet, me, agent, issue, start),
         TickStep::Watch { issue } => watch(fleet, me, agent, issue),
@@ -152,6 +177,9 @@ fn carry_out(
         TickStep::Reclaim { issue } => reclaim(fleet, me, agent, read.flows, issue),
         TickStep::Dispatch { issue } => {
             let started = dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            if started["gone"].is_string() {
+                return Ok(Outcome::Gone);
+            }
             if let Some(blockers) = started["blocked_by"].as_array() {
                 blocked.push((issue, blockers.iter().filter_map(Value::as_u64).collect()));
                 return Ok(Outcome::Blocked);
@@ -174,6 +202,7 @@ fn carry_out(
 fn words(step: TickStep) -> (&'static str, Option<u64>) {
     match step {
         TickStep::Settle { issue } => ("settle", Some(issue)),
+        TickStep::Forget { issue } => ("forget", Some(issue)),
         TickStep::TendTrain => ("tend_train", None),
         TickStep::Judge { issue, .. } => ("judge", Some(issue)),
         TickStep::Watch { issue } => ("watch", Some(issue)),
@@ -254,6 +283,27 @@ impl Ticked {
         named
     }
 
+    /// What failed, as an answer names it: a step, or the rebuild's read.
+    fn failed_named(&self, failed: Failed) -> Value {
+        match failed {
+            Failed::Step(step) => self.named(step),
+            Failed::Read(issue) => json!({"do": "read", "issue": issue}),
+        }
+    }
+
+    /// What failed, as the line names it: `settle #3`, `patrol triage`.
+    fn failed_said(&self, failed: Failed) -> String {
+        let step = match failed {
+            Failed::Step(step) => step,
+            Failed::Read(issue) => return format!("read #{issue}"),
+        };
+        let (word, issue) = words(step);
+        let issue = issue.or(self.proposal(step));
+        let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
+        let patrol = self.patrol(step).map(|p| format!(" {p}")).unwrap_or_default();
+        format!("{word}{issue}{patrol}")
+    }
+
     /// The panel of `me` after this tick: what its rebuild read, with what the
     /// pass did since.
     pub fn panel(&self, fleet: &Fleet, me: &Me) -> Panel {
@@ -315,6 +365,7 @@ impl Ticked {
                     Outcome::Nothing => "nothing",
                     Outcome::Lost => "lost",
                     Outcome::Blocked => "blocked",
+                    Outcome::Gone => "gone",
                     Outcome::Failed => "failed",
                 };
                 let mut did = self.named(*step);
@@ -339,7 +390,7 @@ impl Ticked {
             .failures
             .iter()
             .map(|failure| {
-                let mut failed = self.named(failure.step);
+                let mut failed = self.failed_named(failure.step);
                 failed["error"] = json!(failure.error);
                 if let Some(see) = failure.see {
                     failed["see"] = json!(see);
@@ -365,6 +416,13 @@ impl Ticked {
             self.escalated.iter().map(|(issue, why)| format!("#{issue} ({why})")).collect();
         if !escalated.is_empty() {
             parts.push(format!("escalated {}", escalated.join(", ")));
+        }
+        // An issue that is gone says so, whichever step found it.
+        for (gone, released) in &self.forgotten {
+            match released {
+                true => parts.push(format!("{}: released its claim", gone.said())),
+                false => parts.push(gone.said()),
+            }
         }
         for (verb, wanted) in [
             ("settled", "settle"),
@@ -471,11 +529,7 @@ impl Ticked {
                 parts.push(format!("FAILED {steps} steps: {}", failure.error));
                 continue;
             }
-            let (word, issue) = words(failure.step);
-            let issue = issue.or(self.proposal(failure.step));
-            let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
-            let patrol = self.patrol(failure.step).map(|p| format!(" {p}")).unwrap_or_default();
-            parts.push(format!("FAILED {word}{issue}{patrol}: {}", failure.error));
+            parts.push(format!("FAILED {}: {}", self.failed_said(failure.step), failure.error));
         }
         parts.join(" · ")
     }

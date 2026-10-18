@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use afkconvoy_core::claims::InstanceId;
+use afkconvoy_core::claims::{InstanceId, claim_ref};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
-use crate::git::Repo;
+use crate::git::{REMOTE, Repo};
 use crate::judge::leaving;
 use crate::launch::Launches;
 use crate::log::{Entry, Failed, Log, Tick, What, by_cause};
@@ -146,6 +146,7 @@ kinds! {
     PatrolFull: Warning, "have reached its `max_open`";
     WaitedLong: Warning, "has waited for a human for";
     NotOurs: Warning, "is held off by a PR not the fleet's";
+    ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
     Moved: Info, "moved since the stage";
     KeptWorktree: Info, "is kept with no claim";
@@ -305,6 +306,20 @@ pub struct State {
     /// The open ready issues held off, with no claim, only by an open PR
     /// that is not the fleet's (`plan::NOT_OURS`).
     pub not_ours: Vec<NotOurs>,
+    /// The claims on issues GitHub says were deleted or transferred.
+    pub on_gone: Vec<OnGone>,
+}
+
+/// A claim on an issue GitHub answers 410 or 404 for: deleted, or
+/// transferred to another repo. Its holder's next tick lets it go; until
+/// then it holds a slot of that fleet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnGone {
+    pub issue: u64,
+    /// The claim's ref on the remote.
+    pub claim_ref: String,
+    /// The fleet instance that holds it, as its record names it.
+    pub holder: Option<String>,
 }
 
 /// An open ready issue no claim holds, kept off the frontier by an open PR
@@ -820,6 +835,22 @@ fn not_ours_finding(held_off: &NotOurs) -> Finding {
     )
 }
 
+/// A claim on an issue that is gone: the line that deletes it, for a holder
+/// whose ticks do not.
+fn on_gone_finding(on: &OnGone) -> Finding {
+    let OnGone { issue, claim_ref, holder } = on;
+    let holder = holder.as_deref().unwrap_or("no fleet instance it names");
+    finding(
+        Kind::ClaimOnGone,
+        format!("#{issue} is claimed but GitHub has it no more: it was deleted or transferred"),
+        format!(
+            "GitHub answers 410 or 404 for #{issue}; {claim_ref} is held by {holder}, whose next \
+             tick releases it"
+        ),
+        format!("git push {REMOTE} :{claim_ref}"),
+    )
+}
+
 /// The team, or a role of it, has a fault at its head.
 fn team_findings(team: &TeamRead) -> Vec<Finding> {
     match team {
@@ -879,6 +910,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(waiting_findings(&state.set, seen.now));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
             found.extend(state.not_ours.iter().map(not_ours_finding));
+            found.extend(state.on_gone.iter().map(on_gone_finding));
         }
         Err(why) => found.push(finding(
             Kind::StateUnread,
@@ -1055,7 +1087,7 @@ fn stamped_instance(fleet: &Fleet, host: &str) -> Option<String> {
 }
 
 fn read_state(now: u64, run: &mut Run) -> Result<State> {
-    let (fleet, open) = Fleet::read(now)?;
+    let (mut fleet, open) = Fleet::read(now)?;
     if run.instance.is_none() {
         run.instance = stamped_instance(&fleet, &run.host);
     }
@@ -1083,7 +1115,20 @@ fn read_state(now: u64, run: &mut Run) -> Result<State> {
             Some(NotOurs { issue: excluded.number, pr: pr.number, branch: pr.head_branch.clone() })
         })
         .collect();
-    Ok(State { set, held, stood, team, ready_label, unclaimed, not_ours })
+    let on_gone = set
+        .gone
+        .iter()
+        .map(|&issue| OnGone {
+            issue,
+            claim_ref: claim_ref(fleet.repo.layout(), issue),
+            holder: fleet
+                .scan
+                .claim_of(issue)
+                .and_then(|claim| claim.owner.as_ref())
+                .map(|owner| owner.instance.clone()),
+        })
+        .collect();
+    Ok(State { set, held, stood, team, ready_label, unclaimed, not_ours, on_gone })
 }
 
 /// The worktrees on this host whose issue holds no claim, each with what it
@@ -1314,6 +1359,7 @@ mod tests {
             peer_live: vec![],
             stale: vec![],
             stale_closed: vec![],
+            gone: vec![],
             free_slots: 2,
             now: NOW,
             locks: vec![],
@@ -1333,6 +1379,7 @@ mod tests {
             ready_label: "ready-for-agent".into(),
             unclaimed: vec![],
             not_ours: vec![],
+            on_gone: vec![],
         }
     }
 

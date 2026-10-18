@@ -1,5 +1,5 @@
 //! The transitions that end a claim other than a landing: `escalate`, `close`,
-//! `park` and `hand_on`. Each runs in one order, writes the status board's last word,
+//! `park`, `hand_on` and `forget`. Each runs in one order, writes the status board's last word,
 //! releases the claim as its last write to the remote, and hands back a
 //! `Released` only that release produces — so one cannot end half way and be
 //! taken for done.
@@ -49,6 +49,13 @@ impl LastWord {
     #[spec(fn(self: &mut Self[false]) ensures self: Self[true])]
     fn write(&mut self) {
         self.written = true;
+    }
+
+    /// The board of an issue that is gone: it went with the issue, and
+    /// nothing is left to write it on.
+    #[spec(fn() -> LastWord[true])]
+    fn gone() -> LastWord {
+        LastWord { written: true }
     }
 
     /// The one way to a `Released`: released sooner, the claim is nobody's,
@@ -382,6 +389,33 @@ where
     Ok(released)
 }
 
+/// One step of letting go of a claim whose issue is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForgetStep {
+    Release,
+    RemoveWorktree,
+    /// Close the worker's terminal, in a worktree that is kept.
+    CloseTerminal,
+}
+
+/// Lets go of the claim on `issue`, which GitHub says was deleted or
+/// transferred: release the claim → remove the worktree, when it holds
+/// nothing the remote does not (`spare`), and close its worker's terminal
+/// when it does. Nothing is written on GitHub: the issue, its board and its
+/// labels went together.
+pub fn forget<E, F>(issue: u64, spare: Option<&Spare>, mut carry_out: F) -> Result<Released, E>
+where
+    F: FnMut(ForgetStep) -> Result<(), E>,
+{
+    carry_out(ForgetStep::Release)?;
+    let released = LastWord::gone().release(issue);
+    carry_out(match spare {
+        Some(_) => ForgetStep::RemoveWorktree,
+        None => ForgetStep::CloseTerminal,
+    })?;
+    Ok(released)
+}
+
 #[cfg(flux)]
 #[allow(dead_code)]
 mod rejected {
@@ -595,6 +629,23 @@ mod tests {
         let cut =
             close(7, &proof, |step| if step == CloseStep::Release { Err("no") } else { Ok(()) });
         assert_eq!(cut, Err("no"));
+    }
+
+    #[test]
+    fn forgetting_releases_first_writes_no_board_and_removes_only_a_spare_worktree() {
+        use ForgetStep::*;
+        let run = |spare: Option<&Spare>, fail_at: Option<ForgetStep>| {
+            let mut steps = vec![];
+            let done = forget(7, spare, |step| {
+                steps.push(step);
+                if Some(step) == fail_at { Err("cut") } else { Ok(()) }
+            });
+            (done.map(|released| released.issue), steps)
+        };
+        assert_eq!(run(None, None), (Ok(7), vec![Release, CloseTerminal]));
+        let left = Left::of(&Held { dirty: false, unpushed: Some(0) });
+        assert_eq!(run(left.spare(), None), (Ok(7), vec![Release, RemoveWorktree]));
+        assert_eq!(run(None, Some(Release)), (Err("cut"), vec![Release]), "still held");
     }
 
     #[test]

@@ -28,11 +28,9 @@ WHAT `doctor` FINDS — critical: the fleet does not work until it is fixed
       In a bound repo the worker launch command must end in its harness, taking flags:
       the fleet adds what puts the worker in its role. `afkconvoy run --help`.
   no `afkconvoy run` is alive
-      The `run` of this host was stopped or killed while it held claims. Start it
-      again, on the same host: it takes its claims back, and the workers worked on.
+      The `run` of this host died holding claims. Start it here: it takes them back.
   failed in each of the last
-      One step of a tick fails tick after tick; `evidence` is its error. Run `fix`, and
-      read the error: it names what refused, GitHub or the remote or orca.
+      One step fails tick after tick; `evidence` is its error, naming what refused. `fix`.
   the team this repo names cannot be read
       The team's repo, or a role's, could not be read. `afkconvoy check` says which.
   has a fault at its head
@@ -68,6 +66,8 @@ fleet mid-step: run `doctor` again after a tick before you act on one.
       Nothing in the fleet moves that issue. `fix` answers it: `afkconvoy help humans`.
   is held off by a PR not the fleet's
       No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
+  is claimed but GitHub has it no more
+      Deleted or transferred: its fleet's next tick releases it. `fix` is for one stopped.
   the gate is slow
       On one host, the last 5 landings with a recorded gate run all took more than 80%
       of the gate limit. A tick opens one issue for the fleet to make the gate faster:

@@ -54,7 +54,7 @@ impl Stage {
             Status::NoPr | Status::AtStage => Some(Stage::Claimed),
             Status::Joining => Some(Stage::Joining),
             Status::Joined => Some(Stage::Joined),
-            Status::Landed | Status::Closed => None,
+            Status::Landed | Status::Closed | Status::Gone => None,
         }
     }
 

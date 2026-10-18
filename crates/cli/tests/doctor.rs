@@ -594,3 +594,22 @@ fn a_worktree_kept_with_no_claim_is_named_with_what_it_holds_and_how_to_remove_i
     assert!(eight_found["what"].as_str().unwrap().ends_with("nothing the remote does not"));
     assert_eq!(eight_found["fix"], remove(&eight), "nothing to push first");
 }
+
+#[test]
+fn a_claim_on_a_deleted_issue_is_a_finding_with_the_line_that_deletes_it() {
+    let world = World::new();
+    world.issue(3, &["ready-for-agent"]);
+    world
+        .afk(&["claim", "--issue", "3", "--instance", "alpha", "--host", "h2", "--now", "1000"])
+        .ok();
+    world.with_gh(|gh| {
+        gh["issues"] = json!([]);
+        gh["deleted"] = json!({"3": 0});
+    });
+    let answer = doctor(&world, "1100").json;
+    let on_gone = found(&answer, "is claimed but GitHub has it no more");
+    assert_eq!(on_gone.len(), 1, "{answer}");
+    assert_eq!(on_gone[0]["severity"], "warning");
+    assert_eq!(on_gone[0]["fix"], "git push origin :refs/convoy/claim/3");
+    assert!(on_gone[0]["evidence"].as_str().unwrap().contains("held by alpha"), "{answer}");
+}

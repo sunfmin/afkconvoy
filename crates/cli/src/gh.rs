@@ -140,16 +140,69 @@ pub fn unreached(error: &anyhow::Error) -> Option<&Unreached> {
     error.chain().find_map(|cause| cause.downcast_ref())
 }
 
+/// An issue GitHub answered for with 410 or 404: deleted, or transferred to
+/// another repo. Like a closed one, it is never worked again, and it is
+/// nothing the rest of the fleet waits on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gone {
+    pub issue: u64,
+    /// 410: it was deleted. 404: it is not in this repo — transferred.
+    pub deleted: bool,
+}
+
+impl Gone {
+    /// What happened to it, as a tick's line says it: `#231 was deleted`.
+    pub fn said(&self) -> String {
+        match self.deleted {
+            true => format!("#{} was deleted", self.issue),
+            false => format!("#{} is gone from this repo", self.issue),
+        }
+    }
+}
+
+impl std::fmt::Display for Gone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.deleted {
+            true => write!(f, "issue #{} was deleted (HTTP 410)", self.issue),
+            false => write!(f, "issue #{} is not in this repo (HTTP 404): transferred", self.issue),
+        }
+    }
+}
+
+impl std::error::Error for Gone {}
+
+/// The issue `error` says is gone, when that is why it was raised, whatever
+/// was said around it since.
+pub fn gone(error: &anyhow::Error) -> Option<&Gone> {
+    error.chain().find_map(|cause| cause.downcast_ref())
+}
+
+/// The HTTP status what `gh` said of a call that failed names, when it
+/// names one: `gh: Not Found (HTTP 404)` → 404.
+fn status(said: &str) -> Option<u16> {
+    let said = said.to_ascii_lowercase();
+    let (_, after) = said.split_once("http ")?;
+    after.get(..3).filter(|code| code.bytes().all(|b| b.is_ascii_digit()))?.parse().ok()
+}
+
+/// `made`, a call about issue `number`, with a failure GitHub answered 410
+/// or 404 raised as `Gone`.
+fn about_issue<T>(number: u64, made: Result<T>) -> Result<T> {
+    made.map_err(|error| match status(&format!("{error}")) {
+        Some(410) => Gone { issue: number, deleted: true }.into(),
+        Some(404) => Gone { issue: number, deleted: false }.into(),
+        _ => error,
+    })
+}
+
 /// Whether what `gh` said of a call that failed says it failed in transit:
 /// an answer cut short, a 5xx, a connection reset or a timeout. Any other
 /// status — a 404, a 403 — is GitHub's answer, and asking again gets the same.
 fn in_transit(said: &str) -> bool {
-    let said = said.to_ascii_lowercase();
-    if let Some((_, status)) = said.split_once("http ")
-        && status.bytes().take(3).all(|b| b.is_ascii_digit())
-    {
-        return status.starts_with('5');
+    if let Some(status) = status(said) {
+        return status / 100 == 5;
     }
+    let said = said.to_ascii_lowercase();
     let cut_short = ["unexpected end of json input", "unexpected eof", ": eof"];
     let unanswered = ["connection reset", "timeout", "timed out"];
     cut_short.iter().chain(&unanswered).any(|mark| said.contains(mark))
@@ -431,28 +484,33 @@ impl GitHub {
             .collect())
     }
 
-    /// One issue, open or closed. An error when it cannot be read.
+    /// One issue, open or closed. An error when it cannot be read: `Gone`
+    /// when GitHub says it was deleted or transferred.
     pub fn issue(&self, number: u64) -> Result<IssueRead> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}");
-        let out = self.read(&["api", &endpoint, "--jq", ISSUE_JQ])?;
+        let out = about_issue(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
         serde_json::from_str(&out)
             .with_context(|| format!("gh api issue {number}: unexpected answer"))
     }
 
-    /// Every comment on an issue or a PR, oldest first.
+    /// Every comment on an issue or a PR, oldest first: `Gone` of one GitHub
+    /// says was deleted or transferred.
     pub fn comments(&self, number: u64) -> Result<Vec<Comment>> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100");
-        let out = self.read(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ])?;
+        let read = self.read(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ]);
+        let out = about_issue(number, read)?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api comments: unexpected answer"))
             .collect()
     }
 
-    /// Posts one comment on an issue or a PR.
+    /// Posts one comment on an issue or a PR: `Gone` of one GitHub says was
+    /// deleted or transferred.
     pub fn comment(&self, number: u64, body: &str) -> Result<()> {
         let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments");
-        self.gh(&["api", "--method", "POST", &endpoint, "-f", &format!("body={body}")])?;
+        let body = format!("body={body}");
+        about_issue(number, self.gh(&["api", "--method", "POST", &endpoint, "-f", &body]))?;
         Ok(())
     }
 
@@ -546,12 +604,14 @@ impl GitHub {
         Ok(())
     }
 
-    /// The issues GitHub records `number` as blocked by, open or closed.
+    /// The issues GitHub records `number` as blocked by, open or closed:
+    /// `Gone` when `number` was deleted or transferred.
     pub fn blocked_by(&self, number: u64) -> Result<Vec<BlockedBy>> {
         let endpoint = format!(
             "repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by?per_page=100"
         );
-        let out = self.read(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ])?;
+        let read = self.read(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ]);
+        let out = about_issue(number, read)?;
         out.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).context("gh api blocked_by: unexpected answer"))
@@ -644,6 +704,21 @@ mod tests {
         ] {
             assert!(!in_transit(said), "{said}");
         }
+    }
+
+    #[test]
+    fn an_issue_answered_with_410_or_404_is_gone_and_any_other_failure_is_as_it_was() {
+        let failed = |said: &str| -> Result<()> { bail!("gh api failed: {said}") };
+        let deleted = about_issue(231, failed("gh: This issue was deleted (HTTP 410)"));
+        let error = deleted.unwrap_err().context("the claim cannot be read");
+        assert_eq!(gone(&error), Some(&Gone { issue: 231, deleted: true }));
+        let moved = about_issue(7, failed("gh: Not Found (HTTP 404)")).unwrap_err();
+        assert_eq!(gone(&moved), Some(&Gone { issue: 7, deleted: false }));
+        for said in ["gh: Resource not accessible by integration (HTTP 403)", "gh: no"] {
+            let error = about_issue(7, failed(said)).unwrap_err();
+            assert_eq!((gone(&error), error.to_string()), (None, format!("gh api failed: {said}")));
+        }
+        assert_eq!(Gone { issue: 231, deleted: true }.said(), "#231 was deleted");
     }
 
     #[test]

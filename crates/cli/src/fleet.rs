@@ -18,7 +18,7 @@ use std::thread;
 
 use crate::claims::Scan;
 use crate::config;
-use crate::gh::{GitHub, Open, beside};
+use crate::gh::{GitHub, Gone, Open, beside, gone};
 use crate::git::{Listing, Repo};
 use crate::orca::{Source, Worktree};
 use crate::patrol;
@@ -41,6 +41,13 @@ pub struct Fleet {
     /// tick's line says of them. Every escalation is made through
     /// `judge::escalate_claim`, which is what adds to it.
     pub escalated: Vec<(u64, String)>,
+    /// The issues this view found gone — deleted or transferred — as a step
+    /// met them, each with whether a claim on it was released: what a tick's
+    /// line says of them.
+    pub forgotten: Vec<(Gone, bool)>,
+    /// The claimed issues the last rebuild could not read, each with why: the
+    /// pass goes on with them as open, and its tick reports each.
+    pub unread: Vec<(u64, anyhow::Error)>,
 }
 
 impl Fleet {
@@ -51,7 +58,17 @@ impl Fleet {
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), listing.records.clone());
         let gh = GitHub { dir: repo.dir.clone() };
-        Ok(Fleet { repo, config, gh, scan, listing, now, escalated: vec![] })
+        Ok(Fleet {
+            repo,
+            config,
+            gh,
+            scan,
+            listing,
+            now,
+            escalated: vec![],
+            forgotten: vec![],
+            unread: vec![],
+        })
     }
 
     /// The fleet's view, opened for a rebuild → it, and what is open on
@@ -76,17 +93,25 @@ impl Fleet {
 
     /// Rebuilds the working set of `me` from `open` and the remote as this
     /// view was opened on it (`Fleet::read`) → it, and the read of the issues
-    /// that follow a workflow it was assembled from. Reads only.
-    pub fn rebuild(&self, open: &Open, me: Option<&InstanceId>) -> Result<(WorkingSet, Flows)> {
+    /// that follow a workflow it was assembled from. Reads only. A claimed
+    /// issue that cannot be read costs only itself: it is taken for open,
+    /// and noted in `unread`.
+    pub fn rebuild(&mut self, open: &Open, me: Option<&InstanceId>) -> Result<(WorkingSet, Flows)> {
         let (issues, prs) = (&open.issues.rows, &open.prs);
         let stages = Flows::read(self, &open.issues)?;
-        // The list holds only open issues: a claim missing from it is asked about.
-        let mut closed = vec![];
+        // The list holds only open issues: a claim missing from it is asked
+        // about, and is closed, gone — deleted or transferred — or unread.
+        let (mut closed, mut deleted) = (vec![], vec![]);
+        self.unread.clear();
         for claim in &self.scan.claims {
-            if !issues.iter().any(|issue| issue.number == claim.number)
-                && self.gh.issue(claim.number)?.is_closed()
-            {
-                closed.push(claim.number);
+            if issues.iter().any(|issue| issue.number == claim.number) {
+                continue;
+            }
+            match self.gh.issue(claim.number) {
+                Ok(read) if read.is_closed() => closed.push(claim.number),
+                Ok(_) => {}
+                Err(error) if gone(&error).is_some() => deleted.push(claim.number),
+                Err(error) => self.unread.push((claim.number, error)),
             }
         }
         // What is on the train is read off the train's own commits.
@@ -133,6 +158,7 @@ impl Fleet {
             claims: &self.scan.claims,
             heartbeats: &heartbeats,
             closed: &closed,
+            gone: &deleted,
             joined: &joined,
             kept: &kept,
             landed: &landed,

@@ -21,11 +21,11 @@ WHAT IT ANSWERS
 
   {"did", "errors", "held", "frontier_remaining", "locks"}
 
-    did                 each step taken: {do, issue, outcome}. do is settle, tend_train,
+    did                 each step taken: {do, issue, outcome}. do is settle, forget, tend_train,
                         judge, watch, advance, escalate, end_patrol, patrol,
                         end_proposal, propose, unlock, reclaim, dispatch, slow_gate,
                         board, stage_label or heartbeat; outcome is done, nudged, continued,
-                        restarted, abandoned, nothing, lost, blocked or failed. A step on a
+                        restarted, abandoned, nothing, lost, blocked, gone or failed. A step on a
                         patrol has a null issue and names it: {do, issue, patrol,
                         outcome}. A step on the proposal of a precedent names the
                         issue that was ruled on. An `advance` that read a verdict and
@@ -37,7 +37,9 @@ WHAT IT ANSWERS
                         blocked_by}
     errors              each step that failed: {do, issue, error}, with `patrol` as
                         in `did` — and `see`, where a help topic explains what
-                        refused it: the command that prints the topic
+                        refused it: the command that prints the topic. A claimed
+                        issue the rebuild could not read is {do: "read", issue,
+                        error}: the rest of the tick is made, with it taken for open
     held                the claims the instance holds after the pass, a patrol's run
                         and a proposal still going among them
     frontier_remaining  the frontier issues it left undispatched
@@ -71,6 +73,13 @@ WHAT TRIPS YOU UP
     and no status board is shown; the step says `blocked`, the line `skipped #68
     (blocked by #71)`, and the slot it would have taken goes to the next issue on the
     frontier, in the same tick. The rebuild's own requests are as many as ever.
+  - An issue GitHub answers 410 (deleted) or 404 (transferred) for is gone, like a
+    closed one, and costs the tick nothing else. A claim of mine on it is let go
+    (`forget`): released, its worktree removed when it holds nothing the remote does
+    not — else kept, its worker's terminal closed — and nothing written on GitHub. A
+    dispatch that finds it gone, before its claim or after, leaves no claim behind,
+    says `gone` and takes no slot. The line says `#231 was deleted: released its claim`;
+    `afkconvoy doctor` names a claim on one whose fleet is not running, with its fix.
   - The last stage is different: the tick after a `pass` that leads to `land` starts a
     worker in the workflow's landing role, which gates the PR and joins the landing
     train; a `pass` to `land` with no open PR to join is handed to a human. A consult
