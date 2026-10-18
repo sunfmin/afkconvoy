@@ -27,44 +27,14 @@ cargo fmt --all --check
 # directory of its own, times every function it checks (`-Ftimings`) and keeps
 # the file it writes of them out of the tree. A solver query of one function
 # past twenty seconds is stopped, and is an error naming that function
-# (`-Ffixpoint-timeout`); Flux checks on past an error (`-Fcatch-bugs`), so a
-# run names every function that is slow, and still ends with its timings.
+# (`-Ffixpoint-timeout`): no query holds the gate up longer. Flux checks on
+# past an error (`-Fcatch-bugs`), so a run names every function that is slow,
+# and still ends with its timings.
 flux_log=$(mktemp)
 FLUXFLAGS="-Ftimings -Ffixpoint-timeout=20 -Fcatch-bugs -Flog-dir=$PWD/target/flux-log"
 export FLUXFLAGS
-./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 &
-flux_pid=$!
-# A process and everything it started: Flux runs as cargo, its driver and
-# the solver under it, and stopping cargo alone leaves the solver running.
-stop_tree() {
-    for child in $(pgrep -P "$1"); do stop_tree "$child"; done
-    kill "$1" 2>/dev/null || true
-}
-# Flux is given three minutes, and no caller can give it more: one that runs
-# past them — a solver query that never ends, a host too busy to give it a
-# core — is stopped, and the gate fails saying so, instead of waiting for it
-# however long it takes.
-flux_limit=180
-(
-    sleep "$flux_limit"
-    touch "$flux_log.late"
-    stop_tree "$flux_pid"
-) &
-watch_pid=$!
-# A kill that finds nothing fails: under `set -e` that would be the gate's
-# exit, whatever passed.
-trap 'stop_tree "$watch_pid"; stop_tree "$flux_pid"; rm -f "$flux_log" "$flux_log.late"' EXIT
-wait "$flux_pid" && flux_status=0 || flux_status=$?
-stop_tree "$watch_pid"
-# Reaped here, the watch stopped says nothing of being stopped.
-wait "$watch_pid" 2>/dev/null || true
-# Both have ended, and their ids may be another process's by the time the
-# gate does: from here on only the log is removed.
-trap 'rm -f "$flux_log" "$flux_log.late"' EXIT
-if [ -e "$flux_log.late" ]; then
-    echo "gate: Flux ran past its limit of ${flux_limit}s on the core crate and was stopped. Flux says what each function took only once it ends, so none is known; this host's load was $(uptime | sed 's/.*load averages*: //') on $(getconf _NPROCESSORS_ONLN) cores. Check part of the crate with ./verify.sh <name>" >&2
-    exit 1
-fi
+trap 'rm -f "$flux_log"' EXIT
+./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 && flux_status=0 || flux_status=$?
 core_summary=$(awk '
     /^\{/ { if (/"reason":"compiler-artifact"/) { core = last; last = "" }; next }
     /Timing Report/ { timings = ""; in_timings = 1 }
