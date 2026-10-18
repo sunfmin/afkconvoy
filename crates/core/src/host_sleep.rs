@@ -114,8 +114,8 @@ pub struct Host {
 
 /// What keeps the host awake at `now`, for an instance that last worked at
 /// `worked`, given `host` and what every instance on it — itself included —
-/// answered, each having to have been idle `wait` seconds: nothing, and the
-/// host is put to sleep. An instance of a version without the socket is in
+/// answered, each having to have been idle `wait` seconds and the keyboard and
+/// mouse untouched `IDLE_WAIT`: nothing, and the host is put to sleep. An instance of a version without the socket is in
 /// none of `asked`, and keeps nothing awake.
 pub fn awake(worked: Option<u64>, host: &Host, asked: &[Asked], now: u64, wait: u64) -> Vec<Awake> {
     let mut awake = vec![];
@@ -128,7 +128,7 @@ pub fn awake(worked: Option<u64>, host: &Host, asked: &[Asked], now: u64, wait: 
     }
     match host.untouched {
         None => awake.push(Awake::TouchUnread),
-        Some(untouched) if untouched < wait => awake.push(Awake::Touched { untouched }),
+        Some(untouched) if untouched < IDLE_WAIT => awake.push(Awake::Touched { untouched }),
         Some(_) => {}
     }
     for one in asked {

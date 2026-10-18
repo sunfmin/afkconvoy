@@ -71,6 +71,10 @@ impl World {
             std::os::unix::fs::symlink(built.join(example), bin.join(name)).unwrap();
         }
         write_script(&bin.join("shell"), SHELL);
+        // The host a fleet would put to sleep: nothing of the one the tests run on.
+        for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG)] {
+            write_script(&bin.join(name), script);
+        }
         let world = World {
             gh_file: root.join("gh.json"),
             orca_file: root.join("orca.json"),
@@ -104,7 +108,10 @@ impl World {
             .env("XDG_CACHE_HOME", self.cache())
             .env("HOME", self.home())
             .envs(GIT_ENV)
-            .env_remove("ANTHROPIC_BASE_URL");
+            .env_remove("ANTHROPIC_BASE_URL")
+            // A `run` keeps its host awake, but where a test says otherwise
+            // (`World::host_sleeps`).
+            .env("AFKCONVOY_NO_HOST_SLEEP", "true");
         cmd
     }
 
@@ -617,6 +624,40 @@ case "$2" in
 esac
 exit 2
 "#;
+
+/// The stand-in `pmset`: `sleepnow` is written to `pmset.log`, and puts
+/// nothing to sleep.
+const PMSET: &str = r#"#!/bin/sh
+echo "$*" >> "${0%/*}/../pmset.log"
+"#;
+
+/// The stand-in `sysctl`, for `kern.waketime`: the host last woke at the
+/// epoch second in `host-woke`, or never slept since it booted.
+const SYSCTL: &str = r#"#!/bin/sh
+woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
+echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
+"#;
+
+/// The stand-in `ioreg`: the keyboard and mouse untouched for the seconds in
+/// `host-untouched`, or an hour.
+const IOREG: &str = r#"#!/bin/sh
+idle=$(cat "${0%/*}/../host-untouched" 2>/dev/null || echo 3600)
+echo "    | |   \"HIDIdleTime\" = ${idle}000000000"
+"#;
+
+impl World {
+    /// Has every `run` of this world put its host to sleep, as one told
+    /// nothing does: the host is the stand-in one (`pmset.log`).
+    pub fn host_sleeps(&self, command: &mut Command) {
+        command.env_remove("AFKCONVOY_NO_HOST_SLEEP");
+    }
+
+    /// What the stand-in `pmset` was asked, one call a line.
+    pub fn pmset_calls(&self) -> Vec<String> {
+        let log = std::fs::read_to_string(self.root.join("pmset.log")).unwrap_or_default();
+        log.lines().map(str::to_string).collect()
+    }
+}
 
 fn write_script(file: &Path, script: &str) {
     use std::os::unix::fs::PermissionsExt;

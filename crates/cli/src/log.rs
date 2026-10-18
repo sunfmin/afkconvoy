@@ -47,6 +47,13 @@ pub enum What {
     },
     /// One tick ended.
     Tick(Tick),
+    /// A check for host sleep ended: it put the host to sleep, or what kept
+    /// the host awake, each in words.
+    HostSleep {
+        slept: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        awake: Vec<String>,
+    },
 }
 
 /// One tick, as its `run` saw it end.
@@ -218,7 +225,7 @@ mod tests {
     fn counts(log: &Log) -> Vec<u64> {
         let count = |entry: Entry| match entry.what {
             What::Tick(tick) => tick.count,
-            What::Start { .. } => 0,
+            What::Start { .. } | What::HostSleep { .. } => 0,
         };
         log.read().unwrap().into_iter().map(count).collect()
     }

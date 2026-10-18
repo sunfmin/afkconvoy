@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::{RepoDir, RepoName};
 use afkconvoy_core::harness::Harness;
+use afkconvoy_core::host_sleep::IDLE_WAIT;
 use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
@@ -35,6 +36,7 @@ pub mod gate;
 pub mod gh;
 pub mod git;
 pub mod guard;
+pub mod host_sleep;
 pub mod intake;
 pub mod judge;
 pub mod kept;
@@ -75,6 +77,9 @@ use fleet::Fleet;
 use git::Repo;
 use launch::Launches;
 use tick::Pacing;
+
+/// The environment variable that tells `run` `--no-host-sleep`.
+pub const NO_HOST_SLEEP_ENV: &str = "AFKCONVOY_NO_HOST_SLEEP";
 
 /// What this binary was built from, as `--version` says it: stamped by
 /// `build.rs`.
@@ -198,6 +203,14 @@ enum Command {
         /// Serve the panel — the fleet as a web page, live — on this port of this host
         #[arg(long, value_name = "PORT")]
         panel: Option<u16>,
+        /// Keep this host awake: put it to sleep never, and keep every other fleet on it
+        /// from doing so [default: put it to sleep once every fleet on it has been idle
+        /// ten minutes]
+        #[arg(long, env = NO_HOST_SLEEP_ENV)]
+        no_host_sleep: bool,
+        /// Seconds every fleet on this host must have been idle before it is put to sleep
+        #[arg(long, hide = true, default_value_t = IDLE_WAIT)]
+        host_sleep_after: u64,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -801,12 +814,28 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             }
             Ok(plan)
         }
-        Command::Run { instance, host, agent, panel, ticks, second_ms } => {
+        Command::Run {
+            instance,
+            host,
+            agent,
+            panel,
+            no_host_sleep,
+            host_sleep_after,
+            ticks,
+            second_ms,
+        } => {
+            if !no_host_sleep && !cfg!(target_os = "macos") {
+                anyhow::bail!(
+                    "this host is not macOS, the one a fleet can put to sleep once every fleet \
+                     on it is idle: start it with `--no-host-sleep`, which keeps it awake"
+                );
+            }
             let host = host.unwrap_or_else(this_host);
             let salt = clock() as u32 ^ std::process::id();
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
-            let pacing = Pacing { ticks, second: Duration::from_millis(second_ms) };
+            let second = Duration::from_millis(second_ms);
+            let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after };
             let agent = agent.start(now, false)?;
             tick::run(&mut me, &agent, &pacing, panel, || fixed_now.unwrap_or_else(clock))
         }
