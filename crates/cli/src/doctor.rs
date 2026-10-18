@@ -45,6 +45,8 @@ use crate::wake::listening;
 const FAILED_TICKS: usize = 3;
 /// How many failed steps the answer lists, newest first.
 const FAILED_SHOWN: usize = 10;
+/// How many of the events that reached a `run` the answer lists, newest first.
+const EVENTS_SHOWN: usize = 20;
 /// How long a worker is stopped for before it is a finding: past every wait
 /// a tick gives one before it nudges.
 const STOPPED_LONG: u64 = 1800;
@@ -227,6 +229,20 @@ pub struct Run {
     pub ticks: Option<Vec<(u64, Tick)>>,
     /// Its last check for host sleep, as its log has it; `None`: it made none.
     pub host_sleep: Option<HostSleepChecked>,
+    /// The newest events that reached this host's `run`s, newest first.
+    pub events: Vec<Event>,
+}
+
+/// One event that reached a `run` from outside it: a wake, its start or
+/// stop, the host put to sleep or waking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Event {
+    pub at: u64,
+    /// `wake`, `start`, `stop`, `host_sleep` or `host_wake`.
+    pub event: &'static str,
+    /// What caused it, in words.
+    pub cause: String,
+    pub instance: String,
 }
 
 /// A check for host sleep, as the log has it.
@@ -984,11 +1000,11 @@ fn read_log(
             let named = harness_commands.iter().map(|(harness, word)| format!("{harness}={word}"));
             Some(std::iter::once(worker_command.clone()).chain(named).collect())
         }
-        What::Tick(_) | What::HostSleep { .. } => None,
+        _ => None,
     });
     let ticks = own().filter_map(|entry| match &entry.what {
         What::Tick(tick) => Some((entry.at, tick.clone())),
-        What::Start { .. } | What::HostSleep { .. } => None,
+        _ => None,
     });
     (Some(newest.instance.clone()), command, ticks.collect())
 }
@@ -1002,8 +1018,20 @@ fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
         What::HostSleep { slept, awake } => {
             Some(HostSleepChecked { at: entry.at, slept: *slept, awake: awake.clone() })
         }
-        What::Start { .. } | What::Tick(_) => None,
+        _ => None,
     })
+}
+
+/// The events that reached the `run`s of `host` (`Entry::event`), as the log
+/// has them: the newest `EVENTS_SHOWN`, newest first, whichever instance they
+/// reached — a `run` stopped and started again is two.
+fn read_events(entries: &[Entry], host: &str) -> Vec<Event> {
+    let of_host = entries.iter().rev().filter(|entry| entry.host == host);
+    let event = |entry: &Entry| {
+        let (event, cause) = entry.event()?;
+        Some(Event { at: entry.at, event, cause, instance: entry.instance.clone() })
+    };
+    of_host.filter_map(event).take(EVENTS_SHOWN).collect()
 }
 
 /// The team a bound repo names, as it stands at its head → with the team
@@ -1236,6 +1264,7 @@ fn fleet_json(run: &Run) -> Value {
         "failed_steps": failed,
         "host_sleep": run.host_sleep.as_ref().map(|checked| json!({"checked": checked.at,
             "slept": checked.slept, "kept_awake_by": checked.awake})),
+        "events": run.events,
     })
 }
 
@@ -1285,6 +1314,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
+        events: read_events(entries.as_deref().unwrap_or_default(), host),
         ticks: entries.map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
@@ -1376,6 +1406,7 @@ mod tests {
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
             host_sleep: None,
+            events: vec![],
         }
     }
 

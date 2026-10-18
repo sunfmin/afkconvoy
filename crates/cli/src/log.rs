@@ -1,5 +1,8 @@
-//! The log of a `run`: one line when it starts and one for each tick it made,
-//! in a file under this user's cache directory, for `doctor` to read back.
+//! The log of a `run`: one line when it starts, one as each tick starts and
+//! one as it ends, and one for each event that reached it — a wake heard
+//! during a tick, a check for host sleep, the host waking, being told to stop
+//! — in a file under this user's cache directory, for `doctor` to read back.
+//! `run` prints each line too, as it is written (`Entry::said`).
 //!
 //! It is a log, not state: nothing reads it to decide what the fleet does
 //! (fleet state lives on GitHub and the remote), and a host with none loses
@@ -17,8 +20,12 @@ use serde_json::Value;
 use crate::copies::cache;
 use crate::git::Repo;
 
-/// The lines a log is cut back to once it holds twice as many.
-const KEPT: usize = 200;
+/// How far back a log keeps every line, in seconds: a day.
+const KEPT_FOR: u64 = 86_400;
+/// The fewest lines a log is cut back to, however old they are.
+const KEPT_LEAST: usize = 200;
+/// The most lines a log holds, however new they are.
+const KEPT_MOST: usize = 5000;
 
 /// One line of the log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,8 +52,13 @@ pub enum What {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         harness_commands: BTreeMap<String, String>,
     },
+    /// A tick started, for `cause`, before it did anything.
+    TickStarted { count: u64, cause: Cause },
     /// One tick ended.
     Tick(Tick),
+    /// A wake was heard while tick `during` ran: the tick after it starts as
+    /// it ends. Only the first wake of a tick is a line.
+    WokenDuring { during: u64 },
     /// A check for host sleep ended: it put the host to sleep, or what kept
     /// the host awake, each in words.
     HostSleep {
@@ -54,6 +66,95 @@ pub enum What {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         awake: Vec<String>,
     },
+    /// The host woke from a sleep, noticed as a rest of this `run` took
+    /// `asleep` seconds past what it was to.
+    HostWoke { asleep: u64 },
+    /// The `run` was told to stop, and said `line` of its heartbeat as it went.
+    Stop { line: String },
+}
+
+/// Why a tick started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Cause {
+    /// Its sleep ran out.
+    Timer,
+    /// A wake ended its sleep, or was heard during the tick before.
+    Woken,
+    /// It is the `run`'s first.
+    Start,
+    /// The tick before left a worker to start, or could not reach GitHub: it
+    /// runs with no sleep.
+    FollowUp,
+}
+
+impl Cause {
+    pub fn said(self) -> &'static str {
+        match self {
+            Cause::Timer => "timer",
+            Cause::Woken => "woken",
+            Cause::Start => "start",
+            Cause::FollowUp => "follow-up",
+        }
+    }
+}
+
+impl Entry {
+    /// The line `run` prints of it on stdout, as it is written.
+    pub fn said(&self) -> String {
+        match &self.what {
+            What::Start { worker_command, .. } => format!(
+                "start: run as {} on {}, its workers started with `{worker_command}`",
+                self.instance, self.host
+            ),
+            What::TickStarted { count, cause } => {
+                format!("tick {count}: started ({})", cause.said())
+            }
+            What::Tick(Tick { count, sleep: 0, line, .. }) => {
+                format!("tick {count}: {line} · next now")
+            }
+            What::Tick(Tick { count, sleep, line, .. }) => {
+                format!("tick {count}: {line} · next in {sleep}s")
+            }
+            What::WokenDuring { during } => {
+                format!("woken during tick {during}: tick {} follows", during + 1)
+            }
+            What::HostSleep { slept: true, .. } => "host sleep: every fleet on this host has \
+                been idle long enough, and ticked once more: put the host to sleep"
+                .to_string(),
+            What::HostSleep { slept: false, awake } => {
+                format!("host sleep: kept awake: {}", awake.join("; "))
+            }
+            What::HostWoke { asleep } => format!("host woke: after {asleep}s asleep"),
+            What::Stop { line } => format!("stop: {line}"),
+        }
+    }
+
+    /// What reached the `run` from outside it, as `doctor` lists it: the
+    /// event's name and its cause in words; `None` of what the `run` did by
+    /// itself — a tick on its timer, or after the one before, and its end.
+    pub fn event(&self) -> Option<(&'static str, String)> {
+        match &self.what {
+            What::Start { worker_command, .. } => Some((
+                "start",
+                format!("afkconvoy run started, its workers with `{worker_command}`"),
+            )),
+            What::TickStarted { count, cause: Cause::Woken } => {
+                Some(("wake", format!("woken: tick {count} started")))
+            }
+            What::WokenDuring { during } => {
+                Some(("wake", format!("woken during tick {during}: tick {} followed", during + 1)))
+            }
+            What::HostSleep { slept: true, .. } => {
+                Some(("host_sleep", "every fleet on this host was idle".to_string()))
+            }
+            What::HostWoke { asleep } => Some(("host_wake", format!("after {asleep}s asleep"))),
+            What::Stop { line } => {
+                Some(("stop", format!("told to stop (SIGTERM or SIGINT): {line}")))
+            }
+            What::TickStarted { .. } | What::Tick(_) | What::HostSleep { slept: false, .. } => None,
+        }
+    }
 }
 
 /// One tick, as its `run` saw it end.
@@ -145,7 +246,29 @@ impl Tick {
 /// The log of the `run` of one repo on this host.
 pub struct Log {
     pub file: PathBuf,
-    kept: usize,
+    kept: Kept,
+}
+
+/// What a log keeps: every line of the last `for_secs` seconds, never fewer
+/// than `least` lines nor more than `most`.
+#[derive(Debug, Clone, Copy)]
+struct Kept {
+    for_secs: u64,
+    least: usize,
+    most: usize,
+}
+
+const KEPT: Kept = Kept { for_secs: KEPT_FOR, least: KEPT_LEAST, most: KEPT_MOST };
+
+impl Kept {
+    /// How many of the newest lines are kept of lines written at `ats`,
+    /// oldest first, at `now`: those of the last day, at the least `least`
+    /// and at the most `most` — never more than there are.
+    fn of(self, ats: &[u64], now: u64) -> usize {
+        let since = now.saturating_sub(self.for_secs);
+        let recent = ats.iter().rev().take_while(|&&at| at >= since).count();
+        recent.clamp(self.least, self.most).min(ats.len())
+    }
 }
 
 impl Log {
@@ -159,13 +282,15 @@ impl Log {
         Ok(Log::at(&cache()?.join("runs").join(named), KEPT))
     }
 
-    fn at(file: &Path, kept: usize) -> Log {
+    fn at(file: &Path, kept: Kept) -> Log {
         Log { file: file.to_path_buf(), kept }
     }
 
     /// Appends `entry` as one line, written whole or not at all, and cuts
-    /// the log back to its newest lines once it holds twice what it keeps.
-    /// A line already written is never touched again but to be dropped.
+    /// the log back to what it keeps (`Kept`) once it holds more than its
+    /// most, or `least` lines more than it keeps: a log is not written over
+    /// at every line. A line already written is never touched again but to
+    /// be dropped.
     pub fn append(&self, entry: &Entry) -> Result<()> {
         let said = || format!("cannot write the log {}", self.file.display());
         if let Some(dir) = self.file.parent() {
@@ -181,9 +306,20 @@ impl Log {
         drop(file);
         let text = std::fs::read_to_string(&self.file).with_context(said)?;
         let lines: Vec<&str> = text.lines().collect();
-        if lines.len() >= self.kept * 2 {
+        if lines.len() <= self.kept.least {
+            return Ok(());
+        }
+        /// Only when it was written: a line that cannot be read is as old as can be.
+        #[derive(Deserialize)]
+        struct At {
+            at: u64,
+        }
+        let at = |line: &&str| serde_json::from_str::<At>(line).map_or(0, |at| at.at);
+        let ats: Vec<u64> = lines.iter().map(at).collect();
+        let kept = self.kept.of(&ats, entry.at);
+        if lines.len() > self.kept.most || lines.len() >= kept + self.kept.least {
             // Whole or not at all: written beside it, then moved over it.
-            let newest = lines[lines.len() - self.kept..].join("\n") + "\n";
+            let newest = lines[lines.len() - kept..].join("\n") + "\n";
             let beside = self.file.with_extension("trimming");
             std::fs::write(&beside, newest).with_context(said)?;
             std::fs::rename(&beside, &self.file).with_context(said)?;
@@ -225,7 +361,7 @@ mod tests {
     fn counts(log: &Log) -> Vec<u64> {
         let count = |entry: Entry| match entry.what {
             What::Tick(tick) => tick.count,
-            What::Start { .. } | What::HostSleep { .. } => 0,
+            _ => 0,
         };
         log.read().unwrap().into_iter().map(count).collect()
     }
@@ -233,7 +369,7 @@ mod tests {
     #[test]
     fn a_line_is_read_back_as_it_was_written() {
         let dir = tempfile::tempdir().unwrap();
-        let log = Log::at(&dir.path().join("runs/widgets.jsonl"), 5);
+        let log = Log::at(&dir.path().join("runs/widgets.jsonl"), SMALL);
         assert_eq!(log.read(), None, "no log yet");
         let start = Entry {
             at: 1000,
@@ -251,19 +387,51 @@ mod tests {
         assert_eq!(text.lines().count(), 2, "one line each: {text}");
     }
 
+    /// A day of lines, at the least 3 and at the most 10.
+    const SMALL: Kept = Kept { for_secs: 86_400, least: 3, most: 10 };
+
+    /// A tick that ended at `at`.
+    fn tick_at(count: u64, at: u64) -> Entry {
+        Entry { at, ..tick(count) }
+    }
+
     #[test]
-    fn the_log_is_cut_back_to_its_newest_lines_at_twice_what_it_keeps() {
+    fn a_log_keeps_every_line_of_the_last_day_and_no_fewer_lines_than_its_least() {
+        let kept = SMALL;
+        let day = 86_400;
+        // every line of the last day, the newest first
+        assert_eq!(kept.of(&[0, 9, day, day + 5, day + 9], day + 10), 3, "old lines fall off");
+        assert_eq!(kept.of(&[10, 20, 30, 40, 50], day + 10), 5, "a day back, to the second");
+        // never fewer than its least, however old
+        assert_eq!(kept.of(&[1, 2, 3, 4, 5], 10 * day), 3);
+        assert_eq!(kept.of(&[1, 2], 10 * day), 2, "nor more than there are");
+        // never more than its most, however new
+        let new: Vec<u64> = (0..25).map(|at| day + at).collect();
+        assert_eq!(kept.of(&new, day + 30), 10);
+        // the bounds a `run` keeps its log at
+        assert_eq!((KEPT.for_secs, KEPT.least, KEPT.most), (86_400, 200, 5000));
+    }
+
+    #[test]
+    fn the_log_is_cut_back_to_its_newest_lines_but_never_past_a_day_of_them() {
         let dir = tempfile::tempdir().unwrap();
-        let log = Log::at(&dir.path().join("widgets.jsonl"), 3);
+        let log = Log::at(&dir.path().join("widgets.jsonl"), SMALL);
+        // old lines: cut back to its least once it holds that many more
         for count in 1..=5 {
-            log.append(&tick(count)).unwrap();
+            log.append(&tick_at(count, count)).unwrap();
         }
         assert_eq!(counts(&log), [1, 2, 3, 4, 5]);
-        log.append(&tick(6)).unwrap();
-        assert_eq!(counts(&log), [4, 5, 6]);
-        for count in 7..=40 {
-            log.append(&tick(count)).unwrap();
-            assert!(counts(&log).len() < 6, "never past its bound");
+        log.append(&tick_at(6, 6 + 86_400 * 2)).unwrap();
+        assert_eq!(counts(&log), [4, 5, 6], "the least kept, the newest last");
+        // lines of the last day: none dropped, up to its most
+        let now = 86_400 * 3;
+        for count in 7..=13 {
+            log.append(&tick_at(count, now + count)).unwrap();
+        }
+        assert_eq!(counts(&log), [7, 8, 9, 10, 11, 12, 13], "a day of lines kept whole");
+        for count in 14..=60 {
+            log.append(&tick_at(count, now + count)).unwrap();
+            assert!(counts(&log).len() <= 10, "never past its most");
             assert_eq!(counts(&log).last(), Some(&count), "the newest line is always kept");
         }
     }
@@ -271,7 +439,7 @@ mod tests {
     #[test]
     fn a_line_that_cannot_be_read_is_passed_over() {
         let dir = tempfile::tempdir().unwrap();
-        let log = Log::at(&dir.path().join("widgets.jsonl"), 5);
+        let log = Log::at(&dir.path().join("widgets.jsonl"), SMALL);
         log.append(&tick(1)).unwrap();
         let mut text = std::fs::read_to_string(&log.file).unwrap();
         text.push_str("{\"at\": 5, \"cut sho\n");
