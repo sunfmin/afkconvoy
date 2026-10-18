@@ -64,6 +64,11 @@ WHAT IT ANSWERS
                                  do, issue, patrol, error, count}. One cause that
                                  stopped several steps of a tick is one failure: count
                                  is how many, and do, issue and patrol the first's
+                host_sleep       {checked, slept, kept_awake_by}: its last check for
+                                 host sleep — when it ended, whether it put the host
+                                 to sleep, and else what kept the host awake, each in
+                                 words. null: it made none, being told
+                                 `--no-host-sleep` or never idle ten minutes
     claims    each claim of that instance: {issue, title, status, pr, stage, role,
               held_for, worker, worktree, gate} — status as `plan` gives it; stage and
               role in a bound repo; held_for in seconds; worker is {state, quiet}, state

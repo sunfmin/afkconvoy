@@ -3,8 +3,9 @@
 
 use std::time::Duration;
 
+use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
 use afkconvoy_core::lock::named;
-use afkconvoy_core::plan::WorkingSet;
+use afkconvoy_core::plan::{Status, WorkingSet};
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::wake::turn;
@@ -19,6 +20,7 @@ use crate::fleet::Fleet;
 use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
+use crate::host_sleep::{Checked, HostSleep};
 use crate::judge::judge;
 use crate::log::{self, Log};
 use crate::opening;
@@ -33,7 +35,7 @@ use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
 use crate::topic::{self, See};
-use crate::wake::Listener;
+use crate::wake::{Listener, Waker};
 use crate::watch::watch;
 
 /// What failed: a step, or the rebuild's read of one claimed issue.
@@ -320,6 +322,16 @@ impl Ticked {
         self.bound.saturating_sub(self.concurrency.saturating_add(self.set.left_alone()))
     }
 
+    /// Whether this instance is idle after the tick, and whether it worked in
+    /// it: held a claim — as its rebuild read the claims, or as its pass ended
+    /// — or had something on the landing train.
+    pub fn idle(&self) -> (bool, bool) {
+        let on_train = self.set.mine.iter().any(|mine| mine.status == Status::Joined);
+        let pass = &self.pass;
+        let idle = host_sleep::idle(pass.held, pass.frontier_remaining, on_train);
+        (idle, host_sleep::worked(self.set.held().max(pass.held), on_train))
+    }
+
     /// Whether a step of the tick failed on a read GitHub could not be
     /// reached for: nothing says the next tick's read fails too.
     pub fn unreached(&self) -> bool {
@@ -541,6 +553,26 @@ pub struct Pacing {
     pub ticks: Option<u64>,
     /// How long one second of sleep really takes.
     pub second: Duration,
+    /// Whether it was told `--no-host-sleep`.
+    pub no_host_sleep: bool,
+    /// How long, in seconds, every fleet on this host must have been idle
+    /// before it is put to sleep [default: `IDLE_WAIT`].
+    pub host_sleep_after: u64,
+}
+
+/// What a `run` says at its start of host sleep, when it puts its host to
+/// sleep: after how long, and how not to.
+fn host_sleep_line(pacing: &Pacing) -> Option<String> {
+    let after = match pacing.host_sleep_after {
+        IDLE_WAIT => "ten minutes".to_string(),
+        seconds => format!("{seconds}s"),
+    };
+    (!pacing.no_host_sleep).then(|| {
+        format!(
+            "start: puts this host to sleep once every fleet on it has been idle {after} \
+             (`--no-host-sleep` keeps it awake)"
+        )
+    })
 }
 
 /// What a start says it took, when it took or lost anything.
@@ -573,16 +605,21 @@ fn start_line(took: &Value) -> Option<String> {
 /// stop.
 const HEARS_WITHIN: Duration = Duration::from_millis(250);
 
-/// Sleeps for `sleep`, or until a wake, or until this run is told to stop.
-fn rest(wakes: &Listener, stop: &Stop, sleep: Duration) {
+/// Sleeps for `sleep`, or until a wake, or until this run is told to stop →
+/// whether it slept the whole of it.
+fn rest(wakes: &Listener, stop: &Stop, sleep: Duration) -> bool {
     let mut left = sleep;
     while !stop.told() {
         let nap = left.min(HEARS_WITHIN);
-        if wakes.rest(nap) || nap == left {
-            return;
+        if wakes.rest(nap) {
+            return false;
+        }
+        if nap == left {
+            return true;
         }
         left -= nap;
     }
+    false
 }
 
 /// What a `run` told to stop says of its heartbeat as it goes (`goodbye`).
@@ -630,6 +667,36 @@ impl Said {
     }
 }
 
+/// Makes the check for host sleep that is due, if one is (`HostSleep::check`),
+/// and says how it ended: on stdout when it put the host to sleep, and in the
+/// log either way → whether the next tick is due now, the check waiting on it.
+fn check_host(
+    host: &mut HostSleep,
+    (said, me): (&Said, &Me),
+    stop: &Stop,
+    clock: &impl Fn() -> u64,
+) -> bool {
+    let Some(checked) = host.check(clock(), clock, stop) else { return false };
+    let (slept, awake) = match checked {
+        Checked::TickNow => return true,
+        Checked::Stopped => return false,
+        Checked::Awake(awake) => (false, awake.iter().map(|awake| awake.said()).collect()),
+        Checked::Slept => {
+            println!(
+                "host sleep: every fleet on this host has been idle long enough, and ticked once \
+                 more: put the host to sleep"
+            );
+            (true, vec![])
+        }
+        Checked::Failed(error) => {
+            println!("host sleep: FAILED to put the host to sleep: {error}");
+            (false, vec![format!("the host could not be put to sleep: {error}")])
+        }
+    };
+    said.keep(me, clock(), log::What::HostSleep { slept, awake });
+    false
+}
+
 /// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
 /// `afkconvoy wake` ends early, and that is skipped after a tick that left the
 /// next one a worker to start (`Pass::follow_up_due`) or that failed on a read
@@ -640,7 +707,9 @@ impl Said {
 /// runs that could not (`at_start`). It serves the panel once that is opened — at the start,
 /// on a `panel_port`, or later by `afkconvoy panel --open` (`opening`) — a new page after
 /// every tick. It keeps a line of each tick in its log (`log::Log`),
-/// which nothing here ever reads.
+/// which nothing here ever reads. Unless told `--no-host-sleep`, it puts the
+/// host to sleep once every fleet on it has been idle long enough
+/// (`HostSleep`, docs/adr/0016).
 pub fn run(
     me: &mut Me,
     agent: &Agent,
@@ -662,6 +731,19 @@ pub fn run(
     opening::listen(&repo, live.clone(), me.instance.as_str());
     let stop = Stop::listen();
     let said = Said::open(me, agent);
+    if let Some(line) = host_sleep_line(pacing) {
+        println!("{line}");
+    }
+    let standing = Standing {
+        instance: me.instance.as_str().to_string(),
+        repo: repo.main_checkout().map(|main| main.display().to_string()).unwrap_or_default(),
+        version: crate::VERSION.to_string(),
+        no_host_sleep: pacing.no_host_sleep,
+        idle: false,
+        since: me.now,
+        worked: None,
+    };
+    let mut host = HostSleep::open(standing, Waker::of(&repo), pacing.host_sleep_after);
     loop {
         count += 1;
         me.now = clock();
@@ -689,6 +771,8 @@ pub fn run(
                 Ok::<_, anyhow::Error>((ticked, panel))
             },
         );
+        let idle = ticked.as_ref().ok().map(|(ticked, _)| ticked.idle());
+        host.ticked(clock(), idle);
         let (line, sleep, logged) = match ticked {
             Ok((ticked, panel)) => {
                 if let Some(panel) = panel {
@@ -724,10 +808,22 @@ pub fn run(
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
             live.show(panel::render(&shown));
         }
+        let mut due_now = check_host(&mut host, (&said, me), &stop, &clock);
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
-        rest(&wakes, &stop, pacing.second * sleep as u32);
+        // A check that falls due while it sleeps is made then, whether a
+        // tick is due or not.
+        let mut left = pacing.second * sleep as u32;
+        while !due_now {
+            let until = host.due().map(|due| Duration::from_secs(due.saturating_sub(clock())));
+            let nap = until.map_or(left, |until| until.min(left));
+            if !rest(&wakes, &stop, nap) || nap == left {
+                break;
+            }
+            left -= nap;
+            due_now = check_host(&mut host, (&said, me), &stop, &clock);
+        }
         if stop.told() {
             println!("stop: {}", stop_line(me));
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));

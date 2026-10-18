@@ -225,6 +225,19 @@ pub struct Run {
     /// The ticks its log has of that instance, oldest first, each with when
     /// it ended; `None` where there is no log.
     pub ticks: Option<Vec<(u64, Tick)>>,
+    /// Its last check for host sleep, as its log has it; `None`: it made none.
+    pub host_sleep: Option<HostSleepChecked>,
+}
+
+/// A check for host sleep, as the log has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSleepChecked {
+    /// When it ended.
+    pub at: u64,
+    /// Whether it put the host to sleep.
+    pub slept: bool,
+    /// What kept the host awake, each in words.
+    pub awake: Vec<String>,
 }
 
 impl Run {
@@ -971,13 +984,26 @@ fn read_log(
             let named = harness_commands.iter().map(|(harness, word)| format!("{harness}={word}"));
             Some(std::iter::once(worker_command.clone()).chain(named).collect())
         }
-        What::Tick(_) => None,
+        What::Tick(_) | What::HostSleep { .. } => None,
     });
     let ticks = own().filter_map(|entry| match &entry.what {
         What::Tick(tick) => Some((entry.at, tick.clone())),
-        What::Start { .. } => None,
+        What::Start { .. } | What::HostSleep { .. } => None,
     });
     (Some(newest.instance.clone()), command, ticks.collect())
+}
+
+/// The last check for host sleep the newest `run` of `host` made, as the log
+/// has it.
+fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
+    let newest = entries.iter().rev().find(|entry| entry.host == host)?;
+    let own = entries.iter().filter(|entry| entry.instance == newest.instance);
+    own.rev().find_map(|entry| match &entry.what {
+        What::HostSleep { slept, awake } => {
+            Some(HostSleepChecked { at: entry.at, slept: *slept, awake: awake.clone() })
+        }
+        What::Start { .. } | What::Tick(_) => None,
+    })
 }
 
 /// The team a bound repo names, as it stands at its head → with the team
@@ -1208,6 +1234,8 @@ fn fleet_json(run: &Run) -> Value {
         },
         "last_tick": last_tick,
         "failed_steps": failed,
+        "host_sleep": run.host_sleep.as_ref().map(|checked| json!({"checked": checked.at,
+            "slept": checked.slept, "kept_awake_by": checked.awake})),
     })
 }
 
@@ -1256,6 +1284,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         heartbeat_age: None,
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
+        host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
         ticks: entries.map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
@@ -1346,6 +1375,7 @@ mod tests {
             heartbeats: Heartbeats { found: 1, live: vec!["alpha".into()] },
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
+            host_sleep: None,
         }
     }
 
@@ -1974,6 +2004,29 @@ mod tests {
         let found = self::found(&host(), &run(vec![]), &state);
         let severities: Vec<Severity> = found.iter().map(|finding| finding.severity).collect();
         assert_eq!(severities, [Severity::Critical, Severity::Warning, Severity::Info]);
+    }
+
+    #[test]
+    fn the_last_check_for_host_sleep_is_read_for_the_instance_this_host_ran_last() {
+        let entry = |at: u64, instance: &str, slept: bool, awake: &[&str]| Entry {
+            at,
+            instance: instance.into(),
+            host: "h1".into(),
+            what: What::HostSleep { slept, awake: awake.iter().map(|a| a.to_string()).collect() },
+        };
+        let ticked =
+            Entry { what: What::Tick(tick(1, json!([])).1), ..entry(40, "alpha", false, &[]) };
+        let entries = [
+            entry(10, "old", true, &[]),
+            entry(20, "alpha", false, &["beta is not idle"]),
+            entry(30, "alpha", false, &["the keyboard or mouse was used 30s ago"]),
+            ticked,
+        ];
+        let checked = read_host_sleep(&entries, "h1").unwrap();
+        assert_eq!(checked.at, 30);
+        assert_eq!(checked.awake, ["the keyboard or mouse was used 30s ago"]);
+        assert_eq!(read_host_sleep(&entries[..1], "h1").map(|checked| checked.slept), Some(true));
+        assert_eq!(read_host_sleep(&entries, "h2"), None);
     }
 
     #[test]
