@@ -42,6 +42,14 @@ _Avoid_: refresh (a heartbeat is refreshed), resync
 The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, off the landing train — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
 _Avoid_: queue, backlog (all the issues a repo has open)
 
+**Idle**:
+A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or the proposal of a precedent — nothing is on its landing train, and its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
+_Avoid_: drained, done, finished
+
+**Host sleep**:
+A fleet instance putting its host to sleep: every fleet instance on the host has been idle for ten minutes, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and no instance on the host was told not to. A host woken stays awake until some instance on it has worked again.
+_Avoid_: sleep (the wait between ticks), hibernate, suspend, shutdown
+
 **Base branch**:
 The one branch a repo's fleet work is cut from and lands on.
 _Avoid_: trunk, main, default branch (a team's or a role's repo is read at its own)
