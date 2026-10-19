@@ -2,8 +2,11 @@
 //! a clone of it, and stand-ins for `gh` and `orca` first on PATH.
 #![allow(dead_code)]
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{Receiver, channel};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -712,6 +715,65 @@ pub fn write(dir: &Path, file: &str, text: &str) {
     let path = dir.join(file);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
+}
+
+/// A `run` started in the background, its sleeps real: its stdout comes line
+/// by line.
+pub struct Running {
+    child: Child,
+    lines: Receiver<String>,
+}
+
+impl World {
+    /// Starts `run` with `args`, its workers started with `agent`, and goes
+    /// on while it runs.
+    pub fn running(&self, args: &[&str]) -> Running {
+        let mut child = self
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone)
+            .arg("run")
+            .args(args)
+            .args(["--worker-command", "agent"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let (send, lines) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if send.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Running { child, lines }
+    }
+}
+
+impl Running {
+    /// The next line `run` prints but for those it prints whatever it does
+    /// (`bookkeeping`), if one comes within `within`.
+    pub fn line(&self, within: Duration) -> Option<String> {
+        let until = Instant::now() + within;
+        loop {
+            let line = self.every_line(until.saturating_duration_since(Instant::now()))?;
+            if !bookkeeping(&line) {
+                return Some(line);
+            }
+        }
+    }
+
+    /// The next line `run` prints, whatever it is, if one comes within `within`.
+    pub fn every_line(&self, within: Duration) -> Option<String> {
+        self.lines.recv_timeout(within).ok()
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// Whether `line` is one a `run` prints whatever its ticks do: the line of

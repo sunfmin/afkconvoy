@@ -4,9 +4,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use afkconvoy_core::before::{Before, Lost};
 use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
 use afkconvoy_core::lock::named;
-use afkconvoy_core::plan::{Status, WorkingSet};
+use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::wake::turn;
@@ -69,6 +70,19 @@ pub struct Ticked {
     /// The issues the pass found gone, each with whether it released a claim
     /// on it (`Fleet::forgotten`).
     forgotten: Vec<(Gone, bool)>,
+    /// What the tick before saw, when this `run` made one: what the line
+    /// names an outside change against.
+    before: Option<Before>,
+    /// The claims another fleet instance took since the tick before.
+    lost: Vec<Lost>,
+    /// The closed claimed issues, each with who closed it (`Fleet::closers`).
+    closers: Vec<(u64, String)>,
+    /// The open issues, each with the label that hands it to the fleet
+    /// (`plan::handed_by`).
+    handed: Vec<(u64, String)>,
+    /// What this tick saw as it ended, but for its count: the next one's
+    /// `before`.
+    saw: Before,
     /// The config's `concurrency`.
     concurrency: usize,
     /// The claims the pass could hold as it ended (`Pass::bound`).
@@ -81,10 +95,19 @@ pub struct Ticked {
 /// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
 /// for the workers it started, and leaves nothing on this host a later tick
 /// needs: the next one rebuilds from GitHub and the remote. Told to `stop`, it
-/// finishes the step it is in and makes none of those left, which fail.
-pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
+/// finishes the step it is in and makes none of those left, which fail. What
+/// the tick `before` saw, when there was one, words its line and decides
+/// nothing.
+pub fn tick(
+    me: &Me,
+    agent: &Agent,
+    stop: &Stop,
+    before: Option<&Before>,
+) -> Result<(Ticked, Fleet)> {
     let (mut fleet, open) = Fleet::read(me.now)?;
     let (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
+    let me_said = me.instance.as_str();
+    let lost = before.map(|before| before.lost(&fleet.scan.claims, me_said)).unwrap_or_default();
     let bound = set.bound(fleet.config.concurrency());
     // A claimed issue the rebuild could not read is this tick's error, and
     // only its own.
@@ -107,9 +130,32 @@ pub fn tick(me: &Me, agent: &Agent, stop: &Stop) -> Result<(Ticked, Fleet)> {
     });
     let escalated = std::mem::take(&mut fleet.escalated);
     let forgotten = std::mem::take(&mut fleet.forgotten);
+    let closers = std::mem::take(&mut fleet.closers);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
-    let ticked =
-        Ticked { pass, failures, escalated, blocked, forgotten, concurrency, bound, set, flows };
+    let issues = &open.issues.rows;
+    let config = &fleet.config;
+    let handed = issues
+        .iter()
+        .filter_map(|issue| handed_by(&issue.labels, config).map(|label| (issue.number, label)))
+        .collect();
+    let beat = fleet.scan.last_beat(me_said);
+    let saw = Before::saw((&set.mine, issues), (&fleet.scan.claims, me_said, beat), config);
+    let ticked = Ticked {
+        pass,
+        failures,
+        escalated,
+        blocked,
+        forgotten,
+        before: before.cloned(),
+        lost,
+        closers,
+        handed,
+        saw,
+        concurrency,
+        bound,
+        set,
+        flows,
+    };
     Ok((ticked, fleet))
 }
 
@@ -277,6 +323,32 @@ impl Ticked {
         self.blocked.iter().find(|(number, _)| *number == issue).map(|(_, by)| by.as_slice())
     }
 
+    /// Why `issue` was dispatched, when the cause changed on GitHub since the
+    /// tick before: `labelled ready-for-agent since tick 111`.
+    fn labelled(&self, issue: u64) -> Option<String> {
+        let since = self.before.as_ref()?.labelled(issue)?;
+        let label = self.handed.iter().find(|(number, _)| *number == issue)?;
+        Some(format!("labelled {} since tick {since}", label.1))
+    }
+
+    /// Who closed `issue`, when the tick settled its claim and something
+    /// other than the fleet closed it since the tick before.
+    fn closed_outside(&self, issue: u64) -> Option<String> {
+        let mine = self.set.mine.iter().find(|mine| mine.number == issue)?;
+        let outside = mine.status == Status::Closed && self.before.as_ref()?.closed_outside(issue);
+        let by = self.closers.iter().find(|(number, _)| *number == issue);
+        outside.then(|| match by {
+            Some((_, login)) => format!("closed by @{login}"),
+            None => "closed on GitHub".to_string(),
+        })
+    }
+
+    /// What this tick saw as it ended, as tick `count` of its `run`: the next
+    /// one's `before`.
+    pub fn saw(&self, count: u64) -> Before {
+        Before { tick: count, ..self.saw.clone() }
+    }
+
     fn named(&self, step: TickStep) -> Value {
         let (word, issue) = words(step);
         let mut named = json!({"do": word, "issue": issue.or(self.proposal(step))});
@@ -423,6 +495,8 @@ impl Ticked {
             parts.push(format!("FLEET LOCK {} stands: only it is worked", named(&self.set.locks)));
         }
         let lead = parts.len();
+        // A claim another fleet instance took since the tick before.
+        parts.extend(self.lost.iter().map(Lost::said));
         // An issue that left the fleet for a human says so, whichever step
         // handed it over: none of them names it as anything else.
         let escalated: Vec<String> =
@@ -432,10 +506,21 @@ impl Ticked {
         }
         // An issue that is gone says so, whichever step found it.
         for (gone, released) in &self.forgotten {
-            match released {
-                true => parts.push(format!("{}: released its claim", gone.said())),
-                false => parts.push(gone.said()),
-            }
+            let verb = if *released { "released" } else { "skipped" };
+            parts.push(format!("{verb} #{} ({})", gone.issue, gone.said()));
+        }
+        // A claim settled on an issue closed outside the fleet is let go of:
+        // nothing of the fleet's landed.
+        let left: Vec<String> = self
+            .pass
+            .did
+            .iter()
+            .filter(|(step, outcome)| words(*step).0 == "settle" && *outcome == Outcome::Done)
+            .filter_map(|(step, _)| words(*step).1)
+            .filter_map(|issue| self.closed_outside(issue).map(|why| format!("#{issue} ({why})")))
+            .collect();
+        if !left.is_empty() {
+            parts.push(format!("left {}", left.join(", ")));
         }
         for (verb, wanted) in [
             ("settled", "settle"),
@@ -455,8 +540,10 @@ impl Ticked {
                         && self.escalated_by(*step, *outcome).is_none()
                 })
                 .filter_map(|(step, _)| words(*step).1)
-                .map(|issue| match self.advanced_to(issue) {
-                    Some(stage) if wanted == "advance" => format!("#{issue} → {stage}"),
+                .filter(|issue| wanted != "settle" || self.closed_outside(*issue).is_none())
+                .map(|issue| match (wanted, self.advanced_to(issue), self.labelled(issue)) {
+                    ("advance", Some(stage), _) => format!("#{issue} → {stage}"),
+                    ("dispatch", _, Some(why)) => format!("#{issue} ({why})"),
                     _ => format!("#{issue}"),
                 })
                 .collect();
@@ -469,7 +556,13 @@ impl Ticked {
             .iter()
             .map(|(issue, by)| {
                 let by: Vec<String> = by.iter().map(|blocker| format!("#{blocker}")).collect();
-                format!("#{issue} (blocked by {})", by.join(", "))
+                let since = self.before.as_ref().and_then(|before| before.unblocked(*issue));
+                match since {
+                    Some(tick) => {
+                        format!("#{issue} (blocked by {}, added since tick {tick})", by.join(", "))
+                    }
+                    None => format!("#{issue} (blocked by {})", by.join(", ")),
+                }
             })
             .collect();
         if !skipped.is_empty() {
@@ -752,6 +845,9 @@ pub fn run(
     let mut skipped = 0;
     let mut count = 0;
     let mut started = false;
+    // What the last tick that rebuilt saw: the next one's line names what
+    // changed outside this host since.
+    let mut before: Option<Before> = None;
     let repo = Repo::here()?;
     let said = Arc::new(Said::open(me, agent));
     let during: During = {
@@ -799,7 +895,7 @@ pub fn run(
         let ticked = turn(
             || wakes.forget(count),
             || {
-                let (ticked, fleet) = tick(me, agent, &stop)?;
+                let (ticked, fleet) = tick(me, agent, &stop, before.as_ref())?;
                 let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },
@@ -812,6 +908,7 @@ pub fn run(
                 if let Some(panel) = panel {
                     shown = panel;
                 }
+                before = Some(ticked.saw(count));
                 let pass = &ticked.pass;
                 // A tick GitHub could not be reached in was not an empty one:
                 // what it could not read may be work.

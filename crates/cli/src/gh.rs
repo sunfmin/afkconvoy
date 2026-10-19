@@ -36,7 +36,7 @@ pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, tit
 pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
 pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].name], \
-    pull_request: (.pull_request != null)}";
+    pull_request: (.pull_request != null), closed_by: .closed_by.login}";
 /// What is read of each closed issue that carries one label.
 pub const CLOSED_JQ: &str = ".[] | select(.pull_request == null) | \
     {number, at: (.closed_at | fromdateiso8601? // null)}";
@@ -66,6 +66,9 @@ pub struct IssueRead {
     pub state_reason: Option<String>,
     pub labels: Vec<String>,
     pub pull_request: bool,
+    /// The login of whoever closed it, where GitHub says.
+    #[serde(default)]
+    pub closed_by: Option<String>,
 }
 
 /// One issue another is recorded as blocked by — a native dependency edge.
@@ -151,11 +154,12 @@ pub struct Gone {
 }
 
 impl Gone {
-    /// What happened to it, as a tick's line says it: `#231 was deleted`.
+    /// What happened to it, as a tick's line says why it let go of it:
+    /// `released #231 (the issue was deleted)`.
     pub fn said(&self) -> String {
         match self.deleted {
-            true => format!("#{} was deleted", self.issue),
-            false => format!("#{} is gone from this repo", self.issue),
+            true => "the issue was deleted".to_string(),
+            false => "the issue is gone from this repo".to_string(),
         }
     }
 }
@@ -718,7 +722,7 @@ mod tests {
             let error = about_issue(7, failed(said)).unwrap_err();
             assert_eq!((gone(&error), error.to_string()), (None, format!("gh api failed: {said}")));
         }
-        assert_eq!(Gone { issue: 231, deleted: true }.said(), "#231 was deleted");
+        assert_eq!(Gone { issue: 231, deleted: true }.said(), "the issue was deleted");
     }
 
     #[test]

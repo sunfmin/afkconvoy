@@ -78,7 +78,8 @@ WHAT TRIPS YOU UP
     (`forget`): released, its worktree removed when it holds nothing the remote does
     not — else kept, its worker's terminal closed — and nothing written on GitHub. A
     dispatch that finds it gone, before its claim or after, leaves no claim behind,
-    says `gone` and takes no slot. The line says `#231 was deleted: released its claim`;
+    says `gone` and takes no slot. The line says `released #231 (the issue was deleted)`,
+    or `skipped #231 (…)` of a dispatch that found it gone with no claim to release;
     `afkconvoy doctor` names a claim on one whose fleet is not running, with its fix.
   - The last stage is different: the tick after a `pass` that leads to `land` starts a
     worker in the workflow's landing role, which gates the PR and joins the landing

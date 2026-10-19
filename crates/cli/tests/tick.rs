@@ -297,7 +297,8 @@ fn gone(world: &World, number: u64, how: &str, calls: u64) {
 
 #[test]
 fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
-    for (how, said) in [("deleted", "#3 was deleted"), ("transferred", "#3 is gone from this repo")]
+    for (how, said) in
+        [("deleted", "the issue was deleted"), ("transferred", "the issue is gone from this repo")]
     {
         let world = backlog(&[3, 5, 9]);
         tick(&world, "1000");
@@ -308,7 +309,7 @@ fn a_claimed_issue_deleted_between_two_ticks_is_let_go_and_its_slot_refilled() {
         assert_eq!(
             lines,
             [format!(
-                "tick 1: {said}: released its claim · dispatched #9 · holding 2/2 · frontier 0 · \
+                "tick 1: released #3 ({said}) · dispatched #9 · holding 2/2 · frontier 0 · \
                  next in 90s"
             )],
             "{how}"
@@ -339,7 +340,7 @@ fn an_issue_deleted_during_its_own_dispatch_leaves_no_claim_behind() {
     let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
     assert_eq!(
         lines,
-        ["tick 1: #3 was deleted: released its claim · dispatched #5 · holding 1/2 · frontier \
+        ["tick 1: released #3 (the issue was deleted) · dispatched #5 · holding 1/2 · frontier \
              0 · next in 90s"]
     );
     assert_eq!(world.claims(), alpha(&[5]));

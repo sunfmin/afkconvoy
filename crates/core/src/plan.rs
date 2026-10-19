@@ -14,7 +14,7 @@ use crate::patrol::{self, Standing};
 use crate::precedent;
 use crate::role::{Due, flows};
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
-use crate::team::LAND;
+use crate::team::{FLOW_LABEL, LAND};
 use crate::waiting::{Waiting, Waits};
 
 /// One open issue.
@@ -106,6 +106,16 @@ pub fn label_bar(labels: &[String], config: &Config) -> Option<LabelBar> {
             Some(LabelBar::NotReady(config.ready_label.clone()))
         }
         _ => None,
+    }
+}
+
+/// The label among `labels` that hands an issue to the fleet: in a bound repo
+/// its flow label, in an unbound one the ready label; `None` when it carries
+/// none.
+pub fn handed_by(labels: &[String], config: &Config) -> Option<String> {
+    match &config.bound {
+        Some(_) => flows(labels).first().map(|flow| format!("{FLOW_LABEL}{flow}")),
+        None => labels.contains(&config.ready_label).then(|| config.ready_label.clone()),
     }
 }
 

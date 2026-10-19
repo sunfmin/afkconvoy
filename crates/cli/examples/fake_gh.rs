@@ -1,7 +1,7 @@
 //! Stands in for `gh` in the tests: GitHub's issues, pull requests and comments
 //! as one JSON file (`CONVOY_FAKE_GH`), the code in the bare repo it names.
 //!
-//! State: `issues` [{number, title, labels: [name…], state, state_reason?, closed_at?,
+//! State: `issues` [{number, title, labels: [name…], state, state_reason?, closed_at?, closed_by?,
 //! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url, at?}]}, `now` the time a comment posted here is written at, when there is one, `prs` [{number, headRefName, headRefOid, body, state,
 //! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail. `cut_short` {a substring of a command
@@ -385,7 +385,8 @@ fn api(st: &mut State) -> ! {
             let row = json!({"id": issue_id(issue), "title": issue["title"],
                 "state": issue["state"].as_str().unwrap_or("open"),
                 "state_reason": issue["state_reason"], "labels": issue["labels"],
-                "pull_request": issue["pull_request"].as_bool().unwrap_or(false)});
+                "pull_request": issue["pull_request"].as_bool().unwrap_or(false),
+                "closed_by": issue["closed_by"]});
             st.finish(&row.to_string(), 0, "")
         }
         ["issues", number, "dependencies", "blocked_by"] if method == "POST" => {

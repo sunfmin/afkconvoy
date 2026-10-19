@@ -102,7 +102,8 @@ WHAT IT ANSWERS
     host sleep: kept awake: the host could not be put to sleep: <why>
     host woke: after 3600s asleep
 
-  A tick's line names what it did — escalated, settled, ended, advanced, unlocked, reclaimed,
+  A tick's line names what it did — lost, escalated, released, left, settled, ended,
+  advanced, unlocked, reclaimed,
   dispatched, skipped (a frontier issue found blocked just before its claim, with what
   blocks it), nudged, continued, restarted, tended the train, abandoned the train — then
   the claims held out of the concurrency, and the frontier left. The claims a fleet
@@ -122,6 +123,29 @@ WHAT IT ANSWERS
   whichever step did, with why in a few words — the stage first, where it was at one.
   It is named as nothing else. The comment on the issue says why in full and ends with
   the line that answers it; `afkconvoy doctor` lists it under `waiting_on_human`.
+
+  A change made on GitHub, or by another host's fleet, shows on this host at the
+  next tick, and in no other way: that tick reads GitHub and the remote, as every
+  tick does. Nothing reaches a `run` sooner — no webhook, no port — and
+  `afkconvoy wake` makes that next tick start now. Where the tick acts on such a
+  change, its line says what changed since the tick before, and who changed it
+  where that is known:
+
+    tick 8: lost #46 to instance beta-1a2b3c4d on host h2 (takeover) · holding 1/3 · frontier 0 · next in 90s
+    tick 9: dispatched #45 (labelled ready-for-agent since tick 8) · holding 2/3 · frontier 0 · next in 90s
+    tick 9: released #231 (the issue was deleted) · holding 1/3 · frontier 0 · next in 90s
+    tick 9: left #97 (closed by @alice) · holding 1/3 · frontier 0 · next now
+    tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
+
+  `lost #46`: a claim this instance held is another's now — taken by a takeover,
+  or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being
+  past the lease. `released #231`: its issue was deleted, or `(the issue is gone
+  from this repo)`, transferred. `left #97`: a claim with no PR whose issue was
+  closed, by whoever GitHub says closed it (`closed on GitHub` where it says no
+  one), is settled — nothing of the fleet's landed. `labelled …` and `added since
+  …` say what the tick before saw otherwise. A change the tick does nothing about is
+  in no line; nor is one made before the `run`'s first tick, which has no tick
+  before it, nor anything of the kind in what `afkconvoy tick` answers.
 
   `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one
   without starting what follows, and left a slot free, so what follows — a consult, the
