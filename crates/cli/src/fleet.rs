@@ -10,7 +10,7 @@ use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::plan::{Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::stopped::standing_verdict;
-use afkconvoy_core::train::on_train;
+use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Result, anyhow};
@@ -20,6 +20,7 @@ use crate::claims::Scan;
 use crate::config;
 use crate::gh::{GitHub, Gone, Open, beside, gone};
 use crate::git::{Listing, Repo};
+use crate::measure;
 use crate::orca::{Source, Worktree};
 use crate::patrol;
 use crate::precedent;
@@ -51,6 +52,9 @@ pub struct Fleet {
     /// The closed claimed issues the last rebuild read, each with the login of
     /// whoever closed it, where GitHub says: what a tick's line names.
     pub closers: Vec<(u64, String)>,
+    /// What this machine's train's worktree held when this view cut it again:
+    /// what a tick's line says of it.
+    pub cut_train: Option<Built>,
 }
 
 impl Fleet {
@@ -72,6 +76,7 @@ impl Fleet {
             forgotten: vec![],
             unread: vec![],
             closers: vec![],
+            cut_train: None,
         })
     }
 
@@ -179,9 +184,18 @@ impl Fleet {
             waiting: &stages.waiting(self, open),
             landings: &landings,
             slow_gate: &slow_gate,
+            idle_train: if train.tip == train.base { self.train_built() } else { None },
         };
         let set = assemble(&seen, me, self.now, &self.config);
         Ok((set, stages))
+    }
+
+    /// What the last landing measured of this machine's train's worktree;
+    /// `None` when there is none here, no landing measured it, or orca or the
+    /// worktree cannot be read — nothing is cut on what is not known.
+    fn train_built(&self) -> Option<Built> {
+        let worktree = Worktree::of_train(&Source::of(&self.repo).ok()?).ok()??;
+        measure::measured(&Repo::new(worktree.path)).ok()?
     }
 
     /// Whether the worker of `claim`, in an unbound repo, declared a verdict
