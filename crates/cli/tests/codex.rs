@@ -54,6 +54,16 @@ const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam:
 const IMPLEMENT: &str = "---\nname: implement\ndescription: build\n---\n";
 
 fn bound() -> World {
+    bound_with(TEAM)
+}
+
+/// `bound`, of a team whose workers are given nothing of the host user's.
+fn bound_alone() -> World {
+    bound_with(&TEAM.replace("```\n", "host_user: false\n```\n"))
+}
+
+/// `bound`, of the team file `team`.
+fn bound_with(team: &str) -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
@@ -72,7 +82,7 @@ fn bound() -> World {
     world.repo(
         "acme/team",
         &[
-            ("team.md", TEAM),
+            ("team.md", team),
             ("workflows/feature.md", FEATURE),
             ("workflows/audit.md", AUDIT),
             ("patrols/sweep.md", SWEEP),
@@ -125,9 +135,16 @@ fn role_copy(world: &World, repo: &str) -> PathBuf {
     copies.join(format!("{}-role+codex-", head(world, repo)))
 }
 
-/// The directory the fleet keeps for Codex on this world's host.
+/// The directory the fleet keeps for Codex on this world's host, for a
+/// worker of a team that turns the host user's skills and rules off.
 fn kept(world: &World) -> PathBuf {
     world.cache().join("afkconvoy/harness/codex")
+}
+
+/// The directory the fleet keeps for Codex on this world's host, for a
+/// worker given the host user's skills and rules.
+fn kept_host_user(world: &World) -> PathBuf {
+    world.cache().join("afkconvoy/harness/codex-host-user")
 }
 
 fn worktree(world: &World, issue: u64) -> PathBuf {
@@ -347,7 +364,7 @@ fn hook(guard: &str) -> String {
 
 #[test]
 fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own() {
-    let world = bound();
+    let world = bound_alone();
     // What this host's user has of Codex's: a login, rules, a configuration,
     // hooks, a skill and memories.
     let home = world.home();
@@ -531,7 +548,7 @@ fn a_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rules() 
     assert!(!said.contains("It's \"ours\""), "{said}");
     assert!(said.contains("# The team rules: "), "{said}");
     // None of it is kept in a file Codex would load as every worker's.
-    assert!(!kept(&world).join("AGENTS.md").exists());
+    assert!(!kept_host_user(&world).join("AGENTS.md").exists());
 }
 
 /// A stand-in Codex: it prints the directory it was started in, the user
@@ -669,7 +686,7 @@ fn every_tool_call_of_a_codex_worker_is_put_to_the_guard_and_one_it_refuses_is_n
         (started(&world, &worktree(&world, 7)), started(&world, &worktree(&world, 8)));
     // The hook is on the line and in no file: no worker starts without it,
     // whatever its role's repo and the fleet's directory hold.
-    assert!(!kept(&world).join("hooks.json").exists());
+    assert!(!kept_host_user(&world).join("hooks.json").exists());
 
     // What every worker is refused, and — in a stage that writes nothing — a
     // commit: each refused as Codex takes a refusal, with the guard's reason.
@@ -793,8 +810,8 @@ fn a_hook_of_a_role_s_limits_for_codex_runs_beside_the_guard_and_never_in_its_pl
     let (guard, report) = hooked(&ran);
     assert!(!guard.contains("refuse.sh") && !report.contains("refuse.sh"));
     assert!(!held.contains("afkconvoy"), "{held}");
-    assert!(!kept(&world).join("hooks.json").exists());
-    assert!(!kept(&world).join("config.toml").exists());
+    assert!(!kept_host_user(&world).join("hooks.json").exists());
+    assert!(!kept_host_user(&world).join("config.toml").exists());
 
     // Each is run as Codex runs a hook: by a shell, in the directory the
     // worker started in and in its environment, with the call on stdin.
@@ -1064,4 +1081,59 @@ fn a_role_that_holds_skills_for_codex_itself_is_left_as_it_is_and_noted_not_refu
     let checked = world.afk(&["check"]);
     assert!(!checked.stderr.contains("holds skills of its own"), "{}", checked.stderr);
     checked.ok();
+}
+
+#[test]
+fn a_codex_worker_is_given_the_host_user_s_skills_and_rules_and_its_role_s_skill_wins() {
+    let world = bound();
+    // What this host's user has of Codex's: a login, rules, a configuration,
+    // hooks, a skill of their own, and one named as a skill of the role.
+    let home = world.home();
+    let skill = |name: &str| format!("---\nname: {name}\ndescription: theirs\n---\n");
+    for (file, text) in [
+        (".codex/auth.json", "{\"a\": \"login\"}\n".to_string()),
+        (".codex/AGENTS.md", "the user's rules\n".to_string()),
+        (".codex/config.toml", "model = \"theirs\"\n".to_string()),
+        (".codex/hooks.json", "{\"hooks\": {}}\n".to_string()),
+        (".codex/skills/theirs/SKILL.md", skill("theirs")),
+        (".codex/skills/implement/SKILL.md", skill("implement")),
+        (".agents/skills/implement/SKILL.md", skill("implement")),
+    ] {
+        write(&home, file, &text);
+    }
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+
+    // Its user directory is the one kept with the host user's skills and
+    // rules: linked to, where Codex finds a user's, beside the login — and
+    // still no configuration and no hook of theirs.
+    let (alone, kept) = (kept(&world), kept_host_user(&world));
+    let mut held: Vec<String> = std::fs::read_dir(&kept)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    held.sort();
+    assert_eq!(held, ["AGENTS.md", "auth.json", "skills"]);
+    let link = |name: &str| std::fs::read_link(kept.join(name)).unwrap();
+    assert_eq!(link("AGENTS.md"), home.join(".codex/AGENTS.md"));
+    assert_eq!(link("skills"), home.join(".codex/skills"));
+    assert!(!alone.exists(), "nothing is kept without them");
+
+    // The worker starts under it, and the host user's `implement` is turned
+    // off wherever Codex would find it: the role's is the one it is shown.
+    let ran = under_codex(&world, &started(&world, &worktree(&world, 7)));
+    assert_eq!(ran[1], kept.to_str().unwrap());
+    let off: Vec<&String> = ran.iter().filter(|word| word.starts_with("skills.config=")).collect();
+    let [off] = off[..] else { panic!("one key turns skills off: {ran:?}") };
+    for file in [
+        home.join(".agents/skills/implement/SKILL.md"),
+        home.join(".codex/skills/implement/SKILL.md"),
+        kept.join("skills/implement/SKILL.md"),
+    ] {
+        let entry = format!("{{path=\"{}\",enabled=false}}", file.display());
+        assert!(off.contains(&entry), "{entry}\n{off}");
+    }
+    assert!(!off.contains("theirs"), "{off}");
 }

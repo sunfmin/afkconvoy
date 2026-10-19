@@ -96,15 +96,15 @@ pub(super) const KEPT: Kept = Kept {
         Link { home: ".pi/agent/skills", kept: HOST_SKILLS },
         Link { home: ".pi/agent/AGENTS.override.md", kept: "AGENTS.override.md" },
         Link { home: ".pi/agent/AGENTS.md", kept: "AGENTS.md" },
-        Link { home: ".pi/agent/AGENTS.MD", kept: "AGENTS.MD" },
         Link { home: ".pi/agent/CLAUDE.md", kept: "CLAUDE.md" },
-        Link { home: ".pi/agent/CLAUDE.MD", kept: "CLAUDE.MD" },
     ],
     files: &[(EXTENSION_FILE, include_str!("pi/extension.js"))],
 };
 /// Where the user directory the host keeps for a worker given the host
 /// user's skills and rules links to their skills. Their rules are linked to
-/// where pi loads them from in its user directory, the first it finds.
+/// where pi loads them from in its user directory, the first it finds — of
+/// the names that differ in more than case: on a host that does not tell
+/// case apart, one link would stand in for another.
 const HOST_SKILLS: &str = "skills";
 
 /// The tool pi runs shell lines with.

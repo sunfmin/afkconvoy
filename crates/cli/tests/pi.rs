@@ -714,3 +714,45 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
         .unwrap();
     assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
 }
+
+#[test]
+fn a_pi_worker_is_given_the_host_user_s_skills_and_rules_after_its_role_s() {
+    let world = bound();
+    // What this host's user has of pi's: a login, a rule, a skill, settings
+    // and an extension of their own.
+    let home = world.home();
+    for (file, text) in [
+        (".pi/agent/auth.json", "{\"a\": \"login\"}\n"),
+        (".pi/agent/AGENTS.md", "the user's rules\n"),
+        (".pi/agent/settings.json", "{}\n"),
+        (".pi/agent/skills/implement/SKILL.md", "---\nname: implement\ndescription: x\n---\n"),
+        (".pi/agent/extensions/theirs.ts", "// theirs\n"),
+    ] {
+        write(&home, file, text);
+    }
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+
+    // The user directory kept for it links to the host user's skills and to
+    // their rules, where pi loads a user's from — and to no setting and no
+    // extension of theirs.
+    let kept = kept(&world);
+    let link = |name: &str| std::fs::read_link(kept.join(name)).unwrap();
+    assert_eq!(link("AGENTS.md"), home.join(".pi/agent/AGENTS.md"));
+    assert_eq!(link("skills"), home.join(".pi/agent/skills"));
+    assert!(kept.join("settings.json").symlink_metadata().is_err());
+    assert!(kept.join("extensions/theirs.ts").symlink_metadata().is_err());
+    assert!(!kept_alone(&world).exists(), "nothing is kept without them");
+
+    // Their skills are named after the role's: of two of one name pi keeps
+    // the first, the role's.
+    let line = started(&world, &worktree(&world, 7));
+    let skills = format!(
+        " --no-skills --skill '{}/.claude/skills' --skill '{}/skills' ",
+        copy(&world, "acme/dev").display(),
+        kept.display()
+    );
+    assert!(line.contains(&skills), "{line}");
+    assert!(line.contains(&format!("PI_CODING_AGENT_DIR='{}'", kept.display())), "{line}");
+}
