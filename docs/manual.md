@@ -307,9 +307,9 @@ its path, its frontmatter, its keys — is in `afkconvoy help skill-file`.
 ````text
 A role is a directory that defines one kind of worker. A worker of a bound repo is a
 session of its harness started in that directory, with the issue's worktree beside
-it: open the directory by hand and you are in the role a worker is in. It loads
-nothing of your own configuration, so a role is what its directory says, on every
-host. The directory holds three things:
+it: open the directory by hand and you are in the role a worker is in. Of your own
+configuration it loads your skills and rules alone (below). The directory holds
+three things:
 
     its rules     what a worker in it always works under, whatever it is asked
     its skills    each one thing it can be asked to perform; a stage's `do` names one
@@ -382,6 +382,20 @@ this kind of worker alone: its role's. And if nobody could have written it down
 before the question came up, it is a ruling, and becomes a precedent when a human
 accepts it (`afkconvoy help humans`). The four have no order: two that contradict
 each other are a defect of the files, and nothing says which holds.
+````
+
+### THE HOST USER'S SKILLS AND RULES
+
+````text
+A worker is also given the skills and the rules of the host's own user, as a session
+that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's
+and Codex's in ~/.pi/agent and ~/.codex — so a role need not copy in the skills its
+author relies on everywhere. Never their settings, hooks, MCP servers or extensions:
+the guard and orca's report stay the only hooks the fleet adds. A role's skill wins
+over one of theirs of the same name, and the brief, the role's rules, the team rules
+and the repo's own rules win over theirs; the brief says so. The cost: a role may
+behave differently on two hosts. A team file that says `host_user: false` gives its
+workers none of it, and every role is what its directory says on every host.
 ````
 
 ### WHAT MAKES A ROLE GOOD
@@ -1368,6 +1382,10 @@ _Avoid_: org, crew, squad
 **Team rules**:
 The rules every role of a team works under, whatever its own rules add. They say how the team works, and hold in any repo bound to it; what one codebase asks is that repo's to say, and what one kind of worker does is its role's.
 _Avoid_: global rules, shared rules
+
+**Host user's skills and rules**:
+The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
+_Avoid_: global rules, user config, personal skills
 
 **Bound repo**:
 A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then the landing train.

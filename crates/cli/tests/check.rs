@@ -88,6 +88,7 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
     assert_eq!(read["files"], json!(["team.md", "workflows/feature.md"]));
     assert_eq!(read["escalate_label"], "ready-for-human");
     assert_eq!(read["rules"], false, "the team holds no CLAUDE.md");
+    assert_eq!(read["host_user"], true, "its workers are given the host user's skills and rules");
     assert_eq!(
         read["roles"],
         json!([
@@ -1160,4 +1161,19 @@ fn the_help_and_a_skeleton_say_where_a_roles_limits_for_each_harness_go() {
         assert!(check.contains(harness.limits()), "check --help: {}", harness.key());
     }
     assert!(world.root.join("dev").join(Harness::Codex.limits()).is_file());
+}
+
+#[test]
+fn a_team_file_may_turn_the_host_user_s_skills_and_rules_off_with_true_or_false_alone() {
+    let off = TEAM.replace("```\n", "host_user: false\n```\n");
+    let world = bound(&[("team.md", &off), ("workflows/feature.md", FEATURE)]);
+    assert_eq!(world.afk(&["check"]).ok()["host_user"], false);
+    let team = world.root.join("github/acme/team");
+    commit(&team, "team.md", &TEAM.replace("```\n", "host_user: \"no\"\n```\n"));
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 1);
+    assert_eq!(faults(&answer.json), ["team.md: host_user"]);
+    let problem = answer.json["faults"][0]["problem"].as_str().unwrap();
+    assert_eq!(problem, "must be true or false, not text");
+    see(&answer.json["faults"][0]);
 }

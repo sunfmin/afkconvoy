@@ -54,8 +54,18 @@ const ORCA_S: &str = ".pi/agent/extensions/orca-agent-status.ts";
 /// A world whose repo is bound to a team of two roles and two workflows, with
 /// rules of its own, and whose own rules are in an `AGENTS.md`.
 fn bound() -> World {
+    bound_with(TEAM)
+}
+
+/// `bound`, of a team whose workers are given nothing of the host user's.
+fn bound_alone() -> World {
+    bound_with(&TEAM.replace("```\n", "host_user: false\n```\n"))
+}
+
+/// `bound`, of the team file `team`.
+fn bound_with(team: &str) -> World {
     bound_to(&[
-        ("team.md", TEAM),
+        ("team.md", team),
         ("CLAUDE.md", "the rules of the team\n"),
         ("workflows/feature.md", FEATURE),
         ("workflows/audit.md", AUDIT),
@@ -115,8 +125,16 @@ fn copy(world: &World, repo: &str) -> PathBuf {
     world.cache().join("afkconvoy/copies").join(repo).join(head(world, repo))
 }
 
-/// The directory the fleet keeps for pi on this world's host.
+/// The directory the fleet keeps for pi on this world's host, for a worker
+/// given the host user's skills and rules: one of a team that does not turn
+/// them off.
 fn kept(world: &World) -> PathBuf {
+    world.cache().join("afkconvoy/harness/pi-host-user")
+}
+
+/// The directory the fleet keeps for pi on this world's host, for a worker
+/// of a team that turns the host user's skills and rules off.
+fn kept_alone(world: &World) -> PathBuf {
     world.cache().join("afkconvoy/harness/pi")
 }
 
@@ -303,7 +321,7 @@ fn a_command_that_wraps_pi_is_asked_nothing_of_pi_s_credentials() {
 
 #[test]
 fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
-    let world = bound();
+    let world = bound_alone();
     // What this host's user has of pi's: a login, a rule, a skill, settings,
     // an extension of their own, and the one orca installed.
     let home = world.home();
@@ -321,7 +339,7 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
     let ticked = tick(&world, 1000).ok();
     assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
 
-    let (role, dir, kept) = (copy(&world, "acme/dev"), worktree(&world, 7), kept(&world));
+    let (role, dir, kept) = (copy(&world, "acme/dev"), worktree(&world, 7), kept_alone(&world));
     assert_eq!(
         started(&world, &dir),
         format!(
@@ -415,14 +433,16 @@ fn a_stage_that_names_no_harness_starts_its_worker_as_before() {
     let adds = format!(
         " AFKCONVOY_HARNESS='claude-code' && claude --dangerously-skip-permissions --settings \
          '{{\"skipDangerousModePermissionPrompt\":true}}' --add-dir \
-         '{}' --add-dir '{}' --setting-sources project --settings '{{\"hooks\":",
+         '{}' --add-dir '{}' --add-dir '{}' --setting-sources project --settings \
+         '{{\"hooks\":",
         worktree(&world, 7).display(),
-        team.display()
+        team.display(),
+        world.cache().join("afkconvoy/harness/claude-code-host-user").display(),
     );
     assert!(line.contains(&adds), "{line}");
     assert!(!line.contains("PI_CODING_AGENT_DIR") && !line.contains("AFKCONVOY_GUARD"), "{line}");
-    // Nothing is kept for Claude Code, and nothing for pi until it is started.
-    assert!(!world.cache().join("afkconvoy/harness").exists());
+    // Nothing is kept for pi until it is started.
+    assert!(!kept(&world).exists() && !kept_alone(&world).exists());
 }
 
 /// A stand-in pi: it takes the flags the fleet adds, loads each extension
@@ -559,13 +579,14 @@ fn a_pi_worker_is_refused_what_a_claude_code_worker_is_by_the_same_guard() {
 
     // The stand-in was started as pi is: in the role's directory, under the
     // fleet's own user directory, its question answered, with the role's
-    // skills and no others, the fleet's extension, and the stage's model.
+    // skills, then the host user's, and no others, the fleet's extension,
+    // and the stage's model.
     let ran = under_pi(&world, &writes, &json!([]));
     let role = copy(&world, "acme/dev");
     assert_eq!(
         ran["started"],
         json!({"cwd": role, "userDir": kept(&world), "flags": ["--approve", "--no-skills"],
-            "skills": [role.join(".claude/skills")],
+            "skills": [role.join(".claude/skills"), kept(&world).join("skills")],
             "extensions": [kept(&world).join("afkconvoy.js")],
             "model": "openai/gpt-5.5", "found": []})
     );
@@ -692,4 +713,46 @@ fn a_tool_call_is_refused_when_the_guard_cannot_be_reached() {
         .output()
         .unwrap();
     assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+}
+
+#[test]
+fn a_pi_worker_is_given_the_host_user_s_skills_and_rules_after_its_role_s() {
+    let world = bound();
+    // What this host's user has of pi's: a login, a rule, a skill, settings
+    // and an extension of their own.
+    let home = world.home();
+    for (file, text) in [
+        (".pi/agent/auth.json", "{\"a\": \"login\"}\n"),
+        (".pi/agent/AGENTS.md", "the user's rules\n"),
+        (".pi/agent/settings.json", "{}\n"),
+        (".pi/agent/skills/implement/SKILL.md", "---\nname: implement\ndescription: x\n---\n"),
+        (".pi/agent/extensions/theirs.ts", "// theirs\n"),
+    ] {
+        write(&home, file, text);
+    }
+    world.issue(7, &["flow:feature"]);
+    let ticked = tick(&world, 1000).ok();
+    assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
+
+    // The user directory kept for it links to the host user's skills and to
+    // their rules, where pi loads a user's from — and to no setting and no
+    // extension of theirs.
+    let kept = kept(&world);
+    let link = |name: &str| std::fs::read_link(kept.join(name)).unwrap();
+    assert_eq!(link("AGENTS.md"), home.join(".pi/agent/AGENTS.md"));
+    assert_eq!(link("skills"), home.join(".pi/agent/skills"));
+    assert!(kept.join("settings.json").symlink_metadata().is_err());
+    assert!(kept.join("extensions/theirs.ts").symlink_metadata().is_err());
+    assert!(!kept_alone(&world).exists(), "nothing is kept without them");
+
+    // Their skills are named after the role's: of two of one name pi keeps
+    // the first, the role's.
+    let line = started(&world, &worktree(&world, 7));
+    let skills = format!(
+        " --no-skills --skill '{}/.claude/skills' --skill '{}/skills' ",
+        copy(&world, "acme/dev").display(),
+        kept.display()
+    );
+    assert!(line.contains(&skills), "{line}");
+    assert!(line.contains(&format!("PI_CODING_AGENT_DIR='{}'", kept.display())), "{line}");
 }

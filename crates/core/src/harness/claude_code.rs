@@ -3,6 +3,9 @@
 //! and hooks from the directory it starts in (docs/adr/0009), so what the
 //! fleet adds is the rest: the directories beside the role's, the settings it
 //! may load, and the hooks that ask the guard and tell the worker backend.
+//! The host user's skills and rules (docs/adr/0017) are one more directory
+//! beside the role's: one the host keeps, which holds nothing else of the
+//! user's, so that leaving their settings out still leaves out their hooks.
 
 use std::collections::BTreeMap;
 
@@ -10,7 +13,7 @@ use flux_rs::attrs::*;
 use serde::de::{Error, IgnoredAny};
 use serde::{Deserialize, Deserializer};
 
-use super::Held;
+use super::{Held, Kept, Link};
 use crate::guard::Call;
 use crate::line::Line;
 use crate::role::Start;
@@ -51,7 +54,8 @@ pub(super) const FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
 const HELP: &str = " --help";
 
 /// The settings a worker loads: those of the directory it starts in — its
-/// role's — and nothing of the host user's.
+/// role's — and nothing of the host user's: no hook, no MCP server, no
+/// permission of theirs.
 const SOURCES: &str = "project";
 /// The event of Claude Code before each tool call: where the guard is asked.
 const BEFORE_A_CALL: &str = "PreToolUse";
@@ -84,6 +88,19 @@ const ADDED_RULES: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
 const NO_MEMORY: &str = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
 /// The variables a worker's environment sets for Claude Code.
 pub(super) const ENVIRONMENT: [&str; 2] = [ADDED_RULES, NO_MEMORY];
+
+/// What a host keeps for Claude Code: the host user's skills and rules, as
+/// a directory added to a worker's holds them, and nothing else. Claude Code
+/// loads the skills and the rules of an added directory, and not its
+/// settings; a skill of the role's wins over one of the same name there.
+pub(super) const KEPT: Kept = Kept {
+    links: &[],
+    host_user: &[
+        Link { home: ".claude/skills", kept: ".claude/skills" },
+        Link { home: ".claude/CLAUDE.md", kept: ".claude/CLAUDE.md" },
+    ],
+    files: &[],
+};
 
 /// The shell line that tells orca of a worker's state: the hook orca installs
 /// on its host for Claude Code, which reads the event on standard input and
@@ -176,8 +193,8 @@ fn added_settings(guard: &str, report: &str) -> String {
 
 /// `line`, which starts the worker launch command, with what Claude Code is
 /// given to put a worker in its role: the worktree and the team's copy added,
-/// the user's settings left out, the guard and the report added, and the
-/// stage's model.
+/// and the host user's skills and rules where it is given them; the user's
+/// settings left out, the guard and the report added, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
     let line = line
@@ -188,7 +205,13 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(ADD_DIR)
         .fixed(" ")
-        .word(start.team_dir)
+        .word(start.team_dir);
+    let line = if start.host_user {
+        line.fixed(" ").fixed(ADD_DIR).fixed(" ").word(start.kept)
+    } else {
+        line
+    };
+    let line = line
         .fixed(" ")
         .fixed(SETTING_SOURCES)
         .fixed(" ")
@@ -274,6 +297,8 @@ mod tests {
             model,
             guard: "/bin/afkconvoy guard",
             kept: "/cache/harness/claude-code",
+            host_user: false,
+            shadowed: &[],
             told: Told::default(),
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },

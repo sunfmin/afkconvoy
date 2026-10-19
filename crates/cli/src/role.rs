@@ -60,6 +60,9 @@ pub struct Staged {
     team_copy: Copy,
     /// The team rules, in the team's copy, of a team that has them.
     team_rules: Option<String>,
+    /// Whether the worker is given the host user's skills and rules
+    /// (`Team::host_user`).
+    host_user: bool,
     /// The team's workflows, by name: what a stage that splits its issue
     /// may take a child in to.
     workflows: Vec<String>,
@@ -133,6 +136,7 @@ impl Staged {
             role_copy: kept.role(role, harness)?,
             team_copy: kept.copy.clone(),
             team_rules: kept.rules(),
+            host_user: kept.team.host_user,
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
     }
@@ -147,13 +151,17 @@ impl Staged {
     /// keeps for that harness is put in place first (`kept::keep`).
     pub fn command(&self, launch: &str, worktree: &Worktree) -> Result<String> {
         let told = ToldRules::read(self.harness, &worktree.path, self.team_rules.as_deref())?;
+        let (kept, shadowed) =
+            crate::kept::for_worker(self.harness, self.host_user, &self.role_copy.dir)?;
         let start = Start {
             role_dir: &self.role_copy.dir.display().to_string(),
             worktree: &worktree.path.display().to_string(),
             team_dir: &self.team_copy.dir.display().to_string(),
             model: self.model.as_deref(),
             guard: &crate::own_command().fixed(" guard").own(),
-            kept: &crate::kept::keep(self.harness)?.display().to_string(),
+            kept: &kept,
+            host_user: self.host_user,
+            shadowed: &shadowed,
             told: told.told(),
             facts: Facts {
                 on: On::Stage { issue: self.issue, flow: &self.flow, stage: &self.stage },
