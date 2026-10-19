@@ -19,7 +19,8 @@ use crate::train::Train;
 ///
 /// The train's worktree is the repo's, not a run's: it is found by its name,
 /// kept when the fleet stops, and used again, with what its gate runs built,
-/// by whichever fleet instance tends the train next.
+/// by whichever fleet instance tends the train next — until it has outgrown
+/// its build (`cut_train`).
 ///
 /// A worker that stopped on the tip it was told about is `stopped_train`'s.
 pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {

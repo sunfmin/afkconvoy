@@ -22,7 +22,7 @@ WHAT IT ANSWERS
   {"did", "errors", "held", "frontier_remaining", "locks"}
 
     did                 each step taken: {do, issue, outcome}. do is settle, forget, tend_train,
-                        judge, watch, advance, escalate, end_patrol, patrol,
+                        cut_train, judge, watch, advance, escalate, end_patrol, patrol,
                         end_proposal, propose, unlock, reclaim, dispatch, slow_gate,
                         board, stage_label or heartbeat; outcome is done, nudged, continued,
                         restarted, abandoned, nothing, lost, blocked, gone or failed. A step on a
@@ -115,6 +115,12 @@ WHAT TRIPS YOU UP
                           same, and a later dispatch recreates a removed worktree
                           at the pushed tip.
     An issue that lands loses its worktree, and its worker with it, as it is settled.
+  - The train's worktree is kept with what its gate runs built until it has outgrown its
+    fresh build, by what the last landing measured (`afkconvoy land --help`). A tick
+    that finds the train idle then — nothing on it, and its worker not at work — removes
+    it and cuts it again (`cut_train`), and its line says `cut the train's worktree
+    again (built 4.2 GiB, its fresh build 1.1 GiB)`, or `no fresh build on record`.
+    A train with a PR on it, or a train worker at work, is never cut again.
   - An `escalate` does not always hand the issue to a human. From a stage that names a
     consult (`escalate: { to, do }`), the tick that reads it ends the stage's claim,
     and the next one starts a worker in the consult's role — under a claim of its

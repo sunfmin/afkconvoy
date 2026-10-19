@@ -972,3 +972,19 @@ fn the_help_of_land_says_what_the_trains_worktree_holds_in_each_of_its_three_num
         assert!(row.contains(says), "{key}: {row}");
     }
 }
+
+#[test]
+fn the_help_that_keeps_the_trains_worktree_with_what_it_built_says_when_it_is_cut_again() {
+    let land = asked(&["land", "--help"]).split_whitespace().collect::<Vec<_>>().join(" ");
+    for says in [
+        "kept with what its gate runs built",
+        "built more than 3 times fresh and more than 1 GiB",
+        "more than 1 GiB alone while no fresh is on record",
+        "cuts it again",
+    ] {
+        assert!(land.contains(says), "{says}: {land}");
+    }
+    let tick = asked(&["tick", "--help"]).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(tick.contains("cut_train"), "{tick}");
+    assert!(tick.contains("is never cut again"), "{tick}");
+}

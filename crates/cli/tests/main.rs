@@ -12,6 +12,7 @@ mod codex;
 mod config;
 mod consult;
 mod continuation;
+mod cut_train;
 mod declared;
 mod dispatch;
 mod doctor;
