@@ -50,13 +50,16 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"team", "path", "commit", "files", "escalate_label", "rules", "harness", "roles",
-  "workflows", "patrols", "precedents"} — what it read.
+  {"team", "path", "commit", "files", "escalate_label", "rules", "host_user", "harness",
+  "roles", "workflows", "patrols", "precedents"} — what it read.
   `team` is the team's repo and `path` its directory there, "" for a whole repo — with
   `--dir`, the directory read and null. `commit` is the team's commit read, null with
   `--dir`; `files` the definition files read, each from the team's directory.
   `rules` is whether the team has rules of its own: a `CLAUDE.md` in its directory,
   which every one of its workers is given.
+  `host_user` is whether its workers are given the host user's own skills and rules
+  beside their role's: true unless the team file says `host_user: false`, and a value
+  that is not true or false is a fault (`afkconvoy help roles`).
   `harness` is the default harness: the one the config of this checkout names, and
   claude-code where it names none — and with `--team` and `--dir`, which read no
   config. Each of
