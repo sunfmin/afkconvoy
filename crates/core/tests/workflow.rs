@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use afkconvoy_core::config::RepoDir;
+use afkconvoy_core::config::{RepoDir, RepoLabels};
 use afkconvoy_core::position::{Breaker, Declared, Place, Position};
 use afkconvoy_core::team::{
     DONE, Fault, File, LAND, Pass, RoleDir, Sources, TEAM_FILE, Team, Workflow, load,
@@ -269,6 +269,7 @@ fn team_of(definition: &Definition) -> Result<Team, Vec<Fault>> {
             repo("acme/dev", &["plan", "implement", "land"]),
             repo("acme/reviewer", &["review", "rule"]),
         ],
+        labels: RepoLabels::default(),
     })
 }
 

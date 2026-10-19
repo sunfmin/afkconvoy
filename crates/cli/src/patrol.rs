@@ -8,7 +8,7 @@ use afkconvoy_core::patrol::{
     failure_title, is_due, read_run, run_over, run_ref, write_run,
 };
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
-use afkconvoy_core::role::{Facts, On, Start, flows};
+use afkconvoy_core::role::{Facts, On, Start};
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, anyhow};
@@ -41,7 +41,7 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
     let mut opened = read.opened();
     let issues = &open.rows;
     for issue in issues {
-        if flows(&issue.labels).is_empty() && issue.labels.contains(escalate) {
+        if kept.team.flows(&issue.labels).is_empty() && issue.labels.contains(escalate) {
             let comments = open.comments(issue.number);
             opened.extend(opened_by(comments.iter().map(|comment| comment.body.as_str())));
         }

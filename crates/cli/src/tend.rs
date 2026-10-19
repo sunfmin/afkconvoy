@@ -52,7 +52,7 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     // taken in to one of the team's workflows as they stand now.
     let workflows: Option<Vec<String>> = match &fleet.config.bound {
         Some(bound) => {
-            let kept = keep(&fleet.gh, &Copies::here()?, &bound.team)?;
+            let kept = keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?;
             Some(kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect())
         }
         None => None,

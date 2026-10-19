@@ -9,7 +9,7 @@ use afkconvoy_core::claims::{Claim, releasable};
 use afkconvoy_core::left::{Held, Left};
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
-use afkconvoy_core::role::{flows, followed};
+use afkconvoy_core::role::followed;
 use afkconvoy_core::stage_record::stage_records;
 use afkconvoy_core::stopped::{
     NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
@@ -195,16 +195,18 @@ pub(crate) fn escalate_claim(
     let said = escalation_begun(bodies(), &claim.id);
     // A bound repo's escalate label is its team's to name.
     let kept = match &fleet.config.bound {
-        Some(bound) => Some(keep(&fleet.gh, &Copies::here()?, &bound.team)?),
+        Some(bound) => {
+            Some(keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?)
+        }
         None => None,
     };
-    let team_label = kept.as_ref().map(|kept| kept.team.escalate_label.clone());
-    let swap = Relabel::of(&labels, &fleet.config, team_label.as_deref());
+    let team = kept.as_ref().map(|kept| &kept.team);
+    let swap = Relabel::of(&labels, &fleet.config, team);
     // The one workflow a bound repo's issue follows: a ruling puts its label back.
-    let flow = match flows(&labels).as_slice() {
-        [flow] if team_label.is_some() => Some(flow.to_string()),
+    let flow = team.and_then(|team| match team.flows(&labels).as_slice() {
+        [flow] => team.labelled(flow).map(|workflow| workflow.name.clone()),
         _ => None,
-    };
+    });
     let back = match &kept {
         Some(kept) => {
             // An escalation cut short after its relabel reads the workflow

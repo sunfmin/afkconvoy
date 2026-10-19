@@ -12,9 +12,9 @@ use crate::lease::is_stale;
 use crate::lock;
 use crate::patrol::{self, Standing};
 use crate::precedent;
-use crate::role::{Due, flows};
+use crate::role::Due;
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
-use crate::team::{FLOW_LABEL, LAND};
+use crate::team::{FlowLabels, LAND};
 use crate::train::Built;
 use crate::waiting::{Waiting, Waits};
 
@@ -94,15 +94,17 @@ impl LabelBar {
 }
 
 /// What in an issue's labels keeps a fleet from dispatching it; `None` when
-/// they allow it. The one home of the label rules: the frontier reads it, and
-/// so does the standing of a blocker, so the two cannot disagree.
-pub fn label_bar(labels: &[String], config: &Config) -> Option<LabelBar> {
+/// they allow it. `flows` are the flow labels of a bound repo's team. The one
+/// home of the label rules: the frontier reads it, and so does the standing
+/// of a blocker, so the two cannot disagree. An epic is barred whatever else
+/// it carries: the ready label too, where that is a flow label.
+pub fn label_bar(labels: &[String], config: &Config, flows: &FlowLabels) -> Option<LabelBar> {
     if let Some(epic) = labels.iter().find(|label| config.epic_labels.contains(label)) {
         return Some(LabelBar::Epic(epic.clone()));
     }
     // The ready label means something only in an unbound repo.
     match &config.bound {
-        Some(_) if flows(labels).is_empty() => Some(LabelBar::NoFlow),
+        Some(_) if flows.among(labels).is_empty() => Some(LabelBar::NoFlow),
         None if !labels.contains(&config.ready_label) => {
             Some(LabelBar::NotReady(config.ready_label.clone()))
         }
@@ -111,11 +113,11 @@ pub fn label_bar(labels: &[String], config: &Config) -> Option<LabelBar> {
 }
 
 /// The label among `labels` that hands an issue to the fleet: in a bound repo
-/// its flow label, in an unbound one the ready label; `None` when it carries
-/// none.
-pub fn handed_by(labels: &[String], config: &Config) -> Option<String> {
+/// its flow label — one of `flows`, its team's — in an unbound one the ready
+/// label; `None` when it carries none.
+pub fn handed_by(labels: &[String], config: &Config, flows: &FlowLabels) -> Option<String> {
     match &config.bound {
-        Some(_) => flows(labels).first().map(|flow| format!("{FLOW_LABEL}{flow}")),
+        Some(_) => flows.among(labels).first().map(|flow| flow.to_string()),
         None => labels.contains(&config.ready_label).then(|| config.ready_label.clone()),
     }
 }
@@ -367,6 +369,9 @@ pub struct Observed<'a> {
     /// What is due on each open issue of a bound repo that carries a flow
     /// label (`role::due`). Empty in an unbound repo.
     pub due: &'a [(u64, Due<'a>)],
+    /// The flow labels of a bound repo's team, as the rebuild read it: none
+    /// in an unbound repo, or where the team did not load.
+    pub flows: &'a FlowLabels,
     /// The claimed issues of a bound repo whose claim is a landing worker's
     /// (`stage_record::lands`). Empty in an unbound repo.
     pub landing: &'a [u64],
@@ -496,12 +501,12 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
     set.proposals = precedent::rows(seen.proposals, me, seen.heartbeats, now, locked);
     set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols);
     for issue in &issues {
-        if config.bound.is_some() && !flows(&issue.labels).is_empty() {
+        if config.bound.is_some() && !seen.flows.among(&issue.labels).is_empty() {
             set.flowing.push((*issue).clone());
         }
         let claimed = claims.iter().any(|claim| claim.number == issue.number);
         let (number, title) = (issue.number, issue.title.clone());
-        let reason = if let Some(bar) = label_bar(&issue.labels, config) {
+        let reason = if let Some(bar) = label_bar(&issue.labels, config, seen.flows) {
             // An escalated issue lost the label that bars it to the escalation.
             let waits = set.waiting_on_human.iter().find(|waiting| waiting.issue == number);
             let said = waits.and_then(|waiting| waiting.waits.excluded());
@@ -561,7 +566,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             let issue = issues.iter().find(|issue| issue.number == claim.number);
             let title = issue.map(|issue| issue.title.clone());
             let startable = |issue: &&&Issue| {
-                config.bound.is_some() && label_bar(&issue.labels, config).is_none()
+                config.bound.is_some() && label_bar(&issue.labels, config, seen.flows).is_none()
             };
             let due = issue.filter(startable).and_then(|issue| match call(issue, seen.due) {
                 Call::Start(stage, Due::Worker(_)) => Some(stage),
@@ -685,6 +690,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &[],
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -727,6 +733,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &[],
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -762,6 +769,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &[],
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -809,6 +817,7 @@ mod tests {
             issue(6, READY),
         ];
         let none = precedent::Seen::default();
+        let no_flows = FlowLabels::default();
         let seen = |issues, claims| Observed {
             issues,
             prs: &[],
@@ -821,6 +830,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &[],
+            flows: &no_flows,
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -899,6 +909,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &due,
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -1011,6 +1022,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &due,
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[5, 6, 7, 8, 9, 10, 11, 12],
             patrols: &[],
@@ -1091,6 +1103,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &[],
+            flows: &FlowLabels::default(),
             // #10's PR is gone: its landing worker has nothing to join.
             landing: &[8, 9, 10],
             begun: &[],
@@ -1148,6 +1161,7 @@ mod tests {
             landed: &[9],
             declared: &[],
             due: &[],
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -1196,6 +1210,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &[],
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -1227,6 +1242,7 @@ mod tests {
             landed: &[],
             declared: &[],
             due: &[],
+            flows: &FlowLabels::default(),
             landing: &[],
             begun: &[],
             patrols: &[],
@@ -1267,6 +1283,7 @@ mod tests {
                     landed: &[],
                     declared: &[],
                     due: &[],
+                    flows: &FlowLabels::default(),
                     landing: &[],
                     begun: &[],
                     patrols: &[],

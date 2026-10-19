@@ -6,7 +6,7 @@
 
 use afkconvoy_core::intake::{By, IntakeRecord, On, has_room, taken_in};
 use afkconvoy_core::plan::Issue;
-use afkconvoy_core::role::flows;
+use afkconvoy_core::team::Team;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -47,11 +47,11 @@ fn with(mut object: Value, more: Value) -> Value {
     object
 }
 
-/// How an issue carrying `labels` came to follow its workflow, read off its
-/// `comments`: by a worker's intake, with the record it left, or — a flow
-/// label no record is for — by a human's.
-pub(crate) fn came_in(labels: &[String], comments: &[Comment]) -> Value {
-    match taken_in(labels, comments.iter().map(|comment| comment.body.as_str())) {
+/// How an issue carrying `labels` came to follow its workflow of `team`,
+/// read off its `comments`: by a worker's intake, with the record it left,
+/// or — a flow label no record is for — by a human's.
+pub(crate) fn came_in(team: &Team, labels: &[String], comments: &[Comment]) -> Value {
+    match taken_in(team, labels, comments.iter().map(|comment| comment.body.as_str())) {
         Some((at, record)) => with(
             json!({"by": "worker", "url": comments.get(at).map(|comment| comment.url.as_str())}),
             who(&record.by),
@@ -60,12 +60,12 @@ pub(crate) fn came_in(labels: &[String], comments: &[Comment]) -> Value {
     }
 }
 
-/// How many of `issues` — the open ones — a worker took in, counted from
-/// their intake records.
-pub(crate) fn open_taken_in(open: &OpenIssues) -> usize {
+/// How many of `issues` — the open ones — a worker took in to a workflow of
+/// `team`, counted from their intake records.
+pub(crate) fn open_taken_in(team: &Team, open: &OpenIssues) -> usize {
     let taken = |issue: &&Issue| {
         let bodies = open.comments(issue.number).iter().map(|comment| comment.body.as_str());
-        !flows(&issue.labels).is_empty() && taken_in(&issue.labels, bodies).is_some()
+        taken_in(team, &issue.labels, bodies).is_some()
     };
     open.rows.iter().filter(taken).count()
 }
@@ -105,11 +105,12 @@ fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u6
 pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     let Taking { issue: number, workflow: name, by, blocked_by } = taking;
     let config = config::load(&repo.dir.join(config::FILE))?;
+    let labels = config.labels();
     let Some(bound) = config.bound else {
         bail!("this repo is unbound: its config names no team, so it has no workflow to take in to")
     };
     let gh = GitHub { dir: repo.dir.clone() };
-    let kept = keep(&gh, &Copies::here()?, &bound.team)?;
+    let kept = keep(&gh, &Copies::here()?, &bound.team, &labels)?;
     let Some(workflow) = kept.team.workflow(&name) else {
         let has: Vec<&str> = kept.team.workflows.iter().map(|w| w.name.as_str()).collect();
         bail!("the team {} has no workflow {name:?}: it has {}", bound.team, has.join(", "));
@@ -137,10 +138,10 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     if issue.is_closed() {
         bail!("issue #{number} is closed: only an open issue is taken in");
     }
-    match flows(&issue.labels).as_slice() {
+    match kept.team.flows(&issue.labels).as_slice() {
         [] => {}
-        [carried] if *carried == name => {
-            let standing = came_in(&issue.labels, &gh.comments(number)?);
+        [carried] if *carried == workflow.flow_label() => {
+            let standing = came_in(&kept.team, &issue.labels, &gh.comments(number)?);
             return Ok(json!({"issue": number, "workflow": name, "taken": false,
                 "standing": standing}));
         }
@@ -150,7 +151,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
         ),
     }
     let blockers = blockers(&gh, number, &blocked_by)?;
-    let (open, limit) = (open_taken_in(&gh.open_issues()?), bound.intake_limit);
+    let (open, limit) = (open_taken_in(&kept.team, &gh.open_issues()?), bound.intake_limit);
     if !has_room(open, limit) {
         bail!(
             "the intake limit is reached: {open} open issues were taken in by workers, and \
@@ -165,7 +166,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     }
     let record = IntakeRecord { workflow: name, by };
     gh.comment(number, &record.comment())?;
-    gh.add_label(number, &workflow.flow_label())?;
+    gh.add_label(number, workflow.flow_label())?;
     let taken = json!({"issue": number, "workflow": record.workflow, "taken": true,
         "blocked_by": blocked_by, "open": open + 1, "limit": limit});
     Ok(with(taken, who(&record.by)))

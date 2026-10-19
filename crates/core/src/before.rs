@@ -10,6 +10,7 @@ use crate::claims::Claim;
 use crate::config::Config;
 use crate::lease::is_stale;
 use crate::plan::{Issue, LabelBar, Mine, Status, label_bar};
+use crate::team::FlowLabels;
 
 /// What one tick saw as it ended.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -66,11 +67,12 @@ impl Lost {
 
 impl Before {
     /// What a tick saw as it ended: `mine` and `issues` as its rebuild read
-    /// them, `claims` and `beat` as its steps left them, under `config`.
+    /// them, `claims` and `beat` as its steps left them, under `config` and
+    /// the flow labels `flows` of a bound repo's team.
     pub fn saw(
         (mine, issues): (&[Mine], &[Issue]),
         (claims, me, beat): (&[Claim], &str, Option<u64>),
-        config: &Config,
+        (config, flows): (&Config, &FlowLabels),
     ) -> Before {
         let mut held = vec![];
         for claim in claims {
@@ -84,7 +86,7 @@ impl Before {
         }
         let mut open = BTreeMap::new();
         for issue in issues {
-            let bar = label_bar(&issue.labels, config);
+            let bar = label_bar(&issue.labels, config, flows);
             let barred = matches!(bar, Some(LabelBar::NotReady(_) | LabelBar::NoFlow));
             open.insert(issue.number, Looked { barred, open_blockers: issue.open_blockers });
         }

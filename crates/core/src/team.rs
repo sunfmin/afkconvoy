@@ -5,7 +5,7 @@
 
 use flux_rs::attrs::*;
 
-use crate::config::{ESCALATE_LABEL, NotADir, RepoDir};
+use crate::config::{ESCALATE_LABEL, NotADir, RepoDir, RepoLabels};
 use crate::harness::Harness;
 
 /// The team file, at the top of a team's repo.
@@ -27,12 +27,34 @@ pub const PRECEDENTS: &str = "precedents.md";
 /// are written once (docs/adr/0013). In a role's directory they are the
 /// role's, and in a team's the team rules.
 pub const RULES: &str = "CLAUDE.md";
-/// What a flow label is made of: this, then the workflow's name.
+/// What a workflow's flow label is made of where nothing names another: this,
+/// then the workflow's name. A label made so is a flow label though it names
+/// no workflow of the team.
 pub const FLOW_LABEL: &str = "flow:";
 /// How much rework an issue may have in total, where its workflow does not say.
 pub const MAX_REWORK: u64 = 3;
 /// How often one stage may reject in a row, where its workflow does not say.
 pub const MAX_CONSECUTIVE_REWORK: u64 = 2;
+
+/// The labels a team's workflows take: what, among an issue's labels, hands
+/// it to one. Where no team was read it holds none, and only a label written
+/// as one — `flow:…` — is taken for a flow label.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FlowLabels(Vec<String>);
+
+impl FlowLabels {
+    /// The flow labels among `labels`, in their order: each a workflow's, or
+    /// written as one (`flow:…`) though it names none.
+    pub fn among<'l>(&self, labels: &'l [String]) -> Vec<&'l str> {
+        let flow = |label: &&String| label.starts_with(FLOW_LABEL) || self.0.contains(label);
+        labels.iter().filter(flow).map(String::as_str).collect()
+    }
+
+    /// Whether `label` is one of the team's workflows' flow labels.
+    pub fn takes(&self, label: &str) -> bool {
+        self.0.iter().any(|taken| taken.eq_ignore_ascii_case(label))
+    }
+}
 
 /// Who performs a stage that no role does.
 pub const HUMAN: &str = "human";
@@ -48,11 +70,14 @@ const PRECEDENTS_KEY: &str = "precedents";
 const HARNESS_KEY: &str = "harness";
 /// The key under which a stage, or a patrol, names its model.
 const MODEL_KEY: &str = "model";
+/// The key of a workflow's file that names its flow label.
+const LABEL_KEY: &str = "label";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
 pub const TEAM_KEYS: [&str; 3] = ["escalate_label", "roles", PRECEDENTS_KEY];
 pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
-pub const WORKFLOW_KEYS: [&str; 4] = ["max_rework", "max_consecutive_rework", "stages", LAND];
+pub const WORKFLOW_KEYS: [&str; 5] =
+    [LABEL_KEY, "max_rework", "max_consecutive_rework", "stages", LAND];
 pub const STAGE_KEYS: [&str; 8] =
     ["name", "by", "do", HARNESS_KEY, "model", "writes", "escalate", "on"];
 pub const ON_KEYS: [&str; 2] = ["pass", "reject"];
@@ -228,6 +253,9 @@ pub struct Sources {
     /// Each directory `role_dirs` names, with what was read of it or why it
     /// was not read.
     pub roles: Vec<(RepoDir, Result<RoleDir, Unread>)>,
+    /// The labels of the repo the team is read for: no flow label is its lock
+    /// label or an epic label.
+    pub labels: RepoLabels,
 }
 
 /// Why a role's directory was not read.
@@ -285,6 +313,22 @@ pub struct Team {
 }
 
 impl Team {
+    /// The labels its workflows take, each one's flow label.
+    pub fn flow_labels(&self) -> FlowLabels {
+        FlowLabels(self.workflows.iter().map(|workflow| workflow.label.clone()).collect())
+    }
+
+    /// The flow labels among `labels`, in their order.
+    pub fn flows<'l>(&self, labels: &'l [String]) -> Vec<&'l str> {
+        self.flow_labels().among(labels)
+    }
+
+    /// The workflow whose flow label is `label`.
+    #[spec(fn(&Team[@roles], label: &str) -> Option<&Workflow{v: v.roles == roles}>)]
+    pub fn labelled(&self, label: &str) -> Option<&Workflow> {
+        self.workflows.iter().find(|workflow| workflow.label == label)
+    }
+
     pub fn role(&self, name: &str) -> Option<&Role> {
         self.roles.iter().find(|role| role.name == name)
     }
@@ -820,8 +864,11 @@ impl Stage {
 #[refined_by(n: int, roles: int)]
 #[invariant(n > 0)]
 pub struct Workflow {
-    /// What follows `flow:` in its flow label.
+    /// The name of its file: `workflows/<name>.md`.
     pub name: String,
+    /// The label an issue carries that follows it: what its file's `label`
+    /// names, and else `flow:<name>`.
+    label: String,
     /// What it is for, as whoever hands the fleet work reads it: the prose of
     /// its file. Empty when the file says nothing.
     pub description: String,
@@ -838,8 +885,8 @@ pub struct Workflow {
 }
 
 impl Workflow {
-    pub fn flow_label(&self) -> String {
-        format!("{FLOW_LABEL}{}", self.name)
+    pub fn flow_label(&self) -> &str {
+        &self.label
     }
 
     /// The stage an issue entering the workflow is at. There is one, by the
@@ -894,6 +941,7 @@ fn workflow(
     }
     Some(Workflow {
         name,
+        label: String::new(),
         description: String::new(),
         max_rework,
         max_consecutive_rework,
@@ -1050,6 +1098,7 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
         let mut report = Report { file: &file.path, faults: &mut faults };
         workflows.extend(workflow_file(&mut report, file, &roles));
     }
+    flow_labels(&mut faults, sources, &escalate_label, &mut workflows);
     let mut patrols: Vec<Patrol> = vec![];
     for file in &sources.patrols {
         let mut report = Report { file: &file.path, faults: &mut faults };
@@ -1066,6 +1115,42 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
         })
     } else {
         Err(faults)
+    }
+}
+
+/// Gives each workflow its flow label: the one its file names, and else
+/// `flow:<name>` — and reports a label two workflows take, and one that is
+/// the escalate label `escalate`, the lock label or an epic label.
+fn flow_labels(
+    faults: &mut Vec<Fault>,
+    sources: &Sources,
+    escalate: &str,
+    workflows: &mut [Workflow],
+) {
+    let labels = &sources.labels;
+    // Each label given so far, with the file that took it.
+    let mut taken: Vec<(String, String)> = vec![];
+    for workflow in workflows.iter_mut() {
+        let file = format!("{WORKFLOWS}/{}.md", workflow.name);
+        let mut report = Report { file: &file, faults: &mut *faults };
+        let written = !workflow.label.is_empty();
+        let key = if written { LABEL_KEY } else { "" };
+        if !written {
+            workflow.label = format!("{FLOW_LABEL}{}", workflow.name);
+        }
+        let label = workflow.label.clone();
+        let its = if written { format!("`{label}`") } else { format!("its flow label `{label}`") };
+        if label == escalate {
+            report.fault(key, format!("{its} is the team's escalate label"));
+        } else if label == labels.lock {
+            report.fault(key, format!("{its} is the repo's lock label"));
+        } else if labels.epics.contains(&label) {
+            report.fault(key, format!("{its} is an epic label of the repo"));
+        }
+        match taken.iter().find(|(held, _)| *held == label) {
+            Some((_, by)) => report.fault(key, format!("{its} is already the flow label of {by}")),
+            None => taken.push((label, file)),
+        }
     }
 }
 
@@ -1595,6 +1680,7 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
         }
     };
     let entries = map(report, "", node, &WORKFLOW_KEYS)?;
+    let label = text(report, "", entries, LABEL_KEY).map(str::to_string);
     let max_rework = count(report, "", entries, "max_rework", MAX_REWORK);
     let max_consecutive_rework =
         count(report, "", entries, "max_consecutive_rework", MAX_CONSECUTIVE_REWORK);
@@ -1704,6 +1790,8 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
     let roles = roles.loaded.len();
     let mut read = built(name, max_rework?, max_consecutive_rework?, drafts, edges, land?, roles)?;
     read.description = file.prose.clone();
+    // Empty until `flow_labels` gives it the one nothing names.
+    read.label = label.unwrap_or_default();
     Some(read)
 }
 
@@ -1843,6 +1931,7 @@ mod rejected {
     fn a_workflow_with_no_stage(name: String) -> Workflow {
         Workflow {
             name,
+            label: String::new(),
             description: String::new(),
             max_rework: 0,
             max_consecutive_rework: 0,
@@ -1857,6 +1946,7 @@ mod rejected {
     fn a_workflow_of_whatever_was_listed(name: String, stages: Vec<Stage>) -> Workflow {
         Workflow {
             name,
+            label: String::new(),
             description: String::new(),
             max_rework: 0,
             max_consecutive_rework: 0,
@@ -1967,6 +2057,7 @@ land: { by: dev, do: land }
                 repo("acme/dev", &["plan", "implement", "land"]),
                 repo("acme/reviewer", &["review", "rule"]),
             ],
+            labels: RepoLabels::default(),
         }
     }
 
@@ -1981,6 +2072,15 @@ land: { by: dev, do: land }
     /// The usual team with `workflow` as its one workflow, `feature`.
     pub(crate) fn one(workflow: &str) -> Team {
         load(&sources(TEAM, &[("workflows/feature.md", workflow)])).unwrap()
+    }
+
+    /// The usual team with a workflow `FEATURE` under each of `names`.
+    pub(crate) fn named(names: &[&str]) -> Team {
+        let paths: Vec<String> =
+            names.iter().map(|name| format!("{WORKFLOWS}/{name}.md")).collect();
+        let workflows: Vec<(&str, &str)> =
+            paths.iter().map(|path| (path.as_str(), FEATURE)).collect();
+        load(&sources(TEAM, &workflows)).unwrap()
     }
 
     /// Every fault of a team with one workflow, as (file, key, problem).
@@ -2793,8 +2893,15 @@ stages:
             (dir, Ok(RoleDir { commit, skills: vec!["plan".to_string()], ..RoleDir::default() }))
         };
         let roles = role_dirs(&team, Some(&at)).into_iter().map(read).collect();
-        let sources =
-            Sources { at: Some(at), team, rules: false, workflows: vec![], patrols: vec![], roles };
+        let sources = Sources {
+            at: Some(at),
+            team,
+            rules: false,
+            workflows: vec![],
+            patrols: vec![],
+            roles,
+            labels: RepoLabels::default(),
+        };
         match load(&sources) {
             Ok(team) => {
                 Ok(team.roles.iter().map(|r| (r.name.clone(), r.dir.to_string())).collect())
@@ -2922,6 +3029,7 @@ stages:
             workflows: vec![],
             patrols: vec![],
             roles: vec![],
+            labels: RepoLabels::default(),
         };
         let faults = load(&sources).unwrap_err();
         assert_eq!(faults[0].key, "roles.fellow");
@@ -2949,6 +3057,7 @@ stages:
                 workflows: vec![],
                 patrols: vec![],
                 roles,
+                labels: RepoLabels::default(),
             })
         };
         let faults = read(&["hooks/guard.sh -> ../../shared/guard.sh"], &[]).unwrap_err();
@@ -2971,9 +3080,16 @@ stages:
         let refused = Unread::Refused("it is no directory at the head of acme/hospital".into());
         let roles = vec![(dir("acme/hospital/roles/fellow"), Err(refused))];
         let at = Some(dir("acme/hospital"));
-        let faults =
-            load(&Sources { at, team, rules: false, workflows: vec![], patrols: vec![], roles })
-                .unwrap_err();
+        let faults = load(&Sources {
+            at,
+            team,
+            rules: false,
+            workflows: vec![],
+            patrols: vec![],
+            roles,
+            labels: RepoLabels::default(),
+        })
+        .unwrap_err();
         assert_eq!(
             (faults[0].key.as_str(), faults[0].problem.as_str()),
             (

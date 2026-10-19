@@ -8,9 +8,9 @@ use serde::Serialize;
 
 use crate::line::Line;
 use crate::position::{Declared, Position};
-use crate::role::{Due, due, flows};
+use crate::role::{Due, due};
 use crate::stage_record::{StageRecord, history};
-use crate::team::{FLOW_LABEL, Team, Workflow};
+use crate::team::{Team, Workflow};
 
 /// How long an issue waits for a human before `doctor` counts it a finding.
 pub const WAITED_LONG: u64 = 3600;
@@ -121,7 +121,7 @@ impl Waits {
             Waits::Escalated(Back::Flow { escalate }) => WayOut {
                 what: "put its one flow label back: nothing says which workflow it left"
                     .to_string(),
-                line: swap(issue, &format!("{FLOW_LABEL}<workflow>"), escalate),
+                line: swap(issue, "<flow label>", escalate),
             },
             Waits::Escalated(Back::Ready { ready, escalate }) => WayOut {
                 what: "fix what the comment names, and put the ready label back".to_string(),
@@ -185,7 +185,7 @@ pub fn waits(
     records: &[StageRecord],
     pr: Option<u64>,
 ) -> Option<Waits> {
-    if flows(labels).is_empty() {
+    if team.flows(labels).is_empty() {
         return None;
     }
     let workflow = crate::role::workflow_of(team, labels).ok();
@@ -283,7 +283,7 @@ mod tests {
         );
         assert_eq!(
             answer(Waits::Escalated(Back::Flow { escalate: "needs a human".into() })),
-            "gh issue edit 12 --add-label 'flow:<workflow>' --remove-label 'needs a human'"
+            "gh issue edit 12 --add-label '<flow label>' --remove-label 'needs a human'"
         );
         let ready = Back::Ready { ready: "ready-for-agent".into(), escalate: "stuck".into() };
         assert_eq!(

@@ -11,7 +11,7 @@ use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::precedent::PROPOSAL_ENV;
 use crate::stage_record::{StageRecord, history};
-use crate::team::{FLOW_LABEL, Role, Stage, Team, Work, Workflow};
+use crate::team::{Role, Stage, Team, Work, Workflow};
 use crate::transition::escalated_from;
 
 /// Every flag the fleet adds: what a bound repo's worker launch command must
@@ -59,31 +59,23 @@ pub struct Lander<'t> {
     pub pr: u64,
 }
 
-/// The names of the workflows an issue's labels name, in the labels' order.
-pub fn flows(labels: &[String]) -> Vec<&str> {
-    labels.iter().filter_map(|label| label.strip_prefix(FLOW_LABEL)).collect()
-}
-
 /// The workflow of `team` an issue carrying `labels` follows: the one its
 /// flow label names. An error says why it follows none.
 #[spec(fn(&Team[@roles], &[String]) -> Result<&Workflow{v: v.roles == roles}, String>)]
 pub fn workflow_of<'t>(team: &'t Team, labels: &[String]) -> Result<&'t Workflow, String> {
-    let named = flows(labels);
-    let name = match named.as_slice() {
+    let label = match team.flows(labels).as_slice() {
         [] => return Err("it carries no flow label".to_string()),
-        [name] => *name,
+        [label] => *label,
         several => {
-            let labels: Vec<String> =
-                several.iter().map(|name| format!("{FLOW_LABEL}{name}")).collect();
             return Err(format!(
                 "it carries {} flow labels ({}): an issue follows one workflow",
-                labels.len(),
-                labels.join(", ")
+                several.len(),
+                several.join(", ")
             ));
         }
     };
-    team.workflow(name)
-        .ok_or_else(|| format!("its flow label {FLOW_LABEL}{name} names no workflow of the team"))
+    team.labelled(label)
+        .ok_or_else(|| format!("its flow label {label} names no workflow of the team"))
 }
 
 /// The workflow of `team` an issue carrying `labels` follows, or — handed to
@@ -95,14 +87,14 @@ pub fn followed<'t, 'a>(
     labels: &[String],
     bodies: impl IntoIterator<Item = &'a str>,
 ) -> Result<&'t Workflow, String> {
-    if !flows(labels).is_empty() {
+    if !team.flows(labels).is_empty() {
         return workflow_of(team, labels);
     }
     let Some(left) = escalated_from(bodies) else {
         return Err("it carries no flow label, and no escalation of it says which it left".into());
     };
     team.workflow(&left).ok_or_else(|| {
-        format!("it was escalated from {FLOW_LABEL}{left}, which names no workflow of the team")
+        format!("it was escalated from the workflow {left}, which is no workflow of the team")
     })
 }
 
@@ -139,7 +131,7 @@ pub fn due<'t>(
 ) -> Due<'t> {
     let workflow = match workflow_of(team, labels) {
         Ok(workflow) => workflow,
-        Err(why) if flows(labels).is_empty() => return Due::Nothing(why),
+        Err(why) if team.flows(labels).is_empty() => return Due::Nothing(why),
         Err(why) => return Due::Human(why),
     };
     let position = history(workflow, records).place.position;
@@ -178,7 +170,7 @@ pub enum On<'a> {
     /// A stage of an issue — `land` for the join that follows the last.
     Stage {
         issue: u64,
-        /// The workflow's name: what follows `flow:` in the issue's flow label.
+        /// The name of the workflow the issue follows.
         flow: &'a str,
         stage: &'a str,
     },
@@ -283,7 +275,7 @@ pub struct Told<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RepoDir;
+    use crate::config::{RepoDir, RepoLabels};
     use crate::position::Declared;
     use crate::stage_record::{Author, Stated};
     use crate::team::{File, RoleDir, Sources, TEAM_FILE, load};
@@ -362,6 +354,7 @@ land: { by: boss, do: implement }
             at: None,
             rules: false,
             roles: vec![repo("acme/dev"), repo("acme/boss")],
+            labels: RepoLabels::default(),
         })
         .unwrap()
     }
@@ -526,7 +519,7 @@ land: { by: boss, do: implement }
         assert_eq!(why, "it carries no flow label, and no escalation of it says which it left");
         let gone = escalation_comment("c2", Some("chore"), "stuck");
         let why = name(&[], &[gone.as_str()]).unwrap_err();
-        assert!(why.starts_with("it was escalated from flow:chore, which names no"), "{why}");
+        assert!(why.starts_with("it was escalated from the workflow chore, which is no"), "{why}");
         // An escalation that says none — an unbound repo's, or of an issue
         // that followed no one workflow — is no answer.
         let silent = escalation_comment("c3", None, "stuck");

@@ -5,11 +5,11 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use afkconvoy_core::config::{RepoDir, RepoName};
+use afkconvoy_core::config::{Config, RepoDir, RepoLabels, RepoName};
 use afkconvoy_core::harness::{Harness, Held};
 use afkconvoy_core::team::{
-    self, Fault, File, Node, PATROLS, Pass, Patrol, Performer, RULES, RoleDir, SKILL_FILE, SKILLS,
-    Sources, Stage, TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
+    self, Fault, File, FlowLabels, Node, PATROLS, Pass, Patrol, Performer, RULES, RoleDir,
+    SKILL_FILE, SKILLS, Sources, Stage, TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -336,11 +336,15 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
     faults
 }
 
-/// Reads the team `from` names and every role's directory, and loads it. A
-/// team with a fault fails with `Refused`.
+/// Reads the team `from` names and every role's directory, and loads it
+/// against the labels of this checkout's repo — or, where its config cannot
+/// be read, the labels a repo that names none has. A team with a fault fails
+/// with `Refused`.
 pub fn load(from: From) -> Result<Loaded> {
     let gh = GitHub { dir: PathBuf::from(".") };
     let copies = Copies::here()?;
+    let here = config::default_file().and_then(|file| config::load(&file));
+    let labels = here.as_ref().map(|config| config.labels()).unwrap_or_default();
     // The patrols this checkout's repo names and its default harness, when
     // it is its team that is read.
     let (mut named, mut harness) = (vec![], Harness::DEFAULT);
@@ -351,14 +355,13 @@ pub fn load(from: From) -> Result<Loaded> {
             }
             let name = dir.display().to_string();
             let settings = dir.join(SETTINGS).is_dir();
-            let (sources, roles) = read(&Tree { dir }, of, None, &gh, &copies)?;
+            let (sources, roles) = read(&Tree { dir }, of, None, &gh, &copies, &labels)?;
             roles.reached()?;
             return loaded(name, None, copies, sources, named, harness, settings);
         }
         From::Repo(team) => team,
         From::Config => {
-            let config = config::load(&config::default_file()?)?;
-            let Some(bound) = config.bound else {
+            let Some(bound) = here?.bound else {
                 bail!(
                     "this repo is unbound: its config names no team. Name one with --team, \
                      or a directory of a team's files with --dir"
@@ -368,7 +371,7 @@ pub fn load(from: From) -> Result<Loaded> {
             bound.team
         }
     };
-    let (copy, sources, roles) = read_kept(&gh, &copies, &team)?;
+    let (copy, sources, roles) = read_kept(&gh, &copies, &team, &labels)?;
     roles.reached()?;
     let settings = within(&copy, &team).join(SETTINGS).is_dir();
     let at = Some((team.clone(), copy.commit));
@@ -443,6 +446,7 @@ fn read(
     own: Option<&Copy>,
     gh: &GitHub,
     copies: &Copies,
+    labels: &RepoLabels,
 ) -> Result<(Sources, RoleReads)> {
     let team = tree.file(TEAM_FILE);
     let rules = tree.dir.join(RULES).is_file();
@@ -490,7 +494,8 @@ fn read(
         (dir, read)
     });
     let roles = roles.collect();
-    Ok((Sources { at, team, rules, workflows, patrols, roles }, kept))
+    let labels = labels.clone();
+    Ok((Sources { at, team, rules, workflows, patrols, roles, labels }, kept))
 }
 
 /// Where `dir` is in `copy`, the fleet's copy of its repo: the copy itself
@@ -660,7 +665,12 @@ fn leaving_links(root: &Path, under: &Path, links: &mut Vec<String>) -> Result<(
 
 /// `read`, of the team at `team`: its own files out of the fleet's copy of
 /// its repo's head as it stands now → with that copy, of the whole repo.
-fn read_kept(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<(Copy, Sources, RoleReads)> {
+fn read_kept(
+    gh: &GitHub,
+    copies: &Copies,
+    team: &RepoDir,
+    labels: &RepoLabels,
+) -> Result<(Copy, Sources, RoleReads)> {
     let copy =
         copies.of(gh, &team.repo).with_context(|| format!("the team {team} cannot be read"))?;
     let dir = within(&copy, team);
@@ -673,7 +683,8 @@ fn read_kept(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<(Copy, Sour
             copy.commit
         );
     }
-    let (sources, roles) = read(&Tree { dir }, Some(team.clone()), Some(&copy), gh, copies)?;
+    let (sources, roles) =
+        read(&Tree { dir }, Some(team.clone()), Some(&copy), gh, copies, labels)?;
     Ok((copy, sources, roles))
 }
 
@@ -734,16 +745,25 @@ fn left_out(dir: &RepoDir, loaded: &Team) -> Vec<PathBuf> {
 /// Loads the team at `team` as it stands now: the head of its repo and of
 /// each role's, each read from the fleet's copy of that commit and fetched
 /// only when no copy of it is here — and the team's directory taken out of
-/// its repo's. A team with a fault fails with `Refused`, and one whose own
-/// repo GitHub could not be reached for with `Unreached`.
-pub fn keep(gh: &GitHub, copies: &Copies, team: &RepoDir) -> Result<Kept> {
-    let (fetched, sources, roles) = read_kept(gh, copies, team)?;
+/// its repo's — read against the `labels` of the repo bound to it. A team
+/// with a fault fails with `Refused`, and one whose own repo GitHub could not
+/// be reached for with `Unreached`.
+pub fn keep(gh: &GitHub, copies: &Copies, team: &RepoDir, labels: &RepoLabels) -> Result<Kept> {
+    let (fetched, sources, roles) = read_kept(gh, copies, team, labels)?;
     let loaded = match team::load(&sources) {
         Ok(loaded) => loaded,
         Err(faults) => return Err(Refused { team: team.to_string(), faults }.into()),
     };
     let copy = copies.team(&fetched, team, &left_out(team, &loaded))?;
     Ok(Kept { team: loaded, copy, roles, copies: copies.clone() })
+}
+
+/// The flow labels of the team the repo of `config` is bound to, as it
+/// stands now: none in an unbound repo, or where the team does not load.
+pub fn flow_labels(gh: &GitHub, config: &Config) -> FlowLabels {
+    let Some(bound) = &config.bound else { return FlowLabels::default() };
+    let kept = Copies::here().and_then(|copies| keep(gh, &copies, &bound.team, &config.labels()));
+    kept.map(|kept| kept.team.flow_labels()).unwrap_or_default()
 }
 
 fn answer(loaded: &Loaded) -> Value {

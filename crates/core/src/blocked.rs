@@ -5,6 +5,7 @@ use flux_rs::attrs::*;
 
 use crate::config::Config;
 use crate::plan::{LabelBar, label_bar};
+use crate::team::FlowLabels;
 
 /// How many issues the chain of open blockers behind a verdict's blockers may
 /// hold before the walk gives up: a dependency graph that deep is not read
@@ -52,8 +53,9 @@ pub struct Edge {
     pub open_blockers: Vec<u64>,
 }
 
-/// One named blocker's standing, before the cycle check.
-fn alone(named: &Named, config: &Config) -> Standing {
+/// One named blocker's standing, before the cycle check. `flows` are the
+/// flow labels of a bound repo's team.
+fn alone(named: &Named, config: &Config, flows: &FlowLabels) -> Standing {
     let Some(read) = &named.read else {
         return Standing::Unmet("could not be read (it may not exist)".to_string());
     };
@@ -68,7 +70,7 @@ fn alone(named: &Named, config: &Config) -> Standing {
             _ => Standing::Closed,
         };
     }
-    match label_bar(&read.labels, config) {
+    match label_bar(&read.labels, config, flows) {
         // A bar no claim overrides: nothing will ever dispatch it.
         Some(bar @ LabelBar::Epic(_)) => {
             Standing::Unmet(format!("will never be dispatched: {}", bar.reason()))
@@ -112,12 +114,18 @@ pub fn depends_on(start: u64, target: u64, edges: &[Edge]) -> bool {
 /// Where `named` stands as a blocker of `issue`. `edges` covers everything
 /// reachable from the open blockers named (`walk`): a blocker that itself
 /// depends on `issue` is unmet — waiting on it would close a cycle neither
-/// side ever leaves.
-pub fn standing(issue: u64, named: &Named, config: &Config, edges: &[Edge]) -> Standing {
+/// side ever leaves. `flows` are the flow labels of a bound repo's team.
+pub fn standing(
+    issue: u64,
+    named: &Named,
+    config: &Config,
+    flows: &FlowLabels,
+    edges: &[Edge],
+) -> Standing {
     if named.number == issue {
         return Standing::Unmet("is the issue itself".to_string());
     }
-    let alone = alone(named, config);
+    let alone = alone(named, config, flows);
     if alone == Standing::Waiting && depends_on(named.number, issue, edges) {
         return Standing::Unmet(format!(
             "already depends on #{issue}: waiting on it would close a cycle"
@@ -324,7 +332,7 @@ mod tests {
     }
 
     fn unmet(named: &Named, edges: &[Edge]) -> String {
-        match standing(7, named, &config(), edges) {
+        match standing(7, named, &config(), &FlowLabels::default(), edges) {
             Standing::Unmet(reason) => reason,
             other => panic!("{other:?}"),
         }
@@ -337,12 +345,18 @@ mod tests {
     #[test]
     fn a_blocker_the_backlog_will_resolve_is_waiting() {
         let config = config();
-        assert_eq!(standing(7, &open(41, &["ready-for-agent"]), &config, &[]), Standing::Waiting);
+        assert_eq!(
+            standing(7, &open(41, &["ready-for-agent"]), &config, &FlowLabels::default(), &[]),
+            Standing::Waiting
+        );
         let claimed = Named { claimed: true, ..open(41, &[]) };
-        assert_eq!(standing(7, &claimed, &config, &[]), Standing::Waiting);
+        assert_eq!(standing(7, &claimed, &config, &FlowLabels::default(), &[]), Standing::Waiting);
         let with_pr = Named { open_pr: true, ..open(41, &["bug"]) };
-        assert_eq!(standing(7, &with_pr, &config, &[]), Standing::Waiting);
-        assert_eq!(standing(7, &closed(41, "completed"), &config, &[]), Standing::Closed);
+        assert_eq!(standing(7, &with_pr, &config, &FlowLabels::default(), &[]), Standing::Waiting);
+        assert_eq!(
+            standing(7, &closed(41, "completed"), &config, &FlowLabels::default(), &[]),
+            Standing::Closed
+        );
     }
 
     #[test]
@@ -375,10 +389,16 @@ mod tests {
         assert!(unmet(&ready, &chain).contains("close a cycle"));
         // a cycle that does not pass through the blocked issue is somebody else's
         let elsewhere = [edge(41, &[50]), edge(50, &[41])];
-        assert_eq!(standing(7, &ready, &config(), &elsewhere), Standing::Waiting);
+        assert_eq!(
+            standing(7, &ready, &config(), &FlowLabels::default(), &elsewhere),
+            Standing::Waiting
+        );
         assert!(!depends_on(41, 7, &elsewhere));
         // a closed blocker's edges are not asked about
-        assert_eq!(standing(7, &closed(41, "completed"), &config(), &direct), Standing::Closed);
+        assert_eq!(
+            standing(7, &closed(41, "completed"), &config(), &FlowLabels::default(), &direct),
+            Standing::Closed
+        );
     }
 
     #[test]

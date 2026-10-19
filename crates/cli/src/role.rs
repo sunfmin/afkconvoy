@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::claims::Claim;
-use afkconvoy_core::config::Bound;
+use afkconvoy_core::config::{Bound, RepoLabels};
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::closing_pr;
@@ -77,7 +77,7 @@ impl Staged {
     /// already is. An error is an issue no worker can be started on, or a
     /// team that does not load.
     pub fn enter(fleet: &Fleet, bound: &Bound, issue: u64, labels: &[String]) -> Result<Staged> {
-        let kept = keep(&fleet.gh, &Copies::here()?, &bound.team)?;
+        let kept = keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?;
         let (records, urls) = records_of(&fleet.gh, issue)?;
         let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
         // A landing worker is at no stage: it may commit, to resolve a
@@ -353,11 +353,12 @@ pub struct Checked {
 /// Every harness the fleet of a repo `bound` to a team could be asked for,
 /// each with what calls for it (`Team::harnesses`): the repo's default, and
 /// whatever the team's workflows and the patrols the repo runs name, as the
-/// team stands now. A team that cannot be read or does not load calls for
-/// the default alone: no worker is started under it, and each tick says why.
-pub fn called_for(bound: &Bound) -> Vec<(Harness, Vec<String>)> {
+/// team stands now, read against the repo's `labels`. A team that cannot be
+/// read or does not load calls for the default alone: no worker is started
+/// under it, and each tick says why.
+pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<String>)> {
     let gh = GitHub { dir: PathBuf::from(".") };
-    match Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team)) {
+    match Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels)) {
         Ok(kept) => kept.team.harnesses(bound.harness, &bound.patrols),
         Err(_) => vec![(bound.harness, vec![BY_DEFAULT.to_string()])],
     }
@@ -401,9 +402,9 @@ impl Checked {
 /// fault at once — a harness that is missing or holds no credentials with
 /// what calls for it and the line that fixes it: none is started in
 /// another's place, so a start that cannot start them all starts no worker.
-pub fn probe(launches: &Launches, bound: &Bound) -> Result<()> {
+pub fn probe(launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
     let (mut lacking, mut faults) = (vec![], vec![]);
-    for checked in check(launches, &called_for(bound))? {
+    for checked in check(launches, &called_for(bound, labels))? {
         let missing = checked.missing();
         if let Some((tool, found)) = &checked.tool {
             lacking.extend(fault(*tool, found, None, &checked.callers));

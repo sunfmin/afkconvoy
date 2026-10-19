@@ -19,7 +19,7 @@ use crate::config::Config;
 use crate::left::Spare;
 use crate::record;
 use crate::stopped::Workless;
-use crate::team::FLOW_LABEL;
+use crate::team::Team;
 
 /// What is left of a transition once its claim is gone: nothing to act on.
 #[derive(Debug, PartialEq, Eq)]
@@ -218,21 +218,15 @@ pub struct Relabel {
 }
 
 impl Relabel {
-    /// The swap for an issue carrying `labels`. `team_label` is the escalate
-    /// label of the team a bound repo follows; `None` in an unbound repo,
-    /// whose own config names it.
-    pub fn of(labels: &[String], config: &Config, team_label: Option<&str>) -> Relabel {
-        let escalate = team_label.unwrap_or(&config.escalate_label);
-        let mut remove = vec![];
-        for label in labels {
-            let hands_over = match team_label {
-                Some(_) => label.starts_with(FLOW_LABEL),
-                None => *label == config.ready_label,
-            };
-            if hands_over {
-                remove.push(label.clone());
-            }
-        }
+    /// The swap for an issue carrying `labels`. `team` is the team a bound
+    /// repo follows, which names its escalate label and its flow labels;
+    /// `None` in an unbound repo, whose own config names the escalate label.
+    pub fn of(labels: &[String], config: &Config, team: Option<&Team>) -> Relabel {
+        let escalate = team.map_or(&config.escalate_label, |team| &team.escalate_label);
+        let remove = match team {
+            Some(team) => team.flows(labels).into_iter().map(str::to_string).collect(),
+            None => labels.iter().filter(|label| **label == config.ready_label).cloned().collect(),
+        };
         let carried = labels.iter().any(|label| label == escalate);
         Relabel { add: if carried { None } else { Some(escalate.to_string()) }, remove }
     }
@@ -577,16 +571,31 @@ mod tests {
         })
         .unwrap();
         let labels = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let team = crate::team::tests::one(crate::team::tests::FEATURE);
         let carried = labels(&["flow:feature", "bug", "flow:chore", "ready-for-agent"]);
-        let swap = Relabel::of(&carried, &config, Some("for-a-human"));
-        assert_eq!(swap.add.as_deref(), Some("for-a-human"));
+        let swap = Relabel::of(&carried, &config, Some(&team));
+        assert_eq!(swap.add.as_deref(), Some("ready-for-human"));
         assert_eq!(
             swap.remove,
             ["flow:feature", "flow:chore"],
             "the ready label means nothing here"
         );
         assert!(!swap.done());
-        assert!(Relabel::of(&labels(&["bug", "for-a-human"]), &config, Some("for-a-human")).done());
+        assert!(Relabel::of(&labels(&["bug", "ready-for-human"]), &config, Some(&team)).done());
+        // A workflow that names the ready label its flow label takes it off.
+        let named = format!("label: ready-for-agent\n{}", crate::team::tests::FEATURE);
+        let team = crate::team::tests::one(&named);
+        let swap = Relabel::of(&carried, &config, Some(&team));
+        assert_eq!(swap.remove, ["flow:feature", "flow:chore", "ready-for-agent"]);
+        let back = Relabel::back(
+            &labels(&["bug", "ready-for-human"]),
+            "ready-for-agent",
+            "ready-for-human",
+        );
+        assert_eq!(
+            (back.add.as_deref(), back.remove),
+            (Some("ready-for-agent"), vec!["ready-for-human".to_string()])
+        );
     }
 
     #[test]

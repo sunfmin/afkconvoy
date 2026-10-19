@@ -140,12 +140,19 @@ pub fn tick(
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
     let config = &fleet.config;
+    let flow_labels = flows.flow_labels();
     let handed = issues
         .iter()
-        .filter_map(|issue| handed_by(&issue.labels, config).map(|label| (issue.number, label)))
+        .filter_map(|issue| {
+            handed_by(&issue.labels, config, &flow_labels).map(|label| (issue.number, label))
+        })
         .collect();
     let beat = fleet.scan.last_beat(me_said);
-    let saw = Before::saw((&set.mine, issues), (&fleet.scan.claims, me_said, beat), config);
+    let saw = Before::saw(
+        (&set.mine, issues),
+        (&fleet.scan.claims, me_said, beat),
+        (config, &flow_labels),
+    );
     let ticked = Ticked {
         pass,
         failures,
