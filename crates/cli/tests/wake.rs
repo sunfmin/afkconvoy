@@ -41,7 +41,7 @@ fn a_wake_from_a_worktree_opens_the_next_tick_now() {
     // the worker's worktree, not the fleet's checkout: the repo is what is woken
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
     let started = Instant::now();
-    assert_eq!(wake(&world, Path::new(&worktree)), json!({"woke": true}));
+    assert_eq!(wake(&world, Path::new(&worktree)), json!({"woke": true, "tick": 2}));
 
     // said before the tick does anything, within a second of the wake
     let opened = running.every_line(SOON).expect("the wake opens the second tick");
@@ -63,7 +63,7 @@ fn the_tick_a_wake_opens_reads_github_like_any_other() {
 
     // what changed meanwhile is not in the wake: the tick finds it on GitHub
     world.issue(9, &["ready-for-agent"]);
-    assert_eq!(wake(&world, &world.clone), json!({"woke": true}));
+    assert_eq!(wake(&world, &world.clone), json!({"woke": true, "tick": 2}));
     let second = running.line(SOON).expect("the second tick");
     assert!(second.starts_with("tick 2: dispatched #9"), "{second}");
 }
@@ -82,8 +82,9 @@ fn a_wake_that_arrives_during_a_tick_makes_the_next_start_at_once() {
         calls.contains("graphql")
     });
     let woken = Instant::now();
-    assert_eq!(wake(&world, &world.clone), json!({"woke": true}));
-    assert_eq!(wake(&world, &world.clone), json!({"woke": true}), "and a second, as well");
+    assert_eq!(wake(&world, &world.clone), json!({"woke": true, "after_tick": 1}));
+    let again = json!({"woke": true, "after_tick": 1});
+    assert_eq!(wake(&world, &world.clone), again, "and a second, as well");
 
     // said as it is heard, while the tick goes on — once
     let heard = running.line(SOON).expect("the wake heard");
@@ -113,7 +114,9 @@ fn with_no_run_to_wake_a_wake_succeeds_and_does_nothing() {
 
     let answer = wake(&world, &world.clone);
     assert_eq!(answer["woke"], false);
-    assert!(answer["detail"].as_str().unwrap().contains("no afkconvoy run is listening"));
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.contains("no afkconvoy run is listening"), "{detail}");
+    assert!(detail.contains("`afkconvoy run`"), "with the fix: {detail}");
 
     assert!(!world.clone.join(".git/convoy-wake.sock").exists(), "it left nothing");
     assert_eq!(world.remote(&["for-each-ref"]), refs);
@@ -121,6 +124,25 @@ fn with_no_run_to_wake_a_wake_succeeds_and_does_nothing() {
     assert_eq!(world.gh_calls(), [] as [Vec<String>; 0]);
     assert_eq!(world.orca_calls(), [] as [Vec<String>; 0]);
     assert_eq!(world.pushes(), [] as [String; 0]);
+}
+
+#[test]
+fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
+    let world = World::new();
+    // something listens where a run would, and answers nothing
+    let socket = world.clone.join(".git/convoy-wake.sock");
+    let mute = std::os::unix::net::UnixDatagram::bind(socket).unwrap();
+
+    let started = Instant::now();
+    let answer = wake(&world, &world.clone);
+    let took = started.elapsed();
+    assert_eq!(answer["woke"], false, "{answer}");
+    let detail = answer["detail"].as_str().unwrap();
+    assert!(detail.contains("did not answer within 3s"), "{detail}");
+    assert!(detail.contains("`afkconvoy doctor`"), "with the fix: {detail}");
+    assert!(took >= Duration::from_secs(3) && took < Duration::from_secs(10), "{took:?}");
+    // it was sent all the same
+    assert!(mute.recv(&mut [0; 1]).is_ok());
 }
 
 #[test]

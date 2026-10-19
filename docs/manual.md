@@ -1452,7 +1452,7 @@ Recovering a claim whose worker died from the progress that survived: its worktr
 _Avoid_: resume, checkpoint restore
 
 **Wake**:
-A contentless signal a worker sends to its host's fleet instance once its outcome is on GitHub, ending the sleep between ticks early.
+A contentless signal a worker sends to its host's fleet instance once its outcome is on GitHub, ending the sleep between ticks early. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows; the signal itself carries no state.
 _Avoid_: notification, callback, done signal
 
 #### Claims
