@@ -45,9 +45,13 @@ impl IntakeRecord {
     /// The comment that carries the record: its marker, and a line for a human.
     pub fn comment(&self) -> String {
         let (role, from, patrol, by, who) = match &self.by {
-            By::Role { role, on: On::Issue(issue) } => {
-                (role.as_str(), issue.to_string(), "", "", format!("a worker in the role `{role}`, on #{issue},"))
-            }
+            By::Role { role, on: On::Issue(issue) } => (
+                role.as_str(),
+                issue.to_string(),
+                "",
+                "",
+                format!("a worker in the role `{role}`, on #{issue},"),
+            ),
             By::Role { role, on: On::Patrol(patrol) } => (
                 role.as_str(),
                 String::new(),
@@ -193,7 +197,9 @@ mod tests {
             comment.starts_with("<!--convoy:intake workflow=small%20fix by=train-->\n"),
             "{comment}"
         );
-        assert!(comment.contains("the train worker, for a defect of the base branch it found, took"));
+        assert!(
+            comment.contains("the train worker, for a defect of the base branch it found, took")
+        );
         assert_eq!(IntakeRecord::read(&comment), Some(written));
         // The train has no role, and is on nothing: a record that says so is none.
         for odd in [
@@ -207,7 +213,10 @@ mod tests {
             assert_eq!(IntakeRecord::read(odd), None, "{odd}");
         }
         // It counts like any worker's intake, and no patrol opened the issue.
-        assert_eq!(taken_in(&labels(&["flow:small fix"]), [comment.as_str()]).map(|(at, _)| at), Some(0));
+        assert_eq!(
+            taken_in(&labels(&["flow:small fix"]), [comment.as_str()]).map(|(at, _)| at),
+            Some(0)
+        );
         assert_eq!(opened_by([comment.as_str()]), None);
     }
 

@@ -67,6 +67,9 @@ VERDICTS, AND WHERE EACH LEADS
   the gate merged in is red the same way gated alone — opens that defect's issue
   itself, unless an open one already records it, takes it in the same way, and
   declares `blocked` on it. When it closes, the stage runs again and gates again.
+  The train worker does the same for a base branch that is red without the train: it
+  takes the defect's issue in with `afkconvoy intake --train`, to the team's first
+  workflow unless another fits it clearly better, and has no issue to park.
 
 REWORK AND ITS BREAKERS
 

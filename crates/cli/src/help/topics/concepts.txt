@@ -60,7 +60,9 @@ ONE ISSUE, IN AN UNBOUND REPO
      it, or opens one with the ready label, and parks its issue on that one with
      `blocked`. It is the one `blocked` whose blocker the worker opens. When that issue
      closes, its own is on the frontier again. The train worker does the same for a
-     base branch that is red without the train, with no issue to park.
+     base branch that is red without the train, with no issue to park — in a bound
+     repo taking the issue in to a workflow (`afkconvoy intake --train`) in place of
+     the ready label.
 
 ONE ISSUE, IN A BOUND REPO
 

@@ -89,6 +89,12 @@ WHAT TRIPS YOU UP
   - `--train` moves the branch checked out here onto the train's tip, with a hard reset.
     Run in a checkout of your own it takes that checkout's branch with it.
   - Joined is not landed. `--issue` ends at `joined`; the train worker gates and lands.
+  - A `gate_red` may be the base branch's, not the train's: the train worker gates
+    `origin/<base>` alone, in a clean checkout, and red the same way is a defect it
+    records — on the open issue that already does, or on one it opens. In an unbound
+    repo that one carries the ready label; in a bound repo, where only a flow label
+    dispatches, it takes it in with `afkconvoy intake --train`: to the team's first
+    workflow, unless another fits it clearly better. Then it goes on with the train.
   - `--issue` runs no gate. It joins whatever is committed: run `gate --train` first.
   - `--merged-timeout` and `--host` are read by `--train` only. How long the gate may
     run is no flag: it is `gate_seconds` in the config (`afkconvoy config --help`).

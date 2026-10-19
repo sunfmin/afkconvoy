@@ -114,6 +114,40 @@ fn the_role_and_the_issue_are_read_from_the_worker_s_environment() {
 }
 
 #[test]
+fn the_train_worker_takes_in_with_no_role_and_no_issue_against_the_same_limit() {
+    let world = bound(2);
+    for issue in [11, 12, 13] {
+        world.issue(issue, &[]);
+    }
+    assert_eq!(intake(&world, 11, "feature").ok()["open"], 1);
+
+    let train =
+        |issue: &str| world.afk(&["intake", "--train", "--issue", issue, "--workflow", "fix"]);
+    let taken = train("12").ok();
+    assert_eq!(
+        taken,
+        json!({"issue": 12, "workflow": "fix", "taken": true, "train": true, "blocked_by": [],
+            "open": 2, "limit": 2, "woke": false})
+    );
+    assert_eq!(world.labels(12), ["flow:fix"]);
+    assert_eq!(
+        world.comments(12),
+        ["<!--convoy:intake workflow=fix by=train-->\n**afkconvoy** — the train worker, for a \
+          defect of the base branch it found, took this issue in to the workflow `fix`."]
+    );
+    let shown = world.afk(&["show", "--issue", "12"]).ok();
+    assert_eq!(shown["intake"], json!({"by": "worker", "train": true, "url": "https://gh/c/1002"}));
+    // It counts like any worker's intake.
+    assert_eq!(planned(&world), json!({"open": 2, "limit": 2}));
+    assert!(train("13").error().starts_with("the intake limit is reached: 2 open issues"));
+
+    // The train has no role and is on nothing: one given with it is refused.
+    let args = ["intake", "--train", "--issue", "13", "--workflow", "fix", "--role", "dev"];
+    assert!(world.afk(&args).error().contains("the train worker has no role"));
+    assert_eq!((world.labels(13), world.comments(13)), (vec![], vec![]));
+}
+
+#[test]
 fn a_workflow_the_team_does_not_have_is_refused() {
     let world = bound(5);
     world.issue(12, &[]);

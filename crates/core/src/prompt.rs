@@ -1753,8 +1753,8 @@ mod tests {
         );
         assert!(!bound.contains("--label") && !bound.contains("agent-ready"), "{bound}");
         // Only how the issue enters differs: the rest is the unbound repo's.
-        let unbound = train_prompt(&TrainFields { enters: Enters::Ready("agent-ready"), ..fields })
-            .unwrap();
+        let unbound =
+            train_prompt(&TrainFields { enters: Enters::Ready("agent-ready"), ..fields }).unwrap();
         let open = |brief: &str| {
             let from = brief.find("   it. ").unwrap() + "   it. ".len();
             let to = brief.find(" Name no blocker").unwrap();
