@@ -3,7 +3,7 @@
 //! takes a slot, declares nothing, and has failed when it left a commit or a
 //! PR.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 

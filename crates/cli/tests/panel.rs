@@ -3,7 +3,7 @@
 //! the page `run --panel` serves, fetched from a running fleet, as is the one
 //! `panel --open` has a fleet that is already running serve.
 
-mod common;
+use crate::common;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

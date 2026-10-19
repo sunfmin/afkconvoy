@@ -3,7 +3,7 @@
 //! stage that asked runs again under the ruling — or lets the escalation
 //! through to a human. It writes no code, and the chain is one role long.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 

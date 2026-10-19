@@ -2,7 +2,7 @@
 //! with it, read with nothing written; and the log `run` keeps for it. What
 //! each finding is made from is `doctor.rs`'s own tests'; these are the reads.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::process::Stdio;

@@ -3,7 +3,7 @@
 //! into it, the labels to keep off — and it creates the labels that line
 //! names, so the line works on a repo nobody labelled yet.
 
-mod common;
+use crate::common;
 
 use common::{World, git, write};
 use serde_json::{Value, json};

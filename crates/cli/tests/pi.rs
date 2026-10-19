@@ -5,7 +5,7 @@
 //! then run with a stand-in pi, which loads the fleet's extension as pi does
 //! and hands it tool calls: what refuses them is the guard itself.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

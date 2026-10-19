@@ -2,7 +2,7 @@
 //! role's repo — and either accepted, with what was read, or refused with
 //! every fault and the file and key it is in.
 
-mod common;
+use crate::common;
 
 use common::{World, commit, git, write};
 use serde_json::{Value, json};

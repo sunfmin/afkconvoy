@@ -1,7 +1,7 @@
 //! A claim whose worker declared a verdict takes no slot: it is held until the
 //! verdict is acted on, and the frontier does not wait for that.
 
-mod common;
+use crate::common;
 
 use common::World;
 use serde_json::{Value, json};

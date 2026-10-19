@@ -1,7 +1,7 @@
 //! The fleet lock (docs/adr/0011): an open issue carrying the lock label stops
 //! the fleet from working anything else, and closing the last one ends it.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 

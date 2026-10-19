@@ -3,7 +3,7 @@
 //! the issue's PR and joins the train — and from there on the train, its
 //! worker and a joining worker's silences are what they are in an unbound repo.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 

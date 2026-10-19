@@ -3,7 +3,7 @@
 //! issue at a named stage, and a stage a workflow gives to a human waits for
 //! their verdict with no claim and no slot held.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 

@@ -4,7 +4,7 @@
 //! in the order their blockers close, and when the last has closed the stage
 //! that split the parent runs again and judges the whole.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 

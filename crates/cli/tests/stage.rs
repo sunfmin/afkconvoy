@@ -3,7 +3,7 @@
 //! with `show --issue`; and each tick brings its `stage:` label to that
 //! position, reading the label for nothing.
 
-mod common;
+use crate::common;
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};

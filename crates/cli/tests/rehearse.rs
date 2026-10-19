@@ -1,7 +1,7 @@
 //! `rehearse` and `show`: a workflow walked through a list of verdicts with
 //! no worker started, and drawn as a graph.
 
-mod common;
+use crate::common;
 
 use common::World;
 use serde_json::{Value, json};

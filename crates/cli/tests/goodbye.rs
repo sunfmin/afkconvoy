@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};

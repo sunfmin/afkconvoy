@@ -3,7 +3,7 @@
 //! many steps it stopped, and no fault of the team. A step is stopped by it
 //! only where it needs the role that could not be read.
 
-mod common;
+use crate::common;
 
 use common::{World, git, write};
 use serde_json::{Value, json};

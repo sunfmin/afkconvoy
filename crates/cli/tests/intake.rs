@@ -3,7 +3,7 @@
 //! under the repo's `intake_limit`, counted from those records; and an issue
 //! a human labelled is outside all of it.
 
-mod common;
+use crate::common;
 
 use common::{Answer, World, git, write};
 use serde_json::{Value, json};

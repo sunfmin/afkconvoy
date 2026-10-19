@@ -2,7 +2,7 @@
 //! as a `run` shows it: at its next tick, named on the line of what that tick
 //! did about it.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 
