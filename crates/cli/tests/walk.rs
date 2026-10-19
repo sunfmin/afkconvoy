@@ -682,7 +682,11 @@ fn run_starts_the_stage_a_verdict_leads_to_in_the_tick_that_reads_it() {
     let (lines, _) = run(&world, "1090", "1", &["--second-ms", "0"]);
     assert_eq!(
         lines,
-        ["tick 1: advanced #7 → review · dispatched #7 · holding 1/2 · frontier 0 · next in 90s"]
+        [
+            // the advance wakes the fleet, as after any verdict
+            "woken during tick 1: tick 2 follows",
+            "tick 1: advanced #7 → review · dispatched #7 · holding 1/2 · frontier 0 · next in 90s",
+        ]
     );
     assert!(workers(&world, &worktree(&world, 7))[0].contains(" AFKCONVOY_STAGE='review' "));
     assert_eq!(did(&tick(&world, 1180)), [] as [&str; 0]);
@@ -702,6 +706,7 @@ fn run_starts_what_a_verdict_left_the_next_tick_with_no_sleep() {
     assert_eq!(
         lines,
         [
+            "woken during tick 1: tick 2 follows",
             "tick 1: advanced #7 → build · holding 0/2 · frontier 0 · next now",
             "tick 2: dispatched #7 · holding 1/2 · frontier 0 · next in 90s",
         ]
@@ -722,6 +727,9 @@ fn run_gives_the_slot_a_verdict_freed_to_the_stage_it_led_to() {
     let (lines, _) = run(&world, "1090", "1", &["--second-ms", "0"]);
     assert_eq!(
         lines,
-        ["tick 1: advanced #7 → review · dispatched #7 · holding 1/1 · frontier 1 · next in 90s"]
+        [
+            "woken during tick 1: tick 2 follows",
+            "tick 1: advanced #7 → review · dispatched #7 · holding 1/1 · frontier 1 · next in 90s",
+        ]
     );
 }

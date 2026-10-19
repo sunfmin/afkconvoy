@@ -3,7 +3,7 @@ mod common;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
-use common::World;
+use common::{World, bookkeeping};
 use serde_json::{Value, json};
 
 /// The lease, and a day: what a heartbeat that holds nothing outlives on its
@@ -15,13 +15,14 @@ const DAY: u64 = 86_400;
 const RUN: [&str; 5] = ["run", "--host", "h1", "--worker-command", "agent"];
 
 /// Starts `run`, waits for its first tick to end — it sleeps, as a fleet that
-/// is running does — and sends it `signal` → the lines it printed, and its
-/// answer. It must then exit by itself, and cleanly.
+/// is running does — and sends it `signal` → the lines it printed but for
+/// those it prints whatever it does (`bookkeeping`), and its answer. It must then exit by itself, and cleanly.
 fn stopped_by(world: &World, signal: &str, args: &[&str]) -> (Vec<String>, Value) {
     let mut run = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     let mut run = run.args(RUN).args(args).stdout(Stdio::piped()).spawn().unwrap();
     let mut lines: Vec<String> = vec![];
-    let mut stdout = BufReader::new(run.stdout.take().unwrap()).lines();
+    let stdout = BufReader::new(run.stdout.take().unwrap()).lines();
+    let mut stdout = stdout.filter(|line| !line.as_ref().is_ok_and(|line| bookkeeping(line)));
     for line in stdout.by_ref() {
         lines.push(line.unwrap());
         if lines.last().unwrap().starts_with("tick 1:") {

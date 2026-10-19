@@ -189,7 +189,8 @@ fn a_verdict_wakes_the_fleet() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let mut lines = BufReader::new(running.stdout.take().unwrap()).lines();
+    let lines = BufReader::new(running.stdout.take().unwrap()).lines();
+    let mut lines = lines.filter(|line| !line.as_ref().is_ok_and(|line| common::bookkeeping(line)));
     let first = lines.next().unwrap().unwrap();
     assert!(
         first.starts_with("tick 1: dispatched #7") && first.ends_with("next in 90s"),
@@ -198,6 +199,9 @@ fn a_verdict_wakes_the_fleet() {
 
     let started = Instant::now();
     assert_eq!(declare(&world, "build", "pass", &["--text", "built"]).ok()["woke"], true);
+    // the tick it opens advances #7, which wakes the fleet once more
+    let second = lines.next().unwrap().unwrap();
+    assert_eq!(second, "woken during tick 2: tick 3 follows");
     let second = lines.next().unwrap().unwrap();
     assert!(second.starts_with("tick 2: "), "{second}");
     assert!(started.elapsed() < Duration::from_secs(20), "the sleep was not waited out");

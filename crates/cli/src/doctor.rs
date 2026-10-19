@@ -1356,6 +1356,7 @@ mod tests {
     use afkconvoy_core::plan::{Dispatchable, Excluded, Mine, PeerClaim};
 
     use super::*;
+    use crate::log::Cause;
 
     const NOW: u64 = 100_000;
 
@@ -2035,6 +2036,55 @@ mod tests {
         let found = self::found(&host(), &run(vec![]), &state);
         let severities: Vec<Severity> = found.iter().map(|finding| finding.severity).collect();
         assert_eq!(severities, [Severity::Critical, Severity::Warning, Severity::Info]);
+    }
+
+    #[test]
+    fn the_events_that_reached_this_hosts_runs_are_listed_newest_first_with_their_causes() {
+        let entry = |at: u64, instance: &str, host: &str, what: What| Entry {
+            at,
+            instance: instance.into(),
+            host: host.into(),
+            what,
+        };
+        let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
+        let started = |count, cause| What::TickStarted { count, cause };
+        let entries = [
+            entry(10, "old", "h1", start.clone()),
+            entry(20, "old", "h1", What::Stop { line: "holding no claim".into() }),
+            entry(30, "alpha", "h1", start.clone()),
+            entry(30, "alpha", "h1", started(1, Cause::Start)),
+            entry(40, "alpha", "h1", What::Tick(tick(1, json!([])).1)),
+            entry(50, "alpha", "h1", started(2, Cause::Timer)),
+            entry(55, "alpha", "h1", What::WokenDuring { during: 2 }),
+            entry(60, "alpha", "h1", started(3, Cause::Woken)),
+            entry(70, "alpha", "h1", What::HostSleep { slept: false, awake: vec!["x".into()] }),
+            entry(80, "alpha", "h1", What::HostSleep { slept: true, awake: vec![] }),
+            entry(90, "alpha", "h1", What::HostWoke { asleep: 3600 }),
+            entry(95, "beta", "h2", start),
+        ];
+        let events = read_events(&entries, "h1");
+        let said: Vec<(u64, &str, &str, &str)> = events
+            .iter()
+            .map(|event| (event.at, event.event, event.cause.as_str(), event.instance.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (90, "host_wake", "after 3600s asleep", "alpha"),
+                (80, "host_sleep", "every fleet on this host was idle", "alpha"),
+                (60, "wake", "woken: tick 3 started", "alpha"),
+                (55, "wake", "woken during tick 2: tick 3 followed", "alpha"),
+                (30, "start", "afkconvoy run started, its workers with `claude`", "alpha"),
+                (20, "stop", "told to stop (SIGTERM or SIGINT): holding no claim", "old"),
+                (10, "start", "afkconvoy run started, its workers with `claude`", "old"),
+            ]
+        );
+        // only the newest are listed
+        let many: Vec<Entry> =
+            (0..30).map(|at| entry(at, "alpha", "h1", started(at, Cause::Woken))).collect();
+        let events = read_events(&many, "h1");
+        assert_eq!(events.len(), EVENTS_SHOWN);
+        assert_eq!(events[0].at, 29);
     }
 
     #[test]

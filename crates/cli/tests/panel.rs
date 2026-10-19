@@ -12,7 +12,7 @@ use std::process::{Child, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use common::{Rendered, World, card, carded, git, write};
+use common::{Rendered, World, bookkeeping, card, carded, git, write};
 use serde_json::json;
 
 const NOW: u64 = 10_000;
@@ -367,7 +367,9 @@ fn run(world: &World, more: &[&str]) -> Running {
     let out = child.stdout.take().unwrap();
     let (send, lines) = channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
+        // What it prints whatever it does is none of these tests'.
+        let lines = BufReader::new(out).lines().map_while(Result::ok);
+        for line in lines.filter(|line| !bookkeeping(line)) {
             if send.send(line).is_err() {
                 break;
             }
@@ -515,6 +517,8 @@ fn a_panel_asked_for_during_a_tick_is_opened_at_once_and_the_tick_goes_on() {
     // answered while the tick still runs: the address comes before its line
     assert_eq!(running.line(), format!("panel: http://127.0.0.1:{port}/"));
     assert!(get(port, "/").starts_with("HTTP/1.1 200 OK"), "it is served before any tick ends");
+    // its opening wakes the run, to fill the page at once
+    assert_eq!(running.line(), "woken during tick 1: tick 2 follows");
     let first = running.line();
     assert!(first.starts_with("tick 1: dispatched #7 · holding 1/2"), "it was not cut: {first}");
 
