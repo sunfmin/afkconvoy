@@ -24,10 +24,18 @@ fn run(world: &World) -> Running {
 /// The first tick's line, then — once `between` changed the world — the
 /// second's, which a wake starts now.
 fn two_ticks(world: &World, between: impl FnOnce()) -> (String, String) {
+    by_command(world, || {
+        between();
+        assert_eq!(world.afk(&["wake"]).ok()["woke"], true);
+    })
+}
+
+/// The first tick's line, then the second's, which `command` — one that
+/// changes fleet state, and so wakes the `run` itself — starts now.
+fn by_command(world: &World, command: impl FnOnce()) -> (String, String) {
     let running = run(world);
     let first = running.line(SOON).expect("the first tick");
-    between();
-    assert_eq!(world.afk(&["wake"]).ok()["woke"], true);
+    command();
     let second = running.line(SOON).expect("the second tick");
     (first, second)
 }
@@ -36,7 +44,7 @@ fn two_ticks(world: &World, between: impl FnOnce()) -> (String, String) {
 fn a_claim_another_host_took_over_is_said_lost_at_the_next_tick() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    let (first, second) = two_ticks(&world, || {
+    let (first, second) = by_command(&world, || {
         let from = ["takeover", "--from", "alpha", "--instance", "beta", "--host", "h2"];
         let taken = world.afk(&[&from[..], &["--now", "1060", "--yes"]].concat()).ok();
         assert_eq!(taken["taken"], json!([3]));
@@ -53,7 +61,7 @@ fn a_claim_another_host_took_over_is_said_lost_at_the_next_tick() {
 fn a_claim_taken_as_stale_is_said_lost_past_the_lease() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    let (_, second) = two_ticks(&world, || {
+    let (_, second) = by_command(&world, || {
         let from = ["takeover", "--from", "alpha", "--instance", "beta", "--host", "h2"];
         let taken = world.afk(&[&from[..], &["--now", LATER]].concat()).ok();
         assert_eq!(taken["taken"], json!([3]));
