@@ -585,6 +585,24 @@ mod tests {
     }
 
     #[test]
+    fn the_train_worker_takes_a_defect_s_issue_in_and_puts_no_flow_label_on_by_hand() {
+        // The line its brief gives, from the train's worktree.
+        allowed(&[
+            "/opt/bin/afkconvoy intake --train --issue 12 --workflow feature",
+            "cd /wt/convoy-train && afkconvoy intake --train --issue 12 --workflow 'small fix'",
+            "gh issue create --title 'develop is red' --body-file /tmp/defect.md",
+        ]);
+        refused_for(
+            &[
+                "gh issue create --title 'develop is red' --body x --label flow:feature",
+                "gh issue edit 12 --add-label flow:feature",
+                "gh issue comment 12 --body '<!--convoy:intake workflow=feature by=train-->'",
+            ],
+            "afkconvoy intake",
+        );
+    }
+
+    #[test]
     fn a_shell_line_is_read_as_its_simple_commands_and_their_words() {
         let read = |line: &str| -> Vec<String> {
             commands(line).iter().map(|words| words.join("·")).collect()

@@ -1,6 +1,6 @@
 //! Keeping a train worker on the landing train.
 
-use afkconvoy_core::prompt::{TrainFields, brief_pointer, train_pointer, train_prompt};
+use afkconvoy_core::prompt::{Enters, TrainFields, brief_pointer, train_pointer, train_prompt};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::train::{Built, TRAIN_WORKTREE, Tend, tend};
 use afkconvoy_core::worker::WorkerState;
@@ -8,9 +8,11 @@ use anyhow::{Result, anyhow};
 
 use crate::abandon::{StoppedOn, stopped_train};
 use crate::claims::Me;
+use crate::copies::Copies;
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::orca::{Source, Worktree};
+use crate::team::keep;
 use crate::train::Train;
 
 /// Keeps the train worker on the train: starts one in the train's worktree —
@@ -46,12 +48,26 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
         (_, None) => Worktree::cut(&source, TRAIN_WORKTREE, &train.base, None)?,
     };
     let path = worktree.path.display().to_string();
+    // In a bound repo only a flow label dispatches: a defect's issue is
+    // taken in to one of the team's workflows as they stand now.
+    let workflows: Option<Vec<String>> = match &fleet.config.bound {
+        Some(bound) => {
+            let kept = keep(&fleet.gh, &Copies::here()?, &bound.team)?;
+            Some(kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect())
+        }
+        None => None,
+    };
+    let intake_command = crate::own_command().fixed(" intake --train").own();
+    let enters = match &workflows {
+        Some(workflows) => Enters::Intake { command: &intake_command, workflows },
+        None => Enters::Ready(&fleet.config.ready_label),
+    };
     let prompt = train_prompt(&TrainFields {
         worktree: &path,
         base_branch: &fleet.config.base_branch,
         land_command: &crate::own_command().fixed(" land --train").own(),
         gate_alone_command: &crate::own_command().fixed(" gate").own(),
-        ready_label: &fleet.config.ready_label,
+        enters,
     })
     .map_err(|e| anyhow!(e))?;
     let brief = worktree.write_brief(&prompt)?;

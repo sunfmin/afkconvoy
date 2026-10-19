@@ -347,13 +347,16 @@ enum Command {
         workflow: String,
         /// The role of the worker that takes it in
         #[arg(long, env = ROLE_ENV)]
-        role: String,
+        role: Option<String>,
         /// The issue that worker is on
         #[arg(long, env = ISSUE_ENV, conflicts_with = "patrol")]
         from: Option<u64>,
         /// The patrol that worker runs, when it is on no issue
         #[arg(long, env = PATROL_ENV)]
         patrol: Option<String>,
+        /// Taken in by the train worker, for a defect of the base branch: no role, issue or patrol
+        #[arg(long)]
+        train: bool,
         /// The issues it is to wait for, as numbers separated by commas
         #[arg(long, value_delimiter = ',')]
         blocked_by: Vec<u64>,
@@ -1043,16 +1046,30 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let team = team::load(team::From::Config)?.team;
             steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
         }
-        Command::Intake { issue, workflow, role, from, patrol, blocked_by } => {
-            let from = match (from, patrol) {
-                (Some(issue), _) => afkconvoy_core::intake::On::Issue(issue),
-                (None, Some(patrol)) => afkconvoy_core::intake::On::Patrol(patrol),
-                (None, None) => anyhow::bail!(
+        Command::Intake { issue, workflow, role, from, patrol, train, blocked_by } => {
+            use afkconvoy_core::intake::{By, On};
+            let on = match (from, patrol) {
+                (Some(issue), _) => Some(On::Issue(issue)),
+                (None, Some(patrol)) => Some(On::Patrol(patrol)),
+                (None, None) => None,
+            };
+            let by = match (train, role, on) {
+                (true, None, None) => By::Train,
+                (true, ..) => anyhow::bail!(
+                    "the train worker has no role and is on no issue and no patrol: `--train` \
+                     takes none of them ({ROLE_ENV}, {ISSUE_ENV} and {PATROL_ENV} unset)"
+                ),
+                (false, Some(role), Some(on)) => By::Role { role, on },
+                (false, None, _) => anyhow::bail!(
+                    "an intake names the role of its worker (--role, or {ROLE_ENV} in the \
+                     environment) — or, the train worker's, `--train`"
+                ),
+                (false, Some(_), None) => anyhow::bail!(
                     "an intake names what its worker is on: the issue (--from, or {ISSUE_ENV} in \
                      the environment) or the patrol (--patrol, or {PATROL_ENV})"
                 ),
             };
-            let taking = intake::Taking { issue: issue.number(), workflow, role, from, blocked_by };
+            let taking = intake::Taking { issue: issue.number(), workflow, by, blocked_by };
             intake::intake(&Repo::here()?, taking)
         }
         Command::Lock { issue, role } => {
