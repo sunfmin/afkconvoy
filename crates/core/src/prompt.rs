@@ -122,7 +122,7 @@ const PROOF_MERGED: &str =
 `origin/{base_branch}` —";
 
 /// How an issue a worker opens for a defect is put before the fleet: with the
-/// ready label, in an unbound repo and by the train worker.
+/// ready label, in an unbound repo, by every worker that opens one.
 const DEFECT_READY: &str = "Put the label `{ready_label}` on it (`--label {ready_label}`), so
    the fleet works it like any other issue.";
 
@@ -919,10 +919,28 @@ pub struct TrainFields<'a> {
     /// The line the train worker gates another checkout with, in that
     /// checkout: `afkconvoy gate`.
     pub gate_alone_command: &'a str,
-    /// The label that makes an issue dispatchable: what an issue the train
-    /// worker opens for a defect of the base branch carries.
-    pub ready_label: &'a str,
+    /// How an issue the train worker opens for a defect of the base branch
+    /// enters the fleet's work.
+    pub enters: Enters<'a>,
 }
+
+/// How an issue the train worker opens for a defect enters the fleet's work.
+#[derive(Debug, Clone, Copy)]
+pub enum Enters<'a> {
+    /// In an unbound repo: with the label that makes an issue dispatchable.
+    Ready(&'a str),
+    /// In a bound repo, where only a flow label dispatches: taken in, with
+    /// the line `afkconvoy intake --train`, to one of the team's workflows —
+    /// the first, unless another fits it better.
+    Intake { command: &'a str, workflows: &'a [String] },
+}
+
+/// How the train worker of a bound repo puts an issue it opens for a defect
+/// before the fleet: it takes it in, by default to the team's first workflow.
+const DEFECT_TRAIN_INTAKE: &str = "Put no label of a workflow on it yourself: take it in with
+   `{intake_command} --issue <n> --workflow <workflow>`, to the team's first workflow,
+   `{first_workflow}`, unless another of its workflows fits the defect clearly better — the team
+   has {workflows}. The fleet works it like any other issue.";
 
 /// What the train worker does once a defect of the base branch is recorded:
 /// it has no issue to park.
@@ -935,14 +953,27 @@ const PARK_TRAIN: &str =
 /// again whenever more joined.
 pub fn train_prompt(fields: &TrainFields) -> Result<String, String> {
     let proof = "`origin/{base_branch}`, without the train,";
+    let (open, ready_label, intake_command, named, first) = match fields.enters {
+        Enters::Ready(label) => (DEFECT_READY, label, "", vec![], ""),
+        Enters::Intake { command, workflows } => {
+            let Some(first) = workflows.first() else {
+                return Err("the team has no workflow to take a defect's issue in to".to_string());
+            };
+            let named = workflows.iter().map(|name| format!("`{name}`")).collect();
+            (DEFECT_TRAIN_INTAKE, "", command, named, first.as_str())
+        }
+    };
     fill(
-        &TRAIN.replace("<defect>", &defect(proof, DEFECT_READY, PARK_TRAIN)),
+        &TRAIN.replace("<defect>", &defect(proof, open, PARK_TRAIN)),
         &[
             ("worktree_path", fields.worktree),
             ("base_branch", fields.base_branch),
             ("land_command", fields.land_command),
             ("gate_alone_command", fields.gate_alone_command),
-            ("ready_label", fields.ready_label),
+            ("ready_label", ready_label),
+            ("intake_command", intake_command),
+            ("workflows", &named.join(", ")),
+            ("first_workflow", first),
         ],
     )
 }
@@ -1560,7 +1591,7 @@ mod tests {
             base_branch: "develop",
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
-            ready_label: "agent-ready",
+            enters: Enters::Ready("agent-ready"),
         })
         .unwrap();
         assert!(prompt.contains("\n/opt/bin/afkconvoy land --train\n"));
@@ -1600,7 +1631,7 @@ mod tests {
             base_branch: "develop",
             land_command: "/opt/bin/afkconvoy land --train",
             gate_alone_command: "/opt/bin/afkconvoy gate",
-            ready_label: "agent-ready",
+            enters: Enters::Ready("agent-ready"),
         })
         .unwrap();
         let fresh = worker_prompt(&fields(), Variant::Fresh).unwrap();
@@ -1694,6 +1725,49 @@ mod tests {
         for brief in [joiner, reads] {
             assert!(!brief.contains("A red gate that is not yours"), "{brief}");
         }
+    }
+
+    #[test]
+    fn in_a_bound_repo_the_train_worker_takes_a_defect_s_issue_in_the_first_workflow_by_default() {
+        let workflows = ["feature".to_string(), "fix".to_string()];
+        let fields = TrainFields {
+            worktree: "/wt/convoy-train",
+            base_branch: "develop",
+            land_command: "/opt/bin/afkconvoy land --train",
+            gate_alone_command: "/opt/bin/afkconvoy gate",
+            enters: Enters::Intake {
+                command: "/opt/bin/afkconvoy intake --train",
+                workflows: &workflows,
+            },
+        };
+        let bound = train_prompt(&fields).unwrap();
+        assert!(
+            bound.contains(
+                "Put no label of a workflow on it yourself: take it in with\n   \
+                 `/opt/bin/afkconvoy intake --train --issue <n> --workflow <workflow>`, to the \
+                 team's first workflow,\n   `feature`, unless another of its workflows fits the \
+                 defect clearly better — the team\n   has `feature`, `fix`. The fleet works it like \
+                 any other issue. Name no blocker"
+            ),
+            "{bound}"
+        );
+        assert!(!bound.contains("--label") && !bound.contains("agent-ready"), "{bound}");
+        // Only how the issue enters differs: the rest is the unbound repo's.
+        let unbound =
+            train_prompt(&TrainFields { enters: Enters::Ready("agent-ready"), ..fields }).unwrap();
+        let open = |brief: &str| {
+            let from = brief.find("   it. ").unwrap() + "   it. ".len();
+            let to = brief.find(" Name no blocker").unwrap();
+            format!("{}{}", &brief[..from], &brief[to..])
+        };
+        assert_eq!(open(&bound), open(&unbound));
+        assert!(unbound.contains("Put the label `agent-ready` on it (`--label agent-ready`)"));
+        // A team with no workflow has nothing to take it in to.
+        let none = TrainFields {
+            enters: Enters::Intake { command: "/opt/bin/afkconvoy intake --train", workflows: &[] },
+            ..fields
+        };
+        assert!(train_prompt(&none).unwrap_err().contains("no workflow"));
     }
 
     #[test]

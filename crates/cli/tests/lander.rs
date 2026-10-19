@@ -285,6 +285,13 @@ fn an_issue_walks_a_four_stage_workflow_to_the_base_branch() {
     assert_eq!(did(&tick(&world, now + 90)), ["tend_train done"]);
     let train = worker(&world, &train_worktree(&world));
     assert!(!train.contains("AFKCONVOY_ROLE"), "the train worker has no role: {train}");
+    // A defect of the base branch it finds is taken in to the team's workflow: in a
+    // bound repo the ready label dispatches nothing.
+    let told = brief(&train_worktree(&world));
+    let intake = format!("`{} intake --train --issue <n>", env!("CARGO_BIN_EXE_afkconvoy"));
+    assert!(told.contains(&intake), "{told}");
+    assert!(told.contains("to the team's first workflow,\n   `feature`"), "{told}");
+    assert!(!told.contains("--label ready-for-agent"), "{told}");
     assert_eq!(world.remote(&["rev-parse", "refs/heads/main"]), base, "nothing landed yet");
 
     // The train worker lands it: the issue closes, and the workflow has ended.

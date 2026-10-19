@@ -4,7 +4,7 @@
 //! issues. What a record is and which issue it counts for is the core's
 //! (`afkconvoy_core::intake`).
 
-use afkconvoy_core::intake::{IntakeRecord, On, has_room, taken_in};
+use afkconvoy_core::intake::{By, IntakeRecord, On, has_room, taken_in};
 use afkconvoy_core::plan::Issue;
 use afkconvoy_core::role::flows;
 use anyhow::{Result, anyhow, bail};
@@ -21,21 +21,30 @@ pub struct Taking {
     pub issue: u64,
     /// The workflow to take it in to, by name.
     pub workflow: String,
-    /// The worker's role, and what it is on: an issue, or a patrol.
-    pub role: String,
-    pub from: On,
+    /// The worker: one in its role, on an issue or a patrol, or the train
+    /// worker.
+    pub by: By,
     /// The issues it is to wait for: what a stage that splits its issue says
     /// of the order of the children.
     pub blocked_by: Vec<u64>,
 }
 
-/// What a worker was on, as an answer says it: `from`, the issue, or
-/// `patrol`, the patrol.
-fn on(from: &On) -> (&'static str, Value) {
-    match from {
-        On::Issue(issue) => ("from", json!(issue)),
-        On::Patrol(patrol) => ("patrol", json!(patrol)),
+/// The worker that took an issue in, as an answer says it: its `role`, with
+/// `from`, the issue it was on, or `patrol`, the patrol — or `train`.
+fn who(by: &By) -> Value {
+    match by {
+        By::Role { role, on: On::Issue(issue) } => json!({"role": role, "from": issue}),
+        By::Role { role, on: On::Patrol(patrol) } => json!({"role": role, "patrol": patrol}),
+        By::Train => json!({"train": true}),
     }
+}
+
+/// `object` with the fields of `more` added.
+fn with(mut object: Value, more: Value) -> Value {
+    if let (Some(object), Value::Object(more)) = (object.as_object_mut(), more) {
+        object.extend(more);
+    }
+    object
 }
 
 /// How an issue carrying `labels` came to follow its workflow, read off its
@@ -43,11 +52,10 @@ fn on(from: &On) -> (&'static str, Value) {
 /// label no record is for — by a human's.
 pub(crate) fn came_in(labels: &[String], comments: &[Comment]) -> Value {
     match taken_in(labels, comments.iter().map(|comment| comment.body.as_str())) {
-        Some((at, record)) => {
-            let (key, from) = on(&record.from);
-            json!({"by": "worker", "role": record.role, key: from,
-                "url": comments.get(at).map(|comment| comment.url.as_str())})
-        }
+        Some((at, record)) => with(
+            json!({"by": "worker", "url": comments.get(at).map(|comment| comment.url.as_str())}),
+            who(&record.by),
+        ),
         None => json!({"by": "human"}),
     }
 }
@@ -89,13 +97,13 @@ fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u6
 /// what blocks it. An issue that follows that workflow already is left as it
 /// is, whoever took it in.
 ///
-///   {"issue", "workflow", "taken": true, "role", "from" | "patrol", "blocked_by", "open",
-///    "limit", "woke"}
+///   {"issue", "workflow", "taken": true, "role", "from" | "patrol" — or "train",
+///    "blocked_by", "open", "limit", "woke"}
 ///   {"issue", "workflow", "taken": false, "standing": <how it came in>}
 ///
 /// `open` is the open issues taken in by workers, this one among them.
 pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
-    let Taking { issue: number, workflow: name, role, from, blocked_by } = taking;
+    let Taking { issue: number, workflow: name, by, blocked_by } = taking;
     let config = config::load(&repo.dir.join(config::FILE))?;
     let Some(bound) = config.bound else {
         bail!("this repo is unbound: its config names no team, so it has no workflow to take in to")
@@ -106,13 +114,15 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
         let has: Vec<&str> = kept.team.workflows.iter().map(|w| w.name.as_str()).collect();
         bail!("the team {} has no workflow {name:?}: it has {}", bound.team, has.join(", "));
     };
-    if kept.team.role(&role).is_none() {
+    if let By::Role { role, .. } = &by
+        && kept.team.role(role).is_none()
+    {
         bail!(
             "the team {} has no role {role:?}: an intake names the role that made it",
             bound.team
         );
     }
-    if let On::Patrol(patrol) = &from
+    if let By::Role { on: On::Patrol(patrol), .. } = &by
         && kept.team.patrol(patrol).is_none()
     {
         bail!(
@@ -153,11 +163,10 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
             gh.add_blocker(number, id)?;
         }
     }
-    let record = IntakeRecord { workflow: name, role, from };
+    let record = IntakeRecord { workflow: name, by };
     gh.comment(number, &record.comment())?;
     gh.add_label(number, &workflow.flow_label())?;
-    let (key, from) = on(&record.from);
-    Ok(json!({"issue": number, "workflow": record.workflow, "taken": true,
-        "role": record.role, key: from, "blocked_by": blocked_by, "open": open + 1,
-        "limit": limit}))
+    let taken = json!({"issue": number, "workflow": record.workflow, "taken": true,
+        "blocked_by": blocked_by, "open": open + 1, "limit": limit});
+    Ok(with(taken, who(&record.by)))
 }

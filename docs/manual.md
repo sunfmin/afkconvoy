@@ -84,7 +84,9 @@ the worker that wrote it before it lands.
    it, or opens one with the ready label, and parks its issue on that one with
    `blocked`. It is the one `blocked` whose blocker the worker opens. When that issue
    closes, its own is on the frontier again. The train worker does the same for a
-   base branch that is red without the train, with no issue to park.
+   base branch that is red without the train, with no issue to park — in a bound
+   repo taking the issue in to a workflow (`afkconvoy intake --train`) in place of
+   the ready label.
 ````
 
 ### ONE ISSUE, IN A BOUND REPO
@@ -561,6 +563,9 @@ A stage that may commit and finds its gate red for a defect outside its issue �
 the gate merged in is red the same way gated alone — opens that defect's issue
 itself, unless an open one already records it, takes it in the same way, and
 declares `blocked` on it. When it closes, the stage runs again and gates again.
+The train worker does the same for a base branch that is red without the train: it
+takes the defect's issue in with `afkconvoy intake --train`, to the team's first
+workflow unless another fits it clearly better, and has no issue to park.
 ````
 
 ### REWORK AND ITS BREAKERS
