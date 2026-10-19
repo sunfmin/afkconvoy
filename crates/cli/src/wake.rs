@@ -2,9 +2,9 @@
 //! `afkconvoy wake`, which a worker runs to end that sleep early.
 //!
 //! The socket is a file in the repo's git dir — the one place every worktree
-//! of a repo shares on a host — and an empty datagram is all that crosses it
-//! to the `run`. The `run` answers a wake sent from a socket with a name
-//! (`Answer`), as it hears it.
+//! of a repo shares on a host — and one datagram is all that crosses it to
+//! the `run`: what sent it, in words (`park #46`), or nothing. The `run`
+//! answers a wake sent from a socket with a name (`Answer`), as it hears it.
 
 use std::io::ErrorKind;
 use std::os::unix::net::UnixDatagram;
@@ -52,8 +52,11 @@ pub(crate) fn named_inside<T>(
 const HEARS_WITHIN: Duration = Duration::from_millis(100);
 
 /// What a `run` is told of a wake heard during tick `n`: the first of that
-/// tick's, as it is heard.
-pub type During = Box<dyn Fn(u64) + Send>;
+/// tick's, as it is heard, with what it named.
+pub type During = Box<dyn Fn(u64, Option<String>) + Send>;
+
+/// The most bytes of what a wake names that are heard.
+const NAMED_UP_TO: usize = 256;
 
 /// The listening end, held by `run` for as long as it runs: a thread of its
 /// own hears every wake as it arrives, during a tick as between ticks. One
@@ -74,6 +77,8 @@ struct Heard {
 struct Wakes {
     /// A wake was heard since the last was forgotten, or ended a rest.
     waiting: bool,
+    /// What the first of those that named something named.
+    by: Option<String>,
     /// The tick running, if one is.
     ticking: Option<u64>,
     /// Whether a wake was heard during it, and told.
@@ -125,7 +130,8 @@ impl Listener {
     pub fn forget(&self, count: u64) {
         let Some(heard) = &self.heard else { return };
         let mut wakes = heard.wakes();
-        (wakes.waiting, wakes.ticking, wakes.told, wakes.last) = (false, Some(count), false, count);
+        (wakes.waiting, wakes.by, wakes.ticking, wakes.told, wakes.last) =
+            (false, None, Some(count), false, count);
     }
 
     /// The tick `forget` named ended: a wake heard from now is told by the
@@ -136,20 +142,29 @@ impl Listener {
     }
 
     /// Sleeps for `sleep`, or until a wake — one that arrived before the
-    /// sleep began ends it at once → whether a wake ended it. The wake that
-    /// ended it is used up.
-    pub fn rest(&self, sleep: Duration) -> bool {
+    /// sleep began ends it at once → the wake that ended it, if one did,
+    /// which is used up.
+    pub fn rest(&self, sleep: Duration) -> Option<Woken> {
         let Some(heard) = &self.heard else {
             std::thread::sleep(sleep);
-            return false;
+            return None;
         };
         let wakes = heard.wakes();
         let (mut wakes, _) = heard
             .rung
             .wait_timeout_while(wakes, sleep, |wakes| !wakes.waiting)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::take(&mut wakes.waiting)
+        let by = wakes.by.take();
+        std::mem::take(&mut wakes.waiting).then_some(Woken { by })
     }
+}
+
+/// A wake that ended a rest.
+#[derive(Debug, PartialEq)]
+pub struct Woken {
+    /// What the first wake heard since the last was used up named, where one
+    /// named something.
+    pub by: Option<String>,
 }
 
 impl Drop for Listener {
@@ -169,19 +184,25 @@ impl Drop for Listener {
 /// tick's end is said after it. A wake from a socket with a name is answered
 /// there, at once: what the `run` will do of it.
 fn hear(socket: &UnixDatagram, heard: &Heard, during: &During) {
+    let mut named = [0; NAMED_UP_TO];
     loop {
-        let got = socket.recv_from(&mut [0; 1]);
+        let got = socket.recv_from(&mut named);
         let mut wakes = heard.wakes();
         if wakes.closed {
             return;
         }
         match got {
-            Ok((_, from)) => {
+            Ok((length, from)) => {
+                let by = String::from_utf8_lossy(&named[..length]).trim().to_string();
+                let by = Some(by).filter(|by| !by.is_empty());
                 wakes.waiting = true;
+                if wakes.by.is_none() {
+                    wakes.by.clone_from(&by);
+                }
                 let answer = Answer::of(wakes.ticking, wakes.last);
                 if let Some(count) = wakes.ticking.filter(|_| !wakes.told) {
                     wakes.told = true;
-                    during(count);
+                    during(count, by);
                 }
                 heard.rung.notify_all();
                 drop(wakes);
@@ -262,12 +283,14 @@ impl Drop for Reply {
     }
 }
 
-/// `afkconvoy wake`: tells the `run` of this host for this repo to open its
-/// next tick now, and waits a few seconds at most (`ANSWER_WITHIN`) for its answer: the tick the wake
-/// starts, or the tick in progress it follows. With none running, or none
-/// answering, it does nothing, and whatever goes wrong is not an error: the
-/// fleet finds the outcome at its next tick anyway.
-pub fn wake(repo: &Repo) -> Result<Value> {
+/// Tells the `run` of this host for this repo to open its next tick now,
+/// naming `by` — what woke it, `park #46` — for it to log: what every command
+/// that acts does as it ends (`crate::acting`), `afkconvoy wake` among them.
+/// It waits a few seconds at most (`ANSWER_WITHIN`) for the `run`'s answer:
+/// the tick the wake starts, or the tick in progress it follows. With none
+/// running, or none answering, it does nothing, and whatever goes wrong is not
+/// an error: the fleet finds the outcome at its next tick anyway.
+pub fn wake(repo: &Repo, by: &str) -> Result<Value> {
     let reply = Reply::bind();
     let sent = inside(&home(repo)?, |name| {
         let socket = match &reply {
@@ -275,7 +298,8 @@ pub fn wake(repo: &Repo) -> Result<Value> {
             Err(_) => UnixDatagram::unbound()?,
         };
         socket.set_nonblocking(true)?;
-        socket.send_to(SIGNAL, name)
+        let by = by.as_bytes();
+        socket.send_to(&by[..by.len().min(NAMED_UP_TO)], name)
     });
     if let Err(error) = sent {
         let nobody = error.downcast_ref::<std::io::Error>().is_some_and(|error| {
@@ -330,11 +354,15 @@ pub(crate) mod tests {
     pub(crate) static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn listen(dir: &Path) -> Listener {
-        Listener::at(dir, Box::new(|_| {})).unwrap()
+        Listener::at(dir, Box::new(|_, _| {})).unwrap()
     }
 
     fn send(dir: &Path) -> bool {
-        let sent = inside(dir, |name| UnixDatagram::unbound()?.send_to(SIGNAL, name));
+        send_named(dir, "")
+    }
+
+    fn send_named(dir: &Path, by: &str) -> bool {
+        let sent = inside(dir, |name| UnixDatagram::unbound()?.send_to(by.as_bytes(), name));
         sent.is_ok()
     }
 
@@ -346,13 +374,13 @@ pub(crate) mod tests {
         // one that arrived during the tick
         assert!(send(dir.path()));
         let started = Instant::now();
-        assert!(listener.rest(Duration::from_secs(30)));
+        assert!(listener.rest(Duration::from_secs(30)).is_some());
         assert!(started.elapsed() < Duration::from_secs(5));
         // …and with none, the whole sleep is waited out
         let started = Instant::now();
-        assert!(!listener.rest(Duration::from_millis(150)));
+        assert!(listener.rest(Duration::from_millis(150)).is_none());
         assert!(started.elapsed() >= Duration::from_millis(150));
-        assert!(!listener.rest(Duration::ZERO));
+        assert!(listener.rest(Duration::ZERO).is_none());
     }
 
     #[test]
@@ -360,10 +388,11 @@ pub(crate) mod tests {
         let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let (told, during) = std::sync::mpsc::channel();
-        let listener = Listener::at(dir.path(), Box::new(move |n| told.send(n).unwrap())).unwrap();
+        let listener =
+            Listener::at(dir.path(), Box::new(move |n, _| told.send(n).unwrap())).unwrap();
         // between ticks: the rest it ends says so, not this
         assert!(send(dir.path()));
-        assert!(listener.rest(Duration::from_secs(30)));
+        assert!(listener.rest(Duration::from_secs(30)).is_some());
         assert!(during.try_recv().is_err());
         listener.forget(7);
         assert!(send(dir.path()));
@@ -371,13 +400,39 @@ pub(crate) mod tests {
         assert!(send(dir.path()), "and a second, as well");
         listener.ended();
         // …which is kept, not told twice, and ends the rest at once
-        assert!(listener.rest(Duration::from_secs(30)));
+        assert!(listener.rest(Duration::from_secs(30)).is_some());
         assert!(during.try_recv().is_err(), "one line a tick");
         listener.forget(8);
         listener.ended();
         assert!(send(dir.path()));
-        assert!(listener.rest(Duration::from_secs(30)));
+        assert!(listener.rest(Duration::from_secs(30)).is_some());
         assert!(during.try_recv().is_err(), "heard after the tick ended");
+    }
+
+    #[test]
+    fn a_wake_says_what_sent_it_and_the_first_that_named_one_is_kept() {
+        let _cwd = CWD.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (told, during) = std::sync::mpsc::channel();
+        let listener =
+            Listener::at(dir.path(), Box::new(move |_, by| told.send(by).unwrap())).unwrap();
+        assert!(send(dir.path()));
+        assert!(send_named(dir.path(), "park #46"));
+        assert!(send_named(dir.path(), "land #7"));
+        std::thread::sleep(Duration::from_millis(300));
+        let woken = listener.rest(Duration::from_secs(5));
+        assert_eq!(woken, Some(Woken { by: Some("park #46".into()) }));
+        // used up with the wake it ended
+        assert!(send(dir.path()));
+        assert_eq!(listener.rest(Duration::from_secs(5)), Some(Woken { by: None }));
+        // during a tick: told as it is heard, and kept for the tick after it
+        listener.forget(3);
+        assert!(send_named(dir.path(), "verdict #121"));
+        let told = during.recv_timeout(Duration::from_secs(1));
+        assert_eq!(told, Ok(Some("verdict #121".to_string())));
+        listener.ended();
+        let woken = listener.rest(Duration::from_secs(5));
+        assert_eq!(woken, Some(Woken { by: Some("verdict #121".into()) }));
     }
 
     #[test]
@@ -390,15 +445,15 @@ pub(crate) mod tests {
         }
         std::thread::sleep(Duration::from_millis(300));
         listener.forget(1);
-        assert!(!listener.rest(Duration::from_millis(50)));
+        assert!(listener.rest(Duration::from_millis(50)).is_none());
         // three at once are one early tick, then the next turn forgets the rest
         for _ in 0..3 {
             assert!(send(dir.path()));
         }
         std::thread::sleep(Duration::from_millis(300));
-        assert!(listener.rest(Duration::from_secs(5)));
+        assert!(listener.rest(Duration::from_secs(5)).is_some());
         listener.forget(2);
-        assert!(!listener.rest(Duration::ZERO));
+        assert!(listener.rest(Duration::ZERO).is_none());
     }
 
     #[test]
@@ -411,14 +466,14 @@ pub(crate) mod tests {
         assert!(!listening(dir.path()));
         let listener = listen(dir.path());
         assert!(listening(dir.path()));
-        assert!(!listener.rest(Duration::ZERO), "asking whether one listens wakes nobody");
+        assert!(listener.rest(Duration::ZERO).is_none(), "asking whether one listens wakes nobody");
         drop(listener);
         assert!(!send(dir.path()), "the run that listened here ended");
         assert!(!listening(dir.path()));
         // the next run listens over what the last one left
         let listener = listen(dir.path());
         assert!(send(dir.path()));
-        assert!(listener.rest(Duration::from_secs(5)));
+        assert!(listener.rest(Duration::from_secs(5)).is_some());
     }
 
     #[test]
@@ -431,6 +486,6 @@ pub(crate) mod tests {
         let listener = listen(&deep);
         assert_eq!(std::env::current_dir().unwrap(), back, "the working directory is left alone");
         assert!(send(&deep));
-        assert!(listener.rest(Duration::from_secs(5)));
+        assert!(listener.rest(Duration::from_secs(5)).is_some());
     }
 }

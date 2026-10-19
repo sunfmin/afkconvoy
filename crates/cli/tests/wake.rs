@@ -96,7 +96,7 @@ fn a_wake_from_a_worktree_opens_the_next_tick_now() {
 
     // said before the tick does anything, within a second of the wake
     let opened = running.every_line(SOON).expect("the wake opens the second tick");
-    assert_eq!(opened, "tick 2: started (woken)");
+    assert_eq!(opened, "tick 2: started (woken by wake)");
     assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
     let second = running.line(SOON).expect("the second tick ends");
     assert!(second.starts_with("tick 2: "), "{second}");
@@ -139,7 +139,7 @@ fn a_wake_that_arrives_during_a_tick_makes_the_next_start_at_once() {
 
     // said as it is heard, while the tick goes on — once
     let heard = running.line(SOON).expect("the wake heard");
-    assert_eq!(heard, "woken during tick 1: tick 2 follows");
+    assert_eq!(heard, "woken by wake during tick 1: tick 2 follows");
     assert!(
         woken.elapsed() < Duration::from_secs(1),
         "said within a second: {:?}",
@@ -149,7 +149,7 @@ fn a_wake_that_arrives_during_a_tick_makes_the_next_start_at_once() {
     assert!(first.starts_with("tick 1: dispatched #7"), "it ended after the wake came: {first}");
     assert!(first.ends_with("next in 90s"), "{first}");
     let started = running.every_line(SOON).expect("no sleep: the wake was waiting");
-    assert_eq!(started, "tick 2: started (woken)", "it starts as the first ends");
+    assert_eq!(started, "tick 2: started (woken by wake)", "it starts as the first ends");
     let second = running.line(SOON).expect("the second tick");
     assert!(second.starts_with("tick 2: "), "{second}");
 }

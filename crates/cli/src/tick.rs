@@ -615,7 +615,8 @@ const SLEPT_PAST: u64 = 60;
 enum Rested {
     /// It slept the whole of it.
     Slept,
-    Woken,
+    /// A wake ended it, naming what sent it, where it did.
+    Woken(Option<String>),
     Stopped,
 }
 
@@ -632,8 +633,8 @@ fn rest(wakes: &Listener, stop: &Stop, sleep: Duration, (said, clock): (&Said, &
         if took > nap.as_secs() + SLEPT_PAST {
             said.keep(clock(), log::What::HostWoke { asleep: took - nap.as_secs() });
         }
-        if woken {
-            return Rested::Woken;
+        if let Some(woken) = woken {
+            return Rested::Woken(woken.by);
         }
         if nap == left {
             return Rested::Slept;
@@ -697,7 +698,7 @@ impl Said {
         println!("{}", entry.said());
         if let Some(log) = &self.log {
             // Soft: the line is on stdout too, and the next one is tried again.
-            let _ = log.append(&entry);
+            let _ = log.keep(&entry);
         }
     }
 }
@@ -755,12 +756,13 @@ pub fn run(
     let said = Arc::new(Said::open(me, agent));
     let during: During = {
         let (said, clock) = (Arc::clone(&said), Arc::clone(&clock));
-        Box::new(move |during| said.keep(clock(), log::What::WokenDuring { during }))
+        Box::new(move |during, by| said.keep(clock(), log::What::WokenDuring { during, by }))
     };
     let wakes = Listener::open(&repo, during);
     opening::listen(&repo, live.clone(), me.instance.as_str());
     let stop = Stop::listen();
     let mut cause = Cause::Start;
+    let mut by = None;
     if let Some(line) = host_sleep_line(pacing) {
         println!("{line}");
     }
@@ -776,7 +778,7 @@ pub fn run(
     let mut host = HostSleep::open(standing, Waker::of(&repo), pacing.host_sleep_after);
     loop {
         count += 1;
-        said.keep(clock(), log::What::TickStarted { count, cause });
+        said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });
         me.now = clock();
         // Once: a start takes every claim stamped with this host (docs/adr/0003).
         if !started {
@@ -848,10 +850,13 @@ pub fn run(
             let until = host.due().map(|due| Duration::from_secs(due.saturating_sub(clock())));
             let nap = until.map_or(left, |until| until.min(left));
             let rested = rest(&wakes, &stop, nap, (&said, &clock));
-            if rested == Rested::Woken && sleep > 0 {
-                cause = Cause::Woken;
+            let slept = rested == Rested::Slept;
+            if let Rested::Woken(woken) = rested
+                && sleep > 0
+            {
+                (cause, by) = (Cause::Woken, woken);
             }
-            if rested != Rested::Slept || nap == left {
+            if !slept || nap == left {
                 break;
             }
             left -= nap;

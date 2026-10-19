@@ -29,7 +29,6 @@ use crate::gh::{Comment, GitHub, Open, OpenIssues, Unreached, unreached};
 use crate::git::Repo;
 use crate::intake::came_in;
 use crate::team::{Kept, keep};
-use crate::wake::wake;
 use crate::workflow::position;
 
 /// What a stage declares as it ends.
@@ -57,7 +56,7 @@ pub struct Ran {
 
 /// `afkconvoy verdict`, and a consult's `afkconvoy rule`: write the stage
 /// record of the stage `declaring` ends — or, of a consult, the one whose
-/// `escalate` it answers — and wake the fleet. A worker's is written under the claim the issue is
+/// `escalate` it answers; the fleet is woken as the command ends (`crate::acting`). A worker's is written under the claim the issue is
 /// held by, and a stage that has a record under that claim already gets no
 /// second one:
 ///
@@ -110,7 +109,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     }
     let mut answer = json!({"issue": issue, "stage": record.stage,
         "verdict": record.stated.word(), "claim": claim.id,
-        "declared": standing.is_none(), "woke": wake(repo)?["woke"]});
+        "declared": standing.is_none()});
     if let Some(standing) = standing {
         answer["standing"] = json!(standing.stated.word());
     }

@@ -15,7 +15,6 @@ use crate::copies::Copies;
 use crate::gh::{Comment, GitHub, OpenIssues};
 use crate::git::Repo;
 use crate::team::keep;
-use crate::wake::wake;
 
 /// What a worker takes in, and who it is.
 pub struct Taking {
@@ -85,7 +84,7 @@ fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u6
 
 /// `afkconvoy intake`: take the issue `taking` names in to its workflow — a
 /// blocked-by edge to each issue it is to wait for, the intake record, then
-/// the flow label — and wake the fleet. The edges come first: the flow label
+/// the flow label; the fleet is woken as the command ends (`crate::acting`). The edges come first: the flow label
 /// is what puts the issue on the frontier, and it is never there ahead of
 /// what blocks it. An issue that follows that workflow already is left as it
 /// is, whoever took it in.
@@ -160,6 +159,5 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     let (key, from) = on(&record.from);
     Ok(json!({"issue": number, "workflow": record.workflow, "taken": true,
         "role": record.role, key: from, "blocked_by": blocked_by, "open": open + 1,
-        "limit": limit,
-        "woke": wake(repo)?["woke"]}))
+        "limit": limit}))
 }
