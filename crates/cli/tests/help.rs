@@ -958,3 +958,17 @@ fn one_topic_says_where_the_cache_directory_is_and_every_other_help_sends_there(
         assert!(flat.contains("`afkconvoy help cache` says where"), "{command}");
     }
 }
+
+#[test]
+fn the_help_of_land_says_what_the_trains_worktree_holds_in_each_of_its_three_numbers() {
+    let land = asked(&["land", "--help"]);
+    for (key, says) in [
+        ("built", "everything git ignores here"),
+        ("fresh", "after the first gate run since it was cut"),
+        ("source", "the files git tracks, for reference only"),
+    ] {
+        let row = land.lines().find(|line| line.trim_start().starts_with(&format!("{key} ")));
+        let row = row.unwrap_or_else(|| panic!("{key} in {land}"));
+        assert!(row.contains(says), "{key}: {row}");
+    }
+}

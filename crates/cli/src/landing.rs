@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use crate::gate::{Gated, gated};
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
+use crate::measure;
 use crate::train::{Train, merge_in, require_committed, unmerged};
 
 /// Pushes `commit` to the base branch as a fast-forward → whether the remote
@@ -57,6 +58,9 @@ fn await_merged(gh: &GitHub, numbers: &BTreeSet<u64>, timeout: Duration) -> Resu
 ///   push    what that made, as the train's new tip
 ///   gate    the gate command on that commit, timed and recorded as a run on
 ///           `host` — or the run on record for its tree, left as it is
+///   measure what the worktree holds that git ignores, and its tracked files;
+///           what the first run in a worktree that held nothing ignored built
+///           is noted as its fresh build
 ///   land    the commit pushed to the base branch as a fast-forward
 ///   finish  every PR that commit landed: its issue closed, and its branch
 ///           deleted once GitHub shows it merged
@@ -147,7 +151,20 @@ pub fn land_train(
     answer["commit"] = json!(head);
     answer["prs"] = json!(prs);
 
-    let (run, source) = match gated(repo, &command, host, now, Duration::from_secs(limit))? {
+    // A fresh build is what the first gate run built in a worktree that held none.
+    let unbuilt = measure::fresh(repo)?.is_none() && !measure::holds_ignored(repo)?;
+    let gated = gated(repo, &command, host, now, Duration::from_secs(limit))?;
+    let ran = !matches!(gated, Gated::Green { source: "recorded", .. });
+    let built = measure::built(repo)?;
+    if unbuilt && ran {
+        measure::record_fresh(repo, built)?;
+    }
+    answer["built"] = json!(built);
+    answer["source"] = json!(measure::source(repo)?);
+    if let Some(fresh) = measure::fresh(repo)? {
+        answer["fresh"] = json!(fresh);
+    }
+    let (run, source) = match gated {
         Gated::Green { run, source } => (run, source),
         Gated::Red { ran, excerpt } => {
             // Best effort: a red commit not on record only costs a worker's gate a red run.
