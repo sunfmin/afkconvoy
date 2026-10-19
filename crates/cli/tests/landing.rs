@@ -397,3 +397,85 @@ fn an_empty_train_is_idle_and_a_dirty_worktree_is_refused() {
     assert_eq!(world.afk_in(&train, &["land"]).code, 2);
     assert_eq!(world.afk_in(&train, &["land", "--train", "--issue", "7"]).code, 2);
 }
+
+/// A world whose gate builds ten bytes more into `out/`, which git ignores,
+/// each time it runs.
+fn building_world() -> World {
+    let world = World::new();
+    world.set_gate("mkdir -p out && printf 0123456789 >> out/build");
+    commit(&world.clone, ".gitignore", "out/\n");
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world
+}
+
+/// The bytes of the files git tracks in `dir`, read off the files themselves.
+fn tracked_bytes(dir: &Path) -> u64 {
+    let listed = git(dir, &["ls-files"]);
+    listed.lines().map(|file| std::fs::metadata(dir.join(file)).unwrap().len()).sum()
+}
+
+/// Joins a new PR for `issue` and lands the train in `dir` → the answer.
+fn land_one(world: &World, dir: &Path, issue: u64) -> Value {
+    let worker = world.worker(issue, &format!("{issue}.txt"), &format!("{issue}\n"));
+    join(world, &worker, issue);
+    let (answer, _) = land_train(world, dir);
+    assert_eq!(answer["outcome"], "landed", "{answer}");
+    answer
+}
+
+#[test]
+fn the_first_gate_run_in_a_worktree_just_cut_records_its_fresh_build() {
+    let world = building_world();
+    let train = train(&world);
+
+    let first = land_one(&world, &train, 7);
+    assert_eq!(first["gate"]["source"], "run");
+    assert_eq!(first["built"], 10);
+    assert_eq!(first["fresh"], 10, "{first}");
+    assert_eq!(first["source"], tracked_bytes(&train));
+
+    let second = land_one(&world, &train, 8);
+    assert_eq!(second["built"], 20, "what the runs built piles up");
+    assert_eq!(second["fresh"], 10, "a later run leaves the fresh build as it is");
+
+    // Cut again: the worktree's git dir goes with it, and the note with that.
+    let at = train.to_str().unwrap();
+    git(&world.clone, &["worktree", "remove", "--force", at]);
+    git(&world.clone, &["worktree", "add", "-q", "-B", "convoy-train", at, "origin/main"]);
+    let third = land_one(&world, &train, 9);
+    assert_eq!(third["built"], 10);
+    assert_eq!(third["fresh"], 10, "recorded anew: {third}");
+}
+
+#[test]
+fn a_worktree_built_in_before_its_first_measured_run_has_no_fresh_build() {
+    let world = building_world();
+    let train = train(&world);
+    common::write(&train, "out/old", "12345");
+
+    let answer = land_one(&world, &train, 7);
+    assert_eq!(answer["built"], 15, "{answer}");
+    assert!(answer.get("fresh").is_none(), "{answer}");
+    assert_eq!(answer["source"], tracked_bytes(&train));
+
+    let again = land_one(&world, &train, 8);
+    assert_eq!(again["built"], 25);
+    assert!(again.get("fresh").is_none(), "{again}");
+}
+
+#[test]
+fn a_landing_on_a_run_on_record_runs_nothing_here_and_records_no_fresh_build() {
+    let world = building_world();
+    let seven = world.worker(7, "seven.txt", "7\n");
+    assert_eq!(world.afk_in(&seven, &["gate", "--train"]).ok()["recorded"], true);
+    join(&world, &seven, 7);
+    let train = train(&world);
+
+    let (answer, _) = land_train(&world, &train);
+    assert_eq!(answer["gate"]["source"], "recorded", "{answer}");
+    assert_eq!(answer["built"], 0);
+    assert!(answer.get("fresh").is_none(), "no run built anything here: {answer}");
+
+    let next = land_one(&world, &train, 8);
+    assert_eq!(next["fresh"], 10, "the first run here is its fresh build: {next}");
+}

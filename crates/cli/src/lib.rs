@@ -45,6 +45,7 @@ pub mod landing;
 pub mod launch;
 pub mod lock;
 pub mod log;
+pub mod measure;
 pub mod opening;
 pub mod orca;
 pub mod panel;

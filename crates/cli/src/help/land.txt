@@ -29,7 +29,8 @@ WHAT IT READS AND WRITES
   machine's name). Green: it pushes the commit to the base branch as a
   fast-forward, closes the issue of every PR that landed, and deletes those PRs'
   branches once GitHub shows them merged. Red: it comments the failure on every PR on
-  the train, and lands nothing.
+  the train, and lands nothing. Either way it then measures this worktree: what git
+  ignores in it, and the files git tracks; the first run here notes what it built.
 
 WHAT IT ANSWERS
 
@@ -59,6 +60,17 @@ WHAT IT ANSWERS
                   and "host" are how long the gate command ran and where, as the run
                   that answered says — the one on record ("source": "recorded") or the
                   one made now ("run"); a run recorded with no time has neither
+
+    gate_red and landed also say, in bytes, what this worktree holds once it is gated:
+
+    built   everything git ignores here — what gate runs built, every older artifact a
+            build tool keeps beside the newest included
+    fresh   what this worktree held after the first gate run since it was cut: its
+            fresh build. Noted once, in this worktree's own git dir, so a worktree cut
+            again notes it anew; never noted when the worktree held ignored files before
+            that run, and absent while none is on record
+    source  the files git tracks, for reference only: how many times this a build comes
+            to differs from repo to repo, so it decides nothing
 
   Errors: no open PR closes the issue; tracked files have uncommitted changes; the
   remote has no such branch; the train moved under the command too many times ("run this
