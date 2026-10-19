@@ -223,10 +223,17 @@ impl Relabel {
     /// `None` in an unbound repo, whose own config names the escalate label.
     pub fn of(labels: &[String], config: &Config, team: Option<&Team>) -> Relabel {
         let escalate = team.map_or(&config.escalate_label, |team| &team.escalate_label);
-        let remove = match team {
-            Some(team) => team.flows(labels).into_iter().map(str::to_string).collect(),
-            None => labels.iter().filter(|label| **label == config.ready_label).cloned().collect(),
-        };
+        let mut remove = vec![];
+        let flows = team.map(|team| team.flows(labels));
+        for label in labels {
+            let hands_over = match &flows {
+                Some(flows) => flows.contains(&label.as_str()),
+                None => *label == config.ready_label,
+            };
+            if hands_over {
+                remove.push(label.clone());
+            }
+        }
         let carried = labels.iter().any(|label| label == escalate);
         Relabel { add: if carried { None } else { Some(escalate.to_string()) }, remove }
     }

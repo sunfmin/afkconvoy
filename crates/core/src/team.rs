@@ -46,8 +46,13 @@ impl FlowLabels {
     /// The flow labels among `labels`, in their order: each a workflow's, or
     /// written as one (`flow:…`) though it names none.
     pub fn among<'l>(&self, labels: &'l [String]) -> Vec<&'l str> {
-        let flow = |label: &&String| label.starts_with(FLOW_LABEL) || self.0.contains(label);
-        labels.iter().filter(flow).map(String::as_str).collect()
+        let mut among = vec![];
+        for label in labels {
+            if label.starts_with(FLOW_LABEL) || self.0.contains(label) {
+                among.push(label.as_str());
+            }
+        }
+        among
     }
 
     /// Whether `label` is one of the team's workflows' flow labels.
@@ -1107,7 +1112,7 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
         let mut report = Report { file: &file.path, faults: &mut faults };
         workflows.extend(workflow_file(&mut report, file, &roles));
     }
-    flow_labels(&mut faults, sources, &escalate_label, &mut workflows);
+    flow_labels(&mut faults, sources, &escalate_label, &workflows);
     let mut patrols: Vec<Patrol> = vec![];
     for file in &sources.patrols {
         let mut report = Report { file: &file.path, faults: &mut faults };
@@ -1128,27 +1133,19 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     }
 }
 
-/// Gives each workflow its flow label: the one its file names, and else
-/// `flow:<name>` — and reports a label two workflows take, and one that is
-/// the escalate label `escalate`, the lock label or an epic label.
-fn flow_labels(
-    faults: &mut Vec<Fault>,
-    sources: &Sources,
-    escalate: &str,
-    workflows: &mut [Workflow],
-) {
+/// Reports a flow label two of `workflows` take, and one that is the
+/// escalate label `escalate`, the lock label or an epic label: under `label`
+/// where the file names it, and of the file where it is `flow:<name>`.
+fn flow_labels(faults: &mut Vec<Fault>, sources: &Sources, escalate: &str, workflows: &[Workflow]) {
     let labels = &sources.labels;
-    // Each label given so far, with the file that took it.
+    // Each label taken so far, with the file that took it.
     let mut taken: Vec<(String, String)> = vec![];
-    for workflow in workflows.iter_mut() {
+    for workflow in workflows {
         let file = format!("{WORKFLOWS}/{}.md", workflow.name);
         let mut report = Report { file: &file, faults: &mut *faults };
-        let written = !workflow.label.is_empty();
-        let key = if written { LABEL_KEY } else { "" };
-        if !written {
-            workflow.label = format!("{FLOW_LABEL}{}", workflow.name);
-        }
         let label = workflow.label.clone();
+        let written = label != format!("{FLOW_LABEL}{}", workflow.name);
+        let key = if written { LABEL_KEY } else { "" };
         let its = if written { format!("`{label}`") } else { format!("its flow label `{label}`") };
         if label == escalate {
             report.fault(key, format!("{its} is the team's escalate label"));
@@ -1816,8 +1813,7 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
     let roles = roles.loaded.len();
     let mut read = built(name, max_rework?, max_consecutive_rework?, drafts, edges, land?, roles)?;
     read.description = file.prose.clone();
-    // Empty until `flow_labels` gives it the one nothing names.
-    read.label = label.unwrap_or_default();
+    read.label = label.unwrap_or_else(|| format!("{FLOW_LABEL}{name}"));
     Some(read)
 }
 
