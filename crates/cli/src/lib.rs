@@ -1127,3 +1127,85 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A command line of each command, as little as it parses with.
+    const LINES: &[&[&str]] = &[
+        &["config"],
+        &["check"],
+        &["scaffold", "team", "x"],
+        &["flows"],
+        &["skill"],
+        &["show"],
+        &["rehearse", "build"],
+        &["doctor"],
+        &["plan"],
+        &["run"],
+        &["panel"],
+        &["tick", "--instance", "a-h1-1"],
+        &["gate"],
+        &["land", "7"],
+        &["verdict", "pass", "7", "--stage", "build", "--text", "x"],
+        &["rule", "7", "--text", "x"],
+        &["send", "7", "--stage", "build", "--text", "x"],
+        &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
+        &["lock", "7"],
+        &["over", "--run", "sweep"],
+        &["guard"],
+        &["dispatch", "7", "--instance", "a-h1-1"],
+        &["recovery", "7"],
+        &["close", "7", "--instance", "a-h1-1"],
+        &["escalate", "7", "--instance", "a-h1-1", "--reason", "x"],
+        &["park", "7", "--instance", "a-h1-1"],
+        &["nudge", "7", "--instance", "a-h1-1"],
+        &["restart", "7", "--instance", "a-h1-1"],
+        &["abandon", "--instance", "a-h1-1"],
+        &["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"],
+        &["wake"],
+        &["scan"],
+        &["claim", "7", "--instance", "a-h1-1"],
+        &["release", "7", "--instance", "a-h1-1"],
+        &["heartbeat", "--instance", "a-h1-1"],
+        &["help"],
+    ];
+
+    /// The commands that act are those whose `--help` says what they log, and
+    /// none else: a test of the list `--help` gives, not of `ACTS` alone.
+    #[test]
+    fn a_command_logs_and_wakes_where_its_help_says_so_and_only_there() {
+        let mut cli = cli();
+        cli.build();
+        let mut listed = vec![];
+        for command in cli.get_subcommands_mut() {
+            let name = command.get_name().to_string();
+            let help = command.render_long_help().to_string();
+            let line = LINES.iter().find(|line| line[0] == name);
+            let line = line.unwrap_or_else(|| panic!("no command line of `{name}` here"));
+            let parsed =
+                Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
+            let acts = parsed.unwrap_or_else(|e| panic!("{name}: {e}")).command.acting().is_some();
+            assert_eq!(acts, help.contains("\nWHAT IT LOGS\n"), "{name}");
+            assert_eq!(acts, ACTS.contains(&name.as_str()), "{name}");
+            listed.push(name);
+        }
+        assert_eq!(listed.len(), LINES.len(), "{listed:?}");
+        // The listing with `--list` changes nothing, and says nothing.
+        let list = Cli::try_parse_from(["afkconvoy", "takeover", "--list"]).unwrap();
+        assert!(list.command.acting().is_none());
+        // What one acts on is named, as its wake names it.
+        let named = |line: &[&str]| {
+            let cli = Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
+            cli.unwrap().command.acting().unwrap().named()
+        };
+        assert_eq!(named(&["park", "--issue", "46", "--instance", "a-h1-1"]), "park #46");
+        assert_eq!(named(&["over", "--run", " sweep "]), "over run sweep");
+        assert_eq!(
+            named(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]),
+            "takeover from b-h2-2"
+        );
+        assert_eq!(named(&["land", "--train"]), "land");
+    }
+}

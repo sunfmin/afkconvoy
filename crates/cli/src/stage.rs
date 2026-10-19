@@ -56,7 +56,7 @@ pub struct Ran {
 
 /// `afkconvoy verdict`, and a consult's `afkconvoy rule`: write the stage
 /// record of the stage `declaring` ends — or, of a consult, the one whose
-/// `escalate` it answers — and wake the fleet. A worker's is written under the claim the issue is
+/// `escalate` it answers; the fleet is woken as the command ends (`crate::acting`). A worker's is written under the claim the issue is
 /// held by, and a stage that has a record under that claim already gets no
 /// second one:
 ///

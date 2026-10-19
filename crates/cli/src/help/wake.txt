@@ -1,7 +1,9 @@
 WHEN TO RUN IT
 
   Once, as a worker's last command: after its PR is on the landing train, or its verdict
-  is posted on the issue. A worker's prompt names the exact command.
+  is posted on the issue. A worker's prompt names the exact command. Every command that
+  changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one
+  is redundant, and harmless.
 
 WHO RUNS IT
 
@@ -10,9 +12,10 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  It sends one empty signal to the `run` of this host for this repo, over a socket in
-  the repo's git directory. It carries nothing and writes nothing: the tick it starts
-  reads the outcome from GitHub itself.
+  It sends one signal to the `run` of this host for this repo, over a socket in the
+  repo's git directory, naming itself and the issue the worker is on, if its
+  environment says one. It carries nothing else and writes nothing to GitHub: the tick
+  it starts reads the outcome from GitHub itself.
 
 WHAT IT ANSWERS
 

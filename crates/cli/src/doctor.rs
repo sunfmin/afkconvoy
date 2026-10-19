@@ -1317,7 +1317,8 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         log_file: log.map(|log| log.file),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
         events: read_events(entries.as_deref().unwrap_or_default(), host),
-        ticks: entries.map(|_| ticks),
+        // A log only commands wrote to is no `run`'s.
+        ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
     let seen_host = read_host(config.as_ref().ok(), started_with.as_deref());

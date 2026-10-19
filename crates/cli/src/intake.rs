@@ -84,7 +84,7 @@ fn blockers(gh: &GitHub, number: u64, blocked_by: &[u64]) -> Result<Vec<(u64, u6
 
 /// `afkconvoy intake`: take the issue `taking` names in to its workflow — a
 /// blocked-by edge to each issue it is to wait for, the intake record, then
-/// the flow label — and wake the fleet. The edges come first: the flow label
+/// the flow label; the fleet is woken as the command ends (`crate::acting`). The edges come first: the flow label
 /// is what puts the issue on the frontier, and it is never there ahead of
 /// what blocks it. An issue that follows that workflow already is left as it
 /// is, whoever took it in.
