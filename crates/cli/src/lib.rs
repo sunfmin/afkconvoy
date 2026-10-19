@@ -850,7 +850,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Tick { who, agent } => {
             let agent = agent.start(now, true)?;
-            Ok(tick::tick(&who.me(now), &agent, &stop::Stop::never())?.0.json())
+            Ok(tick::tick(&who.me(now), &agent, &stop::Stop::never(), None)?.0.json())
         }
         Command::Gate { train, host } => {
             let repo = Repo::here()?;

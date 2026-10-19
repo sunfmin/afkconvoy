@@ -48,6 +48,9 @@ pub struct Fleet {
     /// The claimed issues the last rebuild could not read, each with why: the
     /// pass goes on with them as open, and its tick reports each.
     pub unread: Vec<(u64, anyhow::Error)>,
+    /// The closed claimed issues the last rebuild read, each with the login of
+    /// whoever closed it, where GitHub says: what a tick's line names.
+    pub closers: Vec<(u64, String)>,
 }
 
 impl Fleet {
@@ -68,6 +71,7 @@ impl Fleet {
             escalated: vec![],
             forgotten: vec![],
             unread: vec![],
+            closers: vec![],
         })
     }
 
@@ -103,12 +107,16 @@ impl Fleet {
         // about, and is closed, gone — deleted or transferred — or unread.
         let (mut closed, mut deleted) = (vec![], vec![]);
         self.unread.clear();
+        self.closers.clear();
         for claim in &self.scan.claims {
             if issues.iter().any(|issue| issue.number == claim.number) {
                 continue;
             }
             match self.gh.issue(claim.number) {
-                Ok(read) if read.is_closed() => closed.push(claim.number),
+                Ok(read) if read.is_closed() => {
+                    closed.push(claim.number);
+                    self.closers.extend(read.closed_by.map(|by| (claim.number, by)));
+                }
                 Ok(_) => {}
                 Err(error) if gone(&error).is_some() => deleted.push(claim.number),
                 Err(error) => self.unread.push((claim.number, error)),
