@@ -14,7 +14,9 @@ WHEN TO RUN IT
       blocked            the issue waits on other issues: name them with `--blocked-by`.
                          A stage that splits its issue declares it on the issues it
                          opened and took in (`afkconvoy intake --help`), and runs again
-                         when they have all closed
+                         when they have all closed. So does a stage whose gate is red for
+                         a defect outside its issue, on the defect's issue: one it opened
+                         and took in, or the open one that already recorded it
       already-satisfied  the issue needs no change: it is already done
       escalate           the stage cannot decide; the text says what has to be decided
 
