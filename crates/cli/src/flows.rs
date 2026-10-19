@@ -67,7 +67,7 @@ fn workflow(team: &Team, workflow: &Workflow) -> Value {
         "description": workflow.description,
         "first": {"stage": first.name, "by": by, "do": skill},
         "ends": ends,
-        "line": line(&flow_label),
+        "line": line(flow_label),
     })
 }
 
