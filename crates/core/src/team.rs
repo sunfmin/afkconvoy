@@ -1110,7 +1110,11 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let mut workflows: Vec<Workflow> = vec![];
     for file in &sources.workflows {
         let mut report = Report { file: &file.path, faults: &mut faults };
-        workflows.extend(workflow_file(&mut report, file, &roles));
+        let label = label_key(&mut report, file);
+        if let Some(mut read) = workflow_file(&mut report, file, &roles) {
+            read.label = label.unwrap_or_else(|| format!("{FLOW_LABEL}{}", read.name));
+            workflows.push(read);
+        }
     }
     flow_labels(&mut faults, sources, &escalate_label, &workflows);
     let mut patrols: Vec<Patrol> = vec![];
@@ -1131,6 +1135,14 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     } else {
         Err(faults)
     }
+}
+
+/// Reads a workflow's file's `label` → the flow label it names; `None` where
+/// it names none, or the key is at fault. What is wrong with the file itself
+/// is `workflow_file`'s to say.
+fn label_key(report: &mut Report, file: &File) -> Option<String> {
+    let Ok(Node::Map(entries)) = &file.yaml else { return None };
+    text(report, "", entries, LABEL_KEY).map(str::to_string)
 }
 
 /// Reports a flow label two of `workflows` take, and one that is the
@@ -1703,7 +1715,6 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
         }
     };
     let entries = map(report, "", node, &WORKFLOW_KEYS)?;
-    let label = text(report, "", entries, LABEL_KEY).map(str::to_string);
     let max_rework = count(report, "", entries, "max_rework", MAX_REWORK);
     let max_consecutive_rework =
         count(report, "", entries, "max_consecutive_rework", MAX_CONSECUTIVE_REWORK);
@@ -1813,7 +1824,6 @@ fn workflow_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Work
     let roles = roles.loaded.len();
     let mut read = built(name, max_rework?, max_consecutive_rework?, drafts, edges, land?, roles)?;
     read.description = file.prose.clone();
-    read.label = label.unwrap_or_else(|| format!("{FLOW_LABEL}{name}"));
     Some(read)
 }
 
