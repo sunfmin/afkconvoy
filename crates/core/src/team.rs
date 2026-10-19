@@ -2242,6 +2242,80 @@ land: { by: dev, do: land }
     }
 
     #[test]
+    fn a_workflow_s_file_names_its_flow_label_or_takes_flow_and_its_name() {
+        let named = format!("label: ready-for-agent\n{FEATURE}");
+        let team = load(&sources(
+            TEAM,
+            &[("workflows/feature.md", &named), ("workflows/fix.md", FEATURE)],
+        ))
+        .unwrap();
+        assert_eq!(team.workflow("feature").unwrap().flow_label(), "ready-for-agent");
+        assert_eq!(team.workflow("fix").unwrap().flow_label(), "flow:fix");
+        assert_eq!(team.labelled("ready-for-agent").unwrap().name, "feature");
+        assert!(team.labelled("flow:feature").is_none());
+        let carried = ["bug", "ready-for-agent", "flow:chore", "flow:fix"].map(String::from);
+        // One a workflow takes, and one written as one though it names none.
+        assert_eq!(team.flows(&carried), ["ready-for-agent", "flow:chore", "flow:fix"]);
+        assert_eq!(FlowLabels::default().among(&carried), ["flow:chore", "flow:fix"]);
+    }
+
+    #[test]
+    fn a_flow_label_two_workflows_take_or_the_fleet_s_own_is_a_fault() {
+        let labelled = |label: &str| format!("label: {label}\n{FEATURE}");
+        let faults = |team: &str, workflows: &[(&str, &str)]| {
+            let faults = load(&sources(team, workflows)).unwrap_err();
+            faults.into_iter().map(|f| (f.file, f.key, f.problem)).collect::<Vec<_>>()
+        };
+        let fault = |file: &str, key: &str, problem: &str| {
+            (file.to_string(), key.to_string(), problem.to_string())
+        };
+        let shared = labelled("flow:fix");
+        assert_eq!(
+            faults(TEAM, &[("workflows/fix.md", FEATURE), ("workflows/feature.md", &shared)]),
+            [fault(
+                "workflows/feature.md",
+                "label",
+                "`flow:fix` is already the flow label of workflows/fix.md"
+            )]
+        );
+        // Where the one that names it comes first, the other is the one at fault.
+        assert_eq!(
+            faults(TEAM, &[("workflows/feature.md", &shared), ("workflows/fix.md", FEATURE)]),
+            [fault(
+                "workflows/fix.md",
+                "",
+                "its flow label `flow:fix` is already the flow label of workflows/feature.md"
+            )]
+        );
+        let one = |label: &str| faults(TEAM, &[("workflows/feature.md", &labelled(label))]);
+        assert_eq!(
+            one("ready-for-human"),
+            [fault(
+                "workflows/feature.md",
+                "label",
+                "`ready-for-human` is the team's escalate label"
+            )]
+        );
+        let stuck = format!("escalate_label: stuck\n{TEAM}");
+        let escalating = faults(&stuck, &[("workflows/feature.md", &labelled("stuck"))]);
+        assert_eq!(escalating[0].2, "`stuck` is the team's escalate label");
+        assert_eq!(
+            one("fleet-lock"),
+            [fault("workflows/feature.md", "label", "`fleet-lock` is the repo's lock label")]
+        );
+        assert_eq!(
+            one("prd"),
+            [fault("workflows/feature.md", "label", "`prd` is an epic label of the repo")]
+        );
+        assert_eq!(one("''")[0].2, "must not be empty");
+        // The repo's own labels are the ones it is held against.
+        let mut stopped = sources(TEAM, &[("workflows/feature.md", &labelled("stop"))]);
+        stopped.labels.lock = "stop".to_string();
+        assert_eq!(load(&stopped).unwrap_err()[0].problem, "`stop` is the repo's lock label");
+        assert!(load(&sources(TEAM, &[("workflows/feature.md", &labelled("stop"))])).is_ok());
+    }
+
+    #[test]
     fn the_breakers_default_to_3_and_2() {
         let done = "stages:\n  - { name: a, by: dev, do: plan, on: { pass: done } }\n";
         let load_one = |yaml: &str| load(&sources(TEAM, &[("workflows/w.md", yaml)])).unwrap();

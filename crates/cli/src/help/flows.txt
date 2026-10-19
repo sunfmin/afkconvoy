@@ -21,7 +21,8 @@ WHAT IT READS AND WRITES
   every open issue that carries a flow label.
 
   It writes one thing: each label its lines name that the repo lacks. In a bound repo
-  that is the flow label of every workflow of the team, `flow:<workflow>`; in an unbound
+  that is the flow label of every workflow of the team — `flow:<workflow>`, or the one
+  its file's `label` names; in an unbound
   one, the ready label. It puts no label on any issue and opens none. Everything is read
   first: a team with a fault creates nothing.
 

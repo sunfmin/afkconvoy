@@ -251,7 +251,7 @@ fn an_issue_that_follows_the_workflow_already_is_left_as_it_is() {
 
     // An issue follows one workflow: it is not taken in to a second.
     let error = intake(&world, 20, "fix").error();
-    assert!(error.contains("already follows a workflow (feature)"), "{error}");
+    assert!(error.contains("already follows a workflow (flow:feature)"), "{error}");
     assert_eq!(world.labels(20), ["flow:feature"]);
 }
 

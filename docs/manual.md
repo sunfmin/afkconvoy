@@ -96,7 +96,8 @@ A bound repo's config names a team. The issue passes through the stages of one o
 the team's workflows, and each stage is performed by a new worker, started in the
 role that stage names.
 
-1. Intake. The issue is given a flow label, `flow:<workflow>`: by a human on GitHub,
+1. Intake. The issue is given a flow label — `flow:<workflow>`, or the one the
+   workflow's file names with `label`: by a human on GitHub,
    or by a patrol's worker through `afkconvoy intake`. `afkconvoy flows` says which
    workflow takes which issue, and creates the labels. An issue with no flow label
    is left alone.
@@ -263,7 +264,8 @@ By its config, on its base branch (`afkconvoy config --help` shows the file whol
 
 The team is read at the head of its repo's default branch: pushing is the only way an
 edit reaches a worker. An issue of a bound repo is the fleet's to work only while it
-carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows`.
+carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows`. The
+ready label is one only where a workflow's file names it with `label`.
 ````
 
 ### WHAT CHECK HOLDS IT TO
@@ -498,11 +500,18 @@ in the landing train or in nothing more to do. Read this to write a file of a te
 ### A WORKFLOW'S FILE
 
 ````text
-`workflows/<name>.md` is the workflow `<name>`, and its flow label is `flow:<name>`: an
-issue that carries it is at the first stage. Above the yaml block, say what the
+`workflows/<name>.md` is the workflow `<name>`, and its flow label is `flow:<name>`
+unless its `label` names another: an issue that carries it is at the first stage.
+Name the label issues are already opened with — `label: ready-for-agent` — and one
+opened the usual way is worked with no relabelling and no patrol. In a bound repo the
+ready label is an ordinary label unless a workflow names it, and an epic stays out
+whatever it carries. `afkconvoy check` refuses a label two workflows take, and one
+that is the team's escalate label, the repo's lock label or an epic label. Above the
+yaml block, say what the
 workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to
 whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
 
+    label: <label>                     # optional; default flow:<name>
     max_rework: 3                      # default
     max_consecutive_rework: 2          # default
     stages:
@@ -1041,7 +1050,9 @@ it, the issue's number filled in. `afkconvoy plan` gives the same list, and the 
 shows it as "With a human". One that has waited for more than an hour is a finding.
 
 An escalated issue also says so itself: it carries the escalate label in place of
-its flow label — `ready-for-human`, unless the team's file names another — and the
+its flow label, whatever that is — `ready-for-agent` too, where its workflow names
+that — the escalate label being `ready-for-human`, unless the team's file names
+another; and the
 comment of the escalation says why and ends with the same line. Run every command
 below in a checkout of the repo the issue is of.
 ````
@@ -1379,8 +1390,8 @@ The stages one issue passes through and where each verdict leads, ending in the 
 _Avoid_: pipeline, process (a program that is running)
 
 **Flow label**:
-The label that names the workflow an issue follows. A bound repo's issue is the fleet's to work only while it carries one.
-_Avoid_: ready label (the unbound repo's), type label
+The label that names the workflow an issue follows: `flow:<name>`, unless the workflow's file names another with `label` — the ready label, say, so that an issue opened the usual way is worked. A bound repo's issue is the fleet's to work only while it carries one; there the ready label is one only where a workflow names it.
+_Avoid_: type label
 
 **Intake**:
 Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit.

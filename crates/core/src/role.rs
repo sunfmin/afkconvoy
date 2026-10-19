@@ -380,6 +380,25 @@ land: { by: boss, do: implement }
     }
 
     #[test]
+    fn an_issue_carrying_the_label_a_workflow_names_enters_at_its_first_stage() {
+        use crate::team::tests::{FEATURE, one};
+        let team = one(&format!("label: ready-for-agent\n{FEATURE}"));
+        let Due::Worker(entry) = due(&team, &labels(&["ready-for-agent"]), &[], None) else {
+            panic!("a worker is due")
+        };
+        assert_eq!((entry.workflow.name.as_str(), entry.stage.name.as_str()), ("feature", "plan"));
+        // Its `flow:<name>` it no longer takes: that names no workflow now.
+        let why = said(due(&team, &labels(&["flow:feature"]), &[], None));
+        assert_eq!(why, "human: its flow label flow:feature names no workflow of the team");
+        // …and without `label`, the ready label is an ordinary one.
+        let plain = one(FEATURE);
+        assert_eq!(
+            said(due(&plain, &labels(&["ready-for-agent"]), &[], None)),
+            "nothing: it carries no flow label"
+        );
+    }
+
+    #[test]
     fn an_issue_enters_at_the_first_stage_of_the_workflow_its_flow_label_names() {
         let team = team();
         let Due::Worker(entry) = due(&team, &labels(&["bug", "flow:feature"]), &[], None) else {

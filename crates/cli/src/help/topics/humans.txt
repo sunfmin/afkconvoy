@@ -11,7 +11,9 @@ WHERE TO LOOK
   shows it as "With a human". One that has waited for more than an hour is a finding.
 
   An escalated issue also says so itself: it carries the escalate label in place of
-  its flow label — `ready-for-human`, unless the team's file names another — and the
+  its flow label, whatever that is — `ready-for-agent` too, where its workflow names
+  that — the escalate label being `ready-for-human`, unless the team's file names
+  another; and the
   comment of the escalation says why and ends with the same line. Run every command
   below in a checkout of the repo the issue is of.
 

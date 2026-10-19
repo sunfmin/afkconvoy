@@ -100,7 +100,8 @@ HOW A REPO IS BOUND TO IT
 
   The team is read at the head of its repo's default branch: pushing is the only way an
   edit reaches a worker. An issue of a bound repo is the fleet's to work only while it
-  carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows`.
+  carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows`. The
+  ready label is one only where a workflow's file names it with `label`.
 
 WHAT CHECK HOLDS IT TO
 
