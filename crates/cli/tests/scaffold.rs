@@ -50,14 +50,16 @@ fn a_team_and_its_roles_in_one_repo_pass_check_after_the_one_push() {
     );
     let file = std::fs::read_to_string(team.join("team.md")).unwrap();
     assert!(file.contains("roles:\n  fellow: ./roles/fellow\n  attending: ./roles/attending\n"));
-    // Its rules: a heading, and two lines on what belongs there and what
-    // belongs in a repo's own rules or a role's.
+    // Its rules: a heading, two lines on what belongs there and what
+    // belongs in a repo's own rules or a role's, and one that has the host
+    // user's rules give way to all of it.
     let rules = std::fs::read_to_string(team.join("CLAUDE.md")).unwrap();
     let lines: Vec<&str> = rules.lines().filter(|line| !line.is_empty()).collect();
-    assert_eq!(lines.len(), 3, "{rules}");
+    assert_eq!(lines.len(), 4, "{rules}");
     assert_eq!(lines[0], "# Team rules");
     assert!(lines[1].starts_with("Here: how this team works, in every repo bound to it"));
     assert!(lines[2].contains("that repo's own rules") && lines[2].contains("its role's"));
+    assert!(lines[3].contains("win over the host user's") && lines[3].contains("host_user: false"));
     // One repo was created, from the one commit that holds exactly the skeleton.
     assert_eq!(git(&team, &["status", "--porcelain"]), "");
     assert_eq!(git(&team, &["rev-list", "--count", "HEAD"]), "1");
