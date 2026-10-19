@@ -43,6 +43,9 @@ pub const DONE: &str = "done";
 
 /// The key of the team file that says who proposes precedents.
 const PRECEDENTS_KEY: &str = "precedents";
+/// The key of the team file that says whether a worker of the team is given
+/// the host user's skills and rules (`Team::host_user`).
+const HOST_USER_KEY: &str = "host_user";
 /// The key of a stage and of a patrol that names the harness its worker
 /// runs: a key wherever `model` is one, and nowhere else.
 const HARNESS_KEY: &str = "harness";
@@ -50,7 +53,7 @@ const HARNESS_KEY: &str = "harness";
 const MODEL_KEY: &str = "model";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
-pub const TEAM_KEYS: [&str; 3] = ["escalate_label", "roles", PRECEDENTS_KEY];
+pub const TEAM_KEYS: [&str; 4] = ["escalate_label", "roles", PRECEDENTS_KEY, HOST_USER_KEY];
 pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
 pub const WORKFLOW_KEYS: [&str; 4] = ["max_rework", "max_consecutive_rework", "stages", LAND];
 pub const STAGE_KEYS: [&str; 8] =
@@ -272,6 +275,11 @@ pub struct Team {
     /// Whether it has team rules: a `RULES` in its directory, which every
     /// worker of the team is given with that directory.
     pub rules: bool,
+    /// Whether every worker of the team is given the host user's own skills
+    /// and rules beside its role's (docs/adr/0017): `true` unless the team
+    /// file says `host_user: false`, which keeps a role the same on every
+    /// host.
+    pub host_user: bool,
     #[field(Vec<Role>[roles])]
     pub roles: Vec<Role>,
     #[field(Vec<Workflow{v: v.roles == roles}>)]
@@ -1045,6 +1053,7 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let mut faults: Vec<Fault> = vec![];
     let (escalate_label, roles) = team_file(&mut faults, sources);
     let precedents = precedents_key(&mut faults, sources, &roles);
+    let host_user = host_user_key(&mut faults, sources);
     let mut workflows: Vec<Workflow> = vec![];
     for file in &sources.workflows {
         let mut report = Report { file: &file.path, faults: &mut faults };
@@ -1059,6 +1068,7 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
         Ok(Team {
             escalate_label,
             rules: sources.rules,
+            host_user,
             roles: roles.loaded,
             workflows,
             patrols,
@@ -1383,6 +1393,22 @@ fn precedents_key(
     let work = work(&mut report, roles, PRECEDENTS_KEY, entries, ("by", "do"));
     let max_open = limit(&mut report, PRECEDENTS_KEY, entries);
     Some(Some(Precedents { work: work?, max_open: max_open? }))
+}
+
+/// Whether the team file has its workers given the host user's skills and
+/// rules: `true` where it says nothing. Anything but true or false is
+/// reported, and read as the default.
+fn host_user_key(faults: &mut Vec<Fault>, sources: &Sources) -> bool {
+    let mut report = Report { file: &sources.team.path, faults };
+    let Ok(Node::Map(entries)) = &sources.team.yaml else { return true };
+    match get(entries, HOST_USER_KEY) {
+        None => true,
+        Some(Node::Bool(host_user)) => *host_user,
+        Some(other) => {
+            report.fault(HOST_USER_KEY, format!("must be true or false, not {}", kind(other)));
+            true
+        }
+    }
 }
 
 /// The skill `skill_key` names of the role `role_key` names, both under `at`.
@@ -2161,6 +2187,21 @@ land: { by: dev, do: land }
         assert_eq!(team.escalate_label, "stuck");
         assert!(team.roles.is_empty());
         assert!(load(&sources("{}", &[])).unwrap().workflows.is_empty());
+    }
+
+    #[test]
+    fn a_team_gives_its_workers_the_host_user_s_skills_and_rules_unless_it_says_not() {
+        let feature = [("workflows/feature.md", FEATURE)];
+        assert!(load(&sources(TEAM, &feature)).unwrap().host_user);
+        let said = |value: &str| load(&sources(&format!("{TEAM}host_user: {value}\n"), &feature));
+        assert!(said("true").unwrap().host_user);
+        assert!(!said("false").unwrap().host_user);
+        for value in ["no", "0", "[false]"] {
+            let faults = said(value).unwrap_err();
+            let [fault] = &faults[..] else { panic!("one fault: {faults:#?}") };
+            assert_eq!((fault.file.as_str(), fault.key.as_str()), (TEAM_FILE, "host_user"));
+            assert!(fault.problem.starts_with("must be true or false, not "), "{}", fault.problem);
+        }
     }
 
     /// A workflow whose second stage, by `dev`, has `rest` as the rest of it,

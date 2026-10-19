@@ -16,8 +16,8 @@ mod claude_code;
 mod codex;
 mod pi;
 
-/// A file of the host user's that a directory the host keeps for a harness
-/// links to.
+/// A file or a directory of the host user's that a directory the host keeps
+/// for a harness links to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Link {
     /// Where it is, under the home of the host's user.
@@ -34,6 +34,11 @@ pub struct Kept {
     /// The files of the host user's it links to. One the user has none of is
     /// left out.
     pub links: &'static [Link],
+    /// The host user's own skills and rules, as this harness finds them in a
+    /// session the user starts by hand: linked to as well, in a directory
+    /// kept apart, for a worker given them (`Start::host_user`), and in no
+    /// other. One the user has none of is left out.
+    pub host_user: &'static [Link],
     /// The files the tool carries, each by where it is under the directory
     /// and by what it holds.
     pub files: &'static [(&'static str, &'static str)],
@@ -147,10 +152,11 @@ impl Harness {
     }
 
     /// What a host keeps for it before it starts a worker of it
-    /// (`Start::kept`). For Claude Code, nothing.
+    /// (`Start::kept`). For Claude Code, nothing but the host user's skills
+    /// and rules.
     pub const fn kept(self) -> Kept {
         match self {
-            Harness::ClaudeCode => Kept { links: &[], files: &[] },
+            Harness::ClaudeCode => claude_code::KEPT,
             Harness::Pi => pi::KEPT,
             Harness::Codex => codex::KEPT,
         }
@@ -212,6 +218,17 @@ impl Harness {
         }
     }
 
+    /// The directories of the host user's home it finds skills in beside a
+    /// role's, and shows both of two skills of one name from: the fleet
+    /// turns off there each skill a role's of the same name stands for
+    /// (`Start::shadowed`). Empty: a role's skill wins by itself.
+    pub const fn shadowed_in(self) -> &'static [&'static str] {
+        match self {
+            Harness::ClaudeCode | Harness::Pi => &[],
+            Harness::Codex => &codex::SHADOWED_IN,
+        }
+    }
+
     /// The shell line whose answer says which models it knows on a host,
     /// asked of the worker launch command `command` with what the host keeps
     /// for it in `kept` (`models` reads it). `None`: it has no way to say.
@@ -262,7 +279,8 @@ impl Harness {
     /// harness in the environment, and start the command with what this
     /// harness does not load from there: the worktree and its rules, the
     /// user's configuration left out, the guard and the report to the worker
-    /// backend, and the stage's model — each in this harness's way.
+    /// backend, the host user's skills and rules where the worker is given
+    /// them, and the stage's model — each in this harness's way.
     pub fn in_role(self, command: &str, start: &Start) -> String {
         let mut line = Line::new().fixed("cd ").word(start.role_dir).fixed(" && export");
         for variable in self.environment() {

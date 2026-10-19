@@ -175,7 +175,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
     let launch = std::env::var("AFKCONVOY_SMOKE_PI_COMMAND")
         .unwrap_or_else(|_| Harness::Pi.stock().to_string());
     let text = |path: &Path| path.display().to_string();
-    let kept = keep_under(&cache, Some(&home), Harness::Pi).unwrap();
+    let kept = keep_under(&cache, Some(&home), Harness::Pi, false).unwrap();
     let start = Start {
         role_dir: &text(&role),
         worktree: &text(&project),
@@ -183,6 +183,8 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
         model: Some("fake/fake-1"),
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         kept: &text(&kept),
+        host_user: false,
+        shadowed: &[],
         told: Told::default(),
         facts: Facts {
             on: On::Stage { issue: 7, flow: "feature", stage: "smoke-stage" },

@@ -246,7 +246,9 @@ fn ask(
 /// (`Harness::models_question`), with what this host keeps for it. `None`: it
 /// has no way to say. An error is the question that failed, or listed none.
 pub fn models(harness: Harness) -> Option<Result<Vec<String>, String>> {
-    let kept = crate::kept::keep(harness).ok()?;
+    // The logins are in the directory kept with the host user's skills and
+    // rules as they are in the one kept without.
+    let kept = crate::kept::keep(harness, false).ok()?;
     let question = harness.models_question(harness.stock(), &kept.display().to_string())?;
     let listed = login_shell(&question).and_then(|answer| harness.models(&answer));
     Some(listed.ok_or(question))

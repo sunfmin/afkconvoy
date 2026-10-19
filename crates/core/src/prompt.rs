@@ -457,10 +457,14 @@ Then stop.
 /// for each kind. A harness loads them; a brief copies none. They are given
 /// no order, and nothing here says which holds when two disagree: a team's
 /// rules and a role's that contradict each other are a defect of the team's
-/// files.
+/// files. The host user's skills and rules, which a harness may load beside
+/// them (docs/adr/0017), are the one exception: everything above them wins.
 const RULES: &str = "\
 - **The repo's rules:** the rules file at the top of the <place>, where it has one
 <team_rules>- **Your role's rules:** the rules file of the directory you were started in
+- **The host user's own rules and skills:** loaded too, unless the team turns them off. Where they \
+disagree with this brief or the rules above, this brief and the rules above win, a skill of your \
+role's over one of theirs of the same name; you end only as this brief says
 ";
 
 /// The line of `RULES` for the team rules, of a team that has them.
@@ -1908,6 +1912,11 @@ mod tests {
             );
             assert!(brief.contains(&lines), "{brief}");
             assert!(brief.contains("`/copies/acme/team/def/precedents.md`"), "{brief}");
+            // The host user's give way to all of it, wherever they are loaded.
+            let host_user = "- **The host user's own rules and skills:** loaded too, unless the \
+                             team turns them off. Where they disagree with this brief or the \
+                             rules above, this brief and the rules above win";
+            assert!(brief.contains(host_user), "{brief}");
         }
         // A team with none: no line for them, and the others as they are.
         for (place, brief) in briefs(None) {

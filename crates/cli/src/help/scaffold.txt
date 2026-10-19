@@ -35,8 +35,9 @@ WHAT IT READS AND WRITES
   `roles/<name>/`:
 
       team.md                  the team file, naming each role as `./roles/<name>`
-      CLAUDE.md                the team rules: a heading, and what belongs there and what
-                               belongs in a repo's own rules or a role's
+      CLAUDE.md                the team rules: a heading, what belongs there and what
+                               belongs in a repo's own rules or a role's, and that the
+                               host user's rules give way to all of them
       workflows/feature.md     one workflow, `feature`: one stage the first role performs
                                as its skill `implement`, then the landing train
       roles/<name>/            that role's skeleton, as `scaffold role` writes it —

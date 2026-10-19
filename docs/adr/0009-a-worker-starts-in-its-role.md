@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR-0017
 ---
 
 # A worker starts in its role, with the issue's worktree added to it
@@ -7,6 +7,8 @@ status: accepted
 In a bound repo a worker's working directory is its role's directory, and the issue's worktree is an additional directory. Claude Code loads rules, skills and hooks from the working directory natively, so a role needs no code to be put into effect, and a human who opens the role's repo by hand gets the same role a worker does. The other way round — start in the worktree, inject the role — means the fleet carries its own loader for rules and hooks, and the two ways of entering a role stop being one.
 
 The worker loads nothing of the host user's own configuration. A role's behaviour is what its repo says and nothing else; otherwise the same role is a different role on each host.
+
+_Amended by ADR-0017:_ a worker is now given the host user's own skills and rules by default, beside its role's and below it, and never their settings, hooks or MCP servers. A team file that says `host_user: false` restores the guarantee above.
 
 ## Consequences
 

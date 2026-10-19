@@ -179,14 +179,16 @@ Of each definition file — the team file, a workflow's, a patrol's — only the
     roles:
       <short name>: <its directory>    # owner/repo, owner/repo/path or ./path
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
+    host_user: true                    # default
 
 `escalate_label` is the label an issue handed to a human carries in place of its flow
 label. `roles` gives each role the short name a `by` or a `to` says. `precedents`
 names who proposes a human's ruling as a precedent: for each ruling a human gives an
-escalated issue (`afkconvoy rule`) the fleet starts one worker in the role `by`, with
-the skill `do`, to open a PR on the team's repo that appends one entry to
-`precedents.md`. `max_open` is required there: no proposal is started while that many
-are open. A team without the key has none proposed (`afkconvoy tick --help`).
+escalated issue (`afkconvoy rule`) a worker in the role `by`, with the skill `do`,
+opens a PR on the team's repo that appends one entry to `precedents.md`, unless
+`max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`,
+true or false, says whether a worker is given the host user's own skills and rules
+beside its role's: `afkconvoy help roles`.
 ````
 
 ### HOW IT NAMES A ROLE
@@ -238,7 +240,7 @@ patrol, the proposal of a precedent, a landing — and no key turns it off. A ro
 teams name works under the rules of the team whose stage it is in.
 
 They are one of four kinds of text a worker reads, beside the repo's own rules, its
-role's rules and the precedents. Which file is whose rules:
+role's rules and the precedents; the host user's rules give way to all four. Whose:
 
     its role's        the CLAUDE.md of the role's directory, under every harness
     the team rules    the CLAUDE.md of the team's directory, under every harness
@@ -272,14 +274,11 @@ carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows
 `afkconvoy check` loads a team and answers every fault at once, each with its file and
 key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 - A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an
-  `AGENTS.override.md` is a fault: pi loads the first of those in place of `CLAUDE.md`,
-  Codex the first of `AGENTS.override.md` and `AGENTS.md`, and the role would have two
-  sets of rules.
+  `AGENTS.override.md` is a fault: pi and Codex load one in place of `CLAUDE.md`.
 - A role that holds limits for one harness and none for another is right for the
   first alone: a stage, a patrol, a consult, a landing or the proposal of a precedent
-  that runs it on the other is a fault. A role with no limits at all is right for
-  every harness. Whether its limits for two harnesses refuse the same things is not
-  checked: that is the role's to see to.
+  that runs it on the other is a fault. A role with no limits is right for every
+  harness. That its limits for two harnesses refuse alike is the role's to see to.
 - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
 ````
 
@@ -307,9 +306,9 @@ its path, its frontmatter, its keys — is in `afkconvoy help skill-file`.
 ````text
 A role is a directory that defines one kind of worker. A worker of a bound repo is a
 session of its harness started in that directory, with the issue's worktree beside
-it: open the directory by hand and you are in the role a worker is in. It loads
-nothing of your own configuration, so a role is what its directory says, on every
-host. The directory holds three things:
+it: open the directory by hand and you are in the role a worker is in. Of your own
+configuration it loads your skills and rules alone (below). The directory holds
+three things:
 
     its rules     what a worker in it always works under, whatever it is asked
     its skills    each one thing it can be asked to perform; a stage's `do` names one
@@ -382,6 +381,20 @@ this kind of worker alone: its role's. And if nobody could have written it down
 before the question came up, it is a ruling, and becomes a precedent when a human
 accepts it (`afkconvoy help humans`). The four have no order: two that contradict
 each other are a defect of the files, and nothing says which holds.
+````
+
+### THE HOST USER'S SKILLS AND RULES
+
+````text
+A worker is also given the skills and the rules of the host's own user, as a session
+that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's
+and Codex's in ~/.pi/agent and ~/.codex — so a role need not copy in the skills its
+author relies on everywhere. Never their settings, hooks, MCP servers or extensions:
+the guard and orca's report stay the only hooks the fleet adds. A role's skill wins
+over one of theirs of the same name, and the brief, the role's rules, the team rules
+and the repo's own rules win over theirs; the brief says so. The cost: a role may
+behave differently on two hosts. A team file that says `host_user: false` gives its
+workers none of it, and every role is what its directory says on every host.
 ````
 
 ### WHAT MAKES A ROLE GOOD
@@ -1363,6 +1376,10 @@ _Avoid_: org, crew, squad
 **Team rules**:
 The rules every role of a team works under, whatever its own rules add. They say how the team works, and hold in any repo bound to it; what one codebase asks is that repo's to say, and what one kind of worker does is its role's.
 _Avoid_: global rules, shared rules
+
+**Host user's skills and rules**:
+The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
+_Avoid_: global rules, user config, personal skills
 
 **Bound repo**:
 A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then the landing train.

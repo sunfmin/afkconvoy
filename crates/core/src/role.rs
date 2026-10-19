@@ -257,6 +257,14 @@ pub struct Start<'a> {
     /// The directory this host keeps for the worker's harness, holding what
     /// that harness is given of the fleet's own (`Harness::kept`).
     pub kept: &'a str,
+    /// Whether the worker is given the host user's own skills and rules
+    /// (`Team::host_user`): the directory `kept` is then the one kept with
+    /// them (`Kept::host_user`).
+    pub host_user: bool,
+    /// The files of the host user's skills that a role's skill of the same
+    /// name stands for, where its harness would show both
+    /// (`Harness::shadowed_in`): each is turned off.
+    pub shadowed: &'a [String],
     /// The rules its harness is told on the line that starts it: nothing, of
     /// a harness that loads them itself (`Harness::told`).
     pub told: Told<'a>,
