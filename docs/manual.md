@@ -180,14 +180,16 @@ Of each definition file — the team file, a workflow's, a patrol's — only the
     roles:
       <short name>: <its directory>    # owner/repo, owner/repo/path or ./path
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
+    host_user: true                    # default
 
 `escalate_label` is the label an issue handed to a human carries in place of its flow
 label. `roles` gives each role the short name a `by` or a `to` says. `precedents`
 names who proposes a human's ruling as a precedent: for each ruling a human gives an
-escalated issue (`afkconvoy rule`) the fleet starts one worker in the role `by`, with
-the skill `do`, to open a PR on the team's repo that appends one entry to
-`precedents.md`. `max_open` is required there: no proposal is started while that many
-are open. A team without the key has none proposed (`afkconvoy tick --help`).
+escalated issue (`afkconvoy rule`) a worker in the role `by`, with the skill `do`,
+opens a PR on the team's repo that appends one entry to `precedents.md`, unless
+`max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`,
+true or false, says whether a worker is given the host user's own skills and rules
+beside its role's: `afkconvoy help roles`.
 ````
 
 ### HOW IT NAMES A ROLE
@@ -239,7 +241,7 @@ patrol, the proposal of a precedent, a landing — and no key turns it off. A ro
 teams name works under the rules of the team whose stage it is in.
 
 They are one of four kinds of text a worker reads, beside the repo's own rules, its
-role's rules and the precedents. Which file is whose rules:
+role's rules and the precedents; the host user's rules give way to all four. Whose:
 
     its role's        the CLAUDE.md of the role's directory, under every harness
     the team rules    the CLAUDE.md of the team's directory, under every harness
@@ -264,8 +266,7 @@ By its config, on its base branch (`afkconvoy config --help` shows the file whol
 
 The team is read at the head of its repo's default branch: pushing is the only way an
 edit reaches a worker. An issue of a bound repo is the fleet's to work only while it
-carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows`. The
-ready label is one only where a workflow's file names it with `label`.
+carries a flow label, which `afkconvoy flows` creates: `afkconvoy help workflows`.
 ````
 
 ### WHAT CHECK HOLDS IT TO
@@ -274,14 +275,11 @@ ready label is one only where a workflow's file names it with `label`.
 `afkconvoy check` loads a team and answers every fault at once, each with its file and
 key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 - A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an
-  `AGENTS.override.md` is a fault: pi loads the first of those in place of `CLAUDE.md`,
-  Codex the first of `AGENTS.override.md` and `AGENTS.md`, and the role would have two
-  sets of rules.
+  `AGENTS.override.md` is a fault: pi and Codex load one in place of `CLAUDE.md`.
 - A role that holds limits for one harness and none for another is right for the
   first alone: a stage, a patrol, a consult, a landing or the proposal of a precedent
-  that runs it on the other is a fault. A role with no limits at all is right for
-  every harness. Whether its limits for two harnesses refuse the same things is not
-  checked: that is the role's to see to.
+  that runs it on the other is a fault. A role with no limits is right for every
+  harness. That its limits for two harnesses refuse alike is the role's to see to.
 - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
 ````
 
@@ -500,16 +498,12 @@ in the landing train or in nothing more to do. Read this to write a file of a te
 ### A WORKFLOW'S FILE
 
 ````text
-`workflows/<name>.md` is the workflow `<name>`, and its flow label is `flow:<name>`
-unless its `label` names another: an issue that carries it is at the first stage.
-Name the label issues are already opened with — `label: ready-for-agent` — and one
-opened the usual way is worked with no relabelling and no patrol. In a bound repo the
-ready label is an ordinary label unless a workflow names it, and an epic stays out
-whatever it carries. `afkconvoy check` refuses a label two workflows take, and one
-that is the team's escalate label, the repo's lock label or an epic label. Above the
-yaml block, say what the
-workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to
-whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
+`workflows/<name>.md` is the workflow `<name>`: an issue that carries its flow label is
+at the first stage. That is `flow:<name>`, or what `label` names — `ready-for-agent`
+takes issues opened the usual way; an epic stays out. Above the yaml block, say what
+the workflow is for and what an issue of it holds: `afkconvoy flows` answers that
+prose to whoever opens an issue, and `afkconvoy check` warns of a file that says
+nothing there.
 
     label: <label>                     # optional; default flow:<name>
     max_rework: 3                      # default

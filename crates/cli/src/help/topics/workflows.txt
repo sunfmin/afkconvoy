@@ -6,16 +6,12 @@ WORKFLOWS
 
 A WORKFLOW'S FILE
 
-  `workflows/<name>.md` is the workflow `<name>`, and its flow label is `flow:<name>`
-  unless its `label` names another: an issue that carries it is at the first stage.
-  Name the label issues are already opened with — `label: ready-for-agent` — and one
-  opened the usual way is worked with no relabelling and no patrol. In a bound repo the
-  ready label is an ordinary label unless a workflow names it, and an epic stays out
-  whatever it carries. `afkconvoy check` refuses a label two workflows take, and one
-  that is the team's escalate label, the repo's lock label or an epic label. Above the
-  yaml block, say what the
-  workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to
-  whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
+  `workflows/<name>.md` is the workflow `<name>`: an issue that carries its flow label is
+  at the first stage. That is `flow:<name>`, or what `label` names — `ready-for-agent`
+  takes issues opened the usual way; an epic stays out. Above the yaml block, say what
+  the workflow is for and what an issue of it holds: `afkconvoy flows` answers that
+  prose to whoever opens an issue, and `afkconvoy check` warns of a file that says
+  nothing there.
 
       label: <label>                     # optional; default flow:<name>
       max_rework: 3                      # default
