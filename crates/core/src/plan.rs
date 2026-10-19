@@ -15,6 +15,7 @@ use crate::precedent;
 use crate::role::{Due, flows};
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
 use crate::team::{FLOW_LABEL, LAND};
+use crate::train::Built;
 use crate::waiting::{Waiting, Waits};
 
 /// One open issue.
@@ -244,6 +245,11 @@ pub struct WorkingSet {
     /// a pass opens one while there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slow_gate: Option<SlowGate>,
+    /// The landing train is idle and this machine's train's worktree has
+    /// outgrown its build, by what the last landing measured: a pass cuts it
+    /// again.
+    #[serde(skip)]
+    pub outgrown_train: Option<Built>,
 }
 
 impl WorkingSet {
@@ -382,6 +388,10 @@ pub struct Observed<'a> {
     pub landings: &'a [Landing],
     /// The issues the fleet opened for a slow gate.
     pub slow_gate: &'a Reported,
+    /// What the last landing measured of this machine's train's worktree,
+    /// while nothing is on the landing train: none while something is, or
+    /// where no landing here measured it.
+    pub idle_train: Option<Built>,
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -477,6 +487,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         patrols: vec![],
         proposals: vec![],
         slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
+        outgrown_train: seen.idle_train.filter(|built| built.outgrown()),
     };
     let locked = !set.locks.is_empty();
     for patrol in seen.patrols {
@@ -681,6 +692,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -722,6 +734,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let frontier: Vec<u64> = set.frontier.iter().map(|d| d.number).collect();
@@ -761,6 +774,7 @@ mod tests {
             ],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
         let reasons: Vec<(u64, &str)> =
@@ -814,6 +828,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let claims = [claim(5, "me"), claim(6, "me")];
         let set = assemble(&seen(&issues, &claims), Some(&me()), 1000, &config(2));
@@ -891,6 +906,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -1002,6 +1018,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let frontier: Vec<(u64, Option<&str>)> =
@@ -1082,6 +1099,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -1137,6 +1155,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.pr)).collect();
@@ -1184,6 +1203,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
         let mine: Vec<_> = set.mine.iter().map(|m| (m.number, m.status, m.title.clone())).collect();
@@ -1214,6 +1234,7 @@ mod tests {
             waiting: &[],
             landings: &[],
             slow_gate: &Reported::NONE,
+            idle_train: None,
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
     }
@@ -1253,6 +1274,7 @@ mod tests {
                     waiting: &[],
                     landings: &[],
                     slow_gate: &Reported::NONE,
+                    idle_train: None,
                 };
                 assemble(&seen, Some(&me()), 1000, &config)
             };

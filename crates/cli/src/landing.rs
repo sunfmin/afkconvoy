@@ -60,7 +60,8 @@ fn await_merged(gh: &GitHub, numbers: &BTreeSet<u64>, timeout: Duration) -> Resu
 ///           `host` — or the run on record for its tree, left as it is
 ///   measure what the worktree holds that git ignores, and its tracked files;
 ///           what the first run in a worktree that held nothing ignored built
-///           is noted as its fresh build
+///           is noted as its fresh build, and what it holds now as built:
+///           what a tick reads
 ///   land    the commit pushed to the base branch as a fast-forward
 ///   finish  every PR that commit landed: its issue closed, and its branch
 ///           deleted once GitHub shows it merged
@@ -159,6 +160,7 @@ pub fn land_train(
     if unbuilt && ran {
         measure::record_fresh(repo, built)?;
     }
+    measure::record_built(repo, built)?;
     answer["built"] = json!(built);
     answer["source"] = json!(measure::source(repo)?);
     if let Some(fresh) = measure::fresh(repo)? {

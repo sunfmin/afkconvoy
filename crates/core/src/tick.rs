@@ -24,6 +24,10 @@ pub enum TickStep {
     /// Keep a train worker on the landing train while a PR of mine is on it.
     /// The train worker holds no claim and takes no slot.
     TendTrain,
+    /// Remove this machine's train's worktree and cut it again, once it has
+    /// outgrown its build while the train is idle (`WorkingSet::outgrown_train`)
+    /// — unless the train worker is at work. It takes no slot.
+    CutTrain,
     /// Ask after the worker of a claim of mine with no PR, and settle what it
     /// declared when it stopped. `start`: whether a worker may be started
     /// under the claim again — false only for a claim whose worker declared,
@@ -281,6 +285,10 @@ where
     let slots = end_claims(set, Sweep::Landed, slots, &mut did, &mut carry_out);
     if set.mine.iter().any(|mine| mine.status == Status::Joined) {
         let step = TickStep::TendTrain;
+        did.push((step, carry_out(step)));
+    }
+    if set.outgrown_train.is_some() {
+        let step = TickStep::CutTrain;
         did.push((step, carry_out(step)));
     }
     let slots = end_claims(set, Sweep::Stopped, slots, &mut did, &mut carry_out);
@@ -777,6 +785,7 @@ mod tests {
             patrols: vec![],
             proposals: vec![],
             slow_gate: None,
+            outgrown_train: None,
         }
     }
 
@@ -1448,6 +1457,20 @@ mod tests {
         let mut reported = set(&[], &[]);
         reported.slow_gate = Some(slow(Some(41)));
         assert_eq!(run_pass(&reported, 1, 0, |_| Done).did, [], "one is open: no other");
+        assert_eq!(run_pass(&set(&[], &[]), 1, 0, |_| Done).did, []);
+    }
+
+    #[test]
+    fn a_pass_cuts_again_the_trains_worktree_that_outgrew_its_build_and_takes_no_slot() {
+        use crate::train::Built;
+        let mut outgrown = set(&[5], &[]);
+        outgrown.outgrown_train = Some(Built { built: 1 << 32, fresh: Some(1 << 30) });
+        let pass = run_pass(&outgrown, 1, 0, |_| Done);
+        assert_eq!(pass.did[..2], [(CutTrain, Done), (Dispatch { issue: 5 }, Done)]);
+        assert_eq!(pass.held, 1);
+        assert!(pass.did_work());
+        // its worker at work: nothing was cut
+        assert!(!run_pass(&outgrown, 0, 0, |_| Nothing).did_work());
         assert_eq!(run_pass(&set(&[], &[]), 1, 0, |_| Done).did, []);
     }
 

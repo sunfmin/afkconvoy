@@ -72,6 +72,13 @@ WHAT IT ANSWERS
     source  the files git tracks, for reference only: how many times this a build comes
             to differs from repo to repo, so it decides nothing
 
+    This worktree is kept with what its gate runs built, landing after landing, until
+    it has outgrown its fresh build: built more than 3 times fresh and more than 1 GiB
+    — more than 1 GiB alone while no fresh is on record. Then the next tick that finds
+    the train idle — nothing on it, and its worker not at work — removes the worktree
+    and cuts it again at the base branch's tip, its notes with it; the run log says so,
+    with built and fresh. The next gate run here builds from nothing, and is slower.
+
   Errors: no open PR closes the issue; tracked files have uncommitted changes; the
   remote has no such branch; the train moved under the command too many times ("run this
   again"); for `--train`, untracked files in the worktree ("is not the commit that would

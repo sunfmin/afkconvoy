@@ -2,7 +2,7 @@
 
 use afkconvoy_core::prompt::{TrainFields, brief_pointer, train_pointer, train_prompt};
 use afkconvoy_core::tick::Outcome;
-use afkconvoy_core::train::{TRAIN_WORKTREE, Tend, tend};
+use afkconvoy_core::train::{Built, TRAIN_WORKTREE, Tend, tend};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow};
 
@@ -19,7 +19,8 @@ use crate::train::Train;
 ///
 /// The train's worktree is the repo's, not a run's: it is found by its name,
 /// kept when the fleet stops, and used again, with what its gate runs built,
-/// by whichever fleet instance tends the train next.
+/// by whichever fleet instance tends the train next — until it has outgrown
+/// its build (`cut_train`).
 ///
 /// A worker that stopped on the tip it was told about is `stopped_train`'s.
 pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {
@@ -68,5 +69,32 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     }
     // Last: a delivery that failed leaves a worker nobody told, and the next tick starts over.
     worktree.record_told(&train.tip, fleet.now)?;
+    Ok(Outcome::Done)
+}
+
+/// Removes this machine's train's worktree and cuts it again at the base
+/// branch's tip, once it has outgrown its build (`train::outgrown`) while the
+/// train is idle: what its gate runs built is gone with it, and so is the
+/// note of its fresh build — the next gate run there records it anew. A train
+/// worker at work is left to it. What the worktree held is kept in
+/// `Fleet::cut_train`, for the tick's line.
+///
+/// Nothing is lost: with nothing on the train a landing resets the worktree
+/// to the tip anyway, and the next PR to join has a train worker started in
+/// the worktree cut now.
+pub fn cut_train(fleet: &mut Fleet, built: Built) -> Result<Outcome> {
+    let source = Source::of(&fleet.repo)?;
+    let Some(worktree) = Worktree::of_train(&source)? else { return Ok(Outcome::Nothing) };
+    if worktree.state(fleet.now)? == WorkerState::Busy {
+        return Ok(Outcome::Nothing);
+    }
+    let train = Train::read(&fleet.repo, &fleet.config)?;
+    if train.tip != train.base {
+        // a PR joined since the rebuild
+        return Ok(Outcome::Nothing);
+    }
+    worktree.remove()?;
+    Worktree::cut(&source, TRAIN_WORKTREE, &train.base, None)?;
+    fleet.cut_train = Some(built);
     Ok(Outcome::Done)
 }

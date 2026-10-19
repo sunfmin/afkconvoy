@@ -255,9 +255,55 @@ pub fn finished<'a>(joins: &'a [Joined], open: &[PullRequest]) -> Vec<&'a Joined
 }
 
 /// The name the train's worktree is created under — one per repo on a
-/// machine, kept across runs with what its gate runs built — and so, with a
+/// machine, kept across runs with what its gate runs built until it has
+/// `outgrown` its build — and so, with a
 /// `-<k>` when the name was taken, the name of its directory.
 pub const TRAIN_WORKTREE: &str = "convoy-train";
+
+/// The train's worktree has outgrown its build when what it built is more
+/// than this many times its fresh build…
+pub const OUTGROWN_TIMES: u64 = 3;
+
+/// …and more than this many bytes, 1 GiB: a small repo's worktree is not cut
+/// again and again.
+pub const OUTGROWN_FLOOR: u64 = 1_073_741_824;
+
+/// What the last landing in the train's worktree measured of it, in bytes:
+/// everything git ignores there, and its fresh build when one is on record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Built {
+    pub built: u64,
+    pub fresh: Option<u64>,
+}
+
+impl Built {
+    /// Has the worktree outgrown its build (`outgrown`)?
+    pub fn outgrown(self) -> bool {
+        outgrown(self.built, self.fresh)
+    }
+}
+
+/// Is `built` more than `OUTGROWN_TIMES` times `fresh`? Asked of `built - 1`
+/// divided, for the product may not fit.
+#[spec(fn(built: u64{built > 0}, fresh: u64) -> bool[built > fresh * OUTGROWN_TIMES])]
+fn past_fresh(built: u64, fresh: u64) -> bool {
+    fresh <= (built - 1) / OUTGROWN_TIMES
+}
+
+/// Has the train's worktree outgrown its build — `built` more than
+/// `OUTGROWN_TIMES` its `fresh` build and more than `OUTGROWN_FLOOR`? With no
+/// fresh build on record (a worktree built in before measuring began), more
+/// than the floor is enough: the worktree cut again records one.
+#[spec(fn(built: u64, fresh: Option<u64>) -> bool{v: v => built > OUTGROWN_FLOOR})]
+pub fn outgrown(built: u64, fresh: Option<u64>) -> bool {
+    if built <= OUTGROWN_FLOOR {
+        return false;
+    }
+    match fresh {
+        Some(fresh) => past_fresh(built, fresh),
+        None => true,
+    }
+}
 
 /// Is a worktree directory of this name the train's? The train's worktree is
 /// linked to no issue, so it is known by the name it was created under.
@@ -333,6 +379,22 @@ mod relied_on {
     #[spec(fn(ahead: bool, own: bool) -> bool[false])]
     fn commits_of_another_train_are_not_kept(ahead: bool, own: bool) -> bool {
         keeps_its_commits(ahead, own, false)
+    }
+
+    /// A worktree within the floor is never cut again, whatever its fresh build.
+    #[spec(fn(built: u64{built <= OUTGROWN_FLOOR}, fresh: Option<u64>) -> bool[false])]
+    fn a_worktree_within_the_floor_has_not_outgrown(built: u64, fresh: Option<u64>) -> bool {
+        outgrown(built, fresh)
+    }
+
+    /// A worktree past the floor, within three times its fresh build, has not.
+    #[spec(fn(built: u64{built > OUTGROWN_FLOOR}, fresh: u64{built <= fresh * OUTGROWN_TIMES})
+        -> bool[false])]
+    fn a_worktree_within_three_times_its_fresh_build_has_not_outgrown(
+        built: u64,
+        fresh: u64,
+    ) -> bool {
+        past_fresh(built, fresh)
     }
 
     /// A train that holds nothing is not under repair.
@@ -448,6 +510,21 @@ mod tests {
         assert_eq!(tend(WorkerState::Busy, Some("t0"), "t1"), Tend::Leave);
         assert_eq!(tend(idle, Some("t0"), "t1"), Tend::Tell);
         assert_eq!(tend(idle, Some("t1"), "t1"), Tend::Stopped);
+    }
+
+    #[test]
+    fn a_worktree_has_outgrown_its_build_past_three_times_it_and_the_floor() {
+        const GIB: u64 = OUTGROWN_FLOOR;
+        assert!(outgrown(4 * GIB, Some(GIB)));
+        assert!(!outgrown(3 * GIB, Some(GIB)), "three times is within");
+        assert!(outgrown(3 * GIB + 1, Some(GIB)));
+        assert!(!outgrown(GIB, Some(1)), "the floor keeps a small repo's");
+        assert!(outgrown(GIB + 1, Some(1)));
+        assert!(!outgrown(GIB, None));
+        assert!(outgrown(GIB + 1, None), "with no fresh build, the floor alone");
+        assert!(!outgrown(u64::MAX, Some(u64::MAX)));
+        assert!(outgrown(u64::MAX, Some(u64::MAX / 3 - 1)));
+        assert!(Built { built: 2 * GIB, fresh: None }.outgrown());
     }
 
     #[test]

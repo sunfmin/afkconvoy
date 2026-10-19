@@ -1432,6 +1432,7 @@ mod tests {
             patrols: vec![],
             proposals: vec![],
             slow_gate: None,
+            outgrown_train: None,
         }
     }
 
