@@ -2,7 +2,9 @@
 //! one as it ends, and one for each event that reached it — a wake heard
 //! during a tick, a check for host sleep, the host waking, being told to stop
 //! — in a file under this user's cache directory, for `doctor` to read back.
-//! `run` prints each line too, as it is written (`Entry::said`).
+//! `run` prints each line too, as it is written (`Entry::said`). Every command
+//! that changes fleet state writes a line of its own to it as it acts
+//! (`crate::acting`), whether a `run` is there or not.
 //!
 //! It is a log, not state: nothing reads it to decide what the fleet does
 //! (fleet state lives on GitHub and the remote), and a host with none loses
@@ -52,13 +54,38 @@ pub enum What {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         harness_commands: BTreeMap<String, String>,
     },
-    /// A tick started, for `cause`, before it did anything.
-    TickStarted { count: u64, cause: Cause },
+    /// A tick started, for `cause`, before it did anything. `by` is what the
+    /// wake that started it named — a command and what it acted on — where
+    /// one did.
+    TickStarted {
+        count: u64,
+        cause: Cause,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+    },
     /// One tick ended.
     Tick(Tick),
     /// A wake was heard while tick `during` ran: the tick after it starts as
-    /// it ends. Only the first wake of a tick is a line.
-    WokenDuring { during: u64 },
+    /// it ends. Only the first wake of a tick is a line; `by` is what it named.
+    WokenDuring {
+        during: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+    },
+    /// A command that changes fleet state acted (`crate::acting`): `command`
+    /// on `on` — `#46`, `run sweep`, `from <instance>` — run `by` a worker or
+    /// the operator, coming to `outcome`, or failing with it. Written by that
+    /// command, not by the `run`: `instance` is the fleet instance it acted
+    /// as, or empty.
+    Command {
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on: Option<String>,
+        by: String,
+        outcome: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        failed: bool,
+    },
     /// A check for host sleep ended: it put the host to sleep, or what kept
     /// the host awake, each in words.
     HostSleep {
@@ -107,7 +134,10 @@ impl Entry {
                 "start: run as {} on {}, its workers started with `{worker_command}`",
                 self.instance, self.host
             ),
-            What::TickStarted { count, cause } => {
+            What::TickStarted { count, cause, by: Some(by) } => {
+                format!("tick {count}: started ({} by {by})", cause.said())
+            }
+            What::TickStarted { count, cause, by: None } => {
                 format!("tick {count}: started ({})", cause.said())
             }
             What::Tick(Tick { count, sleep: 0, line, .. }) => {
@@ -116,8 +146,13 @@ impl Entry {
             What::Tick(Tick { count, sleep, line, .. }) => {
                 format!("tick {count}: {line} · next in {sleep}s")
             }
-            What::WokenDuring { during } => {
-                format!("woken during tick {during}: tick {} follows", during + 1)
+            What::WokenDuring { during, by } => {
+                format!("{} during tick {during}: tick {} follows", woken(by), during + 1)
+            }
+            What::Command { command, on, by, outcome, failed } => {
+                let on = on.as_ref().map(|on| format!(" {on}")).unwrap_or_default();
+                let failed = if *failed { "FAILED: " } else { "" };
+                format!("{command}{on} ({by}): {failed}{outcome}")
             }
             What::HostSleep { slept: true, .. } => "host sleep: every fleet on this host has \
                 been idle long enough, and ticked once more: put the host to sleep"
@@ -139,12 +174,13 @@ impl Entry {
                 "start",
                 format!("afkconvoy run started, its workers with `{worker_command}`"),
             )),
-            What::TickStarted { count, cause: Cause::Woken } => {
-                Some(("wake", format!("woken: tick {count} started")))
+            What::TickStarted { count, cause: Cause::Woken, by } => {
+                Some(("wake", format!("{}: tick {count} started", woken(by))))
             }
-            What::WokenDuring { during } => {
-                Some(("wake", format!("woken during tick {during}: tick {} followed", during + 1)))
-            }
+            What::WokenDuring { during, by } => Some((
+                "wake",
+                format!("{} during tick {during}: tick {} followed", woken(by), during + 1),
+            )),
             What::HostSleep { slept: true, .. } => {
                 Some(("host_sleep", "every fleet on this host was idle".to_string()))
             }
@@ -152,8 +188,25 @@ impl Entry {
             What::Stop { line } => {
                 Some(("stop", format!("told to stop (SIGTERM or SIGINT): {line}")))
             }
-            What::TickStarted { .. } | What::Tick(_) | What::HostSleep { slept: false, .. } => None,
+            What::TickStarted { .. }
+            | What::Tick(_)
+            | What::HostSleep { slept: false, .. }
+            | What::Command { .. } => None,
         }
+    }
+
+    /// Whether a `run` wrote it, not a command that acted beside it: only
+    /// such a line says which instance the `run` is.
+    pub fn of_run(&self) -> bool {
+        !matches!(self.what, What::Command { .. })
+    }
+}
+
+/// A wake, in words: with what it named, where it named something.
+fn woken(by: &Option<String>) -> String {
+    match by {
+        Some(by) => format!("woken by {by}"),
+        None => "woken".to_string(),
     }
 }
 
@@ -286,25 +339,23 @@ impl Log {
         Log { file: file.to_path_buf(), kept }
     }
 
-    /// Appends `entry` as one line, written whole or not at all, and cuts
-    /// the log back to what it keeps (`Kept`) once it holds more than its
-    /// most, or `least` lines more than it keeps: a log is not written over
-    /// at every line. A line already written is never touched again but to
-    /// be dropped.
+    /// Appends `entry` as one line, written whole or not at all: what any
+    /// command that acts does, while a `run` may be writing too. Lines
+    /// appended at once are each whole, and none is lost to a `run` cutting
+    /// the log back (`keep`): both are made holding the log's lock.
     pub fn append(&self, entry: &Entry) -> Result<()> {
-        let said = || format!("cannot write the log {}", self.file.display());
-        if let Some(dir) = self.file.parent() {
-            std::fs::create_dir_all(dir).with_context(said)?;
-        }
-        let line = format!("{}\n", serde_json::to_string(entry)?);
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&self.file)
-            .with_context(said)?;
-        file.write_all(line.as_bytes()).with_context(said)?;
-        drop(file);
-        let text = std::fs::read_to_string(&self.file).with_context(said)?;
+        let _held = self.lock()?;
+        self.write(entry)
+    }
+
+    /// The same, and then cuts the log back to what it keeps (`Kept`) once it
+    /// holds more than its most, or `least` lines more than it keeps: a log
+    /// is not written over at every line. A line already written is never
+    /// touched again but to be dropped. Only a `run` cuts its log back.
+    pub fn keep(&self, entry: &Entry) -> Result<()> {
+        let _held = self.lock()?;
+        self.write(entry)?;
+        let text = std::fs::read_to_string(&self.file).with_context(|| self.unwritten())?;
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() <= self.kept.least {
             return Ok(());
@@ -321,10 +372,43 @@ impl Log {
             // Whole or not at all: written beside it, then moved over it.
             let newest = lines[lines.len() - kept..].join("\n") + "\n";
             let beside = self.file.with_extension("trimming");
-            std::fs::write(&beside, newest).with_context(said)?;
-            std::fs::rename(&beside, &self.file).with_context(said)?;
+            std::fs::write(&beside, newest).with_context(|| self.unwritten())?;
+            std::fs::rename(&beside, &self.file).with_context(|| self.unwritten())?;
         }
         Ok(())
+    }
+
+    fn unwritten(&self) -> String {
+        format!("cannot write the log {}", self.file.display())
+    }
+
+    /// Takes the log's lock, beside it: held until what it answers is
+    /// dropped, or the process ends. Not the log itself, which a cut moves
+    /// over: one appending to the file it opened before a cut would write to
+    /// one that is gone.
+    fn lock(&self) -> Result<std::fs::File> {
+        if let Some(dir) = self.file.parent() {
+            std::fs::create_dir_all(dir).with_context(|| self.unwritten())?;
+        }
+        let lock = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.file.with_extension("lock"))
+            .with_context(|| self.unwritten())?;
+        lock.lock().with_context(|| self.unwritten())?;
+        Ok(lock)
+    }
+
+    /// Writes `entry` as one line, in one write to the end of the log.
+    fn write(&self, entry: &Entry) -> Result<()> {
+        let line = format!("{}\n", serde_json::to_string(entry)?);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.file)
+            .with_context(|| self.unwritten())?;
+        file.write_all(line.as_bytes()).with_context(|| self.unwritten())
     }
 
     /// Every line of the log, oldest first; `None` where there is no log. A
@@ -418,33 +502,118 @@ mod tests {
         let log = Log::at(&dir.path().join("widgets.jsonl"), SMALL);
         // old lines: cut back to its least once it holds that many more
         for count in 1..=5 {
-            log.append(&tick_at(count, count)).unwrap();
+            log.keep(&tick_at(count, count)).unwrap();
         }
         assert_eq!(counts(&log), [1, 2, 3, 4, 5]);
-        log.append(&tick_at(6, 6 + 86_400 * 2)).unwrap();
+        log.keep(&tick_at(6, 6 + 86_400 * 2)).unwrap();
         assert_eq!(counts(&log), [4, 5, 6], "the least kept, the newest last");
         // lines of the last day: none dropped, up to its most
         let now = 86_400 * 3;
         for count in 7..=13 {
-            log.append(&tick_at(count, now + count)).unwrap();
+            log.keep(&tick_at(count, now + count)).unwrap();
         }
         assert_eq!(counts(&log), [7, 8, 9, 10, 11, 12, 13], "a day of lines kept whole");
         for count in 14..=60 {
-            log.append(&tick_at(count, now + count)).unwrap();
+            log.keep(&tick_at(count, now + count)).unwrap();
             assert!(counts(&log).len() <= 10, "never past its most");
             assert_eq!(counts(&log).last(), Some(&count), "the newest line is always kept");
         }
+    }
+
+    /// A line a command appends: `n`, written at `at`.
+    fn acted(n: u64, at: u64) -> Entry {
+        let what = What::Command {
+            command: "park".into(),
+            on: Some(format!("#{n}")),
+            by: "operator".into(),
+            outcome: "blocked by #99".into(),
+            failed: false,
+        };
+        Entry { at, instance: String::new(), host: "h1".into(), what }
+    }
+
+    #[test]
+    fn lines_appended_at_once_while_the_run_cuts_the_log_back_are_each_kept_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        // Cut back to its newest 200 lines once it holds 205, again and again
+        // while four commands append and the run keeps its own.
+        let kept = Kept { for_secs: 86_400, least: 5, most: 200 };
+        let log = Log::at(&dir.path().join("widgets.jsonl"), kept);
+        let (writers, lines) = (4, 300);
+        std::thread::scope(|threads| {
+            for writer in 1..=writers {
+                let log = &log;
+                threads.spawn(move || {
+                    for n in 0..lines {
+                        log.append(&acted(writer * 1000 + n, 1000)).unwrap();
+                    }
+                });
+            }
+            let log = &log;
+            threads.spawn(move || {
+                for count in 1..=lines {
+                    log.keep(&tick_at(count, 1000)).unwrap();
+                }
+            });
+        });
+        let text = std::fs::read_to_string(&log.file).unwrap();
+        let entries: Vec<Entry> =
+            text.lines().map(|line| serde_json::from_str(line).expect(line)).collect();
+        // A cut keeps the newest lines: what is left of each writer's is the
+        // end of what it wrote, none missing in between.
+        let mut ends: Vec<Vec<u64>> = vec![vec![]; writers as usize + 1];
+        for entry in &entries {
+            match &entry.what {
+                What::Command { on: Some(on), .. } => {
+                    let n: u64 = on.trim_start_matches('#').parse().unwrap();
+                    ends[(n / 1000) as usize].push(n % 1000);
+                }
+                What::Tick(tick) => ends[0].push(tick.count - 1),
+                other => panic!("{other:?}"),
+            }
+        }
+        for (writer, end) in ends.iter().enumerate() {
+            let first = end.first().copied().unwrap_or(lines);
+            assert_eq!(*end, (first..lines).collect::<Vec<_>>(), "writer {writer}");
+        }
+        assert!(entries.len() <= 205, "cut back: {}", entries.len());
+    }
+
+    #[test]
+    fn a_command_says_what_it_did_on_what_and_who_ran_it() {
+        assert_eq!(acted(46, 1).said(), "park #46 (operator): blocked by #99");
+        let failed = What::Command {
+            command: "verdict".into(),
+            on: Some("#121".into()),
+            by: "worker".into(),
+            outcome: "no claim".into(),
+            failed: true,
+        };
+        let failed = Entry { what: failed, ..acted(1, 1) };
+        assert_eq!(failed.said(), "verdict #121 (worker): FAILED: no claim");
+        assert!(!failed.of_run());
+        assert!(failed.event().is_none());
+        let woken = |by: Option<&str>| Entry {
+            what: What::TickStarted { count: 5, cause: Cause::Woken, by: by.map(str::to_string) },
+            ..tick(1)
+        };
+        assert_eq!(woken(Some("park #46")).said(), "tick 5: started (woken by park #46)");
+        assert_eq!(woken(None).said(), "tick 5: started (woken)");
+        let during =
+            Entry { what: What::WokenDuring { during: 4, by: Some("land #7".into()) }, ..tick(1) };
+        assert_eq!(during.said(), "woken by land #7 during tick 4: tick 5 follows");
+        assert!(during.of_run());
     }
 
     #[test]
     fn a_line_that_cannot_be_read_is_passed_over() {
         let dir = tempfile::tempdir().unwrap();
         let log = Log::at(&dir.path().join("widgets.jsonl"), SMALL);
-        log.append(&tick(1)).unwrap();
+        log.keep(&tick(1)).unwrap();
         let mut text = std::fs::read_to_string(&log.file).unwrap();
         text.push_str("{\"at\": 5, \"cut sho\n");
         std::fs::write(&log.file, text).unwrap();
-        log.append(&tick(2)).unwrap();
+        log.keep(&tick(2)).unwrap();
         assert_eq!(counts(&log), [1, 2]);
     }
 

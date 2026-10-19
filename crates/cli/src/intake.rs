@@ -15,7 +15,6 @@ use crate::copies::Copies;
 use crate::gh::{Comment, GitHub, OpenIssues};
 use crate::git::Repo;
 use crate::team::keep;
-use crate::wake::wake;
 
 /// What a worker takes in, and who it is.
 pub struct Taking {
@@ -160,6 +159,5 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     let (key, from) = on(&record.from);
     Ok(json!({"issue": number, "workflow": record.workflow, "taken": true,
         "role": record.role, key: from, "blocked_by": blocked_by, "open": open + 1,
-        "limit": limit,
-        "woke": wake(repo)?["woke"]}))
+        "limit": limit}))
 }

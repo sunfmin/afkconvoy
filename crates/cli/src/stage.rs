@@ -29,7 +29,6 @@ use crate::gh::{Comment, GitHub, Open, OpenIssues, Unreached, unreached};
 use crate::git::Repo;
 use crate::intake::came_in;
 use crate::team::{Kept, keep};
-use crate::wake::wake;
 use crate::workflow::position;
 
 /// What a stage declares as it ends.
@@ -110,7 +109,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     }
     let mut answer = json!({"issue": issue, "stage": record.stage,
         "verdict": record.stated.word(), "claim": claim.id,
-        "declared": standing.is_none(), "woke": wake(repo)?["woke"]});
+        "declared": standing.is_none()});
     if let Some(standing) = standing {
         answer["standing"] = json!(standing.stated.word());
     }

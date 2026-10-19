@@ -373,8 +373,7 @@ pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
         bail!("no run {key:?} is going: there is nothing to declare over");
     };
     let refname = push_over(repo, key, &claim.sha)?;
-    let woke = crate::wake::wake(repo)?;
-    Ok(json!({"over": true, "run": key, "ref": refname, "woke": woke["woke"]}))
+    Ok(json!({"over": true, "run": key, "ref": refname}))
 }
 
 /// Deletes the claim ref `refname`, only while it still points at `expected`

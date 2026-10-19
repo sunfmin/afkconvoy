@@ -18,10 +18,11 @@ use afkconvoy_core::role::{
 };
 
 use anyhow::Context;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::{Value, json};
 
 pub mod abandon;
+pub mod acting;
 pub mod advance;
 pub mod board;
 pub mod claims;
@@ -71,6 +72,7 @@ pub mod wake;
 pub mod watch;
 pub mod workflow;
 
+use acting::Acting;
 use claims::{Me, Scan, Take};
 use dispatch::Agent;
 use fleet::Fleet;
@@ -610,6 +612,45 @@ fn own_program() -> String {
     exe.unwrap_or_else(|| "afkconvoy".to_string())
 }
 
+/// The commands that act: each logs a line and wakes the `run` as it ends
+/// (`Command::acting`), and its `--help` says so (`acting::HELP`).
+const ACTS: [&str; 21] = [
+    "dispatch",
+    "close",
+    "escalate",
+    "park",
+    "nudge",
+    "restart",
+    "abandon",
+    "takeover",
+    "claim",
+    "release",
+    "heartbeat",
+    "rule",
+    "send",
+    "land",
+    "verdict",
+    "intake",
+    "lock",
+    "over",
+    "gate",
+    "wake",
+    "tick",
+];
+
+/// The command line as parsed: `Cli`, each command that acts with what it logs
+/// added to its `--help`.
+fn cli() -> clap::Command {
+    let mut cli = Cli::command();
+    for name in ACTS {
+        cli = cli.mut_subcommand(name, |command| {
+            let help = command.get_after_long_help().map(ToString::to_string).unwrap_or_default();
+            command.after_long_help(format!("{}\n\n{}\n", help.trim_end(), acting::HELP))
+        });
+    }
+    cli
+}
+
 /// What `--help` opens with: `help.txt`, with the topics listed where it says
 /// `{topics}`.
 fn guide() -> String {
@@ -619,7 +660,7 @@ fn guide() -> String {
 /// What `help` prints: the guide with no name, the long help of the command
 /// called `name`, or the topic called that. `None` for any other name.
 fn help(name: Option<&str>) -> Option<String> {
-    let mut cli = Cli::command();
+    let mut cli = cli();
     // Built, so that a command's usage line names the whole command line.
     cli.build();
     let Some(name) = name else {
@@ -674,7 +715,7 @@ fn ran(
     Some(stage::Ran { role_commit, team_commit, harness: harness.unwrap_or(Harness::UNNAMED) })
 }
 
-fn this_host() -> String {
+pub(crate) fn this_host() -> String {
     gethostname::gethostname().to_string_lossy().into()
 }
 
@@ -714,7 +755,9 @@ impl AgentArgs {
 /// harness that asks it, in that harness's way: for Claude Code, a hook's,
 /// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
-    let cli = match Cli::try_parse_from(args) {
+    let parsed =
+        cli().try_get_matches_from(args).and_then(|matches| Cli::from_arg_matches(&matches));
+    let cli = match parsed {
         Ok(cli) => cli,
         // `--help` and `--version` are asked for by a human: clap prints them.
         Err(e) if !e.use_stderr() => e.exit(),
@@ -730,7 +773,17 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         print!("{text}");
         return ExitCode::SUCCESS;
     }
-    match run(cli.command, cli.now) {
+    let acting = cli.command.acting();
+    let now = || cli.now.unwrap_or_else(clock);
+    if let Some(acting) = &acting {
+        acting.start(now());
+    }
+    let ran = run(cli.command, cli.now);
+    let ran = match &acting {
+        Some(acting) => acting.end(now(), ran),
+        None => ran,
+    };
+    match ran {
         Ok(Value::String(drawing)) => {
             print!("{drawing}");
             ExitCode::SUCCESS
@@ -762,6 +815,71 @@ fn fail(code: u8, message: &str) -> ExitCode {
 
 fn clock() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+impl Command {
+    /// What it says of itself as it acts (`acting`), if it changes fleet
+    /// state: writes to GitHub — issues, comments, labels, blocked-by edges —
+    /// or to the fleet's refs on the remote. One that only reads says nothing.
+    fn acting(&self) -> Option<Acting> {
+        let of = |name, issue: &IssueArg, who: Option<&Who>| {
+            let acting = Acting::new(name).on_issue(Some(issue.number()));
+            match who {
+                Some(who) => acting.as_instance(who.instance.as_str()),
+                None => acting,
+            }
+        };
+        let as_who = |name, who: &Who| Acting::new(name).as_instance(who.instance.as_str());
+        Some(match self {
+            Command::Dispatch { issue, who, .. } => of("dispatch", issue, Some(who)),
+            Command::Close { issue, who } => of("close", issue, Some(who)),
+            Command::Escalate { issue, who, .. } => of("escalate", issue, Some(who)),
+            Command::Park { issue, who } => of("park", issue, Some(who)),
+            Command::Nudge { issue, who } => of("nudge", issue, Some(who)),
+            Command::Restart { issue, who, .. } => of("restart", issue, Some(who)),
+            Command::Abandon { who } => as_who("abandon", who),
+            Command::Takeover { list: true, .. } => return None,
+            Command::Takeover { from, instance, .. } => {
+                let acting = Acting::new("takeover");
+                let acting = match from {
+                    Some(from) => acting.on(format!("from {from}")),
+                    None => acting,
+                };
+                match instance {
+                    Some(instance) => acting.as_instance(instance.as_str()),
+                    None => acting,
+                }
+            }
+            Command::Claim { issue, who } => of("claim", issue, Some(who)),
+            Command::Release { issue, who } => of("release", issue, Some(who)),
+            Command::Heartbeat { who } => as_who("heartbeat", who),
+            Command::Rule { issue, .. } => of("rule", issue, None),
+            Command::Send { issue, .. } => of("send", issue, None),
+            Command::Land { number, issue, .. } => Acting::new("land").on_issue(issue.or(*number)),
+            Command::Verdict { issue, .. } => of("verdict", issue, None),
+            Command::Intake { issue, .. } => of("intake", issue, None),
+            Command::Lock { issue, .. } => of("lock", issue, None),
+            Command::Over { run } => Acting::new("over").on(format!("run {}", run.trim())),
+            Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
+            Command::Wake => Acting::new("wake").on_own_issue(),
+            Command::Tick { who, .. } => as_who("tick", who),
+            Command::Config { .. }
+            | Command::Check { .. }
+            | Command::Scaffold { .. }
+            | Command::Flows
+            | Command::Skill
+            | Command::Show { .. }
+            | Command::Rehearse { .. }
+            | Command::Doctor { .. }
+            | Command::Plan { .. }
+            | Command::Run { .. }
+            | Command::Panel { .. }
+            | Command::Guard
+            | Command::Recovery { .. }
+            | Command::Scan
+            | Command::Help { .. } => return None,
+        })
+    }
 }
 
 fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
@@ -941,7 +1059,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
-            lock::lock(&repo, &config, &gh, issue.number(), role)
+            lock::lock(&config, &gh, issue.number(), role)
         }
         Command::Over { run } => {
             if let Ok(issue) = std::env::var(ISSUE_ENV) {
@@ -992,7 +1110,8 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 (false, None, _) => anyhow::bail!("takeover takes --list, or --from <instance id>"),
             }
         }
-        Command::Wake => wake::wake(&Repo::here()?),
+        // `Acting::end` sends it, as it does for every command that acts.
+        Command::Wake => Ok(json!({})),
         Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
         Command::Claim { issue, who } => {
             let repo = Repo::here()?;
