@@ -9,6 +9,27 @@ use crate::harness::Harness;
 /// The escalate label where nothing names one: a repo's, and a team's.
 pub const ESCALATE_LABEL: &str = "ready-for-human";
 
+/// The lock label where a repo names none.
+pub const LOCK_LABEL: &str = "fleet-lock";
+
+/// The epic labels where a repo names none.
+pub const EPIC_LABELS: [&str; 2] = ["epic", "prd"];
+
+/// The labels of a repo a team's workflows are read against: what no flow
+/// label may be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoLabels {
+    pub lock: String,
+    pub epics: Vec<String>,
+}
+
+/// A repo whose config names neither.
+impl Default for RepoLabels {
+    fn default() -> RepoLabels {
+        RepoLabels { lock: LOCK_LABEL.to_string(), epics: EPIC_LABELS.map(String::from).to_vec() }
+    }
+}
+
 /// The gate limit of a repo that declares none, in seconds: an hour.
 pub const GATE_SECONDS: u64 = 3600;
 
@@ -139,8 +160,9 @@ impl Config {
         if escalate_label == ready_label {
             return Err(ConfigError::EscalatesToReady);
         }
-        let lock_label = label("lock_label", settings.lock_label, "fleet-lock")?;
-        let epic_labels = settings.epic_labels.unwrap_or_else(|| vec!["epic".into(), "prd".into()]);
+        let lock_label = label("lock_label", settings.lock_label, LOCK_LABEL)?;
+        let epic_labels =
+            settings.epic_labels.unwrap_or_else(|| EPIC_LABELS.map(String::from).to_vec());
         let bound = match settings.team {
             Some(team) => Some(Bound {
                 team: repo("team", team)?,
@@ -177,6 +199,11 @@ impl Config {
             Some(config) => Ok(config),
             None => Err(ConfigError::ZeroGateSeconds),
         }
+    }
+
+    /// The labels a team's workflows are read against in this repo.
+    pub fn labels(&self) -> RepoLabels {
+        RepoLabels { lock: self.lock_label.clone(), epics: self.epic_labels.clone() }
     }
 
     /// How many claims the fleet holds at once. Never zero.

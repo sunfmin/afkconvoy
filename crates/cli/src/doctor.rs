@@ -964,7 +964,7 @@ fn read_host(config: Option<&Config>, started_with: Option<&[String]>) -> Host {
     let looked = tools::look(launches.of(default).ok().flatten());
     // An unbound repo knows of no harness: nothing calls for its one command's.
     let called = match config.and_then(|config| config.bound.as_ref()) {
-        Some(bound) => role::called_for(bound),
+        Some(bound) => role::called_for(bound, &config.unwrap().labels()),
         None => vec![(default, vec![])],
     };
     let checked = role::check(&launches, &called).unwrap_or_default();
@@ -1045,7 +1045,7 @@ fn read_team(bound: bool) -> (TeamRead, Option<team::Loaded>) {
     match team::load(team::From::Config) {
         Ok(loaded) => {
             let workflows = loaded.team.workflows.iter();
-            let flow_labels = workflows.map(|workflow| workflow.flow_label()).collect();
+            let flow_labels = workflows.map(|workflow| workflow.flow_label().to_string()).collect();
             (TeamRead::Loaded { flow_labels }, Some(loaded))
         }
         Err(error) => {

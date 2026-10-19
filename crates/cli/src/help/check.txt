@@ -108,7 +108,9 @@ WHAT IT ANSWERS
   that would load it, whatever harness the role's stages run on; a role's limits that cannot be
   read; a skill its role's directory does not hold; a
   missing `by`, `do` or `on`; a `harness` that names no harness, or one on a stage a
-  human performs; a patrol file whose name is not a patrol's; an `every`
+  human performs; a flow label two workflows take, or one that is the team's escalate
+  label, the repo's lock label or an epic label — under `label`, or the file where it
+  is the `flow:<name>` it names none in place of; a patrol file whose name is not a patrol's; an `every`
   that is no duration; a missing `every` or `max_open`; and — in the config,
   docs/agents/afkconvoy.md, under `patrols` — a name the team has no patrol for.
 

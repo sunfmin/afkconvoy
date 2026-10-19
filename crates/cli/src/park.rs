@@ -54,9 +54,10 @@ pub fn standings(fleet: &Fleet, issue: u64, named: &[u64]) -> Result<Vec<(u64, S
                 )
             }
         })?;
+    let flows = crate::team::flow_labels(&fleet.gh, &fleet.config);
     let standings = blockers
         .iter()
-        .map(|blocker| (blocker.number, standing(issue, blocker, &fleet.config, &edges)));
+        .map(|blocker| (blocker.number, standing(issue, blocker, &fleet.config, &flows, &edges)));
     Ok(standings.collect())
 }
 

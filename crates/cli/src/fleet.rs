@@ -177,6 +177,7 @@ impl Fleet {
             landed: &landed,
             declared: &declared,
             due: &stages.due(prs),
+            flows: &stages.flow_labels(),
             landing: &stages.landing(&self.scan.claims),
             begun: &stages.begun(),
             patrols: &patrol::seen(self, &stages, &open.issues)?,

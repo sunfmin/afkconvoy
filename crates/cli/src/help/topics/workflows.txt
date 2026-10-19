@@ -6,11 +6,14 @@ WORKFLOWS
 
 A WORKFLOW'S FILE
 
-  `workflows/<name>.md` is the workflow `<name>`, and its flow label is `flow:<name>`: an
-  issue that carries it is at the first stage. Above the yaml block, say what the
-  workflow is for and what an issue of it holds: `afkconvoy flows` answers that prose to
-  whoever opens an issue, and `afkconvoy check` warns of a file that says nothing there.
+  `workflows/<name>.md` is the workflow `<name>`: an issue that carries its flow label is
+  at the first stage. That is `flow:<name>`, or what `label` names — `ready-for-agent`
+  takes issues opened the usual way; an epic stays out. Above the yaml block, say what
+  the workflow is for and what an issue of it holds: `afkconvoy flows` answers that
+  prose to whoever opens an issue, and `afkconvoy check` warns of a file that says
+  nothing there.
 
+      label: <label>                     # optional; default flow:<name>
       max_rework: 3                      # default
       max_consecutive_rework: 2          # default
       stages:

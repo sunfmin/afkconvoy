@@ -8,7 +8,7 @@
 use afkconvoy_core::position::{Declared, Position};
 use afkconvoy_core::role::{followed, workflow_of};
 use afkconvoy_core::stage_record::{Author, StageRecord, Stated, history, stage_records};
-use afkconvoy_core::team::{FLOW_LABEL, Team, Workflow};
+use afkconvoy_core::team::{Team, Workflow};
 use afkconvoy_core::transition::Relabel;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -67,8 +67,7 @@ impl Unheld {
     /// The labels that hand the issue back to the fleet as one that follows
     /// `workflow`: nothing to swap unless it was handed to a human.
     fn back(&self, team: &Team, workflow: &Workflow) -> Relabel {
-        let flow = format!("{FLOW_LABEL}{}", workflow.name);
-        Relabel::back(&self.labels, &flow, &team.escalate_label)
+        Relabel::back(&self.labels, workflow.flow_label(), &team.escalate_label)
     }
 
     /// Hands the issue back to the fleet as one that follows `workflow` →

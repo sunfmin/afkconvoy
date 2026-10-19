@@ -70,7 +70,8 @@ ONE ISSUE, IN A BOUND REPO
   the team's workflows, and each stage is performed by a new worker, started in the
   role that stage names.
 
-  1. Intake. The issue is given a flow label, `flow:<workflow>`: by a human on GitHub,
+  1. Intake. The issue is given a flow label — `flow:<workflow>`, or the one the
+     workflow's file names with `label`: by a human on GitHub,
      or by a patrol's worker through `afkconvoy intake`. `afkconvoy flows` says which
      workflow takes which issue, and creates the labels. An issue with no flow label
      is left alone.

@@ -5,7 +5,7 @@
 //! none was a human's, and is outside the limit.
 
 use crate::record;
-use crate::role::flows;
+use crate::team::Team;
 
 /// The kind of record an intake record's comment opens with.
 pub const INTAKE_RECORD: &str = "convoy:intake";
@@ -120,17 +120,23 @@ pub fn opened_by<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Option<String
     found
 }
 
-/// The intake by which an issue carrying `labels` follows a workflow now,
-/// when a worker's: the latest intake record among its comments, oldest
-/// first, that names a workflow one of its flow labels names → (the place of
+/// The intake by which an issue carrying `labels` follows a workflow of
+/// `team` now, when a worker's: the latest intake record among its comments,
+/// oldest first, that names a workflow one of its flow labels names → (the place of
 /// its comment, the record). `None`: a human labelled it, or it carries no
 /// flow label. A record for a workflow whose label the issue no longer
 /// carries says nothing of how it carries the one it has.
 pub fn taken_in<'a>(
+    team: &Team,
     labels: &[String],
     bodies: impl IntoIterator<Item = &'a str>,
 ) -> Option<(usize, IntakeRecord)> {
-    let carried = flows(labels);
+    let carried: Vec<&str> = team
+        .flows(labels)
+        .into_iter()
+        .filter_map(|label| team.labelled(label))
+        .map(|workflow| workflow.name.as_str())
+        .collect();
     let mut found = None;
     for (at, body) in bodies.into_iter().enumerate() {
         if let Some(record) = IntakeRecord::read(body)
@@ -151,6 +157,7 @@ pub fn has_room(open: usize, limit: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::team::tests::named;
 
     fn labels(labels: &[&str]) -> Vec<String> {
         labels.iter().map(|label| label.to_string()).collect()
@@ -214,7 +221,8 @@ mod tests {
         }
         // It counts like any worker's intake, and no patrol opened the issue.
         assert_eq!(
-            taken_in(&labels(&["flow:small fix"]), [comment.as_str()]).map(|(at, _)| at),
+            taken_in(&named(&["small fix"]), &labels(&["flow:small fix"]), [comment.as_str()])
+                .map(|(at, _)| at),
             Some(0)
         );
         assert_eq!(opened_by([comment.as_str()]), None);
@@ -241,17 +249,21 @@ mod tests {
     fn an_issue_was_taken_in_by_the_latest_record_for_the_flow_label_it_carries() {
         let (first, second) = (record("feature", "dev", 7).comment(), record("feature", "lead", 9));
         let bodies = [first.as_str(), "chat", &second.comment(), "more chat"];
-        assert_eq!(taken_in(&labels(&["flow:feature", "bug"]), bodies), Some((2, second)));
+        assert_eq!(
+            taken_in(&named(&["feature"]), &labels(&["flow:feature", "bug"]), bodies),
+            Some((2, second))
+        );
     }
 
     #[test]
     fn a_flow_label_with_no_record_for_it_was_a_human_s() {
         let other = record("feature", "dev", 7).comment();
-        assert_eq!(taken_in(&labels(&["flow:feature"]), ["chat"]), None);
+        let team = named(&["feature", "fix"]);
+        assert_eq!(taken_in(&team, &labels(&["flow:feature"]), ["chat"]), None);
         // A human moved it to another workflow: the worker's record is not for that one.
-        assert_eq!(taken_in(&labels(&["flow:fix"]), [other.as_str()]), None);
+        assert_eq!(taken_in(&team, &labels(&["flow:fix"]), [other.as_str()]), None);
         // …and an issue that carries no flow label is in no workflow at all.
-        assert_eq!(taken_in(&labels(&["bug"]), [other.as_str()]), None);
+        assert_eq!(taken_in(&team, &labels(&["bug"]), [other.as_str()]), None);
     }
 
     #[test]

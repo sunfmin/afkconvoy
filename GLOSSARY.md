@@ -87,8 +87,8 @@ The stages one issue passes through and where each verdict leads, ending in the 
 _Avoid_: pipeline, process (a program that is running)
 
 **Flow label**:
-The label that names the workflow an issue follows. A bound repo's issue is the fleet's to work only while it carries one.
-_Avoid_: ready label (the unbound repo's), type label
+The label that names the workflow an issue follows: `flow:<name>`, unless the workflow's file names another with `label` — the ready label, say, so that an issue opened the usual way is worked. A bound repo's issue is the fleet's to work only while it carries one; there the ready label is one only where a workflow names it.
+_Avoid_: type label
 
 **Intake**:
 Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit.

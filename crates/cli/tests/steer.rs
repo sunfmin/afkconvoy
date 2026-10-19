@@ -35,6 +35,11 @@ stages:
 /// A world whose repo is bound to a team with the one workflow `feature`,
 /// and runs `concurrency` workers at once.
 fn bound(concurrency: u64) -> World {
+    bound_to(FEATURE, concurrency)
+}
+
+/// `bound`, the workflow `feature` being `feature`.
+fn bound_to(feature: &str, concurrency: u64) -> World {
     let world = World::new();
     world.repo(
         "acme/dev",
@@ -44,7 +49,7 @@ fn bound(concurrency: u64) -> World {
         "acme/reviewer",
         &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
     );
-    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", feature)]);
     let config = format!(
         "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
          concurrency: {concurrency}\n```\n"
@@ -214,6 +219,24 @@ fn a_ruling_runs_the_stage_that_asked_again_with_the_ruling_in_its_history() {
     let held = world.afk(&["rule", "--issue", "7", "--text", "And another."]).error();
     assert!(held.contains("issue #7 is claimed"), "{held}");
     assert_eq!(records(&world, 7).pop().unwrap(), record, "nothing was written");
+}
+
+#[test]
+fn a_workflow_that_names_the_ready_label_takes_an_issue_opened_with_it_and_a_ruling_puts_it_back() {
+    let named = FEATURE.replace("```yaml\n", "```yaml\nlabel: ready-for-agent\n");
+    let world = bound_to(&named, 2);
+    world.issue(7, &["ready-for-agent", "bug"]);
+    // An epic stays out, although it carries the workflow's label.
+    world.issue(8, &["ready-for-agent", "epic"]);
+    assert_eq!(frontier(&world), [(7, "build".to_string())]);
+    stage(&world, 7, 1000, "build", "escalate");
+    // The escalate label in place of the ready label, which is its flow label here.
+    assert_eq!(world.labels(7), ["bug", "stage:build", "stuck"]);
+    let ruled = world.afk(&["rule", "--issue", "7", "--text", "Go on."]).ok();
+    assert_eq!((&ruled["relabelled"], &ruled["workflow"]), (&json!(true), &json!("feature")));
+    assert!(has(&world, 7, "ready-for-agent") && !has(&world, 7, "stuck"));
+    assert_eq!(frontier(&world), [(7, "build".to_string())]);
+    assert!(!held(&world, 8));
 }
 
 #[test]

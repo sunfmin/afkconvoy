@@ -5,17 +5,16 @@
 //! (`afkconvoy_core::stage_record`).
 
 use afkconvoy_core::claims::Claim;
-use afkconvoy_core::config::Bound;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::{opened_by, taken_in};
-use afkconvoy_core::plan::{Issue, PullRequest, closing_pr, label_bar};
+use afkconvoy_core::plan::{PullRequest, closing_pr, label_bar};
 use afkconvoy_core::position::{Declared, Position};
 use afkconvoy_core::precedent::{Ruling, proposed, rulings};
-use afkconvoy_core::role::{Due, due, flows, followed, workflow_of};
+use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, advance, history, label_moves, lands, stage_records,
 };
-use afkconvoy_core::team::{FLOW_LABEL, LAND, Team, Workflow};
+use afkconvoy_core::team::{FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::escalated_at;
 use afkconvoy_core::waiting::{Back, Waits, back, waits};
@@ -185,7 +184,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, default: Harness, number: u64) -> Re
     Ok(json!({
         "issue": number,
         "workflow": workflow.name,
-        "intake": came_in(&issue.labels, &comments),
+        "intake": came_in(team, &issue.labels, &comments),
         "position": position(team, workflow, default, place.position),
         "follows": follows,
         "rework": {"had": place.rework(), "left": place.rework_left()},
@@ -257,9 +256,8 @@ pub struct Stood {
 /// team as it stands, and the stage records of each. Everything a tick
 /// derives of a position, it derives from this one read.
 pub struct Flows {
-    /// The team, or why it does not load. `None` where nothing was read:
-    /// an unbound repo, or one with no issue that carries a flow label, none
-    /// that was escalated, and no patrol named.
+    /// The team, or why it does not load. `None` in an unbound repo, where
+    /// nothing was read.
     team: Option<Result<Kept, Unkept>>,
     issues: Vec<Flowing>,
 }
@@ -274,28 +272,23 @@ enum Unkept {
 
 impl Flows {
     /// Reads the team `fleet`'s repo is bound to and, among the comments of
-    /// `open`, the stage records of each issue that carries a flow label. A
-    /// team that does not load is not an error here: the issues it leaves
-    /// without a position are said so, one by one.
+    /// `open`, the stage records of each issue that carries a flow label. The
+    /// team is read first: which labels are flow labels is its workflows' to
+    /// say. A team that does not load is not an error here: the issues it
+    /// leaves without a position are said so, one by one.
     pub fn read(fleet: &Fleet, open: &OpenIssues) -> Result<Flows> {
-        let flowing: Vec<&Issue> =
-            open.rows.iter().filter(|issue| !flows(&issue.labels).is_empty()).collect();
-        // An escalated issue carries no flow label, and what answers it is
-        // the team's to say all the same.
-        let escalated = open.rows.iter().any(|issue| {
-            let bodies = open.comments(issue.number).iter().map(|comment| comment.body.as_str());
-            flows(&issue.labels).is_empty() && escalated_at(bodies).is_some()
-        });
-        let read = |bound: &&Bound| !flowing.is_empty() || !bound.patrols.is_empty() || escalated;
-        let Some(bound) = fleet.config.bound.as_ref().filter(read) else {
+        let Some(bound) = fleet.config.bound.as_ref() else {
             return Ok(Flows { team: None, issues: vec![] });
         };
-        let team = Copies::here().and_then(|copies| keep(&fleet.gh, &copies, &bound.team)).map_err(
-            |error| match unreached(&error) {
+        let labels = fleet.config.labels();
+        let team = Copies::here()
+            .and_then(|copies| keep(&fleet.gh, &copies, &bound.team, &labels))
+            .map_err(|error| match unreached(&error) {
                 Some(read) => Unkept::Unreached(read.clone()),
                 None => Unkept::Unloaded(format!("{error:#}")),
-            },
-        );
+            });
+        let flow_labels = team.as_ref().map(|kept| kept.team.flow_labels()).unwrap_or_default();
+        let flowing = open.rows.iter().filter(|issue| !flow_labels.among(&issue.labels).is_empty());
         let mut issues = vec![];
         for issue in flowing {
             let comments = open.comments(issue.number);
@@ -305,7 +298,9 @@ impl Flows {
             let at = said.iter().map(|comment| comment.at).collect();
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
             let proposed = proposed(bodies());
-            let taken_in = taken_in(&issue.labels, bodies()).is_some();
+            let taken_in = team
+                .as_ref()
+                .is_ok_and(|kept| taken_in(&kept.team, &issue.labels, bodies()).is_some());
             let opened_by = opened_by(bodies());
             let (number, labels) = (issue.number, issue.labels.clone());
             issues.push(Flowing {
@@ -321,6 +316,12 @@ impl Flows {
             });
         }
         Ok(Flows { team: Some(team), issues })
+    }
+
+    /// The flow labels of the team as this rebuild read it: none where it
+    /// read none, or the team did not load.
+    pub fn flow_labels(&self) -> FlowLabels {
+        self.team().map(Team::flow_labels).unwrap_or_default()
     }
 
     /// The team as this rebuild read it.
@@ -360,7 +361,7 @@ impl Flows {
         let Ok(team) = self.team() else { return vec![] };
         let stood = |issue: &Flowing| {
             let flow_labels: Vec<String> =
-                flows(&issue.labels).iter().map(|name| format!("{FLOW_LABEL}{name}")).collect();
+                team.flows(&issue.labels).into_iter().map(str::to_string).collect();
             let mut stood = Stood {
                 number: issue.number,
                 flow_labels,
@@ -589,7 +590,7 @@ impl Flows {
             let comments = open.issues.comments(issue.number);
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
             let handed = escalate.is_some_and(|label| issue.labels.iter().any(|l| l == label))
-                && label_bar(&issue.labels, config).is_some();
+                && label_bar(&issue.labels, config, &self.flow_labels()).is_some();
             let Some(at) = escalated_at(bodies()).filter(|_| handed) else { continue };
             let back = match (team, escalate) {
                 (Some(team), Some(escalate)) if config.bound.is_some() => {

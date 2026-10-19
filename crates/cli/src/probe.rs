@@ -120,7 +120,7 @@ pub fn startup(now: u64, launches: &Launches) -> Result<Vec<String>> {
     // A bound repo's workers start in their roles, each on the harness its
     // stage names: every one's command must be there, and take that.
     if let Some(bound) = &config.bound {
-        role::probe(launches, bound).see(See::Troubleshooting)?;
+        role::probe(launches, bound, &config.labels()).see(See::Troubleshooting)?;
     }
     let branch = &config.base_branch;
     let mut warnings = vec![];
