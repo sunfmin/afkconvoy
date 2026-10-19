@@ -13,7 +13,11 @@
 //! the fleet's copy of a role links the one to the other. No flag has it look
 //! nowhere else, so it also loads the skills of the host user's home, wherever
 //! its user directory is: the one thing of the host user's a worker is left
-//! with (docs/adr/0013).
+//! with where it is given none of the others (docs/adr/0013). Given them
+//! (docs/adr/0017), it finds the host user's skills and rules where it finds a
+//! user's, in its user directory, linked there; of two skills of one name it
+//! shows both, so the fleet turns off the host user's where a role's stands
+//! for it.
 
 use std::collections::BTreeMap;
 
@@ -65,13 +69,29 @@ const NAMED: &str = "\"slug\":\"";
 const USER_DIR: &str = "CODEX_HOME";
 
 /// What a host keeps for Codex: its user directory, of the fleet's own. Of
-/// the host user's it holds the login, and nothing else: no rule, skill,
-/// hook or configuration — so no provider the user defined, which Codex
-/// keeps in that configuration. It is a link: a login Codex renews is
+/// the host user's it holds the login, and nothing else but, in the directory
+/// kept for a worker given them, their skills and rules: no hook or
+/// configuration — so no provider the user defined, which Codex keeps in
+/// that configuration. It is a link: a login Codex renews is
 /// written where the host user's own is, and neither goes stale. A user
 /// whose login is in a keyring has no such file, and no worker a login.
-pub(super) const KEPT: Kept =
-    Kept { links: &[Link { home: ".codex/auth.json", kept: "auth.json" }], files: &[] };
+pub(super) const KEPT: Kept = Kept {
+    links: &[Link { home: ".codex/auth.json", kept: "auth.json" }],
+    host_user: &[
+        Link { home: ".codex/skills", kept: "skills" },
+        Link { home: ".codex/AGENTS.override.md", kept: "AGENTS.override.md" },
+        Link { home: ".codex/AGENTS.md", kept: "AGENTS.md" },
+    ],
+    files: &[],
+};
+/// The directories of the host user's home Codex finds skills in beside a
+/// role's: the one it reads wherever its user directory is, and the one in
+/// its user directory, which the directory kept for a worker given the host
+/// user's skills links to.
+pub(super) const SHADOWED_IN: [&str; 2] = [".agents/skills", ".codex/skills"];
+/// The key of Codex's configuration that turns a skill off, by the path of
+/// its file.
+const SKILLS_CONFIG: &str = "skills.config";
 
 /// The key of Codex's configuration under which it is told, of each
 /// directory, whether to load what the directory holds of Codex's own: a
@@ -259,6 +279,17 @@ fn told(told: &Told) -> Option<String> {
     Some(format!("{TOLD}={}", toml_text(&text)))
 }
 
+/// What turns off the skills `shadowed`, each by the path of its file, as
+/// one key of Codex's configuration. `None` when there are none.
+fn turned_off(shadowed: &[String]) -> Option<String> {
+    if shadowed.is_empty() {
+        return None;
+    }
+    let off: Vec<String> =
+        shadowed.iter().map(|path| format!("{{path={},enabled=false}}", toml_text(path))).collect();
+    Some(format!("{SKILLS_CONFIG}=[{}]", off.join(",")))
+}
+
 /// `line`, which exports a worker's environment, with what Codex reads from
 /// it: the user directory the host keeps.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
@@ -270,7 +301,8 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 /// to put a worker in its role: the worktree added, the review of its hooks
 /// and the question about its role's directory answered, the role's rules
 /// and none from above them, the repo's own and the team rules, the guard and
-/// the report, no memory, none of the skills it carries, and the stage's model.
+/// the report, no memory, none of the skills it carries nor of the host
+/// user's a role's stands for, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
     let line = line
@@ -309,6 +341,10 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(CONFIG)
         .fixed(" ")
         .fixed(NO_CARRIED_SKILLS);
+    let line = match turned_off(start.shadowed) {
+        Some(off) => line.fixed(" ").fixed(CONFIG).fixed(" ").word(&off),
+        None => line,
+    };
     match start.model {
         Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
         None => line,
@@ -407,6 +443,8 @@ mod tests {
             model,
             guard: "/bin/afkconvoy guard",
             kept: "/cache/harness/codex",
+            host_user: false,
+            shadowed: &[],
             told: Told::default(),
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },

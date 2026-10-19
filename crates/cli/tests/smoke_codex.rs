@@ -106,7 +106,7 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
     let launch = std::env::var("AFKCONVOY_SMOKE_CODEX_COMMAND")
         .unwrap_or_else(|_| Harness::Codex.stock().to_string());
     let text = |path: &Path| path.display().to_string();
-    let kept = keep_under(&cache, Some(&home), Harness::Codex).unwrap();
+    let kept = keep_under(&cache, Some(&home), Harness::Codex, false).unwrap();
     let names = Harness::Codex.told();
     let held = names.iter().map(|name| project.join(name)).find(|file| file.is_file()).unwrap();
     assert_eq!(held, project.join("AGENTS.md"));
@@ -117,6 +117,8 @@ fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_t
         model: None,
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         kept: &text(&kept),
+        host_user: false,
+        shadowed: &[],
         told: Told {
             repo: Some(Rules { file: &text(&held), text: &own }),
             team: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),
@@ -319,7 +321,7 @@ fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_gua
          --config 'model_provider=\"smoke\"'"
     );
     let text = |path: &Path| path.display().to_string();
-    let kept = keep_under(&cache, Some(&home), Harness::Codex).unwrap();
+    let kept = keep_under(&cache, Some(&home), Harness::Codex, false).unwrap();
     let start = Start {
         role_dir: &text(&role),
         worktree: &text(&project),
@@ -327,6 +329,8 @@ fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_gua
         model: None,
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         kept: &text(&kept),
+        host_user: false,
+        shadowed: &[],
         told: Told {
             repo: Some(Rules { file: &text(&project.join("AGENTS.md")), text: &own }),
             team: Some(Rules { file: &text(&team.join("CLAUDE.md")), text: &team_rules }),

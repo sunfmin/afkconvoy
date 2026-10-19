@@ -93,6 +93,13 @@ fn dispatch(world: &World, issue: u64) -> common::Answer {
     world.afk(&["dispatch", "--issue", &issue, "--instance", "alpha", "--host", "h1"])
 }
 
+/// The directory the fleet keeps for Claude Code on this world's host, with
+/// the host user's skills and rules: added to a worker of a team that does
+/// not turn them off.
+fn host_user(world: &World) -> PathBuf {
+    world.cache().join("afkconvoy/harness/claude-code-host-user")
+}
+
 fn head(world: &World, repo: &str) -> String {
     git(&world.root.join("github").join(repo), &["rev-parse", "HEAD"])
 }
@@ -233,12 +240,13 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
          AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
          AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
          AFKCONVOY_HARNESS='claude-code' && \
-         {STOCK} --add-dir '{worktree}' --add-dir '{team_dir}' --setting-sources project \
-         --settings '{guard}' --model 'opus'",
+         {STOCK} --add-dir '{worktree}' --add-dir '{team_dir}' --add-dir '{host_user}' \
+         --setting-sources project --settings '{guard}' --model 'opus'",
         guard = added_settings(terminals[0]["command"].as_str().unwrap()),
         role = role_dir.display(),
         worktree = dir.display(),
         team_dir = team_dir.display(),
+        host_user = host_user(&world).display(),
     );
     assert_eq!(terminals[0]["command"], command);
     assert_eq!(created[4..], ["--command".to_string(), command]);
@@ -749,7 +757,8 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     // of the team's directory no skill and no setting.
     let dir = worktree(&world, 7);
     let command = open_terminals(&world, &dir)[0]["command"].as_str().unwrap().to_string();
-    assert_eq!(started_in(&command), (role_dir.clone(), vec![dir.clone(), team_dir.clone()]));
+    let added = vec![dir.clone(), team_dir.clone(), host_user(&world)];
+    assert_eq!(started_in(&command), (role_dir.clone(), added));
     assert!(command.contains(" export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 "));
     assert_eq!(
         loaded(&command),

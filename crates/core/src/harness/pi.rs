@@ -30,9 +30,11 @@ pub(super) const STOCK: &str = "pi";
 const APPROVE: &str = "--approve";
 /// pi's flag that leaves out every skill it would find by itself: those of
 /// the host user's home among them, which it reads wherever its user
-/// directory is.
+/// directory is. The host user's own are named, where a worker is given
+/// them, from the user directory the host keeps.
 const NO_SKILLS: &str = "--no-skills";
-/// pi's flag for a directory of skills to load all the same.
+/// pi's flag for a directory of skills to load all the same. Of two skills
+/// of one name pi keeps the one named first.
 const SKILL: &str = "--skill";
 /// pi's flag for an extension to load.
 const EXTENSION: &str = "--extension";
@@ -79,8 +81,8 @@ const EXTENSION_FILE: &str = "afkconvoy.js";
 /// installed to hear of a pi session's state; pi finds that one by itself,
 /// so on a host where the backend installed none, nothing is told. They are
 /// links: a login pi renews is renewed for the host user too, and neither
-/// goes stale. No rule, skill, setting or other extension of the user's is
-/// there.
+/// goes stale. No setting or other extension of the user's is there, and
+/// their skills and rules only in the directory kept for a worker given them.
 pub(super) const KEPT: Kept = Kept {
     links: &[
         Link { home: ".pi/agent/auth.json", kept: "auth.json" },
@@ -90,8 +92,20 @@ pub(super) const KEPT: Kept = Kept {
             kept: "extensions/orca-agent-status.ts",
         },
     ],
+    host_user: &[
+        Link { home: ".pi/agent/skills", kept: HOST_SKILLS },
+        Link { home: ".pi/agent/AGENTS.override.md", kept: "AGENTS.override.md" },
+        Link { home: ".pi/agent/AGENTS.md", kept: "AGENTS.md" },
+        Link { home: ".pi/agent/AGENTS.MD", kept: "AGENTS.MD" },
+        Link { home: ".pi/agent/CLAUDE.md", kept: "CLAUDE.md" },
+        Link { home: ".pi/agent/CLAUDE.MD", kept: "CLAUDE.MD" },
+    ],
     files: &[(EXTENSION_FILE, include_str!("pi/extension.js"))],
 };
+/// Where the user directory the host keeps for a worker given the host
+/// user's skills and rules links to their skills. Their rules are linked to
+/// where pi loads them from in its user directory, the first it finds.
+const HOST_SKILLS: &str = "skills";
 
 /// The tool pi runs shell lines with.
 const SHELL_TOOL: &str = "bash";
@@ -124,8 +138,9 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 }
 
 /// `line`, which starts the worker launch command, with what pi is given to
-/// put a worker in its role: its question answered, the role's skills and no
-/// others, the fleet's extension, and the stage's model.
+/// put a worker in its role: its question answered, the role's skills, then
+/// the host user's where it is given them, and no others, the fleet's
+/// extension, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
     let line = line
@@ -136,7 +151,13 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .fixed(" ")
         .fixed(SKILL)
         .fixed(" ")
-        .word(&format!("{}/{SKILLS}", start.role_dir))
+        .word(&format!("{}/{SKILLS}", start.role_dir));
+    let line = if start.host_user {
+        line.fixed(" ").fixed(SKILL).fixed(" ").word(&format!("{}/{HOST_SKILLS}", start.kept))
+    } else {
+        line
+    };
+    let line = line
         .fixed(" ")
         .fixed(EXTENSION)
         .fixed(" ")
@@ -273,6 +294,8 @@ mod tests {
             model,
             guard: "/bin/afkconvoy guard",
             kept: "/cache/harness/pi",
+            host_user: false,
+            shadowed: &[],
             told: Told::default(),
             facts: Facts {
                 on: On::Stage { issue: 7, flow: "feature", stage: "build" },
