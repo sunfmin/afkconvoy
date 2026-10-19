@@ -27,7 +27,7 @@ fn two_ticks(world: &World, between: impl FnOnce()) -> (String, String) {
     let running = run(world);
     let first = running.line(SOON).expect("the first tick");
     between();
-    assert_eq!(world.afk(&["wake"]).ok(), json!({"woke": true}));
+    assert_eq!(world.afk(&["wake"]).ok()["woke"], true);
     let second = running.line(SOON).expect("the second tick");
     (first, second)
 }
