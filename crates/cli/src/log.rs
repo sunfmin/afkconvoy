@@ -373,6 +373,8 @@ impl Log {
             let newest = lines[lines.len() - kept..].join("\n") + "\n";
             let beside = self.file.with_extension("trimming");
             std::fs::write(&beside, newest).with_context(|| self.unwritten())?;
+            #[cfg(test)]
+            tests::CUTTING.with(|cutting| cutting.get().map(|cutting| cutting()));
             std::fs::rename(&beside, &self.file).with_context(|| self.unwritten())?;
         }
         Ok(())
@@ -421,9 +423,18 @@ impl Log {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::time::Duration;
+
     use serde_json::json;
 
     use super::*;
+
+    thread_local! {
+        /// What a cut on this thread does between writing what it keeps and
+        /// moving that over the log: a test holds it open.
+        pub(super) static CUTTING: Cell<Option<fn()>> = const { Cell::new(None) };
+    }
 
     fn tick(count: u64) -> Entry {
         let tick = Tick {
@@ -535,31 +546,37 @@ mod tests {
     #[test]
     fn lines_appended_at_once_while_the_run_cuts_the_log_back_are_each_kept_whole() {
         let dir = tempfile::tempdir().unwrap();
-        // Cut back to its newest 200 lines once it holds 205, again and again
-        // while four commands append and the run keeps its own.
-        let kept = Kept { for_secs: 86_400, least: 5, most: 200 };
+        let kept = Kept { for_secs: 86_400, least: 5, most: 100 };
         let log = Log::at(&dir.path().join("widgets.jsonl"), kept);
-        let (writers, lines) = (4, 300);
+        for count in 1..=104 {
+            log.append(&tick_at(count, 1000)).unwrap();
+        }
+        // The run's cut takes a while between reading the log and moving
+        // what it keeps over it, while four commands append, one line at a
+        // time, all along.
+        let (writers, lines) = (4, 50);
         std::thread::scope(|threads| {
+            let log = &log;
+            threads.spawn(move || {
+                CUTTING.with(|cutting| {
+                    cutting.set(Some(|| std::thread::sleep(Duration::from_millis(150))))
+                });
+                std::thread::sleep(Duration::from_millis(20));
+                log.keep(&tick_at(105, 1000)).unwrap();
+            });
             for writer in 1..=writers {
-                let log = &log;
                 threads.spawn(move || {
                     for n in 0..lines {
                         log.append(&acted(writer * 1000 + n, 1000)).unwrap();
+                        std::thread::sleep(Duration::from_millis(5));
                     }
                 });
             }
-            let log = &log;
-            threads.spawn(move || {
-                for count in 1..=lines {
-                    log.keep(&tick_at(count, 1000)).unwrap();
-                }
-            });
         });
         let text = std::fs::read_to_string(&log.file).unwrap();
         let entries: Vec<Entry> =
             text.lines().map(|line| serde_json::from_str(line).expect(line)).collect();
-        // A cut keeps the newest lines: what is left of each writer's is the
+        // A cut keeps the newest lines: what is left of each command's is the
         // end of what it wrote, none missing in between.
         let mut ends: Vec<Vec<u64>> = vec![vec![]; writers as usize + 1];
         for entry in &entries {
@@ -568,15 +585,17 @@ mod tests {
                     let n: u64 = on.trim_start_matches('#').parse().unwrap();
                     ends[(n / 1000) as usize].push(n % 1000);
                 }
-                What::Tick(tick) => ends[0].push(tick.count - 1),
+                What::Tick(tick) => ends[0].push(tick.count),
                 other => panic!("{other:?}"),
             }
         }
-        for (writer, end) in ends.iter().enumerate() {
+        for (writer, end) in ends.iter().enumerate().skip(1) {
             let first = end.first().copied().unwrap_or(lines);
-            assert_eq!(*end, (first..lines).collect::<Vec<_>>(), "writer {writer}");
+            assert_eq!(*end, (first..lines).collect::<Vec<_>>(), "command {writer}");
         }
-        assert!(entries.len() <= 205, "cut back: {}", entries.len());
+        let cut = ends[0].first().copied().unwrap_or_default();
+        assert!(cut > 1, "the run cut the log back: {:?}", ends[0]);
+        assert_eq!(*ends[0], (cut..=105).collect::<Vec<_>>());
     }
 
     #[test]
