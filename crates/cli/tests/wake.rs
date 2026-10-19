@@ -1,12 +1,9 @@
 mod common;
 
-use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, Stdio};
-use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use common::{World, bookkeeping, git};
+use common::{Running, World, git};
 use serde_json::json;
 
 /// How long anything a wake should bring about is waited for. The sleep it
@@ -14,57 +11,9 @@ use serde_json::json;
 const SOON: Duration = Duration::from_secs(20);
 
 /// A `run` of two ticks whose sleep between them is real: 90 seconds at the
-/// least. Its stdout comes line by line.
-struct Running {
-    child: Child,
-    lines: Receiver<String>,
-}
-
+/// least.
 fn run(world: &World) -> Running {
-    let mut child = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["run", "--instance", "alpha", "--host", "h1", "--ticks", "2"])
-        .args(["--worker-command", "agent"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let out = child.stdout.take().unwrap();
-    let (send, lines) = channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
-            if send.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    Running { child, lines }
-}
-
-impl Running {
-    /// The next line `run` prints but for those it prints whatever it does
-    /// (`bookkeeping`), if one comes within `within`.
-    fn line(&self, within: Duration) -> Option<String> {
-        let until = Instant::now() + within;
-        loop {
-            let line = self.every_line(until.saturating_duration_since(Instant::now()))?;
-            if !bookkeeping(&line) {
-                return Some(line);
-            }
-        }
-    }
-
-    /// The next line `run` prints, whatever it is, if one comes within `within`.
-    fn every_line(&self, within: Duration) -> Option<String> {
-        self.lines.recv_timeout(within).ok()
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    world.running(&["--instance", "alpha", "--host", "h1", "--ticks", "2"])
 }
 
 fn wake(world: &World, dir: &Path) -> serde_json::Value {
