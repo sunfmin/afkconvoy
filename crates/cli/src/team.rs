@@ -764,6 +764,7 @@ fn answer(loaded: &Loaded) -> Value {
         "files": loaded.files,
         "escalate_label": team.escalate_label,
         "rules": team.rules,
+        "host_user": team.host_user,
         "harness": loaded.harness,
         "roles": roles,
         "workflows": team.workflows.iter().map(|w| workflow(loaded, w)).collect::<Vec<_>>(),

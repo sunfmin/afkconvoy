@@ -834,3 +834,43 @@ fn a_team_and_seven_roles_in_one_repo_are_loaded_with_one_fetch() {
     let role_dir = PathBuf::from(started["stage"]["role_dir"].as_str().unwrap());
     assert_eq!(holds(&role_dir), [".claude"]);
 }
+
+#[test]
+fn a_worker_is_given_the_host_user_s_skills_and_rules_unless_its_team_turns_them_off() {
+    let world = bound();
+    // What this host's user has of Claude Code's: skills, rules, and
+    // settings with a hook in them.
+    let home = world.home();
+    for (file, text) in [
+        (".claude/skills/theirs/SKILL.md", "---\nname: theirs\ndescription: theirs\n---\n"),
+        (".claude/CLAUDE.md", "the user's rules\n"),
+        (".claude/settings.json", "{\"hooks\": {\"Stop\": [{\"hooks\": []}]}}\n"),
+    ] {
+        write(&home, file, text);
+    }
+    world.issue(7, &["flow:feature"]);
+    dispatch(&world, 7).ok();
+    // A directory of the fleet's is added to the worker, which links to the
+    // host user's skills and rules and holds nothing else of theirs: their
+    // settings are still left out.
+    let kept = host_user(&world);
+    let command = open_terminals(&world, &worktree(&world, 7))[0]["command"].clone();
+    let command = command.as_str().unwrap();
+    assert!(command.contains(&format!(" --add-dir '{}' ", kept.display())), "{command}");
+    assert!(command.contains(" --setting-sources project "), "{command}");
+    assert_eq!(holds(&kept), [".claude"]);
+    assert_eq!(holds(&kept.join(".claude")), ["CLAUDE.md", "skills"]);
+    let link = |name: &str| std::fs::read_link(kept.join(".claude").join(name)).unwrap();
+    assert_eq!(link("skills"), home.join(".claude/skills"));
+    assert_eq!(link("CLAUDE.md"), home.join(".claude/CLAUDE.md"));
+
+    // A team that turns them off has its workers given none of it, as before.
+    let team = world.root.join("github/acme/team");
+    commit(&team, "team.md", &TEAM.replace("```\n", "host_user: false\n```\n"));
+    world.issue(8, &["flow:audit"]);
+    dispatch(&world, 8).ok();
+    let command = open_terminals(&world, &worktree(&world, 8))[0]["command"].clone();
+    let command = command.as_str().unwrap();
+    assert!(!command.contains("host-user"), "{command}");
+    assert!(!world.cache().join("afkconvoy/harness/claude-code").exists());
+}
