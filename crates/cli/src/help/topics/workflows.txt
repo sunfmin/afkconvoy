@@ -63,6 +63,11 @@ VERDICTS, AND WHERE EACH LEADS
   (`afkconvoy intake --help`) and declares `blocked` on all of them. When they have all
   closed, the stage runs again and judges the whole.
 
+  A stage that may commit and finds its gate red for a defect outside its issue — what
+  the gate merged in is red the same way gated alone — opens that defect's issue
+  itself, unless an open one already records it, takes it in the same way, and
+  declares `blocked` on it. When it closes, the stage runs again and gates again.
+
 REWORK AND ITS BREAKERS
 
   Rework is a stage running again because a later stage rejected its work or a consult

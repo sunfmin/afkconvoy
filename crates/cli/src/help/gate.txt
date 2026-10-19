@@ -57,5 +57,10 @@ WHAT TRIPS YOU UP
   - A recorded run is of one tree. Any further commit needs another run.
   - The gate limit is no flag. It is `gate_seconds` in the config of this worktree
     (`afkconvoy config --help`), the same for a worker's run and the train's.
+  - A red run is the worker's own until it shows otherwise: the commit `merged` names,
+    gated alone in a clean checkout of it (this command, without `--train`), red the
+    same way. Then the defect is outside its issue, and its prompt says how it records
+    it: on the open issue that already does, or on one it opens — with the ready label,
+    or through `afkconvoy intake` in a bound repo — and parks its issue on that one.
   - A conflict is resolved by committing the merge, then running this again. A resolved
     merge left uncommitted is refused.

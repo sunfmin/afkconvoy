@@ -236,6 +236,8 @@ pub(crate) fn write_brief(
         worktree: &path,
         base_branch: &fleet.config.base_branch,
         gate_command: &crate::own_command().fixed(" gate --train").own(),
+        gate_alone_command: &crate::own_command().fixed(" gate").own(),
+        ready_label: &fleet.config.ready_label,
         land_command: &crate::own_command().fixed(" land --issue ").number(number).own(),
         wake_command: &crate::own_command().fixed(" wake").own(),
     };

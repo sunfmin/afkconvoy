@@ -78,6 +78,13 @@ the worker that wrote it before it lands.
    until they close; or it cannot go on, and the issue escalates — it is handed to a
    human, with why. A worker that stops having left nothing is nudged once, and
    escalated after that. Every failure escalates: `afkconvoy help humans`.
+6. Or a red gate that is not its own. A worker that proves its gate red for a defect
+   outside its issue — what its gate merged in is red the same way gated alone —
+   records the defect itself: it comments on the open issue that already records
+   it, or opens one with the ready label, and parks its issue on that one with
+   `blocked`. It is the one `blocked` whose blocker the worker opens. When that issue
+   closes, its own is on the frontier again. The train worker does the same for a
+   base branch that is red without the train, with no issue to park.
 ````
 
 ### ONE ISSUE, IN A BOUND REPO
@@ -549,6 +556,11 @@ from the first: a loop back is made with `reject` only.
 A stage that finds its issue too large splits it: it opens issues, takes each in
 (`afkconvoy intake --help`) and declares `blocked` on all of them. When they have all
 closed, the stage runs again and judges the whole.
+
+A stage that may commit and finds its gate red for a defect outside its issue — what
+the gate merged in is red the same way gated alone — opens that defect's issue
+itself, unless an open one already records it, takes it in the same way, and
+declares `blocked` on it. When it closes, the stage runs again and gates again.
 ````
 
 ### REWORK AND ITS BREAKERS

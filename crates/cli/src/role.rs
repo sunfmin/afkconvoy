@@ -10,7 +10,7 @@ use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
-    Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
+    Gate, Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
 };
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
 use afkconvoy_core::stage_record::{Reading, StageRecord, history};
@@ -229,6 +229,8 @@ impl Staged {
         // A worker starts in its role's copy: its commands are run from the worktree.
         let own = || crate::own_command_in(&path);
         let gate = own().fixed(" gate --train").own();
+        // Another checkout is gated from inside it.
+        let gate_alone = crate::own_command().fixed(" gate").own();
         if let Some(pr) = self.joins {
             let fields = WorkerFields {
                 number: self.issue,
@@ -237,6 +239,8 @@ impl Staged {
                 worktree: &path,
                 base_branch: &fleet.config.base_branch,
                 gate_command: &gate,
+                gate_alone_command: &gate_alone,
+                ready_label: &fleet.config.ready_label,
                 land_command: &own().fixed(" land --issue ").number(self.issue).own(),
                 wake_command: &own().fixed(" wake").own(),
             };
@@ -268,7 +272,7 @@ impl Staged {
             verdict_command: &declare(" verdict"),
             intake_command: &own().fixed(" intake").own(),
             workflows: &self.workflows,
-            gate_command: self.writes.then_some(gate.as_str()),
+            gate: self.writes.then_some(Gate { train: &gate, alone: &gate_alone }),
         };
         let prompt = if self.consult {
             consult_prompt(&fields, &declare(" rule"))

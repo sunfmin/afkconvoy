@@ -50,6 +50,8 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
         worktree: &path,
         base_branch: &fleet.config.base_branch,
         land_command: &crate::own_command().fixed(" land --train").own(),
+        gate_alone_command: &crate::own_command().fixed(" gate").own(),
+        ready_label: &fleet.config.ready_label,
     })
     .map_err(|e| anyhow!(e))?;
     let brief = worktree.write_brief(&prompt)?;

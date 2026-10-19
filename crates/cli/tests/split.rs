@@ -160,7 +160,10 @@ fn a_split_parks_the_parent_and_its_children_are_worked_in_the_order_their_block
     assert!(told.contains("## Splitting the issue\n"), "{told}");
     assert!(told.contains("the team has `feature`, `fix` —"), "{told}");
     let intake = format!("   cd '{}' && ", dir.display());
-    let line = told.lines().find(|line| line.contains(" intake ")).unwrap_or_default();
+    let line = told
+        .lines()
+        .find(|line| line.contains(" intake ") && line.contains("[--blocked-by"))
+        .unwrap_or_default();
     assert!(line.starts_with(&intake), "{line}");
     assert!(line.ends_with(" intake --issue <n> --workflow <workflow> [--blocked-by <n,…>]"));
 
