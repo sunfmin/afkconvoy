@@ -8,8 +8,6 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::gh::GitHub;
-use crate::git::Repo;
-use crate::wake::wake;
 
 /// The fleet locks standing on GitHub now, lowest number first.
 pub fn standing_locks(gh: &GitHub, config: &Config) -> Result<Vec<u64>> {
@@ -28,20 +26,15 @@ pub fn explaining_lock(gh: &GitHub, config: &Config, at: Option<u64>) -> Result<
 }
 
 /// `afkconvoy lock --issue <n>`: raise a fleet lock on an open issue — leave
-/// the record of the `role` that did, put the lock label on it, and wake the
-/// fleet. An issue that is a lock already gets no second record.
+/// the record of the `role` that did, and put the lock label on it; the fleet
+/// is woken as the command ends (`crate::acting`). An issue that is a lock
+/// already gets no second record.
 ///
-///   {"issue", "label", "role", "raised": true, "locks", "woke"}
+///   {"issue", "label", "role", "raised": true, "locks"}
 ///   {…, "raised": false, …}
 ///
 /// The record goes first: a lock nobody is on record for never stands.
-pub fn lock(
-    repo: &Repo,
-    config: &Config,
-    gh: &GitHub,
-    issue: u64,
-    role: Option<&str>,
-) -> Result<Value> {
+pub fn lock(config: &Config, gh: &GitHub, issue: u64, role: Option<&str>) -> Result<Value> {
     let read = gh.issue(issue)?;
     if read.is_closed() {
         bail!("issue #{issue} is closed: a fleet lock is an open issue, and ends when it closes");
@@ -53,5 +46,5 @@ pub fn lock(
         gh.add_label(issue, label)?;
     }
     Ok(json!({"issue": issue, "label": label, "role": role, "raised": raised,
-        "locks": standing_locks(gh, config)?, "woke": wake(repo)?["woke"]}))
+        "locks": standing_locks(gh, config)?}))
 }

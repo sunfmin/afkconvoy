@@ -991,7 +991,9 @@ fn read_log(
     entries: &[Entry],
     host: &str,
 ) -> (Option<String>, Option<StartedWith>, Vec<(u64, Tick)>) {
-    let Some(newest) = entries.iter().rev().find(|entry| entry.host == host) else {
+    // A command's line names the instance it acted as, not the `run`'s.
+    let Some(newest) = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())
+    else {
         return (None, None, vec![]);
     };
     let own = || entries.iter().filter(|entry| entry.instance == newest.instance);
@@ -1012,7 +1014,7 @@ fn read_log(
 /// The last check for host sleep the newest `run` of `host` made, as the log
 /// has it.
 fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
-    let newest = entries.iter().rev().find(|entry| entry.host == host)?;
+    let newest = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())?;
     let own = entries.iter().filter(|entry| entry.instance == newest.instance);
     own.rev().find_map(|entry| match &entry.what {
         What::HostSleep { slept, awake } => {
@@ -1315,7 +1317,8 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         log_file: log.map(|log| log.file),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
         events: read_events(entries.as_deref().unwrap_or_default(), host),
-        ticks: entries.map(|_| ticks),
+        // A log only commands wrote to is no `run`'s.
+        ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
     let seen_host = read_host(config.as_ref().ok(), started_with.as_deref());
@@ -2047,7 +2050,7 @@ mod tests {
             what,
         };
         let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
-        let started = |count, cause| What::TickStarted { count, cause };
+        let started = |count, cause| What::TickStarted { count, cause, by: None };
         let entries = [
             entry(10, "old", "h1", start.clone()),
             entry(20, "old", "h1", What::Stop { line: "holding no claim".into() }),
@@ -2055,7 +2058,7 @@ mod tests {
             entry(30, "alpha", "h1", started(1, Cause::Start)),
             entry(40, "alpha", "h1", What::Tick(tick(1, json!([])).1)),
             entry(50, "alpha", "h1", started(2, Cause::Timer)),
-            entry(55, "alpha", "h1", What::WokenDuring { during: 2 }),
+            entry(55, "alpha", "h1", What::WokenDuring { during: 2, by: None }),
             entry(60, "alpha", "h1", started(3, Cause::Woken)),
             entry(70, "alpha", "h1", What::HostSleep { slept: false, awake: vec!["x".into()] }),
             entry(80, "alpha", "h1", What::HostSleep { slept: true, awake: vec![] }),

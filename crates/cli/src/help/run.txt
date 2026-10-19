@@ -47,17 +47,21 @@ WHAT IT READS AND WRITES
 
   It also keeps a log on this host, in a file under the cache directory (runs/;
   `afkconvoy help cache` says where it is and what moves it): one line when it
-  starts, one as each tick starts — with why — and one as it ends — what `tick`
-  answers for it — and one of each event that reached it: a wake heard during a
-  tick, a check for host sleep, the host waking, being told to stop. It keeps every
-  line of the last 24 hours, and never fewer than 200 lines nor more than 5000. A
-  line is written whole as it happens, so killing `run` loses none. Nothing reads the
+  starts, one as each tick starts — with why, and the command whose wake started it
+  — and one as it ends — what `tick` answers for it — and one of each event that
+  reached it: a wake heard during a tick, a check for host sleep, the host waking,
+  being told to stop. Every command that changes fleet state writes a line of its
+  own to the same file as it acts (its `--help` says so under WHAT IT LOGS); `run`
+  does not print those. It keeps every line of the last 24 hours, and never fewer
+  than 200 lines nor more than 5000. A line is written whole as it happens, so
+  killing `run` loses none, and none a command appends while `run` cuts the file
+  back is lost. Nothing reads the
   log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did,
   which steps failed, and the wakes, starts, stops and host sleeps of late.
 
 WHAT IT ANSWERS
 
-  On stdout, every line its log gets, as it is written and in the same order, until
+  On stdout, every line it writes to its log, as it is written and in the same order, until
   it is stopped; then, told to stop with SIGTERM or Ctrl-C, one `stop:` line and
   {"stopped": true, "ticks", "instance"}, with exit 0.
 
@@ -71,7 +75,7 @@ WHAT IT ANSWERS
     tick 1: started (start)
     tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s
     tick 2: started (timer)
-    woken during tick 2: tick 3 follows
+    woken by park #46 during tick 2: tick 3 follows
     tick 2: nothing to do · holding 2/3 · frontier 4 · next in 60s
     tick 3: advanced #12 → review · dispatched #12 · holding 2/3 · frontier 0 · next in 90s
     tick 4: advanced #12 → land · holding 1/3 · frontier 0 · next now
@@ -81,7 +85,8 @@ WHAT IT ANSWERS
 
   The second `start:` line is there unless it was told `--no-host-sleep`. Every tick
   has a line as it starts, before it does anything, naming why: `timer` (its sleep
-  ran out), `woken` (a wake ended the sleep, or was heard during the tick before),
+  ran out), `woken` (a wake ended the sleep, or was heard during the tick before:
+  `woken by` the command that sent it, and what that acted on, where it named them),
   `start` (the run's first) or `follow-up` (the tick before left a worker to start,
   or could not reach GitHub, so it runs with no sleep). A wake heard during a tick
   is a line as it is heard — the first of each tick — and the next tick starts as
@@ -89,7 +94,8 @@ WHAT IT ANSWERS
   the host waking from a sleep, as `run` notices it — a rest that took a minute past
   its length — and being told to stop:
 
-    tick 4: started (woken)
+    tick 4: started (woken by verdict #121)
+    tick 4: started (woken)                          a wake that named nothing
     tick 5: started (follow-up)
     host sleep: every fleet on this host has been idle long enough, and ticked once more: put the host to sleep
     host sleep: kept awake: the keyboard or mouse was used 40s ago

@@ -485,7 +485,8 @@ fn an_unbound_repo_s_launch_command_is_still_passed_to_orca_exactly_as_given() {
     assert_eq!(open_terminals(&world, &worktree(&world, 7))[0]["command"], passed);
     let asked = world.shell_asked();
     assert!(!asked.iter().any(|script| script.ends_with("--help")), "{asked:?}");
-    assert!(!world.cache().exists(), "an unbound repo keeps no copy");
+    let copies = world.cache().join("afkconvoy/copies");
+    assert!(!copies.exists(), "an unbound repo keeps no copy");
     assert!(brief(&worktree(&world, 7)).contains("**Implement**"));
 }
 

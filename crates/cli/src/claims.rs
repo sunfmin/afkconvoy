@@ -358,8 +358,8 @@ pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
 }
 
 /// `afkconvoy over`: records on the remote that the run keyed `key` is over,
-/// as the claim on it stands now, and wakes the fleet: its next tick ends the
-/// run. An error when no run is claimed under `key` — an issue's claim is no
+/// as the claim on it stands now; the fleet is woken as the command ends
+/// (`crate::acting`), and its next tick ends the run. An error when no run is claimed under `key` — an issue's claim is no
 /// run's: a stage ends with a verdict.
 pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
     if fleet_number(key).is_some() {
@@ -373,8 +373,7 @@ pub fn declare_over(repo: &Repo, key: &str) -> Result<Value> {
         bail!("no run {key:?} is going: there is nothing to declare over");
     };
     let refname = push_over(repo, key, &claim.sha)?;
-    let woke = crate::wake::wake(repo)?;
-    Ok(json!({"over": true, "run": key, "ref": refname, "woke": woke["woke"]}))
+    Ok(json!({"over": true, "run": key, "ref": refname}))
 }
 
 /// Deletes the claim ref `refname`, only while it still points at `expected`

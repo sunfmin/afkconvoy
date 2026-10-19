@@ -108,7 +108,7 @@ fn run_again(
     leave_lock_closed(fleet, flows, claim.number, stage, lock)?;
     hand_on(fleet, claim, None, false)?;
     // As after any verdict: the stage is the next tick's to start.
-    let _ = wake(&fleet.repo);
+    let _ = wake(&fleet.repo, "");
     Ok(Outcome::Done)
 }
 
@@ -120,7 +120,7 @@ pub fn run_again_unclaimed(fleet: &Fleet, flows: &Flows, issue: u64) -> Result<b
     let Some((stage, at)) = flows.stage_escalate(issue) else { return Ok(false) };
     let Some(lock) = explaining_lock(&fleet.gh, &fleet.config, at)? else { return Ok(false) };
     leave_lock_closed(fleet, flows, issue, &stage, lock)?;
-    let _ = wake(&fleet.repo);
+    let _ = wake(&fleet.repo, "");
     Ok(true)
 }
 
@@ -241,7 +241,7 @@ pub fn advance(
             // What follows that this tick does not start is the next one's:
             // it need not wait out a sleep. A wake nobody hears costs only
             // that wait.
-            let _ = wake(&fleet.repo);
+            let _ = wake(&fleet.repo, "");
             return Ok(Outcome::HandedOn);
         }
         Advance::End => {

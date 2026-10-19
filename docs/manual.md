@@ -1452,7 +1452,7 @@ Recovering a claim whose worker died from the progress that survived: its worktr
 _Avoid_: resume, checkpoint restore
 
 **Wake**:
-A contentless signal a worker sends to its host's fleet instance once its outcome is on GitHub, ending the sleep between ticks early. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows; the signal itself carries no state.
+A signal that ends the sleep between ticks of its host's fleet instance early: every command that changes fleet state sends one as it ends — a worker's last among them, once its outcome is on GitHub — naming itself and what it acted on, and carrying no state. The `run` that hears it answers at once, naming the tick it starts or the tick in progress it follows.
 _Avoid_: notification, callback, done signal
 
 #### Claims
@@ -1496,7 +1496,7 @@ The web page that shows a human where the whole fleet stands: each workflow as t
 _Avoid_: dashboard, status page, status board (the comment on one issue), UI
 
 **Tick log**:
-The file a fleet instance's `run` keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake, the `run`'s start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the `run`: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. `run` prints each line as it is written. It keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
+The file a fleet instance's `run` keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake and the command that sent it, the `run`'s start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the `run`: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state, whoever runs it, appends a line of its own to the file of its host and repo as it acts — the command, the issue, who ran it, and how it came out or that it failed — whether a `run` is there or not. `run` prints each of its own lines as it is written. Each line is appended whole, and only `run` cuts the file back: it keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
 _Avoid_: state file, journal, history
 
 **Finding**:

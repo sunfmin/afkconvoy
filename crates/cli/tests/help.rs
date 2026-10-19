@@ -802,7 +802,9 @@ fn a_help_names_every_key_its_command_answers_with() {
             assert!(answer.contains_key(*mark), "{args:?} is not the case meant: {answer:?}");
         }
         let help = asked(&[command, "--help"]);
-        let said = section(&help, "WHAT IT ANSWERS");
+        // A command that acts says under WHAT IT LOGS what its wake adds.
+        let logs = help.split_once("\nWHAT IT LOGS\n").map_or("", |(_, logs)| logs);
+        let said = section(&help, "WHAT IT ANSWERS") + logs;
         let words: BTreeSet<&str> =
             said.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').collect();
         for key in answer.keys() {

@@ -1,6 +1,7 @@
-//! The wake: a contentless signal a worker sends its host's `run` once its
-//! outcome is on GitHub, ending the sleep between ticks early. It carries no
-//! state — the tick it opens reads GitHub like any other — so a wake that is
+//! The wake: a signal every command that changes fleet state sends its host's
+//! `run` as it ends — a worker's once its outcome is on GitHub — ending the
+//! sleep between ticks early. It names the command, for the `run` to log, and
+//! carries no state — the tick it opens reads GitHub like any other — so a wake that is
 //! lost costs only the wait it would have saved. The `run` that hears one
 //! answers it (`Answer`): which tick it starts, or which it follows.
 
@@ -10,7 +11,7 @@ use flux_rs::attrs::*;
 /// repo on a host, shared by every worktree.
 pub const SOCKET: &str = "convoy-wake.sock";
 
-/// What a wake carries: nothing.
+/// What a wake the `run` sends itself carries: nothing.
 pub const SIGNAL: &[u8] = &[];
 
 /// What a `run` answers a wake as it hears it.

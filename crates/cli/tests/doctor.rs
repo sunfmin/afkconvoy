@@ -24,8 +24,10 @@ fn run(world: &World, extra: &[&str]) -> Vec<String> {
 /// The lines of the log this world's `run` kept.
 fn log(world: &World) -> Vec<Value> {
     let runs = world.cache().join("afkconvoy/runs");
+    let files = std::fs::read_dir(&runs).unwrap().map(|entry| entry.unwrap().path());
+    // Beside it, the lock its writers take.
     let files: Vec<PathBuf> =
-        std::fs::read_dir(&runs).unwrap().map(|entry| entry.unwrap().path()).collect();
+        files.filter(|file| file.extension().is_some_and(|ext| ext == "jsonl")).collect();
     assert_eq!(files.len(), 1, "one log for the one repo: {files:?}");
     let text = std::fs::read_to_string(&files[0]).unwrap();
     text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()

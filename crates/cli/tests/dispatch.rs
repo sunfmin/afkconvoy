@@ -241,7 +241,8 @@ fn an_open_blocker_read_before_the_claim_claims_and_starts_nothing() {
     let skipped = dispatch(&world, "7").ok();
     assert_eq!(
         skipped,
-        json!({"issue": 7, "started": false, "skipped": "blocked", "blocked_by": [71, 72]})
+        json!({"issue": 7, "started": false, "skipped": "blocked", "blocked_by": [71, 72],
+            "woke": false})
     );
     assert_eq!(world.claims(), [] as [(u64, String); 0]);
     assert_eq!(world.orca_calls(), [] as [Vec<String>; 0]);

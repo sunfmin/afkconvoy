@@ -206,7 +206,8 @@ fn an_issue_that_follows_the_workflow_already_is_left_as_it_is() {
     assert_eq!(
         again,
         json!({"issue": 12, "workflow": "feature", "taken": false,
-            "standing": {"by": "worker", "role": "dev", "from": 7, "url": "https://gh/c/1001"}})
+            "standing": {"by": "worker", "role": "dev", "from": 7, "url": "https://gh/c/1001"},
+            "woke": false})
     );
     let human = intake(&world, 20, "feature").ok();
     assert_eq!((&human["taken"], &human["standing"]), (&json!(false), &json!({"by": "human"})));

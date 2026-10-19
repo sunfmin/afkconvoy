@@ -16,7 +16,6 @@ use serde_json::{Value, json};
 use crate::claims::Scan;
 use crate::gh::GitHub;
 use crate::git::Repo;
-use crate::wake::wake;
 
 /// An issue nobody holds, as a human's command reads it.
 struct Unheld {
@@ -128,7 +127,7 @@ pub fn rule(repo: &Repo, team: &Team, number: u64, text: String) -> Result<Value
     issue.leave(&stage.name, Stated::Declared(Declared::Ruling), text)?;
     let relabelled = issue.hand_back(team, workflow)?;
     Ok(json!({"issue": number, "workflow": workflow.name, "stage": stage.name, "ruled": true,
-        "relabelled": relabelled, "woke": wake(repo)?["woke"]}))
+        "relabelled": relabelled}))
 }
 
 /// `afkconvoy send`: put issue `number` at the stage `stage` of its workflow,
@@ -153,7 +152,7 @@ pub fn send(repo: &Repo, team: &Team, number: u64, stage: &str, text: String) ->
     issue.leave(stage, Stated::Sent, text)?;
     let relabelled = issue.hand_back(team, workflow)?;
     Ok(json!({"issue": number, "workflow": workflow.name, "stage": stage, "sent": true,
-        "relabelled": relabelled, "woke": wake(repo)?["woke"]}))
+        "relabelled": relabelled}))
 }
 
 /// A human's `afkconvoy verdict`: declare `declared` for the stage `stage`
@@ -198,5 +197,5 @@ pub fn declare(
     }
     issue.leave(stage, Stated::Declared(declared), text)?;
     Ok(json!({"issue": number, "stage": stage, "verdict": declared.word(), "by": "human",
-        "declared": true, "woke": wake(repo)?["woke"]}))
+        "declared": true}))
 }
