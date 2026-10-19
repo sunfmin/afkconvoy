@@ -31,6 +31,8 @@ WHAT IT HOLDS
       harness/    the user directory the fleet keeps for pi and for Codex, a worker's
                   in place of yours: harness/pi, harness/codex.
       runs/       the log of each repo's `run`, one file per repo: what `doctor` reads.
+                  It keeps every line of the last 24 hours, and never fewer than 200
+                  lines nor more than 5000, the oldest dropped first.
       instances/  the socket each `run` of this host listens on, whatever its repo,
                   named for its fleet instance: how they find one another before one
                   puts the host to sleep. A `run` removes its own as it exits.

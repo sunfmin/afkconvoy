@@ -159,8 +159,16 @@ impl World {
         git(&self.clone, &["push", "-q", "origin", BASE]);
     }
 
-    /// Runs a command that prints lines before its answer → (the lines, the answer).
+    /// Runs a command that prints lines before its answer → (the lines, the
+    /// answer), but for the lines a `run` says of itself whatever it does: its
+    /// start, and each tick's (`bookkeeping`).
     pub fn afk_lines(&self, args: &[&str]) -> (Vec<String>, Value) {
+        let (lines, answer) = self.afk_every_line(args);
+        (lines.into_iter().filter(|line| !bookkeeping(line)).collect(), answer)
+    }
+
+    /// Runs a command that prints lines before its answer → (every line, the answer).
+    pub fn afk_every_line(&self, args: &[&str]) -> (Vec<String>, Value) {
         let out =
             self.command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone).args(args).output().unwrap();
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -704,6 +712,15 @@ pub fn write(dir: &Path, file: &str, text: &str) {
     let path = dir.join(file);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
+}
+
+/// Whether `line` is one a `run` prints whatever its ticks do: the line of
+/// its start (`start: run as …`), or of a tick's (`tick N: started (…)`).
+pub fn bookkeeping(line: &str) -> bool {
+    let tick_started = line.strip_prefix("tick ").is_some_and(|rest| {
+        rest.split_once(": started (").is_some_and(|(count, _)| count.parse::<u64>().is_ok())
+    });
+    tick_started || line.starts_with("start: run as ")
 }
 
 /// Runs git in `cwd` and returns its trimmed stdout; a failure fails the test.
