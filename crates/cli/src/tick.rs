@@ -7,7 +7,7 @@ use std::time::Duration;
 use afkconvoy_core::before::{Before, Lost};
 use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
 use afkconvoy_core::lock::named;
-use afkconvoy_core::plan::{LabelBar, Status, WorkingSet, handed_by, label_bar};
+use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::wake::turn;
@@ -139,9 +139,7 @@ pub fn tick(
         .filter_map(|issue| handed_by(&issue.labels, config).map(|label| (issue.number, label)))
         .collect();
     let beat = fleet.scan.last_beat(me_said);
-    let saw = Before::saw(&set.mine, issues, (&fleet.scan.claims, me_said, beat), |labels| {
-        matches!(label_bar(labels, config), Some(LabelBar::NotReady(_) | LabelBar::NoFlow))
-    });
+    let saw = Before::saw((&set.mine, issues), (&fleet.scan.claims, me_said, beat), config);
     let ticked = Ticked {
         pass,
         failures,

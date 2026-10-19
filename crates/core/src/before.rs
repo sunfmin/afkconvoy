@@ -7,8 +7,9 @@
 use std::collections::BTreeMap;
 
 use crate::claims::Claim;
+use crate::config::Config;
 use crate::lease::is_stale;
-use crate::plan::{Issue, Mine, Status};
+use crate::plan::{Issue, LabelBar, Mine, Status, label_bar};
 
 /// What one tick saw as it ended.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -65,37 +66,28 @@ impl Lost {
 
 impl Before {
     /// What a tick saw as it ended: `mine` and `issues` as its rebuild read
-    /// them, `claims` and `beat` as its steps left them. `barred` says of an
-    /// issue's labels whether they keep it from being dispatched.
+    /// them, `claims` and `beat` as its steps left them, under `config`.
     pub fn saw(
-        mine: &[Mine],
-        issues: &[Issue],
+        (mine, issues): (&[Mine], &[Issue]),
         (claims, me, beat): (&[Claim], &str, Option<u64>),
-        barred: impl Fn(&[String]) -> bool,
+        config: &Config,
     ) -> Before {
-        let landing = |number: u64| {
-            mine.iter().any(|mine| {
-                mine.number == number
-                    && matches!(mine.status, Status::Joining | Status::Joined | Status::Landed)
-            })
-        };
-        let held = claims
-            .iter()
-            .filter(|claim| claim.owner.as_ref().is_some_and(|owner| owner.instance == me))
-            .map(|claim| Held {
-                number: claim.number,
-                id: claim.id.clone(),
-                landing: landing(claim.number),
-            })
-            .collect();
-        let open = issues
-            .iter()
-            .map(|issue| {
-                let looked =
-                    Looked { barred: barred(&issue.labels), open_blockers: issue.open_blockers };
-                (issue.number, looked)
-            })
-            .collect();
+        let mut held = vec![];
+        for claim in claims {
+            if claim.owner.as_ref().is_some_and(|owner| owner.instance == me) {
+                let landing = mine.iter().any(|mine| {
+                    mine.number == claim.number
+                        && matches!(mine.status, Status::Joining | Status::Joined | Status::Landed)
+                });
+                held.push(Held { number: claim.number, id: claim.id.clone(), landing });
+            }
+        }
+        let mut open = BTreeMap::new();
+        for issue in issues {
+            let bar = label_bar(&issue.labels, config);
+            let barred = matches!(bar, Some(LabelBar::NotReady(_) | LabelBar::NoFlow));
+            open.insert(issue.number, Looked { barred, open_blockers: issue.open_blockers });
+        }
         Before { tick: 0, held, beat, open }
     }
 
