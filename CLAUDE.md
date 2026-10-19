@@ -8,9 +8,9 @@ When this repo's fleet is idle (the last line of `~/Library/Logs/afkconvoy-run.l
 2. On a branch `release-<version>`: set `version` in `Cargo.toml`, `cargo update -w`, commit `afkconvoy <version>`, open a PR listing the PRs since the tag, and squash-merge it (`gh pr merge --squash --delete-branch`). This rule is the go-ahead to merge that PR.
 3. On `main`, pulled: `git tag -a v<version> -m 'afkconvoy <version>'`, push the tag, then `packaging/release.sh check v<version>`, `build`, `package`, `publish` (the release workflow has no `HOMEBREW_TAP_TOKEN`).
 4. `brew update && brew upgrade sunfmin/tap/afkconvoy`, and check `afkconvoy --version`.
-5. Restart this repo's fleet only — the `afkconvoy run` whose working directory is this checkout, never another repo's: SIGTERM it, wait for it to exit, then `nohup afkconvoy run </dev/null >>~/Library/Logs/afkconvoy-run.log 2>&1 &`, and wait for its `tick 1:` line.
+5. Restart every `afkconvoy run` on this host on the new binary, whatever repo it works. Before stopping one, note its working directory, its full command line and where its stdout goes (`ps`, `lsof -d cwd,1`). SIGTERM it and wait for it to exit (its claims stay with this host and the new one takes them back), then from that working directory `nohup <the same command line> </dev/null >><its stdout file> 2>&1 &`. If its stdout was not a file of its own — `/dev/null`, or another session's file under `/private/tmp` — write to `~/Library/Logs/afkconvoy-<repo>-run.log` instead. One at a time; wait for each one's first finished `tick 1:` line.
 
-Report the version, the PRs it holds, and the seconds each step took.
+Report the version, the PRs it holds, every fleet restarted (repo, old and new PID), and the seconds each step took.
 
 ## Agent skills
 
