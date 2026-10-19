@@ -13,17 +13,25 @@ WHO RUNS IT
 WHAT IT READS AND WRITES
 
   It sends one signal to the `run` of this host for this repo, over a socket in the
-  repo's git directory, naming itself and the issue the worker is on, if its
-  environment says one. It carries nothing else and writes nothing to GitHub: the tick
-  it starts reads the outcome from GitHub itself.
+  repo's git directory — naming itself, and the issue the worker is on if its
+  environment says one — and waits 3 seconds at most for that `run`'s answer, on a
+  socket of its own in the temp directory that it removes as it ends. The signal carries
+  nothing else and it writes nothing to GitHub: the tick it starts reads the outcome
+  from GitHub itself.
 
 WHAT IT ANSWERS
 
-  {"woke": true} — the signal was sent.
-  {"woke": false, "detail"} — it was not: no `run` is listening for this repo on this
-  host, or the reason given.
+  {"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The `run`'s
+  log says "tick N: started (woken by wake #12)" of it.
+  {"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it
+  ends. The `run`'s log says "woken by wake #12 during tick N: tick N+1 follows" of the
+  first such wake.
+  {"woke": false, "detail"} — no `run` heard it: none is listening for this repo on this
+  host, or the one listening did not answer within 3 seconds. `detail` says which, with
+  the line that fixes it: start one with `afkconvoy run`, or ask `afkconvoy doctor`.
 
-  Errors: only "is not in a git checkout". Failing to wake anybody is not an error.
+  It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake
+  anybody is not an error, and costs at most the 3 seconds it waits.
 
 WHAT TRIPS YOU UP
 

@@ -27,8 +27,9 @@ WHAT IT LOGS
     verdict #121 (worker): FAILED: issue #121 is closed
 
   Then it wakes this host's `run` for this repo, which logs `woken by park #46` and
-  starts its next tick, or follows the one in progress with it. Its answer says
-  whether it did, as \"woke\". With no `run` listening it does nothing more.";
+  starts its next tick, or follows the one in progress with it; it waits 3 seconds at
+  most for the `run` to answer. Its answer says whether it woke one, as \"woke\". With
+  no `run` listening it does nothing more.";
 
 /// One command that acts, as it starts.
 pub struct Acting {

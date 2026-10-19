@@ -2,8 +2,9 @@
 //! `afkconvoy wake`, which a worker runs to end that sleep early.
 //!
 //! The socket is a file in the repo's git dir — the one place every worktree
-//! of a repo shares on a host — and one datagram is all that crosses it: what
-//! sent it, in words (`park #46`), or nothing.
+//! of a repo shares on a host — and one datagram is all that crosses it to
+//! the `run`: what sent it, in words (`park #46`), or nothing. The `run`
+//! answers a wake sent from a socket with a name (`Answer`), as it hears it.
 
 use std::io::ErrorKind;
 use std::os::unix::net::UnixDatagram;
@@ -12,7 +13,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use afkconvoy_core::wake::{SIGNAL, SOCKET};
+use afkconvoy_core::wake::{Answer, SIGNAL, SOCKET};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
@@ -82,6 +83,8 @@ struct Wakes {
     ticking: Option<u64>,
     /// Whether a wake was heard during it, and told.
     told: bool,
+    /// The last tick to have started: none before the first.
+    last: u64,
     /// The listener was dropped: the thread ends.
     closed: bool,
 }
@@ -127,7 +130,8 @@ impl Listener {
     pub fn forget(&self, count: u64) {
         let Some(heard) = &self.heard else { return };
         let mut wakes = heard.wakes();
-        (wakes.waiting, wakes.by, wakes.ticking, wakes.told) = (false, None, Some(count), false);
+        (wakes.waiting, wakes.by, wakes.ticking, wakes.told, wakes.last) =
+            (false, None, Some(count), false, count);
     }
 
     /// The tick `forget` named ended: a wake heard from now is told by the
@@ -177,28 +181,35 @@ impl Drop for Listener {
 
 /// The hearing thread: every wake on `socket` is kept in `heard`, and the
 /// first of a tick told to `during` as it is heard — under the lock, so the
-/// tick's end is said after it.
+/// tick's end is said after it. A wake from a socket with a name is answered
+/// there, at once: what the `run` will do of it.
 fn hear(socket: &UnixDatagram, heard: &Heard, during: &During) {
     let mut named = [0; NAMED_UP_TO];
     loop {
-        let got = socket.recv(&mut named);
+        let got = socket.recv_from(&mut named);
         let mut wakes = heard.wakes();
         if wakes.closed {
             return;
         }
         match got {
-            Ok(length) => {
+            Ok((length, from)) => {
                 let by = String::from_utf8_lossy(&named[..length]).trim().to_string();
                 let by = Some(by).filter(|by| !by.is_empty());
                 wakes.waiting = true;
                 if wakes.by.is_none() {
                     wakes.by.clone_from(&by);
                 }
+                let answer = Answer::of(wakes.ticking, wakes.last);
                 if let Some(count) = wakes.ticking.filter(|_| !wakes.told) {
                     wakes.told = true;
                     during(count, by);
                 }
                 heard.rung.notify_all();
+                drop(wakes);
+                // An answer that cannot be sent costs the waker its wait.
+                if let Some(to) = from.as_pathname() {
+                    let _ = socket.send_to(answer.said().as_bytes(), to);
+                }
             }
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
@@ -242,29 +253,92 @@ pub fn listening(repo: &Repo) -> bool {
     reached.is_ok()
 }
 
+/// How long a wake waits for the `run`'s answer.
+const ANSWER_WITHIN: Duration = Duration::from_secs(3);
+
+/// The socket `afkconvoy wake` hears its answer on: a file of its own in the
+/// temp dir, named short enough for a socket, and gone with it.
+struct Reply {
+    socket: UnixDatagram,
+    path: PathBuf,
+}
+
+impl Reply {
+    fn bind() -> std::io::Result<Reply> {
+        let name = format!("convoy-wake-{}.sock", std::process::id());
+        let mut path = std::env::temp_dir().join(&name);
+        // A socket's path may only be some hundred bytes long.
+        if path.as_os_str().len() > 100 {
+            path = Path::new("/tmp").join(&name);
+        }
+        let _ = std::fs::remove_file(&path);
+        let socket = UnixDatagram::bind(&path)?;
+        Ok(Reply { socket, path })
+    }
+}
+
+impl Drop for Reply {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Tells the `run` of this host for this repo to open its next tick now,
 /// naming `by` — what woke it, `park #46` — for it to log: what every command
 /// that acts does as it ends (`crate::acting`), `afkconvoy wake` among them.
-/// With no `run` it does nothing, and whatever goes wrong sending it is not
+/// It waits a few seconds at most (`ANSWER_WITHIN`) for the `run`'s answer:
+/// the tick the wake starts, or the tick in progress it follows. With none
+/// running, or none answering, it does nothing, and whatever goes wrong is not
 /// an error: the fleet finds the outcome at its next tick anyway.
 pub fn wake(repo: &Repo, by: &str) -> Result<Value> {
+    let reply = Reply::bind();
     let sent = inside(&home(repo)?, |name| {
-        let socket = UnixDatagram::unbound()?;
+        let socket = match &reply {
+            Ok(reply) => reply.socket.try_clone()?,
+            Err(_) => UnixDatagram::unbound()?,
+        };
         socket.set_nonblocking(true)?;
         let by = by.as_bytes();
         socket.send_to(&by[..by.len().min(NAMED_UP_TO)], name)
     });
-    Ok(match sent {
-        Ok(_) => json!({"woke": true}),
+    if let Err(error) = sent {
+        let nobody = error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            matches!(error.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused)
+        });
+        let why = if nobody {
+            "no afkconvoy run is listening for this repo on this host: start one with              `afkconvoy run` in a checkout of it"
+                .to_string()
+        } else {
+            format!("{error:#}: `afkconvoy doctor` says what is wrong with the fleet")
+        };
+        return Ok(json!({"woke": false, "detail": why}));
+    }
+    let reply = match reply {
+        Ok(reply) => reply,
         Err(error) => {
-            let nobody = error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                matches!(error.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused)
-            });
-            let why = if nobody {
-                "no afkconvoy run is listening for this repo on this host".to_string()
-            } else {
-                format!("{error:#}")
-            };
+            let why = format!(
+                "the wake was sent, but no answer can be heard here ({error}): the tick log, \
+                 or `afkconvoy doctor`, says what the run did of it"
+            );
+            return Ok(json!({"woke": false, "detail": why}));
+        }
+    };
+    let heard = || {
+        reply.socket.set_nonblocking(false).ok()?;
+        reply.socket.set_read_timeout(Some(ANSWER_WITHIN)).ok()?;
+        let mut bytes = [0; 64];
+        let n = reply.socket.recv(&mut bytes).ok()?;
+        Answer::read(&bytes[..n])
+    };
+    Ok(match heard() {
+        Some(Answer::Starts(tick)) => json!({"woke": true, "tick": tick}),
+        Some(Answer::Follows(tick)) => json!({"woke": true, "after_tick": tick}),
+        None => {
+            let why = format!(
+                "the afkconvoy run listening for this repo on this host did not answer within \
+                 {}s: `afkconvoy doctor` says why",
+                ANSWER_WITHIN.as_secs()
+            );
             json!({"woke": false, "detail": why})
         }
     })
