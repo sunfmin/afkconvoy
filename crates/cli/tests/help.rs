@@ -2,7 +2,7 @@
 //! `-h` the one-screen listing, and the skill file only points at the former.
 //! Each subcommand's `--help` is the next rung: what its one line leaves out.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::fs;

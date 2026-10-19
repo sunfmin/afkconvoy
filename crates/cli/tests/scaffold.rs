@@ -2,7 +2,7 @@
 //! written, created on GitHub when asked, and accepted by `check` exactly as
 //! written.
 
-mod common;
+use crate::common;
 
 use common::{World, git};
 use serde_json::{Value, json};

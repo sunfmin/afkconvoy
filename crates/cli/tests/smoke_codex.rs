@@ -16,7 +16,7 @@
 //! hand when what the fleet adds to the worker launch command changes, or
 //! Codex is upgraded:
 //!
-//!   cargo test -p afkconvoy --test smoke_codex -- --ignored --nocapture
+//!   cargo test -p afkconvoy --test cli smoke_codex:: -- --ignored --nocapture
 //!
 //! `AFKCONVOY_SMOKE_CODEX_COMMAND` is the worker launch command to try, when
 //! it is not the stock one.
@@ -69,7 +69,7 @@ fn said(shown: &Value, role: &str) -> String {
 }
 
 #[test]
-#[ignore = "runs real Codex: cargo test -p afkconvoy --test smoke_codex -- --ignored"]
+#[ignore = "runs real Codex: cargo test -p afkconvoy --test cli smoke_codex:: -- --ignored"]
 fn a_real_codex_worker_is_shown_its_role_s_rules_and_skills_the_repo_s_own_and_the_team_rules() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();
@@ -264,7 +264,7 @@ fn shown(request: &Value) -> String {
 }
 
 #[test]
-#[ignore = "starts real Codex: cargo test -p afkconvoy --test smoke_codex -- --ignored"]
+#[ignore = "starts real Codex: cargo test -p afkconvoy --test cli smoke_codex:: -- --ignored"]
 fn a_real_codex_worker_starts_on_its_brief_and_makes_no_call_its_role_or_the_guard_refuses() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path().canonicalize().unwrap();

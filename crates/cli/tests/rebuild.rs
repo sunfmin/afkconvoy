@@ -1,7 +1,7 @@
 //! What a rebuild costs: GitHub is asked a fixed number of times and the
 //! remote is listed once, however many issues are in flight.
 
-mod common;
+use crate::common;
 
 use common::{World, git, write};
 use serde_json::Value;

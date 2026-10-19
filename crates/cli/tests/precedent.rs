@@ -4,7 +4,7 @@
 //! closes a PR that is anything else and merges none; the issue goes on
 //! without waiting.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 

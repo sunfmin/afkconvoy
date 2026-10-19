@@ -3,7 +3,7 @@
 //! say so with the same evidence. Whether the gate is slow is the core's own
 //! tests'; these are the reads and the opening.
 
-mod common;
+use crate::common;
 
 use afkconvoy::claims::{Me, Scan, take_run};
 use afkconvoy::git::Repo;

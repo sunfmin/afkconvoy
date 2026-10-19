@@ -9,7 +9,7 @@
 //! Code, takes seconds and costs a little. Run it by hand when what the fleet
 //! adds to the worker launch command changes, or Claude Code is upgraded:
 //!
-//!   cargo test -p afkconvoy --test smoke -- --ignored --nocapture
+//!   cargo test -p afkconvoy --test cli smoke:: -- --ignored --nocapture
 //!
 //! `AFKCONVOY_SMOKE_COMMAND` is the worker launch command to try, when it is
 //! not the stock one. Nothing of the user's own configuration is touched: it

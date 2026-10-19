@@ -7,7 +7,7 @@
 //! refuses a call is the guard itself, and what orca hears is what the fleet
 //! then reads off it.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

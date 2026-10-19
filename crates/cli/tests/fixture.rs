@@ -1,6 +1,6 @@
 //! The fixture itself: what every later test stands on.
 
-mod common;
+use crate::common;
 
 use common::{BASE, World, git};
 

@@ -3,7 +3,7 @@
 //! worktree as ever, and has it change to the role's copy and start the
 //! worker launch command with a fixed set added (docs/adr/0009).
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 

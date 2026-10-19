@@ -4,7 +4,7 @@
 //! claim of its own, with what was declared so far as the worker's history.
 //! With no slot free, that start is a later tick's.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

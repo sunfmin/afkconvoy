@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use afkconvoy::gate::recorded;
 use afkconvoy::git::Repo;

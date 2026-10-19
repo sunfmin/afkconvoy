@@ -13,7 +13,7 @@
 //! Run it by hand when what the fleet adds to the worker launch command
 //! changes, or pi is upgraded:
 //!
-//!   cargo test -p afkconvoy --test smoke_pi -- --ignored --nocapture
+//!   cargo test -p afkconvoy --test cli smoke_pi:: -- --ignored --nocapture
 //!
 //! `AFKCONVOY_SMOKE_PI_COMMAND` is the worker launch command to try, when it
 //! is not the stock one.

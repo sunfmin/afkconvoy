@@ -1,7 +1,7 @@
 //! Every command that changes fleet state logs a line in the tick log of its
 //! host and repo as it acts, and wakes that repo's `run`, which logs who woke it.
 
-mod common;
+use crate::common;
 
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;

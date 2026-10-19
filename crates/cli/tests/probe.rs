@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{Answer, World, commit, git};
 use serde_json::{Value, json};
