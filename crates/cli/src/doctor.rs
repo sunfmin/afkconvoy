@@ -45,6 +45,8 @@ use crate::wake::listening;
 const FAILED_TICKS: usize = 3;
 /// How many failed steps the answer lists, newest first.
 const FAILED_SHOWN: usize = 10;
+/// How many of the events that reached a `run` the answer lists, newest first.
+const EVENTS_SHOWN: usize = 20;
 /// How long a worker is stopped for before it is a finding: past every wait
 /// a tick gives one before it nudges.
 const STOPPED_LONG: u64 = 1800;
@@ -227,6 +229,20 @@ pub struct Run {
     pub ticks: Option<Vec<(u64, Tick)>>,
     /// Its last check for host sleep, as its log has it; `None`: it made none.
     pub host_sleep: Option<HostSleepChecked>,
+    /// The newest events that reached this host's `run`s, newest first.
+    pub events: Vec<Event>,
+}
+
+/// One event that reached a `run` from outside it: a wake, its start or
+/// stop, the host put to sleep or waking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Event {
+    pub at: u64,
+    /// `wake`, `start`, `stop`, `host_sleep` or `host_wake`.
+    pub event: &'static str,
+    /// What caused it, in words.
+    pub cause: String,
+    pub instance: String,
 }
 
 /// A check for host sleep, as the log has it.
@@ -984,11 +1000,11 @@ fn read_log(
             let named = harness_commands.iter().map(|(harness, word)| format!("{harness}={word}"));
             Some(std::iter::once(worker_command.clone()).chain(named).collect())
         }
-        What::Tick(_) | What::HostSleep { .. } => None,
+        _ => None,
     });
     let ticks = own().filter_map(|entry| match &entry.what {
         What::Tick(tick) => Some((entry.at, tick.clone())),
-        What::Start { .. } | What::HostSleep { .. } => None,
+        _ => None,
     });
     (Some(newest.instance.clone()), command, ticks.collect())
 }
@@ -1002,8 +1018,20 @@ fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
         What::HostSleep { slept, awake } => {
             Some(HostSleepChecked { at: entry.at, slept: *slept, awake: awake.clone() })
         }
-        What::Start { .. } | What::Tick(_) => None,
+        _ => None,
     })
+}
+
+/// The events that reached the `run`s of `host` (`Entry::event`), as the log
+/// has them: the newest `EVENTS_SHOWN`, newest first, whichever instance they
+/// reached — a `run` stopped and started again is two.
+fn read_events(entries: &[Entry], host: &str) -> Vec<Event> {
+    let of_host = entries.iter().rev().filter(|entry| entry.host == host);
+    let event = |entry: &Entry| {
+        let (event, cause) = entry.event()?;
+        Some(Event { at: entry.at, event, cause, instance: entry.instance.clone() })
+    };
+    of_host.filter_map(event).take(EVENTS_SHOWN).collect()
 }
 
 /// The team a bound repo names, as it stands at its head → with the team
@@ -1236,6 +1264,7 @@ fn fleet_json(run: &Run) -> Value {
         "failed_steps": failed,
         "host_sleep": run.host_sleep.as_ref().map(|checked| json!({"checked": checked.at,
             "slept": checked.slept, "kept_awake_by": checked.awake})),
+        "events": run.events,
     })
 }
 
@@ -1285,6 +1314,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
+        events: read_events(entries.as_deref().unwrap_or_default(), host),
         ticks: entries.map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
@@ -1326,6 +1356,7 @@ mod tests {
     use afkconvoy_core::plan::{Dispatchable, Excluded, Mine, PeerClaim};
 
     use super::*;
+    use crate::log::Cause;
 
     const NOW: u64 = 100_000;
 
@@ -1376,6 +1407,7 @@ mod tests {
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
             host_sleep: None,
+            events: vec![],
         }
     }
 
@@ -2004,6 +2036,55 @@ mod tests {
         let found = self::found(&host(), &run(vec![]), &state);
         let severities: Vec<Severity> = found.iter().map(|finding| finding.severity).collect();
         assert_eq!(severities, [Severity::Critical, Severity::Warning, Severity::Info]);
+    }
+
+    #[test]
+    fn the_events_that_reached_this_hosts_runs_are_listed_newest_first_with_their_causes() {
+        let entry = |at: u64, instance: &str, host: &str, what: What| Entry {
+            at,
+            instance: instance.into(),
+            host: host.into(),
+            what,
+        };
+        let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
+        let started = |count, cause| What::TickStarted { count, cause };
+        let entries = [
+            entry(10, "old", "h1", start.clone()),
+            entry(20, "old", "h1", What::Stop { line: "holding no claim".into() }),
+            entry(30, "alpha", "h1", start.clone()),
+            entry(30, "alpha", "h1", started(1, Cause::Start)),
+            entry(40, "alpha", "h1", What::Tick(tick(1, json!([])).1)),
+            entry(50, "alpha", "h1", started(2, Cause::Timer)),
+            entry(55, "alpha", "h1", What::WokenDuring { during: 2 }),
+            entry(60, "alpha", "h1", started(3, Cause::Woken)),
+            entry(70, "alpha", "h1", What::HostSleep { slept: false, awake: vec!["x".into()] }),
+            entry(80, "alpha", "h1", What::HostSleep { slept: true, awake: vec![] }),
+            entry(90, "alpha", "h1", What::HostWoke { asleep: 3600 }),
+            entry(95, "beta", "h2", start),
+        ];
+        let events = read_events(&entries, "h1");
+        let said: Vec<(u64, &str, &str, &str)> = events
+            .iter()
+            .map(|event| (event.at, event.event, event.cause.as_str(), event.instance.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (90, "host_wake", "after 3600s asleep", "alpha"),
+                (80, "host_sleep", "every fleet on this host was idle", "alpha"),
+                (60, "wake", "woken: tick 3 started", "alpha"),
+                (55, "wake", "woken during tick 2: tick 3 followed", "alpha"),
+                (30, "start", "afkconvoy run started, its workers with `claude`", "alpha"),
+                (20, "stop", "told to stop (SIGTERM or SIGINT): holding no claim", "old"),
+                (10, "start", "afkconvoy run started, its workers with `claude`", "old"),
+            ]
+        );
+        // only the newest are listed
+        let many: Vec<Entry> =
+            (0..30).map(|at| entry(at, "alpha", "h1", started(at, Cause::Woken))).collect();
+        let events = read_events(&many, "h1");
+        assert_eq!(events.len(), EVENTS_SHOWN);
+        assert_eq!(events[0].at, 29);
     }
 
     #[test]

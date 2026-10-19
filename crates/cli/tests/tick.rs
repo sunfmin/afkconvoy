@@ -233,6 +233,28 @@ fn run_follows_a_tick_that_settled_a_claim_with_no_sleep_and_sleeps_after_one_th
 }
 
 #[test]
+fn every_tick_says_as_it_starts_why_it_started() {
+    let world = backlog(&[3]);
+    tick(&world, "1000");
+    world.close_issue(3);
+    let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let more = ["--instance", "alpha", "--ticks", "3", "--now", "1090", "--no-host-sleep"];
+    let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
+    assert_eq!(
+        lines,
+        [
+            "start: run as alpha on h1, its workers started with `agent`",
+            "tick 1: started (start)",
+            "tick 1: settled #3 · holding 0/2 · frontier 0 · next now",
+            "tick 2: started (follow-up)",
+            "tick 2: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+            "tick 3: started (timer)",
+            "tick 3: nothing to do · holding 0/2 · frontier 0 · next in 90s",
+        ]
+    );
+}
+
+#[test]
 fn run_mints_an_instance_id_named_for_the_host() {
     let world = backlog(&[3]);
     let (_, stopped) = run(&world, &["--ticks", "1"]);

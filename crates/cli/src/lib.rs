@@ -837,7 +837,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let second = Duration::from_millis(second_ms);
             let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after };
             let agent = agent.start(now, false)?;
-            tick::run(&mut me, &agent, &pacing, panel, || fixed_now.unwrap_or_else(clock))
+            tick::run(&mut me, &agent, &pacing, panel, move || fixed_now.unwrap_or_else(clock))
         }
         Command::Panel { open: true, port, .. } => opening::open(&Repo::here()?, port),
         Command::Panel { instance, host, .. } => {

@@ -32,10 +32,10 @@ WHAT A COMMAND ANSWERS
 
   Every command prints exactly one JSON object on stdout. A failure is {"error": …} with
   a non-zero exit — and "see" beside it, where a topic explains it: the command that
-  prints that topic. Warnings go to stderr. `run` instead prints one line per tick until
-  it is stopped, `show` a drawing unless it is asked about an issue, `help` plain text
-  as `--help` does, `skill` the text of a file, and `guard` answers the harness that
-  asks it as a hook does: with its exit code.
+  prints that topic. Warnings go to stderr. `run` instead prints its log — a line as
+  each tick starts and one as it ends — until stopped, `show` a drawing unless asked
+  about an issue, `help` plain text as `--help` does, `skill` the text of a file, and
+  `guard` answers the harness that asks it as a hook does: with its exit code.
 
 THE COMMANDS, by who runs them
 

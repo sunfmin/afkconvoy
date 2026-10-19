@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::World;
+use common::{World, bookkeeping};
 use serde_json::Value;
 
 /// The directory every `run` of a world's host listens in.
@@ -35,7 +35,8 @@ fn worked() -> World {
 }
 
 /// Runs alpha of h1 for `ticks` ticks, putting the host to sleep once every
-/// fleet on it has been idle no time at all → the lines it printed.
+/// fleet on it has been idle no time at all → the lines it printed, but for
+/// those it prints whatever it does (`bookkeeping`).
 fn run(world: &World, ticks: &str) -> Vec<String> {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
@@ -44,7 +45,7 @@ fn run(world: &World, ticks: &str) -> Vec<String> {
     let out = command.args(args).args(pacing).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
-    stdout.lines().map(str::to_string).collect()
+    stdout.lines().filter(|line| !bookkeeping(line)).map(str::to_string).collect()
 }
 
 /// What `doctor` says of the last check for host sleep.
@@ -109,6 +110,7 @@ fn a_fleet_that_worked_puts_its_host_to_sleep_once_every_fleet_on_it_is_idle() {
     let slept: Vec<&String> = lines.iter().filter(|line| line.starts_with("host sleep:")).collect();
     assert_eq!(slept.len(), 1, "{lines:?}");
     assert!(slept[0].ends_with("put the host to sleep"), "{lines:?}");
+    assert!(!lines.iter().any(|line| line.starts_with("host woke:")), "no sleep to notice");
     // it ticked once more first: the line comes after the second tick
     let at = |prefix: &str| lines.iter().position(|line| line.starts_with(prefix)).unwrap();
     assert!(at("tick 2:") < at("host sleep:"), "{lines:?}");
@@ -123,7 +125,9 @@ fn a_host_woken_since_the_fleet_last_worked_is_not_put_back_to_sleep() {
     let world = World::new();
     // it never held a claim: nothing it did keeps a host woken by hand awake
     let lines = run(&world, "2");
-    assert!(!lines.iter().any(|line| line.starts_with("host sleep:")), "{lines:?}");
+    // a check that kept the host awake is a line, as in the log
+    let kept = "host sleep: kept awake: this instance has not worked since the host last woke";
+    assert!(lines.iter().any(|line| line == kept), "{lines:?}");
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     let checked = last_check(&world);
     assert_eq!(checked["slept"], false, "{checked}");
@@ -163,13 +167,11 @@ fn an_instance_idle_less_than_ten_minutes_makes_no_check() {
     let out = command.args(args).args(["--second-ms", "0", "--ticks", "3"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
-    assert!(
-        stdout.starts_with(
-            "start: puts this host to sleep once every fleet on it has been idle ten minutes \
-         (`--no-host-sleep` keeps it awake)\n"
-        ),
-        "{stdout}"
-    );
+    let host_sleep = "start: puts this host to sleep once every fleet on it has been idle ten \
+                      minutes (`--no-host-sleep` keeps it awake)";
+    let lines: Vec<&str> = stdout.lines().filter(|line| !bookkeeping(line)).collect();
+    assert_eq!(lines[0], host_sleep, "{stdout}");
+    assert!(!stdout.contains("host sleep:"), "{stdout}");
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     assert_eq!(last_check(&world), Value::Null);
 }
@@ -256,7 +258,8 @@ fn a_run_told_to_stop_while_a_check_waits_for_the_ticks_stops_at_once() {
     let mut lines = BufReader::new(run.stdout.take().unwrap()).lines();
     // the check asked delta to tick, and its own second tick has ended
     for line in lines.by_ref() {
-        if line.unwrap().starts_with("tick 2:") {
+        let line = line.unwrap();
+        if line.starts_with("tick 2: ") && !bookkeeping(&line) {
             break;
         }
     }

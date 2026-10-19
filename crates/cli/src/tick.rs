@@ -1,6 +1,7 @@
 //! The tick's effect half: carries out the steps the core's pass hands it, and
 //! the loop that runs one tick after another.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
@@ -22,7 +23,7 @@ use crate::gh::{Gone, unreached};
 use crate::git::Repo;
 use crate::host_sleep::{Checked, HostSleep};
 use crate::judge::judge;
-use crate::log::{self, Log};
+use crate::log::{self, Cause, Log};
 use crate::opening;
 use crate::panel::{self, Panel};
 use crate::patrol;
@@ -35,7 +36,7 @@ use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::tend_train;
 use crate::topic::{self, See};
-use crate::wake::{Listener, Waker};
+use crate::wake::{During, Listener, Waker};
 use crate::watch::watch;
 
 /// What failed: a step, or the rebuild's read of one claimed issue.
@@ -605,21 +606,41 @@ fn start_line(took: &Value) -> Option<String> {
 /// stop.
 const HEARS_WITHIN: Duration = Duration::from_millis(250);
 
+/// How many seconds past its length a rest takes before the host is taken to
+/// have slept through it.
+const SLEPT_PAST: u64 = 60;
+
+/// How a rest ended.
+#[derive(PartialEq)]
+enum Rested {
+    /// It slept the whole of it.
+    Slept,
+    Woken,
+    Stopped,
+}
+
 /// Sleeps for `sleep`, or until a wake, or until this run is told to stop →
-/// whether it slept the whole of it.
-fn rest(wakes: &Listener, stop: &Stop, sleep: Duration) -> bool {
+/// how it ended. A nap the wall clock says took far longer than it was to is
+/// the host waking from a sleep: said as it is noticed.
+fn rest(wakes: &Listener, stop: &Stop, sleep: Duration, (said, clock): (&Said, &Clock)) -> Rested {
     let mut left = sleep;
     while !stop.told() {
         let nap = left.min(HEARS_WITHIN);
-        if wakes.rest(nap) {
-            return false;
+        let before = clock();
+        let woken = wakes.rest(nap);
+        let took = clock().saturating_sub(before);
+        if took > nap.as_secs() + SLEPT_PAST {
+            said.keep(clock(), log::What::HostWoke { asleep: took - nap.as_secs() });
+        }
+        if woken {
+            return Rested::Woken;
         }
         if nap == left {
-            return true;
+            return Rested::Slept;
         }
         left -= nap;
     }
-    false
+    Rested::Stopped
 }
 
 /// What a `run` told to stop says of its heartbeat as it goes (`goodbye`).
@@ -633,21 +654,33 @@ fn stop_line(me: &Me) -> String {
     }
 }
 
-/// The log a `run` keeps of itself (`log::Log`). One that cannot be written
-/// is said once and costs only what `doctor` could have read of it: no tick
+/// The clock a `run` reads, in epoch seconds: shared with the thread that
+/// hears its wakes.
+type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The log a `run` keeps of itself (`log::Log`), and its stdout: each line is
+/// printed as it is written, one at a time, whichever thread says it, so the
+/// two hold the same lines in the same order. A log that cannot be written is
+/// said once and costs only what `doctor` could have read of it: no tick
 /// waits for its log.
 struct Said {
     log: Option<Log>,
+    instance: String,
+    host: String,
+    /// Held while a line is printed and written.
+    one: Mutex<()>,
 }
 
 impl Said {
     /// Opens the log and says in it that `me` started, with `agent`.
     fn open(me: &Me, agent: &Agent) -> Said {
         let log = Repo::here().and_then(|repo| Log::of(&repo));
-        let mut said = Said { log: log.ok() };
+        let instance = me.instance.as_str().to_string();
+        let mut said =
+            Said { log: log.ok(), instance, host: me.host.clone(), one: Mutex::default() };
         // First words alone (`Launches::logged`): a command is written to no file.
         let (worker_command, harness_commands) = agent.launches.logged();
-        said.keep(me, me.now, log::What::Start { worker_command, harness_commands });
+        said.keep(me.now, log::What::Start { worker_command, harness_commands });
         said.log = said.log.filter(|log| log.file.exists());
         if said.log.is_none() {
             eprintln!(
@@ -657,9 +690,11 @@ impl Said {
         said
     }
 
-    fn keep(&self, me: &Me, at: u64, what: log::What) {
-        let instance = me.instance.as_str().to_string();
-        let entry = log::Entry { at, instance, host: me.host.clone(), what };
+    fn keep(&self, at: u64, what: log::What) {
+        let (instance, host) = (self.instance.clone(), self.host.clone());
+        let entry = log::Entry { at, instance, host, what };
+        let _one = self.one.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        println!("{}", entry.said());
         if let Some(log) = &self.log {
             // Soft: the line is on stdout too, and the next one is tried again.
             let _ = log.append(&entry);
@@ -668,32 +703,19 @@ impl Said {
 }
 
 /// Makes the check for host sleep that is due, if one is (`HostSleep::check`),
-/// and says how it ended: on stdout when it put the host to sleep, and in the
-/// log either way → whether the next tick is due now, the check waiting on it.
-fn check_host(
-    host: &mut HostSleep,
-    (said, me): (&Said, &Me),
-    stop: &Stop,
-    clock: &impl Fn() -> u64,
-) -> bool {
-    let Some(checked) = host.check(clock(), clock, stop) else { return false };
+/// and says how it ended → whether the next tick is due now, the check waiting on it.
+fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> bool {
+    let Some(checked) = host.check(clock(), clock.as_ref(), stop) else { return false };
     let (slept, awake) = match checked {
         Checked::TickNow => return true,
         Checked::Stopped => return false,
         Checked::Awake(awake) => (false, awake.iter().map(|awake| awake.said()).collect()),
-        Checked::Slept => {
-            println!(
-                "host sleep: every fleet on this host has been idle long enough, and ticked once \
-                 more: put the host to sleep"
-            );
-            (true, vec![])
-        }
+        Checked::Slept => (true, vec![]),
         Checked::Failed(error) => {
-            println!("host sleep: FAILED to put the host to sleep: {error}");
             (false, vec![format!("the host could not be put to sleep: {error}")])
         }
     };
-    said.keep(me, clock(), log::What::HostSleep { slept, awake });
+    said.keep(clock(), log::What::HostSleep { slept, awake });
     false
 }
 
@@ -706,8 +728,10 @@ fn check_host(
 /// none, it removes its heartbeat. A start removes the heartbeats left by the
 /// runs that could not (`at_start`). It serves the panel once that is opened — at the start,
 /// on a `panel_port`, or later by `afkconvoy panel --open` (`opening`) — a new page after
-/// every tick. It keeps a line of each tick in its log (`log::Log`),
-/// which nothing here ever reads. Unless told `--no-host-sleep`, it puts the
+/// every tick. It keeps a line in its log (`log::Log`) as each tick starts,
+/// with why, and as it ends, and one of each event that reaches it — a wake
+/// heard during a tick, said as it is heard — and prints each as it is
+/// written (`Said`); nothing here ever reads the log. Unless told `--no-host-sleep`, it puts the
 /// host to sleep once every fleet on it has been idle long enough
 /// (`HostSleep`, docs/adr/0016).
 pub fn run(
@@ -715,8 +739,9 @@ pub fn run(
     agent: &Agent,
     pacing: &Pacing,
     panel_port: Option<u16>,
-    clock: impl Fn() -> u64,
+    clock: impl Fn() -> u64 + Send + Sync + 'static,
 ) -> Result<Value> {
+    let clock: Clock = Arc::new(clock);
     let mut shown = Panel::empty(&Fleet::open(me.now)?, Some(me));
     let live = Live::new(panel::render(&shown));
     if let Some(port) = panel_port {
@@ -727,10 +752,15 @@ pub fn run(
     let mut count = 0;
     let mut started = false;
     let repo = Repo::here()?;
-    let wakes = Listener::open(&repo);
+    let said = Arc::new(Said::open(me, agent));
+    let during: During = {
+        let (said, clock) = (Arc::clone(&said), Arc::clone(&clock));
+        Box::new(move |during| said.keep(clock(), log::What::WokenDuring { during }))
+    };
+    let wakes = Listener::open(&repo, during);
     opening::listen(&repo, live.clone(), me.instance.as_str());
     let stop = Stop::listen();
-    let said = Said::open(me, agent);
+    let mut cause = Cause::Start;
     if let Some(line) = host_sleep_line(pacing) {
         println!("{line}");
     }
@@ -746,6 +776,7 @@ pub fn run(
     let mut host = HostSleep::open(standing, Waker::of(&repo), pacing.host_sleep_after);
     loop {
         count += 1;
+        said.keep(clock(), log::What::TickStarted { count, cause });
         me.now = clock();
         // Once: a start takes every claim stamped with this host (docs/adr/0003).
         if !started {
@@ -764,13 +795,14 @@ pub fn run(
         let served = live.served();
         // A tick that could not even rebuild is a line, not the end of the loop.
         let ticked = turn(
-            || wakes.forget(),
+            || wakes.forget(count),
             || {
                 let (ticked, fleet) = tick(me, agent, &stop)?;
                 let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },
         );
+        wakes.ended();
         let idle = ticked.as_ref().ok().map(|(ticked, _)| ticked.idle());
         host.ticked(clock(), idle);
         let (line, sleep, logged) = match ticked {
@@ -796,36 +828,37 @@ pub fn run(
                 (format!("FAILED: {error}"), sleep, (None, None, Some(error)))
             }
         };
-        match sleep {
-            0 => println!("tick {count}: {line} · next now"),
-            _ => println!("tick {count}: {line} · next in {sleep}s"),
-        }
         let (bound, answer, error) = logged;
         let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
-        said.keep(me, clock(), log::What::Tick(tick));
+        said.keep(clock(), log::What::Tick(tick));
         if served {
             // A tick that failed leaves the page as the last one found it.
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
             live.show(panel::render(&shown));
         }
-        let mut due_now = check_host(&mut host, (&said, me), &stop, &clock);
+        let mut due_now = check_host(&mut host, &said, &stop, &clock);
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
         // A check that falls due while it sleeps is made then, whether a
         // tick is due or not.
         let mut left = pacing.second * sleep as u32;
+        cause = if sleep == 0 { Cause::FollowUp } else { Cause::Timer };
         while !due_now {
             let until = host.due().map(|due| Duration::from_secs(due.saturating_sub(clock())));
             let nap = until.map_or(left, |until| until.min(left));
-            if !rest(&wakes, &stop, nap) || nap == left {
+            let rested = rest(&wakes, &stop, nap, (&said, &clock));
+            if rested == Rested::Woken && sleep > 0 {
+                cause = Cause::Woken;
+            }
+            if rested != Rested::Slept || nap == left {
                 break;
             }
             left -= nap;
-            due_now = check_host(&mut host, (&said, me), &stop, &clock);
+            due_now = check_host(&mut host, &said, &stop, &clock);
         }
         if stop.told() {
-            println!("stop: {}", stop_line(me));
+            said.keep(clock(), log::What::Stop { line: stop_line(me) });
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
     }

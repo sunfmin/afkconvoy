@@ -69,6 +69,12 @@ WHAT IT ANSWERS
                                  to sleep, and else what kept the host awake, each in
                                  words. null: it made none, being told
                                  `--no-host-sleep` or never idle ten minutes
+                events           the last twenty events that reached a `run` of this
+                                 host, newest first, whichever instance: {at, event,
+                                 cause, instance} — event being wake (between ticks,
+                                 or during one), start, stop (told to, by SIGTERM or
+                                 SIGINT), host_sleep or host_wake; cause says what
+                                 caused it, in words. [] with no log
     claims    each claim of that instance: {issue, title, status, pr, stage, role,
               held_for, worker, worktree, gate} — status as `plan` gives it; stage and
               role in a bound repo; held_for in seconds; worker is {state, quiet}, state

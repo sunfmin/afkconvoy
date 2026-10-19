@@ -990,6 +990,8 @@ started with reads another directory, and finds no log there.
     harness/    the user directory the fleet keeps for pi and for Codex, a worker's
                 in place of yours: harness/pi, harness/codex.
     runs/       the log of each repo's `run`, one file per repo: what `doctor` reads.
+                It keeps every line of the last 24 hours, and never fewer than 200
+                lines nor more than 5000, the oldest dropped first.
     instances/  the socket each `run` of this host listens on, whatever its repo,
                 named for its fleet instance: how they find one another before one
                 puts the host to sleep. A `run` removes its own as it exits.
@@ -1494,7 +1496,7 @@ The web page that shows a human where the whole fleet stands: each workflow as t
 _Avoid_: dashboard, status page, status board (the comment on one issue), UI
 
 **Tick log**:
-The file a fleet instance's `run` keeps on its own host: one line as it starts and one for each tick, cut back to its newest lines at a bound. It is a log and not fleet state: nothing reads it to decide what the fleet does.
+The file a fleet instance's `run` keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake, the `run`'s start, or a follow-up — and one as it ends, plus the lines of the events that reached the `run`: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. `run` prints each line as it is written. It keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
 _Avoid_: state file, journal, history
 
 **Finding**:

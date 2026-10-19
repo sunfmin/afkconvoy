@@ -31,6 +31,11 @@ fn log(world: &World) -> Vec<Value> {
     text.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
+/// The lines of `log` that are ticks' ends.
+fn ticks(log: &[Value]) -> Vec<&Value> {
+    log.iter().filter(|line| !line["tick"].is_null()).collect()
+}
+
 /// The findings of `answer` whose `what` contains `what`.
 fn found<'a>(answer: &'a Value, what: &str) -> Vec<&'a Value> {
     let findings = answer["findings"].as_array().unwrap().iter();
@@ -170,44 +175,65 @@ fn the_instance_is_found_from_the_claims_stamped_with_this_host_where_there_is_n
 }
 
 #[test]
-fn run_logs_a_line_as_it_starts_and_one_for_each_tick() {
+fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
-    let lines = run(&world, &["--instance", "alpha", "--ticks", "2", "--now", "1000"]);
+    let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let more = ["--instance", "alpha", "--ticks", "2", "--now", "1000"];
+    let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
     let log = log(&world);
-    assert_eq!(log.len(), 3, "{log:?}");
+    assert_eq!(log.len(), 5, "{log:?}");
     assert_eq!(log[0]["start"]["worker_command"], "agent");
-    for (at, line) in log.iter().enumerate() {
+    assert_eq!(log[1]["tick_started"], json!({"count": 1, "cause": "start"}));
+    assert_eq!(log[3]["tick_started"], json!({"count": 2, "cause": "timer"}));
+    for line in &log {
         assert_eq!(
             (&line["instance"], &line["host"], &line["at"]),
             (&json!("alpha"), &json!("h1"), &json!(1000))
         );
-        if at > 0 {
-            let tick = &line["tick"];
-            assert_eq!(tick["count"], at);
-            // what `run` printed, and what `tick` answers
-            let printed = format!(
-                "tick {at}: {} · next in {}s",
-                tick["line"].as_str().unwrap(),
-                tick["sleep"]
-            );
-            assert_eq!(printed, lines[at - 1]);
-            assert_eq!(tick["bound"], 2);
-            for key in ["did", "errors", "held", "frontier_remaining", "locks"] {
-                assert!(!tick["answer"][key].is_null(), "the tick's answer lost {key}: {tick}");
-            }
+    }
+    // stdout holds every line of the log, in its order
+    let host_sleep = "start: puts this host to sleep";
+    let printed: Vec<&String> = lines.iter().filter(|line| !line.starts_with(host_sleep)).collect();
+    assert_eq!(printed.len(), log.len(), "{lines:?}");
+    assert_eq!(printed[0], "start: run as alpha on h1, its workers started with `agent`");
+    assert_eq!(printed[1], "tick 1: started (start)");
+    assert_eq!(printed[3], "tick 2: started (timer)");
+    for (count, at) in [(1, 2), (2, 4)] {
+        let tick = &log[at]["tick"];
+        assert_eq!(tick["count"], count);
+        // what `run` printed, and what `tick` answers
+        let line = tick["line"].as_str().unwrap();
+        assert_eq!(*printed[at], format!("tick {count}: {line} · next in {}s", tick["sleep"]));
+        assert_eq!(tick["bound"], 2);
+        for key in ["did", "errors", "held", "frontier_remaining", "locks"] {
+            assert!(!tick["answer"][key].is_null(), "the tick's answer lost {key}: {tick}");
         }
     }
-    let failed = &log[1]["tick"]["answer"]["errors"][0];
+    let failed = &log[2]["tick"]["answer"]["errors"][0];
     assert_eq!((&failed["do"], &failed["issue"]), (&json!("dispatch"), &json!(3)));
 
     // a second `run` writes on: nothing a `run` wrote is lost when it ends
     run(&world, &["--instance", "beta", "--ticks", "1", "--now", "2000"]);
     let more = self::log(&world);
-    assert_eq!(more[..3], log[..]);
-    assert_eq!(more.len(), 5);
-    assert_eq!(more[3]["instance"], "beta");
+    assert_eq!(more[..5], log[..]);
+    assert_eq!(more.len(), 8);
+    assert_eq!(more[5]["instance"], "beta");
+
+    // …and `doctor` lists the starts of both, newest first, with their causes
+    let answer = doctor(&world, "2000").json;
+    let events = answer["fleet"]["events"].as_array().unwrap();
+    let said: Vec<(&Value, &Value, &Value)> =
+        events.iter().map(|event| (&event["at"], &event["event"], &event["instance"])).collect();
+    assert_eq!(
+        said,
+        [
+            (&json!(2000), &json!("start"), &json!("beta")),
+            (&json!(1000), &json!("start"), &json!("alpha"))
+        ]
+    );
+    assert_eq!(events[0]["cause"], "afkconvoy run started, its workers with `agent`");
 }
 
 #[test]
@@ -217,8 +243,9 @@ fn a_tick_that_failed_whole_is_logged_and_three_in_a_row_are_a_finding() {
     world.with_gh(|gh| gh["fail"] = json!(["pr list"]));
     run(&world, &["--instance", "alpha", "--ticks", "3", "--now", "1000"]);
     let log = log(&world);
-    assert!(log[3]["tick"]["error"].as_str().unwrap().starts_with("gh pr list failed"), "{log:?}");
-    assert_eq!(log[3]["tick"]["answer"], Value::Null);
+    let last = ticks(&log)[2];
+    assert!(last["tick"]["error"].as_str().unwrap().starts_with("gh pr list failed"), "{log:?}");
+    assert_eq!(last["tick"]["answer"], Value::Null);
 
     world.with_gh(|gh| gh["fail"] = json!([]));
     let unwell = doctor(&world, "1000");
@@ -296,7 +323,7 @@ fn start(world: &World) -> Running {
     // its first tick is over once its log says so
     let started = Instant::now();
     let runs = world.cache().join("afkconvoy/runs");
-    while !runs.is_dir() || log(world).len() < 2 {
+    while !runs.is_dir() || ticks(&log(world)).is_empty() {
         assert!(started.elapsed() < Duration::from_secs(60), "the run never logged a tick");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -308,7 +335,7 @@ fn a_live_run_is_seen_alive_and_a_claim_whose_worker_is_gone_is_a_finding() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
     let running = start(&world);
-    let at = log(&world)[1]["at"].as_u64().unwrap() + 5;
+    let at = ticks(&log(&world))[0]["at"].as_u64().unwrap() + 5;
     let now = at.to_string();
     world.with_orca(|orca| {
         let terminal = &mut orca["terminals"][0];

@@ -6,7 +6,7 @@ use std::process::{Child, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use common::{World, git};
+use common::{World, bookkeeping, git};
 use serde_json::json;
 
 /// How long anything a wake should bring about is waited for. The sleep it
@@ -42,8 +42,20 @@ fn run(world: &World) -> Running {
 }
 
 impl Running {
-    /// The next line `run` prints, if one comes within `within`.
+    /// The next line `run` prints but for those it prints whatever it does
+    /// (`bookkeeping`), if one comes within `within`.
     fn line(&self, within: Duration) -> Option<String> {
+        let until = Instant::now() + within;
+        loop {
+            let line = self.every_line(until.saturating_duration_since(Instant::now()))?;
+            if !bookkeeping(&line) {
+                return Some(line);
+            }
+        }
+    }
+
+    /// The next line `run` prints, whatever it is, if one comes within `within`.
+    fn every_line(&self, within: Duration) -> Option<String> {
         self.lines.recv_timeout(within).ok()
     }
 }
@@ -82,7 +94,11 @@ fn a_wake_from_a_worktree_opens_the_next_tick_now() {
     let started = Instant::now();
     assert_eq!(wake(&world, Path::new(&worktree)), json!({"woke": true}));
 
-    let second = running.line(SOON).expect("the wake opens the second tick");
+    // said before the tick does anything, within a second of the wake
+    let opened = running.every_line(SOON).expect("the wake opens the second tick");
+    assert_eq!(opened, "tick 2: started (woken)");
+    assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+    let second = running.line(SOON).expect("the second tick ends");
     assert!(second.starts_with("tick 2: "), "{second}");
     assert!(started.elapsed() < SOON);
     let stopped = running.line(SOON).expect("the answer");
@@ -116,13 +132,24 @@ fn a_wake_that_arrives_during_a_tick_makes_the_next_start_at_once() {
         let calls = world.gh()["calls"].to_string();
         calls.contains("graphql")
     });
+    let woken = Instant::now();
     assert_eq!(wake(&world, &world.clone), json!({"woke": true}));
     assert_eq!(wake(&world, &world.clone), json!({"woke": true}), "and a second, as well");
 
+    // said as it is heard, while the tick goes on — once
+    let heard = running.line(SOON).expect("the wake heard");
+    assert_eq!(heard, "woken during tick 1: tick 2 follows");
+    assert!(
+        woken.elapsed() < Duration::from_secs(1),
+        "said within a second: {:?}",
+        woken.elapsed()
+    );
     let first = running.line(SOON).expect("the first tick");
     assert!(first.starts_with("tick 1: dispatched #7"), "it ended after the wake came: {first}");
     assert!(first.ends_with("next in 90s"), "{first}");
-    let second = running.line(SOON).expect("no sleep: the wake was waiting");
+    let started = running.every_line(SOON).expect("no sleep: the wake was waiting");
+    assert_eq!(started, "tick 2: started (woken)", "it starts as the first ends");
+    let second = running.line(SOON).expect("the second tick");
     assert!(second.starts_with("tick 2: "), "{second}");
 }
 
