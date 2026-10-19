@@ -428,7 +428,7 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
         "exactly one JSON object on stdout",
         "{\"error\": …}",
         "Warnings go to stderr",
-        "one line per tick",
+        "each tick starts and one as it ends",
         // When to read a command's own help.
         "afkconvoy <command> --help",
         // The rules an agent would otherwise trip on.
