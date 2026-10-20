@@ -1479,8 +1479,12 @@ _Avoid_: liveness, status (as under Position)
 What ends a stage, declared on the issue by whoever performed it: `pass`, `reject`, `blocked`, `already-satisfied`, or `escalate`. Opening a PR declares nothing.
 _Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, or its verdict), result, needs-human
 
+**Silent worker**:
+A worker that stopped, declared nothing, and for the grace period showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
+_Avoid_: hung, idle (a fleet instance with nothing to do)
+
 **Nudge**:
-The one line the fleet types at a worker that stopped with no outcome, telling it to carry on. Sent once per worker.
+The one line the fleet types at a silent worker with no outcome, telling it to carry on. Sent once per worker.
 _Avoid_: ping, reminder, retry
 
 **Restart**:
