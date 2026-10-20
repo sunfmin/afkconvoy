@@ -98,8 +98,23 @@ pub enum Nudged {
     At(u64),
 }
 
+/// Work a stopped worker started itself — a shell or a monitor it runs in the
+/// background — that its harness shows still running: first seen at
+/// `since`, and waited on for no longer than `limit` seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Background {
+    pub since: u64,
+    pub limit: u64,
+}
+
+/// How many lines of its screen to ask a stopped worker's terminal for, to see
+/// whether its harness shows background work of its own running: the footer
+/// under its prompt, and the blank lines around it.
+pub const FOOTER_LINES: usize = 12;
+
 /// The proof that a worker is silent: it stopped, showed no sign of life
-/// within grace, and declared nothing. Only `route` makes one, so what asks
+/// within grace — and waits on no background work of its own, or has waited
+/// on it past the limit — and declared nothing. Only `route` makes one, so what asks
 /// for one — reading the worker's screen — is never done to a worker at work,
 /// or to one that said what it stopped on.
 #[derive(Debug, PartialEq, Eq)]
@@ -114,6 +129,9 @@ pub struct Silent {
     declared: bool,
     /// Whether it was nudged, and stayed silent a grace period more.
     pub nudged: bool,
+    /// How long it waited on its own background work, when that ran past the
+    /// limit — which is its silence, nudged or not.
+    pub waited: Option<u64>,
 }
 
 /// The proof that the worker here was never nudged, used up by the one nudge
@@ -134,6 +152,9 @@ pub enum Route {
     /// Nothing: the worker is at work, showed a sign of life within grace, or
     /// stopped in a way this decision does not settle.
     Leave,
+    /// Nothing: it stopped, and waits on its own background work, running
+    /// since this epoch second.
+    Waiting(u64),
     /// The issue needed no change: close it.
     Close(Workless),
     Escalate(Why),
@@ -233,7 +254,12 @@ pub fn stage_stalled_reason(stage: &str, consult: bool, silent: &Silent, tail: &
 /// `stopped` — what the worker stopped without — with how its silence was
 /// established, and the end of its screen.
 fn stalled(stopped: &str, silent: &Silent, tail: &Tail) -> String {
-    let why = if silent.nudged {
+    let why = if let Some(waited) = silent.waited {
+        format!(
+            "{stopped}, and waited {waited}s on its own background work, past the limit, \
+             without a word."
+        )
+    } else if silent.nudged {
         format!("{stopped}, and stayed silent after one nudge.")
     } else {
         format!("{stopped}, and this host has no worktree of its to nudge it in.")
@@ -356,17 +382,23 @@ enum Quiet {
     Gone,
     /// At work, or a sign of life within grace.
     Lively,
-    Stopped,
+    /// Stopped, waiting on its own background work since this epoch second.
+    Waiting(u64),
+    /// Stopped — having waited this long on its own background work, past
+    /// the limit, when it did.
+    Stopped(Option<u64>),
 }
 
 /// `handed`: when the worker here was last handed its work by the fleet —
 /// started, told of a train's tip. A sign of life like a nudge: it gets a
-/// grace period from then.
+/// grace period from then. `background`: its own background work, running —
+/// it is waiting, not silent, until that has run past its limit.
 fn quiet(
     state: WorkerState,
     progress: &Progress,
     nudged: Nudged,
     handed: Option<u64>,
+    background: Option<Background>,
     now: u64,
 ) -> Quiet {
     let terminal = match state {
@@ -380,8 +412,29 @@ fn quiet(
     };
     match least(quiet_for(terminal, progress, nudged, now), handed) {
         Some(quiet) if quiet < GRACE => Quiet::Lively,
-        _ => Quiet::Stopped,
+        _ => match background {
+            None => Quiet::Stopped(None),
+            // A stamp from the future is work just seen: it is waited on.
+            Some(background) => match stamp_age(background.since, now) {
+                Some(waited) if waited >= background.limit => Quiet::Stopped(Some(waited)),
+                _ => Quiet::Waiting(background.since),
+            },
+        },
     }
+}
+
+/// Whether a worker stopped and showed no sign of life within grace (see
+/// `silence`): whether it waits on its own background work is what decides
+/// its silence then, and so the one time that is worth reading off its
+/// screen.
+pub fn past_grace(
+    state: WorkerState,
+    progress: &Progress,
+    nudged: Nudged,
+    handed: Option<u64>,
+    now: u64,
+) -> bool {
+    matches!(quiet(state, progress, nudged, handed, None, now), Quiet::Stopped(_))
 }
 
 /// The silence of a worker that declared nothing.
@@ -391,6 +444,9 @@ pub enum Silence {
     Gone,
     /// It is at work, or showed a sign of life within grace.
     Lively,
+    /// It stopped, and waits on its own background work, running since this
+    /// epoch second: it is not silent.
+    Waiting(u64),
     /// It stopped: tell it, once, to carry on.
     Nudge(Unnudged),
     /// It stayed silent past its nudge, or cannot be nudged here.
@@ -399,25 +455,30 @@ pub enum Silence {
 
 /// How silent a worker is that declared nothing — or whose word is not on its
 /// issue to read: one with a PR open. The one place a nudge is allowed, and a
-/// silence proven.
+/// silence proven. A worker waiting on its own `background` work is neither
+/// nudged nor silent until that work ends — and it stays still past its nudge
+/// — or runs past its limit, which is a silence at once.
 pub fn silence(
     state: WorkerState,
     progress: &Progress,
     nudged: Nudged,
     handed: Option<u64>,
+    background: Option<Background>,
     now: u64,
 ) -> Silence {
-    match quiet(state, progress, nudged, handed, now) {
+    let silent = |nudged| Silent { lively: false, declared: false, nudged, waited: None };
+    match quiet(state, progress, nudged, handed, background, now) {
         Quiet::Gone => Silence::Gone,
         Quiet::Lively => Silence::Lively,
-        Quiet::Stopped => match nudged {
+        Quiet::Waiting(since) => Silence::Waiting(since),
+        Quiet::Stopped(Some(waited)) => Silence::Stalled(Silent {
+            waited: Some(waited),
+            ..silent(matches!(nudged, Nudged::At(_)))
+        }),
+        Quiet::Stopped(None) => match nudged {
             Nudged::Never => Silence::Nudge(Unnudged { sent: 0 }),
-            Nudged::At(_) => {
-                Silence::Stalled(Silent { lively: false, declared: false, nudged: true })
-            }
-            Nudged::Nowhere => {
-                Silence::Stalled(Silent { lively: false, declared: false, nudged: false })
-            }
+            Nudged::At(_) => Silence::Stalled(silent(true)),
+            Nudged::Nowhere => Silence::Stalled(silent(false)),
         },
     }
 }
@@ -427,28 +488,30 @@ pub fn silence(
 /// is retried: a failure escalates (docs/adr/0005).
 ///
 /// What the worker declared is routed whether or not it was nudged; a nudge is
-/// only ever for a worker that declared nothing. `handed` (see `silence`)
-/// spares only that worker: a verdict is not kept waiting for it.
+/// only ever for a worker that declared nothing. `handed` and `background`
+/// (see `silence`) spare only that worker: a verdict is not kept waiting for
+/// either.
 pub fn route(
     state: WorkerState,
     progress: &Progress,
     verdict: Option<&Verdict>,
     nudged: Nudged,
-    handed: Option<u64>,
+    (handed, background): (Option<u64>, Option<Background>),
     now: u64,
 ) -> Route {
     let Some(verdict) = verdict else {
-        return match silence(state, progress, nudged, handed, now) {
+        return match silence(state, progress, nudged, handed, background, now) {
             Silence::Gone => Route::Continue,
             Silence::Lively => Route::Leave,
+            Silence::Waiting(since) => Route::Waiting(since),
             Silence::Nudge(unnudged) => Route::Nudge(unnudged),
             Silence::Stalled(silent) => Route::Stalled(silent),
         };
     };
-    match quiet(state, progress, nudged, None, now) {
+    match quiet(state, progress, nudged, None, None, now) {
         Quiet::Gone => return Route::Continue,
         Quiet::Lively => return Route::Leave,
-        Quiet::Stopped => {}
+        Quiet::Waiting(_) | Quiet::Stopped(_) => {}
     }
     match verdict.phase {
         Some(Phase::AlreadySatisfied) => match Workless::of(progress) {
@@ -482,13 +545,13 @@ mod rejected {
     /// nudge typed over what it said.
     #[should_fail]
     fn a_worker_that_declared_called_silent(declared: bool) -> Silent {
-        Silent { lively: false, declared, nudged: false }
+        Silent { lively: false, declared, nudged: false, waited: None }
     }
 
     /// …or one that showed a sign of life within grace.
     #[should_fail]
     fn a_lively_worker_called_silent(lively: bool) -> Silent {
-        Silent { lively, declared: false, nudged: false }
+        Silent { lively, declared: false, nudged: false, waited: None }
     }
 
     /// A worker already nudged, nudged again.
@@ -538,22 +601,29 @@ mod tests {
     fn a_busy_worker_and_a_recent_sign_of_life_are_left() {
         let verdict = said(Some(Phase::Escalate));
         assert_eq!(
-            route(WorkerState::Busy, &progress(0, false), Some(&verdict), Nudged::Never, None, NOW),
+            route(
+                WorkerState::Busy,
+                &progress(0, false),
+                Some(&verdict),
+                Nudged::Never,
+                (None, None),
+                NOW
+            ),
             Route::Leave
         );
         let just = WorkerState::Idle { quiet: Some(GRACE - 1) };
         assert_eq!(
-            route(just, &progress(0, false), Some(&verdict), Nudged::Never, None, NOW),
+            route(just, &progress(0, false), Some(&verdict), Nudged::Never, (None, None), NOW),
             Route::Leave
         );
         let committed = Progress { last_commit: Some(NOW - 10), ..progress(0, false) };
         assert_eq!(
-            route(STOPPED, &committed, Some(&verdict), Nudged::Never, None, NOW),
+            route(STOPPED, &committed, Some(&verdict), Nudged::Never, (None, None), NOW),
             Route::Leave
         );
         let touched = Progress { touched: Some(NOW - 10), ..progress(0, false) };
         assert_eq!(
-            route(STOPPED, &touched, Some(&verdict), Nudged::Never, None, NOW),
+            route(STOPPED, &touched, Some(&verdict), Nudged::Never, (None, None), NOW),
             Route::Leave
         );
     }
@@ -561,7 +631,8 @@ mod tests {
     #[test]
     fn commits_ahead_and_a_dirty_tree_are_no_signs_of_life() {
         let verdict = said(Some(Phase::Escalate));
-        let route = route(STOPPED, &progress(9, true), Some(&verdict), Nudged::Never, None, NOW);
+        let route =
+            route(STOPPED, &progress(9, true), Some(&verdict), Nudged::Never, (None, None), NOW);
         assert_eq!(route, Route::Escalate(Why::Escalate));
         // nor is a stamp from the future, or no stamp at all
         let unknown = Progress { last_commit: Some(NOW * 2), touched: None, ..progress(0, false) };
@@ -574,23 +645,23 @@ mod tests {
         let idle = WorkerState::Idle { quiet: None };
         let satisfied = said(Some(Phase::AlreadySatisfied));
         assert!(matches!(
-            route(idle, &progress(0, false), Some(&satisfied), Nudged::Never, None, NOW),
+            route(idle, &progress(0, false), Some(&satisfied), Nudged::Never, (None, None), NOW),
             Route::Close(_)
         ));
         for refuted in [progress(1, false), progress(0, true)] {
             assert_eq!(
-                route(idle, &refuted, Some(&satisfied), Nudged::Never, None, NOW),
+                route(idle, &refuted, Some(&satisfied), Nudged::Never, (None, None), NOW),
                 Route::Escalate(Why::Refuted)
             );
         }
         let unreadable = Progress { commits_ahead: None, ..progress(0, false) };
         assert_eq!(
-            route(idle, &unreadable, Some(&satisfied), Nudged::Never, None, NOW),
+            route(idle, &unreadable, Some(&satisfied), Nudged::Never, (None, None), NOW),
             Route::Escalate(Why::Refuted),
             "unreadable is not zero"
         );
         assert_eq!(
-            route(idle, &progress(0, false), Some(&said(None)), Nudged::Never, None, NOW),
+            route(idle, &progress(0, false), Some(&said(None)), Nudged::Never, (None, None), NOW),
             Route::Escalate(Why::UnknownPhase)
         );
         assert!(Why::Escalate.reason("https://x/1").contains("https://x/1"));
@@ -600,7 +671,7 @@ mod tests {
     fn a_blocked_verdict_is_routed_by_its_blockers_unless_already_answered() {
         let blocked = said(Some(Phase::Blocked));
         assert_eq!(
-            route(STOPPED, &progress(1, false), Some(&blocked), Nudged::Never, None, NOW),
+            route(STOPPED, &progress(1, false), Some(&blocked), Nudged::Never, (None, None), NOW),
             Route::Blocked
         );
         let at = Some("https://x/1");
@@ -616,14 +687,17 @@ mod tests {
     #[test]
     fn a_silent_worker_is_nudged_once_then_stalled() {
         let work = progress(2, true);
-        assert!(matches!(route(STOPPED, &work, None, Nudged::Never, None, NOW), Route::Nudge(_)));
+        assert!(matches!(
+            route(STOPPED, &work, None, Nudged::Never, (None, None), NOW),
+            Route::Nudge(_)
+        ));
         // the nudge is a sign of life for one grace period…
         let just = Nudged::At(NOW - GRACE + 1);
-        assert_eq!(route(STOPPED, &work, None, just, None, NOW), Route::Leave);
+        assert_eq!(route(STOPPED, &work, None, just, (None, None), NOW), Route::Leave);
         assert_eq!(quiet_for(Some(9000), &work, just, NOW), Some(GRACE - 1));
         // …and then the silence is the worker's last word
         let Route::Stalled(silent) =
-            route(STOPPED, &work, None, Nudged::At(NOW - GRACE), None, NOW)
+            route(STOPPED, &work, None, Nudged::At(NOW - GRACE), (None, None), NOW)
         else {
             panic!("a second silence is not nudged again")
         };
@@ -631,26 +705,90 @@ mod tests {
         assert!(stalled_reason(&silent, &Tail::of(&[])).ends_with("after one nudge."));
         // a nudge stamped from the future is no sign of life
         assert!(matches!(
-            route(STOPPED, &work, None, Nudged::At(NOW * 2), None, NOW),
+            route(STOPPED, &work, None, Nudged::At(NOW * 2), (None, None), NOW),
             Route::Stalled(_)
         ));
+    }
+
+    #[test]
+    fn a_worker_waiting_on_its_own_background_work_is_not_silent() {
+        let work = progress(1, false);
+        let running = Some(Background { since: NOW - 600, limit: 3600 });
+        // neither nudged, nor stalled past its nudge, while the work runs
+        for nudged in [Nudged::Never, Nudged::At(NOW - GRACE)] {
+            assert_eq!(
+                route(STOPPED, &work, None, nudged, (None, running), NOW),
+                Route::Waiting(NOW - 600)
+            );
+        }
+        // a stamp from the future is work just seen
+        let just = Some(Background { since: NOW * 2, limit: 3600 });
+        assert_eq!(
+            route(STOPPED, &work, None, Nudged::Never, (None, just), NOW),
+            Route::Waiting(NOW * 2)
+        );
+        // a sign of life within grace is lively as ever
+        let lively = WorkerState::Idle { quiet: Some(GRACE - 1) };
+        assert_eq!(route(lively, &work, None, Nudged::Never, (None, running), NOW), Route::Leave);
+        // once it ends, the silence is counted as ever: a nudge, then stalled past it
+        assert!(matches!(
+            route(STOPPED, &work, None, Nudged::Never, (None, None), NOW),
+            Route::Nudge(_)
+        ));
+        let Route::Stalled(silent) =
+            route(STOPPED, &work, None, Nudged::At(NOW - GRACE), (None, None), NOW)
+        else {
+            panic!("stalled past its nudge")
+        };
+        assert_eq!(silent.waited, None);
+        // a verdict is not kept waiting for it
+        let verdict = said(Some(Phase::Escalate));
+        assert_eq!(
+            route(STOPPED, &work, Some(&verdict), Nudged::Never, (None, running), NOW),
+            Route::Escalate(Why::Escalate)
+        );
+    }
+
+    #[test]
+    fn a_worker_waiting_past_the_limit_is_silent_and_says_so() {
+        let past = Some(Background { since: NOW - 3600, limit: 3600 });
+        for nudged in [Nudged::Never, Nudged::At(NOW - GRACE)] {
+            let Route::Stalled(silent) =
+                route(STOPPED, &progress(0, false), None, nudged, (None, past), NOW)
+            else {
+                panic!("waiting past the limit is a silence, nudged or not")
+            };
+            assert_eq!(silent.waited, Some(3600));
+            let reason = stalled_reason(&silent, &Tail::of(&[]));
+            assert!(
+                reason.contains("waited 3600s on its own background work, past the limit"),
+                "{reason}"
+            );
+        }
     }
 
     #[test]
     fn a_worker_just_started_is_not_nudged_and_its_verdict_is_not_kept_waiting() {
         let started = Some(NOW - GRACE + 1);
         assert_eq!(
-            route(STOPPED, &progress(0, false), None, Nudged::Never, started, NOW),
+            route(STOPPED, &progress(0, false), None, Nudged::Never, (started, None), NOW),
             Route::Leave
         );
         let long_ago = Some(NOW - GRACE);
         assert!(matches!(
-            route(STOPPED, &progress(0, false), None, Nudged::Never, long_ago, NOW),
+            route(STOPPED, &progress(0, false), None, Nudged::Never, (long_ago, None), NOW),
             Route::Nudge(_)
         ));
         let verdict = said(Some(Phase::Escalate));
         assert_eq!(
-            route(STOPPED, &progress(0, false), Some(&verdict), Nudged::Never, started, NOW),
+            route(
+                STOPPED,
+                &progress(0, false),
+                Some(&verdict),
+                Nudged::Never,
+                (started, None),
+                NOW
+            ),
             Route::Escalate(Why::Escalate)
         );
     }
@@ -658,7 +796,7 @@ mod tests {
     #[test]
     fn with_nowhere_to_record_a_nudge_the_silence_stalls_at_once() {
         let Route::Stalled(silent) =
-            route(STOPPED, &progress(0, false), None, Nudged::Nowhere, None, NOW)
+            route(STOPPED, &progress(0, false), None, Nudged::Nowhere, (None, None), NOW)
         else {
             panic!("nothing can be nudged where no worktree is")
         };
@@ -671,14 +809,16 @@ mod tests {
         let human = said(Some(Phase::Escalate));
         for nudged in [Nudged::Never, Nudged::At(1), Nudged::Nowhere] {
             assert_eq!(
-                route(STOPPED, &progress(0, false), Some(&human), nudged, None, NOW),
+                route(STOPPED, &progress(0, false), Some(&human), nudged, (None, None), NOW),
                 Route::Escalate(Why::Escalate)
             );
         }
         // nor is a worker at work, or one gone, told anything
-        let gone = route(WorkerState::Gone, &progress(0, false), None, Nudged::Never, None, NOW);
+        let gone =
+            route(WorkerState::Gone, &progress(0, false), None, Nudged::Never, (None, None), NOW);
         assert_eq!(gone, Route::Continue);
-        let busy = route(WorkerState::Busy, &progress(0, false), None, Nudged::Never, None, NOW);
+        let busy =
+            route(WorkerState::Busy, &progress(0, false), None, Nudged::Never, (None, None), NOW);
         assert_eq!(busy, Route::Leave);
     }
 
@@ -690,17 +830,25 @@ mod tests {
         assert_eq!(settled_by_state(Some(STOPPED)), None);
         let human = said(Some(Phase::Escalate));
         assert_eq!(
-            route(WorkerState::Gone, &progress(3, true), Some(&human), Nudged::At(1), None, NOW),
+            route(
+                WorkerState::Gone,
+                &progress(3, true),
+                Some(&human),
+                Nudged::At(1),
+                (None, None),
+                NOW
+            ),
             Route::Continue
         );
     }
 
     #[test]
     fn a_nudge_tells_then_records() {
-        let take = || match route(STOPPED, &progress(0, false), None, Nudged::Never, None, NOW) {
-            Route::Nudge(unnudged) => unnudged,
-            other => panic!("{other:?}"),
-        };
+        let take =
+            || match route(STOPPED, &progress(0, false), None, Nudged::Never, (None, None), NOW) {
+                Route::Nudge(unnudged) => unnudged,
+                other => panic!("{other:?}"),
+            };
         let mut steps = vec![];
         let done: Result<(), ()> = nudge(take(), |step| {
             steps.push(step);
@@ -729,10 +877,11 @@ mod tests {
         let wide = Tail::of(&["é".repeat(500)]);
         assert_eq!(wide.text().chars().count(), SCREEN_LINE_CHARS);
         assert!(Tail::of(&["  ".to_string()]).is_empty());
-        let silent = match route(STOPPED, &progress(0, false), None, Nudged::At(1), None, NOW) {
-            Route::Stalled(silent) => silent,
-            other => panic!("{other:?}"),
-        };
+        let silent =
+            match route(STOPPED, &progress(0, false), None, Nudged::At(1), (None, None), NOW) {
+                Route::Stalled(silent) => silent,
+                other => panic!("{other:?}"),
+            };
         assert_eq!(screen_request(&silent), 60);
         let reason = stalled_reason(&silent, &Tail::of(&["Proceed? [y/n]".to_string()]));
         assert!(reason.ends_with("```\nProceed? [y/n]\n```"), "{reason}");

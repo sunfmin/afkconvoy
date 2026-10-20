@@ -257,6 +257,44 @@ pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::E
     })
 }
 
+/// The line Claude Code waits for the next prompt at: its footer is below it.
+const PROMPT: char = '❯';
+/// What Claude Code's footer counts of the work a session runs in the
+/// background, as `<n> <what>` between its `·`s: `1 shell, 1 monitor`.
+const BACKGROUND: [&str; 6] =
+    ["shell", "shells", "monitor", "monitors", "background task", "background tasks"];
+
+/// Whether the end of a Claude Code worker's screen shows work it started
+/// itself still running: its footer — the lines below the last prompt, or
+/// the last line where no prompt shows — counts a shell or a monitor. What
+/// a turn's end said ran, above the prompt, is not read: that work may have
+/// ended since.
+pub(super) fn shows_background(screen: &[String]) -> bool {
+    let mut below = screen.iter();
+    match screen.iter().rposition(|line| line.trim_start().starts_with(PROMPT)) {
+        Some(prompt) => {
+            below.nth(prompt);
+        }
+        None => {
+            let last = screen.iter().rposition(|line| !line.trim().is_empty());
+            if let Some(last) = last.and_then(|last| last.checked_sub(1)) {
+                below.nth(last);
+            }
+        }
+    }
+    below.any(|line| {
+        line.split(['·', ',']).any(|part| match part.trim().split_once(' ') {
+            Some((count, what)) => {
+                !count.is_empty()
+                    && count.bytes().all(|b| b.is_ascii_digit())
+                    && count != "0"
+                    && BACKGROUND.contains(&what.trim())
+            }
+            None => false,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +457,33 @@ mod tests {
             let why = takes_flags("agent ; true", silent).unwrap_err();
             assert!(why.contains("`agent ; true --help` failed in a login shell"), "{why}");
         }
+    }
+
+    #[test]
+    fn its_footer_says_whether_background_work_of_its_own_runs() {
+        let screen = |lines: &[&str]| lines.iter().map(|line| line.to_string()).collect::<Vec<_>>();
+        let waiting = screen(&[
+            "⏺ Monitor(gate --train finishing for #512)",
+            "✻ Worked for 14s · done 11:03 PM · 1 shell, 1 monitor still running",
+            "─────",
+            "❯ ",
+            "─────",
+            "  ⏵⏵ bypass permissions on · 1 shell, 1 monitor · ← 4 agents · ↓ to manage     130593 tokens",
+        ]);
+        assert!(shows_background(&waiting));
+        let two = screen(&["❯", "  ⏵⏵ bypass permissions on · 2 shells"]);
+        assert!(shows_background(&two));
+        // what a turn's end said, with the footer counting none now
+        let ended = screen(&[
+            "✻ Worked for 14s · done 11:03 PM · 1 shell, 1 monitor still running",
+            "❯ ",
+            "  ⏵⏵ bypass permissions on · ← 4 agents",
+        ]);
+        assert!(!shows_background(&ended));
+        assert!(!shows_background(&screen(&["❯", "  ⏵⏵ bypass permissions on (shift+tab)"])));
+        assert!(!shows_background(&screen(&[])));
+        // no prompt in sight: the last line is the footer
+        assert!(shows_background(&screen(&["output", "1 monitor", ""])));
+        assert!(!shows_background(&screen(&["1 monitor", "output"])));
     }
 }

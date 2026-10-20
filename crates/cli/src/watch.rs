@@ -8,7 +8,7 @@ use afkconvoy_core::joining::{
 };
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
-use afkconvoy_core::stopped::{Route, settled_by_state};
+use afkconvoy_core::stopped::{Route, past_grace, settled_by_state};
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -17,7 +17,9 @@ use crate::claims::Me;
 use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::gh::Comment;
-use crate::judge::{Handed, escalate_claim, mine, nudge_worker, progress, where_it_stopped};
+use crate::judge::{
+    Handed, escalate_claim, mine, nudge_worker, own_background, progress, where_it_stopped,
+};
 use crate::orca::{Source, Worktree};
 
 /// A joining worker of mine that stopped, and what was gathered to route it.
@@ -65,9 +67,11 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     };
     let (record, comments) = join_record(fleet, pr)?;
     let progress = progress(&worktree, &fleet.base_tip()?)?;
-    let handed = worktree.handed(record.restarted)?;
+    let (nudged, handed) = (worktree.nudged()?, worktree.handed(record.restarted)?);
+    let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
+    let background = own_background(fleet, &worktree, past_grace)?;
     let route =
-        join_route(state, &progress, worktree.nudged()?, record.restarted, handed, fleet.now);
+        join_route(state, &progress, nudged, record.restarted, (handed, background), fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, pr, worktree, record, comments, route }))))
 }
 
@@ -141,6 +145,7 @@ pub fn restart(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<
                 JoinRoute::Stalled(_) =>
                     "PR's join already had its one restart, and a silence past it escalates",
                 JoinRoute::Nudge(_) => "it was not nudged yet",
+                JoinRoute::Waiting(_) => "it waits on background work of its own, still running",
                 _ => "it showed a sign of life within the grace period",
             }
         );
@@ -167,6 +172,7 @@ pub fn watch(fleet: &mut Fleet, me: &Me, agent: &Agent, issue: u64) -> Result<Ou
     let mut found = found;
     match std::mem::replace(&mut found.route, JoinRoute::Leave) {
         JoinRoute::Leave => Ok(Outcome::Nothing),
+        JoinRoute::Waiting(since) => Ok(Outcome::Waiting(since)),
         JoinRoute::Continue => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             Ok(Outcome::Continued)

@@ -7,7 +7,7 @@ use afkconvoy_core::abandon::{
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::joining::JoinRecord;
 use afkconvoy_core::prompt::{rejoin_pointer, train_nudge_line};
-use afkconvoy_core::stopped::Silent;
+use afkconvoy_core::stopped::{Silent, past_grace};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::train::{Tend, on_train, tend, train_refs};
 use afkconvoy_core::worker::WorkerState;
@@ -19,7 +19,7 @@ use crate::dispatch::write_join_brief;
 use crate::fleet::Fleet;
 use crate::gh::{Comment, IssueRead};
 use crate::git::REMOTE;
-use crate::judge::{Handed, escalate_claim, nudge_worker, progress};
+use crate::judge::{Handed, escalate_claim, nudge_worker, own_background, progress};
 use crate::orca::{Source, Worktree};
 use crate::train::Train;
 use crate::watch::{join_record, record_join};
@@ -48,6 +48,7 @@ struct Riding {
 pub fn stopped_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn) -> Result<Outcome> {
     match route(fleet, stopped)? {
         TrainRoute::Leave => Ok(Outcome::Nothing),
+        TrainRoute::Waiting(since) => Ok(Outcome::Waiting(since)),
         TrainRoute::Nudge(unnudged) => {
             nudge_worker(stopped.worktree, unnudged, train_nudge_line, fleet.now)?;
             Ok(Outcome::Nudged)
@@ -63,7 +64,9 @@ fn route(fleet: &Fleet, stopped: &StoppedOn) -> Result<TrainRoute> {
     let progress = progress(stopped.worktree, &stopped.train.base)?;
     let nudged = stopped.worktree.nudged()?;
     let handed = stopped.worktree.handed(stopped.told_at)?;
-    Ok(train_route(stopped.state, &progress, nudged, handed, fleet.now))
+    let past_grace = past_grace(stopped.state, &progress, nudged, handed, fleet.now);
+    let background = own_background(fleet, stopped.worktree, past_grace)?;
+    Ok(train_route(stopped.state, &progress, nudged, handed, background, fleet.now))
 }
 
 /// Gives the train up with nothing landed: its refs deleted — only while the
