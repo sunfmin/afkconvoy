@@ -143,7 +143,7 @@ pub fn due<'t>(
     };
     match position {
         Position::Escalating(stage, reason) => Due::Human(reason.said(stage)),
-        Position::Consult(stage, work) => {
+        Position::Consult(stage, work, _) => {
             Due::Consult(Entry { workflow, stage, work, role: team.role_of(work) })
         }
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
@@ -482,7 +482,7 @@ land: { by: boss, do: implement }
         let through = [&asked[..], &[consult(Declared::Escalate)]].concat();
         assert_eq!(
             said(due(&team, &flow, &through, None)),
-            "human: the consult of the stage `build` let its `escalate` through"
+            "human: the consult of the stage `build` let it through"
         );
     }
 

@@ -290,7 +290,7 @@ fn a_consult_s_own_escalate_always_goes_to_a_human() {
     assert!(said.contains("the consult of the stage `build` declared `escalate`"), "{said}");
     assert!(
         said.contains(
-            "The consult of the stage `build` let its `escalate` through.\n\nIts stage record: \
+            "The consult of the stage `build` let it through.\n\nIts stage record: \
              https://gh/c/"
         ),
         "{said}"
