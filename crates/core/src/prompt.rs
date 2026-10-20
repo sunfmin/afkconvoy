@@ -6,6 +6,7 @@ use crate::precedent::entry_form;
 use crate::recovery::Variant;
 use crate::stage_record::{Author, StageRecord, Stated};
 use crate::verdict;
+use crate::waiting::ANSWERING;
 
 /// What a worker prompt is filled with: the issue, and the branch and path
 /// orca actually returned.
@@ -402,18 +403,18 @@ This stage runs again under a human's ruling on it. Follow it:
 const CONSULTED: &str = "
 ## Ruling
 
-This stage declared `escalate`, and its consult ruled on that. It runs again under the ruling.
-Follow it:
+This stage's consult ruled on what it handed on. It runs again under the ruling. Follow it:
 
 {reason}
 ";
 
-/// The brief of a consult: a fixed form that says what was asked and how to
-/// answer, and nothing of how to decide — that is the role's to say.
+/// The brief of a consult: a fixed form that says what was asked, where to
+/// look and what it may run — as a human handed the issue would be told —
+/// and nothing of how to decide: that is the role's to say.
 const CONSULT: &str = "\
-You are an afkconvoy worker, started in your role as a **consult**: a stage of one GitHub issue
-declared `escalate`, and you rule on that before a human is asked. Nobody reads this terminal: never
-wait for an answer.
+You are an afkconvoy worker, started in your role as a **consult**: the fleet would hand one GitHub
+issue to a human, and you stand where that human stands. You are asked first, and may answer as
+they would. Nobody reads this terminal: never wait for an answer.
 
 - **Issue:** #{n} — {title}
 - **Stage that asked:** `{stage}`, of the workflow `{flow}`
@@ -430,28 +431,57 @@ wait for an answer.
 
 ## What was asked
 
-The stage `{stage}` could not decide, and said why:
+{asked}
 
-{reason}
+## Where to look further
+
+What a human answering this would look at, and nothing you must: you decide what to look into.
+
+- The issue, its comments and its blocked-by edges both ways: `gh issue view {n} --comments`,
+  `gh api repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by` and `…/blocking`
+- Where it is and its rework: `{show_command}`
+- The worktree, its branch and what only it holds: `git -C {worktree_path} status`, `git log`
+- Its worker's terminal: `orca terminal list --worktree path:{worktree_path}`, then `orca terminal
+  read --terminal <handle> --screen`
+- The gate, run again in the worktree: `{gate_command}`
+- The fleet and its host: `{doctor_command}`, `{plan_command}`, and any other read-only command
+
+## What you may run
+
+Every command a human runs to answer an escalated issue (`afkconvoy help humans`), and any
+read-only command:
+
+{answering}
+
+What you may not do is what a stage that may not write may not: commit, push, or change the host —
+delete files, caches or worktrees, or stop processes. What needs that, rule to the stage that
+writes, or open as an issue.
 
 ## Before you let it through
 
 <precedents_first>
-## Rule, or let it through
+## End
 
-End with exactly one of these two commands, and not before; each one's `--help` says what it takes.
-Then stop.
+End with one answer, and not before; each command's `--help` says what it takes. Then stop.
 
 - **Rule.** The stage `{stage}` runs again under your ruling, which is the text you give:
   ```bash
   {rule_command} --text-file <file>
   ```
-- **Let it through.** The question is not yours to rule on either: the issue goes to a human, and
-  your text says what has to be decided:
+- **Send** it to another stage of its workflow, or **close** it, with the lines above.
+- **Let it through.** It is not yours to answer either: the issue goes to a human, and your text
+  says what has to be decided:
   ```bash
   {verdict_command} escalate --text-file <file>
   ```
 ";
+
+/// What a consult is told of the `escalate` it answers.
+const ASKED_ESCALATE: &str = "The stage `{stage}` could not decide, and said why:\n\n";
+
+/// What a consult is told of a hand-off it answers.
+const ASKED_HAND_OFF: &str =
+    "The fleet would have handed this issue to a human, and told them:\n\n";
 
 /// Where the rules a worker works under are, beside the precedents: a line
 /// for each kind. A harness loads them; a brief copies none. They are given
@@ -836,18 +866,44 @@ pub fn proposal_prompt(fields: &ProposalFields) -> Result<String, String> {
     )
 }
 
+/// The lines a consult's brief names beside its stage's fields.
+#[derive(Debug, Clone, Copy)]
+pub struct Consulting<'a> {
+    /// The line it rules with.
+    pub rule: &'a str,
+    /// What a human handed the issue would be told, of a hand-off; `None`
+    /// of an `escalate`, which is the last of the records.
+    pub handed: Option<&'a str>,
+    /// The lines that show the issue's position, run the gate in its
+    /// worktree, and look at the fleet.
+    pub show: &'a str,
+    pub gate: &'a str,
+    pub doctor: &'a str,
+    pub plan: &'a str,
+}
+
 /// The brief a consult is given: `fields` are those of the stage that asked,
-/// with the consult's role and skill, and `rule_command` is the line it rules
-/// with. The last of the records is the `escalate` it rules on.
-pub fn consult_prompt(fields: &StageFields, rule_command: &str) -> Result<String, String> {
+/// with the consult's role and skill. What it answers is the hand-off
+/// `consulting` names, or else the last of the records, an `escalate`.
+pub fn consult_prompt(fields: &StageFields, consulting: &Consulting) -> Result<String, String> {
     let number = fields.number.to_string();
-    let asked = fields.records.last().map_or(String::new(), |said| quoted(&said.record.text));
+    let asked = match consulting.handed {
+        Some(handed) => format!("{ASKED_HAND_OFF}{}", quoted(handed)),
+        None => {
+            let said = fields.records.last().ok_or("nothing was asked")?;
+            let asked = ASKED_ESCALATE.replace("{stage}", fields.stage);
+            format!("{asked}{}", quoted(&said.record.text))
+        }
+    };
+    let answering: Vec<String> =
+        ANSWERING.iter().map(|line| format!("    {}", line.replace("<n>", &number))).collect();
     fill(
         &with_rules(CONSULT, "worktree", fields.team_rules)
             .replace("<precedents_first>", PRECEDENTS_FIRST),
         &[
             ("records", &records_said(fields.records)),
-            ("reason", &asked),
+            ("asked", &asked),
+            ("answering", &answering.join("\n")),
             ("n", &number),
             ("title", fields.title),
             ("flow", fields.flow),
@@ -860,7 +916,14 @@ pub fn consult_prompt(fields: &StageFields, rule_command: &str) -> Result<String
             ("precedents", fields.precedents),
             ("team_rules", fields.team_rules.unwrap_or_default()),
             ("verdict_command", fields.verdict_command),
-            ("rule_command", rule_command),
+            ("rule_command", consulting.rule),
+            ("show_command", consulting.show),
+            ("gate_command", consulting.gate),
+            ("doctor_command", consulting.doctor),
+            ("plan_command", consulting.plan),
+            // `gh api` fills these in itself.
+            ("owner", "{owner}"),
+            ("repo", "{repo}"),
         ],
     )
 }
@@ -1402,35 +1465,59 @@ mod tests {
         let escalated = [Said { record: &asked, url: "https://gh/c/5" }];
         let rule = "/opt/bin/afkconvoy rule --issue 7 --stage build";
         let consulted = StageFields { role: "boss", skill: "rule", ..fields.clone() };
-        let brief = consult_prompt(&StageFields { records: &escalated, ..consulted.clone() }, rule)
-            .unwrap();
+        let consulting = Consulting {
+            rule,
+            handed: None,
+            show: "afkconvoy show --issue 7",
+            gate: "afkconvoy gate",
+            doctor: "afkconvoy doctor",
+            plan: "afkconvoy plan",
+        };
+        let brief =
+            consult_prompt(&StageFields { records: &escalated, ..consulted.clone() }, &consulting)
+                .unwrap();
         for said in [
             "started in your role as a **consult**",
             "- **Stage that asked:** `build`, of the workflow `feature`\n",
             "- **Skill to perform:** `rule`, of the role you were started in (`boss`)\n",
             "a consult writes no code, so never commit and never push\n",
             "- `build` declared `escalate` — https://gh/c/5\n",
+            "- Where it is and its rework: `afkconvoy show --issue 7`\n",
+            "    afkconvoy rule --issue 7 --text-file <file>\n",
+            "    gh issue close 7 --comment <why>\n",
+            "commit, push, or change the host",
             "## What was asked\n\nThe stage `build` could not decide, and said why:\n\n> v1 or v2?\n",
             "```bash\n  /opt/bin/afkconvoy rule --issue 7 --stage build --text-file <file>\n",
             "/opt/bin/afkconvoy verdict --issue 7 --stage build escalate --text-file <file>\n",
         ] {
             assert!(brief.contains(said), "{said}\n{brief}");
         }
-        assert!(consult_prompt(&consulted, rule).is_err(), "nothing was asked");
+        assert!(consult_prompt(&consulted, &consulting).is_err(), "nothing was asked");
+        // Of a hand-off, it is told what a human would be, and no check of its own.
+        let handed =
+            Consulting { handed: Some("The worker went silent.\nIts screen: …"), ..consulting };
+        let brief = consult_prompt(&consulted, &handed).unwrap();
+        assert!(
+            brief.contains(
+                "## What was asked\n\nThe fleet would have handed this issue to a human, and told \
+                 them:\n\n> The worker went silent.\n> Its screen: …\n"
+            ),
+            "{brief}"
+        );
         let answered =
             [&escalated[..], &[Said { record: &answer, url: "https://gh/c/6" }]].concat();
         let under = stage_prompt(&StageFields { records: &answered, ..fields.clone() }).unwrap();
         assert!(
             under.contains(
-                "- the consult of the stage `build` ruled on its `escalate`: the stage runs \
-                 again under the ruling — https://gh/c/6\n"
+                "- the consult of the stage `build` ruled: the stage runs again under the ruling \
+                 — https://gh/c/6\n"
             ),
             "{under}"
         );
         assert!(
             under.contains(
-                "## Ruling\n\nThis stage declared `escalate`, and its consult ruled on that. It \
-                 runs again under the ruling.\nFollow it:\n\n> Keep {v1}.\n"
+                "## Ruling\n\nThis stage's consult ruled on what it handed on. It runs again \
+                 under the ruling. Follow it:\n\n> Keep {v1}.\n"
             ),
             "{under}"
         );
@@ -1896,7 +1983,14 @@ mod tests {
                     "worktree",
                     consult_prompt(
                         &StageFields { records: &escalated, ..stage(team_rules) },
-                        "afkconvoy rule",
+                        &Consulting {
+                            rule: "afkconvoy rule",
+                            handed: None,
+                            show: "afkconvoy show",
+                            gate: "afkconvoy gate",
+                            doctor: "afkconvoy doctor",
+                            plan: "afkconvoy plan",
+                        },
                     )
                     .unwrap(),
                 ),

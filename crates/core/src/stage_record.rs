@@ -179,8 +179,7 @@ impl StageRecord {
             }
             (Author::Worker { consult: true, .. }, Stated::Declared(Declared::Ruling)) => {
                 format!(
-                    "the consult of the stage `{stage}` ruled on its `escalate`: the stage runs \
-                     again under the ruling"
+                    "the consult of the stage `{stage}` ruled: the stage runs again under the ruling"
                 )
             }
             (Author::Worker { consult: true, .. }, Stated::Declared(_)) => {
@@ -831,8 +830,8 @@ mod tests {
         assert_eq!(
             consult("build", Ruling, "c3").comment(),
             "<!--convoy:stage stage=build verdict=ruling by=consult claim=c3 role_commit=r1 \
-             team_commit=t1 harness=claude-code-->\n**afkconvoy** — the consult of the stage `build` ruled on its \
-             `escalate`: the stage runs again under the ruling.\n\nbuild is done"
+             team_commit=t1 harness=claude-code-->\n**afkconvoy** — the consult of the stage \
+             `build` ruled: the stage runs again under the ruling.\n\nbuild is done"
         );
         assert_eq!(
             consult("build", Escalate, "c3").headline(),

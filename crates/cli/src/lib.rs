@@ -14,7 +14,7 @@ use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
 use afkconvoy_core::role::{
-    CONSULT_ENV, HARNESS_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, TEAM_COMMIT_ENV,
+    CONSULT_ENV, HARNESS_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, STAGE_ENV, TEAM_COMMIT_ENV,
 };
 
 use anyhow::Context;
@@ -313,8 +313,9 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         text: TextArgs,
-        /// The stage whose `escalate` a consult rules on [a human names none]
-        #[arg(long, requires = "role_commit")]
+        /// The stage whose hand-off a consult rules on: the one its environment
+        /// names [a human names none]
+        #[arg(long, env = STAGE_ENV, requires = "role_commit")]
         stage: Option<String>,
         /// The commit of the role's repo a consult ran under [a human names none]
         #[arg(long, env = ROLE_COMMIT_ENV, requires = "team_commit")]
@@ -326,7 +327,7 @@ enum Command {
         #[arg(long, env = HARNESS_ENV, value_parser = harness, requires = "role_commit")]
         harness: Option<Harness>,
     },
-    /// Send an issue to a named stage of its workflow (a human's command)
+    /// Send an issue to a named stage of its workflow (a human's command, and a consult's)
     #[command(after_long_help = include_str!("help/send.txt"))]
     Send {
         #[command(flatten)]
@@ -336,6 +337,18 @@ enum Command {
         stage: String,
         #[command(flatten)]
         text: TextArgs,
+        /// The commit of the role's repo a consult ran under [a human names none]
+        #[arg(long, env = ROLE_COMMIT_ENV, requires = "team_commit")]
+        role_commit: Option<String>,
+        /// The commit of the team's repo a consult ran under [a human names none]
+        #[arg(long, env = TEAM_COMMIT_ENV, requires = "role_commit")]
+        team_commit: Option<String>,
+        /// The harness a consult ran on [a human names none]
+        #[arg(long, env = HARNESS_ENV, value_parser = harness, requires = "role_commit")]
+        harness: Option<Harness>,
+        /// The worker is the stage's consult [a human is none]
+        #[arg(long, env = CONSULT_ENV)]
+        consult: bool,
     },
     /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
     #[command(after_long_help = include_str!("help/intake.txt"))]
@@ -1041,9 +1054,27 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let team = team::load(team::From::Config)?.team;
             steer::rule(&Repo::here()?, &team, issue, text.read()?)
         }
-        Command::Send { issue, stage, text } => {
+        Command::Send { issue, stage, text, role_commit, team_commit, harness, consult } => {
             let issue = issue.number();
             let team = team::load(team::From::Config)?.team;
+            // With the commits it ran under, the sending is a consult's: a
+            // stage record under its claim, as its ruling is.
+            if let Some(ran) = ran(role_commit, team_commit, harness) {
+                if !consult {
+                    anyhow::bail!(
+                        "a worker sends an issue to a stage only as its stage's consult: a \
+                         stage declares its verdict, and the workflow says where it leads"
+                    );
+                }
+                return stage::consult_send(
+                    &Repo::here()?,
+                    &team,
+                    issue,
+                    &stage,
+                    text.read()?,
+                    ran,
+                );
+            }
             steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
         }
         Command::Intake { issue, workflow, role, from, patrol, train, blocked_by } => {

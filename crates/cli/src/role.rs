@@ -9,11 +9,13 @@ use afkconvoy_core::config::{Bound, RepoLabels};
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::position::{ConsultOn, Position, Reason};
 use afkconvoy_core::prompt::{
-    Gate, Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt, stage_prompt,
+    Consulting, Gate, Landing, Said, StageFields, WorkerFields, consult_prompt, landing_prompt,
+    stage_prompt,
 };
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
-use afkconvoy_core::stage_record::{Reading, StageRecord, history};
+use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
 use afkconvoy_core::team::{BY_DEFAULT, LAND, PRECEDENTS};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Context, Result, anyhow, bail};
@@ -69,6 +71,30 @@ pub struct Staged {
     /// The stage records that counted on the issue so far, oldest first,
     /// each with the URL of its comment: the worker's history.
     verdicts: Vec<(StageRecord, String)>,
+    /// Of a consult asked of a hand-off, what a human handed the issue would
+    /// be told (`handed_said`).
+    handed: Option<String>,
+}
+
+/// What a human handed the issue would be told, where `history` — read from
+/// `records`, each with the URL of its comment — has it with its stage's
+/// consult for a hand-off: the reason and the evidence of the failure the
+/// fleet recorded, or why its records hand it on, with every round of the
+/// rework a breaker stopped. `None` of an `escalate`, and anywhere else.
+fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> Option<String> {
+    let Position::Consult(stage, _, ConsultOn::HandOff(reason)) = history.place.position else {
+        return None;
+    };
+    if let Reason::Failed(_) = reason {
+        let recorded =
+            records.iter().rev().find(|record| matches!(record.stated, Stated::Failed(_)));
+        return recorded.map(|record| record.text.clone());
+    }
+    let mut said = format!("{}.", reason.said(stage));
+    if let Some(rounds) = history.rounds_said(records, urls) {
+        said.push_str(&format!("\n\n{rounds}"));
+    }
+    Some(said)
 }
 
 impl Staged {
@@ -106,6 +132,7 @@ impl Staged {
             }
         };
         let history = history(workflow, &records);
+        let handed = handed_said(&history, &records, &urls);
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
         // The stage's harness and its model are its own worker's: a workflow
         // names none for a consult.
@@ -116,11 +143,15 @@ impl Staged {
         Ok(Staged {
             verdicts: verdicts
                 .filter(|(_, reading)| {
-                    matches!(reading, Reading::Verdict | Reading::Sent | Reading::LockClosed)
+                    matches!(
+                        reading,
+                        Reading::Verdict | Reading::Sent | Reading::LockClosed | Reading::Failed
+                    )
                 })
                 .map(|(verdict, _)| verdict)
                 .collect(),
             issue,
+            handed,
             flow: workflow.name.clone(),
             stage: at.map_or(LAND, |stage| &stage.name).to_string(),
             role: role.name.clone(),
@@ -283,7 +314,16 @@ impl Staged {
             gate: self.writes.then_some(Gate { train: &gate, alone: &gate_alone }),
         };
         let prompt = if self.consult {
-            consult_prompt(&fields, &declare(" rule"))
+            let issue = own().fixed(" show --issue ").number(self.issue).own();
+            let consulting = Consulting {
+                rule: &declare(" rule"),
+                handed: self.handed.as_deref(),
+                show: &issue,
+                gate: &own().fixed(" gate").own(),
+                doctor: &own().fixed(" doctor").own(),
+                plan: &own().fixed(" plan").own(),
+            };
+            consult_prompt(&fields, &consulting)
         } else {
             stage_prompt(&fields)
         };

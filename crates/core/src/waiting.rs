@@ -12,6 +12,20 @@ use crate::role::{Due, due};
 use crate::stage_record::{StageRecord, history};
 use crate::team::{Team, Workflow};
 
+/// Every command a human runs to answer an escalated issue, as the
+/// `humans` help names them, `<n>` standing for the issue's number: a
+/// consult, who stands where that human stands (docs/adr/0018), is given
+/// the same list. A command added here is both's.
+pub const ANSWERING: [&str; 7] = [
+    "afkconvoy rule --issue <n> --text-file <file>",
+    "afkconvoy send --issue <n> --stage <stage> --text-file <file>",
+    "gh issue close <n> --comment <why>",
+    "gh issue create --title <title> --body-file <file> --label <ready label>",
+    "gh issue edit <n> --body-file <file>",
+    "gh api --method POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
+    "gh api --method DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>",
+];
+
 /// How long an issue waits for a human before `doctor` counts it a finding.
 pub const WAITED_LONG: u64 = 3600;
 

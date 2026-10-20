@@ -247,7 +247,7 @@ fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_unde
     let record = world.comments(7).pop().unwrap();
     assert!(record.starts_with("<!--convoy:stage stage=build verdict=ruling by=consult "));
     assert!(
-        record.contains("the consult of the stage `build` ruled on its `escalate`"),
+        record.contains("the consult of the stage `build` ruled: the stage runs again"),
         "{record}"
     );
 
@@ -271,8 +271,11 @@ fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_unde
         "{again}"
     );
     let told = brief(&worktree(&world));
-    assert!(told.contains("the consult of the stage `build` ruled on its `escalate`"), "{told}");
-    assert!(told.contains("## Ruling\n\nThis stage declared `escalate`, and its consult ruled"));
+    assert!(
+        told.contains("the consult of the stage `build` ruled: the stage runs again"),
+        "{told}"
+    );
+    assert!(told.contains("## Ruling\n\nThis stage's consult ruled on what it handed on."));
     assert!(told.contains("> Keep the v1 schema."), "{told}");
     assert_eq!(did(&tick(&world, 1450)), [] as [&str; 0]);
 }
