@@ -4,8 +4,8 @@
 
 use afkconvoy_core::intake::opened_by;
 use afkconvoy_core::patrol::{
-    Row, Seen, Standing, broke, checkout_name, claim_key, failure_of, failure_report,
-    failure_title, is_due, read_run, run_over, run_ref, write_run,
+    Ran, Row, Seen, Standing, broke, checkout_name, claim_key, failure_of, failure_report,
+    failure_title, held_until, is_due, read_run, run_over, run_ref, write_run,
 };
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
@@ -49,8 +49,9 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
     let seen = |patrol: &&afkconvoy_core::team::Patrol| Seen {
         name: patrol.name.clone(),
         every: patrol.every,
+        max_runs_a_day: patrol.max_runs_a_day,
         max_open: patrol.max_open,
-        last_run: fleet.scan.last_runs.get(&patrol.name).copied(),
+        last_run: fleet.scan.last_runs.get(&patrol.name).cloned(),
         claim: fleet.scan.runs.iter().find(|run| run.key == claim_key(&patrol.name)).cloned(),
         open: opened.iter().filter(|by| **by == patrol.name).count() as u64,
         failure: failure_of(issues, &patrol.name, escalate),
@@ -85,7 +86,10 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     // A peer's run may have started and ended since the rebuild read the remote.
     let recorded = run_ref(fleet.repo.layout(), name);
     let last = fleet.repo.remote_records(&recorded)?.pop();
-    if !is_due(row.every, last.and_then(|record| read_run(&record.subject)), me.now) {
+    let last = last.and_then(|record| read_run(&record.subject));
+    if !is_due(row.every, last.as_ref().map(|ran| ran.ts), me.now)
+        || held_until(row.max_runs_a_day, last.as_ref(), me.now).is_some()
+    {
         drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
         return Ok(Outcome::Lost);
     }
@@ -149,9 +153,11 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 
-    let sha = fleet.repo.record_commit(&write_run(me.now))?;
+    // The record carries the runs of the day before it: they are counted from it alone.
+    let ran = Ran::after(last.as_ref(), me.now);
+    let sha = fleet.repo.record_commit(&write_run(&ran))?;
     fleet.repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{recorded}")])?;
-    fleet.scan.last_runs.insert(name.to_string(), me.now);
+    fleet.scan.last_runs.insert(name.to_string(), ran);
     Ok(Outcome::Done)
 }
 

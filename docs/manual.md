@@ -681,12 +681,22 @@ Of the file only the first ```yaml block is read:
     harness: claude-code               # optional
     model: <model>                     # optional; its harness's own name for it
     max_open: 5                        # required
+    max_runs_a_day: 4                  # optional: a whole number from 1
 
 `by` is a short name of the team file and `do` a skill of that role. `every` is how
 long after its last run a patrol is due: it is due or it is not, and one that missed
 ten intervals runs once. `harness` and `model` are what they are for a stage
 (`afkconvoy help workflows`). `max_open` bounds what a patrol gives the fleet: it is
 not run while that many issues it opened are open.
+
+`max_runs_a_day` bounds how often it runs besides `every`: a patrol whose runs that
+started in the last 24 hours — rolling, the same on every host — have reached it is
+not due, whatever `every` says, until the oldest of them is 24 hours old. Each run's
+record on the remote carries the starts of the day before it; nothing is kept beside
+it. Left out, nothing bounds the patrol but `every` and `max_open`. `afkconvoy check`
+refuses one that bounds nothing: `every: 1h` lets a patrol run at most 24 times a
+day, so `max_runs_a_day` is at most 23 there, and a patrol run every day or less
+often has no use for it.
 ````
 
 ### WHICH PATROLS A REPO RUNS
@@ -1468,7 +1478,7 @@ Parking an issue on issues its own stage opened. When they have all closed, that
 _Avoid_: decompose, epic (an issue under an epic label), fan out
 
 **Patrol**:
-A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period. Each run has a checkout of its own, removed as the run ends unless it failed.
+A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. It is due once its interval has passed since its last run, and — where its file says `max_runs_a_day` — while fewer than that many of its runs started in the last 24 hours, rolling. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period. Each run has a checkout of its own, removed as the run ends unless it failed.
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:

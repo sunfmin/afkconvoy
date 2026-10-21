@@ -86,10 +86,15 @@ WHAT IT ANSWERS
     patrols        in a bound repo that names patrols: each, in the order the config
                    names them: {name, standing, every, last_run, open, max_open} —
                    `every` in seconds, `last_run` when its last recorded run started
-                   (null: it never ran), `open` the open issues it opened. standing
-                   says what a tick does about it:
+                   (null: it never ran), `open` the open issues it opened. A patrol
+                   whose file says `max_runs_a_day` has it too, and `runs_in_day`: how
+                   many of its runs started in the last 24 hours. standing says what a
+                   tick does about it:
                      due           its interval has passed: a tick runs it
                      not_due       its interval has not passed since `last_run`
+                     spent         `runs_in_day` has reached `max_runs_a_day`: it is
+                                   held until `until`, in this case only — when the
+                                   oldest of those runs is 24 hours old
                      locked        a fleet lock stands: no patrol runs
                      full          `open` has reached `max_open`
                      failed        its last run failed, and the issue that reports it —

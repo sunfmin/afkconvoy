@@ -9,7 +9,7 @@ use afkconvoy_core::claims::{
     run_ref, write_heartbeat, write_over,
 };
 use afkconvoy_core::layout::Layout;
-use afkconvoy_core::patrol::{RUN_KIND, read_run};
+use afkconvoy_core::patrol::{RUN_KIND, Ran, read_run};
 use afkconvoy_core::record::fleet_number;
 use afkconvoy_core::takeover::{held, holds};
 use anyhow::{Result, bail};
@@ -34,8 +34,8 @@ pub struct Scan {
     /// The claims on runs — a patrol's, the proposal of a precedent: one for
     /// each still going.
     pub runs: Vec<RunClaim>,
-    /// patrol → when its last recorded run started.
-    pub last_runs: BTreeMap<String, u64>,
+    /// patrol → its last recorded run.
+    pub last_runs: BTreeMap<String, Ran>,
 }
 
 impl Scan {
@@ -68,9 +68,9 @@ impl Scan {
             {
                 scan.heartbeats.insert(instance.to_string(), beat);
             } else if let Some(patrol) = kept.strip_prefix(RUN_KIND)
-                && let Some(ts) = read_run(&record.subject)
+                && let Some(ran) = read_run(&record.subject)
             {
-                scan.last_runs.insert(patrol.to_string(), ts);
+                scan.last_runs.insert(patrol.to_string(), ran);
             } else if let Some(key) = kept.strip_prefix(OVER_KIND)
                 && let Some(claim) = read_over(&record.subject)
             {

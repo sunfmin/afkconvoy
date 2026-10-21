@@ -78,7 +78,8 @@ WHAT IT ANSWERS
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
   {"name", "by", "do", "harness", "model", "writes", "escalate", "pass", "reject"}.
   Each of `patrols` is {"name", "by", "do", "every", "harness", "model", "max_open",
-  "runs_here"}: `every` in seconds. A `harness` is the one the stage's worker, or the
+  "max_runs_a_day", "runs_here"}: `every` in seconds, `max_runs_a_day` null where the
+  file says none. A `harness` is the one the stage's worker, or the
   patrol's, runs: the one it names, or the default — and null of a stage a human
   performs. `runs_here` is whether the config of this checkout names the patrol — false
   with `--team` and `--dir`, which read no config. `precedents` is {"by", "do",
