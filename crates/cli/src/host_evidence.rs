@@ -2,7 +2,8 @@
 //! admission's reading and shares; for disk, what each of this host's
 //! worktrees of every fleet holds — with its issue, its stage and whether a
 //! worker holds it — the landing train's among them, the fleet's caches, and
-//! the largest directories outside them; for load or memory, the process
+//! the largest directories of the whole volume under the home folder outside
+//! them, found within five minutes; for load or memory, the process
 //! trees of each worker and of the train, and the hottest processes outside
 //! them. It is written to a directory of the cache every fleet of the host
 //! shares, and handed to the inspection (`crate::inspection`).
@@ -31,9 +32,16 @@ const FILE: &str = "evidence.md";
 /// How many of the largest directories outside the worktrees, and of the
 /// hottest processes outside the trees, are taken down.
 const TOP: usize = 10;
-/// How long the directories outside the worktrees are measured for, at the
-/// most: what is not measured by then is said to be.
+/// How long the fleet's caches are measured for, at the most: what is not
+/// measured by then is said to be.
 const MEASURED_WITHIN: Duration = Duration::from_secs(60);
+/// How long the volume under the home folder is measured for, at the most:
+/// what `du` had not reached by then is said not to be listed.
+const VOLUME_WITHIN: Duration = Duration::from_secs(300);
+/// How deep under the home folder directories are listed.
+const DEPTH: &str = "4";
+/// How many of the largest directories of the volume are listed.
+const LARGEST: usize = 40;
 
 /// What the inspecting fleet knows of its own worktrees.
 pub struct Own<'a> {
@@ -89,20 +97,18 @@ fn disk(out: &mut String, on_host: Vec<OnHost>, own: &Own) {
     let caches: Vec<PathBuf> = cache().into_iter().collect();
     out.push_str(&sizes_said(&caches, &[], deadline));
     out.push_str("```\n");
-    out.push_str("\n## The largest directories of the home, but for the worktrees above\n\n```\n");
-    let worktrees: Vec<(PathBuf, u64)> = listed
-        .iter()
-        .map(|listed| (listed.on.path.clone(), held_by(listed).unwrap_or(0)))
-        .collect();
-    let home: Vec<PathBuf> = std::env::var_os("HOME")
-        .and_then(|home| std::fs::read_dir(home).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && !path.is_symlink())
-        .collect();
-    out.push_str(&sizes_said(&home, &worktrees, deadline));
+    out.push_str(
+        "\n## The largest directories of the volume under the home folder, but for the \
+         worktrees above\n\n```\n",
+    );
+    let worktrees: Vec<PathBuf> = listed.iter().map(|listed| listed.on.path.clone()).collect();
+    match std::env::var_os("HOME") {
+        Some(home) => {
+            let deadline = Instant::now() + VOLUME_WITHIN;
+            out.push_str(&largest_said(Path::new(&home), &worktrees, deadline));
+        }
+        None => out.push_str("(HOME is not set)\n"),
+    }
     out.push_str("```\n");
 }
 
@@ -207,9 +213,73 @@ fn sizes_said(dirs: &[PathBuf], inside: &[(PathBuf, u64)], deadline: Instant) ->
     out
 }
 
+/// The largest directories under `home` on its volume, `DEPTH` deep — as
+/// `du -x` says them, so no other volume is crossed — but for the `worktrees`
+/// and what is in them, measured until `deadline`: what `du` had not reached
+/// by then is said not to be listed.
+fn largest_said(home: &Path, worktrees: &[PathBuf], deadline: Instant) -> String {
+    let child = Command::new("du")
+        .args(["-xk", "-d", DEPTH])
+        .arg(home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else { return "(du could not be run)\n".to_string() };
+    let Some(stdout) = child.stdout.take() else { return "(du said nothing)\n".to_string() };
+    // Read beside, for `du` says each directory once it is measured: what it
+    // said by the deadline stands.
+    let read = std::thread::spawn(move || {
+        std::io::BufRead::lines(std::io::BufReader::new(stdout))
+            .map_while(Result::ok)
+            .collect::<Vec<String>>()
+    });
+    let mut stopped = false;
+    while child.try_wait().ok().flatten().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            stopped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.wait();
+    let said = read.join().unwrap_or_default();
+    let mut out = largest(&said, worktrees);
+    if stopped {
+        let _ = writeln!(
+            out,
+            "(du was stopped at {} minutes: what it had not reached is not listed)",
+            VOLUME_WITHIN.as_secs() / 60
+        );
+    }
+    out
+}
+
+/// The `LARGEST` directories `du` `said` — `<KiB>\t<path>` a line — largest
+/// first, but for the `worktrees` and what is in them.
+fn largest(said: &[String], worktrees: &[PathBuf]) -> String {
+    let mut sized: Vec<(u64, &str)> = said
+        .iter()
+        .filter_map(|line| {
+            let (kib, path) = line.split_once('\t')?;
+            Some((kib.trim().parse::<u64>().ok()?.saturating_mul(1024), path))
+        })
+        .filter(|(_, path)| !worktrees.iter().any(|worktree| Path::new(path).starts_with(worktree)))
+        .collect();
+    if sized.is_empty() {
+        return "(none measured)\n".to_string();
+    }
+    sized.sort_unstable_by(|a, b| b.cmp(a));
+    sized
+        .into_iter()
+        .take(LARGEST)
+        .map(|(bytes, path)| format!("{}  {path}\n", measure::said(bytes)))
+        .collect()
+}
+
 /// The bytes under `dir` on its own volume, as `du -sxk` says them; `None`
 /// where it could not say by `deadline`.
-fn du(dir: &Path, deadline: Instant) -> Option<u64> {
+pub(crate) fn du(dir: &Path, deadline: Instant) -> Option<u64> {
     if Instant::now() >= deadline {
         return None;
     }
@@ -342,5 +412,27 @@ mod tests {
         assert_ne!(all, less, "the worktree inside is not counted twice");
         let late = sizes_said(&[big], &[], Instant::now());
         assert!(late.contains("not measured in time"), "{late}");
+    }
+
+    #[test]
+    fn the_largest_directories_of_the_volume_are_listed_but_for_the_worktrees() {
+        let said: Vec<String> = [
+            "1048576\t/h/.cache/huggingface",
+            "15728640\t/h/w/a/target",
+            "15728640\t/h/w/a",
+            "2048\t/h/Downloads",
+            "not a line",
+        ]
+        .map(String::from)
+        .to_vec();
+        let listed = largest(&said, &["/h/w/a".into()]);
+        assert_eq!(listed, "1.0 GiB  /h/.cache/huggingface\n2.0 MiB  /h/Downloads\n");
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("big")).unwrap();
+        std::fs::write(home.path().join("big/blob"), vec![1u8; 512 << 10]).unwrap();
+        let measured = largest_said(home.path(), &[], Instant::now() + MEASURED_WITHIN);
+        assert!(measured.lines().any(|line| line.ends_with("/big")), "{measured}");
+        let late = largest_said(home.path(), &[], Instant::now());
+        assert!(late.contains("du was stopped at 5 minutes"), "{late}");
     }
 }

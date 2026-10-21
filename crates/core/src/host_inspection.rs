@@ -5,6 +5,11 @@
 //! fleet does of what it found are decided here; taking down what it is
 //! given, starting it and ending it are the effect layer's.
 //!
+//! A disk inspection that finds what holds it `reclaimable` frees it, by its
+//! own `afkconvoy inspected`: which paths under the home folder may be
+//! deleted, and how, is decided here (`reclaim`); what may not is named for a
+//! human.
+//!
 //! It is held to an inspection's bounds (`crate::inspection`): one a host at a
 //! time, of either kind, in a checkout of its own, no slot of the
 //! `concurrency`, and `TIME_LIMIT` to say what it found.
@@ -156,10 +161,138 @@ pub fn covered(last: Option<(Reason, u64)>, due: &Due) -> bool {
     last.is_some_and(|(reason, started)| reason == due.reason && started >= due.episode)
 }
 
+/// A path under the home folder a host inspection freed, or named for a
+/// human to, with the bytes it held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Item {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// The bytes `items` held in all.
+pub fn bytes_of(items: &[Item]) -> u64 {
+    items.iter().fold(0, |sum, item| sum.saturating_add(item.bytes))
+}
+
+/// What under the home folder cannot be rebuilt, or is expensive to fetch
+/// again — model weights, downloads, media, Docker's images, the user's own
+/// files: a host inspection names it, and never deletes it.
+pub const KEPT: [&str; 13] = [
+    ".cache/huggingface",
+    ".cache/modelscope",
+    ".ollama",
+    ".lmstudio",
+    ".docker",
+    "Library/Containers/com.docker.docker",
+    "Downloads",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Documents",
+    "Desktop",
+    "Library/Mobile Documents",
+];
+
+/// The tools' caches under the home folder: what is in them is fetched or
+/// built again when it is wanted.
+pub const TOOL_CACHES: [&str; 8] = [
+    "Library/Caches",
+    "Library/Developer/Xcode/DerivedData",
+    ".cargo/registry/cache",
+    ".cargo/git/checkouts",
+    ".npm/_cacache",
+    ".cache/uv",
+    ".cache/pip",
+    ".gradle/caches",
+];
+
+/// Where a path is, under the home folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// In what is kept (`KEPT`).
+    Kept,
+    /// A tool's cache (`TOOL_CACHES`): the cache itself, whose contents are
+    /// freed, or something in it.
+    ToolCache { whole: bool },
+    /// Anywhere else.
+    Elsewhere,
+}
+
+/// Where `relative` — a path under the home folder, relative to it, its
+/// parts parted by `/` — is.
+pub fn place(relative: &str) -> Place {
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let under = |root: &str| {
+        let root: Vec<&str> = root.split('/').collect();
+        parts.len() >= root.len() && parts.iter().zip(root.iter()).all(|(part, root)| part == root)
+    };
+    if KEPT.iter().any(|root| under(root)) {
+        return Place::Kept;
+    }
+    match TOOL_CACHES.iter().find(|root| under(root)) {
+        Some(root) => Place::ToolCache { whole: parts.len() == root.split('/').count() },
+        None => Place::Elsewhere,
+    }
+}
+
+/// What is known of a path a host inspection would free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Facts {
+    /// Where it is under the home folder; `None` where it is not under it.
+    pub place: Option<Place>,
+    /// It is a git checkout: the top of one.
+    pub checkout: bool,
+    /// A process has its working directory there, or a file open there.
+    pub in_use: bool,
+    /// A worker holds it: a terminal of it is live.
+    pub held: bool,
+    /// It is a worktree of an issue that is closed.
+    pub closed: bool,
+    /// Git says changes there that no commit holds.
+    pub uncommitted: bool,
+}
+
+/// How a host inspection frees a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reclaim {
+    /// What git ignores in a checkout — what its builds made — and nothing
+    /// git tracks or holds uncommitted.
+    Ignored,
+    /// The worktree of a closed issue, which holds nothing uncommitted.
+    Worktree,
+    /// What is in a tool's cache; the cache itself, where `whole`.
+    Cache { whole: bool },
+}
+
+/// How a host inspection frees the path `facts` says → why it may not.
+///
+/// Never what is outside the home folder or kept (`KEPT`), nor a checkout a
+/// process uses — the landing train's while a gate runs there among them — or
+/// a worker holds; never what git tracks, nor changes no commit holds; and of
+/// what is neither a checkout nor a tool's cache, nothing.
+pub fn reclaim(facts: &Facts) -> Result<Reclaim, &'static str> {
+    match facts.place {
+        None => Err("it is not under the home folder"),
+        Some(Place::Kept) => {
+            Err("it cannot be rebuilt, or is expensive to fetch again: name it for a human")
+        }
+        Some(Place::ToolCache { whole }) => Ok(Reclaim::Cache { whole }),
+        Some(Place::Elsewhere) if !facts.checkout => Err(
+            "it is neither a git checkout nor a tool's cache: name it for a human if it should go",
+        ),
+        Some(Place::Elsewhere) if facts.held => Err("a worker holds it"),
+        Some(Place::Elsewhere) if facts.in_use => {
+            Err("a process uses it: its working directory is there, or a file it holds open")
+        }
+        Some(Place::Elsewhere) if facts.closed && !facts.uncommitted => Ok(Reclaim::Worktree),
+        Some(Place::Elsewhere) => Ok(Reclaim::Ignored),
+    }
+}
+
 /// What the fleet does of what a host inspection found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
-    /// It records it, and deletes nothing on its word.
+    /// It records it: what was freed the inspection freed itself.
     Record,
     /// It opens the issue that says the fleet outgrows its host — none while
     /// one is open.
@@ -227,24 +360,35 @@ Nobody reads this terminal: never wait for an answer.
 What holds the {reason} admission read, and why. Look at the evidence and at the host as it is now
 (`du`, `df`, `ps`, `top -l 1`). It is one of three things:
 
-- `reclaimable`: the fleet holds what it no longer needs — a worktree whose issue is closed, the
-  build output of a worktree whose next stage will rebuild it anyway. Name each, with how much.
+- `reclaimable`: something on the disk can be rebuilt — anywhere under the home folder, not only
+  the fleet's worktrees: the build output of a checkout no process uses, a worktree whose issue is
+  closed, a tool's cache. You free it below.
 - `fleet`: the fleet's own shape outgrows the host — its `concurrency` times one worktree's fresh
   build past the free disk, say. Say the arithmetic.
-- `not-its`: what holds it is outside this fleet — another fleet, a daemon, a user's files. Name it.
+- `not-its`: what holds it is outside this fleet and cannot be rebuilt — another fleet's work, a
+  daemon, a user's files. Name it.
 
-You may read and run anything that changes nothing. Commit nothing, push nothing, and change
-nothing on this host: stop no process and delete no file. The fleet deletes nothing on your word
-either: what you name is for a human to free.
+You may read and run anything that changes nothing. Commit nothing, push nothing, stop no process,
+and delete nothing yourself: `afkconvoy inspected` frees what you give it, once it has checked each.
+It frees, under the home folder:
+- with `--reclaim <checkout>`: what git ignores in a git checkout (`git clean -fdX`: `target/`,
+  `node_modules`, `.build`) that no process uses and no worker holds — never a file git tracks or
+  a change no commit holds; a worktree whose issue is closed and that holds no change, whole;
+- with `--reclaim <cache>`: a tool's cache, or what is in it: {caches}.
+
+It refuses anything else, and frees nothing of a line it refuses any path of. What cannot be
+rebuilt or is expensive to fetch again — model weights, downloads, media, Docker's images, a
+user's files ({kept}) — you name with `--name <path>`, for a human; it is never deleted.
 
 ## Say what you found
 
 You have {minutes_left} minutes. Write what you found, where and why, to a file, then run this once,
 with `reclaimable`, `fleet` or `not-its`, and stop:
 ```bash
-{inspected_command} --found <found> --text-file <file>
+{inspected_command} --found <found> --text-file <file> [--reclaim <path>]... [--name <path>]...
 ```
-The fleet records it beside admission's reading, and for `fleet` opens one issue saying so.
+`--reclaim` goes with `reclaimable` only. The fleet records what you found, what was freed and what
+you named beside admission's reading, and for `fleet` opens one issue saying so.
 ";
 
 /// What the evidence of a host inspection for `reason` holds, beside
@@ -252,9 +396,9 @@ The fleet records it beside admission's reading, and for `fleet` opens one issue
 fn taken(reason: Reason) -> &'static str {
     match reason {
         Reason::Disk => {
-            "the largest directories under the checkout's disk: each of this host's worktrees of \
-             every fleet, with its issue, its stage and whether a worker holds it, the landing \
-             train's, the fleet's caches, and the largest outside them"
+            "the largest directories of the whole volume under the home folder: each of this \
+             host's worktrees of every fleet, with its issue, its stage and whether a worker holds \
+             it, the landing train's, the fleet's caches, and the largest outside them"
         }
         Reason::Load | Reason::Memory => {
             "the process trees of each worker and of the landing train, and the hottest processes \
@@ -280,6 +424,8 @@ pub fn brief(fields: &Fields) -> Result<String, String> {
             ("checkout", fields.checkout),
             ("minutes_left", &(TIME_LIMIT / 60).to_string()),
             ("inspected_command", fields.inspected_command),
+            ("caches", &TOOL_CACHES.map(|root| format!("`~/{root}`")).join(", ")),
+            ("kept", &KEPT.map(|root| format!("`~/{root}`")).join(", ")),
         ],
     )
 }
@@ -394,11 +540,56 @@ mod tests {
         assert!(said.contains("every new worker for disk for 10 minutes in a row"), "{said}");
         assert!(said.contains("whether a worker holds it"), "{said}");
         assert!(said.contains("afkconvoy inspected --found <found> --text-file <file>"), "{said}");
+        assert!(said.contains("`~/Library/Developer/Xcode/DerivedData`"), "{said}");
+        assert!(said.contains("`~/.cache/huggingface`"), "{said}");
         let load = brief(&Fields { reason: Reason::Load, ..fields }).unwrap();
         assert!(load.contains("the process trees of each worker"), "{load}");
         for reason in [Reason::Load, Reason::Memory, Reason::Disk] {
             assert_eq!(Reason::read(reason.word()), Some(reason));
         }
+    }
+
+    #[test]
+    fn what_is_kept_is_never_freed_and_a_tool_s_cache_is() {
+        assert_eq!(place(".cache/huggingface/hub/models--x"), Place::Kept);
+        assert_eq!(place("Downloads"), Place::Kept);
+        assert_eq!(place("Library/Caches"), Place::ToolCache { whole: true });
+        assert_eq!(place("Library/Caches/Homebrew/"), Place::ToolCache { whole: false });
+        assert_eq!(place("Library/CachesOld"), Place::Elsewhere, "a part, not a prefix");
+        assert_eq!(place("src/widgets"), Place::Elsewhere);
+        let facts = Facts {
+            place: Some(Place::Kept),
+            checkout: true,
+            in_use: false,
+            held: false,
+            closed: true,
+            uncommitted: false,
+        };
+        assert!(reclaim(&facts).is_err(), "kept, even a checkout");
+        assert!(reclaim(&Facts { place: None, ..facts }).is_err(), "outside the home folder");
+        let cache = Facts { place: Some(Place::ToolCache { whole: true }), ..facts };
+        assert_eq!(reclaim(&cache), Ok(Reclaim::Cache { whole: true }));
+    }
+
+    #[test]
+    fn a_checkout_is_freed_of_its_build_output_only_while_nothing_uses_it() {
+        let idle = Facts {
+            place: Some(Place::Elsewhere),
+            checkout: true,
+            in_use: false,
+            held: false,
+            closed: false,
+            uncommitted: true,
+        };
+        assert_eq!(reclaim(&idle), Ok(Reclaim::Ignored));
+        assert!(reclaim(&Facts { in_use: true, ..idle }).is_err(), "a gate runs there, say");
+        assert!(reclaim(&Facts { held: true, ..idle }).is_err());
+        assert!(reclaim(&Facts { checkout: false, ..idle }).is_err(), "a user's files");
+        // A closed issue's worktree goes whole, unless it holds a change.
+        assert_eq!(reclaim(&Facts { closed: true, ..idle }), Ok(Reclaim::Ignored));
+        let done = Facts { closed: true, uncommitted: false, ..idle };
+        assert_eq!(reclaim(&done), Ok(Reclaim::Worktree));
+        assert!(reclaim(&Facts { in_use: true, ..done }).is_err());
     }
 
     #[test]

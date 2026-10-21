@@ -744,11 +744,13 @@ pub fn render(panel: &Panel) -> String {
 
     if let Some(last) = &panel.host_inspected {
         let issue = last.issue.map(|issue| format!(" (#{issue})")).unwrap_or_default();
+        let freed = last.freed_said();
+        let freed = if freed.is_empty() { freed } else { format!(" · {}", esc(&freed)) };
         let _ = writeln!(
             out,
             "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
              {} ago: admission held back for {} ({}); <code>{by}</code> found \
-             <b>{found}</b>{issue}: {}</section>",
+             <b>{found}</b>{issue}: {}{freed}</section>",
             lasted(panel.now.saturating_sub(last.ended)),
             last.reason.word(),
             esc(&last.reading),
@@ -987,6 +989,8 @@ mod tests {
                 found: found.into(),
                 said: "five worktrees of 14 GiB".into(),
                 issue,
+                reclaimed: vec![afkconvoy_core::host_inspection::Item { path: "/w/a/target".into(), bytes: 14 << 30 }],
+                named: vec![],
             });
             let page = render(&panel);
             if issue.is_some() {
@@ -1002,6 +1006,10 @@ mod tests {
             assert!(page.contains(&format!("found <b>{found}</b>")), "{page}");
         }
         assert!(render(&panel).contains("found <b>not-its</b>: five worktrees"));
+        assert!(
+            render(&panel).contains("five worktrees of 14 GiB · freed 14.0 GiB: /w/a/target (14.0 GiB)"),
+            "what it freed is shown"
+        );
     }
 
     #[test]

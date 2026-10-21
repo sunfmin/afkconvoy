@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::host_inspection::Item;
 use crate::prompt::fill;
 use crate::record;
 use crate::team::{Consult, Stage, Work};
@@ -41,8 +42,8 @@ pub enum Found {
     /// What takes so much is not the worker's — of a host inspection, not
     /// this fleet's: it is told nothing.
     NotIts,
-    /// Of a host inspection: the fleet holds what it no longer needs. The
-    /// fleet deletes nothing on its word.
+    /// Of a host inspection: something on the disk can be rebuilt. The
+    /// inspection frees it itself, as its `afkconvoy inspected` is told.
     Reclaimable,
     /// Of a host inspection: the fleet's own shape outgrows the host. The
     /// fleet opens one issue saying so.
@@ -108,9 +109,19 @@ pub struct Finding {
     pub found: Found,
     /// What, where and why, in its own words.
     pub said: String,
+    /// Of a host inspection: what it freed, and what it named for a human.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reclaimed: Vec<Item>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named: Vec<Item>,
 }
 
 impl Finding {
+    /// `found`, as `said`, which freed and named nothing.
+    pub fn new(found: Found, said: &str) -> Finding {
+        Finding { found, said: said.to_string(), reclaimed: vec![], named: vec![] }
+    }
+
     /// The line typed at the hot worker; none where what takes so much is
     /// not its own.
     pub fn typed(&self) -> Option<String> {
@@ -373,7 +384,7 @@ mod tests {
 
     #[test]
     fn what_was_found_is_typed_at_the_worker_unless_it_is_not_its_own() {
-        let finding = |found| Finding { found, said: "the test\n `loops`  forever.".into() };
+        let finding = |found| Finding::new(found, "the test\n `loops`  forever.");
         let wrong = finding(Found::Wrong).typed().unwrap();
         assert!(
             wrong.contains("found the work wrong: the test `loops` forever. Fix that"),
@@ -394,13 +405,13 @@ mod tests {
         assert!(Found::Wrong.of(Kind::Worker) && !Found::Wrong.of(Kind::Host));
         assert!(Found::Fleet.of(Kind::Host) && !Found::Fleet.of(Kind::Worker));
         assert!(Found::NotIts.of(Kind::Host) && Found::NotIts.of(Kind::Worker));
-        let typed = Finding { found: Found::Reclaimable, said: "x".into() }.typed();
+        let typed = Finding::new(Found::Reclaimable, "x").typed();
         assert_eq!(typed, None);
     }
 
     #[test]
     fn the_comment_says_what_was_found_and_is_no_stage_record() {
-        let finding = Finding { found: Found::Heavy, said: "cargo build of 900 crates".into() };
+        let finding = Finding::new(Found::Heavy, "cargo build of 900 crates");
         let said = comment("#7", "past 4.0 cores for 120s", "stock-consult", Some(&finding));
         assert!(said.starts_with("<!--convoy:inspection found=heavy-->\n"), "{said}");
         assert!(said.contains("> cargo build of 900 crates"), "{said}");

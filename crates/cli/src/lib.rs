@@ -60,6 +60,7 @@ pub mod park;
 pub mod patrol;
 pub mod precedent;
 pub mod probe;
+pub mod reclaim;
 pub mod recovery;
 pub mod role;
 pub mod scaffold;
@@ -440,6 +441,13 @@ enum Command {
         found: Found,
         #[command(flatten)]
         text: TextArgs,
+        /// Of the host, with reclaimable: a path under the home folder to free — what git
+        /// ignores in a checkout no process uses, a closed issue's worktree, a tool's cache
+        #[arg(long, value_name = "PATH")]
+        reclaim: Vec<PathBuf>,
+        /// Of the host: a path to name for a human, which is never deleted
+        #[arg(long, value_name = "PATH")]
+        name: Vec<PathBuf>,
     },
     /// Run a heavy command alone on this host, once no other `exclusive` command runs (a
     /// worker's command)
@@ -1208,7 +1216,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             }
             claims::declare_over(&Repo::here()?, run.trim())
         }
-        Command::Inspected { found, text } => inspection::inspected(found, &text.read()?),
+        Command::Inspected { found, text, reclaim, name } => {
+            inspection::inspected(found, &text.read()?, &reclaim, &name)
+        }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
         Command::Exclusive { .. } => {

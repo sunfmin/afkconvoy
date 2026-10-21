@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 use afkconvoy_core::config::Bound;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::host_inspection::{self, Act, Due, Holding, Reason, act, covered};
+use afkconvoy_core::host_inspection::{self, Act, Due, Holding, Item, Reason, act, covered};
 use afkconvoy_core::hot::Limits;
 use afkconvoy_core::inspection::{
     self, CHECKOUT, Fields, Finding, Found, Hot, Inspected, Inspector as Who, Kind, inspector, over,
@@ -51,6 +51,7 @@ use crate::git::Repo;
 use crate::host_evidence::{self, Own};
 use crate::hot::{HotNow, held_said};
 use crate::log::What;
+use crate::measure;
 use crate::orca::{Source, Worktree};
 use crate::role::ToldRules;
 use crate::stage::records_of;
@@ -154,6 +155,39 @@ pub struct Last {
     /// The issue it had the fleet open, or the one already open that said so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<u64>,
+    /// What it freed, and what it named for a human to.
+    #[serde(default)]
+    pub reclaimed: Vec<Item>,
+    #[serde(default)]
+    pub named: Vec<Item>,
+}
+
+impl Last {
+    /// What it freed and named, in words; empty where neither.
+    pub fn freed_said(&self) -> String {
+        freed_said(&self.reclaimed, &self.named)
+    }
+}
+
+/// What a host inspection freed — `reclaimed` — and `named`, in words, each
+/// with what it held, for the log and the panel; empty where neither.
+pub fn freed_said(reclaimed: &[Item], named: &[Item]) -> String {
+    let each = |items: &[Item]| {
+        items
+            .iter()
+            .map(|item| format!("{} ({})", item.path, measure::said(item.bytes)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut said = vec![];
+    if !reclaimed.is_empty() {
+        let freed = measure::said(host_inspection::bytes_of(reclaimed));
+        said.push(format!("freed {freed}: {}", each(reclaimed)));
+    }
+    if !named.is_empty() {
+        said.push(format!("named for a human: {}", each(named)));
+    }
+    said.join(" · ")
 }
 
 /// What the last host inspection on this host found; none where none ended.
@@ -704,6 +738,14 @@ fn end_host(
         None => format!("it said nothing in {} minutes", inspection::TIME_LIMIT / 60),
     };
     let found = finding.as_ref().map_or("nothing", |finding| finding.found.word());
+    let (reclaimed, named) = finding
+        .as_ref()
+        .map(|finding| (finding.reclaimed.clone(), finding.named.clone()))
+        .unwrap_or_default();
+    let freed = freed_said(&reclaimed, &named);
+    if !freed.is_empty() {
+        said.push_str(&format!(" · {freed}"));
+    }
     let mut issue = None;
     if let Some(finding) = finding.as_ref().filter(|finding| finding.found == Found::Fleet) {
         // How long admission had held back as the inspection started.
@@ -730,6 +772,8 @@ fn end_host(
         found: found.to_string(),
         said: finding.as_ref().map_or_else(|| said.clone(), |finding| finding.said.clone()),
         issue,
+        reclaimed,
+        named,
     };
     if let Err(error) = keep_last(&last) {
         said.push_str(&format!(" · what it found was not kept: {error:#}"));
@@ -801,7 +845,11 @@ fn end_worker(
 
 /// `afkconvoy inspected`: keeps what the inspection in this checkout found,
 /// for its `run` to type at the hot worker and leave on its issue.
-pub fn inspected(found: Found, said: &str) -> Result<Value> {
+///
+/// Of the host, it first frees `reclaim` — only where it found something
+/// `reclaimable`, and none of it where any may not be — and measures `name`,
+/// for a human to free.
+pub fn inspected(found: Found, said: &str, reclaim: &[PathBuf], name: &[PathBuf]) -> Result<Value> {
     if said.trim().is_empty() {
         anyhow::bail!("say what was found, where and why: the text is empty");
     }
@@ -824,8 +872,19 @@ pub fn inspected(found: Found, said: &str) -> Result<Value> {
             found.word()
         );
     }
-    checkout.record_inspected(&Finding { found, said: said.trim().to_string() })?;
-    Ok(json!({"inspected": true, "found": found.word(), "kind": kind.word()}))
+    if kind == Kind::Worker && !(reclaim.is_empty() && name.is_empty()) {
+        anyhow::bail!("an inspection of a worker frees and names nothing on the host");
+    }
+    if found != Found::Reclaimable && !reclaim.is_empty() {
+        anyhow::bail!("only what is reclaimable is freed, not what is {}", found.word());
+    }
+    let named = crate::reclaim::name_all(name)?;
+    let reclaimed = crate::reclaim::reclaim_all(reclaim)?;
+    let finding = Finding { reclaimed, named, ..Finding::new(found, said.trim()) };
+    checkout.record_inspected(&finding)?;
+    Ok(json!({"inspected": true, "found": found.word(), "kind": kind.word(),
+        "reclaimed": finding.reclaimed, "freed": host_inspection::bytes_of(&finding.reclaimed),
+        "named": finding.named}))
 }
 
 #[cfg(test)]
