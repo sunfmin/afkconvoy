@@ -1058,6 +1058,9 @@ started with reads another directory, and finds no log there.
     instances/  the socket each `run` of this host listens on, whatever its repo,
                 named for its fleet instance: how they find one another before one
                 puts the host to sleep. A `run` removes its own as it exits.
+    host-inspection/  what the last inspection of the host was given (evidence.md)
+                and what it found (last.json), whichever fleet of the host started
+                it: what `doctor` and the panel show beside admission's reading.
 
 None of it is fleet state: that is in GitHub and on the repo's remote.
 ````
@@ -1429,7 +1432,7 @@ The rules every role of a team works under, whatever its own rules add. They say
 _Avoid_: global rules, shared rules
 
 **Admission**:
-Whether a tick starts new workers on its host: not while the host is past a share of its load, under memory pressure, or low on free disk under the checkout. What it holds back stays on the frontier for the next tick; workers already running, the landing train and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own.
+Whether a tick starts new workers on its host: not while the host is past a share of its load, under memory pressure, or low on free disk under the checkout. What it holds back stays on the frontier for the next tick; workers already running, the landing train and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own. Holding back for one reason — the load, memory or disk — at every tick past a span (ten minutes, or the host's own) starts an inspection of the host, once an **episode**: the episode ends once admission has admitted for five minutes. Holding back for reasons that change starts none.
 _Avoid_: throttling, backpressure
 
 **Host user's skills and rules**:
@@ -1537,7 +1540,7 @@ A worker whose processes — every one started with its `TMPDIR`, and every one 
 _Avoid_: hog
 
 **Inspection**:
-A worker in the role of the consult of a hot worker's stage — the stock consult where the stage names none, at no stage, and in an unbound repo — started in a checkout of its own once per episode, and given what was taken down as that worker turned hot (its process tree, a `sample` of its hottest process, its resident memory over the last minutes, what its processes wrote, the largest directories of its worktree), the issue, the worktree and the hot worker's terminal. It finds the work wrong, that heavy, or what takes so much not the worker's, and says so with `afkconvoy inspected`; the fleet types the first two at the hot worker and leaves what it found as a comment on the issue that is no stage record. One runs on a host at a time, across its fleets, takes no slot of the `concurrency`, and has 15 minutes. It is held as a consult and hands nothing on; nobody inspects where the stage or the repo says `human`, and a worker hot again after its inspection is never escalated for it.
+A worker in the role of the consult of a hot worker's stage — the stock consult where the stage names none, at no stage, and in an unbound repo — started in a checkout of its own once per episode, and given what was taken down as that worker turned hot (its process tree, a `sample` of its hottest process, its resident memory over the last minutes, what its processes wrote, the largest directories of its worktree), the issue, the worktree and the hot worker's terminal. It finds the work wrong, that heavy, or what takes so much not the worker's, and says so with `afkconvoy inspected`; the fleet types the first two at the hot worker and leaves what it found as a comment on the issue that is no stage record. One runs on a host at a time, across its fleets, takes no slot of the `concurrency`, and has 15 minutes. It is held as a consult and hands nothing on; nobody inspects where the stage or the repo says `human`, and a worker hot again after its inspection is never escalated for it. An inspection of the **host** is started by admission instead, on no worker: the stock consult, given what was taken down as it started — admission's reading and shares; for disk, each of the host's worktrees of every fleet with its issue, its stage, whether a worker holds it and what it holds, the landing train's, the fleet's caches and the largest directories outside them; for load or memory, the process trees of each worker and of the train and the hottest processes outside them. It finds what holds it `reclaimable` — the fleet holds what it no longer needs, which it names and the fleet deletes nothing of — `fleet` — the fleet's own shape outgrows the host, for which the fleet opens one issue with the escalate label, and none other while it is open — or `not-its`; the log, the panel and `doctor` show it beside admission's reading. Of either kind, one runs on a host at a time, and none where another fleet of the host inspected it in the episode.
 _Avoid_: investigation, diagnosis
 
 **Exclusive queue**:

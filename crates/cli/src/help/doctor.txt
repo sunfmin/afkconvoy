@@ -47,7 +47,13 @@ WHAT IT ANSWERS
                                  as `plan` answers it (`afkconvoy plan --help`), or
                                  {error} where a share the host says is wrong. A tick
                                  that admission held back is no "started no worker"
-                                 finding
+                                 finding. Its inspected is what the last host
+                                 inspection on this host found, whichever fleet started
+                                 it: {repo, reason, reading, by, started, ended, found,
+                                 said, issue} — what admission held back for and read,
+                                 the role, reclaimable, fleet, not-its or nothing, its
+                                 words, and the issue a fleet finding opened; null with
+                                 none
                 exclusive        the host's queue of `afkconvoy exclusive`, whatever
                                  its repo: {running, waiting} — running is the command
                                  that runs alone now, null with none; waiting, those
@@ -56,11 +62,13 @@ WHAT IT ANSWERS
                                  in, the issue of its worker, and when it asked and
                                  began to run, in epoch seconds. {error} when the
                                  queue cannot be read
-                inspection       the inspection of a hot worker running on this host,
-                                 whatever its repo: {repo, worker, issue, by, since} —
-                                 the repo whose fleet started it, the hot worker and its
-                                 issue, the role it runs in and when it started, in epoch
-                                 seconds; null with none (`afkconvoy inspected --help`)
+                inspection       the inspection running on this host, whatever its repo:
+                                 {kind, repo, worker, issue, by, since, held_back_by} —
+                                 worker or host, the repo whose fleet started it, the
+                                 hot worker and its issue ("the host" and null of a
+                                 host's), the role it runs in, when it started, in epoch
+                                 seconds, and of a host's what admission held back for;
+                                 null with none (`afkconvoy inspected --help`)
     fleet     the `run` of this host for this repo:
                 alive            whether one is running now
                 instance, host   its fleet instance id: the one its log names, else the

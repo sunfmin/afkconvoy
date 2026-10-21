@@ -36,6 +36,9 @@ WHAT IT HOLDS
       instances/  the socket each `run` of this host listens on, whatever its repo,
                   named for its fleet instance: how they find one another before one
                   puts the host to sleep. A `run` removes its own as it exits.
+      host-inspection/  what the last inspection of the host was given (evidence.md)
+                  and what it found (last.json), whichever fleet of the host started
+                  it: what `doctor` and the panel show beside admission's reading.
 
   None of it is fleet state: that is in GitHub and on the repo's remote.
 
