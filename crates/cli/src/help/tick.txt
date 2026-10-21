@@ -24,8 +24,11 @@ WHAT IT ANSWERS
     did                 each step taken: {do, issue, outcome}. do is settle, forget, tend_train,
                         cut_train, judge, watch, advance, escalate, end_patrol, patrol,
                         end_proposal, propose, unlock, reclaim, dispatch, slow_gate,
-                        board, stage_label or heartbeat; outcome is done, nudged, continued,
-                        restarted, abandoned, nothing, lost, blocked, gone or failed. A step on a
+                        board, stage_label or heartbeat; outcome is done, nudged, waiting,
+                        continued, restarted, abandoned, nothing, lost, blocked, gone or
+                        failed. A step whose worker waits on its own background work says
+                        since when it was first seen to (epoch seconds): {do, issue,
+                        outcome, waiting_since}. A step on a
                         patrol has a null issue and names it: {do, issue, patrol,
                         outcome}. A step on the proposal of a precedent names the
                         issue that was ruled on. An `advance` that read a verdict and

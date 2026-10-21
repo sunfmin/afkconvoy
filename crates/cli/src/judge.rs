@@ -6,14 +6,15 @@ use std::time::UNIX_EPOCH;
 use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::board::Stage;
 use afkconvoy_core::claims::{Claim, releasable};
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::left::{Held, Left};
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::role::followed;
 use afkconvoy_core::stage_record::stage_records;
 use afkconvoy_core::stopped::{
-    NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless, route, screen_request,
-    settled_by_state, stalled_reason, standing_verdict,
+    Background, FOOTER_LINES, NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless,
+    past_grace, route, screen_request, settled_by_state, stalled_reason, standing_verdict,
 };
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
@@ -372,7 +373,17 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
     let said = said.filter(|_| verdict.is_some());
     let handed = worktree.handed(None)?;
-    let route = route(state, &progress, verdict.as_ref(), worktree.nudged()?, handed, fleet.now);
+    // What the worker said is carried out whatever it waits on: its screen is
+    // read only when it said nothing.
+    let nudged = worktree.nudged()?;
+    let background = match verdict {
+        Some(_) => None,
+        None => {
+            let past_grace = past_grace(state, &progress, nudged, handed, fleet.now);
+            own_background(fleet, &worktree, past_grace)?
+        }
+    };
+    let route = route(state, &progress, verdict.as_ref(), nudged, (handed, background), fleet.now);
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, said, route }))))
 }
 
@@ -393,6 +404,30 @@ pub(crate) fn nudge_worker(
         NudgeStep::Record => worktree.record_nudge(now),
     })?;
     Ok(terminal)
+}
+
+/// The background work the stopped worker in `worktree` started itself and
+/// waits on, as its harness shows it at the end of its screen: since when it
+/// was first seen here, under the gate limit. Read only of a worker
+/// `past_grace` (`stopped::past_grace`) — one with a sign of life is not
+/// waiting, and is seen waiting afresh when it next stops — and soft: a
+/// terminal that cannot be read shows none, and a silence never waits on one.
+pub(crate) fn own_background(
+    fleet: &Fleet,
+    worktree: &Worktree,
+    past_grace: bool,
+) -> Result<Option<Background>> {
+    if !past_grace {
+        worktree.background_since(false, fleet.now)?;
+        return Ok(None);
+    }
+    let screen = worktree.terminal().and_then(|terminal| match terminal {
+        Some(terminal) => worktree.screen(&terminal, FOOTER_LINES),
+        None => Ok(vec![]),
+    });
+    let waiting = Harness::any_shows_background(&screen.unwrap_or_default());
+    let since = worktree.background_since(waiting, fleet.now)?;
+    Ok(since.map(|since| Background { since, limit: fleet.config.gate_seconds() }))
 }
 
 /// The end of a silent worker's screen, for the reason its claim is escalated
@@ -423,6 +458,7 @@ pub fn nudge(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
             match found.route {
                 Route::Stalled(_) => "it was already nudged, and a second silence escalates",
                 Route::Leave => "it showed a sign of life within the grace period",
+                Route::Waiting(_) => "it waits on background work of its own, still running",
                 _ => "it declared a verdict",
             }
         );
@@ -456,6 +492,7 @@ pub fn judge(
     let said = said.as_deref();
     let reason = match route {
         Route::Leave => return Ok(Outcome::Nothing),
+        Route::Waiting(since) => return Ok(Outcome::Waiting(since)),
         Route::Continue if !start => return Ok(Outcome::Nothing),
         Route::Continue => {
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;

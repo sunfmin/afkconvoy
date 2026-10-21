@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use afkconvoy_core::before::{Before, Lost};
 use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
+use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
 use afkconvoy_core::takeover::run_said;
@@ -59,6 +60,29 @@ struct Failure {
     unreached: bool,
 }
 
+/// Since when a worker has waited on its own background work, as a tick's line
+/// says it: `since 2026-10-20 23:03 UTC, 12m ago`.
+fn waiting_since(since: u64, now: u64) -> String {
+    let days = since / 86_400;
+    let (hour, minute) = (since % 86_400 / 3600, since % 3600 / 60);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`).
+    let shifted = days + 719_468;
+    let era = shifted / 146_097;
+    let of_era = shifted % 146_097;
+    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * of_year + 2) / 153;
+    let day = of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    let ago = match stamp_age(since, now) {
+        Some(ago) if ago >= 60 => format!("{}m ago", ago / 60),
+        Some(ago) => format!("{ago}s ago"),
+        None => "just now".to_string(),
+    };
+    format!("since {year}-{month:02}-{day:02} {hour:02}:{minute:02} UTC, {ago}")
+}
+
 /// What one tick came to.
 pub struct Ticked {
     pub pass: Pass,
@@ -95,6 +119,8 @@ pub struct Ticked {
     /// What its rebuild read: the pass was made over these.
     set: WorkingSet,
     flows: Flows,
+    /// The clock the tick ran at: what a worker's wait is told against.
+    now: u64,
 }
 
 /// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
@@ -169,6 +195,7 @@ pub fn tick(
         bound,
         set,
         flows,
+        now: me.now,
     };
     Ok((ticked, fleet))
 }
@@ -463,6 +490,7 @@ impl Ticked {
                 let ended = match outcome {
                     Outcome::Done | Outcome::HandedOn => "done",
                     Outcome::Nudged => "nudged",
+                    Outcome::Waiting(_) => "waiting",
                     Outcome::Continued => "continued",
                     Outcome::Restarted => "restarted",
                     Outcome::Abandoned => "abandoned",
@@ -478,6 +506,9 @@ impl Ticked {
                     && let Some(stage) = self.advanced_to(*issue)
                 {
                     did["stage"] = json!(stage);
+                }
+                if let Outcome::Waiting(since) = outcome {
+                    did["waiting_since"] = json!(since);
                 }
                 if let Some(why) = self.escalated_by(*step, *outcome) {
                     did["escalated"] = json!(why);
@@ -602,6 +633,26 @@ impl Ticked {
             if !issues.is_empty() {
                 parts.push(format!("{verb} {}", issues.join(", ")));
             }
+        }
+        // A worker left as it waits on its own background work, and since when:
+        // it is not silent, and the line says why it was not nudged.
+        let waiting: Vec<String> = self
+            .pass
+            .did
+            .iter()
+            .filter_map(|(step, outcome)| match outcome {
+                Outcome::Waiting(since) => {
+                    let since = waiting_since(*since, self.now);
+                    Some(match words(*step).1 {
+                        Some(issue) => format!("#{issue} ({since})"),
+                        None => format!("the train worker ({since})"),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        if !waiting.is_empty() {
+            parts.push(format!("waiting on its own background work {}", waiting.join(", ")));
         }
         for (verb, wanted) in [("ran the patrol", "patrol"), ("ended the patrol", "end_patrol")] {
             let patrols: Vec<&str> = self
@@ -992,5 +1043,18 @@ pub fn run(
             said.keep(clock(), log::What::Stop { line: stop_line(me) });
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn since_when_a_worker_waits_is_said_in_utc() {
+        assert_eq!(waiting_since(0, 30), "since 1970-01-01 00:00 UTC, 30s ago");
+        let at = 1_792_537_380; // 2026-10-20 23:03 UTC
+        assert_eq!(waiting_since(at, at + 720), "since 2026-10-20 23:03 UTC, 12m ago");
+        assert_eq!(waiting_since(951_782_400, 0), "since 2000-02-29 00:00 UTC, just now");
     }
 }

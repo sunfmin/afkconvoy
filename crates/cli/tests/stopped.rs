@@ -199,6 +199,102 @@ fn screen_reads(world: &World) -> Vec<Vec<String>> {
     calls.into_iter().filter(|call| common::asked(call) == "terminal read").collect()
 }
 
+/// How many lines of its screen each read since the last look asked for.
+fn read_limits(world: &World) -> Vec<String> {
+    let reads = screen_reads(world);
+    reads
+        .iter()
+        .map(|read| {
+            let limit = read.iter().position(|arg| arg == "--limit").unwrap();
+            read[limit + 1].clone()
+        })
+        .collect()
+}
+
+/// The worker's terminal shows `screen`.
+fn show(world: &World, screen: &[&str]) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["screen"] = json!(screen);
+        }
+    });
+}
+
+/// What Claude Code's terminal shows as it waits on a gate it started in the
+/// background, with a monitor on it.
+const WAITING: [&str; 5] = [
+    "⏺ Monitor(gate --train finishing for #7)",
+    "✻ Worked for 14s · done 11:03 PM · 1 shell, 1 monitor still running",
+    "❯ ",
+    "─────",
+    "  ⏵⏵ bypass permissions on · 1 shell, 1 monitor · ↓ to manage",
+];
+
+/// …and once that work ended.
+const ENDED: [&str; 4] = [
+    "✻ Worked for 14s · done 11:03 PM · 1 shell, 1 monitor still running",
+    "❯ ",
+    "─────",
+    "  ⏵⏵ bypass permissions on",
+];
+
+/// The lines one tick of `run` at `now` prints.
+fn run_line(world: &World, now: u64) -> Vec<String> {
+    let now = now.to_string();
+    let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let more = ["--instance", "alpha", "--ticks", "1", "--now", &now];
+    world.afk_lines(&[&args[..], &more[..]].concat()).0
+}
+
+#[test]
+fn a_worker_waiting_on_its_own_background_work_is_not_silent_until_it_ends() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    world.orca_calls();
+
+    // past grace, but waiting on its gate: neither nudged nor escalated
+    let ticked = tick(&world, 1300);
+    assert_eq!(did(&ticked), ["judge 7 waiting", "heartbeat done"]);
+    assert_eq!(ticked["did"][0]["waiting_since"], 1300, "{ticked}");
+    assert_eq!(typed(&world).len(), 1, "only its brief");
+    assert_eq!(read_limits(&world), ["12"], "its footer is read, and only that");
+    let ticked = tick(&world, 1800);
+    assert_eq!(did(&ticked), ["judge 7 waiting", "heartbeat done"]);
+    assert_eq!(ticked["did"][0]["waiting_since"], 1300, "since when it was first seen");
+    assert_eq!(world.claims().len(), 1);
+    // the tick's line says so, and since when
+    let lines = run_line(&world, 1820);
+    let said = "waiting on its own background work #7 (since 1970-01-01 00:21 UTC, 8m ago)";
+    assert!(lines.iter().any(|line| line.contains(said)), "{lines:?}");
+
+    // the work ended: the silence is counted as ever — a nudge, then stalled past it
+    show(&world, &ENDED);
+    assert_eq!(did(&tick(&world, 1900)), ["judge 7 nudged", "heartbeat done"]);
+    assert_eq!(typed(&world).len(), 2);
+    assert_eq!(did(&tick(&world, 2199)), ["judge 7 nothing", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 2200)), ["judge 7 done"]);
+    let said = world.comments(7).last().unwrap().clone();
+    assert!(said.contains("stayed silent after one nudge"), "{said}");
+}
+
+#[test]
+fn a_worker_waiting_past_the_gate_limit_is_silent_saying_so() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    show(&world, &WAITING);
+    assert_eq!(did(&tick(&world, 1300))[0], "judge 7 waiting");
+    // the gate limit is 600s here: still waiting just short of it…
+    assert_eq!(did(&tick(&world, 1300 + 599))[0], "judge 7 waiting");
+    // …and silent at it, never nudged
+    assert_eq!(did(&tick(&world, 1300 + 600))[0], "judge 7 done");
+    assert_eq!(typed(&world).len(), 1, "no nudge");
+    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
+    let said = world.comments(7).last().unwrap().clone();
+    assert!(said.contains("waited 600s on its own background work, past the limit"), "{said}");
+    assert!(said.contains("1 shell, 1 monitor"), "where it stopped: {said}");
+}
+
 fn nudge_record(world: &World) -> PathBuf {
     let dir = worktree(world);
     PathBuf::from(common::git(&dir, &["rev-parse", "--absolute-git-dir"])).join("convoy-nudged")
@@ -231,7 +327,7 @@ fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
     assert!(lines[1].contains("convoy-worker-prompt.md") && lines[1].contains("convoy:verdict"));
     assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1300");
     assert_eq!(world.claims().len(), 1, "the claim is still held");
-    assert_eq!(screen_reads(&world), [] as [Vec<String>; 0], "nothing is read to nudge");
+    assert_eq!(read_limits(&world), ["12"], "only its footer is read to nudge");
 
     // the nudge is a sign of life for one grace period
     assert_eq!(did(&tick(&world, 1599)), ["judge 7 nothing", "heartbeat done"]);
@@ -270,10 +366,10 @@ fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
         "gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human"
     );
     let reads = screen_reads(&world);
-    assert_eq!(reads.len(), 1, "{reads:?}");
-    let limit = reads[0].iter().position(|arg| arg == "--limit").unwrap();
+    assert_eq!(reads.len(), 2, "its footer, then where it stopped: {reads:?}");
+    let limit = reads[1].iter().position(|arg| arg == "--limit").unwrap();
     assert_eq!(
-        (reads[0][limit + 1].as_str(), reads[0].contains(&"--screen".to_string())),
+        (reads[1][limit + 1].as_str(), reads[1].contains(&"--screen".to_string())),
         ("60", true)
     );
 }

@@ -27,6 +27,9 @@ const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 const TOLD_FILE: &str = "convoy-train-told";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
+/// When the worker here was first seen waiting on its own background work
+/// (epoch seconds), beside the brief: gone once it is seen waiting on none.
+const BACKGROUND_FILE: &str = "convoy-background";
 /// When the worker here was started (epoch seconds), beside the brief.
 const START_FILE: &str = "convoy-started";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
@@ -402,6 +405,7 @@ impl Worktree {
         repo.git(&["clean", "--quiet", "-fd"])?;
         self.forget(TOLD_FILE)?;
         self.forget(START_FILE)?;
+        self.forget(BACKGROUND_FILE)?;
         self.forget(NUDGE_FILE)
     }
 
@@ -412,6 +416,24 @@ impl Worktree {
             Some(at) => Nudged::At(at),
             None => Nudged::Never,
         })
+    }
+
+    /// When the worker here was first seen waiting on its own background
+    /// work — `waiting`, as its screen shows now — recorded `now` when it
+    /// was not; `None`, and the record gone, when it waits on none.
+    pub fn background_since(&self, waiting: bool, now: u64) -> Result<Option<u64>> {
+        if !waiting {
+            self.forget(BACKGROUND_FILE)?;
+            return Ok(None);
+        }
+        let file = self.note(BACKGROUND_FILE)?;
+        let seen = std::fs::read_to_string(&file).ok();
+        if let Some(since) = seen.and_then(|at| at.trim().parse().ok()) {
+            return Ok(Some(since));
+        }
+        std::fs::write(&file, now.to_string())
+            .with_context(|| format!("cannot write {}", file.display()))?;
+        Ok(Some(now))
     }
 
     pub fn record_nudge(&self, at: u64) -> Result<()> {
@@ -524,10 +546,11 @@ impl Worktree {
     /// verbatim → its terminal's handle. Whatever terminal was here first is
     /// closed, so the worker's is the only one in the worktree: two agents in
     /// one worktree would fight, and orca opens a bare shell in every worktree
-    /// it cuts. A new worker was never nudged, whatever the one before it
-    /// was, and started `now`.
+    /// it cuts. A new worker was never nudged, and waits on no background
+    /// work, whatever the one before it did, and was started `now`.
     pub fn start(&self, command: &str, now: u64) -> Result<String> {
         self.forget(NUDGE_FILE)?;
+        self.forget(BACKGROUND_FILE)?;
         // One with no terminal is as wanted.
         let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
         let made =

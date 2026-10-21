@@ -89,6 +89,9 @@ pub enum Outcome {
     HandedOn,
     /// A silent worker was told to carry on: its claim is still held.
     Nudged,
+    /// A stopped worker waits on its own background work, running since this
+    /// epoch second: it was left, and is not silent.
+    Waiting(u64),
     /// A worker was started on the claim again: it is still held.
     Continued,
     /// `Watch` replaced a silent joining worker, the once that is allowed: the

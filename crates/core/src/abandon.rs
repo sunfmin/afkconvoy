@@ -4,7 +4,7 @@
 use flux_rs::attrs::*;
 
 use crate::joining::JoinRecord;
-use crate::stopped::{Nudged, Progress, Silence, Silent, Unnudged, silence};
+use crate::stopped::{Background, Nudged, Progress, Silence, Silent, Unnudged, silence};
 use crate::worker::WorkerState;
 
 /// What the tick does about a train worker that stopped on the tip it was
@@ -14,6 +14,9 @@ pub enum TrainRoute {
     /// Nothing: it showed a sign of life within grace — or it is not there,
     /// which is `train::tend`'s to answer.
     Leave,
+    /// Nothing: it stopped, and waits on its own background work — the
+    /// train's gate, say — running since this epoch second.
+    Waiting(u64),
     Nudge(Unnudged),
     /// Silent past its nudge: give the train up.
     Abandon(Silent),
@@ -28,10 +31,12 @@ pub fn train_route(
     progress: &Progress,
     nudged: Nudged,
     handed: Option<u64>,
+    background: Option<Background>,
     now: u64,
 ) -> TrainRoute {
-    match silence(state, progress, nudged, handed, now) {
+    match silence(state, progress, nudged, handed, background, now) {
         Silence::Gone | Silence::Lively => TrainRoute::Leave,
+        Silence::Waiting(since) => TrainRoute::Waiting(since),
         Silence::Nudge(unnudged) => TrainRoute::Nudge(unnudged),
         Silence::Stalled(silent) => TrainRoute::Abandon(silent),
     }
@@ -217,7 +222,7 @@ mod tests {
     }
 
     fn silent() -> Silent {
-        match train_route(STOPPED, &held(), Nudged::At(1), Some(1), NOW) {
+        match train_route(STOPPED, &held(), Nudged::At(1), Some(1), None, NOW) {
             TrainRoute::Abandon(silent) => silent,
             other => panic!("{other:?}"),
         }
@@ -226,18 +231,18 @@ mod tests {
     #[test]
     fn a_stopped_train_worker_is_left_within_grace_nudged_once_then_the_train_abandoned() {
         let long_ago = NOW - GRACE;
-        let route = |nudged, told| train_route(STOPPED, &held(), nudged, told, NOW);
+        let route = |nudged, told| train_route(STOPPED, &held(), nudged, told, None, NOW);
         // told of the tip moments ago, or committed a fix: it shows life
         assert_eq!(route(Nudged::Never, Some(long_ago + 1)), TrainRoute::Leave);
         let fixing = Progress { last_commit: Some(NOW - 10), ..held() };
-        let left = train_route(STOPPED, &fixing, Nudged::Never, Some(1), NOW);
+        let left = train_route(STOPPED, &fixing, Nudged::Never, Some(1), None, NOW);
         assert_eq!(left, TrainRoute::Leave);
         assert!(matches!(route(Nudged::Never, Some(long_ago)), TrainRoute::Nudge(_)));
         assert_eq!(route(Nudged::At(long_ago + 1), Some(1)), TrainRoute::Leave);
         assert!(matches!(route(Nudged::At(long_ago), Some(1)), TrainRoute::Abandon(_)));
         // one at work, or gone, is never this decision's
         for state in [WorkerState::Busy, WorkerState::Gone] {
-            let route = train_route(state, &held(), Nudged::At(1), Some(1), NOW);
+            let route = train_route(state, &held(), Nudged::At(1), Some(1), None, NOW);
             assert_eq!(route, TrainRoute::Leave);
         }
     }

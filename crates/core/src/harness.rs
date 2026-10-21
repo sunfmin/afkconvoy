@@ -353,6 +353,22 @@ impl Harness {
         }
     }
 
+    /// Whether `screen`, the end of a stopped worker's terminal, shows work
+    /// the worker started itself still running in the background, as this
+    /// harness shows it. A harness that shows none is never waited on.
+    pub fn shows_background(self, screen: &[String]) -> bool {
+        match self {
+            Harness::ClaudeCode => claude_code::shows_background(screen),
+            Harness::Pi | Harness::Codex => false,
+        }
+    }
+
+    /// Whether any harness shows background work on `screen` (as
+    /// `shows_background`): the screen does not say which harness drew it.
+    pub fn any_shows_background(screen: &[String]) -> bool {
+        Harness::ALL.into_iter().any(|harness| harness.shows_background(screen))
+    }
+
     /// The tool call this harness describes in `described`, as the guard
     /// judges one. An error is a description of no tool call.
     pub fn call<'de, D: Deserializer<'de>>(self, described: D) -> Result<Call, D::Error> {
