@@ -4,6 +4,8 @@
 //! State: `repos` [{id, path}], `root` (where worktrees are made), `worktrees`
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
 //! worktreePath, command, sent, open, agent?, lastOutputAt?, screen?}], `calls`.
+//! A terminal's `command` is the worker's line behind what starts every one
+//! under `nice` with the worktree's own `TMPDIR`: one without it is refused.
 //! Knobs: `stopped` (it is not running: it says so, and every other call
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
@@ -13,6 +15,7 @@ mod fake;
 
 use std::path::Path;
 
+use afkconvoy_core::line::niced;
 use fake::State;
 use serde_json::{Value, json};
 
@@ -197,7 +200,10 @@ fn terminal_create(st: &mut State) -> ! {
     if !knows_worktree(st, &path) {
         fail(st, "selector_not_found");
     }
-    let command = st.opt("--command").expect("--command").to_string();
+    let given = st.opt("--command").expect("--command");
+    let niced = niced(&format!("{path}/.afkconvoy-tmp"), "");
+    let command = given.strip_prefix(&niced).unwrap_or_else(|| panic!("not niced: {given}"));
+    let command = command.to_string();
     let handle = format!("term-{}", st.list("terminals").len() + 1);
     st.list("terminals").push(json!({"handle": handle, "worktreePath": path, "command": command,
         "sent": [], "open": true}));

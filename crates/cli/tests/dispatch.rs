@@ -31,6 +31,27 @@ fn ready_world() -> World {
 }
 
 #[test]
+fn a_worker_is_started_under_nice_with_a_tmpdir_its_worktree_ignores_and_takes_with_it() {
+    let world = ready_world();
+    let started = dispatch(&world, "7").ok();
+    let worktree = Path::new(started["worktree"].as_str().unwrap()).to_path_buf();
+    let calls = world.orca_calls();
+    let created = calls.iter().find(|call| common::asked(call) == "terminal create").unwrap();
+    assert_eq!(created[4..6], ["--command".to_string(), common::niced(&worktree, COMMAND)]);
+
+    // what the worker writes there is not git's to show…
+    let tmp = worktree.join(".afkconvoy-tmp");
+    std::fs::write(tmp.join("scratch"), "the worker's own").unwrap();
+    std::fs::create_dir_all(tmp.join("a/b")).unwrap();
+    std::fs::write(tmp.join("a/b/deep"), "and deeper").unwrap();
+    assert_eq!(git(&worktree, &["status", "--porcelain", "--untracked-files=all"]), "");
+
+    // …and goes when the worktree does
+    git(&world.clone, &["worktree", "remove", "--force", worktree.to_str().unwrap()]);
+    assert!(!tmp.exists() && !worktree.exists());
+}
+
+#[test]
 fn dispatch_starts_a_worker_on_a_fresh_worktree() {
     let world = ready_world();
     let started = dispatch(&world, "7").ok();
