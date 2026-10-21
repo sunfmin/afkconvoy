@@ -162,9 +162,11 @@ fn check_reads_patrol_files_and_holds_the_repos_patrols_against_them() {
         read["patrols"],
         json!([
             {"name": "audit", "by": "dev", "do": "sweep", "every": 172_800,
-                "harness": "claude-code", "model": "opus", "max_open": 1, "runs_here": false},
+                "harness": "claude-code", "model": "opus", "max_open": 1, "max_runs_a_day": null,
+                "runs_here": false},
             {"name": "sweep", "by": "dev", "do": "sweep", "every": 3600,
-                "harness": "claude-code", "model": null, "max_open": 2, "runs_here": true},
+                "harness": "claude-code", "model": null, "max_open": 2, "max_runs_a_day": null,
+                "runs_here": true},
         ])
     );
     let files: Vec<&str> =
@@ -788,4 +790,114 @@ fn takeover_lists_and_takes_the_run_of_a_patrol_with_what_its_worker_declared() 
     // The run is over under the claim that took it: the next tick ends it.
     assert_eq!(patrolled(&tick_as(&world, "beta", 10_020)), ["end_patrol sweep done"]);
     assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"], "nothing of the run is left");
+}
+
+/// #303: `max_runs_a_day` is a whole number from 1, fewer than `every` lets
+/// a day hold.
+#[test]
+fn check_holds_max_runs_a_day_to_a_count_its_interval_does_not_already_keep() {
+    let world = World::new();
+    world.repo(
+        "acme/dev",
+        &[(".claude/skills/sweep/SKILL.md", "---\nname: sweep\ndescription: s\n---\n")],
+    );
+    let file = |every: &str, max: &str| {
+        format!(
+            "```yaml\nby: dev\ndo: sweep\nevery: {every}\nmax_open: 1\nmax_runs_a_day: {max}\n```\n"
+        )
+    };
+    let (zero, word, fraction) = (file("1h", "0"), file("1h", "five"), file("1h", "1.5"));
+    let (hourly, daily, fine) = (file("1h", "24"), file("1d", "1"), file("1h", "23"));
+    let dir = world.repo(
+        "acme/team",
+        &[
+            ("team.md", TEAM),
+            ("patrols/zero.md", &zero),
+            ("patrols/word.md", &word),
+            ("patrols/fraction.md", &fraction),
+            ("patrols/hourly.md", &hourly),
+            ("patrols/daily.md", &daily),
+            ("patrols/fine.md", &fine),
+        ],
+    );
+    let refused = world.afk(&["check", "--dir", dir.to_str().unwrap()]);
+    assert_ne!(refused.code, 0);
+    let faults: Vec<(String, String, String)> = refused.json["faults"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|fault| {
+            let said = |key: &str| fault[key].as_str().unwrap().to_string();
+            (said("file"), said("key"), said("problem"))
+        })
+        .collect();
+    let problem = |file: &str| -> &str {
+        let found = faults.iter().find(|(at, key, _)| at == file && key == "max_runs_a_day");
+        &found.unwrap_or_else(|| panic!("no fault of {file} among {faults:?}")).2
+    };
+    assert!(problem("patrols/zero.md").contains("from 1 up, not a number below 1"));
+    assert!(problem("patrols/word.md").contains("from 1 up, not "));
+    assert!(problem("patrols/fraction.md").contains("not a number with a fraction"));
+    let hourly = problem("patrols/hourly.md");
+    assert!(hourly.contains("24 bounds nothing") && hourly.contains("at most 24 time(s) a day"));
+    assert!(problem("patrols/daily.md").contains("at most 1 time(s) a day"));
+    assert!(faults.iter().all(|(file, _, _)| file != "patrols/fine.md"), "{faults:?}");
+    assert_eq!(faults.len(), 5, "{faults:?}");
+}
+
+/// #303: a patrol that ran `max_runs_a_day` times in the last 24 hours is not
+/// due, whatever `every` says, until the oldest of those runs is a day old —
+/// and `plan` and the panel say until when.
+#[test]
+fn a_patrol_that_ran_its_max_runs_a_day_waits_until_the_oldest_is_a_day_old() {
+    let world = bound("[sweep]");
+    let team = world.root.join("github/acme/team");
+    let bounded = "```yaml\nby: dev\ndo: sweep\nevery: 1h\nmax_open: 2\nmax_runs_a_day: 2\n```\n";
+    commit(&team, "patrols/sweep.md", bounded);
+    let check = world.afk(&["check"]).ok();
+    assert_eq!(check["patrols"][1]["max_runs_a_day"], 2, "{check}");
+
+    let run = |at: u64| {
+        assert_eq!(patrolled(&tick(&world, at)), ["patrol sweep done"], "at {at}");
+        workers_leave(&world);
+        assert_eq!(patrolled(&tick(&world, at + 100)), ["end_patrol sweep done"]);
+    };
+    run(10_000);
+    let once = planned(&world, "alpha", 13_600);
+    assert_eq!(once["patrols"][0]["standing"], "due");
+    assert_eq!(once["patrols"][0]["runs_in_day"], 1);
+    run(13_600);
+
+    // An interval later the patrol would be due, but the day holds two runs.
+    let held = planned(&world, "alpha", 17_200);
+    assert_eq!(
+        held["patrols"],
+        json!([{"name": "sweep", "standing": "spent", "every": 3600, "last_run": 13_600,
+            "open": 0, "max_open": 2, "max_runs_a_day": 2, "runs_in_day": 2,
+            "until": 10_000 + 86_400}])
+    );
+    assert_eq!(patrolled(&tick(&world, 17_200)), Vec::<String>::new());
+    let page = world.render_panel(
+        "patrol-spent",
+        &["--instance", "alpha", "--host", "h1", "--now", "17200"],
+        (1440, 1000),
+    );
+    assert!(
+        page.html.contains(
+            "held by max_runs_a_day: 2 runs in the last 24h, of 2 — until 02:46 UTC, in 22h 0m"
+        ) && page.html.contains("data-patrol=\"sweep\" data-until=\"96400\""),
+        "{}",
+        page.html
+    );
+    assert_eq!(standing(&world, 96_399), ["sweep spent"]);
+    assert_eq!(patrolled(&tick(&world, 96_399)), Vec::<String>::new());
+
+    // The oldest is a day old: it runs, and the day holds the two last runs.
+    assert_eq!(standing(&world, 96_400), ["sweep due"]);
+    run(96_400);
+    let after = planned(&world, "alpha", 100_000);
+    assert_eq!(after["patrols"][0]["standing"], "due", "{after}");
+    assert_eq!(after["patrols"][0]["runs_in_day"], 1, "13_600 is a day old at 100_000");
+    let spent = planned(&world, "alpha", 99_999);
+    assert_eq!(spent["patrols"][0]["standing"], "not_due", "the interval comes first");
 }
