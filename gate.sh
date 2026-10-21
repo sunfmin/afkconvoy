@@ -72,6 +72,16 @@ cargo run --quiet -p afkconvoy --example manual -- --check
 # checks the same and takes about three times as long. nextest also holds one
 # test to the limit .config/nextest.toml gives: a test past it is ended, and
 # fails by name as TIMEOUT. `cargo test` has no such limit.
+#
+# The tests run with a TMPDIR like a worker's, whoever runs the gate: inside
+# this checkout, in the directory that ignores itself, and deeper than a
+# socket's path may be long. A test that binds a socket by its whole path
+# there, finds this checkout above its own directories, or says a path whole
+# fails in every gate, and not only in a worker's.
+TMPDIR="$PWD/.afkconvoy-tmp/the-tests-of-the-gate-run-in-a-directory-as-deep-as-a-worker-s"
+mkdir -p "$TMPDIR"
+printf '*\n' >"$PWD/.afkconvoy-tmp/.gitignore"
+export TMPDIR
 if cargo nextest --version >/dev/null 2>&1; then
     cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level fail --show-progress none || {
         tests_status=$?
