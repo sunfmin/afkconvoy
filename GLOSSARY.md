@@ -28,7 +28,7 @@ _Avoid_: namespace, fallback mode
 
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
-_Avoid_: run state, memory (a host's RAM)
+_Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
 A tick's view of the fleet at one moment, derived from fleet state and dropped when the tick ends.
@@ -171,6 +171,10 @@ _Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, o
 **Silent worker**:
 A worker that stopped, declared nothing, and for the grace period showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running, or a command of its in the exclusive queue. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
 _Avoid_: hung, idle (a fleet instance with nothing to do)
+
+**Hot worker**:
+A worker whose processes — every one started with its `TMPDIR`, and every one under those — take more than their share of the host: more than half its cores (one at the least) held for two minutes, more than a quarter of its memory resident, or the most of any worker while the host is under memory pressure. The host can say other limits (`--hot-cores`, `--hot-memory`). `run` samples each worker every ten seconds, with no root; one that has stayed under every limit for five minutes stops being hot, and that ends its **episode** — hot again later is a new one. The landing train's gate runs are the fleet's own and no worker's.
+_Avoid_: hog
 
 **Exclusive queue**:
 The queue of the commands run through `afkconvoy exclusive` on one host, shared by every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A command whose process dies leaves it. A worker with a command in it is busy, not silent, for no longer than the gate limit.

@@ -265,6 +265,39 @@ impl Worktree {
             .collect())
     }
 
+    /// Every worktree of this checkout on this machine a worker may be in,
+    /// with the issue orca links it to where it links one: the landing
+    /// train's left out, whose gate runs are the fleet's own and no worker's.
+    pub fn of_workers(source: &Source) -> Result<Vec<(Option<u64>, Worktree)>> {
+        let listed = orca(&["worktree", "list"])?;
+        let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
+        Ok(rows
+            .iter()
+            .filter(|row| {
+                row["repoId"].as_str() == Some(source.id.as_str())
+                    && row["isMainWorktree"] != true
+                    && row["isArchived"] != true
+            })
+            .filter_map(|row| {
+                let path = PathBuf::from(row["path"].as_str()?);
+                let branch = short_branch(row["branch"].as_str().unwrap_or("")).to_string();
+                Some((row["linkedIssue"].as_u64(), Worktree::at(path, branch)))
+            })
+            .filter(|(_, worktree)| worktree.path.is_dir() && !worktree.is_train())
+            .collect())
+    }
+
+    /// Whether this is the landing train's worktree.
+    fn is_train(&self) -> bool {
+        let name = self.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        is_worktree_named(name, TRAIN_WORKTREE)
+    }
+
+    /// The `TMPDIR` a worker here is started with.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.path.join(TMP_DIR)
+    }
+
     /// The worktree orca links to issue `number`, and what the worker in it
     /// is doing: gone, where there is no worktree.
     pub fn worker_of(
@@ -573,7 +606,7 @@ impl Worktree {
     /// The worker's `TMPDIR` here, made if it was not: a directory git
     /// ignores, by a `.gitignore` of its own that ignores all of it.
     fn tmp(&self) -> Result<PathBuf> {
-        let dir = self.path.join(TMP_DIR);
+        let dir = self.tmp_dir();
         let ignore = dir.join(".gitignore");
         std::fs::create_dir_all(&dir)
             .and_then(|()| std::fs::write(&ignore, "*\n"))
