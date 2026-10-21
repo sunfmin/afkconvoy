@@ -38,12 +38,20 @@ pub enum Found {
     /// The work is that heavy: the hot worker is told so, and to run the
     /// heavy command through `afkconvoy exclusive` from now on.
     Heavy,
-    /// What takes so much is not the worker's: it is told nothing.
+    /// What takes so much is not the worker's — of a host inspection, not
+    /// this fleet's: it is told nothing.
     NotIts,
+    /// Of a host inspection: the fleet holds what it no longer needs. The
+    /// fleet deletes nothing on its word.
+    Reclaimable,
+    /// Of a host inspection: the fleet's own shape outgrows the host. The
+    /// fleet opens one issue saying so.
+    Fleet,
 }
 
 impl Found {
-    pub const ALL: [Found; 3] = [Found::Wrong, Found::Heavy, Found::NotIts];
+    pub const ALL: [Found; 5] =
+        [Found::Wrong, Found::Heavy, Found::NotIts, Found::Reclaimable, Found::Fleet];
 
     /// How the command that declares it, and the log, say it.
     pub fn word(self) -> &'static str {
@@ -51,11 +59,46 @@ impl Found {
             Found::Wrong => "wrong",
             Found::Heavy => "heavy",
             Found::NotIts => "not-its",
+            Found::Reclaimable => "reclaimable",
+            Found::Fleet => "fleet",
         }
+    }
+
+    /// Whether an inspection of `kind` finds it.
+    pub fn of(self, kind: Kind) -> bool {
+        kind.found().contains(&self)
     }
 
     pub fn read(word: &str) -> Option<Found> {
         Found::ALL.into_iter().find(|found| found.word() == word)
+    }
+}
+
+/// What an inspection is started on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    /// A hot worker.
+    Worker,
+    /// The host, on which admission held back new workers past a span
+    /// (`crate::host_inspection`).
+    Host,
+}
+
+impl Kind {
+    /// What an inspection of this kind finds, in its own words.
+    pub fn found(self) -> [Found; 3] {
+        match self {
+            Kind::Worker => [Found::Wrong, Found::Heavy, Found::NotIts],
+            Kind::Host => [Found::Reclaimable, Found::Fleet, Found::NotIts],
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Kind::Worker => "worker",
+            Kind::Host => "host",
+        }
     }
 }
 
@@ -82,7 +125,7 @@ impl Finding {
                  work that heavy: {said} From now on run the heavy command through \
                  `afkconvoy exclusive -- <command>`, so that it runs alone on the host."
             )),
-            Found::NotIts => None,
+            Found::NotIts | Found::Reclaimable | Found::Fleet => None,
         }
     }
 }
@@ -189,7 +232,9 @@ pub fn comment(worker: &str, why: &str, by: &str, finding: Option<&Finding>) -> 
             "The work is that heavy. The worker was told to run the heavy command through \
              `afkconvoy exclusive`."
         }
-        Found::NotIts => "What takes so much is not the worker's. Nothing was typed at it.",
+        Found::NotIts | Found::Reclaimable | Found::Fleet => {
+            "What takes so much is not the worker's. Nothing was typed at it."
+        }
     };
     format!("{head} {told}\n\n{}\n", quoted(&finding.said))
 }
@@ -342,6 +387,15 @@ mod tests {
             assert_eq!(Found::read(found.word()), Some(found));
         }
         assert_eq!(Found::read("bogus"), None);
+    }
+
+    #[test]
+    fn each_kind_finds_in_words_of_its_own() {
+        assert!(Found::Wrong.of(Kind::Worker) && !Found::Wrong.of(Kind::Host));
+        assert!(Found::Fleet.of(Kind::Host) && !Found::Fleet.of(Kind::Worker));
+        assert!(Found::NotIts.of(Kind::Host) && Found::NotIts.of(Kind::Worker));
+        let typed = Finding { found: Found::Reclaimable, said: "x".into() }.typed();
+        assert_eq!(typed, None);
     }
 
     #[test]

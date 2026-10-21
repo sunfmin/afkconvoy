@@ -20,6 +20,7 @@ pub mod gate;
 pub mod graph;
 pub mod guard;
 pub mod harness;
+pub mod host_inspection;
 pub mod host_sleep;
 pub mod hot;
 pub mod inspection;
