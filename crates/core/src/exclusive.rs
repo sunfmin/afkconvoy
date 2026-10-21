@@ -56,11 +56,25 @@ pub fn in_order(mut live: Vec<Ticket>) -> Vec<Ticket> {
 /// counts for `dir` when it was run there or in a directory under it.
 pub fn queued_since(live: &[Ticket], dir: &str) -> Option<u64> {
     let dir = dir.trim_end_matches('/');
-    let within = |ticket: &&Ticket| {
-        let of = ticket.dir.as_str();
-        of == dir || of.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
-    };
-    live.iter().filter(within).map(|ticket| ticket.asked).min()
+    let mut since: Option<u64> = None;
+    for ticket in live {
+        if !within(&ticket.dir, dir) {
+            continue;
+        }
+        since = match since {
+            Some(earlier) if earlier <= ticket.asked => Some(earlier),
+            _ => Some(ticket.asked),
+        };
+    }
+    since
+}
+
+/// Whether the directory `of` is `dir` or one under it.
+fn within(of: &str, dir: &str) -> bool {
+    match of.strip_prefix(dir) {
+        Some(rest) => rest.is_empty() || rest.starts_with('/'),
+        None => false,
+    }
 }
 
 /// What the log says of a ticket that has to wait: `ahead` are before it.
