@@ -29,9 +29,10 @@ cargo fmt --all --check
 # past twenty seconds is stopped, and is an error naming that function
 # (`-Ffixpoint-timeout`): no query holds the gate up longer. Flux checks on
 # past an error (`-Fcatch-bugs`), so a run names every function that is slow,
-# and still ends with its timings.
+# and still ends with its timings. verify.sh sets those three for every run;
+# the gate adds where the timings go.
 flux_log=$(mktemp)
-FLUXFLAGS="-Ftimings -Ffixpoint-timeout=20 -Fcatch-bugs -Flog-dir=$PWD/target/flux-log"
+FLUXFLAGS="-Flog-dir=$PWD/target/flux-log"
 export FLUXFLAGS
 trap 'rm -f "$flux_log"' EXIT
 ./verify.sh --message-format=json-render-diagnostics >"$flux_log" 2>&1 && flux_status=0 || flux_status=$?

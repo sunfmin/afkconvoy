@@ -59,6 +59,11 @@ verify: z3 is ${z3_is:-(nothing reported)}, and crates/core/Cargo.toml pins $z3_
 EOF
 fi
 [ -n "$pinned" ] || exit 1
+# Every run, the gate's or a hand's, stops a solver query of one function past
+# twenty seconds as an error naming it, checks on past it so one run names
+# every slow function, and times each: a run is never held up by one query.
+FLUXFLAGS="-Ftimings -Ffixpoint-timeout=20 -Fcatch-bugs${FLUXFLAGS:+ $FLUXFLAGS}"
+export FLUXFLAGS
 case "${1:-}" in
 "" | -* | check) ;;
 *) set -- check --only-check="def:$1" ;;
