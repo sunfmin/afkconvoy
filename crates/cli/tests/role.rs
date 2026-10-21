@@ -706,11 +706,14 @@ fn started_in(command: &str) -> (PathBuf, Vec<PathBuf>) {
 }
 
 /// Every rules file and directory of skills and settings Claude Code loads
-/// for the worker started by `command`: those of the directory it starts in
-/// and of every directory above it, and those of each directory added to it.
-fn loaded(command: &str) -> Vec<PathBuf> {
+/// for the worker started by `command` from `world`: those of the directory
+/// it starts in and of every directory above it in the world, and those of
+/// each directory added to it. What is above the world is the host's that
+/// runs the tests: a checkout of this repo, when a worker runs them.
+fn loaded(world: &World, command: &str) -> Vec<PathBuf> {
     let (starts_in, added) = started_in(command);
-    let mut dirs: Vec<&Path> = starts_in.ancestors().collect();
+    let mut dirs: Vec<&Path> =
+        starts_in.ancestors().take_while(|dir| dir.starts_with(&world.root)).collect();
     dirs.extend(added.iter().map(PathBuf::as_path));
     let found = dirs.iter().flat_map(|dir| [dir.join("CLAUDE.md"), dir.join(".claude")]);
     found.filter(|path| path.exists()).collect()
@@ -761,7 +764,7 @@ fn a_stage_whose_role_is_a_subdirectory_starts_its_worker_in_that_directory_alon
     assert_eq!(started_in(&command), (role_dir.clone(), added));
     assert!(command.contains(" export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 "));
     assert_eq!(
-        loaded(&command),
+        loaded(&world, &command),
         [role_dir.join("CLAUDE.md"), role_dir.join(".claude"), team_dir.join("CLAUDE.md")]
     );
     assert_eq!(
