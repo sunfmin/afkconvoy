@@ -102,7 +102,10 @@ pub fn read_run(subject: &str) -> Option<Ran> {
 /// many as fit in `DAY` that far apart. A `max_runs_a_day` of as many or more
 /// bounds nothing.
 pub fn runs_a_day(every: u64) -> u64 {
-    if every == 0 { u64::MAX } else { (DAY / every).saturating_add(u64::from(DAY % every != 0)) }
+    match DAY.checked_div(every) {
+        Some(whole) => whole.saturating_add(u64::from(!DAY.is_multiple_of(every))),
+        None => u64::MAX,
+    }
 }
 
 /// Until when a patrol that may run `max` times a day, whose last recorded
