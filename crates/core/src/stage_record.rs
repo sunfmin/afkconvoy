@@ -479,6 +479,45 @@ impl History<'_> {
     }
 }
 
+/// What an issue already handed to a human calls for, where no consult saw
+/// what handed it over (docs/adr/0018).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unconsulted {
+    /// Its records have it with its stage's consult: it goes back to the
+    /// fleet as it is.
+    Back,
+    /// The fleet leaves the record of its escalation, at this stage, which
+    /// puts it with the stage's consult, and it goes back to the fleet.
+    Record(String),
+}
+
+/// What an issue handed to a human, whose stage records are `records` and
+/// read as `history`, calls for: to be put to its stage's consult once, where
+/// that stage names one and no consult had its word on the issue — or was
+/// handed it — since a human last put it at a stage, or its records have it
+/// with the consult already. `None` where it stays with the human: a consult
+/// let it through, or no consult is named. Once its labels are back it is
+/// the fleet's, and nothing is put again.
+pub fn unconsulted(history: &History, records: &[StageRecord]) -> Option<Unconsulted> {
+    let place = &history.place;
+    // Whatever was left before: a put cut short after its record is
+    // finished by its labels.
+    if let Position::Consult(..) = place.position {
+        return Some(Unconsulted::Back);
+    }
+    let since = records.iter().rposition(StageRecord::puts).map_or(0, |at| at + 1);
+    let seen = records.get(since..).unwrap_or_default().iter().any(|record| {
+        matches!(record.by, Author::Worker { consult: true, .. })
+            || matches!(record.stated, Stated::Failed(_))
+    });
+    if seen {
+        return None;
+    }
+    let stage = place.position.stage()?;
+    let failed = crate::position::Reason::Failed(Failure::Escalated);
+    place.consults(failed).then(|| Unconsulted::Record(stage.name.clone()))
+}
+
 /// What the tick does with a claim a stage was dispatched under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Advance {
@@ -884,6 +923,39 @@ mod tests {
         assert_eq!(after(&passed), ("stage:build".to_string(), vec!["verdict", "lock-closed"]));
         let stray = [record("plan", Escalate, "c1"), StageRecord::lock_closed("build", 13)];
         assert_eq!(after(&stray).1, ["verdict", "other-stage"]);
+    }
+
+    #[test]
+    fn an_issue_no_consult_saw_handed_to_a_human_is_put_to_its_consult_once() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        let put = |records: &[StageRecord]| unconsulted(&history(workflow, records), records);
+        // Its worker at `build` went silent, and it was escalated with no record.
+        let silent = [record("plan", Pass, "c1")];
+        assert_eq!(put(&silent), Some(Unconsulted::Record("build".to_string())));
+        let recorded =
+            [&silent[..], &[StageRecord::failed("build", Failure::Escalated, "x")]].concat();
+        assert_eq!(after(&recorded).0, "consult at build: HandOff(Failed(Escalated))");
+        // A put cut short after its record is finished by its labels: once
+        // they are back, the issue is the fleet's, and nothing is put again.
+        assert_eq!(put(&recorded), Some(Unconsulted::Back));
+        // A breaker its records hand on now: only the labels go back.
+        let mut tripped = silent.to_vec();
+        for round in 0..3 {
+            tripped.push(record("build", Pass, &format!("b{round}")));
+            tripped.push(record("review", Reject, &format!("r{round}")));
+        }
+        assert_eq!(put(&tripped), Some(Unconsulted::Back));
+        // One a consult let through stays, and so does one at a stage with none.
+        let through =
+            [&silent[..], &[record("build", Escalate, "c2"), consult("build", Escalate, "c3")]]
+                .concat();
+        assert_eq!(put(&through), None);
+        assert_eq!(put(&[record("plan", Escalate, "c1")]), None);
+        assert_eq!(put(&[]), None, "at `plan`, which names no consult");
+        // A human's ruling starts it over: what follows is unseen again.
+        let ruled = [&through[..], &[human("build", Stated::Declared(Ruling))]].concat();
+        assert_eq!(put(&ruled), Some(Unconsulted::Record("build".to_string())));
     }
 
     #[test]

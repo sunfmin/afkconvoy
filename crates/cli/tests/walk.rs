@@ -507,6 +507,15 @@ fn limited(max_rework: u64, max_consecutive_rework: u64) -> String {
     FEATURE.replacen("```yaml\n", &limits, 1).replacen("    do: implement\n", consult, 1)
 }
 
+/// `FEATURE` under these breakers, its `build` naming no consult: a breaker
+/// goes to a human (a consult's is `consult::handoff`'s).
+fn alone(max_rework: u64, max_consecutive_rework: u64) -> String {
+    let limits = format!(
+        "```yaml\nmax_rework: {max_rework}\nmax_consecutive_rework: {max_consecutive_rework}\n"
+    );
+    FEATURE.replacen("```yaml\n", &limits, 1)
+}
+
 /// Where issue 7 is and the rework it has had, as `show --issue` reads them
 /// off its stage records.
 fn shown(world: &World) -> Value {
@@ -569,8 +578,7 @@ fn started(world: &World) -> Vec<String> {
 
 #[test]
 fn a_stage_that_rejects_too_often_in_a_row_is_escalated_with_every_round_listed() {
-    // `build` names a consult: a breaker goes straight to a human all the same.
-    let world = bound_to(&limited(3, 2), 2);
+    let world = bound_to(&alone(3, 2), 2);
     world.issue(7, &["flow:feature"]);
     let rehearsed = walk(&world, &["pass", "reject", "pass", "reject", "pass", "reject"]);
     assert_eq!(rehearsed["steps"][5]["breaker"], "max_consecutive_rework");
@@ -597,8 +605,7 @@ fn a_stage_that_rejects_too_often_in_a_row_is_escalated_with_every_round_listed(
     assert!(rounds.is_sorted(), "oldest first: {said}");
     assert!(!said.contains("4. `"), "{said}");
 
-    // It is a human's: no flow label, no claim, and nobody started on it —
-    // not `build` again, and not its consult.
+    // It is a human's: no flow label, no claim, and nobody started on it.
     assert_eq!(world.labels(7), ["ready-for-human", "stage:build"]);
     assert_eq!(world.claims(), []);
     let before = started(&world).len();
@@ -611,7 +618,7 @@ fn a_stage_that_rejects_too_often_in_a_row_is_escalated_with_every_round_listed(
 
 #[test]
 fn an_issue_reworked_too_often_in_total_is_escalated_instead_of_dispatched() {
-    let world = bound_to(&limited(2, 5), 2);
+    let world = bound_to(&alone(2, 5), 2);
     world.issue(7, &["flow:feature"]);
     let rehearsed = walk(&world, &["pass", "reject", "pass", "reject", "pass", "reject"]);
     assert_eq!(rehearsed["steps"][5]["breaker"], "max_rework");
@@ -645,7 +652,7 @@ fn running_again_after_a_park_counts_as_no_rework() {
 
 #[test]
 fn a_breaker_found_on_an_issue_nobody_holds_is_escalated_with_its_rounds_too() {
-    let world = bound_to(&limited(0, 2), 2);
+    let world = bound_to(&alone(0, 2), 2);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
     declare(&world, 7, "build", "pass", &["--text", "Built."]);

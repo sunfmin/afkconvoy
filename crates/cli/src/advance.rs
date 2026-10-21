@@ -221,13 +221,13 @@ fn ask_after(
 /// Why the stage that declared under `claim` failed for what it left behind,
 /// when it did: marked as writing nothing, it left a commit on the branch. A
 /// guard refuses the commit as it is made; this is the check of what a guard
-/// missed (docs/adr/0012).
-fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<String>> {
+/// missed (docs/adr/0012). With it, whether the stage's consult left it.
+fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<(String, bool)>> {
     let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, claim.number)? else {
         return Ok(None);
     };
     let Some(started) = worktree.writes_nothing()? else { return Ok(None) };
-    Ok(started.broken(&claim.id, &worktree.tip()?))
+    Ok(started.broken(&claim.id, &worktree.tip()?).map(|why| (why, started.consult)))
 }
 
 /// The tick's look at one claim of mine at a stage → `Done` when that ended
@@ -251,10 +251,11 @@ pub fn advance(
     let said = called.said.as_deref();
     let stage = called.stage.as_deref();
     let declared = !matches!(called.advance, Advance::AskAfter);
-    if declared && let Some(failed) = left_behind(fleet, &claim)? {
+    if declared && let Some((failed, consult)) = left_behind(fleet, &claim)? {
         let worktree = worktree_of(fleet, issue)?;
         let reason = Handed::at(stage, "left a commit it may not", stated(&failed, said, None));
-        if called.consulted {
+        // A consult's own failure is a human's.
+        if consult {
             let pr = pr_of(fleet, issue)?;
             escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
             return Ok(Outcome::Done);

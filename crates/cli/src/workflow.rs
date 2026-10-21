@@ -4,7 +4,7 @@
 
 use afkconvoy_core::graph;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::position::{Declared, Place, Position};
+use afkconvoy_core::position::{ConsultOn, Declared, Place, Position};
 use afkconvoy_core::team::{HUMAN, Team, Workflow};
 use anyhow::{Result, bail};
 use serde_json::{Map, Value, json};
@@ -109,8 +109,11 @@ pub(crate) fn position(
         Position::Perform(stage, ..) => stage.harness(default),
         _ => worker.map(|_| default),
     };
+    // Why it is with a human — or with its stage's consult, for a hand-off
+    // that would have gone to one.
     let reason = match position {
-        Position::Escalating(stage, reason) => Some(reason.said(stage)),
+        Position::Escalating(stage, reason)
+        | Position::Consult(stage, _, ConsultOn::HandOff(reason)) => Some(reason.said(stage)),
         _ => None,
     };
     json!({
