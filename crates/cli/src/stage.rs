@@ -8,7 +8,7 @@ use afkconvoy_core::claims::Claim;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::{opened_by, taken_in};
 use afkconvoy_core::plan::{PullRequest, closing_pr, label_bar};
-use afkconvoy_core::position::{Declared, Failure, Position, Reason};
+use afkconvoy_core::position::{Declared, Failure, Position};
 use afkconvoy_core::precedent::{Ruling, proposed, rulings};
 use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
@@ -618,12 +618,21 @@ impl Flows {
 
     /// The stage of issue `number` whose consult a hand-off for `reason`
     /// goes to (`Place::consults`); `None` where it goes to a human.
-    pub fn consults(&self, number: u64, reason: Reason) -> Option<String> {
+    pub fn consults(&self, number: u64, failure: Failure) -> Option<String> {
         let issue = self.issues.iter().find(|issue| issue.number == number)?;
         let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
         let place = history(workflow, &issue.records).place;
-        let stage = place.position.stage().filter(|_| place.consults(reason))?;
-        Some(stage.name.clone())
+        // The stage it is at, or the one whose verdict the failure refutes.
+        let refuted = issue.records.iter().rev().find(|record| {
+            matches!(record.by, Author::Worker { consult: false, .. })
+                && matches!(record.stated, Stated::Declared(_))
+        });
+        let at = place.position.stage().map(|stage| stage.name.clone());
+        [at, refuted.map(|record| record.stage.clone())].into_iter().flatten().find(|stage| {
+            let mut records = issue.records.clone();
+            records.push(StageRecord::failed(stage, failure, ""));
+            matches!(history(workflow, &records).place.position, Position::Consult(..))
+        })
     }
 
     /// The `escalate` on issue `number` a fleet lock may explain

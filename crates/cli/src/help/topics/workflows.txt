@@ -84,17 +84,19 @@ REWORK AND ITS BREAKERS
       max_consecutive_rework     the rejections in a row by one stage
 
   A count never passes its breaker: the rework that would is not started, and the issue
-  escalates, the comment naming the breaker and every rework's stage and reason.
+  is handed on (below), naming the breaker and every rework's stage and reason.
   `afkconvoy rehearse` shows which verdict trips one, with no worker started.
 
 A CONSULT
 
-  `escalate: { to, do }` names a more senior role to ask before a human is. The stage's
-  `escalate` verdict then starts a worker in the role `to`, with the skill `do`, which
-  rules with `afkconvoy rule` — the stage that asked runs again under the ruling, as
-  one more of the issue's rework in total — or lets the escalation through to a human.
-  The chain is one role long, and a consult writes no code: one that left a commit has
-  failed. It runs on the default harness.
+  `escalate: { to, do }` names a more senior role to ask before a human is. Whatever
+  would hand the issue to a human at that stage — its `escalate`, a tripped breaker, a
+  failure, a workflow changed under it — starts a worker in the role `to`, skill `do`,
+  where that human would stand, free to run what they would (`afkconvoy help humans`).
+  It rules (`afkconvoy rule`: the stage runs again; on an `escalate` that is one more
+  rework in total), sends the issue on, or lets it through. The same hand-off again
+  goes to a human. The chain is one role long, and a consult writes no code: one that
+  left a commit has failed. It runs on the default harness.
 
 A STAGE BY: HUMAN
 
@@ -102,8 +104,8 @@ A STAGE BY: HUMAN
   no `harness` and no `model`; it starts no worker and holds no claim. The issue waits
   there until a human declares the stage's verdict with `afkconvoy verdict`.
 
-  Anywhere else a human is reached by an escalation: an `escalate` no consult ruled on,
-  a tripped breaker, or a failure — nothing is tried a second time. The human answers
+  Anywhere else a human is reached by an escalation: what a consult let through, or
+  what a stage that names none hands on. The human answers
   with `afkconvoy rule`, and the stage runs again under the ruling, or puts the issue at
   a stage of their choosing with `afkconvoy send`.
 

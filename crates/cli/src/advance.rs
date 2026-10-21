@@ -6,7 +6,7 @@
 use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::closing_pr;
-use afkconvoy_core::position::{Failure, Reason};
+use afkconvoy_core::position::Failure;
 use afkconvoy_core::prompt::stage_nudge_line;
 use afkconvoy_core::stage_record::{Advance, StageRecord};
 use afkconvoy_core::stopped::{
@@ -94,7 +94,7 @@ fn hand_off(
     worktree: Option<&Worktree>,
 ) -> Result<Outcome> {
     let issue = claim.number;
-    let Some(stage) = flows.consults(issue, Reason::Failed(failure)) else {
+    let Some(stage) = flows.consults(issue, failure) else {
         escalate_claim(fleet, claim, why, pr_of(fleet, issue)?, worktree)?;
         return Ok(Outcome::Done);
     };

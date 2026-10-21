@@ -596,19 +596,21 @@ ruled on the issue or sent it to a stage. Two breakers bound it:
     max_consecutive_rework     the rejections in a row by one stage
 
 A count never passes its breaker: the rework that would is not started, and the issue
-escalates, the comment naming the breaker and every rework's stage and reason.
+is handed on (below), naming the breaker and every rework's stage and reason.
 `afkconvoy rehearse` shows which verdict trips one, with no worker started.
 ````
 
 ### A CONSULT
 
 ````text
-`escalate: { to, do }` names a more senior role to ask before a human is. The stage's
-`escalate` verdict then starts a worker in the role `to`, with the skill `do`, which
-rules with `afkconvoy rule` — the stage that asked runs again under the ruling, as
-one more of the issue's rework in total — or lets the escalation through to a human.
-The chain is one role long, and a consult writes no code: one that left a commit has
-failed. It runs on the default harness.
+`escalate: { to, do }` names a more senior role to ask before a human is. Whatever
+would hand the issue to a human at that stage — its `escalate`, a tripped breaker, a
+failure, a workflow changed under it — starts a worker in the role `to`, skill `do`,
+where that human would stand, free to run what they would (`afkconvoy help humans`).
+It rules (`afkconvoy rule`: the stage runs again; on an `escalate` that is one more
+rework in total), sends the issue on, or lets it through. The same hand-off again
+goes to a human. The chain is one role long, and a consult writes no code: one that
+left a commit has failed. It runs on the default harness.
 ````
 
 ### A STAGE BY: HUMAN
@@ -618,8 +620,8 @@ No human stands in a workflow unless it names one. A stage `by: human` has no `d
 no `harness` and no `model`; it starts no worker and holds no claim. The issue waits
 there until a human declares the stage's verdict with `afkconvoy verdict`.
 
-Anywhere else a human is reached by an escalation: an `escalate` no consult ruled on,
-a tripped breaker, or a failure — nothing is tried a second time. The human answers
+Anywhere else a human is reached by an escalation: what a consult let through, or
+what a stage that names none hands on. The human answers
 with `afkconvoy rule`, and the stage runs again under the ruling, or puts the issue at
 a stage of their choosing with `afkconvoy send`.
 ````
@@ -1057,48 +1059,66 @@ asked by exception, and nothing tells you so: you look.
 it, the issue's number filled in. `afkconvoy plan` gives the same list, and the panel
 shows it as "With a human". One that has waited for more than an hour is a finding.
 
-An escalated issue also says so itself: it carries the escalate label in place of
-its flow label, whatever that is — `ready-for-agent` too, where its workflow names
-that — the escalate label being `ready-for-human`, unless the team's file names
-another; and the
-comment of the escalation says why and ends with the same line. Run every command
-below in a checkout of the repo the issue is of.
+An escalated issue also carries the escalate label (`ready-for-human` unless the
+team's file names another) in place of its flow label, and the comment of the
+escalation says why and ends with the same line. Run every command below in a
+checkout of the repo the issue is of.
 ````
 
 ### AN ESCALATION
 
 ````text
-A stage declared `escalate` and no consult ruled on it; or something failed — a
-worker went silent and its nudge changed nothing, a stage ended with no verdict, a
-gate stayed red, a stage that may not write left a commit. The comment says which,
-and for an `escalate` gives the question, often with the options.
+Something failed — a worker went silent and its nudge changed nothing, a stage
+ended with no valid verdict, a gate stayed red, a stage that may not write left a
+commit, a `blocked` will never clear — or a stage declared `escalate`. Where the
+stage names a consult (`escalate: { to, do }` in its workflow), that consult was
+asked first, as a human would be, and let it through: a human is reached only then,
+or where the stage names none. The comment says which, and for an `escalate` gives
+the question, often with the options.
 
-    afkconvoy rule --issue <n> --text-file <file>
-        Rule on it, where it stopped: that stage runs again with your ruling in its
-        brief, and both rework counts start over. `--text "<ruling>"` gives a
-        short one in place of a file. `afkconvoy rule --help`.
-    afkconvoy send --issue <n> --stage <stage> --text-file <file>
-        Put it at another stage of its workflow instead, whatever its stage records
-        say: when the approach changed, or the workflow changed under the issue and
-        a record names a stage that is gone. `afkconvoy send --help`.
-
-For a failure, fix what failed first: a ruling starts the same stage anew, and what
-failed it once fails it again. In an unbound repo there is no stage to run again:
+For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and
+what failed it once fails it again. In an unbound repo there is no stage to run again:
 fix what the comment names and put the ready label back, with the line the comment
 ends with. A PR the escalation kept is not started anew: the next worker takes it up
 — it reads the issue's comments, merges the base branch, gates and joins the
 landing train — so say on the issue what is to be done on it.
 ````
 
+### ANSWERING AN ESCALATION
+
+````text
+Every command a human runs to answer one, `<n>` the issue's number. A consult may run
+each, and any read-only command, the gate too; never commit, push or change the host.
+
+    afkconvoy rule --issue <n> --text-file <file>
+        Rule on it, where it stopped: that stage runs again with your ruling in its
+        brief, and both rework counts start over — a consult's starts none over.
+        `afkconvoy rule --help`.
+    afkconvoy send --issue <n> --stage <stage> --text-file <file>
+        Put it at another stage of its workflow instead, whatever its stage records
+        say: when the approach changed, or the workflow changed under the issue and
+        a record names a stage that is gone. `afkconvoy send --help`.
+    gh issue close <n> --comment <why>
+        Nothing is left to do on it: the fleet leaves a closed issue alone.
+    gh issue create --title <title> --body-file <file> --label <ready label>
+        Open what it found outside this issue — a broken base branch, a host
+        problem, a defect of afkconvoy — for the fleet to work.
+    gh issue edit <n> --body-file <file>
+        Keep its body's "## Blocked by" in step with an edge added or removed.
+    gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id=<id>
+        Record it as blocked by the issue whose database id is `<id>`.
+    gh api -X DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>
+        Remove that edge: one whose waiting would never end, say.
+````
+
 ### A TRIPPED BREAKER
 
 ````text
-Rework went past what the workflow allows — in total for the issue, or as rejections
-in a row by one stage — and the issue escalated in place of the rework that would
-have passed it. The comment names the breaker and lists every rework, each with its
-stage and why. Two stages that cannot agree are asking a question neither can
-decide. Read the list, then answer as an escalation is answered: `afkconvoy rule`
-with what settles it, or `afkconvoy send` to the stage that should take it up.
+Rework went past what the workflow allows — in total, or as rejections in a row by
+one stage — and the issue went to the consult in place of that rework, and to a
+human where the stage names none or it trips again after the consult ruled. The
+comment names the breaker and lists every rework with its stage and why. Answer as
+an escalation: `afkconvoy rule` with what settles it, or `afkconvoy send`.
 `afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
 ````
 
@@ -1122,8 +1142,7 @@ which says what failed. The patrol is not run again while that issue is open.
 
     gh issue close <n>
         Once you have looked: the patrol runs again when it is next due.
-        `afkconvoy plan` gives each patrol's standing, and `afkconvoy doctor` a
-        patrol that does not run as a finding.
+        `afkconvoy plan` gives each patrol's standing.
 ````
 
 ### A FLEET LOCK
@@ -1169,9 +1188,8 @@ A workflow that ended without a landing leaves its issue open: `gh issue close <
 ### WHAT NOT TO DO
 
 ````text
-Do not move the labels by hand. A label is not where an issue is — its stage records
-are — so an issue handed back with no ruling on record is escalated again at the
-next tick. Rule on it, or send it.
+Do not move the labels by hand: an issue's stage records say where it is, so one
+handed back with no ruling on record is escalated again. Rule on it, or send it.
 ````
 
 
@@ -1430,11 +1448,11 @@ A limit on rework — in total for an issue, or as rejections in a row by one st
 _Avoid_: retry limit, circuit
 
 **Consult**:
-A worker in a more senior role, asked to rule on a stage's `escalate` verdict before a human is. It rules or lets the escalation through; it writes no code.
+A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human.
 _Avoid_: review (a stage may be named it), second opinion, handoff
 
 **Ruling**:
-What a consult or a human decides on an escalated issue. The stage that asked runs again under it; a human's also hands the issue back to the fleet.
+What a consult or a human decides on an issue handed on. The stage runs again under it; a human's also hands the issue back to the fleet and starts the rework counts over, a consult's starts none over.
 _Avoid_: answer (what a command prints), decision (what a `by: human` stage waits for), override
 
 **Precedent**:
@@ -1524,7 +1542,7 @@ Recording a dependency a worker discovered as a blocker on its issue and releasi
 _Avoid_: defer, snooze, hold (a fleet instance holds its claims)
 
 **Escalate**:
-Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every failure escalates and nothing is retried; an `escalate` verdict escalates unless a consult rules on it first. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
+Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every hand-off — a failure, a tripped breaker, an `escalate` verdict, a changed workflow — goes first to the consult where the stage names one, and escalates when the consult lets it through or where none is named; nothing is retried. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
 _Avoid_: fail (what a command, a gate or one thing a tick does may), retry, give up (a landing train is given up: Abandon)
 
 **Status board**:

@@ -90,7 +90,11 @@ fn handed_said(history: &History, records: &[StageRecord], urls: &[String]) -> O
             records.iter().rev().find(|record| matches!(record.stated, Stated::Failed(_)));
         return recorded.map(|record| record.text.clone());
     }
-    let mut said = format!("{}.", reason.said(stage));
+    let reason = reason.said(stage);
+    let mut chars = reason.chars();
+    let mut said: String =
+        chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect();
+    said.push('.');
     if let Some(rounds) = history.rounds_said(records, urls) {
         said.push_str(&format!("\n\n{rounds}"));
     }

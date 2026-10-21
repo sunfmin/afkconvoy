@@ -22,8 +22,8 @@ pub const ANSWERING: [&str; 7] = [
     "gh issue close <n> --comment <why>",
     "gh issue create --title <title> --body-file <file> --label <ready label>",
     "gh issue edit <n> --body-file <file>",
-    "gh api --method POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
-    "gh api --method DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>",
+    "gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
+    "gh api -X DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>",
 ];
 
 /// How long an issue waits for a human before `doctor` counts it a finding.

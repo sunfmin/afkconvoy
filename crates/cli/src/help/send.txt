@@ -12,7 +12,9 @@ WHEN TO RUN IT
 WHO RUNS IT
 
   The operator, or whichever human steers the issue: in a checkout of the bound repo.
-  No worker runs it: where an issue goes is its workflow's to say, or a human's.
+  Or a consult answering in a human's place, under its claim, as with `afkconvoy rule`;
+  its send starts no count over. No other worker runs it: where an issue goes
+  is its workflow's to say, or a human's.
 
 WHAT IT READS AND WRITES
 
