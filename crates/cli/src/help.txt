@@ -34,8 +34,8 @@ WHAT A COMMAND ANSWERS
   a non-zero exit — and "see" beside it, where a topic explains it: the command that
   prints that topic. Warnings go to stderr. `run` instead prints its log — a line as
   each tick starts and one as it ends — until stopped, `show` a drawing unless asked
-  about an issue, `help` plain text as `--help` does, `skill` the text of a file, and
-  `guard` answers the harness that asks it as a hook does: with its exit code.
+  about an issue, `help` plain text as `--help` does, `skill` the text of a file, `guard`
+  answers as a hook does, with its exit code, and `exclusive` as its command does.
 
 THE COMMANDS, by who runs them
 
@@ -62,7 +62,7 @@ THE COMMANDS, by who runs them
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped (`rule`, below, is a consult's too):
-      gate  land  verdict  intake  lock  over  wake
+      gate  land  verdict  intake  lock  over  wake  exclusive
 
   A human an issue waits for — in a bound repo. Read them to answer an escalated issue,
   to put an issue at a stage of your choosing, or to see what a `by: human` stage asks:

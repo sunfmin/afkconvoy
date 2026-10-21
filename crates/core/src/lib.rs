@@ -15,6 +15,7 @@ pub mod board;
 pub mod claims;
 pub mod closing;
 pub mod config;
+pub mod exclusive;
 pub mod gate;
 pub mod graph;
 pub mod guard;

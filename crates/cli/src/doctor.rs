@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use afkconvoy_core::claims::{InstanceId, claim_ref};
 use afkconvoy_core::config::Config;
+use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
 use afkconvoy_core::left::{Kept, KeptBecause};
@@ -27,6 +28,7 @@ use serde_json::{Value, json};
 
 use crate::admission::Admission;
 use crate::config;
+use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
 use crate::git::{REMOTE, Repo};
@@ -1297,6 +1299,22 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
     Ok(issues)
 }
 
+/// The host's `exclusive` queue: the command that runs alone, and those that
+/// wait their turn, in order — or why it could not be read.
+fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
+    let ticket = |ticket: &Ticket| {
+        json!({"command": ticket.command, "dir": ticket.dir, "issue": ticket.issue,
+            "pid": ticket.pid, "asked": ticket.asked, "ran": ticket.ran})
+    };
+    match standing {
+        Ok(live) => json!({
+            "running": live.first().map(ticket),
+            "waiting": live.iter().skip(1).map(ticket).collect::<Vec<_>>(),
+        }),
+        Err(error) => json!({"error": format!("{error:#}")}),
+    }
+}
+
 /// `afkconvoy doctor`, for the fleet of `host` in the checkout it is run in:
 ///
 ///   {"host", "fleet", "claims", "issues", "waiting_on_human": [{"issue", "title",
@@ -1347,7 +1365,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
-    let answer = json!({
+    let mut answer = json!({
         "host": host,
         "fleet": fleet_json(&run),
         "claims": Value::Array(claims),
@@ -1355,6 +1373,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         "waiting_on_human": waiting,
         "findings": found,
     });
+    answer["host"]["exclusive"] = exclusive_json(Queue::of_host().and_then(|q| q.standing()));
     if found.iter().any(|finding| finding.severity == Severity::Critical) {
         return Err(Unwell(answer).into());
     }
