@@ -114,7 +114,10 @@ impl World {
             .env_remove("ANTHROPIC_BASE_URL")
             // A `run` keeps its host awake, but where a test says otherwise
             // (`World::host_sleeps`).
-            .env("AFKCONVOY_NO_HOST_SLEEP", "true");
+            .env("AFKCONVOY_NO_HOST_SLEEP", "true")
+            // Admission reads the stand-in host's load and memory, never the
+            // disk of whoever runs the tests (`World::busy`).
+            .env("AFKCONVOY_ADMIT_DISK", "0");
         cmd
     }
 
@@ -642,11 +645,19 @@ const PMSET: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../pmset.log"
 "#;
 
-/// The stand-in `sysctl`, for `kern.waketime`: the host last woke at the
-/// epoch second in `host-woke`, or never slept since it booted.
+/// The stand-in `sysctl`: for `kern.waketime`, the host last woke at the
+/// epoch second in `host-woke`, or never slept since it booted; for
+/// `vm.loadavg`, the load in `host-load`, or none; for
+/// `kern.memorystatus_level`, the share of memory free in `host-memory`, or 80%.
 const SYSCTL: &str = r#"#!/bin/sh
-woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
-echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
+case "$*" in
+*vm.loadavg*) echo "{ $(cat "${0%/*}/../host-load" 2>/dev/null || echo 0.00) 0.00 0.00 }" ;;
+*kern.memorystatus_level*) cat "${0%/*}/../host-memory" 2>/dev/null || echo 80 ;;
+*)
+    woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
+    echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
+    ;;
+esac
 "#;
 
 /// The stand-in `ioreg`: the keyboard and mouse untouched for the seconds in
@@ -661,6 +672,11 @@ impl World {
     /// nothing does: the host is the stand-in one (`pmset.log`).
     pub fn host_sleeps(&self, command: &mut Command) {
         command.env_remove("AFKCONVOY_NO_HOST_SLEEP");
+    }
+
+    /// Has the stand-in host's 1-minute load be `load`, as `sysctl` says it.
+    pub fn busy(&self, load: &str) {
+        std::fs::write(self.root.join("host-load"), load).unwrap();
     }
 
     /// What the stand-in `pmset` was asked, one call a line.
