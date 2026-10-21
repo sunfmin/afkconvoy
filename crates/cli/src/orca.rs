@@ -6,6 +6,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use afkconvoy_core::guard::WritesNothing;
+use afkconvoy_core::inspection::{self, Finding};
 use afkconvoy_core::launch::{Waited, until_ready};
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
@@ -44,6 +45,10 @@ const STARTED_FILE: &str = "convoy-patrol-started";
 const ANSWERED_FILE: &str = "convoy-answered";
 /// What a bound repo's worker here was started under (`Under`).
 const UNDER_FILE: &str = "convoy-started-under";
+/// What was taken down as the worker here turned hot (`evidence`).
+const EVIDENCE_DIR: &str = "convoy-hot";
+/// What the inspection in this checkout found, as it said it.
+const INSPECTED_FILE: &str = "convoy-inspected.json";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
@@ -180,7 +185,7 @@ pub struct Worktree {
 }
 
 impl Worktree {
-    fn at(path: PathBuf, branch: String) -> Worktree {
+    pub(crate) fn at(path: PathBuf, branch: String) -> Worktree {
         Worktree { path, branch, git_dir: OnceLock::new() }
     }
 
@@ -283,14 +288,22 @@ impl Worktree {
                 let branch = short_branch(row["branch"].as_str().unwrap_or("")).to_string();
                 Some((row["linkedIssue"].as_u64(), Worktree::at(path, branch)))
             })
-            .filter(|(_, worktree)| worktree.path.is_dir() && !worktree.is_train())
+            .filter(|(_, worktree)| worktree.path.is_dir() && !worktree.is_fleets())
             .collect())
     }
 
-    /// Whether this is the landing train's worktree.
-    fn is_train(&self) -> bool {
+    /// Whether this is the landing train's worktree, or an inspection's: the
+    /// fleet's own, and no worker's.
+    fn is_fleets(&self) -> bool {
         let name = self.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        is_worktree_named(name, TRAIN_WORKTREE)
+        is_worktree_named(name, TRAIN_WORKTREE) || is_worktree_named(name, inspection::CHECKOUT)
+    }
+
+    /// The checkout the command runs in, as a worker's worktree.
+    pub fn here() -> Result<Worktree> {
+        let repo = Repo::here()?;
+        let branch = repo.try_git(&["symbolic-ref", "--short", "HEAD"])?;
+        Ok(Worktree::at(repo.dir, if branch.ok { branch.stdout } else { String::new() }))
     }
 
     /// The `TMPDIR` a worker here is started with.
@@ -476,6 +489,24 @@ impl Worktree {
     pub fn record_nudge(&self, at: u64) -> Result<()> {
         let file = self.note(NUDGE_FILE)?;
         std::fs::write(&file, at.to_string())
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The directory what shows the worker here hot is taken down in.
+    pub fn evidence_dir(&self) -> Result<PathBuf> {
+        self.note(EVIDENCE_DIR)
+    }
+
+    /// What the inspection in this checkout found, when it said.
+    pub fn inspected(&self) -> Result<Option<Finding>> {
+        let said = std::fs::read_to_string(self.note(INSPECTED_FILE)?).unwrap_or_default();
+        Ok(serde_json::from_str(&said).ok())
+    }
+
+    /// Keeps what the inspection in this checkout found: the last it said stands.
+    pub fn record_inspected(&self, finding: &Finding) -> Result<()> {
+        let file = self.note(INSPECTED_FILE)?;
+        std::fs::write(&file, serde_json::to_string(finding)?)
             .with_context(|| format!("cannot write {}", file.display()))
     }
 
