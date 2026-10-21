@@ -191,6 +191,9 @@ pub struct Pass {
     pub bound: usize,
     /// Frontier issues the pass left undispatched.
     pub frontier_remaining: usize,
+    /// Whether admission held back a worker the pass would have started into
+    /// a free slot (`WorkingSet::held_back`).
+    pub held_back: bool,
 }
 
 impl Pass {
@@ -263,7 +266,8 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// locks on closed issues, hand to a
 /// human the unclaimed issues that call for one, take stale
 /// claims, then the due patrols, then frontier issues into the free slots,
-/// lowest number first, then the due proposals of precedents,
+/// lowest number first, then the due proposals of precedents — none of
+/// these while admission holds (`WorkingSet::held_back`) —
 /// open the issue for a slow gate that has none, bring the status boards and the `stage:` labels up to date, then refresh
 /// the heartbeat. `carry_out` performs one
 /// step and says how it ended; a step that fails leaves its claim held, and
@@ -303,7 +307,12 @@ where
         did.push((step, carry_out(step)));
     }
     let held = hand_over(set, concurrency, held, &mut did, &mut carry_out);
-    let held = fill_slots(&takes(set), concurrency, held, &mut did, &mut carry_out);
+    let takes = takes(set);
+    // Admission holds back only what a free slot would start: a busy host
+    // starts no new worker, and the rest of the pass goes on.
+    let admitted = set.held_back.is_empty();
+    let held_back = !admitted && !takes.is_empty() && held < concurrency;
+    let held = if admitted { fill_slots(&takes, concurrency, held, &mut did, &mut carry_out) } else { held };
     if set.slow_gate.as_ref().is_some_and(|slow| slow.issue.is_none()) {
         let step = TickStep::SlowGate;
         did.push((step, carry_out(step)));
@@ -320,7 +329,7 @@ where
         did.push((step, carry_out(step)));
     }
     let left = set.frontier.iter().filter(|issue| !dispatched(&did, issue.number)).count();
-    Pass { did, held, bound: concurrency, frontier_remaining: left }
+    Pass { did, held, bound: concurrency, frontier_remaining: left, held_back }
 }
 
 /// Which of my claims one sweep of a pass looks at.
@@ -789,6 +798,7 @@ mod tests {
             proposals: vec![],
             slow_gate: None,
             outgrown_train: None,
+            held_back: vec![],
         }
     }
 
@@ -1478,6 +1488,57 @@ mod tests {
         // its worker at work: nothing was cut
         assert!(!run_pass(&outgrown, 0, 0, |_| Nothing).did_work());
         assert_eq!(run_pass(&set(&[], &[]), 1, 0, |_| Done).did, []);
+    }
+
+    #[test]
+    fn a_busy_host_starts_no_new_worker_and_leaves_the_rest_of_the_pass_alone() {
+        use crate::admission::Hold;
+        let mine = [(1, Status::Joined), (4, Status::AtStage), (5, Status::NoPr)];
+        let mut busy = due_on(set(&[7, 8], &mine), &[4], "review");
+        busy.stale = peers(&[3]);
+        busy.patrols = patrols(&[Standing::Due]);
+        busy.proposals = proposals(&[precedent::Standing::Due]);
+        busy.held_back = vec![Hold::Load { load: 3000, limit: 2000 }];
+        let carry_out = |step| match step {
+            Advance { .. } => HandedOn,
+            Judge { .. } => Continued,
+            _ => Done,
+        };
+        let pass = run_pass(&busy, 8, 3, carry_out);
+        // The train is tended, the running worker continued, and the worker a
+        // declared verdict calls for started; nothing new is.
+        let acted: Vec<TickStep> =
+            steps(&pass).into_iter().filter(|step| !matches!(step, Board { .. })).collect();
+        assert_eq!(
+            acted,
+            [
+                TendTrain,
+                Advance { issue: 4 },
+                Dispatch { issue: 4 },
+                Judge { issue: 5, start: true },
+                Heartbeat
+            ]
+        );
+        assert!(pass.held_back, "slots were free, and there was something to start");
+        assert_eq!(pass.frontier_remaining, 2, "the frontier waits for the next tick");
+
+        // Admitted, the same pass fills its free slots.
+        busy.held_back = vec![];
+        let admitted = run_pass(&busy, 8, 3, carry_out);
+        assert!(admitted.did.contains(&(Reclaim { issue: 3 }, Done)));
+        assert!(admitted.did.contains(&(Dispatch { issue: 7 }, Done)));
+        assert!(!admitted.held_back);
+    }
+
+    #[test]
+    fn admission_holds_nothing_back_where_there_was_no_room_or_nothing_to_start() {
+        use crate::admission::Hold;
+        let mut full = set(&[7], &[(5, Status::NoPr)]);
+        full.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
+        assert!(!run_pass(&full, 1, 1, |_| Nothing).held_back, "no slot was free");
+        let mut empty = set(&[], &[]);
+        empty.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
+        assert!(!run_pass(&empty, 3, 0, |_| Done).held_back, "nothing waited");
     }
 
     #[test]

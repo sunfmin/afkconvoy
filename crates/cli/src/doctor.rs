@@ -1433,6 +1433,7 @@ mod tests {
             proposals: vec![],
             slow_gate: None,
             outgrown_train: None,
+            held_back: vec![],
         }
     }
 
