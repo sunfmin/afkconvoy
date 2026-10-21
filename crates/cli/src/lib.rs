@@ -84,9 +84,11 @@ use git::Repo;
 use launch::Launches;
 use tick::Pacing;
 
-/// The environment variables that tell `run` `--hot-cores` and `--hot-memory`.
+/// The environment variables that tell `run` `--hot-cores`, `--hot-memory` and
+/// `--hot-written`.
 const HOT_CORES_ENV: &str = "AFKCONVOY_HOT_CORES";
 const HOT_MEMORY_ENV: &str = "AFKCONVOY_HOT_MEMORY";
+const HOT_WRITTEN_ENV: &str = "AFKCONVOY_HOT_WRITTEN";
 
 /// A number of cores or GiB, whole or not, as thousandths of it.
 fn thousandths(said: &str) -> Result<u64, String> {
@@ -237,6 +239,10 @@ enum Command {
         /// [default: a quarter of this host's memory]
         #[arg(long, env = HOT_MEMORY_ENV, value_name = "GIB", value_parser = thousandths)]
         hot_memory: Option<u64>,
+        /// The GiB a worker's processes may write to disk in ten minutes before it turns hot
+        /// [default: a tenth of the disk free here, one GiB at the least]
+        #[arg(long, env = HOT_WRITTEN_ENV, value_name = "GIB", value_parser = thousandths)]
+        hot_written: Option<u64>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -996,6 +1002,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             host_sleep_after,
             hot_cores,
             hot_memory,
+            hot_written,
             ticks,
             second_ms,
         } => {
@@ -1013,6 +1020,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let hot = hot::limits(hot::Said {
                 millicores: hot_cores,
                 resident: hot_memory.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
+                written: hot_written.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
             });
             let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after, hot };
             let agent = agent.start(now, false)?;
