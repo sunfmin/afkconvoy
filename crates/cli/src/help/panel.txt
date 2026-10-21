@@ -50,6 +50,9 @@ WHAT IT ANSWERS
                    long, or no worker — then the queued, which are the frontier, and
                    in a bound repo those held back there, with why
     Landing train  the issues whose PR is on it
+    Patrols        in a bound repo that names patrols: each, with what it is doing or
+                   what holds it back — one held by its `max_runs_a_day` says until
+                   when, as a time of day in UTC and how long from now
     With a human   every open issue that waits for a human, with why and the line
                    that answers it: what `doctor` answers as `waiting_on_human`
     left alone     every other open issue, with the reason `plan` gives under `excluded`
