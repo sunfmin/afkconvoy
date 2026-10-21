@@ -70,4 +70,5 @@ Whatever it finds, it leaves a comment on the issue saying what and why, so late
 ## Open
 
 - The defaults for N, X and Y, and for the shares that hold admission back.
-- When a worker's worktree is removed. A worktree kept after a failure holds its disk until a human removes it; whether the fleet ever does is not this ADR's, but held disk grows with it.
+
+Tracked as #308–#313.
