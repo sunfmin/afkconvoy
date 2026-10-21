@@ -67,25 +67,29 @@ fn said<'a>(bodies: impl IntoIterator<Item = &'a str>) -> Vec<Said> {
 /// before it was not one a consult answered: the same again goes to a human.
 pub fn due<'a>(bodies: impl IntoIterator<Item = &'a str>) -> bool {
     let said = said(bodies);
-    let Some(last) = said.iter().rposition(|said| matches!(said, Said::Escalated(_))) else {
-        return false;
-    };
-    let asked = |claim: &str| said.iter().any(|said| *said == Said::Asked(claim.to_string()));
     let escalated =
         |claim: &str| said.iter().any(|said| *said == Said::Escalated(claim.to_string()));
-    if let Said::Escalated(claim) = &said[last]
-        && asked(claim)
-    {
-        return false;
+    // Read in order: the latest escalation, whether a consult was asked
+    // since it, and whether one that escalated nothing itself answered the
+    // escalation before it.
+    let (mut last, mut asked_since, mut answered, mut answered_before) =
+        (None, false, false, false);
+    for said in &said {
+        match said {
+            Said::Escalated(claim) => {
+                (last, asked_since, answered_before) = (Some(claim), false, answered);
+                answered = false;
+            }
+            Said::Asked(claim) => {
+                asked_since = true;
+                answered = answered || !escalated(claim);
+            }
+        }
     }
-    if said[last..].iter().any(|said| matches!(said, Said::Asked(_))) {
-        return false;
-    }
-    // A consult asked since the escalation before, which escalated nothing
-    // itself, answered it.
-    let before = said[..last].iter().rposition(|said| matches!(said, Said::Escalated(_)));
-    let since = &said[before.map_or(0, |at| at + 1)..last];
-    !since.iter().any(|said| matches!(said, Said::Asked(claim) if !escalated(claim)))
+    let Some(last) = last else { return false };
+    // What a consult let through, or its own failure, is escalated under its claim.
+    let consults = said.contains(&Said::Asked(last.clone()));
+    !consults && !asked_since && !answered_before
 }
 
 /// Whether `claim` is the stock consult's on an unbound repo's issue, by its
