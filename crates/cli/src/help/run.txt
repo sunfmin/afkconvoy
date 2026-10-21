@@ -62,8 +62,8 @@ WHAT IT READS AND WRITES
   uses, a closed issue's worktree, a tool's cache — and names what cannot, never
   deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the
   repo, with the escalate label and the label fleet-outgrows-host, and no other while
-  that one is open. What it found is
-  a line of the log, and shown by the panel and `doctor` beside admission's reading.
+  that one is open. What it found is a line of the log, and shown by the panel and
+  `doctor` beside admission's reading.
 
   A `run` idle ten minutes checks then, tick due or not, and again ten minutes after
   a check that kept the host awake. It puts the host to sleep only when all hold:
