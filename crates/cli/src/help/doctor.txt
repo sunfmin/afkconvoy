@@ -42,6 +42,14 @@ WHAT IT ANSWERS
                                  unbound repo it is the one command, of no harness:
                                  harness is null and called_for_by empty. A harness is
                                  left out on a custom provider with no `run` to say
+                exclusive        the host's queue of `afkconvoy exclusive`, whatever
+                                 its repo: {running, waiting} — running is the command
+                                 that runs alone now, null with none; waiting, those
+                                 that wait their turn, next first. Each is {command,
+                                 dir, issue, pid, asked, ran}: the worktree it was run
+                                 in, the issue of its worker, and when it asked and
+                                 began to run, in epoch seconds. {error} when the
+                                 queue cannot be read
     fleet     the `run` of this host for this repo:
                 alive            whether one is running now
                 instance, host   its fleet instance id: the one its log names, else the

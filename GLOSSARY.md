@@ -28,7 +28,7 @@ _Avoid_: namespace, fallback mode
 
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
-_Avoid_: run state, memory
+_Avoid_: run state, memory (what a host has to run its processes in)
 
 **Working set**:
 A tick's view of the fleet at one moment, derived from fleet state and dropped when the tick ends.
@@ -40,7 +40,7 @@ _Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:
 The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, off the landing train — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
-_Avoid_: queue, backlog (all the issues a repo has open)
+_Avoid_: queue (the exclusive queue of a host's heavy commands), backlog (all the issues a repo has open)
 
 **Idle**:
 A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or the proposal of a precedent — nothing is on its landing train, and its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
@@ -165,8 +165,12 @@ What ends a stage, declared on the issue by whoever performed it: `pass`, `rejec
 _Avoid_: outcome (what a worker leaves on GitHub: its PR on the landing train, or its verdict), result, needs-human
 
 **Silent worker**:
-A worker that stopped, declared nothing, and for the grace period showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
+A worker that stopped, declared nothing, and for the grace period showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — while waiting on no background work of its own: a shell or a monitor it started that its harness shows still running, or a command of its in the exclusive queue. One waiting on such work is not silent until that work ends and it stays still past its nudge, or until it has waited longer than the gate limit.
 _Avoid_: hung, idle (a fleet instance with nothing to do)
+
+**Exclusive queue**:
+The queue of the commands run through `afkconvoy exclusive` on one host, shared by every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A command whose process dies leaves it. A worker with a command in it is busy, not silent, for no longer than the gate limit.
+_Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:
 The one line the fleet types at a silent worker with no outcome, telling it to carry on. Sent once per worker.

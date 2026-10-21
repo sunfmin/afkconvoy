@@ -391,8 +391,8 @@ enum Command {
         #[arg(long)]
         run: String,
     },
-    /// Run a heavy command alone on this host: once no other `exclusive` command runs, in
-    /// any fleet (a worker's command)
+    /// Run a heavy command alone on this host, once no other `exclusive` command runs (a
+    /// worker's command)
     #[command(after_long_help = include_str!("help/exclusive.txt"))]
     Exclusive {
         /// The command and its arguments, after `--`
