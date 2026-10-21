@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A hot worker is inspected, and a heavy command queues
