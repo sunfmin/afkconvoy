@@ -28,7 +28,7 @@ _Avoid_: namespace, fallback mode
 
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
-_Avoid_: run state, memory
+_Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
 A tick's view of the fleet at one moment, derived from fleet state and dropped when the tick ends.
@@ -170,7 +170,7 @@ _Avoid_: hung, idle (a fleet instance with nothing to do)
 
 **Hot worker**:
 A worker whose processes — every one started with its `TMPDIR`, and every one under those — take more than their share of the host: more than half its cores (one at the least) held for two minutes, more than a quarter of its memory resident, or the most of any worker while the host is under memory pressure. The host can say other limits (`--hot-cores`, `--hot-memory`). `run` samples each worker every ten seconds, with no root; one that has stayed under every limit for five minutes stops being hot, and that ends its **episode** — hot again later is a new one. The landing train's gate runs are the fleet's own and no worker's.
-_Avoid_: runaway, hog
+_Avoid_: hog
 
 **Nudge**:
 The one line the fleet types at a silent worker with no outcome, telling it to carry on. Sent once per worker.
