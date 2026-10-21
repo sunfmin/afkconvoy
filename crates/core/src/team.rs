@@ -3303,7 +3303,8 @@ stages:
         }
         assert_eq!(
             misplaced("acme/hospital", "3"),
-            "must be a role's directory, as owner/repo, owner/repo/path or ./path, not a number"
+            "must be a role's directory, as owner/repo, owner/repo/path or ./path, or a map of \
+its `dir` and `host_user`, not a number"
         );
     }
 
