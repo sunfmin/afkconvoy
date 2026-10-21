@@ -30,6 +30,7 @@ pub mod config;
 pub mod copies;
 pub mod dispatch;
 pub mod doctor;
+pub mod exclusive;
 pub mod fleet;
 pub mod flows;
 pub mod forget;
@@ -389,6 +390,14 @@ enum Command {
         /// The run, as its brief names it
         #[arg(long)]
         run: String,
+    },
+    /// Run a heavy command alone on this host: once no other `exclusive` command runs, in
+    /// any fleet (a worker's command)
+    #[command(after_long_help = include_str!("help/exclusive.txt"))]
+    Exclusive {
+        /// The command and its arguments, after `--`
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<OsString>,
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     #[command(after_long_help = include_str!("help/guard.txt"))]
@@ -783,6 +792,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if matches!(cli.command, Command::Guard) {
         return guard::guard();
     }
+    if let Command::Exclusive { command } = &cli.command {
+        return exclusive::exclusive(command, || cli.now.unwrap_or_else(clock));
+    }
     if let Command::Help { name } = &cli.command {
         let Some(text) = help(name.as_deref()) else {
             return fail(2, &topic::unknown(name.as_deref().unwrap_or_default()));
@@ -892,6 +904,7 @@ impl Command {
             | Command::Run { .. }
             | Command::Panel { .. }
             | Command::Guard
+            | Command::Exclusive { .. }
             | Command::Recovery { .. }
             | Command::Scan
             | Command::Help { .. } => return None,
@@ -1121,6 +1134,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
+        Command::Exclusive { .. } => {
+            anyhow::bail!("exclusive answers with its command's exit code")
+        }
         Command::Help { .. } => anyhow::bail!("help answers with plain text"),
         Command::Dispatch { issue, who, agent, start } => dispatch::dispatch(
             &mut Fleet::open(now)?,
