@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use crate::gh::GitHub;
 use crate::git::{REMOTE, Repo};
 use crate::lock::standing_locks;
+use crate::measure;
 use crate::train::{Train, merge_in, unmerged};
 
 /// What keeps a worktree from being exactly a commit: its uncommitted and
@@ -315,6 +316,13 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     }
     let limit = config.gate_seconds();
     let run = run_and_record(repo, &command, host, now, Duration::from_secs(limit))?;
+    // A worker's fresh build is what its worktree holds after its first green
+    // run — one that built everything — by the train worktree's measure: what
+    // its held disk is judged against (`hot`). Best effort: none on record
+    // only leaves it unjudged.
+    if run.ran.green() && measure::fresh(repo).is_ok_and(|fresh| fresh.is_none()) {
+        let _ = measure::built(repo).and_then(|built| measure::record_fresh(repo, built));
+    }
     let red = format!("the gate is red{}", at_limit(run.ran, limit));
     let status = if run.ran.green() { "green" } else { "red" };
     let mut answer = json!({"status": status, "exit_code": run.ran.exit_code,

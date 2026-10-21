@@ -1,7 +1,9 @@
 //! Hot workers, as `run` finds them (docs/adr/0019): every `SAMPLE_EVERY`
-//! seconds it reads what each worker's processes take of the CPU and memory —
-//! from each process's own usage, as `ps` says it, with no root — and the
-//! episode rule (`afkconvoy_core::hot`) says which turned hot and which
+//! seconds it reads what each worker's processes take of the CPU and memory,
+//! and what they wrote to disk — from each process's own usage, as `ps` and
+//! the kernel say it, with no root — and every `LISTED_FOR` samples what each
+//! worker's worktree holds, by the train worktree's measure; and the episode
+//! rule (`afkconvoy_core::hot`) says which turned hot and which
 //! stopped being hot. Each turn is a line of the log.
 //!
 //! A worker's processes are those started with its `TMPDIR`, the one of its
@@ -20,40 +22,79 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::hot::{
-    CPU_HELD, Episode, Limits, SAMPLE_EVERY, Sample, Turned, Watch, Why, millicores,
+    CPU_HELD, Episode, Limits, SAMPLE_EVERY, Sample, Turned, WRITTEN_WITHIN, Watch, Why, millicores,
 };
+use afkconvoy_core::train::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
 use serde::Serialize;
 
 use crate::evidence::{self, Taken};
 use crate::git::Repo;
 use crate::log::What;
 use crate::measure;
-use crate::orca::{Source, Worktree};
+use crate::orca::{Source, TMP_DIR, Worktree};
 use crate::wake::Waker;
 
-/// How many samples go by before the worktrees are asked of orca again.
+/// How many samples go by before the worktrees are asked of orca again, and
+/// what each holds is measured again: that is slow.
 const LISTED_FOR: u32 = 6;
 /// How many samples of a worker's resident memory are kept for the evidence:
 /// the last five minutes'.
 const RESIDENT_KEPT: usize = 30;
 
-/// What the host says of the limits, where it says any: `--hot-cores` and
-/// `--hot-memory`.
+/// What the host says of the limits, where it says any: `--hot-cores`,
+/// `--hot-memory` and `--hot-written`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Said {
     pub millicores: Option<u64>,
     pub resident: Option<u64>,
+    pub written: Option<u64>,
 }
 
 /// The limits on this host: its shares (`Limits::of_host`), but for what it
 /// says.
 pub fn limits(said: Said) -> Limits {
     let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64);
-    let shares = Limits::of_host(cores, memory().unwrap_or(u64::MAX));
+    let shares =
+        Limits::of_host(cores, memory().unwrap_or(u64::MAX), free_disk().unwrap_or(u64::MAX));
     Limits {
         millicores: said.millicores.unwrap_or(shares.millicores),
         resident: said.resident.unwrap_or(shares.resident),
+        written: said.written.unwrap_or(shares.written),
     }
+}
+
+/// The bytes free on the disk the current directory is on, as `df` says
+/// them; `None` where it cannot be read.
+fn free_disk() -> Option<u64> {
+    let out = Command::new("df").args(["-Pk", "."]).output().ok()?;
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    let kib: u64 = out.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
+    Some(kib.saturating_mul(1024))
+}
+
+/// The bytes the process `pid` has written to disk since it started, as the
+/// kernel counts them for it; none where they cannot be read — a process of
+/// another user, or one gone.
+#[cfg(target_os = "macos")]
+pub(crate) fn written_by(pid: u32) -> u64 {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    // SAFETY: `usage` is a `rusage_info_v2`, the flavor asked for, and the
+    // kernel writes no more than one of it.
+    let read = unsafe {
+        libc::proc_pid_rusage(pid as libc::c_int, libc::RUSAGE_INFO_V2, usage.as_mut_ptr().cast())
+    };
+    if read != 0 {
+        return 0;
+    }
+    // SAFETY: zeroed, then written by the kernel: every field is a number.
+    unsafe { usage.assume_init() }.ri_diskio_byteswritten
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn written_by(pid: u32) -> u64 {
+    let io = std::fs::read_to_string(format!("/proc/{pid}/io")).unwrap_or_default();
+    let line = io.lines().find_map(|line| line.strip_prefix("write_bytes:"));
+    line.and_then(|bytes| bytes.trim().parse().ok()).unwrap_or(0)
 }
 
 /// The bytes of memory this host has; `None` where it cannot be read.
@@ -118,15 +159,22 @@ struct Proc {
     resident: u64,
     /// The CPU it has taken since it started, in milliseconds.
     cpu_ms: u64,
+    /// The bytes it has written to disk since it started.
+    written: u64,
     /// Its command line, then its environment, where that can be read.
     line: String,
 }
 
-/// Every process of this host, as `ps` says them.
+/// Every process of this host, as `ps` says them, with what each wrote.
 fn processes() -> Vec<Proc> {
     let out = Command::new("ps").args(["axeww", "-o", "pid=,ppid=,rss=,time=,command="]).output();
-    out.map(|out| String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect())
-        .unwrap_or_default()
+    let mut procs: Vec<Proc> = out
+        .map(|out| String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect())
+        .unwrap_or_default();
+    for proc in &mut procs {
+        proc.written = written_by(proc.pid);
+    }
+    procs
 }
 
 /// One row of `ps`: pid, ppid, resident KiB, CPU time, then the rest.
@@ -141,7 +189,7 @@ fn parse(row: &str) -> Option<Proc> {
     let ppid = field().parse().ok()?;
     let resident = field().parse::<u64>().ok()?.saturating_mul(1024);
     let cpu_ms = cpu_time(field())?;
-    Some(Proc { pid, ppid, resident, cpu_ms, line: rest.to_string() })
+    Some(Proc { pid, ppid, resident, cpu_ms, written: 0, line: rest.to_string() })
 }
 
 /// `[[dd-]hh:]mm:ss[.cc]`, as `ps` says CPU time → milliseconds.
@@ -199,9 +247,9 @@ struct Watched {
     worktree: Worktree,
     issue: Option<u64>,
     watch: Watch,
-    /// The CPU each of its processes had taken at the sample before; `None`
-    /// before its first.
-    cpu: Option<HashMap<u32, u64>>,
+    /// The CPU each of its processes had taken, and the bytes each had
+    /// written, at the sample before; `None` before its first.
+    before: Option<HashMap<u32, (u64, u64)>>,
     /// Its processes at the last sample, and the one of them that took the
     /// most CPU since the one before — or, taking none, held the most.
     pids: Vec<u32>,
@@ -217,7 +265,7 @@ impl Watched {
             worktree,
             issue,
             watch: Watch::default(),
-            cpu: None,
+            before: None,
             pids: vec![],
             hottest: None,
             resident: VecDeque::new(),
@@ -225,24 +273,41 @@ impl Watched {
     }
 }
 
-/// What a worker's processes took in one sample: the CPU since the sample
-/// before, in milliseconds — `None` at its first — and the bytes resident.
-fn took(watched: &mut Watched, procs: &[&Proc]) -> (Option<u64>, u64) {
-    let now: HashMap<u32, u64> = procs.iter().map(|proc| (proc.pid, proc.cpu_ms)).collect();
+/// What a worker's processes took in one sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Took {
+    /// The CPU since the sample before, in milliseconds; `None` at its first.
+    cpu_ms: Option<u64>,
+    /// The bytes written since the sample before; `None` at its first.
+    written: Option<u64>,
+    /// The bytes resident.
+    resident: u64,
+}
+
+fn took(watched: &mut Watched, procs: &[&Proc]) -> Took {
+    let now: HashMap<u32, (u64, u64)> =
+        procs.iter().map(|proc| (proc.pid, (proc.cpu_ms, proc.written))).collect();
     // A process new since the sample before took all it has since then.
-    let since = |before: &HashMap<u32, u64>, (pid, ms): (&u32, &u64)| {
-        ms.saturating_sub(*before.get(pid).unwrap_or(&0))
+    let since = |of: fn(&(u64, u64)) -> u64| {
+        watched.before.as_ref().map(|before| {
+            let one = |(pid, taken): (&u32, &(u64, u64))| {
+                of(taken).saturating_sub(before.get(pid).map_or(0, of))
+            };
+            now.iter().map(one).sum()
+        })
     };
-    let cpu = watched.cpu.as_ref().map(|before| now.iter().map(|taken| since(before, taken)).sum());
-    let busiest = watched.cpu.as_ref().and_then(|before| {
-        let taken = now.iter().map(|(pid, ms)| (since(before, (pid, ms)), *pid));
+    let (cpu_ms, written) = (since(|taken| taken.0), since(|taken| taken.1));
+    let busiest = watched.before.as_ref().and_then(|before| {
+        let taken = now.iter().map(|(pid, (ms, _))| {
+            (ms.saturating_sub(before.get(pid).map_or(0, |taken| taken.0)), *pid)
+        });
         taken.filter(|(ms, _)| *ms > 0).max().map(|(_, pid)| pid)
     });
     let largest = procs.iter().max_by_key(|proc| proc.resident).map(|proc| proc.pid);
     watched.hottest = busiest.or(largest);
     watched.pids = procs.iter().map(|proc| proc.pid).collect();
-    watched.cpu = Some(now);
-    (cpu, procs.iter().map(|proc| proc.resident).sum())
+    watched.before = Some(now);
+    Took { cpu_ms, written, resident: procs.iter().map(|proc| proc.resident).sum() }
 }
 
 /// What was known of `watched` as it turned hot in `episode`, under `limits`.
@@ -258,13 +323,24 @@ fn known(watched: &Watched, episode: &Episode, limits: &Limits) -> Taken {
     }
 }
 
+/// What the worktree at `path` holds, by the train worktree's measure, with
+/// its fresh build: `None` while none is on record — what it built before
+/// its first gate run is no measure of what it should hold — or where it
+/// cannot be read.
+fn held(path: &std::path::Path) -> Option<Built> {
+    let repo = Repo::new(path.to_path_buf());
+    let fresh = measure::fresh(&repo).ok()??;
+    Some(Built { built: measure::built(&repo).ok()?, fresh: Some(fresh) })
+}
+
 /// What the sampler keeps between samples.
 struct Sampler {
     limits: Limits,
-    /// The worktrees of the workers, by their `TMPDIR`, as orca last listed
-    /// them: each with the worker's name and its issue.
+    /// The worktrees of the workers, as orca last listed them, each with its
+    /// worker's name and issue.
     listed: Vec<(PathBuf, String, Worktree, Option<u64>)>,
     samples: u32,
+    /// The workers watched, by their worktrees.
     watched: BTreeMap<PathBuf, Watched>,
 }
 
@@ -280,7 +356,8 @@ impl Sampler {
         every: u64,
         wall_ms: u64,
     ) -> (Vec<What>, Vec<(Worktree, Taken)>) {
-        if self.samples.is_multiple_of(LISTED_FOR) {
+        let measuring = self.samples.is_multiple_of(LISTED_FOR);
+        if measuring {
             // One orca could not answer leaves the workers as they were.
             if let Ok(listed) = Worktree::of_workers(source) {
                 self.listed = listed
@@ -292,7 +369,7 @@ impl Sampler {
                                 name.to_string_lossy().into_owned()
                             }),
                         };
-                        (worktree.tmp_dir(), worker, worktree, issue)
+                        (worktree.path.clone(), worker, worktree, issue)
                     })
                     .collect();
             }
@@ -300,11 +377,11 @@ impl Sampler {
         self.samples = self.samples.wrapping_add(1);
         let mut turned = vec![];
         // A worker no longer listed is gone: hot, it stops being hot with it.
-        let listed: Vec<&PathBuf> = self.listed.iter().map(|(tmp, ..)| tmp).collect();
+        let listed: Vec<&PathBuf> = self.listed.iter().map(|(path, ..)| path).collect();
         let gone: Vec<PathBuf> =
-            self.watched.keys().filter(|tmp| !listed.contains(tmp)).cloned().collect();
-        for tmp in gone {
-            let watched = self.watched.remove(&tmp).expect("listed above");
+            self.watched.keys().filter(|path| !listed.contains(path)).cloned().collect();
+        for path in gone {
+            let watched = self.watched.remove(&path).expect("listed above");
             if let Some(episode) = watched.watch.hot {
                 turned.push(cooled(watched.worker, &episode, true));
             }
@@ -312,28 +389,35 @@ impl Sampler {
         let procs = processes();
         let mut taken = vec![];
         let mut hot_now = vec![];
-        for (tmp, worker, worktree, issue) in &self.listed {
+        for (path, worker, worktree, issue) in &self.listed {
             let watched = self
                 .watched
-                .entry(tmp.clone())
+                .entry(path.clone())
                 .or_insert_with(|| Watched::new(worker.clone(), worktree.clone(), *issue));
-            let (cpu, resident) = took(watched, &tree(&procs, &tmp.display().to_string()));
-            watched.resident.push_back((at, resident));
+            let took = took(watched, &tree(&procs, &path.join(TMP_DIR).display().to_string()));
+            watched.resident.push_back((at, took.resident));
             if watched.resident.len() > RESIDENT_KEPT {
                 watched.resident.pop_front();
             }
-            taken.push((tmp.clone(), cpu.map(|cpu| millicores(cpu, wall_ms)), resident));
+            let held = if measuring { held(path) } else { None };
+            taken.push((path.clone(), took, held));
         }
         let pressure = under_pressure();
         let most = taken
             .iter()
-            .filter(|(_, _, resident)| *resident > 0)
-            .max_by_key(|(_, _, resident)| *resident);
-        let most = most.map(|(tmp, _, _)| tmp.clone());
-        for (tmp, millicores, resident) in taken {
-            let most_under_pressure = pressure && most.as_ref() == Some(&tmp);
-            let sample = Sample { at, millicores, resident, most_under_pressure };
-            let watched = self.watched.get_mut(&tmp).expect("watched above");
+            .filter(|(_, took, _)| took.resident > 0)
+            .max_by_key(|(_, took, _)| took.resident);
+        let most = most.map(|(path, _, _)| path.clone());
+        for (path, took, held) in taken {
+            let sample = Sample {
+                at,
+                millicores: took.cpu_ms.map(|cpu| millicores(cpu, wall_ms)),
+                resident: took.resident,
+                most_under_pressure: pressure && most.as_ref() == Some(&path),
+                written: took.written,
+                held,
+            };
+            let watched = self.watched.get_mut(&path).expect("watched above");
             match watched.watch.sampled(&sample, &self.limits, every) {
                 Some(Turned::Hot(episode)) => {
                     turned.push(hot(watched.worker.clone(), &episode, &self.limits));
@@ -370,18 +454,40 @@ pub fn cores(millicores: u64) -> String {
     format!("{}.{} cores", millicores / 1000, millicores % 1000 / 100)
 }
 
-/// Why a worker turned hot, in words: what it took, and past what.
+/// Why a worker turned hot, in words: which of what is watched, what it
+/// took, and past what.
 pub fn why_said(why: Why, limits: &Limits) -> String {
-    match why {
+    let past = match why {
         Why::Cpu => format!("past {} for {}s", cores(limits.millicores), CPU_HELD),
         Why::Memory => format!("past {} resident", measure::said(limits.resident)),
-        Why::Pressure => "the host under memory pressure, holding the most".to_string(),
-    }
+        Why::Pressure => "the host under it, holding the most".to_string(),
+        Why::Written => format!(
+            "past {} written in {} minutes",
+            measure::said(limits.written),
+            WRITTEN_WITHIN / 60
+        ),
+        Why::Held => format!(
+            "its worktree past {OUTGROWN_TIMES} times its fresh build and past {}",
+            measure::said(OUTGROWN_FLOOR)
+        ),
+    };
+    format!("{}: {past}", why.word())
 }
 
-/// What an episode took at the most, in words.
+/// What an episode took at the most, in words: what its worktree held only
+/// once it was measured.
 pub fn held_said(episode: &Episode) -> String {
-    format!("{}, {} resident", cores(episode.millicores), measure::said(episode.resident))
+    let mut said = format!(
+        "{}, {} resident, {} written in {} minutes",
+        cores(episode.millicores),
+        measure::said(episode.resident),
+        measure::said(episode.written),
+        WRITTEN_WITHIN / 60
+    );
+    if episode.held > 0 {
+        said += &format!(", {} held in its worktree", measure::said(episode.held));
+    }
+    said
 }
 
 fn hot(worker: String, episode: &Episode, limits: &Limits) -> What {
@@ -476,7 +582,7 @@ mod tests {
     }
 
     fn proc(pid: u32, ppid: u32, line: &str) -> Proc {
-        Proc { pid, ppid, resident: 1024, cpu_ms: 0, line: line.to_string() }
+        Proc { pid, ppid, resident: 1024, cpu_ms: 0, written: 0, line: line.to_string() }
     }
 
     #[test]
@@ -500,28 +606,82 @@ mod tests {
     }
 
     #[test]
-    fn the_cpu_a_worker_took_is_what_its_processes_took_since_the_sample_before() {
+    fn what_a_worker_took_is_what_its_processes_took_since_the_sample_before() {
         let worktree = Worktree::at(PathBuf::from("/w/a"), "a".into());
         let mut watched = Watched::new("#7".into(), worktree, Some(7));
-        let at = |cpu: &[(u32, u64)]| -> Vec<Proc> {
-            cpu.iter().map(|(pid, ms)| Proc { cpu_ms: *ms, ..proc(*pid, 1, "") }).collect()
+        let at = |taken: &[(u32, u64, u64)]| -> Vec<Proc> {
+            let one = |(pid, ms, written): &(u32, u64, u64)| Proc {
+                cpu_ms: *ms,
+                written: *written,
+                ..proc(*pid, 1, "")
+            };
+            taken.iter().map(one).collect()
         };
-        let first = at(&[(1, 5000), (2, 700)]);
-        assert_eq!(took(&mut watched, &first.iter().collect::<Vec<_>>()), (None, 2048));
-        // 1 took 2000 more, 2 ended, 3 started and took 300
-        let second = at(&[(1, 7000), (3, 300)]);
-        assert_eq!(took(&mut watched, &second.iter().collect::<Vec<_>>()), (Some(2300), 2048));
+        let first = at(&[(1, 5000, 1 << 20), (2, 700, 0)]);
+        assert_eq!(
+            took(&mut watched, &first.iter().collect::<Vec<_>>()),
+            Took { cpu_ms: None, written: None, resident: 2048 }
+        );
+        // 1 took 2000 more and wrote 1 KiB more, 2 ended, 3 started and took
+        // 300, writing 4 KiB
+        let second = at(&[(1, 7000, (1 << 20) + 1024), (3, 300, 4096)]);
+        assert_eq!(
+            took(&mut watched, &second.iter().collect::<Vec<_>>()),
+            Took { cpu_ms: Some(2300), written: Some(5120), resident: 2048 }
+        );
         // 1 took the most since the sample before
         assert_eq!((watched.hottest, watched.pids.clone()), (Some(1), vec![1, 3]));
     }
 
     #[test]
-    fn what_a_hot_worker_took_is_said_in_cores_and_bytes() {
+    fn what_a_hot_worker_took_is_said_by_which_of_what_is_watched() {
         assert_eq!(cores(2500), "2.5 cores");
-        let limits = Limits { millicores: 4000, resident: 8 << 30 };
-        assert_eq!(why_said(Why::Cpu, &limits), "past 4.0 cores for 120s");
-        assert_eq!(why_said(Why::Memory, &limits), "past 8.0 GiB resident");
-        let episode = Episode { since: 0, why: Why::Cpu, millicores: 6200, resident: 3 << 29 };
-        assert_eq!(held_said(&episode), "6.2 cores, 1.5 GiB resident");
+        let limits = Limits { millicores: 4000, resident: 8 << 30, written: 20 << 30 };
+        assert_eq!(why_said(Why::Cpu, &limits), "CPU: past 4.0 cores for 120s");
+        assert_eq!(why_said(Why::Memory, &limits), "memory: past 8.0 GiB resident");
+        assert_eq!(
+            why_said(Why::Written, &limits),
+            "disk written: past 20.0 GiB written in 10 minutes"
+        );
+        assert_eq!(
+            why_said(Why::Held, &limits),
+            "disk held: its worktree past 3 times its fresh build and past 1.0 GiB"
+        );
+        let episode = Episode {
+            since: 0,
+            why: Why::Cpu,
+            millicores: 6200,
+            resident: 3 << 29,
+            written: 300 << 20,
+            held: 0,
+        };
+        assert_eq!(
+            held_said(&episode),
+            "6.2 cores, 1.5 GiB resident, 300.0 MiB written in 10 minutes"
+        );
+        let held = Episode { held: 5 << 30, ..episode };
+        assert!(
+            held_said(&held).ends_with(", 5.0 GiB held in its worktree"),
+            "{}",
+            held_said(&held)
+        );
+    }
+
+    #[test]
+    fn a_worktree_is_measured_only_once_its_fresh_build_is_on_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = Command::new("git").args(args).current_dir(dir.path()).output().unwrap();
+            assert!(ok.status.success(), "{ok:?}");
+        };
+        git(&["init", "--quiet"]);
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        git(&["add", "."]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "x"]);
+        std::fs::create_dir(dir.path().join("target")).unwrap();
+        std::fs::write(dir.path().join("target/built"), vec![0; 3000]).unwrap();
+        assert_eq!(held(dir.path()), None, "no fresh build on record");
+        measure::record_fresh(&Repo::new(dir.path().to_path_buf()), 1000).unwrap();
+        assert_eq!(held(dir.path()), Some(Built { built: 3000, fresh: Some(1000) }));
     }
 }

@@ -176,3 +176,26 @@ fn a_gate_run_in_a_worktree_reads_the_config_committed_there() {
     let answer = world.afk_in(worktree, &["gate"]).ok();
     assert_eq!(answer["recorded"], true, "{answer}");
 }
+
+#[test]
+fn a_workers_first_green_run_records_its_fresh_build_and_a_later_one_leaves_it() {
+    let world = World::new();
+    let red = world.root.join("red");
+    world.set_gate(&format!(
+        "test ! -f {} && mkdir -p out && printf 0123456789 >> out/build",
+        red.display()
+    ));
+    common::commit(&world.clone, ".gitignore", "out/\n");
+    let repo = Repo::new(world.clone.clone());
+
+    // a red run may have built nothing: no measure of what it should hold
+    std::fs::write(&red, "").unwrap();
+    assert_eq!(world.afk(&["gate"]).ok()["status"], "red");
+    assert_eq!(afkconvoy::measure::fresh(&repo).unwrap(), None);
+
+    std::fs::remove_file(&red).unwrap();
+    assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
+    assert_eq!(afkconvoy::measure::fresh(&repo).unwrap(), Some(10));
+    assert_eq!(world.afk(&["gate"]).ok()["status"], "green");
+    assert_eq!(afkconvoy::measure::fresh(&repo).unwrap(), Some(10), "recorded once");
+}

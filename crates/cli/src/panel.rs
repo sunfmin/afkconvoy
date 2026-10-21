@@ -692,7 +692,9 @@ pub fn render(panel: &Panel) -> String {
             .iter()
             .map(|hot| {
                 format!(
-                    "<li data-hot=\"{worker}\"><b>{worker}</b> hot for {}, holding at most {}</li>",
+                    "<li data-hot=\"{worker}\"><b>{worker}</b> hot on {} for {}, holding at most \
+                     {}</li>",
+                    hot.episode.why.word(),
                     lasted(panel.now.saturating_sub(hot.episode.since)),
                     esc(&held_said(&hot.episode)),
                     worker = esc(&hot.worker),
@@ -891,9 +893,11 @@ mod tests {
         assert!(!ticked.contains("Hot workers"));
         let episode = afkconvoy_core::hot::Episode {
             since: 280,
-            why: afkconvoy_core::hot::Why::Cpu,
+            why: afkconvoy_core::hot::Why::Held,
             millicores: 6200,
             resident: 3 << 29,
+            written: 0,
+            held: 5 << 30,
         };
         panel.hot = vec![HotNow {
             worker: "#7".into(),
@@ -903,7 +907,7 @@ mod tests {
             issue: Some(7),
         }];
         let hot = render(&panel);
-        assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> hot for 12m, holding at most 6.2 cores, 1.5 GiB resident</li>"), "{hot}");
+        assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> hot on disk held for 12m, holding at most 6.2 cores, 1.5 GiB resident, 0 B written in 10 minutes, 5.0 GiB held in its worktree</li>"), "{hot}");
         assert!(!hot.contains("Inspection"), "{hot}");
         panel.inspection = Some(Running {
             repo: "/src/widgets".into(),

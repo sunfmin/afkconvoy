@@ -12,6 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+use crate::hot::written_by;
 use crate::measure;
 use crate::orca::Worktree;
 
@@ -53,7 +54,7 @@ pub fn take(worktree: &Worktree, taken: &Taken) -> Result<PathBuf> {
     let dir = worktree.evidence_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let mut out = head(&taken.worker, taken.since);
-    let _ = write!(out, "\n\nIt turned hot {}; it held {}.\n", taken.why, taken.held);
+    let _ = write!(out, "\n\nHot for {}; it held {}.\n", taken.why, taken.held);
 
     out.push_str("\n## The process tree, with each command line\n\n```\n");
     out.push_str(&tree(&taken.pids));
@@ -69,11 +70,15 @@ pub fn take(worktree: &Worktree, taken: &Taken) -> Result<PathBuf> {
     out.push_str("```\n");
 
     out.push_str("\n## The processes that wrote the most, since each started\n\n```\n");
-    let mut wrote: Vec<(u64, u32)> =
-        taken.pids.iter().filter_map(|pid| Some((written(*pid)?, *pid))).collect();
+    let mut wrote: Vec<(u64, u32)> = taken
+        .pids
+        .iter()
+        .map(|pid| (written_by(*pid), *pid))
+        .filter(|(bytes, _)| *bytes > 0)
+        .collect();
     wrote.sort_unstable_by(|a, b| b.cmp(a));
     if wrote.is_empty() {
-        out.push_str("(this host does not say what a process wrote)\n");
+        out.push_str("(none wrote anything this host can say)\n");
     }
     for (bytes, pid) in wrote.into_iter().take(TOP) {
         let _ = writeln!(out, "{pid}  {}", measure::said(bytes));
@@ -159,46 +164,9 @@ fn largest(dir: &Path) -> String {
         .collect()
 }
 
-/// The bytes `pid` wrote to disk since it started; `None` where the host
-/// does not say.
-#[cfg(target_os = "macos")]
-fn written(pid: u32) -> Option<u64> {
-    // `rusage_info_v2`: a 16-byte UUID, then 18 counters, the last of which
-    // is the bytes written.
-    const RUSAGE_INFO_V2: i32 = 2;
-    const BYTES_WRITTEN: usize = 2 + 17;
-    unsafe extern "C" {
-        fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
-    }
-    let mut info = [0u64; 24];
-    let pid = i32::try_from(pid).ok()?;
-    // SAFETY: the buffer is larger than `rusage_info_v2`, which is all the
-    // call writes.
-    let read = unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V2, info.as_mut_ptr()) };
-    (read == 0).then_some(info[BYTES_WRITTEN])
-}
-
-#[cfg(not(target_os = "macos"))]
-fn written(pid: u32) -> Option<u64> {
-    let io = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
-    let line = io.lines().find(|line| line.starts_with("write_bytes:"))?;
-    line.split_whitespace().nth(1)?.parse().ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn what_this_process_wrote_is_read_where_the_host_says() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), vec![7u8; 1 << 20]).unwrap();
-        file.as_file().sync_all().unwrap();
-        if let Some(wrote) = written(std::process::id()) {
-            assert!(wrote > 0, "{wrote}");
-        }
-        assert_eq!(written(u32::MAX), None);
-    }
 
     #[test]
     fn the_largest_entries_of_a_directory_come_first() {

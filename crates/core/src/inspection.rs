@@ -222,7 +222,7 @@ You are an afkconvoy **inspection**, started in your role (`{role}`, skill `{ski
 worker**: one whose processes take more than their share of this host. Nobody reads this terminal:
 never wait for an answer.
 {instruction}
-- **Hot worker:** {worker}{issue_line}. It turned hot {why}; at the most it held {held}
+- **Hot worker:** {worker}{issue_line}. Hot for {why}; at the most it held {held}
 - **Its worktree:** `{worktree}`, read-only to you
 - **Its terminal:** `{terminal}`. Read it (`orca terminal read --terminal {terminal}`); never type
   at it: the fleet types what you find
@@ -383,7 +383,7 @@ stages:
         let fields = Fields {
             worker: "#7",
             issue: Some(7),
-            why: "past 4.0 cores for 120s",
+            why: "CPU: past 4.0 cores for 120s",
             held: "6.2 cores, 1.5 GiB resident",
             worktree: "/w/a",
             terminal: "term-1",
@@ -395,12 +395,12 @@ stages:
             inspected_command: "cd '/w/inspection' && afkconvoy inspected",
         };
         let said = brief(&fields).unwrap();
-        assert!(said.contains("- **Hot worker:** #7, on issue #7. It turned hot past"), "{said}");
+        assert!(said.contains("- **Hot worker:** #7, on issue #7. Hot for CPU: past"), "{said}");
         assert!(said.contains("# The stock consult"), "{said}");
         assert!(said.contains("afkconvoy inspected --found <found> --text-file <file>"), "{said}");
         assert!(said.contains("You have 15 minutes"), "{said}");
         let patrol = brief(&Fields { issue: None, instruction: None, ..fields }).unwrap();
-        assert!(patrol.contains("- **Hot worker:** #7. It turned hot"), "{patrol}");
+        assert!(patrol.contains("- **Hot worker:** #7. Hot for"), "{patrol}");
         assert!(!patrol.contains("stock consult"), "{patrol}");
     }
 }

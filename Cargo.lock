@@ -10,6 +10,7 @@ dependencies = [
  "anyhow",
  "clap",
  "gethostname",
+ "libc",
  "serde",
  "serde_json",
  "serde_yaml",

@@ -19,6 +19,8 @@ WHAT IT READS AND WRITES
   a committed tree, with the seconds it took and the host it ran on (`--host`, else
   this machine's name); taken off record for a red one. It pushes no branch and changes
   nothing on GitHub; after a red run it reads which fleet locks stand.
+  After the first green run in a worktree it notes, in the worktree's own git dir, what
+  git ignores there as the worktree's fresh build: what `run` judges its held disk by.
 
 WHAT IT ANSWERS
 
