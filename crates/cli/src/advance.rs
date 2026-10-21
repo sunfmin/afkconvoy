@@ -213,7 +213,13 @@ fn ask_after(
             let brief = if consult { "its consult went silent" } else { "its worker went silent" };
             let reason = Handed::at(Some(stage), brief, reason);
             if consult {
-                // A consult's own failure is a human's.
+                // A consult's own failure is a human's. Its record, left
+                // first, has the issue with that human: no tick puts it to
+                // the consult again.
+                let record = StageRecord::failed(stage, Failure::Silent, &reason.reason);
+                if !flows.ends_with(issue, &record) {
+                    fleet.gh.comment(issue, &record.comment())?;
+                }
                 escalate_claim(fleet, claim, &reason, pr_of(fleet, issue)?, Some(&worktree))?;
                 return Ok(Outcome::Done);
             }
@@ -258,7 +264,8 @@ pub fn advance(
     if declared && let Some((failed, consult)) = left_behind(fleet, &claim)? {
         let worktree = worktree_of(fleet, issue)?;
         let reason = Handed::at(stage, "left a commit it may not", stated(&failed, said, None));
-        // A consult's own failure is a human's.
+        // A consult's own failure is a human's: what it declared has it
+        // seen the issue, and no tick puts it to the consult again.
         if consult {
             let pr = pr_of(fleet, issue)?;
             escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;

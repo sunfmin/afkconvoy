@@ -324,6 +324,95 @@ fn a_stage_that_says_to_a_human_escalates_to_a_human_as_before() {
     assert_eq!(started(&world).len(), 1);
 }
 
+/// Issue 7 of `world` built, and its `review` — which names no consult —
+/// having declared `escalate`, which a tick read; the next tick at 1270
+/// starts the stock consult → its start's command.
+fn review_asked(world: &World) -> String {
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(world, 1000)), ["dispatch 7 done"]);
+    declare(world, "build", "pass", "Built.");
+    assert_eq!(did(&tick(world, 1090)), ["advance 7 done", "dispatch 7 done"]);
+    declare(world, "review", "escalate", "Two readings of the issue; which one?");
+    assert_eq!(did(&tick(world, 1180)), ["advance 7 done"]);
+    assert!(!with_a_human(world), "{:?}", world.labels(7));
+    let read = shown(world);
+    assert_eq!(
+        (&read["position"]["is"], &read["position"]["by"], &read["position"]["do"]),
+        (&json!("consult"), &json!("stock-consult"), &json!("consult"))
+    );
+    assert_eq!(did(&tick(world, 1270)), ["dispatch 7 done"]);
+    started(world).pop().unwrap()
+}
+
+#[test]
+fn a_stage_that_names_no_consult_hands_off_to_the_stock_consult() {
+    let world = bound(FEATURE, 2);
+    let consult = review_asked(&world);
+    for said in [
+        "/copies/stock-consult/stock-consult-",
+        "AFKCONVOY_STAGE='review'",
+        "AFKCONVOY_ROLE='stock-consult'",
+        "AFKCONVOY_SKILL='consult'",
+        "AFKCONVOY_CONSULT='true'",
+    ] {
+        assert!(consult.contains(said), "{said} in {consult}");
+    }
+    // It starts in a directory of its own, whose rules are its whole instruction.
+    let stock = world.cache().join("afkconvoy/copies/stock-consult");
+    let dirs: Vec<PathBuf> =
+        std::fs::read_dir(&stock).unwrap().map(|entry| entry.unwrap().path()).collect();
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    let rules = std::fs::read_to_string(dirs[0].join("CLAUDE.md")).unwrap();
+    assert_eq!(rules, afkconvoy_core::stock::INSTRUCTION);
+    assert_eq!(std::fs::read_dir(&dirs[0]).unwrap().count(), 1, "nothing else");
+    let told = brief(&worktree(&world));
+    for said in [
+        "started in your role as a **consult**",
+        "- **Stage that asked:** `review`, of the workflow `feature`\n",
+        "> Two readings of the issue; which one?",
+    ] {
+        assert!(told.contains(said), "{said}\n{told}");
+    }
+    // It answers as a named consult does: its ruling runs the stage again.
+    let line =
+        ["rule", "--issue", "7", "--stage", "review", "--text", "Read it as the title says."];
+    assert_eq!(world.afk(&[&line[..], &COMMITS].concat()).ok()["declared"], true);
+    assert_eq!(did(&tick(&world, 1360)), ["advance 7 done", "dispatch 7 done"]);
+    let read = shown(&world);
+    assert_eq!(
+        (&read["position"]["is"], &read["position"]["stage"]),
+        (&json!("perform"), &json!("review"))
+    );
+}
+
+#[test]
+fn the_stock_consult_s_own_failure_goes_to_a_human() {
+    let world = bound(FEATURE, 2);
+    review_asked(&world);
+    // It lets the issue through.
+    let line = ["verdict", "escalate", "--issue", "7", "--stage", "review", "--text", "A human's."];
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(line)
+        .env("AFKCONVOY_ROLE_COMMIT", "stock")
+        .env("AFKCONVOY_TEAM_COMMIT", "t1")
+        .env("AFKCONVOY_CONSULT", "true")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(did(&tick(&world, 1360)), ["advance 7 done"]);
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+    // Silent past its nudge: a human's too, and no consult is asked of that.
+    let world = bound(FEATURE, 2);
+    review_asked(&world);
+    stop(&world, 1280);
+    assert_eq!(did(&tick(&world, 2270)), ["advance 7 nudged"]);
+    stop(&world, 2370);
+    assert_eq!(did(&tick(&world, 3270)), ["advance 7 done"]);
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+    assert_eq!(did(&tick(&world, 3360)), [] as [&str; 0]);
+}
+
 #[test]
 fn a_consult_s_ruling_past_the_rework_breaker_escalates_with_it_listed() {
     let world = bound(&FEATURE.replacen("```yaml\n", "```yaml\nmax_rework: 0\n", 1), 2);
@@ -396,6 +485,8 @@ fn a_silent_consult_is_nudged_once_and_then_escalated() {
         "{said}"
     );
     assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    // The human's: no tick puts it to the consult again.
+    assert_eq!(did(&tick(&world, 3090)), [] as [&str; 0]);
 }
 
 #[test]
