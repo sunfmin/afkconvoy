@@ -91,7 +91,16 @@ pub fn due<'a>(bodies: impl IntoIterator<Item = &'a str>) -> bool {
 /// Whether `claim` is the stock consult's on an unbound repo's issue, by its
 /// comments (`bodies`, oldest first): the fleet asked it under that claim.
 pub fn asked_under<'a>(bodies: impl IntoIterator<Item = &'a str>, claim: &str) -> bool {
-    said(bodies).contains(&Said::Asked(claim.to_string()))
+    asked_at(bodies, claim).is_some()
+}
+
+/// Which of an issue's comments (`bodies`, oldest first) asked the stock
+/// consult under `claim`; `None` where none did. What it answers is said
+/// after it.
+pub fn asked_at<'a>(bodies: impl IntoIterator<Item = &'a str>, claim: &str) -> Option<usize> {
+    bodies.into_iter().position(|body| {
+        record::read_marker(ASKED, body).is_some_and(|fields| fields.get("claim") == Some(claim))
+    })
 }
 
 #[cfg(test)]

@@ -4,9 +4,11 @@ use std::path::PathBuf;
 
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
-use afkconvoy_core::prompt::{WorkerFields, worker_prompt};
+use afkconvoy_core::prompt::{StockFields, WorkerFields, stock_prompt, worker_prompt};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
+use afkconvoy_core::stock;
 use afkconvoy_core::tick::Outcome;
+use afkconvoy_core::transition::escalated_at;
 use afkconvoy_core::worker::{
     DispatchStep, branch_comment, dispatch_steps, recorded_branches, worktree_name,
 };
@@ -113,6 +115,13 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
         None => fleet.config.harness(),
     })?;
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
+    // In an unbound repo, an escalated issue is the stock consult's.
+    let consult = match staged {
+        None if issue.labels.contains(&fleet.config.escalate_label) => {
+            stock_consult(fleet, number, held)?
+        }
+        _ => None,
+    };
     if let Some(staged) = staged.as_ref().filter(|_| held) {
         staged.refuse_spent(fleet.scan.claim_of(number))?;
     }
@@ -142,6 +151,10 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
                 }
                 if let Some(staged) = &staged {
                     staged.refuse_spent(fleet.scan.claim_of(number))?;
+                }
+                // Its claim is the stock consult's once this says so.
+                if let Some(claim) = fleet.scan.claim_of(number).filter(|_| consult.is_some()) {
+                    fleet.gh.comment(number, &stock::asked_comment(&claim.id))?;
                 }
             }
             DispatchStep::Survey => {
@@ -175,9 +188,12 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
             }
             DispatchStep::Brief => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
-                brief = Some(match &staged {
-                    Some(staged) => staged.write_brief(fleet, cut, &issue.title)?,
-                    None => write_brief(fleet, cut, number, &issue.title, plan.variant)?,
+                brief = Some(match (&staged, &consult) {
+                    (Some(staged), _) => staged.write_brief(fleet, cut, &issue.title)?,
+                    (None, Some(asked)) => {
+                        write_stock_brief(fleet, cut, number, &issue.title, asked)?
+                    }
+                    (None, None) => write_brief(fleet, cut, number, &issue.title, plan.variant)?,
                 });
             }
             DispatchStep::Start => {
@@ -213,10 +229,31 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
         started["prompt"] = json!(staged.prompt());
         started["stage"] = staged.json();
     }
+    if consult.is_some() {
+        started["prompt"] = json!(stock::ROLE);
+    }
     if let Some(discarded) = discarded {
         started["discarded"] = discarded;
     }
     Ok(started)
+}
+
+/// What the stock consult of an unbound repo's escalated issue `number` is
+/// asked — its latest escalation, but for its marker — when it is the
+/// consult's: its consult due, or `held` under a claim it was asked under.
+fn stock_consult(fleet: &Fleet, number: u64, held: bool) -> Result<Option<String>> {
+    if !fleet.config.stock_consult() {
+        return Ok(None);
+    }
+    let comments = fleet.gh.comments(number)?;
+    let bodies = || comments.iter().map(|comment| comment.body.as_str());
+    let asked = match fleet.scan.claim_of(number).filter(|_| held) {
+        Some(claim) => stock::asked_under(bodies(), &claim.id),
+        None => stock::due(bodies()),
+    };
+    let Some(at) = escalated_at(bodies()).filter(|_| asked) else { return Ok(None) };
+    let said = comments.get(at).map_or("", |comment| comment.body.as_str());
+    Ok(Some(said.split_once("-->").map_or(said, |(_, said)| said).trim().to_string()))
 }
 
 /// Writes the brief of the worker of issue `number` into its worktree → the
@@ -227,6 +264,35 @@ pub(crate) fn write_brief(
     number: u64,
     title: &str,
     variant: Variant,
+) -> Result<PathBuf> {
+    brief_with(fleet, worktree, (number, title), |fields| worker_prompt(fields, variant))
+}
+
+/// Writes into `worktree` the brief of the stock consult of issue `number`,
+/// asked of the escalation that said `asked` → the file.
+fn write_stock_brief(
+    fleet: &Fleet,
+    worktree: &Worktree,
+    number: u64,
+    title: &str,
+    asked: &str,
+) -> Result<PathBuf> {
+    let stock = StockFields {
+        asked,
+        escalate_label: &fleet.config.escalate_label,
+        doctor: &crate::own_command().fixed(" doctor").own(),
+        plan: &crate::own_command().fixed(" plan").own(),
+    };
+    brief_with(fleet, worktree, (number, title), |fields| stock_prompt(fields, &stock))
+}
+
+/// Writes into `worktree` the brief `prompt` makes of the fields of issue
+/// `number`, titled `title` → the file.
+fn brief_with(
+    fleet: &Fleet,
+    worktree: &Worktree,
+    (number, title): (u64, &str),
+    prompt: impl FnOnce(&WorkerFields) -> Result<String, String>,
 ) -> Result<PathBuf> {
     let path = worktree.path.display().to_string();
     let fields = WorkerFields {
@@ -241,8 +307,7 @@ pub(crate) fn write_brief(
         land_command: &crate::own_command().fixed(" land --issue ").number(number).own(),
         wake_command: &crate::own_command().fixed(" wake").own(),
     };
-    let prompt = worker_prompt(&fields, variant).map_err(|e| anyhow!(e))?;
-    worktree.write_brief(&prompt)
+    worktree.write_brief(&prompt(&fields).map_err(|e| anyhow!(e))?)
 }
 
 /// Writes into `worktree` the join-only brief of the worker that joins `pr`,
