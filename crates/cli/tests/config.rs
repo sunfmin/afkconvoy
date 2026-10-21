@@ -27,6 +27,7 @@ fn config_prints_every_key_with_defaults_filled() {
             "concurrency": 5,
             "escalate_label": "ready-for-human",
             "lock_label": "fleet-lock",
+            "escalate_to": "consult",
         })
     );
 }

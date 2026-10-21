@@ -15,7 +15,8 @@ use afkconvoy_core::stage_record::{
     Advance, Author, StageRecord, Stated, Unconsulted, advance, history, label_moves, lands,
     stage_records, unconsulted,
 };
-use afkconvoy_core::team::{FlowLabels, LAND, Team, Workflow};
+use afkconvoy_core::stock;
+use afkconvoy_core::team::{Consult, FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::{Relabel, escalated_at};
 use afkconvoy_core::waiting::{Back, Waits, back, waits};
@@ -484,7 +485,10 @@ impl Flows {
                 at => (at.stage().map(|stage| stage.name.clone()), at.worker()),
             };
             stood.stage = stage;
-            stood.role = work.map(|work| team.role_of(work).name.clone());
+            stood.role = match place.position {
+                Position::Consult(_, Consult::Stock, _) => Some(stock::ROLE.to_string()),
+                _ => work.map(|work| team.role_of(work).name.clone()),
+            };
             stood.rework = (place.rework(), place.rework_left());
             for stage in workflow.stages().iter().filter(|stage| stage.reject().is_some()) {
                 let (had, left) =
