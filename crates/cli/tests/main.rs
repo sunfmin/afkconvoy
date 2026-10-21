@@ -16,6 +16,7 @@ mod cut_train;
 mod declared;
 mod dispatch;
 mod doctor;
+mod exclusive;
 mod fixture;
 mod flows;
 mod gate;

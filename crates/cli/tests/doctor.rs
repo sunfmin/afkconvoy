@@ -138,6 +138,34 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     assert_eq!(answer["issues"]["frontier"][0]["number"], 3);
     // with no `run` to say, the command is the one a `run` would use now
     assert_eq!(answer["host"]["worker_commands"][0]["from"], "default");
+    assert_eq!(answer["host"]["exclusive"], json!({"running": null, "waiting": []}));
+}
+
+#[test]
+fn the_host_s_exclusive_queue_is_shown_what_runs_first_then_what_waits() {
+    use afkconvoy::exclusive::Queue;
+    use afkconvoy_core::exclusive::Ticket;
+    let world = World::new();
+    let queue = Queue::at(world.cache().join("afkconvoy/exclusive"));
+    let ticket = |command: &str, issue| Ticket {
+        number: 0,
+        pid: 42,
+        command: command.into(),
+        dir: "/w/acme".into(),
+        issue,
+        asked: 900,
+        ran: None,
+    };
+    let (mut running, _) = queue.join(ticket("cargo test", Some(12))).unwrap();
+    running.begin(950).unwrap();
+    let (_waiting, _) = queue.join(ticket("make bench", None)).unwrap();
+    let exclusive = &doctor(&world, "1000").ok()["host"]["exclusive"];
+    let shown = |command: &str, issue: Value, ran: Value| {
+        json!({"command": command, "dir": "/w/acme", "issue": issue, "pid": 42, "asked": 900,
+            "ran": ran})
+    };
+    assert_eq!(exclusive["running"], shown("cargo test", json!(12), json!(950)));
+    assert_eq!(exclusive["waiting"], json!([shown("make bench", Value::Null, Value::Null)]));
 }
 
 #[test]
