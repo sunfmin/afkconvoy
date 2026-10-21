@@ -9,6 +9,7 @@
 
 use std::fmt::Write;
 
+use afkconvoy_core::patrol::{self, Standing};
 use afkconvoy_core::plan::{Excluded, Status, WorkingSet};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::team::{LAND, Performer, Team, Work, Workflow};
@@ -116,6 +117,11 @@ pub struct Panel {
     pub to_human: Vec<Card>,
     /// Every other open issue, with why the fleet leaves it.
     pub off: Vec<Card>,
+    /// The patrols the repo names, each as it stands.
+    pub patrols: Vec<patrol::Row>,
+    /// When the page was made, in epoch seconds: what a patrol's wait is
+    /// counted from.
+    pub now: u64,
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -220,6 +226,8 @@ impl Panel {
             train: vec![],
             to_human: vec![],
             off: vec![],
+            patrols: vec![],
+            now: fleet.now,
         }
     }
 
@@ -230,6 +238,7 @@ impl Panel {
         let set = seen.set;
         self.lanes = lanes(seen);
         self.locks = set.locks.clone();
+        self.patrols = set.patrols.clone();
         let mut put = Put { panel: &mut self, seen };
 
         for mine in &set.mine {
@@ -531,6 +540,47 @@ fn node(out: &mut String, node: &Node) {
     out.push_str("</li>");
 }
 
+/// What holds the patrol `row` back, or what it is doing, at `now`, in words.
+fn patrol_says(row: &patrol::Row, now: u64) -> String {
+    match row.standing {
+        Standing::Due => "due: the next tick runs it".to_string(),
+        Standing::NotDue => match row.last_run {
+            Some(last) => format!(
+                "not due: it ran {} ago, and runs every {}",
+                lasted(now.saturating_sub(last)),
+                lasted(row.every)
+            ),
+            None => "not due".to_string(),
+        },
+        Standing::Spent => {
+            let until = row.until.unwrap_or(now);
+            format!(
+                "held by max_runs_a_day: {} runs in the last 24h, of {} — until {} UTC, in {}",
+                row.runs_in_day.unwrap_or_default(),
+                row.max_runs_a_day.unwrap_or_default(),
+                clock(until),
+                lasted(until.saturating_sub(now)),
+            )
+        }
+        Standing::Locked => "held: a fleet lock stands".to_string(),
+        Standing::Full => {
+            format!("held by max_open: {} open issues it opened, of {}", row.open, row.max_open)
+        }
+        Standing::Failed => match row.failure {
+            Some(failure) => format!("held: its last run failed, and #{failure} says so"),
+            None => "held: its last run failed".to_string(),
+        },
+        Standing::Running => "running".to_string(),
+        Standing::PeerRunning => "running on a peer".to_string(),
+        Standing::StaleRun => "its run's fleet instance went silent".to_string(),
+    }
+}
+
+/// The time of day of the moment `at`, in UTC: `14:05`.
+fn clock(at: u64) -> String {
+    format!("{:02}:{:02}", at % 86_400 / 3600, at % 3600 / 60)
+}
+
 fn gauge(out: &mut String, name: &str, value: usize, of: Option<usize>) {
     let of = of.map(|of| format!(" <small>of {of}</small>")).unwrap_or_default();
     let _ = write!(out, "<div class=\"gauge\"><dt>{name}</dt><dd>{value}{of}</dd></div>");
@@ -637,6 +687,21 @@ pub fn render(panel: &Panel) -> String {
     }
     out.push_str("</section>\n");
 
+    if !panel.patrols.is_empty() {
+        out.push_str("<section class=\"patrols\"><h2>Patrols</h2><ul class=\"cards\">");
+        for row in &panel.patrols {
+            let held =
+                row.until.map(|until| format!(" data-until=\"{until}\"")).unwrap_or_default();
+            let _ = write!(
+                out,
+                "<li class=\"card\" data-patrol=\"{name}\"{held}><span class=\"title\">{name}</span>\
+                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
+                esc(&patrol_says(row, panel.now)),
+                name = esc(&row.name),
+            );
+        }
+        out.push_str("</ul></section>\n");
+    }
     if !panel.to_human.is_empty() {
         out.push_str("<section class=\"human\"><h2>With a human</h2>");
         cards(&mut out, "asked", None, &panel.to_human);
@@ -674,6 +739,8 @@ mod tests {
             train: vec![Card::new(7, "<script>alert(\"x\")</script> & more")],
             to_human: vec![],
             off: vec![],
+            patrols: vec![],
+            now: 1000,
         };
         let page = render(&panel);
         assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));

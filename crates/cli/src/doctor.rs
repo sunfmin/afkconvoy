@@ -1498,6 +1498,9 @@ mod tests {
             last_run: Some(NOW - 100),
             open: 0,
             max_open: 2,
+            max_runs_a_day: None,
+            runs_in_day: None,
+            until: None,
             failure: None,
             claim: None,
         }
