@@ -98,6 +98,18 @@ pub enum What {
     HostWoke { asleep: u64 },
     /// The `run` was told to stop, and said `line` of its heartbeat as it went.
     Stop { line: String },
+    /// A worker turned hot (`crate::hot`): `worker` is `#7`, or its worktree's
+    /// name; `why` and what it `held` as it did, in words.
+    Hot { worker: String, why: String, held: String },
+    /// A worker hot `since` then stopped being hot: under the limits for five
+    /// minutes, or `gone` with its worktree. `held` is the most it took.
+    Cooled {
+        worker: String,
+        since: u64,
+        held: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        gone: bool,
+    },
 }
 
 /// Why a tick started.
@@ -162,6 +174,20 @@ impl Entry {
             }
             What::HostWoke { asleep } => format!("host woke: after {asleep}s asleep"),
             What::Stop { line } => format!("stop: {line}"),
+            What::Hot { worker, why, held } => {
+                format!("hot: {worker} is hot: {why} · it holds {held}")
+            }
+            What::Cooled { worker, since, held, gone } => {
+                let why = if *gone {
+                    "its worktree is gone".to_string()
+                } else {
+                    "under the limits for five minutes".to_string()
+                };
+                format!(
+                    "hot: {worker} is no longer hot: {why} · hot for {}s, it held at most {held}",
+                    self.at.saturating_sub(*since)
+                )
+            }
         }
     }
 
@@ -191,7 +217,9 @@ impl Entry {
             What::TickStarted { .. }
             | What::Tick(_)
             | What::HostSleep { slept: false, .. }
-            | What::Command { .. } => None,
+            | What::Command { .. }
+            | What::Hot { .. }
+            | What::Cooled { .. } => None,
         }
     }
 

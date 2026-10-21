@@ -18,6 +18,7 @@ use afkconvoy_core::worker::WorkerState;
 
 use crate::claims::Me;
 use crate::fleet::Fleet;
+use crate::hot::{HotNow, held_said};
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 
@@ -122,6 +123,9 @@ pub struct Panel {
     /// When the page was made, in epoch seconds: what a patrol's wait is
     /// counted from.
     pub now: u64,
+    /// The workers hot as the tick ended, as the `run` that made the page
+    /// found them; none of a panel no `run` made.
+    pub hot: Vec<HotNow>,
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -228,6 +232,7 @@ impl Panel {
             off: vec![],
             patrols: vec![],
             now: fleet.now,
+            hot: vec![],
         }
     }
 
@@ -651,6 +656,27 @@ pub fn render(panel: &Panel) -> String {
         );
     }
 
+    if !panel.hot.is_empty() {
+        let hot: Vec<String> = panel
+            .hot
+            .iter()
+            .map(|hot| {
+                format!(
+                    "<li data-hot=\"{worker}\"><b>{worker}</b> hot for {}, holding at most {}</li>",
+                    lasted(panel.now.saturating_sub(hot.episode.since)),
+                    esc(&held_said(&hot.episode)),
+                    worker = esc(&hot.worker),
+                )
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\"><b>Hot workers</b>: their processes take more than their \
+             share of the host.<ul>{}</ul></section>",
+            hot.concat(),
+        );
+    }
+
     for lane in &panel.lanes {
         let _ = write!(
             out,
@@ -741,6 +767,7 @@ mod tests {
             off: vec![],
             patrols: vec![],
             now: 1000,
+            hot: vec![],
         };
         let page = render(&panel);
         assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));

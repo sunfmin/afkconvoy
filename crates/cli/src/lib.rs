@@ -38,6 +38,7 @@ pub mod gh;
 pub mod git;
 pub mod guard;
 pub mod host_sleep;
+pub mod hot;
 pub mod intake;
 pub mod judge;
 pub mod kept;
@@ -80,6 +81,18 @@ use fleet::Fleet;
 use git::Repo;
 use launch::Launches;
 use tick::Pacing;
+
+/// The environment variables that tell `run` `--hot-cores` and `--hot-memory`.
+const HOT_CORES_ENV: &str = "AFKCONVOY_HOT_CORES";
+const HOT_MEMORY_ENV: &str = "AFKCONVOY_HOT_MEMORY";
+
+/// A number of cores or GiB, whole or not, as thousandths of it.
+fn thousandths(said: &str) -> Result<u64, String> {
+    match said.parse::<f64>() {
+        Ok(number) if number.is_finite() && number > 0.0 => Ok((number * 1000.0).round() as u64),
+        _ => Err(format!("`{said}` is not a number above zero")),
+    }
+}
 
 /// The environment variable that tells `run` `--no-host-sleep`.
 pub const NO_HOST_SLEEP_ENV: &str = "AFKCONVOY_NO_HOST_SLEEP";
@@ -214,6 +227,14 @@ enum Command {
         /// Seconds every fleet on this host must have been idle before it is put to sleep
         #[arg(long, hide = true, default_value_t = IDLE_WAIT)]
         host_sleep_after: u64,
+        /// The cores a worker's processes may take before it turns hot, held two minutes
+        /// [default: half this host's cores, one at the least]
+        #[arg(long, env = HOT_CORES_ENV, value_name = "CORES", value_parser = thousandths)]
+        hot_cores: Option<u64>,
+        /// The GiB of memory a worker's processes may hold resident before it turns hot
+        /// [default: a quarter of this host's memory]
+        #[arg(long, env = HOT_MEMORY_ENV, value_name = "GIB", value_parser = thousandths)]
+        hot_memory: Option<u64>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -956,6 +977,8 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             panel,
             no_host_sleep,
             host_sleep_after,
+            hot_cores,
+            hot_memory,
             ticks,
             second_ms,
         } => {
@@ -970,7 +993,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
             let second = Duration::from_millis(second_ms);
-            let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after };
+            let hot = hot::limits(hot::Said {
+                millicores: hot_cores,
+                resident: hot_memory.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
+            });
+            let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after, hot };
             let agent = agent.start(now, false)?;
             tick::run(&mut me, &agent, &pacing, panel, move || fixed_now.unwrap_or_else(clock))
         }

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use afkconvoy_core::before::{Before, Lost};
 use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
+use afkconvoy_core::hot::Limits;
 use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
@@ -25,6 +26,7 @@ use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
 use crate::host_sleep::{Checked, HostSleep};
+use crate::hot::{self, Hot};
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
 use crate::measure;
@@ -740,6 +742,8 @@ pub struct Pacing {
     /// How long, in seconds, every fleet on this host must have been idle
     /// before it is put to sleep [default: `IDLE_WAIT`].
     pub host_sleep_after: u64,
+    /// What a worker's processes may take before it turns hot.
+    pub hot: Limits,
 }
 
 /// What a `run` says at its start of host sleep, when it puts its host to
@@ -913,7 +917,9 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// every tick. It keeps a line in its log (`log::Log`) as each tick starts,
 /// with why, and as it ends, and one of each event that reaches it — a wake
 /// heard during a tick, said as it is heard — and prints each as it is
-/// written (`Said`); nothing here ever reads the log. Unless told `--no-host-sleep`, it puts the
+/// written (`Said`); nothing here ever reads the log. It watches what each
+/// worker's processes take, and says as one turns hot and as it stops being
+/// hot (`hot::watch`, docs/adr/0019). Unless told `--no-host-sleep`, it puts the
 /// host to sleep once every fleet on it has been idle long enough
 /// (`HostSleep`, docs/adr/0016).
 pub fn run(
@@ -943,6 +949,12 @@ pub fn run(
         Box::new(move |during, by| said.keep(clock(), log::What::WokenDuring { during, by }))
     };
     let wakes = Listener::open(&repo, during);
+    let hot = Hot::default();
+    {
+        let said = Arc::clone(&said);
+        let keep = move |at, what| said.keep(at, what);
+        hot::watch(&repo, pacing.hot, pacing.second, Arc::clone(&clock), keep, Arc::clone(&hot));
+    }
     opening::listen(&repo, live.clone(), me.instance.as_str());
     let stop = Stop::listen();
     let mut cause = Cause::Start;
@@ -1021,6 +1033,7 @@ pub fn run(
         if served {
             // A tick that failed leaves the page as the last one found it.
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
+            shown.hot = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
             live.show(panel::render(&shown));
         }
         let mut due_now = check_host(&mut host, &said, &stop, &clock);

@@ -231,6 +231,20 @@ pub struct Run {
     pub host_sleep: Option<HostSleepChecked>,
     /// The newest events that reached this host's `run`s, newest first.
     pub events: Vec<Event>,
+    /// The workers its log says are hot: each turned hot, and has not
+    /// stopped being hot since.
+    pub hot: Vec<HotRead>,
+}
+
+/// A worker that is hot, as the log has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HotRead {
+    /// `#7`, or the name of its worktree.
+    pub worker: String,
+    /// When it turned hot, why, and what it held as it did, in words.
+    pub since: u64,
+    pub why: String,
+    pub held: String,
 }
 
 /// One event that reached a `run` from outside it: a wake, its start or
@@ -1024,6 +1038,28 @@ fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
     })
 }
 
+/// The workers the newest `run` of `host` found hot and has not found
+/// stopped being hot since, as the log has them, longest hot first.
+fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
+    let Some(newest) = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())
+    else {
+        return vec![];
+    };
+    let mut hot: Vec<HotRead> = vec![];
+    for entry in entries.iter().filter(|entry| entry.instance == newest.instance) {
+        match &entry.what {
+            What::Hot { worker, why, held } => {
+                hot.retain(|read| &read.worker != worker);
+                let (worker, why, held) = (worker.clone(), why.clone(), held.clone());
+                hot.push(HotRead { worker, since: entry.at, why, held });
+            }
+            What::Cooled { worker, .. } => hot.retain(|read| &read.worker != worker),
+            _ => {}
+        }
+    }
+    hot
+}
+
 /// The events that reached the `run`s of `host` (`Entry::event`), as the log
 /// has them: the newest `EVENTS_SHOWN`, newest first, whichever instance they
 /// reached — a `run` stopped and started again is two.
@@ -1267,6 +1303,8 @@ fn fleet_json(run: &Run) -> Value {
         "host_sleep": run.host_sleep.as_ref().map(|checked| json!({"checked": checked.at,
             "slept": checked.slept, "kept_awake_by": checked.awake})),
         "events": run.events,
+        // Only a `run` that is alive watches its workers.
+        "hot_workers": if run.alive { json!(run.hot) } else { json!([]) },
     })
 }
 
@@ -1316,6 +1354,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         heartbeats: Heartbeats::default(),
         log_file: log.map(|log| log.file),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
+        hot: read_hot(entries.as_deref().unwrap_or_default(), host),
         events: read_events(entries.as_deref().unwrap_or_default(), host),
         // A log only commands wrote to is no `run`'s.
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
@@ -1410,6 +1449,7 @@ mod tests {
             log_file: Some(PathBuf::from("/cache/afkconvoy/runs/widgets.jsonl")),
             ticks: Some(ticks),
             host_sleep: None,
+            hot: vec![],
             events: vec![],
         }
     }
