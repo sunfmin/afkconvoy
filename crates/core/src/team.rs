@@ -640,7 +640,7 @@ fn workflow_runs(team: &Team, workflow: &Workflow) -> Vec<Run> {
                 model: stage.model.clone(),
             });
         }
-        if let Some(consult) = &stage.consult {
+        if let Some(Consult::Role(consult)) = &stage.consult {
             runs.push(Run {
                 file: file.clone(),
                 harness_key: under(&under(&at, "escalate"), "to"),
@@ -773,6 +773,18 @@ pub struct Precedents {
     pub max_open: u64,
 }
 
+/// Who a stage hands an issue to before a human (docs/adr/0018): `by_role`
+/// when a role it names, one of a team of `roles`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[refined_by(by_role: bool, roles: int)]
+pub enum Consult {
+    /// afkconvoy's own (`stock`), where the stage names none.
+    #[variant(Consult[false, 0])]
+    Stock,
+    #[variant((Work[@roles]) -> Consult[true, roles])]
+    Role(Work),
+}
+
 /// Who performs a stage: `by_role` when a role does, one of a team of `roles`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[refined_by(by_role: bool, roles: int)]
@@ -818,9 +830,12 @@ pub struct Stage {
     pub model: Option<String>,
     /// Whether it may commit. A stage that reviews does not.
     pub writes: bool,
-    /// Who rules on its `escalate` verdict before a human is asked.
-    #[field(Option<Work[roles]>)]
-    pub consult: Option<Work>,
+    /// Who is asked before a human whenever the stage would hand the issue
+    /// to one: the role it names, or the stock consult where it names none.
+    /// `None` where it says `escalate: { to: human }`, and of a stage a
+    /// human performs.
+    #[field(Option<Consult{v: v.by_role => v.roles == roles}>)]
+    pub consult: Option<Consult>,
     #[field(usize[at])]
     at: usize,
     /// How many stages its workflow has.
@@ -1556,8 +1571,9 @@ struct Draft<'n> {
     harness: Option<Harness>,
     model: Option<String>,
     writes: Option<bool>,
-    /// `None` when its `escalate` is at fault; `Some(None)` when it has none.
-    consult: Option<Option<Work>>,
+    /// `None` when its `escalate` is at fault; `Some(None)` when it goes
+    /// to a human.
+    consult: Option<Option<Consult>>,
     pass: Option<&'n str>,
     reject: Option<&'n str>,
 }
@@ -1599,15 +1615,27 @@ fn draft<'n>(report: &mut Report, roles: &Roles, key: String, node: &'n Node) ->
         }
     };
     let consult = match get(entries, "escalate") {
-        Some(node) if !human => {
+        _ if human => Some(None),
+        None => Some(Some(Consult::Stock)),
+        Some(node) => {
             let at = under(&key, "escalate");
-            let consult = match map(report, &at, node, &ESCALATE_KEYS) {
-                Some(entries) => work(report, roles, &at, entries, ("to", "do")),
+            match map(report, &at, node, &ESCALATE_KEYS) {
+                Some(entries) if matches!(get(entries, "to"), Some(Node::Text(to)) if to == HUMAN) => {
+                    match get(entries, "do") {
+                        Some(_) => {
+                            let problem = format!("`to: {HUMAN}` performs no skill");
+                            report.fault(&under(&at, "do"), problem);
+                            None
+                        }
+                        None => Some(None),
+                    }
+                }
+                Some(entries) => {
+                    work(report, roles, &at, entries, ("to", "do")).map(Consult::Role).map(Some)
+                }
                 None => None,
-            };
-            consult.map(Some)
+            }
         }
-        _ => Some(None),
     };
     let (mut pass, mut reject) = (None, None);
     match get(entries, "on") {
@@ -1935,7 +1963,8 @@ fn stage(
         Performer::Role(work) => Performer::Role(among_roles(work, roles)?),
     };
     let consult = match draft.consult? {
-        Some(work) => Some(among_roles(work, roles)?),
+        Some(Consult::Role(work)) => Some(Consult::Role(among_roles(work, roles)?)),
+        Some(Consult::Stock) => Some(Consult::Stock),
         None => None,
     };
     Some(Stage {
@@ -2043,6 +2072,7 @@ stages:
   - name: plan
     by: dev
     do: plan
+    escalate: { to: human }
     on: { pass: build }
   - name: build
     by: dev
@@ -2054,6 +2084,7 @@ stages:
     by: reviewer
     do: review
     writes: false
+    escalate: { to: human }
     on: { pass: sign-off, reject: build }
   - name: sign-off
     by: human
@@ -2261,8 +2292,9 @@ land: { by: dev, do: land }
         assert_eq!((plan.at(), plan.pass(), plan.reject()), (0, Pass::Stage(1), None));
         assert_eq!(build.by, Performer::Role(work(DEV, "implement")));
         assert_eq!(build.model.as_deref(), Some("opus"));
-        assert_eq!(build.consult, Some(work(REVIEWER, "rule")));
-        let consulted = team.role_of(build.consult.as_ref().unwrap());
+        let Some(Consult::Role(consult)) = &build.consult else { panic!("a named consult") };
+        assert_eq!(*consult, work(REVIEWER, "rule"));
+        let consulted = team.role_of(consult);
         assert_eq!(
             (consulted.name.as_str(), consulted.dir.repo.as_str()),
             ("reviewer", "acme/reviewer")
@@ -2270,6 +2302,8 @@ land: { by: dev, do: land }
         assert!(build.writes && !review.writes, "a stage writes unless it says not");
         assert_eq!((review.pass(), review.reject()), (Pass::Stage(3), Some(1)));
         assert_eq!(sign_off.by, Performer::Human);
+        // `plan` goes to a human; a human's stage has no consult.
+        assert_eq!((&plan.consult, &sign_off.consult), (&None, &None));
         assert_eq!((sign_off.at(), sign_off.pass(), sign_off.reject()), (3, Pass::Land, Some(0)));
     }
 
@@ -2675,6 +2709,23 @@ land: { by: dev, do: land }
     }
 
     #[test]
+    fn a_stage_names_a_consult_or_a_human_or_has_the_stock_consult() {
+        let usual = "{ by: dev, do: land }";
+        let consult = |rest: &str| {
+            one(&landed(rest, usual)).workflow("feature").unwrap().stages()[1].consult.clone()
+        };
+        assert_eq!(consult(""), Some(Consult::Stock));
+        assert_eq!(consult("    escalate: { to: human }\n"), None);
+        assert!(matches!(consult("    escalate: { to: dev, do: plan }\n"), Some(Consult::Role(_))));
+        // A human performs no skill.
+        let (key, problem) = fault(&landed("    escalate: { to: human, do: plan }\n", usual));
+        assert_eq!(
+            (key.as_str(), problem.as_str()),
+            ("stages[1].escalate.do", "`to: human` performs no skill")
+        );
+    }
+
+    #[test]
     fn a_harness_is_named_only_where_a_model_is_and_only_by_its_key() {
         let usual = "{ by: dev, do: land }";
         for none in ["aider", "Claude Code", "claude"] {
@@ -2877,7 +2928,7 @@ stages:
         );
         assert_eq!(
             fault(&stage("by: dev, do: plan, escalate: { to: human, do: rule }")).0,
-            "stages[0].escalate.to"
+            "stages[0].escalate.do"
         );
         // A human is started as no worker.
         assert_eq!(fault(&stage("by: human, do: plan")).0, "stages[0].do");

@@ -7,7 +7,7 @@ use flux_rs::attrs::*;
 
 use crate::harness::Harness;
 use crate::position::Breaker;
-use crate::team::{DONE, HUMAN, LAND, Pass, Performer, Stage, Team, Work, Workflow};
+use crate::team::{Consult, DONE, HUMAN, LAND, Pass, Performer, Stage, Team, Work, Workflow};
 
 /// One `reject`: from the stage at `from` back to the one at `to`.
 struct Back {
@@ -89,8 +89,13 @@ fn rows(
     if !stage.writes {
         said.push("writes nothing".to_string());
     }
-    if let Some(consult) = &stage.consult {
-        said.push(format!("escalate → {}", work_said(team, consult)));
+    // The stock consult is every stage's that says nothing else.
+    match (&stage.consult, &stage.by) {
+        (Some(Consult::Role(consult)), _) => {
+            said.push(format!("escalate → {}", work_said(team, consult)));
+        }
+        (None, Performer::Role(_)) => said.push(format!("escalate → {HUMAN}")),
+        _ => {}
     }
     if let Some(to) = stage.reject() {
         said.push(format!("reject → {}", workflow.stage(to).name));
@@ -166,11 +171,11 @@ mod tests {
         let expected = "\
 feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-┌───▶ plan      dev: plan · harness claude-code
+┌───▶ plan      dev: plan · harness claude-code · escalate → human
 │       ↓ pass → build
 │ ┌─▶ build     dev: implement · harness claude-code · model opus · escalate → reviewer: rule
 │ │     ↓ pass → review
-│ └── review    reviewer: review · harness claude-code · writes nothing · reject → build
+│ └── review    reviewer: review · harness claude-code · writes nothing · escalate → human · reject → build
 │       ↓ pass → sign-off
 └──── sign-off  human · reject → plan
         ↓ pass → land

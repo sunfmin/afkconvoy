@@ -11,7 +11,7 @@ use crate::patrol::PATROL_ENV;
 use crate::position::Position;
 use crate::precedent::PROPOSAL_ENV;
 use crate::stage_record::{StageRecord, history};
-use crate::team::{Role, Stage, Team, Work, Workflow};
+use crate::team::{Consult, Role, Stage, Team, Work, Workflow};
 use crate::transition::escalated_from;
 
 /// Every flag the fleet adds: what a bound repo's worker launch command must
@@ -106,6 +106,9 @@ pub enum Due<'t> {
     /// A worker is to be started as the consult this stage names, to rule on
     /// its `escalate`.
     Consult(Entry<'t>),
+    /// A worker is to be started as the stock consult, on what this stage of
+    /// this workflow handed on.
+    Stock(&'t Workflow, &'t Stage),
     /// A worker is to be started in the workflow's landing role, to gate the
     /// issue's PR and join the landing train.
     Lander(Lander<'t>),
@@ -143,9 +146,10 @@ pub fn due<'t>(
     };
     match position {
         Position::Escalating(stage, reason) => Due::Human(reason.said(stage)),
-        Position::Consult(stage, work, _) => {
+        Position::Consult(stage, Consult::Role(work), _) => {
             Due::Consult(Entry { workflow, stage, work, role: team.role_of(work) })
         }
+        Position::Consult(stage, Consult::Stock, _) => Due::Stock(workflow, stage),
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
             waits(stage, "a human: no worker performs it")
         }
@@ -429,6 +433,7 @@ land: { by: boss, do: implement }
             Due::Consult(entry) => {
                 format!("consult on {} by {}", entry.stage.name, entry.role.name)
             }
+            Due::Stock(_, stage) => format!("consult on {} by the stock consult", stage.name),
             Due::Lander(lander) => format!("PR #{} joined by {}", lander.pr, lander.role.name),
             Due::Human(why) => format!("human: {why}"),
             Due::Nothing(why) => format!("nothing: {why}"),
@@ -449,9 +454,10 @@ land: { by: boss, do: implement }
         assert_eq!(after(&[record("build", Declared::Blocked)]), "build by dev");
         let done = [&built[..], &[record("check", Declared::Pass)]].concat();
         assert_eq!(after(&done), "nothing: its workflow has ended");
+        // `build` names no consult: the stock consult is asked.
         assert_eq!(
             after(&[record("build", Declared::Escalate)]),
-            "human: the stage `build` declared `escalate`, and it names no consult"
+            "consult on build by the stock consult"
         );
     }
 

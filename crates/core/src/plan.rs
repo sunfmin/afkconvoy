@@ -426,7 +426,9 @@ fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
     match due.iter().find(|(number, _)| *number == issue.number).map(|(_, due)| due) {
         Some(Due::Human(reason)) => Call::Human(reason.clone()),
         Some(Due::Nothing(why)) => Call::Nothing(why.clone()),
-        Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_)) if issue.open_blockers > 0 => {
+        Some(Due::Worker(_) | Due::Consult(_) | Due::Stock(..) | Due::Lander(_))
+            if issue.open_blockers > 0 =>
+        {
             Call::Nothing(format!("{} open blocker(s)", issue.open_blockers))
         }
         Some(due @ Due::Lander(_)) => Call::Start(LAND.to_string(), due),
@@ -434,6 +436,7 @@ fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
         Some(due @ (Due::Worker(entry) | Due::Consult(entry))) => {
             Call::Start(entry.stage.name.clone(), due)
         }
+        Some(due @ Due::Stock(_, stage)) => Call::Start(stage.name.clone(), due),
         None => Call::Nothing("its position was not read".to_string()),
     }
 }
