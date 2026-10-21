@@ -811,21 +811,20 @@ mod tests {
         let ps = serde_json::json!({"worktrees": [
             {"path": "/w/issue-7", "liveTerminalCount": 1},
             {"path": "/w/issue-8", "liveTerminalCount": 0}]});
-        let found = on_host(&repos, &listed, &ps);
-        let said: Vec<(&str, Option<&str>, Option<u64>, bool, bool)> = found
-            .iter()
-            .map(|on| {
-                let repo = on.repo.as_deref().and_then(Path::to_str);
-                (on.path.to_str().unwrap(), repo, on.issue, on.fleets, on.held)
-            })
-            .collect();
+        let on = |path: &str, repo: &str, issue, fleets, held| OnHost {
+            path: path.into(),
+            repo: Some(repo.into()),
+            issue,
+            fleets,
+            held,
+        };
         assert_eq!(
-            said,
+            on_host(&repos, &listed, &ps),
             [
-                ("/w/issue-7", Some("/src/widgets"), Some(7), false, true),
-                ("/w/issue-8", Some("/src/widgets"), Some(8), false, false),
-                ("/w/convoy-train", Some("/src/widgets"), None, true, false),
-                ("/w/issue-3", Some("/src/gadgets"), Some(3), false, false),
+                on("/w/issue-7", "/src/widgets", Some(7), false, true),
+                on("/w/issue-8", "/src/widgets", Some(8), false, false),
+                on("/w/convoy-train", "/src/widgets", None, true, false),
+                on("/w/issue-3", "/src/gadgets", Some(3), false, false),
             ]
         );
     }

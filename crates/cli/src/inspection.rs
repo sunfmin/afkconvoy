@@ -182,9 +182,9 @@ enum Subject {
     /// A hot worker: `why` it turned hot, and its terminal as the inspection
     /// started, what is typed at.
     Worker { hot: HotNow, why: String, terminal: Option<String> },
-    /// The host, on which admission held back for `reason`: what it read, and
-    /// the label the issue a `fleet` finding opens carries.
-    Host { reason: Reason, reading: String, escalate_label: String },
+    /// The host, on which admission held back for `reason` `since` then: what
+    /// it read, and the label the issue a `fleet` finding opens carries.
+    Host { reason: Reason, since: u64, reading: String, escalate_label: String },
 }
 
 /// An inspection this `run` started, while it runs.
@@ -521,7 +521,7 @@ impl Inspector {
             return Err(error);
         }
         Ok(Started::Running(Box::new(Inspection {
-            on: Subject::Host { reason: due.reason, reading, escalate_label },
+            on: Subject::Host { reason: due.reason, since: due.since, reading, escalate_label },
             checkout,
             started: now,
             by: who.role().to_string(),
@@ -672,8 +672,8 @@ fn end(inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> What 
         Subject::Worker { hot, why, terminal } => {
             end_worker(hot, why, terminal.as_deref(), &inspection.by, finding)
         }
-        Subject::Host { reason, reading, escalate_label } => {
-            let host = (*reason, reading.as_str(), escalate_label.as_str());
+        Subject::Host { reason, since, reading, escalate_label } => {
+            let host = (*reason, *since, reading.as_str(), escalate_label.as_str());
             end_host(host, &inspection, finding, now)
         }
     };
@@ -690,11 +690,11 @@ fn end(inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> What 
 }
 
 /// Ends the host's inspection of what admission held back for — `reason`,
-/// having read `reading` — which found `finding` at `now`: keeps it for
+/// `since` then, having read `reading` — which found `finding` at `now`: keeps it for
 /// `doctor` and the panel, and where it found the fleet outgrowing its host,
 /// opens one issue saying so with `escalate_label`, none while one is open.
 fn end_host(
-    (reason, reading, escalate_label): (Reason, &str, &str),
+    (reason, since, reading, escalate_label): (Reason, u64, &str, &str),
     inspection: &Inspection,
     finding: Option<Finding>,
     now: u64,
@@ -706,7 +706,9 @@ fn end_host(
     let found = finding.as_ref().map_or("nothing", |finding| finding.found.word());
     let mut issue = None;
     if let Some(finding) = finding.as_ref().filter(|finding| finding.found == Found::Fleet) {
-        match open_outgrown(reason, reading, escalate_label, finding, inspection, now) {
+        // How long admission had held back as the inspection started.
+        let minutes = inspection.started.saturating_sub(since) / 60;
+        match open_outgrown((reason, minutes, reading), escalate_label, finding) {
             Ok((number, opened)) => {
                 issue = Some(number);
                 let did = if opened { "opened" } else { "already open:" };
@@ -735,15 +737,14 @@ fn end_host(
     What::HostInspected { reason: reason.word().to_string(), found: found.to_string(), said }
 }
 
-/// Opens the issue that says the fleet outgrows its host, as `finding` said
-/// → its number, and whether it was opened now: none is while one is open.
+/// Opens the issue that says the fleet outgrows its host — admission having
+/// held back for `reason` for `minutes`, reading `reading` — as `finding`
+/// said → its number, and whether it was opened now: none is while one is
+/// open.
 fn open_outgrown(
-    reason: Reason,
-    reading: &str,
+    (reason, minutes, reading): (Reason, u64, &str),
     escalate_label: &str,
     finding: &Finding,
-    inspection: &Inspection,
-    now: u64,
 ) -> Result<(u64, bool)> {
     let gh = GitHub { dir: Repo::here()?.dir };
     let open = gh
@@ -754,7 +755,6 @@ fn open_outgrown(
         (Act::Record, Some(number)) => Ok((number, false)),
         (Act::Record, None) => Err(anyhow!("{} opens no issue", finding.found.word())),
         (Act::Open, _) => {
-            let minutes = now.saturating_sub(inspection.started) / 60;
             let body = host_inspection::report(reason, reading, &finding.said, minutes);
             let labels = [escalate_label, host_inspection::LABEL];
             Ok((gh.open_issue(host_inspection::TITLE, &body, &labels)?, true))
@@ -826,4 +826,32 @@ pub fn inspected(found: Found, said: &str) -> Result<Value> {
     }
     checkout.record_inspected(&Finding { found, said: said.trim().to_string() })?;
     Ok(json!({"inspected": true, "found": found.word(), "kind": kind.word()}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_turn_says_which_kind_of_inspection_holds_it() {
+        // As a `run` of a version before host inspections wrote it.
+        let worker: Running = serde_json::from_str(
+            r##"{"repo": "/src/widgets", "worker": "#7", "issue": 7, "by": "stock-consult", "since": 700}"##,
+        )
+        .unwrap();
+        assert_eq!(json(&worker)["kind"], "worker");
+        let host = Running {
+            worker: THE_HOST.into(),
+            issue: None,
+            held_back_by: Some(Reason::Disk),
+            ..worker
+        };
+        let said = json(&host);
+        assert_eq!(
+            (said["kind"].as_str(), said["held_back_by"].as_str()),
+            (Some("host"), Some("disk"))
+        );
+        let again: Running = serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        assert_eq!(again, host);
+    }
 }
