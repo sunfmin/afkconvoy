@@ -152,21 +152,21 @@ pub type Hot = Arc<Mutex<Vec<HotNow>>>;
 
 /// One process, as `ps` says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Proc {
-    pid: u32,
-    ppid: u32,
+pub(crate) struct Proc {
+    pub(crate) pid: u32,
+    pub(crate) ppid: u32,
     /// Resident memory, in bytes.
-    resident: u64,
+    pub(crate) resident: u64,
     /// The CPU it has taken since it started, in milliseconds.
-    cpu_ms: u64,
+    pub(crate) cpu_ms: u64,
     /// The bytes it has written to disk since it started.
-    written: u64,
+    pub(crate) written: u64,
     /// Its command line, then its environment, where that can be read.
-    line: String,
+    pub(crate) line: String,
 }
 
 /// Every process of this host, as `ps` says them, with what each wrote.
-fn processes() -> Vec<Proc> {
+pub(crate) fn processes() -> Vec<Proc> {
     let out = Command::new("ps").args(["axeww", "-o", "pid=,ppid=,rss=,time=,command="]).output();
     let mut procs: Vec<Proc> = out
         .map(|out| String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect())
@@ -213,7 +213,7 @@ fn cpu_time(said: &str) -> Option<u64> {
 
 /// The processes of the worker started with `tmp` for its `TMPDIR`: each
 /// started with it, and each under one that was.
-fn tree<'a>(procs: &'a [Proc], tmp: &str) -> Vec<&'a Proc> {
+pub(crate) fn tree<'a>(procs: &'a [Proc], tmp: &str) -> Vec<&'a Proc> {
     let needle = format!(" TMPDIR={tmp}");
     let started_with = |proc: &Proc| {
         proc.line.match_indices(&needle).any(|(at, _)| {

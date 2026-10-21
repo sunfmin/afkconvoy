@@ -41,6 +41,7 @@ pub mod gate;
 pub mod gh;
 pub mod git;
 pub mod guard;
+pub mod host_evidence;
 pub mod host_sleep;
 pub mod hot;
 pub mod inspection;
@@ -428,11 +429,13 @@ enum Command {
         #[arg(long)]
         run: String,
     },
-    /// Say what an inspection of a hot worker found: its `run` types it at the worker and
-    /// leaves it on the issue (an inspection's command)
+    /// Say what an inspection of a hot worker or of the host found: its `run` types it at
+    /// the worker and leaves it on the issue, or keeps it beside admission's reading (an
+    /// inspection's command)
     #[command(after_long_help = include_str!("help/inspected.txt"))]
     Inspected {
-        /// What it found: wrong, heavy, or not-its
+        /// What it found: of a hot worker wrong, heavy or not-its; of the host reclaimable,
+        /// fleet or not-its
         #[arg(long, value_parser = found)]
         found: Found,
         #[command(flatten)]

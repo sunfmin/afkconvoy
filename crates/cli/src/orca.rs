@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use afkconvoy_core::guard::WritesNothing;
-use afkconvoy_core::inspection::{self, Finding};
+use afkconvoy_core::inspection::{self, Finding, Kind};
 use afkconvoy_core::launch::{Waited, until_ready};
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
@@ -49,6 +49,9 @@ const UNDER_FILE: &str = "convoy-started-under";
 const EVIDENCE_DIR: &str = "convoy-hot";
 /// What the inspection in this checkout found, as it said it.
 const INSPECTED_FILE: &str = "convoy-inspected.json";
+/// What the inspection in this checkout was started on: a hot worker, or the
+/// host.
+const INSPECTION_KIND_FILE: &str = "convoy-inspection-kind";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
@@ -174,6 +177,47 @@ pub struct Under {
     pub team_commit: String,
 }
 
+/// One worktree orca knows on this machine, of whichever repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnHost {
+    pub path: PathBuf,
+    /// The main checkout of its repo, where orca says one.
+    pub repo: Option<PathBuf>,
+    pub issue: Option<u64>,
+    /// The landing train's, or an inspection's: the fleet's own.
+    pub fleets: bool,
+    /// A worker holds it: a terminal of it is live.
+    pub held: bool,
+}
+
+/// The worktrees of `listed` — `orca worktree list` — each with its repo of
+/// `repos` and whether `ps` says a terminal of it is live.
+fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
+    let rows = |value: &Value, key: &str| value[key].as_array().cloned().unwrap_or_default();
+    let repos = rows(repos, "repos");
+    let live = rows(ps, "worktrees");
+    let path_of = |row: &Value| row["path"].as_str().map(PathBuf::from);
+    rows(listed, "worktrees")
+        .iter()
+        .filter(|row| row["isMainWorktree"] != true && row["isArchived"] != true)
+        .filter_map(|row| {
+            let path = path_of(row)?;
+            let repo = repos
+                .iter()
+                .find(|repo| repo["id"].is_string() && repo["id"] == row["repoId"])
+                .and_then(path_of);
+            let held = live.iter().any(|ps| {
+                path_of(ps).is_some_and(|live| same_dir(&live, &path))
+                    && ps["liveTerminalCount"].as_u64().unwrap_or(0) > 0
+            });
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            let fleets = is_worktree_named(name, TRAIN_WORKTREE)
+                || is_worktree_named(name, inspection::CHECKOUT);
+            Some(OnHost { issue: row["linkedIssue"].as_u64(), path, repo, fleets, held })
+        })
+        .collect()
+}
+
 /// A worker's worktree on this machine.
 #[derive(Debug, Clone)]
 pub struct Worktree {
@@ -290,6 +334,17 @@ impl Worktree {
             })
             .filter(|(_, worktree)| worktree.path.is_dir() && !worktree.is_fleets())
             .collect())
+    }
+
+    /// Every worktree orca knows on this machine, of every repo — so of every
+    /// fleet of the host — each with the main checkout of its repo, the issue
+    /// it is linked to, and whether a worker holds it: a terminal of it is
+    /// live. A main checkout is no worktree of a fleet's, and is left out.
+    pub fn on_host() -> Result<Vec<OnHost>> {
+        let repos = orca(&["repo", "list"])?;
+        let listed = orca(&["worktree", "list"])?;
+        let ps = orca(&["worktree", "ps", "--limit", PS_LIMIT])?;
+        Ok(on_host(&repos, &listed, &ps))
     }
 
     /// Whether this is the landing train's worktree, or an inspection's: the
@@ -501,6 +556,20 @@ impl Worktree {
     pub fn inspected(&self) -> Result<Option<Finding>> {
         let said = std::fs::read_to_string(self.note(INSPECTED_FILE)?).unwrap_or_default();
         Ok(serde_json::from_str(&said).ok())
+    }
+
+    /// What the inspection in this checkout was started on; a hot worker
+    /// where nothing says.
+    pub fn inspection_kind(&self) -> Result<Kind> {
+        let said = std::fs::read_to_string(self.note(INSPECTION_KIND_FILE)?).unwrap_or_default();
+        Ok(if said.trim() == Kind::Host.word() { Kind::Host } else { Kind::Worker })
+    }
+
+    /// Records what the inspection in this checkout is started on.
+    pub fn record_inspection_kind(&self, kind: Kind) -> Result<()> {
+        let file = self.note(INSPECTION_KIND_FILE)?;
+        std::fs::write(&file, kind.word())
+            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// Keeps what the inspection in this checkout found: the last it said stands.
@@ -721,5 +790,43 @@ impl Worktree {
     /// Hands the worker in `terminal` the brief at `brief`.
     pub fn deliver(&self, terminal: &str, brief: &Path) -> Result<()> {
         self.tell(terminal, &brief_pointer(&brief.display().to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_worktree_of_the_host_is_listed_with_its_repo_and_whether_a_worker_holds_it() {
+        let repos = serde_json::json!({"repos": [
+            {"id": "r1", "path": "/src/widgets"}, {"id": "r2", "path": "/src/gadgets"}]});
+        let listed = serde_json::json!({"worktrees": [
+            {"path": "/src/widgets", "repoId": "r1", "isMainWorktree": true},
+            {"path": "/w/issue-7", "repoId": "r1", "linkedIssue": 7},
+            {"path": "/w/issue-8", "repoId": "r1", "linkedIssue": 8},
+            {"path": "/w/convoy-train", "repoId": "r1"},
+            {"path": "/w/old", "repoId": "r2", "isArchived": true},
+            {"path": "/w/issue-3", "repoId": "r2", "linkedIssue": 3}]});
+        let ps = serde_json::json!({"worktrees": [
+            {"path": "/w/issue-7", "liveTerminalCount": 1},
+            {"path": "/w/issue-8", "liveTerminalCount": 0}]});
+        let found = on_host(&repos, &listed, &ps);
+        let said: Vec<(&str, Option<&str>, Option<u64>, bool, bool)> = found
+            .iter()
+            .map(|on| {
+                let repo = on.repo.as_deref().and_then(Path::to_str);
+                (on.path.to_str().unwrap(), repo, on.issue, on.fleets, on.held)
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("/w/issue-7", Some("/src/widgets"), Some(7), false, true),
+                ("/w/issue-8", Some("/src/widgets"), Some(8), false, false),
+                ("/w/convoy-train", Some("/src/widgets"), None, true, false),
+                ("/w/issue-3", Some("/src/gadgets"), Some(3), false, false),
+            ]
+        );
     }
 }

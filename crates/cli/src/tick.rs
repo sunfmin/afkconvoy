@@ -10,6 +10,7 @@ use afkconvoy_core::hot::Limits;
 use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
+use afkconvoy_core::position::Position;
 use afkconvoy_core::takeover::run_said;
 use afkconvoy_core::tick::{Outcome, Pass, TickStep, empty_streak, pace, run_pass, sleeps_skipped};
 use afkconvoy_core::train::Built;
@@ -441,6 +442,40 @@ impl Ticked {
         let issue = issue.map(|issue| format!(" #{issue}")).unwrap_or_default();
         let patrol = self.patrol(step).map(|p| format!(" {p}")).unwrap_or_default();
         format!("{word}{issue}{patrol}")
+    }
+
+    /// Each issue the tick read with where it stands, as a host inspection
+    /// lists the worktrees of this fleet: in a bound repo the position its
+    /// stage records give it, in an unbound one how far its claim is.
+    pub fn stages(&self) -> Vec<(u64, String)> {
+        let positions = self.flows.positions();
+        if !positions.is_empty() {
+            let said = |(number, _, position): &(u64, _, Position)| {
+                let at = |stage: &str| format!("at stage `{stage}`");
+                let said = match position {
+                    Position::Perform(stage, _) => at(&stage.name),
+                    Position::Waiting(stage) => format!("{}, waiting on a human", at(&stage.name)),
+                    Position::Consult(stage, ..) => format!("{}, with a consult", at(&stage.name)),
+                    Position::Parked(stage) => format!("parked {}", at(&stage.name)),
+                    Position::Escalating(stage, _) => format!("escalating {}", at(&stage.name)),
+                    Position::Landing => "landing".to_string(),
+                    Position::Ended => "ended".to_string(),
+                };
+                (*number, said)
+            };
+            return positions.iter().map(said).collect();
+        }
+        let said = |status: Status| match status {
+            Status::Joined => "on the landing train",
+            Status::Landed | Status::Closed | Status::Gone => "landed or closed",
+            Status::NoPr | Status::Joining | Status::AtStage => "claimed, at work",
+        };
+        self.set.mine.iter().map(|mine| (mine.number, said(mine.status).to_string())).collect()
+    }
+
+    /// What admission read of the host this tick.
+    pub fn admission(&self) -> &Admission {
+        &self.admission
     }
 
     /// The panel of `me` after this tick: what its rebuild read, with what the
@@ -1040,6 +1075,8 @@ pub fn run(
                 if let Some(panel) = panel {
                     shown = panel;
                 }
+                let main = repo.main_checkout().unwrap_or_else(|_| repo.dir.clone());
+                inspector.ticked(clock(), ticked.admission(), main, ticked.stages());
                 before = Some(ticked.saw(count));
                 let pass = &ticked.pass;
                 // A tick GitHub could not be reached in was not an empty one:
@@ -1063,7 +1100,8 @@ pub fn run(
         for what in inspector.step(agent, &hot_now, clock()) {
             said.keep(clock(), what);
         }
-        let sleep = if inspector.busy(&hot_now) { sleep.min(INSPECTING_EVERY) } else { sleep };
+        let busy = inspector.busy(&hot_now, clock());
+        let sleep = if busy { sleep.min(INSPECTING_EVERY) } else { sleep };
         let (bound, answer, error) = logged;
         let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
         said.keep(clock(), log::What::Tick(tick));
@@ -1072,6 +1110,7 @@ pub fn run(
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
             shown.hot = hot_now;
             shown.inspection = inspection::on_host();
+            shown.host_inspected = inspection::last_on_host();
             live.show(panel::render(&shown));
         }
         let mut due_now = check_host(&mut host, &said, &stop, &clock);

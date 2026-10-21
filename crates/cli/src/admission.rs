@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
+use afkconvoy_core::host_inspection::{Reason, SPAN};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
@@ -18,6 +19,9 @@ use crate::measure;
 pub const LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
 pub const MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
 pub const DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
+/// The environment variable a host says in, in whole seconds, how long
+/// admission holds back for one reason before the host is inspected.
+pub const INSPECT_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
 
 /// The shares this host is held to, and what was read of it.
 pub struct Admission {
@@ -26,6 +30,9 @@ pub struct Admission {
     /// it in; the rest are the defaults.
     pub said: Vec<&'static str>,
     pub reading: Reading,
+    /// How long, in seconds, admission holds back for one reason before the
+    /// host is inspected: the host's, or `SPAN`.
+    pub span: u64,
 }
 
 impl Admission {
@@ -44,12 +51,22 @@ impl Admission {
                 said.push(name);
             }
         }
-        Ok(Admission { shares, said, reading: read_host(dir) })
+        let mut span = SPAN;
+        if let Some(value) = std::env::var_os(INSPECT_ENV) {
+            span = seconds(INSPECT_ENV, &value.to_string_lossy())?;
+            said.push(INSPECT_ENV);
+        }
+        Ok(Admission { shares, said, reading: read_host(dir), span })
     }
 
     /// The thresholds the host is past: none, and new workers start.
     pub fn holds(&self) -> Vec<Hold> {
         holds(self.shares, &self.reading)
+    }
+
+    /// The reasons admission holds back for now: none, and it admits.
+    pub fn reasons(&self) -> Vec<Reason> {
+        self.holds().iter().map(Reason::of).collect()
     }
 
     /// `hold` as a tick's line and `plan` say it.
@@ -87,6 +104,7 @@ impl Admission {
                 "load_percent_of_cores": self.shares.load,
                 "memory_free_percent": self.shares.memory,
                 "disk_free_percent": self.shares.disk,
+                "inspect_after_seconds": self.span,
                 "said_by_host": self.said,
             },
             "thresholds": {
@@ -110,6 +128,14 @@ fn percent(name: &str, value: &str) -> Result<u64> {
     match value.trim().parse::<u64>() {
         Ok(share) => Ok(share),
         Err(_) => bail!("{name}={value:?} is no share: say a whole percent, as {name}=150"),
+    }
+}
+
+/// A span as the host says it: whole seconds.
+fn seconds(name: &str, value: &str) -> Result<u64> {
+    match value.trim().parse::<u64>() {
+        Ok(seconds) => Ok(seconds),
+        Err(_) => bail!("{name}={value:?} is no span: say whole seconds, as {name}=900"),
     }
 }
 
@@ -198,6 +224,7 @@ mod tests {
             shares: SHARES,
             said: vec![],
             reading: Reading { cores: 14, load: Some(10543), memory_free: Some(4), disk: None },
+            span: SPAN,
         };
         let said: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();
         assert_eq!(
@@ -208,6 +235,8 @@ mod tests {
             ]
         );
         assert_eq!(admission.json()["admits"], false);
+        assert_eq!(admission.reasons(), [Reason::Load, Reason::Memory]);
+        assert_eq!(admission.json()["shares"]["inspect_after_seconds"], 600);
     }
 
     #[test]
@@ -215,5 +244,7 @@ mod tests {
         assert_eq!(percent(LOAD_ENV, " 150\n").unwrap(), 150);
         let error = percent(DISK_ENV, "5%").unwrap_err().to_string();
         assert!(error.contains("AFKCONVOY_ADMIT_DISK=\"5%\" is no share"), "{error}");
+        assert_eq!(seconds(INSPECT_ENV, "900").unwrap(), 900);
+        assert!(seconds(INSPECT_ENV, "10m").is_err());
     }
 }

@@ -9,7 +9,11 @@ use common::World;
 
 /// A checkout of `world`'s repo named as an inspection's is.
 fn inspection_checkout(world: &World) -> std::path::PathBuf {
-    let checkout = world.root.join("wt").join("afkconvoy-inspection");
+    inspection_checkout_named(world, "afkconvoy-inspection")
+}
+
+fn inspection_checkout_named(world: &World, name: &str) -> std::path::PathBuf {
+    let checkout = world.root.join("wt").join(name);
     let made = Command::new("git")
         .current_dir(&world.clone)
         .args(["worktree", "add", "-q", "--detach", checkout.to_str().unwrap()])
@@ -41,6 +45,34 @@ fn an_inspection_keeps_what_it_found_in_its_checkout_and_the_last_said_stands() 
     let kept: serde_json::Value = serde_json::from_str(&kept).unwrap();
     assert_eq!(kept["found"], "heavy");
     assert_eq!(kept["said"], "cargo build of 900 crates");
+}
+
+#[test]
+fn a_host_inspection_finds_in_words_of_its_own() {
+    let world = World::new();
+    let checkout = inspection_checkout(&world);
+    let git_dir = Command::new("git")
+        .current_dir(&checkout)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .unwrap();
+    let git_dir = String::from_utf8(git_dir.stdout).unwrap();
+    std::fs::write(format!("{}/convoy-inspection-kind", git_dir.trim()), "host").unwrap();
+    let wrong = world.afk_in(&checkout, &["inspected", "--found", "wrong", "--text", "x"]).error();
+    assert!(
+        wrong.contains("an inspection of the host finds one of: reclaimable, fleet, not-its"),
+        "{wrong}"
+    );
+    for found in ["reclaimable", "fleet", "not-its"] {
+        let said = world
+            .afk_in(&checkout, &["inspected", "--found", found, "--text", "five worktrees"])
+            .ok();
+        assert_eq!((said["found"].as_str(), said["kind"].as_str()), (Some(found), Some("host")));
+    }
+    // A hot worker's inspection is refused the host's words.
+    let worker = inspection_checkout_named(&world, "afkconvoy-inspection-2");
+    let fleet = world.afk_in(&worker, &["inspected", "--found", "fleet", "--text", "x"]).error();
+    assert!(fleet.contains("an inspection of the worker finds one of: wrong, heavy"), "{fleet}");
 }
 
 #[test]

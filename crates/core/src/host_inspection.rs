@@ -59,7 +59,9 @@ impl Reason {
     }
 
     pub fn read(word: &str) -> Option<Reason> {
-        [Reason::Load, Reason::Memory, Reason::Disk].into_iter().find(|reason| reason.word() == word)
+        [Reason::Load, Reason::Memory, Reason::Disk]
+            .into_iter()
+            .find(|reason| reason.word() == word)
     }
 }
 
