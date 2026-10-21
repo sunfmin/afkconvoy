@@ -34,7 +34,7 @@ WHAT IT READS AND WRITES
   ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load
   average past 200% of its cores, less than 10% of its memory free (what the kernel
   counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in
-  /proc/meminfo), or less than 5% of the disk under the checkout free (`df`). The
+  /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The
   issue stays on the frontier for the next tick, and so do a stale claim, a due patrol
   and a due proposal. Workers already running are left alone, and so are the landing
   train and the worker a declared verdict starts. The host says its own shares, each a

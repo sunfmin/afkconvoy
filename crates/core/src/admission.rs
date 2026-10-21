@@ -25,8 +25,8 @@ pub struct Shares {
 }
 
 /// The shares a host that says none is held to: a load of twice its cores, a
-/// tenth of its memory free, a twentieth of its disk free.
-pub const SHARES: Shares = Shares { load: 200, memory: 10, disk: 5 };
+/// tenth of its memory free, a hundredth of its disk free.
+pub const SHARES: Shares = Shares { load: 200, memory: 10, disk: 1 };
 
 /// What the effect layer read of the host. `None`: it could not be read, and
 /// holds nothing back.
@@ -140,7 +140,7 @@ mod tests {
         let limits = thresholds(SHARES, &idle());
         assert_eq!(limits.load, 2000, "twice the 10 cores, in hundredths");
         assert_eq!(limits.memory_free, 10);
-        assert_eq!(limits.disk_free, Some(1000 * GIB / 100 * 5));
+        assert_eq!(limits.disk_free, Some(1000 * GIB / 100));
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn disk_holds_only_once_under_its_floor() {
-        let floor = 1000 * GIB / 100 * 5;
+        let floor = 1000 * GIB / 100;
         let at = Reading { disk: Some(Disk { free: floor, size: 1000 * GIB }), ..idle() };
         assert_eq!(holds(SHARES, &at), []);
         let under = Reading { disk: Some(Disk { free: floor - 1, size: 1000 * GIB }), ..idle() };
