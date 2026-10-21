@@ -93,6 +93,26 @@ impl Default for Line {
     }
 }
 
+/// How much lower a worker runs than what started it: enough that it gives
+/// way to the human and to the fleet's own gate on a busy host, and nothing
+/// on one with nothing else to do.
+pub const NICENESS: u64 = 10;
+
+/// The line a worker's terminal runs: `line`, which starts the worker launch
+/// command — in its role, or as it was given — run under `nice` with `tmp`
+/// for its `TMPDIR`. The shell lowers itself, so whatever it reads the
+/// command as — an alias, a function — and all it starts run lower too.
+pub fn niced(tmp: &str, line: &str) -> String {
+    Line::new()
+        .fixed("export TMPDIR=")
+        .word(tmp)
+        .fixed(" && renice -n ")
+        .number(NICENESS)
+        .fixed(" -p $$ >/dev/null && ")
+        .launch(line)
+        .done()
+}
+
 /// `text` as one word of a shell line, whatever it holds.
 pub(crate) fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
@@ -178,6 +198,16 @@ mod tests {
             .number(7)
             .done();
         assert_eq!(line, "cd '/it'\\''s here' && kim --yolo --issue 7");
+    }
+
+    #[test]
+    fn a_niced_line_runs_lower_with_its_own_tmpdir() {
+        let tmp = "/it's a tmp";
+        let line = niced(tmp, "printf '%s\\n' \"$TMPDIR\" && ps -o nice= -p $$");
+        let read = String::from_utf8(read(&line)).unwrap();
+        let (given, nice) = read.split_once('\n').unwrap();
+        assert_eq!(given, tmp, "{line}");
+        assert!(nice.trim().parse::<i64>().unwrap() >= NICENESS as i64, "{read:?}: {line}");
     }
 
     #[test]

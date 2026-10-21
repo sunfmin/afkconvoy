@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::launch::{Waited, until_ready};
+use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
@@ -20,6 +21,9 @@ use serde_json::Value;
 
 use crate::git::Repo;
 
+/// A worker's `TMPDIR`, in its worktree: what it writes there is its own, and
+/// goes when the worktree does.
+pub const TMP_DIR: &str = ".afkconvoy-tmp";
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
@@ -543,7 +547,8 @@ impl Worktree {
     }
 
     /// Starts a worker here with the worker launch command, handed to orca
-    /// verbatim → its terminal's handle. Whatever terminal was here first is
+    /// verbatim but run under `nice` with its own `TMPDIR` (`niced`) → its
+    /// terminal's handle. Whatever terminal was here first is
     /// closed, so the worker's is the only one in the worktree: two agents in
     /// one worktree would fight, and orca opens a bare shell in every worktree
     /// it cuts. A new worker was never nudged, and waits on no background
@@ -553,8 +558,9 @@ impl Worktree {
         self.forget(BACKGROUND_FILE)?;
         // One with no terminal is as wanted.
         let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
+        let command = niced(&self.tmp()?.display().to_string(), command);
         let made =
-            orca(&["terminal", "create", "--worktree", &self.selector(), "--command", command])?;
+            orca(&["terminal", "create", "--worktree", &self.selector(), "--command", &command])?;
         let handle = made["terminal"]["handle"].as_str();
         let handle =
             handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
@@ -562,6 +568,17 @@ impl Worktree {
         std::fs::write(&file, now.to_string())
             .with_context(|| format!("cannot write {}", file.display()))?;
         Ok(handle.to_string())
+    }
+
+    /// The worker's `TMPDIR` here, made if it was not: a directory git
+    /// ignores, by a `.gitignore` of its own that ignores all of it.
+    fn tmp(&self) -> Result<PathBuf> {
+        let dir = self.path.join(TMP_DIR);
+        let ignore = dir.join(".gitignore");
+        std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&ignore, "*\n"))
+            .with_context(|| format!("cannot make the worker's TMPDIR {}", dir.display()))?;
+        Ok(dir)
     }
 
     /// When the worker here was last handed its work by the fleet

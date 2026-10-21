@@ -340,7 +340,7 @@ fn a_proposal_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
     let started = calls(&world, "terminal create");
     let commands = started.iter().filter_map(|call| option(call, "--command"));
     let command = commands.into_iter().find(|command| command.contains("AFKCONVOY_PROPOSAL"));
-    let command = command.expect("one worker proposes");
+    let command = common::unniced(command.expect("one worker proposes"));
     let kept = world.cache().join("afkconvoy/copies/acme/team");
     let (role_dir, team_dir) =
         (kept.join(format!("{head}-role-roles%2Fclerk")), kept.join(format!("{head}-team+rules-")));

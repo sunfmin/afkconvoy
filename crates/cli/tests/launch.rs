@@ -170,7 +170,10 @@ fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
         .cloned()
         .unwrap();
     let create: Vec<String> = serde_json::from_value(create).unwrap();
-    assert_eq!(create[create.len() - 3..create.len() - 1], ["--command", passed], "{create:?}");
+    // …but for starting it under `nice`, with the worktree's own `TMPDIR`
+    let dir = Path::new(create[3].strip_prefix("path:").unwrap());
+    let niced = common::niced(dir, passed);
+    assert_eq!(create[create.len() - 3..create.len() - 1], ["--command", &niced], "{create:?}");
     assert!(create.len() <= 7, "a worktree, a command, and nothing else: {create:?}");
 
     // …and the command is in no file: not the brief, not a note, not the repo
