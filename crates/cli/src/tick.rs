@@ -16,6 +16,7 @@ use afkconvoy_core::wake::turn;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
+use crate::admission::Admission;
 use crate::advance::{advance, hand_to_human, run_again_unclaimed};
 use crate::board::show;
 use crate::claims::{Me, beat, goodbye};
@@ -119,6 +120,8 @@ pub struct Ticked {
     /// What its rebuild read: the pass was made over these.
     set: WorkingSet,
     flows: Flows,
+    /// What admission read of the host, and the shares it held it to.
+    admission: Admission,
     /// The clock the tick ran at: what a worker's wait is told against.
     now: u64,
 }
@@ -145,6 +148,9 @@ pub fn tick(
         (fleet, open) = Fleet::read(me.now)?;
         (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
     }
+    // A busy host starts no new worker this tick (docs/adr/0019).
+    let admission = Admission::read(&fleet.repo.dir)?;
+    set.held_back = admission.holds();
     let me_said = me.instance.as_str();
     let lost = before.map(|before| before.lost(&fleet.scan.claims, me_said)).unwrap_or_default();
     let bound = set.bound(fleet.config.concurrency());
@@ -203,6 +209,7 @@ pub fn tick(
         bound,
         set,
         flows,
+        admission,
         now: me.now,
     };
     Ok((ticked, fleet))
@@ -541,8 +548,18 @@ impl Ticked {
                 failed
             })
             .collect();
-        json!({"did": did, "errors": errors, "held": self.pass.held,
-            "frontier_remaining": self.pass.frontier_remaining, "locks": self.set.locks})
+        let mut answer = json!({"did": did, "errors": errors, "held": self.pass.held,
+            "frontier_remaining": self.pass.frontier_remaining, "locks": self.set.locks});
+        if self.pass.held_back(&self.set) {
+            answer["held_back_by"] = json!(self.held_back_by());
+        }
+        answer
+    }
+
+    /// The thresholds of the host admission held the pass back by, each as
+    /// it is said.
+    fn held_back_by(&self) -> Vec<String> {
+        self.set.held_back.iter().map(|hold| self.admission.said(hold)).collect()
     }
 
     /// One line for whoever watches the loop: what the tick did, and where the
@@ -710,6 +727,12 @@ impl Ticked {
         }
         if self.pass.did.contains(&(TickStep::SlowGate, Outcome::Done)) {
             parts.push("opened an issue for the slow gate".to_string());
+        }
+        if self.pass.held_back(&self.set) {
+            parts.push(format!(
+                "admission holds back new workers: {}",
+                self.held_back_by().join("; ")
+            ));
         }
         // A tick whose every step failed had things to do: its failures say so.
         if parts.len() == lead && self.failures.is_empty() {
