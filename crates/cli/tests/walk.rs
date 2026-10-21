@@ -508,7 +508,7 @@ fn limited(max_rework: u64, max_consecutive_rework: u64) -> String {
 }
 
 /// `FEATURE` under these breakers, its `build` naming no consult: a breaker
-/// goes to a human (a consult's is `consult::handoff`'s).
+/// goes to a human (with one, see `consult::a_tripped_breaker_goes_to_its_consult_…`).
 fn alone(max_rework: u64, max_consecutive_rework: u64) -> String {
     let limits = format!(
         "```yaml\nmax_rework: {max_rework}\nmax_consecutive_rework: {max_consecutive_rework}\n"
