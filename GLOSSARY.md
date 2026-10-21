@@ -28,7 +28,7 @@ _Avoid_: namespace, fallback mode
 
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
-_Avoid_: run state, memory (what a host has to run its processes in)
+_Avoid_: run state, memory (a host's RAM)
 
 **Working set**:
 A tick's view of the fleet at one moment, derived from fleet state and dropped when the tick ends.
@@ -68,6 +68,10 @@ _Avoid_: org, crew, squad
 The rules every role of a team works under, whatever its own rules add. They say how the team works, and hold in any repo bound to it; what one codebase asks is that repo's to say, and what one kind of worker does is its role's.
 _Avoid_: global rules, shared rules
 
+**Admission**:
+Whether a tick starts new workers on its host: not while the host is past a share of its load, under memory pressure, or low on free disk under the checkout. What it holds back stays on the frontier for the next tick; workers already running, the landing train and the worker a declared verdict starts are never held back. The shares have defaults taken from the host's cores, memory and disk, and the host can say its own.
+_Avoid_: throttling, backpressure
+
 **Host user's skills and rules**:
 The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. A role may say it for itself, whatever the team says: `reviewer: { dir: ./roles/reviewer, host_user: false }` in `roles`; a role named by its directory alone takes the team's. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
 _Avoid_: global rules, user config, personal skills
@@ -92,7 +96,7 @@ _Avoid_: type label
 
 **Intake**:
 Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit.
-_Avoid_: enroll, admit, triage
+_Avoid_: enroll, admit (a tick starting new workers on a host not busy: admission), triage
 
 **Stage**:
 One step of a workflow: one skill of one role, performed by one new worker — or a decision waited for from a human.

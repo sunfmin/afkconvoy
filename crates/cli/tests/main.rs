@@ -5,6 +5,7 @@
 mod common;
 
 mod abandon;
+mod admission;
 mod board;
 mod check;
 mod claims;

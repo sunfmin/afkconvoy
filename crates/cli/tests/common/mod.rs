@@ -75,7 +75,7 @@ impl World {
         }
         write_script(&bin.join("shell"), SHELL);
         // The host a fleet would put to sleep: nothing of the one the tests run on.
-        for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG)] {
+        for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG), ("df", DF)] {
             write_script(&bin.join(name), script);
         }
         let world = World {
@@ -642,11 +642,26 @@ const PMSET: &str = r#"#!/bin/sh
 echo "$*" >> "${0%/*}/../pmset.log"
 "#;
 
-/// The stand-in `sysctl`, for `kern.waketime`: the host last woke at the
-/// epoch second in `host-woke`, or never slept since it booted.
+/// The stand-in `sysctl`: for `kern.waketime`, the host last woke at the
+/// epoch second in `host-woke`, or never slept since it booted; for
+/// `vm.loadavg`, the load in `host-load`, or none; for
+/// `kern.memorystatus_level`, the share of memory free in `host-memory`, or 80%.
 const SYSCTL: &str = r#"#!/bin/sh
-woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
-echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
+case "$*" in
+*vm.loadavg*) echo "{ $(cat "${0%/*}/../host-load" 2>/dev/null || echo 0.00) 0.00 0.00 }" ;;
+*kern.memorystatus_level*) cat "${0%/*}/../host-memory" 2>/dev/null || echo 80 ;;
+*)
+    woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
+    echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
+    ;;
+esac
+"#;
+
+/// The stand-in `df`, for admission: a disk of 1000 GiB, half of it free —
+/// never the disk of whoever runs the tests.
+const DF: &str = r#"#!/bin/sh
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 "#;
 
 /// The stand-in `ioreg`: the keyboard and mouse untouched for the seconds in
@@ -661,6 +676,11 @@ impl World {
     /// nothing does: the host is the stand-in one (`pmset.log`).
     pub fn host_sleeps(&self, command: &mut Command) {
         command.env_remove("AFKCONVOY_NO_HOST_SLEEP");
+    }
+
+    /// Has the stand-in host's 1-minute load be `load`, as `sysctl` says it.
+    pub fn busy(&self, load: &str) {
+        std::fs::write(self.root.join("host-load"), load).unwrap();
     }
 
     /// What the stand-in `pmset` was asked, one call a line.

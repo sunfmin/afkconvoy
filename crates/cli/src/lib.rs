@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 pub mod abandon;
 pub mod acting;
+pub mod admission;
 pub mod advance;
 pub mod board;
 pub mod claims;
@@ -955,11 +956,14 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             };
             probe::announce(&warnings);
             let (mut fleet, open) = Fleet::read(now)?;
-            let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+            let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+            let admission = admission::Admission::read(&fleet.repo.dir)?;
+            set.held_back = admission.holds();
             let mut plan = serde_json::to_value(set)?;
             if let Some(bound) = &fleet.config.bound {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
             }
+            plan["admission"] = admission.json();
             Ok(plan)
         }
         Command::Run {

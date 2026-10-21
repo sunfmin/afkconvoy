@@ -42,6 +42,12 @@ WHAT IT ANSWERS
                                  unbound repo it is the one command, of no harness:
                                  harness is null and called_for_by empty. A harness is
                                  left out on a custom provider with no `run` to say
+                admission        whether a tick would start a new worker on this host
+                                 now, the thresholds in force and what the host reads:
+                                 as `plan` answers it (`afkconvoy plan --help`), or
+                                 {error} where a share the host says is wrong. A tick
+                                 that admission held back is no "started no worker"
+                                 finding
                 exclusive        the host's queue of `afkconvoy exclusive`, whatever
                                  its repo: {running, waiting} — running is the command
                                  that runs alone now, null with none; waiting, those

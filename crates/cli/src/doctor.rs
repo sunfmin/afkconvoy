@@ -26,6 +26,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::admission::Admission;
 use crate::config;
 use crate::exclusive::Queue;
 use crate::fleet::Fleet;
@@ -695,6 +696,8 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
         && let Some(first) = set.frontier.first()
         && set.free_slots > 0
         && !tick.dispatched()
+        // A busy host starting nothing is admission at work: `host` says why.
+        && !tick.held_back()
     {
         let failed = tick.failed();
         let start = failed.iter().find(|failed| failed.step == "dispatch" || failed.step == "tick");
@@ -1357,8 +1360,13 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         ),
         Err(_) => (vec![], Value::Null, Value::Null),
     };
+    let mut host = host_json(&seen_host);
+    host["admission"] = match Admission::read(&repo.dir) {
+        Ok(admission) => admission.json(),
+        Err(error) => json!({"error": format!("{error:#}")}),
+    };
     let mut answer = json!({
-        "host": host_json(&seen_host),
+        "host": host,
         "fleet": fleet_json(&run),
         "claims": Value::Array(claims),
         "issues": issues,
@@ -1452,6 +1460,7 @@ mod tests {
             proposals: vec![],
             slow_gate: None,
             outgrown_train: None,
+            held_back: vec![],
         }
     }
 
