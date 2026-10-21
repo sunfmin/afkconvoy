@@ -2135,6 +2135,43 @@ mod tests {
     }
 
     #[test]
+    fn the_hot_workers_are_those_the_newest_run_found_hot_and_not_cooled_since() {
+        let entry = |at: u64, instance: &str, what: What| Entry {
+            at,
+            instance: instance.into(),
+            host: "h1".into(),
+            what,
+        };
+        let hot = |worker: &str| What::Hot {
+            worker: worker.into(),
+            why: "past 4.0 cores for 120s".into(),
+            held: "6.0 cores, 1.0 GiB resident".into(),
+        };
+        let cooled = |worker: &str| What::Cooled {
+            worker: worker.into(),
+            since: 0,
+            held: "6.0 cores, 1.0 GiB resident".into(),
+            gone: false,
+        };
+        let start = What::Start { worker_command: "claude".into(), harness_commands: [].into() };
+        let entries = [
+            entry(10, "old", start.clone()),
+            entry(20, "old", hot("#1")),
+            entry(30, "alpha", start),
+            entry(40, "alpha", hot("#7")),
+            entry(50, "alpha", hot("#8")),
+            entry(60, "alpha", cooled("#7")),
+            entry(70, "alpha", hot("#9")),
+        ];
+        let read = read_hot(&entries, "h1");
+        let said: Vec<(&str, u64)> =
+            read.iter().map(|hot| (hot.worker.as_str(), hot.since)).collect();
+        // #1 was the old run's, and #7 cooled
+        assert_eq!(said, [("#8", 50), ("#9", 70)]);
+        assert!(read_hot(&entries, "h2").is_empty());
+    }
+
+    #[test]
     fn the_last_check_for_host_sleep_is_read_for_the_instance_this_host_ran_last() {
         let entry = |at: u64, instance: &str, slept: bool, awake: &[&str]| Entry {
             at,
