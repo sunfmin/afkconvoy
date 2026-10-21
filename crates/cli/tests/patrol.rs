@@ -320,7 +320,7 @@ fn a_patrol_by_a_role_in_a_subdirectory_starts_in_that_directory_alone() {
 
     assert_eq!(patrolled(&tick(&world, 10_000)), ["patrol sweep done"]);
     let started = calls(&world, "terminal create");
-    let command = option(&started[0], "--command").unwrap();
+    let command = common::unniced(option(&started[0], "--command").unwrap());
     let kept = world.cache().join("afkconvoy/copies/acme/team");
     let (role_dir, team_dir) =
         (kept.join(format!("{head}-role-roles%2Fdev")), kept.join(format!("{head}-team+rules-")));

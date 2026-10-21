@@ -20,7 +20,8 @@ WHAT IT READS AND WRITES
   It claims the issue for `--instance` unless that instance holds it already, looks at
   what survives of an earlier attempt, has orca put a worktree there, records the
   worktree's branch in a comment on the issue, writes the worker's brief into the
-  worktree, starts the worker launch command in it, and hands the worker its prompt.
+  worktree, starts the worker launch command in it — under `nice`, with the worktree's
+  own `TMPDIR` — and hands the worker its prompt.
 
   In a bound repo the issue's flow label names its workflow, and the worker performs
   the stage the issue's stage records put it at — the workflow's first while there are
