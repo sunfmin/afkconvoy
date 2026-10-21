@@ -5,7 +5,7 @@
 use flux_rs::attrs::*;
 
 use crate::record;
-use crate::stopped::{Nudged, Progress, Silence, Silent, Tail, Unnudged, silence};
+use crate::stopped::{Background, Nudged, Progress, Silence, Silent, Tail, Unnudged, silence};
 use crate::worker::WorkerState;
 
 /// The kind of record a PR carries of its join.
@@ -84,6 +84,9 @@ fn restarts(restarted: Option<u64>) -> u64 {
 pub enum JoinRoute {
     /// Nothing: the worker is at work, or showed a sign of life within grace.
     Leave,
+    /// Nothing: it stopped, and waits on its own background work, running
+    /// since this epoch second.
+    Waiting(u64),
     /// Its worker is gone: one is started onto the join at once. That is a
     /// continuation, not the restart.
     Continue,
@@ -105,12 +108,13 @@ pub fn join_route(
     progress: &Progress,
     nudged: Nudged,
     restarted: Option<u64>,
-    handed: Option<u64>,
+    (handed, background): (Option<u64>, Option<Background>),
     now: u64,
 ) -> JoinRoute {
-    match silence(state, progress, nudged, handed, now) {
+    match silence(state, progress, nudged, handed, background, now) {
         Silence::Gone => JoinRoute::Continue,
         Silence::Lively => JoinRoute::Leave,
+        Silence::Waiting(since) => JoinRoute::Waiting(since),
         Silence::Nudge(unnudged) => JoinRoute::Nudge(unnudged),
         Silence::Stalled(silent) => {
             let had = restarts(restarted);
@@ -226,7 +230,7 @@ mod tests {
     }
 
     fn at(nudged: Nudged, restarted: Option<u64>) -> JoinRoute {
-        join_route(STOPPED, &work(), nudged, restarted, restarted, NOW)
+        join_route(STOPPED, &work(), nudged, restarted, (restarted, None), NOW)
     }
 
     #[test]
@@ -251,11 +255,23 @@ mod tests {
     fn a_worker_at_work_is_left_and_one_gone_is_continued_restarted_or_not() {
         for restarted in [None, Some(1)] {
             for nudged in [Nudged::Never, Nudged::At(1)] {
-                let busy =
-                    join_route(WorkerState::Busy, &work(), nudged, restarted, restarted, NOW);
+                let busy = join_route(
+                    WorkerState::Busy,
+                    &work(),
+                    nudged,
+                    restarted,
+                    (restarted, None),
+                    NOW,
+                );
                 assert_eq!(busy, JoinRoute::Leave);
-                let gone =
-                    join_route(WorkerState::Gone, &work(), nudged, restarted, restarted, NOW);
+                let gone = join_route(
+                    WorkerState::Gone,
+                    &work(),
+                    nudged,
+                    restarted,
+                    (restarted, None),
+                    NOW,
+                );
                 assert_eq!(gone, JoinRoute::Continue);
             }
         }

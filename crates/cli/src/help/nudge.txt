@@ -4,6 +4,23 @@ WHEN TO RUN IT
   that stopped with no PR and no verdict and stayed quiet for the grace period. Do it
   yourself when a tick is not running and such a worker sits idle.
 
+WHAT COUNTS AS SILENT
+
+  A worker is silent when it stopped, declared nothing, showed no sign of life — its
+  terminal's output, a commit, a file touched, being started or nudged — for the
+  grace period (300s), and waits on no background work of its own. Silent, it is
+  nudged once; silent a grace period past that nudge, it is escalated (a joining
+  worker is restarted first, a train worker's train abandoned).
+
+  A worker whose turn ended while a shell or a monitor it started in the background
+  still runs — its gate, say — is waiting, not silent: its harness shows that work
+  in the footer under its prompt (Claude Code's `1 shell, 1 monitor`), which the tick
+  reads off its screen, and the tick's line says `waiting on its own background work
+  #7 (since …)`. It is neither nudged nor escalated while it waits. Once that work
+  ends, its silence is counted as ever: a nudge, then escalated past it. Waiting
+  longer than the gate limit (`gate_seconds`) is a silence at once, nudged or not,
+  and the escalation says it waited on its own background work past the limit.
+
 WHO RUNS IT
 
   The operator, in a checkout of the repo, on the host the worker runs on.
@@ -20,7 +37,8 @@ WHAT IT ANSWERS
 
   Errors, each with nothing sent: "has no stopped worker" — the instance holds no claim
   on the issue, or its worker is at work or gone; "is not nudged" — it was nudged
-  already, showed a sign of life within the grace period, or declared a verdict; the
+  already, showed a sign of life within the grace period, waits on background work
+  of its own, or declared a verdict; the
   claim is another instance's; the worktree has no live terminal.
 
 WHAT TRIPS YOU UP

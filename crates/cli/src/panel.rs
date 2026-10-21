@@ -189,6 +189,7 @@ fn said(step: TickStep, outcome: Outcome) -> Option<(u64, &'static str)> {
     let says = match (step, outcome) {
         (_, Outcome::Failed) => "a step of this tick failed on it",
         (_, Outcome::Nudged) => "nudged this tick",
+        (_, Outcome::Waiting(_)) => "its worker waits on its own background work",
         (_, Outcome::Restarted) => "its worker was replaced this tick",
         (_, Outcome::Continued) => "a worker was started on it again this tick",
         (TickStep::Dispatch { .. }, Outcome::Done) => "started this tick",
