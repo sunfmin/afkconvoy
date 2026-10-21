@@ -16,6 +16,7 @@ use afkconvoy_core::prompt::{
 };
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
 use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
+use afkconvoy_core::stock;
 use afkconvoy_core::team::{BY_DEFAULT, LAND, PRECEDENTS};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Context, Result, anyhow, bail};
@@ -116,13 +117,16 @@ impl Staged {
         // A landing worker is at no stage: it may commit, to resolve a
         // conflict on joining, and its workflow names no model for it.
         let due = due(&kept.team, labels, &records, pr);
-        let consult = matches!(due, Due::Consult(_));
-        let (workflow, work, role, at, joins) = match due {
+        let consult = matches!(due, Due::Consult(_) | Due::Stock(..));
+        // Who the worker is: a skill of a role, or the stock consult, which
+        // is no role of the team.
+        let (workflow, by, at, joins) = match due {
             Due::Worker(entry) | Due::Consult(entry) => {
-                (entry.workflow, entry.work, entry.role, Some(entry.stage), None)
+                (entry.workflow, Some((entry.work, entry.role)), Some(entry.stage), None)
             }
+            Due::Stock(workflow, stage) => (workflow, None, Some(stage), None),
             Due::Lander(lander) => {
-                (lander.workflow, lander.work, lander.role, None, Some(lander.pr))
+                (lander.workflow, Some((lander.work, lander.role)), None, Some(lander.pr))
             }
             // What waits for a human is answered by one; anything else is
             // where the issue is in its workflow.
@@ -139,11 +143,18 @@ impl Staged {
         let handed = handed_said(&history, &records, &urls);
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
         // The stage's harness and its model are its own worker's: a workflow
-        // names none for a consult.
+        // names none for a consult it names. The stock consult runs on the
+        // stage's harness.
         let harness = at
-            .filter(|_| !consult)
+            .filter(|_| !consult || by.is_none())
             .and_then(|stage| stage.harness(bound.harness))
             .unwrap_or(bound.harness);
+        let (role, skill, role_copy) = match by {
+            Some((work, role)) => {
+                (role.name.clone(), work.skill.clone(), kept.role(role, harness)?)
+            }
+            None => (stock::ROLE.to_string(), stock::SKILL.to_string(), Copies::here()?.stock()?),
+        };
         Ok(Staged {
             verdicts: verdicts
                 .filter(|(_, reading)| {
@@ -158,8 +169,8 @@ impl Staged {
             handed,
             flow: workflow.name.clone(),
             stage: at.map_or(LAND, |stage| &stage.name).to_string(),
-            role: role.name.clone(),
-            skill: work.skill.clone(),
+            role,
+            skill,
             writes: at.is_none_or(|stage| stage.writes),
             consult,
             harness,
@@ -168,7 +179,7 @@ impl Staged {
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
             joins,
-            role_copy: kept.role(role, harness)?,
+            role_copy,
             team_copy: kept.copy.clone(),
             team_rules: kept.rules(),
             host_user: kept.team.host_user,

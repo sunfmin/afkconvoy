@@ -115,8 +115,8 @@ A limit on rework — in total for an issue, or as rejections in a row by one st
 _Avoid_: retry limit, circuit
 
 **Consult**:
-A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human.
-_Avoid_: review (a stage may be named it), second opinion, handoff
+A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human. Where a stage names none, and in an unbound repo, the **stock consult** stands in: afkconvoy's own, in no role of a team, whose one instruction is to decide as the human would. A stage that says `escalate: { to: human }`, or an unbound repo whose config says `escalate_to: human`, has no consult.
+_Avoid_: review (a stage may be named it), second opinion, handoff, default consult
 
 **Ruling**:
 What a consult or a human decides on an issue handed on. The stage runs again under it; a human's also hands the issue back to the fleet and starts the rework counts over, a consult's starts none over.

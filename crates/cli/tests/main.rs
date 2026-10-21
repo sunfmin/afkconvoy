@@ -51,6 +51,7 @@ mod smoke_pi;
 mod split;
 mod stage;
 mod steer;
+mod stock;
 mod stopped;
 mod takeover;
 mod tend;

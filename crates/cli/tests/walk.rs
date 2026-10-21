@@ -19,11 +19,13 @@ stages:
   - name: build
     by: dev
     do: implement
+    escalate: { to: human }
     on: { pass: review }
   - name: review
     by: reviewer
     do: review
     writes: false
+    escalate: { to: human }
     on: { pass: done, reject: build }
 ```
 ";
@@ -224,6 +226,7 @@ stages:
   - name: build
     by: dev
     do: implement
+    escalate: { to: human }
     on: { pass: done }
 ```
 ";
@@ -503,8 +506,9 @@ fn limited(max_rework: u64, max_consecutive_rework: u64) -> String {
     let limits = format!(
         "```yaml\nmax_rework: {max_rework}\nmax_consecutive_rework: {max_consecutive_rework}\n"
     );
-    let consult = "    do: implement\n    escalate: { to: reviewer, do: rule }\n";
-    FEATURE.replacen("```yaml\n", &limits, 1).replacen("    do: implement\n", consult, 1)
+    let (human, consult) =
+        ("    escalate: { to: human }\n", "    escalate: { to: reviewer, do: rule }\n");
+    FEATURE.replacen("```yaml\n", &limits, 1).replacen(human, consult, 1)
 }
 
 /// `FEATURE` under these breakers, its `build` naming no consult: a breaker

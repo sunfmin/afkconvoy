@@ -94,9 +94,10 @@ WHAT TRIPS YOU UP
   - It does not check that the verdict is one the stage may declare. A `reject` from a
     stage whose workflow gives it none is no valid verdict, and the issue escalates.
   - A ruling is not a verdict, and is not declared here: see `afkconvoy rule --help`.
-  - An `escalate` reaches a human only from a stage that names no consult. From one
-    that does, the next tick starts a worker in the consult's role, which rules — and
-    the stage runs again under the ruling — or declares `escalate` itself. That one
+  - An `escalate` reaches a human straight only from a stage that says
+    `escalate: { to: human }`. From any other, the next tick starts its consult — the
+    role it names, or the stock consult where it names none — which rules — and the
+    stage runs again under the ruling — or declares `escalate` itself. That one
     always goes to a human: the chain is one role long.
   - Whether a record is a consult's is read from AFKCONVOY_CONSULT, which the fleet
     put in the worker's environment (or `--consult`). Anything a consult declares but

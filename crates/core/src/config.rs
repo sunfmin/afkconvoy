@@ -30,6 +30,28 @@ impl Default for RepoLabels {
     }
 }
 
+/// Where an unbound repo's hand-off goes first: its `escalate_to`
+/// (docs/adr/0018).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EscalateTo {
+    /// To the stock consult, and to a human where it lets the issue through.
+    Consult,
+    /// Straight to a human.
+    Human,
+}
+
+impl EscalateTo {
+    pub const ALL: [EscalateTo; 2] = [EscalateTo::Consult, EscalateTo::Human];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            EscalateTo::Consult => "consult",
+            EscalateTo::Human => "human",
+        }
+    }
+}
+
 /// The gate limit of a repo that declares none, in seconds: an hour.
 pub const GATE_SECONDS: u64 = 3600;
 
@@ -50,6 +72,7 @@ pub struct Settings {
     pub lock_label: Option<String>,
     pub intake_limit: Option<u64>,
     pub harness: Option<String>,
+    pub escalate_to: Option<String>,
 }
 
 /// What a bound repo's config says beside the keys every repo has.
@@ -89,6 +112,10 @@ pub struct Config {
     /// An open issue carrying this is a fleet lock, in a bound repo and an
     /// unbound one alike.
     pub lock_label: String,
+    /// Where an unbound repo's hand-off goes first. `None` in a bound repo,
+    /// whose stages say it each.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escalate_to: Option<EscalateTo>,
     /// `None` in an unbound repo, whose config is the keys above and nothing else.
     #[serde(flatten)]
     pub bound: Option<Bound>,
@@ -112,6 +139,10 @@ pub enum ConfigError {
     NeedsTeam(&'static str),
     /// `harness` names none: what it was set to.
     NotAHarness(String),
+    /// A key that means something only in an unbound repo, in a repo naming a team.
+    Unbound(&'static str),
+    /// `escalate_to` is neither `consult` nor `human`: what it was set to.
+    NotAnEscalateTo(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -136,6 +167,14 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "{key}: is read only in a bound repo, and this one names no team")
             }
             ConfigError::NotAHarness(named) => write!(f, "harness: {}", Harness::unknown(named)),
+            ConfigError::Unbound(key) => write!(
+                f,
+                "{key}: is read only in an unbound repo: a bound repo's stage says where its \
+                 hand-off goes, `escalate: {{ to: human }}` straight to a human"
+            ),
+            ConfigError::NotAnEscalateTo(named) => {
+                write!(f, "escalate_to: must be consult or human, not {named:?}")
+            }
         }
     }
 }
@@ -163,6 +202,17 @@ impl Config {
         let lock_label = label("lock_label", settings.lock_label, LOCK_LABEL)?;
         let epic_labels =
             settings.epic_labels.unwrap_or_else(|| EPIC_LABELS.map(String::from).to_vec());
+        let escalate_to = match (&settings.team, settings.escalate_to.as_deref()) {
+            (Some(_), Some(_)) => return Err(ConfigError::Unbound("escalate_to")),
+            (Some(_), None) => None,
+            (None, None) => Some(EscalateTo::Consult),
+            (None, Some(named)) => {
+                match EscalateTo::ALL.into_iter().find(|to| to.word() == named) {
+                    Some(to) => Some(to),
+                    None => return Err(ConfigError::NotAnEscalateTo(named.to_string())),
+                }
+            }
+        };
         let bound = match settings.team {
             Some(team) => Some(Bound {
                 team: repo("team", team)?,
@@ -194,11 +244,19 @@ impl Config {
             concurrency,
             escalate_label,
             lock_label,
+            escalate_to,
             bound,
         ) {
             Some(config) => Ok(config),
             None => Err(ConfigError::ZeroGateSeconds),
         }
+    }
+
+    /// Whether an unbound repo's hand-off goes to the stock consult before a
+    /// human: unless its `escalate_to` says `human`. A bound repo's stages
+    /// say it each.
+    pub fn stock_consult(&self) -> bool {
+        self.escalate_to == Some(EscalateTo::Consult)
     }
 
     /// The labels a team's workflows are read against in this repo.
@@ -223,7 +281,7 @@ impl Config {
 /// The one place a `Config` is built: a zero concurrency never gets in, nor
 /// a gate limit of no seconds.
 #[spec(fn(String, String, gate_seconds: u64, bool, String, Vec<String>,
-        concurrency: usize{concurrency > 0}, String, String, Option<Bound>)
+        concurrency: usize{concurrency > 0}, String, String, Option<EscalateTo>, Option<Bound>)
     -> Option<Config[concurrency, gate_seconds]>)]
 #[allow(clippy::too_many_arguments)]
 fn checked(
@@ -236,6 +294,7 @@ fn checked(
     concurrency: usize,
     escalate_label: String,
     lock_label: String,
+    escalate_to: Option<EscalateTo>,
     bound: Option<Bound>,
 ) -> Option<Config> {
     if gate_seconds == 0 {
@@ -251,6 +310,7 @@ fn checked(
         concurrency,
         escalate_label,
         lock_label,
+        escalate_to,
         bound,
     })
 }
@@ -421,6 +481,24 @@ mod tests {
         assert_eq!((config.gate_seconds(), config.gate_limit_declared), (3600, false));
         assert_eq!(config.lock_label, "fleet-lock", "a fleet lock needs no team");
         assert_eq!(config.bound, None, "a repo that names no team is unbound");
+        assert!(config.stock_consult(), "a hand-off goes to the stock consult first");
+    }
+
+    #[test]
+    fn an_unbound_repo_sends_every_hand_off_to_a_human_with_one_key() {
+        let human = Settings { escalate_to: Some("human".into()), ..minimal() };
+        assert!(!Config::new(human).unwrap().stock_consult());
+        let consult = Settings { escalate_to: Some("consult".into()), ..minimal() };
+        assert!(Config::new(consult).unwrap().stock_consult());
+        let other = Settings { escalate_to: Some("boss".into()), ..minimal() };
+        assert_eq!(Config::new(other), Err(ConfigError::NotAnEscalateTo("boss".into())));
+        // A bound repo's stages say it each.
+        let bound = Settings {
+            team: Some("acme/team".into()),
+            escalate_to: Some("human".into()),
+            ..minimal()
+        };
+        assert_eq!(Config::new(bound), Err(ConfigError::Unbound("escalate_to")));
     }
 
     #[test]

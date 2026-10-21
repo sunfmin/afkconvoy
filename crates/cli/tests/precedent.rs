@@ -18,6 +18,7 @@ stages:
   - name: build
     by: dev
     do: implement
+    escalate: { to: human }
     on: { pass: sign-off }
   - name: sign-off
     by: human

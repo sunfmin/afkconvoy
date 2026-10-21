@@ -12,6 +12,7 @@ use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::nudge_line;
 use afkconvoy_core::role::followed;
 use afkconvoy_core::stage_record::stage_records;
+use afkconvoy_core::stock;
 use afkconvoy_core::stopped::{
     Background, FOOTER_LINES, NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless,
     past_grace, route, screen_request, settled_by_state, stalled_reason, standing_verdict,
@@ -19,13 +20,15 @@ use afkconvoy_core::stopped::{
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition;
 use afkconvoy_core::transition::{
-    CloseStep, EscalateStep, Escalation, Relabel, Released, escalation_begun, escalation_comment,
+    CloseStep, EscalateStep, Escalation, HandOnStep, Relabel, Released, escalation_begun,
+    escalation_comment,
 };
 use afkconvoy_core::verdict::{Verdict, latest_verdict};
 use afkconvoy_core::waiting::{Back, Waits, back};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::advance::stated;
 use crate::board::{escalated, last_word};
 use crate::claims::{Me, delete};
 use crate::copies::Copies;
@@ -337,6 +340,8 @@ struct Stopped {
     worktree: Worktree,
     /// The verdict that stands for the worker here.
     verdict: Option<Verdict>,
+    /// Whether the worker is an unbound repo's stock consult.
+    consult: bool,
     /// The URL of the comment that verdict is in.
     said: Option<String>,
     route: Route,
@@ -367,7 +372,12 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     };
     let progress = progress(&worktree, &fleet.base_tip()?)?;
     let comments = fleet.gh.comments(issue)?;
-    let verdict = latest_verdict(comments.iter().map(|c| c.body.as_str()));
+    let bodies = || comments.iter().map(|c| c.body.as_str());
+    let asked = consulted(fleet, bodies(), &claim);
+    // The stock consult's verdict is one said since it was asked: the
+    // escalation it answers may have been a verdict.
+    let verdict =
+        latest_verdict(bodies()).filter(|verdict| asked.is_none_or(|at| verdict.comment > at));
     let said =
         verdict.as_ref().and_then(|verdict| Some(comments.get(verdict.comment)?.url.clone()));
     let verdict = standing_verdict(verdict, said.as_deref(), worktree.answered()?.as_deref());
@@ -384,7 +394,57 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
         }
     };
     let route = route(state, &progress, verdict.as_ref(), nudged, (handed, background), fleet.now);
-    Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, said, route }))))
+    let consult = asked.is_some();
+    Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, consult, said, route }))))
+}
+
+/// Which of an issue's comments (`bodies`) asked an unbound repo's stock
+/// consult under `claim`, when it did.
+fn consulted<'a>(
+    fleet: &Fleet,
+    bodies: impl IntoIterator<Item = &'a str>,
+    claim: &Claim,
+) -> Option<usize> {
+    fleet.config.stock_consult().then(|| stock::asked_at(bodies, &claim.id)).flatten()
+}
+
+/// The tick's look at the stopped stock consult of an unbound repo's
+/// escalated issue, in `worktree`: one that left a commit failed, and is
+/// escalated — a consult's own failure is a human's — and one that answered
+/// — put the ready label back, as a human would — ends its claim, the issue
+/// left as it put it. Either is `Done`. What else it came to is `None`: its
+/// route is the judge's.
+fn answered(
+    fleet: &mut Fleet,
+    claim: &Claim,
+    worktree: Option<Worktree>,
+) -> Result<Option<Outcome>> {
+    let issue = claim.number;
+    if let Some(worktree) = &worktree
+        && let Some(started) = worktree.writes_nothing()?
+        && let Some(why) = started.broken(&claim.id, &worktree.tip()?)
+    {
+        let reason = Handed::new("its consult left a commit it may not", stated(&why, None, None));
+        let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
+        escalate_claim(fleet, claim, &reason, pr, Some(worktree))?;
+        return Ok(Some(Outcome::Done));
+    }
+    if !fleet.gh.issue(issue)?.labels.contains(&fleet.config.ready_label) {
+        return Ok(None);
+    }
+    transition::hand_on(issue, false, |step| {
+        match (step, &worktree) {
+            // An unbound repo's board is moved by the worker started next.
+            (HandOnStep::Board, _) => {}
+            (HandOnStep::Release, _) => {
+                delete(&fleet.repo, &mut fleet.scan, issue, &claim.sha)?;
+            }
+            (HandOnStep::CloseTerminal, Some(worktree)) => worktree.close_terminals()?,
+            (HandOnStep::RemoveWorktree | HandOnStep::CloseTerminal, _) => {}
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(Some(Outcome::Done))
 }
 
 /// Types a nudge at the worker in `worktree` — `line` makes it from where the
@@ -483,13 +543,25 @@ pub fn judge(
         None | Some(Asked::Settled(Route::Leave)) => return Ok(Outcome::Nothing),
         Some(Asked::Settled(_)) if !start => return Ok(Outcome::Nothing),
         Some(Asked::Settled(_)) => {
+            // A stock consult that answered and is gone is not started again.
+            if let Some(claim) = mine(fleet, me, issue)? {
+                let comments = fleet.gh.comments(issue)?;
+                if consulted(fleet, comments.iter().map(|c| c.body.as_str()), &claim).is_some()
+                    && let Some(done) = answered(fleet, &claim, worktree_of(fleet, issue)?)?
+                {
+                    return Ok(done);
+                }
+            }
             dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
             return Ok(Outcome::Continued);
         }
         Some(Asked::Stopped(found)) => *found,
     };
-    let Stopped { claim, worktree, verdict, said, route } = found;
+    let Stopped { claim, worktree, verdict, consult, said, route } = found;
     let said = said.as_deref();
+    if consult {
+        return judge_consult(fleet, me, agent, (&claim, &worktree), said, route, start);
+    }
     let reason = match route {
         Route::Leave => return Ok(Outcome::Nothing),
         Route::Waiting(since) => return Ok(Outcome::Waiting(since)),
@@ -539,6 +611,56 @@ pub fn judge(
     };
     // A claim the tick judges has no PR.
     escalate_claim(fleet, &claim, &reason, None, Some(&worktree))?;
+    Ok(Outcome::Done)
+}
+
+/// `judge`, of the stopped stock consult of an unbound repo's escalated
+/// issue, under `claim`, in `worktree`: one that answered ends its claim;
+/// one that let the issue through — said so, or said anything else — or
+/// went silent past its nudge is escalated under its own claim, which is a
+/// human's (docs/adr/0018). `said` is the URL of its verdict.
+fn judge_consult(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    (claim, worktree): (&Claim, &Worktree),
+    said: Option<&str>,
+    route: Route,
+    start: bool,
+) -> Result<Outcome> {
+    let issue = claim.number;
+    if let Some(done) = answered(fleet, claim, Some(worktree.clone()))? {
+        return Ok(done);
+    }
+    let reason = match route {
+        Route::Leave => return Ok(Outcome::Nothing),
+        Route::Waiting(since) => return Ok(Outcome::Waiting(since)),
+        Route::Continue if !start => return Ok(Outcome::Nothing),
+        Route::Continue => {
+            dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+            return Ok(Outcome::Continued);
+        }
+        Route::Nudge(unnudged) => {
+            nudge_worker(worktree, unnudged, nudge_line, fleet.now)?;
+            return Ok(Outcome::Nudged);
+        }
+        Route::Stalled(silent) => Handed::new(
+            "its consult went silent",
+            format!(
+                "The stock consult was asked of this issue and went silent. {}",
+                stalled_reason(&silent, &where_it_stopped(worktree, &silent))
+            ),
+        ),
+        Route::Close(_) | Route::Blocked | Route::Escalate(_) => Handed::new(
+            "its consult let it through",
+            format!(
+                "The stock consult was asked of this issue and let it through to a human: {}",
+                said.unwrap_or("(its comment)")
+            ),
+        ),
+    };
+    let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
+    escalate_claim(fleet, claim, &reason, pr, Some(worktree))?;
     Ok(Outcome::Done)
 }
 

@@ -7,8 +7,9 @@ use std::path::{Component, Path, PathBuf};
 
 use afkconvoy_core::config::{Config, RepoDir, RepoLabels, RepoName};
 use afkconvoy_core::harness::{Harness, Held};
+use afkconvoy_core::stock;
 use afkconvoy_core::team::{
-    self, Fault, File, FlowLabels, Node, PATROLS, Pass, Patrol, Performer, RULES, RoleDir,
+    self, Consult, Fault, File, FlowLabels, Node, PATROLS, Pass, Patrol, Performer, RULES, RoleDir,
     SKILL_FILE, SKILLS, Sources, Stage, TEAM_FILE, Team, Unread, WORKFLOWS, Work, Workflow,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -834,7 +835,12 @@ fn workflow(loaded: &Loaded, workflow: &Workflow) -> Value {
             "harness": stage.harness(loaded.harness),
             "model": stage.model,
             "writes": stage.writes,
-            "escalate": stage.consult.as_ref().map(|consult| json!({"to": role(consult), "do": consult.skill})),
+            "escalate": match (&stage.consult, &stage.by) {
+                (Some(Consult::Role(work)), _) => json!({"to": role(work), "do": work.skill}),
+                (Some(Consult::Stock), _) => json!({"to": stock::ROLE}),
+                (None, Performer::Role(_)) => json!({"to": team::HUMAN}),
+                (None, Performer::Human) => Value::Null,
+            },
             "pass": pass,
             "reject": stage.reject().map(name),
         })

@@ -111,7 +111,7 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
                  "model": null, "writes": true,
                  "escalate": {"to": "reviewer", "do": "rule"}, "pass": "review", "reject": null},
                 {"name": "review", "by": "reviewer", "do": "review", "harness": "claude-code",
-                 "model": null, "writes": false, "escalate": null, "pass": "land", "reject": "build"},
+                 "model": null, "writes": false, "escalate": {"to": "stock-consult"}, "pass": "land", "reject": "build"},
             ],
             "land": {"by": "dev", "do": "land"},
         }])

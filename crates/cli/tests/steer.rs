@@ -20,11 +20,13 @@ stages:
   - name: build
     by: dev
     do: implement
+    escalate: { to: human }
     on: { pass: review }
   - name: review
     by: reviewer
     do: review
     writes: false
+    escalate: { to: human }
     on: { pass: sign-off, reject: build }
   - name: sign-off
     by: human

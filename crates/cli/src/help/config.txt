@@ -37,7 +37,11 @@ THE CONFIG FILE
 
   A key left out is at the value shown, so the shortest config is the first two lines,
   and a bound repo's those and `team`. The last three are read only beside `team`: an
-  unbound repo leaves all four out. What is outside the block is yours to explain it in.
+  unbound repo leaves all four out, and may say one key more, never beside `team`:
+
+      escalate_to: consult               # or human
+
+  What is outside the block is yours to explain it in.
   No command writes this file: write it, commit it, and run `afkconvoy config`.
 
 WHAT IT ANSWERS
@@ -59,13 +63,18 @@ WHAT IT ANSWERS
   by workers may be open (default 50), and the default harness: the one every worker
   runs that its stage or its patrol names none for (default claude-code, Claude Code;
   the others are pi and codex, Codex). A repo that names no team is unbound and answers
-  the eight above only.
+  the eight above and one more: {"escalate_to"} — where a hand-off to a human goes first.
+  `consult` (the default): the stock consult, afkconvoy's own, is asked first and stands
+  where the human would; a human is reached only where it lets the issue through, or
+  fails. `human`: every hand-off goes straight to a human, as `afkconvoy help humans`
+  says. A bound repo's stages say this each (`afkconvoy help workflows`).
 
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
   `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is
   not a whole number from 1; `team` is neither
   owner/repo nor owner/repo/path; `harness` names no harness; `patrols`, `intake_limit` or `harness` is set
-  where no `team` is — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
+  where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team`
+  — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 
 WHAT TRIPS YOU UP
 

@@ -5,7 +5,8 @@
 use afkconvoy_core::graph;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::position::{ConsultOn, Declared, Place, Position};
-use afkconvoy_core::team::{HUMAN, Team, Workflow};
+use afkconvoy_core::stock;
+use afkconvoy_core::team::{Consult, HUMAN, Team, Workflow};
 use anyhow::{Result, bail};
 use serde_json::{Map, Value, json};
 
@@ -101,12 +102,17 @@ pub(crate) fn position(
         Position::Landing => workflow.land.as_ref(),
         _ => position.worker(),
     };
+    let stock = matches!(position, Position::Consult(_, Consult::Stock, _));
     let by = match position {
         Position::Waiting(_) | Position::Escalating(..) => Some(HUMAN),
+        _ if stock => Some(stock::ROLE),
         _ => worker.map(|work| team.role_of(work).name.as_str()),
     };
+    // The stock consult runs on the stage's harness.
     let harness = match position {
-        Position::Perform(stage, ..) => stage.harness(default),
+        Position::Perform(stage, ..) | Position::Consult(stage, Consult::Stock, _) => {
+            stage.harness(default)
+        }
         _ => worker.map(|_| default),
     };
     // Why it is with a human — or with its stage's consult, for a hand-off
@@ -120,7 +126,7 @@ pub(crate) fn position(
         "is": is,
         "stage": position.stage().map(|stage| stage.name.as_str()),
         "by": by,
-        "do": worker.map(|work| work.skill.as_str()),
+        "do": if stock { Some(stock::SKILL) } else { worker.map(|work| work.skill.as_str()) },
         "harness": harness,
         "reason": reason,
     })

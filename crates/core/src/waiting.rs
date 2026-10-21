@@ -204,7 +204,7 @@ pub fn waits(
     }
     let workflow = crate::role::workflow_of(team, labels).ok();
     match due(team, labels, records, pr) {
-        Due::Worker(_) | Due::Consult(_) | Due::Lander(_) => None,
+        Due::Worker(_) | Due::Consult(_) | Due::Stock(..) | Due::Lander(_) => None,
         Due::Human(_) => Some(Waits::Escalated(back(workflow, records, &team.escalate_label))),
         Due::Nothing(_) => {
             let read = history(workflow?, records);

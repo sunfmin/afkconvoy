@@ -5,7 +5,7 @@
 
 use flux_rs::attrs::*;
 
-use crate::team::{Pass, Performer, Stage, Work, Workflow};
+use crate::team::{Consult, Pass, Performer, Stage, Work, Workflow};
 use crate::verdict::Phase;
 
 /// What ends a stage or answers an escalation: one of the five verdicts, or
@@ -133,7 +133,8 @@ pub enum ConsultOn {
 /// Why an issue is handed to a human.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// Its stage declared `escalate` and names no consult.
+    /// Its stage declared `escalate`, and hands that to a human: it says
+    /// `escalate: { to: human }`.
     Verdict,
     /// Its stage's consult let the escalation, or the hand-off, through.
     Consult,
@@ -152,7 +153,7 @@ impl Reason {
     /// The reason in the few words a tick's line has room for.
     pub fn brief(self) -> String {
         match self {
-            Reason::Verdict => "declared escalate, and names no consult".to_string(),
+            Reason::Verdict => "declared escalate, to a human".to_string(),
             Reason::Consult => "consult let it through".to_string(),
             Reason::Failed(failure) => failure.brief().to_string(),
             Reason::NoValidVerdict => "no valid verdict".to_string(),
@@ -166,7 +167,7 @@ impl Reason {
         let name = &stage.name;
         match self {
             Reason::Verdict => {
-                format!("the stage `{name}` declared `escalate`, and it names no consult")
+                format!("the stage `{name}` declared `escalate`, which it hands to a human")
             }
             Reason::Consult => format!("the consult of the stage `{name}` let it through"),
             Reason::Failed(failure) => format!("the stage `{name}` failed: {}", failure.brief()),
@@ -206,10 +207,11 @@ pub enum Position<'w> {
     /// The stage is a human's: nothing happens until they declare its verdict.
     #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
     Waiting(&'w Stage),
-    /// A worker is to rule on what the stage handed on, as this skill of this
-    /// role: its `escalate`, or a hand-off that would have gone to a human.
-    #[variant((&Stage[@s], &Work[s.roles], ConsultOn) -> Position[true, s.n, s.roles])]
-    Consult(&'w Stage, &'w Work, ConsultOn),
+    /// A worker is to rule on what the stage handed on, as this consult —
+    /// a skill of a role, or the stock consult: its `escalate`, or a
+    /// hand-off that would have gone to a human.
+    #[variant((&Stage[@s], &Consult{v: v.by_role => v.roles == s.roles}, ConsultOn) -> Position[true, s.n, s.roles])]
+    Consult(&'w Stage, &'w Consult, ConsultOn),
     /// Parked on what the stage declared it blocked by. The stage runs again
     /// when those close, which counts as no rework.
     #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
@@ -266,10 +268,11 @@ impl<'w> Position<'w> {
         }
     }
 
-    /// Who a worker is to be started as; `None` where none is to be.
+    /// Who a worker is to be started as, of a role; `None` where none is to
+    /// be, or it is the stock consult.
     pub fn worker(self) -> Option<&'w Work> {
         match self {
-            Position::Perform(_, work) | Position::Consult(_, work, _) => Some(work),
+            Position::Perform(_, work) | Position::Consult(_, Consult::Role(work), _) => Some(work),
             _ => None,
         }
     }
@@ -664,9 +667,12 @@ mod tests {
                 format!("{} by {}: {}", stage.name, team.role_of(work).name, work.skill)
             }
             Position::Waiting(stage) => format!("{} by a human", stage.name),
-            Position::Consult(stage, work, _) => {
+            Position::Consult(stage, Consult::Role(work), _) => {
                 let role = &team.role_of(work).name;
                 format!("consult on {} by {role}: {}", stage.name, work.skill)
+            }
+            Position::Consult(stage, Consult::Stock, _) => {
+                format!("consult on {} by the stock consult", stage.name)
             }
             Position::Parked(stage) => format!("parked at {}", stage.name),
             Position::Landing => "landing".to_string(),
@@ -777,12 +783,15 @@ mod tests {
         assert_eq!(after(&team, &three), ("review by reviewer: review".into(), 3, [0, 1]));
         let fourth = [&three[..], &[Reject]].concat();
         assert_eq!(after(&team, &fourth), (consult, 3, [0, 1]));
-        // A breaker set to 0 allows no rework at all; a stage with no consult
-        // hands it to a human.
+        // A breaker set to 0 allows no rework at all; a stage that goes to a
+        // human hands it to one, and one that names no consult to the stock one.
         let strict = one(&format!("max_rework: 0\n{FEATURE}"));
         assert_eq!(at(&strict, &[Pass, Pass, Reject]), "consult on build by reviewer: rule");
-        let alone = one(&format!("max_rework: 0\n{}", FEATURE.replace(CONSULT_OF_BUILD, "")));
+        let human = FEATURE.replace(CONSULT_OF_BUILD, "    escalate: { to: human }\n");
+        let alone = one(&format!("max_rework: 0\n{human}"));
         assert_eq!(at(&alone, &[Pass, Pass, Reject]), "escalating at build: Breaker(Rework)");
+        let stock = one(&format!("max_rework: 0\n{}", FEATURE.replace(CONSULT_OF_BUILD, "")));
+        assert_eq!(at(&stock, &[Pass, Pass, Reject]), "consult on build by the stock consult");
     }
 
     #[test]
@@ -843,7 +852,7 @@ mod tests {
         // A human putting the issue at a stage starts what the consult ruled on over.
         let put = ruled.put(&workflow.stages()[1]);
         assert!(put.consults(Reason::Failed(Failure::Silent)));
-        // A stage that names no consult hands every failure to a human.
+        // A stage that goes to a human hands every failure to one.
         let planning = Place::enter(workflow);
         assert!(!planning.consults(Reason::Failed(Failure::Silent)));
         assert_eq!(said(&planning.failed(Failure::Refuted)), "human at plan: Failed(Refuted)");

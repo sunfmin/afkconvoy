@@ -897,7 +897,7 @@ mod tests {
     fn the_record_of_a_closed_lock_sets_the_escalate_of_its_stage_aside() {
         let team = one(FEATURE);
         let workflow = team.workflow("feature").unwrap();
-        // `plan` names no consult: its `escalate` is a human's, until a lock explains it.
+        // `plan` goes to a human: its `escalate` is a human's, until a lock explains it.
         let asked = [record("plan", Escalate, "c1")];
         assert_eq!(history(workflow, &asked).stage_escalate(&asked), Some(0));
         let closed = StageRecord::lock_closed("plan", 13);
@@ -967,7 +967,7 @@ mod tests {
                 .concat();
         assert_eq!(put(&through), None);
         assert_eq!(put(&[record("plan", Escalate, "c1")]), None);
-        assert_eq!(put(&[]), None, "at `plan`, which names no consult");
+        assert_eq!(put(&[]), None, "at `plan`, which goes to a human");
         // A human's ruling starts it over: what follows is unseen again.
         let ruled = [&through[..], &[human("build", Stated::Declared(Ruling))]].concat();
         assert_eq!(put(&ruled), Some(Unconsulted::Record("build".to_string())));
@@ -1019,7 +1019,7 @@ mod tests {
     fn an_escalation_is_carried_out_whoever_declared_what_led_to_it() {
         let said = |reason: &str| Advance::Escalate(reason.to_string());
         let asked = [record("plan", Escalate, "c1")];
-        let verdict = "the stage `plan` declared `escalate`, and it names no consult";
+        let verdict = "the stage `plan` declared `escalate`, which it hands to a human";
         assert_eq!(advanced(&asked, "c1"), said(verdict));
         // A verdict its stage may not declare is no valid verdict.
         let invalid = [record("plan", Reject, "c1")];

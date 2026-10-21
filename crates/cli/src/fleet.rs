@@ -8,7 +8,8 @@
 
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
-use afkconvoy_core::plan::{Observed, WorkingSet, assemble, closing_pr};
+use afkconvoy_core::plan::{Issue, Observed, WorkingSet, assemble, closing_pr};
+use afkconvoy_core::stock;
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
@@ -186,6 +187,7 @@ impl Fleet {
             landings: &landings,
             slow_gate: &slow_gate,
             idle_train: if train.tip == train.base { self.train_built() } else { None },
+            consults: &self.stock_consults(open),
         };
         let set = assemble(&seen, me, self.now, &self.config);
         Ok((set, stages))
@@ -197,6 +199,24 @@ impl Fleet {
     fn train_built(&self) -> Option<Built> {
         let worktree = Worktree::of_train(&Source::of(&self.repo).ok()?).ok()??;
         measure::measured(&Repo::new(worktree.path)).ok()?
+    }
+
+    /// The open issues of an unbound repo that are the stock consult's
+    /// (`plan::Observed::consults`): escalated and unclaimed with the consult
+    /// due, or claimed under a claim it was asked under.
+    fn stock_consults(&self, open: &Open) -> Vec<u64> {
+        if !self.config.stock_consult() {
+            return vec![];
+        }
+        let consults = |issue: &&Issue| {
+            let bodies = || open.issues.comments(issue.number).iter().map(|c| c.body.as_str());
+            match self.scan.claim_of(issue.number) {
+                // Whatever labels its answer left.
+                Some(claim) => stock::asked_under(bodies(), &claim.id),
+                None => issue.labels.contains(&self.config.escalate_label) && stock::due(bodies()),
+            }
+        };
+        open.issues.rows.iter().filter(consults).map(|issue| issue.number).collect()
     }
 
     /// Whether the worker of `claim`, in an unbound repo, declared a verdict
