@@ -75,6 +75,117 @@ fn a_host_inspection_finds_in_words_of_its_own() {
     assert!(fleet.contains("an inspection of the worker finds one of: wrong, heavy"), "{fleet}");
 }
 
+/// An inspection checkout of `world`'s repo, started on the host.
+fn host_checkout(world: &World) -> std::path::PathBuf {
+    let checkout = inspection_checkout(world);
+    let git_dir = Command::new("git")
+        .current_dir(&checkout)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .unwrap();
+    let git_dir = String::from_utf8(git_dir.stdout).unwrap();
+    std::fs::write(format!("{}/convoy-inspection-kind", git_dir.trim()), "host").unwrap();
+    checkout
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let ran = Command::new("git").current_dir(dir).args(args).output().unwrap();
+    assert!(ran.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ran.stderr));
+}
+
+#[test]
+fn a_host_inspection_frees_build_output_and_tool_caches_and_names_what_is_kept() {
+    let world = World::new();
+    let checkout = host_checkout(&world);
+    let home = world.home();
+    // A checkout under the home folder no process uses, with its build output.
+    let other = home.join("src/gadgets");
+    std::fs::create_dir_all(other.join("target/debug")).unwrap();
+    git(&other, &["init", "-q"]);
+    std::fs::write(other.join(".gitignore"), "target/\n").unwrap();
+    std::fs::write(other.join("lib.rs"), "fn main() {}\n").unwrap();
+    git(&other, &["add", "."]);
+    git(&other, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]);
+    std::fs::write(other.join("draft.rs"), "// not committed\n").unwrap();
+    std::fs::write(other.join("target/debug/big"), vec![1u8; 1 << 20]).unwrap();
+    let cache = home.join("Library/Caches/Homebrew");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("bottle.tar.gz"), vec![1u8; 1 << 20]).unwrap();
+    let weights = home.join(".cache/huggingface/hub");
+    std::fs::create_dir_all(&weights).unwrap();
+    std::fs::write(weights.join("model.safetensors"), vec![1u8; 1 << 20]).unwrap();
+    let (other_s, cache_s, weights_s) =
+        (other.to_str().unwrap(), cache.to_str().unwrap(), weights.to_str().unwrap());
+
+    // Of a line any path of which may not be freed, nothing is.
+    let kept = world
+        .afk_in(
+            &checkout,
+            &[
+                "inspected",
+                "--found",
+                "reclaimable",
+                "--text",
+                "x",
+                "--reclaim",
+                other_s,
+                "--reclaim",
+                weights_s,
+            ],
+        )
+        .error();
+    assert!(kept.contains("nothing was freed") && kept.contains("name it for a human"), "{kept}");
+    assert!(other.join("target/debug/big").exists());
+    let outside = world
+        .afk_in(
+            &checkout,
+            &[
+                "inspected",
+                "--found",
+                "reclaimable",
+                "--text",
+                "x",
+                "--reclaim",
+                world.clone.to_str().unwrap(),
+            ],
+        )
+        .error();
+    assert!(outside.contains("not under the home folder"), "{outside}");
+    let fleet = world
+        .afk_in(&checkout, &["inspected", "--found", "fleet", "--text", "x", "--reclaim", other_s])
+        .error();
+    assert!(fleet.contains("only what is reclaimable is freed"), "{fleet}");
+
+    let said = world
+        .afk_in(
+            &checkout,
+            &[
+                "inspected",
+                "--found",
+                "reclaimable",
+                "--text",
+                "build output and a cache",
+                "--reclaim",
+                other_s,
+                "--reclaim",
+                cache_s,
+                "--name",
+                weights_s,
+            ],
+        )
+        .ok();
+    assert!(!other.join("target").exists(), "what git ignores is freed");
+    assert!(other.join("lib.rs").exists() && other.join("draft.rs").exists(), "and nothing else");
+    assert!(!cache.exists() && home.join("Library/Caches").exists());
+    assert!(weights.join("model.safetensors").exists(), "what is named is never deleted");
+    let freed = said["freed"].as_u64().unwrap();
+    assert!(freed >= 2 << 20, "{said}");
+    assert_eq!(said["reclaimed"].as_array().map(Vec::len), Some(2), "{said}");
+    let named = &said["named"][0];
+    assert!(named["path"].as_str().unwrap().ends_with(".cache/huggingface/hub"), "{said}");
+    assert!(named["bytes"].as_u64().unwrap() >= 1 << 20, "{said}");
+}
+
 #[test]
 fn only_an_inspection_s_checkout_says_what_was_found() {
     let world = World::new();

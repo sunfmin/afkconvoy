@@ -82,7 +82,8 @@ fn facts(path: &Path, home: &Path, on_host: &[OnHost], open: &[PathBuf]) -> Resu
     });
     let repo = Repo::new(path.to_path_buf());
     let top = repo.try_git(&["rev-parse", "--show-toplevel"])?;
-    let checkout = top.ok && Path::new(top.stdout.trim()).canonicalize().ok().as_deref() == Some(path);
+    let checkout =
+        top.ok && Path::new(top.stdout.trim()).canonicalize().ok().as_deref() == Some(path);
     let worktree = on_host.iter().find(|on| on.path.canonicalize().ok().as_deref() == Some(path));
     let held = worktree.is_some_and(|on| on.held);
     let closed = match worktree.and_then(|on| Some((on.repo.clone()?, on.issue?))) {

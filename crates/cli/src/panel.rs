@@ -989,7 +989,10 @@ mod tests {
                 found: found.into(),
                 said: "five worktrees of 14 GiB".into(),
                 issue,
-                reclaimed: vec![afkconvoy_core::host_inspection::Item { path: "/w/a/target".into(), bytes: 14 << 30 }],
+                reclaimed: vec![afkconvoy_core::host_inspection::Item {
+                    path: "/w/a/target".into(),
+                    bytes: 14 << 30,
+                }],
                 named: vec![],
             });
             let page = render(&panel);
@@ -1007,7 +1010,8 @@ mod tests {
         }
         assert!(render(&panel).contains("found <b>not-its</b>: five worktrees"));
         assert!(
-            render(&panel).contains("five worktrees of 14 GiB · freed 14.0 GiB: /w/a/target (14.0 GiB)"),
+            render(&panel)
+                .contains("five worktrees of 14 GiB · freed 14.0 GiB: /w/a/target (14.0 GiB)"),
             "what it freed is shown"
         );
     }
