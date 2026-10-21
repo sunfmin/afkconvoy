@@ -87,6 +87,12 @@ impl Acting {
         }
     }
 
+    /// Says `what` in the log, as one step of what it does: what a command
+    /// that runs as long as `exclusive` does says as it goes.
+    pub fn say(&self, now: u64, what: String) {
+        self.log(now, what, false);
+    }
+
     /// Says in the log how it ended, then wakes the `run` → `ended`, an
     /// object's with whether the wake was sent, as `woke`. What `wake`
     /// answers is the wake's whole answer.

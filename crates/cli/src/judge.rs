@@ -33,6 +33,7 @@ use crate::board::{escalated, last_word};
 use crate::claims::{Me, delete};
 use crate::copies::Copies;
 use crate::dispatch::{Agent, StartFrom, dispatch};
+use crate::exclusive;
 use crate::fleet::Fleet;
 use crate::git::Repo;
 use crate::orca::{Source, Worktree};
@@ -467,7 +468,8 @@ pub(crate) fn nudge_worker(
 }
 
 /// The background work the stopped worker in `worktree` started itself and
-/// waits on, as its harness shows it at the end of its screen: since when it
+/// waits on, as its harness shows it at the end of its screen — or as the
+/// host's `exclusive` queue holds a command of its: since when it
 /// was first seen here, under the gate limit. Read only of a worker
 /// `past_grace` (`stopped::past_grace`) — one with a sign of life is not
 /// waiting, and is seen waiting afresh when it next stops — and soft: a
@@ -487,6 +489,12 @@ pub(crate) fn own_background(
     });
     let waiting = Harness::any_shows_background(&screen.unwrap_or_default());
     let since = worktree.background_since(waiting, fleet.now)?;
+    // A command of its in the host's `exclusive` queue is work it waits on
+    // too, since it asked to run: busy, not silent (docs/adr/0019).
+    let since = match (since, exclusive::queued_in(&worktree.path)) {
+        (Some(seen), Some(queued)) => Some(seen.min(queued)),
+        (seen, queued) => seen.or(queued),
+    };
     Ok(since.map(|since| Background { since, limit: fleet.config.gate_seconds() }))
 }
 

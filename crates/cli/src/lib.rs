@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 pub mod abandon;
 pub mod acting;
+pub mod admission;
 pub mod advance;
 pub mod board;
 pub mod claims;
@@ -30,6 +31,7 @@ pub mod config;
 pub mod copies;
 pub mod dispatch;
 pub mod doctor;
+pub mod exclusive;
 pub mod fleet;
 pub mod flows;
 pub mod forget;
@@ -410,6 +412,14 @@ enum Command {
         /// The run, as its brief names it
         #[arg(long)]
         run: String,
+    },
+    /// Run a heavy command alone on this host, once no other `exclusive` command runs (a
+    /// worker's command)
+    #[command(after_long_help = include_str!("help/exclusive.txt"))]
+    Exclusive {
+        /// The command and its arguments, after `--`
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<OsString>,
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     #[command(after_long_help = include_str!("help/guard.txt"))]
@@ -804,6 +814,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if matches!(cli.command, Command::Guard) {
         return guard::guard();
     }
+    if let Command::Exclusive { command } = &cli.command {
+        return exclusive::exclusive(command, || cli.now.unwrap_or_else(clock));
+    }
     if let Command::Help { name } = &cli.command {
         let Some(text) = help(name.as_deref()) else {
             return fail(2, &topic::unknown(name.as_deref().unwrap_or_default()));
@@ -913,6 +926,7 @@ impl Command {
             | Command::Run { .. }
             | Command::Panel { .. }
             | Command::Guard
+            | Command::Exclusive { .. }
             | Command::Recovery { .. }
             | Command::Scan
             | Command::Help { .. } => return None,
@@ -963,11 +977,14 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             };
             probe::announce(&warnings);
             let (mut fleet, open) = Fleet::read(now)?;
-            let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+            let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
+            let admission = admission::Admission::read(&fleet.repo.dir)?;
+            set.held_back = admission.holds();
             let mut plan = serde_json::to_value(set)?;
             if let Some(bound) = &fleet.config.bound {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
             }
+            plan["admission"] = admission.json();
             Ok(plan)
         }
         Command::Run {
@@ -1148,6 +1165,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
+        Command::Exclusive { .. } => {
+            anyhow::bail!("exclusive answers with its command's exit code")
+        }
         Command::Help { .. } => anyhow::bail!("help answers with plain text"),
         Command::Dispatch { issue, who, agent, start } => dispatch::dispatch(
             &mut Fleet::open(now)?,
@@ -1231,6 +1251,7 @@ mod tests {
         &["lock", "7"],
         &["over", "--run", "sweep"],
         &["guard"],
+        &["exclusive", "--", "true"],
         &["dispatch", "7", "--instance", "a-h1-1"],
         &["recovery", "7"],
         &["close", "7", "--instance", "a-h1-1"],

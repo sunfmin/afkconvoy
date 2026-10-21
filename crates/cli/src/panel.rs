@@ -9,6 +9,7 @@
 
 use std::fmt::Write;
 
+use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::patrol::{self, Standing};
 use afkconvoy_core::plan::{Excluded, Status, WorkingSet};
 use afkconvoy_core::position::Position;
@@ -17,6 +18,7 @@ use afkconvoy_core::tick::{Outcome, TickStep};
 use afkconvoy_core::worker::WorkerState;
 
 use crate::claims::Me;
+use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::hot::{HotNow, held_said};
 use crate::orca::{Source, Worktree};
@@ -120,6 +122,9 @@ pub struct Panel {
     pub off: Vec<Card>,
     /// The patrols the repo names, each as it stands.
     pub patrols: Vec<patrol::Row>,
+    /// The host's `exclusive` queue, whatever its repo: the first runs alone,
+    /// and the rest wait their turn, next first.
+    pub exclusive: Vec<Ticket>,
     /// When the page was made, in epoch seconds: what a patrol's wait is
     /// counted from.
     pub now: u64,
@@ -231,6 +236,7 @@ impl Panel {
             to_human: vec![],
             off: vec![],
             patrols: vec![],
+            exclusive: vec![],
             now: fleet.now,
             hot: vec![],
         }
@@ -423,6 +429,8 @@ pub fn read(
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
+    // Soft: a queue that cannot be read shows nothing.
+    panel.exclusive = Queue::of_host().and_then(|queue| queue.standing()).unwrap_or_default();
     panel
 }
 
@@ -581,6 +589,23 @@ fn patrol_says(row: &patrol::Row, now: u64) -> String {
     }
 }
 
+/// What the `exclusive` command `ticket` is doing at `now` — the one that
+/// runs, or one waiting in `place` — and whose it is, in words.
+fn exclusive_says(ticket: &Ticket, place: usize, now: u64) -> String {
+    let doing = match ticket.ran {
+        Some(ran) => format!("runs alone, for {}", lasted(now.saturating_sub(ran))),
+        None if place == 0 => "about to run".to_string(),
+        None => {
+            format!("waits behind {place}, for {}", lasted(now.saturating_sub(ticket.asked)))
+        }
+    };
+    let dir = ticket.dir.rsplit('/').next().unwrap_or_default();
+    match ticket.issue {
+        Some(issue) => format!("{doing} · #{issue} in {dir}"),
+        None => format!("{doing} · in {dir}"),
+    }
+}
+
 /// The time of day of the moment `at`, in UTC: `14:05`.
 fn clock(at: u64) -> String {
     format!("{:02}:{:02}", at % 86_400 / 3600, at % 3600 / 60)
@@ -728,6 +753,22 @@ pub fn render(panel: &Panel) -> String {
         }
         out.push_str("</ul></section>\n");
     }
+    if !panel.exclusive.is_empty() {
+        out.push_str(
+            "<section class=\"exclusive\"><h2>Run alone on this host</h2><ul class=\"cards\">",
+        );
+        for (place, ticket) in panel.exclusive.iter().enumerate() {
+            let class = if place == 0 { "busy" } else { "queued" };
+            let _ = write!(
+                out,
+                "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
+                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
+                esc(&ticket.command),
+                esc(&exclusive_says(ticket, place, panel.now)),
+            );
+        }
+        out.push_str("</ul></section>\n");
+    }
     if !panel.to_human.is_empty() {
         out.push_str("<section class=\"human\"><h2>With a human</h2>");
         cards(&mut out, "asked", None, &panel.to_human);
@@ -751,6 +792,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_host_s_exclusive_queue_shows_what_runs_alone_and_what_waits() {
+        let ticket = |command: &str, issue, ran| Ticket {
+            number: 1,
+            pid: 1,
+            command: command.into(),
+            dir: "/w/acme".into(),
+            issue,
+            asked: 700,
+            ran,
+        };
+        let running = ticket("cargo test <all>", Some(12), Some(820));
+        let waiting = ticket("make bench", None, None);
+        assert_eq!(exclusive_says(&running, 0, 1000), "runs alone, for 3m · #12 in acme");
+        assert_eq!(exclusive_says(&waiting, 1, 1000), "waits behind 1, for 5m · in acme");
+        assert_eq!(exclusive_says(&ticket("x", None, None), 0, 1000), "about to run · in acme");
+        let panel = Panel { exclusive: vec![running, waiting], ..page_of(1000) };
+        let page = render(&panel);
+        assert!(page.contains("<h2>Run alone on this host</h2>"), "{page}");
+        assert!(page.contains("<code>cargo test &lt;all&gt;</code>"), "{page}");
+        assert!(page.find("cargo test").unwrap() < page.find("make bench").unwrap());
+    }
+
+    fn page_of(now: u64) -> Panel {
+        Panel {
+            repo: "r".into(),
+            base_branch: "main".into(),
+            who: None,
+            tick: None,
+            held: 0,
+            bound: 2,
+            declared: 0,
+            locks: vec![],
+            lanes: vec![],
+            train: vec![],
+            to_human: vec![],
+            off: vec![],
+            patrols: vec![],
+            exclusive: vec![],
+            now,
+        }
+    }
+
+    #[test]
     fn a_title_is_never_read_as_markup() {
         let mut panel = Panel {
             repo: "r".into(),
@@ -766,6 +850,7 @@ mod tests {
             to_human: vec![],
             off: vec![],
             patrols: vec![],
+            exclusive: vec![],
             now: 1000,
             hot: vec![],
         };
@@ -774,6 +859,7 @@ mod tests {
         assert_eq!(page.matches("<script").count(), 1, "only the page's own");
         // the same panel is the same page
         assert_eq!(page, render(&panel));
+        assert!(!page.contains("Run alone on this host"), "no queue, no section");
         panel.tick = Some(Tick { count: 3, line: "nothing to do".into(), ended: 1000, sleep: 90 });
         let ticked = render(&panel);
         assert!(

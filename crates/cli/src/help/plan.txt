@@ -35,7 +35,8 @@ WHAT IT READS AND WRITES
 WHAT IT ANSWERS
 
   {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale",
-   "stale_closed", "free_slots", "now", "locks"} — and in a bound repo "intake", "patrols" where it names some, and
+   "stale_closed", "free_slots", "now", "locks", "admission"} — "held_back" while
+   admission holds; and in a bound repo "intake", "patrols" where it names some, and
    "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate"
    while the gate is slow
 
@@ -78,6 +79,21 @@ WHAT IT ANSWERS
                    holds lock issues only, and every issue a tick would otherwise
                    dispatch or hand to a human is under `excluded` with the reason
                    "a fleet lock stands (#n)"
+    admission      whether a tick would start a new worker on this host now
+                   (`afkconvoy run --help`, ADMISSION): {admits, held_back_by,
+                   shares, thresholds, reading}. held_back_by is each threshold the
+                   host is past, as a tick's line says it: none, and it admits.
+                   shares are the percentages in force — load_percent_of_cores,
+                   memory_free_percent, disk_free_percent — and said_by_host the
+                   environment variables that said one; thresholds what they come
+                   to on this host — load, memory_free_percent, disk_free_bytes;
+                   reading what the host reads now — cores, load,
+                   memory_free_percent, disk_free_bytes, disk_size_bytes, each null
+                   where it could not be read
+    held_back      while admission holds: each threshold the host is past, as data:
+                   {by: "load", load, limit} in hundredths, {by: "memory", free,
+                   floor} in percent, {by: "disk", free, floor} in bytes. The
+                   frontier is still what a tick would dispatch once it admits
     intake         in a bound repo: {"open", "limit"} — the open issues taken in by
                    workers, counted from their intake records, against the repo's
                    `intake_limit`. With `open` at `limit`, `afkconvoy intake` refuses.

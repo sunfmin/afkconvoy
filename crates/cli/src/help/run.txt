@@ -31,6 +31,20 @@ WHAT IT READS AND WRITES
   repo and version, whether it was told `--no-host-sleep`, since when it has been idle
   or not, and when it last worked; asked to tick first, it ticks, then says so.
 
+  ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load
+  average past 200% of its cores, less than 10% of its memory free (what the kernel
+  counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in
+  /proc/meminfo), or less than 5% of the disk under the checkout free (`df`). The
+  issue stays on the frontier for the next tick, and so do a stale claim, a due patrol
+  and a due proposal. Workers already running are left alone, and so are the landing
+  train and the worker a declared verdict starts. The host says its own shares, each a
+  whole percent, in the environment of `run`, `tick`, `plan` and `doctor`:
+  AFKCONVOY_ADMIT_LOAD (of its cores), AFKCONVOY_ADMIT_MEMORY and AFKCONVOY_ADMIT_DISK
+  (free) — AFKCONVOY_ADMIT_LOAD=400 lets the load reach four times the cores, and
+  AFKCONVOY_ADMIT_DISK=0 never holds for disk. A value that is no whole percent is an
+  error. What cannot be read holds nothing back. `plan` and `doctor` say the
+  thresholds in force and what the host reads.
+
   A `run` idle ten minutes checks then, tick due or not, and again ten minutes after
   a check that kept the host awake. It puts the host to sleep only when all hold:
     - it worked — held a claim, or had something on the landing train — since the
@@ -107,7 +121,9 @@ WHAT IT ANSWERS
   dispatched, skipped (a frontier issue found blocked just before its claim, with what
   blocks it), nudged, waiting on its own background work (with since when: `#7 (since
   2026-10-20 23:03 UTC, 12m ago)`), continued, restarted, tended the train, abandoned
-  the train — then
+  the train — then, when admission held back a worker it would have started, which
+  threshold did (`admission holds back new workers: the load 31.20 is past 28.00,
+  200% of its 14 cores`), then
   the claims held out of the concurrency, and the frontier left. The claims a fleet
   lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left
   alone`), and so are those whose worker declared a verdict not acted on yet

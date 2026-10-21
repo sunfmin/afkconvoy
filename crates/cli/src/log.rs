@@ -317,6 +317,12 @@ impl Tick {
         did.into_iter().flatten().any(started)
     }
 
+    /// Whether admission held back the workers this tick would have started:
+    /// its host was busy.
+    pub fn held_back(&self) -> bool {
+        self.answer.as_ref().is_some_and(|answer| answer["held_back_by"].is_array())
+    }
+
     /// The claims held and the frontier left as it ended.
     pub fn stood(&self) -> Option<(u64, u64)> {
         let answer = self.answer.as_ref()?;

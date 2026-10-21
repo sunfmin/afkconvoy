@@ -5,6 +5,7 @@
 mod common;
 
 mod abandon;
+mod admission;
 mod board;
 mod check;
 mod claims;
@@ -16,6 +17,7 @@ mod cut_train;
 mod declared;
 mod dispatch;
 mod doctor;
+mod exclusive;
 mod fixture;
 mod flows;
 mod gate;

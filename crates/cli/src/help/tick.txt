@@ -19,7 +19,8 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"did", "errors", "held", "frontier_remaining", "locks"}
+  {"did", "errors", "held", "frontier_remaining", "locks"} — and "held_back_by" when
+  admission held back a worker it would have started
 
     did                 each step taken: {do, issue, outcome}. do is settle, forget, tend_train,
                         cut_train, judge, watch, advance, escalate, end_patrol, patrol,
@@ -49,6 +50,11 @@ WHAT IT ANSWERS
     locks               the fleet locks that stood as it ran: the open issues carrying
                         the lock label — none: []. `run` opens its line with them:
                         "FLEET LOCK #7 stands: only it is worked"
+    held_back_by        each threshold of the host past which admission started no
+                        new worker, as the line says it: "the load 31.20 is past
+                        28.00, 200% of its 14 cores". A slot was free and something
+                        waited for it; it stays on the frontier
+                        (`afkconvoy run --help`, ADMISSION)
 
   Errors: a command the fleet needs is missing or logged out, or orca is not running
   or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config, GitHub or the

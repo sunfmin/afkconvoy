@@ -8,12 +8,14 @@ extern crate flux_alloc;
 extern crate flux_core;
 
 pub mod abandon;
+pub mod admission;
 pub mod before;
 pub mod blocked;
 pub mod board;
 pub mod claims;
 pub mod closing;
 pub mod config;
+pub mod exclusive;
 pub mod gate;
 pub mod graph;
 pub mod guard;
