@@ -225,6 +225,10 @@ WHAT TRIPS YOU UP
     '{"skipDangerousModePermissionPrompt":true}'`, pi with `pi`, Codex with
     `codex --dangerously-bypass-approvals-and-sandbox`. The setting answers the
     warning Claude Code opens with in that mode: nobody is at a worker's terminal to.
+  - Every worker is started under `nice` — as fast as before on a host with nothing else
+    to do, and giving way to you and to the gate when it is busy — with its own
+    `TMPDIR`: `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it.
+    Nothing else of an unbound repo's worker launch command is touched.
   - In a bound repo, before any worker is started, the command of every harness the
     fleet could be asked for is checked: the repo's default, each harness a stage of
     the team's workflows names, and each a patrol the repo runs names. One that

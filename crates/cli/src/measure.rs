@@ -7,6 +7,7 @@ use afkconvoy_core::train::Built;
 use anyhow::{Context, Result};
 
 use crate::git::Repo;
+use crate::orca::TMP_DIR;
 
 /// The note of the bytes the worktree held after its first gate run, kept in
 /// the worktree's own git dir: gone when the worktree is.
@@ -16,7 +17,8 @@ const FRESH_NOTE: &str = "convoy-fresh-build";
 /// gate run: what a tick reads, for it measures nothing.
 const BUILT_NOTE: &str = "convoy-built";
 
-/// The paths git ignores in the worktree, an ignored directory as one path.
+/// The paths git ignores in the worktree, an ignored directory as one path:
+/// the worker's `TMPDIR` but for, which no gate run built.
 fn ignored(repo: &Repo) -> Result<Vec<String>> {
     let listed = repo.git_raw(&[
         "ls-files",
@@ -26,7 +28,8 @@ fn ignored(repo: &Repo) -> Result<Vec<String>> {
         "--exclude-standard",
         "--directory",
     ])?;
-    Ok(listed.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect())
+    let built = |path: &&str| !path.is_empty() && path.split('/').next() != Some(TMP_DIR);
+    Ok(listed.split('\0').filter(built).map(str::to_string).collect())
 }
 
 /// Whether the worktree holds anything git ignores.

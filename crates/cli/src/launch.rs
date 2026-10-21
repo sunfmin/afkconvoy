@@ -3,8 +3,9 @@
 //! command's first word is, and a human which command, when nobody said and
 //! the fleet is on a custom provider.
 //!
-//! A command goes to orca as it was given. It is put in no file and no
-//! environment, and nothing of this process's environment goes with it.
+//! A command goes to orca as it was given, but started under `nice` with a
+//! `TMPDIR` of its worktree's own (`Worktree::start`). It is put in no file and
+//! no environment, and nothing of this process's environment goes with it.
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
