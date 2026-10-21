@@ -9,7 +9,9 @@ use afkconvoy_core::claims::{
     run_ref, write_heartbeat, write_over,
 };
 use afkconvoy_core::layout::Layout;
-use afkconvoy_core::patrol::{RUN_KIND, Ran, read_run};
+use afkconvoy_core::patrol::{
+    ASKED_KIND, RUN_KIND, Ran, asked_ref, read_asked, read_run, write_asked,
+};
 use afkconvoy_core::record::fleet_number;
 use afkconvoy_core::takeover::{held, holds};
 use anyhow::{Result, bail};
@@ -36,6 +38,17 @@ pub struct Scan {
     pub runs: Vec<RunClaim>,
     /// patrol → its last recorded run.
     pub last_runs: BTreeMap<String, Ran>,
+    /// patrol → a human's ask for a run of it now, while one stands.
+    pub asks: BTreeMap<String, Ask>,
+}
+
+/// A human's ask for a run of a patrol now, as the remote has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ask {
+    /// When it was made.
+    pub ts: u64,
+    /// The commit its ref points at: what deleting it leases on.
+    pub sha: String,
 }
 
 impl Scan {
@@ -71,6 +84,10 @@ impl Scan {
                 && let Some(ran) = read_run(&record.subject)
             {
                 scan.last_runs.insert(patrol.to_string(), ran);
+            } else if let Some(patrol) = kept.strip_prefix(ASKED_KIND)
+                && let Some(ts) = read_asked(&record.subject)
+            {
+                scan.asks.insert(patrol.to_string(), Ask { ts, sha: record.sha });
             } else if let Some(key) = kept.strip_prefix(OVER_KIND)
                 && let Some(claim) = read_over(&record.subject)
             {
@@ -354,6 +371,31 @@ pub fn drop_run(repo: &Repo, scan: &mut Scan, claim: &RunClaim) -> Result<()> {
         ])?;
     }
     scan.runs.retain(|run| run.key != claim.key);
+    Ok(())
+}
+
+/// Records on the remote that a human on `host` asked at `now` for a run of
+/// the patrol `name` now → the ref it is kept at. An ask standing already is
+/// replaced: of two, one stands, and one run answers it.
+pub fn push_ask(repo: &Repo, scan: &mut Scan, name: &str, host: &str, now: u64) -> Result<String> {
+    let refname = asked_ref(repo.layout(), name);
+    let sha = repo.record_commit(&write_asked(now, host))?;
+    repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{refname}")])?;
+    scan.asks.insert(name.to_string(), Ask { ts: now, sha });
+    Ok(refname)
+}
+
+/// Deletes the ask `ask` for a run of the patrol `name`, which a run has
+/// answered, only while it is still that one: an ask made since is another
+/// human's, and stands. Already gone counts as deleted.
+pub fn drop_ask(repo: &Repo, scan: &mut Scan, name: &str, ask: &Ask) -> Result<()> {
+    let refname = asked_ref(repo.layout(), name);
+    let lease = format!("--force-with-lease={refname}:{}", ask.sha);
+    let pushed = repo.try_git(&["push", "--quiet", REMOTE, &lease, &format!(":{refname}")])?;
+    if !pushed.ok && repo.remote_sha(&refname)?.as_deref() == Some(ask.sha.as_str()) {
+        bail!("the ask {refname} is still on the remote: {}", pushed.stderr.trim());
+    }
+    scan.asks.remove(name);
     Ok(())
 }
 

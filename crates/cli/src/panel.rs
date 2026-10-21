@@ -561,6 +561,9 @@ fn node(out: &mut String, node: &Node) {
 /// What holds the patrol `row` back, or what it is doing, at `now`, in words.
 fn patrol_says(row: &patrol::Row, now: u64) -> String {
     match row.standing {
+        Standing::Due if row.asked.is_some() => {
+            "due: a human asked for it, and the next tick runs it".to_string()
+        }
         Standing::Due => "due: the next tick runs it".to_string(),
         Standing::NotDue => match row.last_run {
             Some(last) => format!(

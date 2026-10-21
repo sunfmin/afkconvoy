@@ -16,10 +16,14 @@ use crate::worker::{GRACE, WorkerState};
 /// The kind of ref the record of a patrol's last run is kept under, named for
 /// the patrol.
 pub const RUN_KIND: &str = "patrol/";
+/// The kind of ref a human's ask for a run of a patrol now is kept under,
+/// named for the patrol: it stands until a run started on it.
+pub const ASKED_KIND: &str = "asked/";
 /// What the claim on a patrol's run is keyed by: this, then the patrol's name.
 const CLAIM_KEY: &str = "patrol-";
 
 const RUN: &str = "convoy:patrol-run";
+const ASKED: &str = "convoy:patrol-asked";
 /// The kind of record the report of a failed run carries.
 pub const FAILED: &str = "convoy:patrol-failed";
 
@@ -30,6 +34,21 @@ pub const PATROL_ENV: &str = "AFKCONVOY_PATROL";
 /// The ref that records when the patrol `name` last ran.
 pub fn run_ref(layout: Layout, name: &str) -> String {
     layout.under(&format!("{RUN_KIND}{name}"))
+}
+
+/// The ref that records a human's ask for a run of the patrol `name` now.
+pub fn asked_ref(layout: Layout, name: &str) -> String {
+    layout.under(&format!("{ASKED_KIND}{name}"))
+}
+
+/// The record of an ask made at `ts` on the host `host`.
+pub fn write_asked(ts: u64, host: &str) -> String {
+    record::write(ASKED, &[("ts", &ts.to_string()), ("host", host)])
+}
+
+/// A commit subject → when the ask it records was made.
+pub fn read_asked(subject: &str) -> Option<u64> {
+    record::read(ASKED, subject)?.number("ts")
 }
 
 /// The key of the claim on a run of the patrol `name` (`claims::RunClaim`).
@@ -57,18 +76,21 @@ pub struct Ran {
     pub ts: u64,
     /// When each earlier run of the day before `ts` started, oldest first.
     pub before: Vec<u64>,
+    /// Whether a human asked for it, past `every` and `max_runs_a_day`.
+    pub asked: bool,
 }
 
 impl Ran {
-    /// The run started at `now`, after the run `last` recorded: it carries
-    /// every start of `last` the day before `now` still holds.
-    pub fn after(last: Option<&Ran>, now: u64) -> Ran {
+    /// The run started at `now`, after the run `last` recorded — `asked`
+    /// for by a human, or due: it carries every start of `last` the day before
+    /// `now` still holds, whichever either was.
+    pub fn after(last: Option<&Ran>, now: u64, asked: bool) -> Ran {
         let mut before: Vec<u64> = match last {
             Some(last) => last.before.iter().copied().chain([last.ts]).collect(),
             None => vec![],
         };
         before.retain(|start| in_day(*start, now));
-        Ran { ts: now, before }
+        Ran { ts: now, before, asked }
     }
 
     /// The starts it records that the day before `now` holds, oldest first.
@@ -89,13 +111,18 @@ fn in_day(start: u64, now: u64) -> bool {
 /// The record of the run `ran`.
 pub fn write_run(ran: &Ran) -> String {
     let before: Vec<String> = ran.before.iter().map(u64::to_string).collect();
-    record::write(RUN, &[("ts", &ran.ts.to_string()), ("before", &before.join(","))])
+    let asked = if ran.asked { "human" } else { "" };
+    record::write(
+        RUN,
+        &[("ts", &ran.ts.to_string()), ("before", &before.join(",")), ("asked", asked)],
+    )
 }
 
 /// A commit subject → the run it records.
 pub fn read_run(subject: &str) -> Option<Ran> {
     let fields = record::read(RUN, subject)?;
-    Some(Ran { ts: fields.number("ts")?, before: fields.numbers("before") })
+    let asked = fields.get("asked") == Some("human");
+    Some(Ran { ts: fields.number("ts")?, before: fields.numbers("before"), asked })
 }
 
 /// How many runs a day a patrol run every `every` seconds has at most: as
@@ -156,13 +183,16 @@ pub struct Seen {
     pub open: u64,
     /// The open issue that reports its last run as failed, while there is one.
     pub failure: Option<u64>,
+    /// When a human asked for a run now, while that ask stands.
+    pub asked: Option<u64>,
 }
 
 /// How one patrol stands: what a tick does about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
-    /// Its interval has passed and nothing holds it back: a tick runs it.
+    /// Its interval has passed, or a human asked for a run, and nothing holds
+    /// it back: a tick runs it.
     Due,
     /// Its interval has not passed since its last recorded run.
     NotDue,
@@ -202,6 +232,10 @@ pub struct Row {
     pub until: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<u64>,
+    /// When a human asked for a run now, while that ask stands: why it is
+    /// `Due` past its interval and its day.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked: Option<u64>,
     /// The claim on its run, while one stands.
     #[serde(skip)]
     pub claim: Option<RunClaim>,
@@ -212,7 +246,8 @@ pub struct Row {
 /// stands. A run still going comes first — whoever holds it, the patrol is
 /// skipped, however long it has been due; then the failure nobody answered,
 /// the interval, the runs of the day, the lock, and the limit on what it
-/// opened.
+/// opened. A human's ask passes the interval and the runs of the day, and
+/// nothing else.
 pub fn row(
     seen: &Seen,
     me: Option<&InstanceId>,
@@ -222,6 +257,7 @@ pub fn row(
 ) -> Row {
     let last = seen.last_run.as_ref();
     let until = held_until(seen.max_runs_a_day, last, now);
+    let asked = seen.asked;
     let standing = match &seen.claim {
         Some(claim) => match claim.holder(me, heartbeats, now) {
             Holder::Mine => Standing::Running,
@@ -229,8 +265,10 @@ pub fn row(
             Holder::Peer => Standing::PeerRunning,
         },
         None if seen.failure.is_some() => Standing::Failed,
-        None if !is_due(seen.every, last.map(|ran| ran.ts), now) => Standing::NotDue,
-        None if until.is_some() => Standing::Spent,
+        None if asked.is_none() && !is_due(seen.every, last.map(|ran| ran.ts), now) => {
+            Standing::NotDue
+        }
+        None if asked.is_none() && until.is_some() => Standing::Spent,
         None if locked => Standing::Locked,
         None if seen.open >= seen.max_open => Standing::Full,
         None => Standing::Due,
@@ -246,7 +284,25 @@ pub fn row(
         runs_in_day: seen.max_runs_a_day.map(|_| last.map_or(0, |ran| ran.day(now).len() as u64)),
         until: until.filter(|_| standing == Standing::Spent),
         failure: seen.failure,
+        asked: seen.asked,
         claim: seen.claim.clone(),
+    }
+}
+
+/// What a human's ask for a run of `seen` now meets at `now`: `Ok` when it
+/// is taken — the patrol is due asked for, or its claim is a dead peer's,
+/// which a tick deletes first — or what holds it. Nobody's claims are the
+/// asker's own: a run of this host's is still going as a peer's is.
+pub fn ask(
+    seen: &Seen,
+    heartbeats: &[(String, u64)],
+    now: u64,
+    locked: bool,
+) -> Result<(), Standing> {
+    let asked = Seen { asked: Some(now), ..seen.clone() };
+    match row(&asked, None, heartbeats, now, locked).standing {
+        Standing::Due | Standing::StaleRun => Ok(()),
+        held => Err(held),
     }
 }
 
@@ -356,11 +412,12 @@ mod tests {
             claim: None,
             open: 0,
             failure: None,
+            asked: None,
         }
     }
 
     fn ran(ts: u64, before: &[u64]) -> Ran {
-        Ran { ts, before: before.to_vec() }
+        Ran { ts, before: before.to_vec(), asked: false }
     }
 
     fn claim(instance: &str) -> RunClaim {
@@ -402,12 +459,13 @@ mod tests {
 
     #[test]
     fn a_runs_record_carries_the_starts_of_the_day_before_it() {
-        let first = Ran::after(None, 1000);
+        let first = Ran::after(None, 1000, false);
         assert_eq!(first, ran(1000, &[]));
-        let second = Ran::after(Some(&first), 5000);
-        assert_eq!(second, ran(5000, &[1000]));
+        let second = Ran::after(Some(&first), 5000, true);
+        assert_eq!(second, Ran { asked: true, ..ran(5000, &[1000]) });
         // A start a day old is no longer carried.
-        let third = Ran::after(Some(&second), 1000 + DAY);
+        // A run asked for counts among the day's starts as a due one does.
+        let third = Ran::after(Some(&second), 1000 + DAY, false);
         assert_eq!(third, ran(1000 + DAY, &[5000]));
         assert_eq!(third.day(5000 + DAY - 1), [5000, 1000 + DAY]);
         assert_eq!(third.day(5000 + DAY), [1000 + DAY]);
@@ -433,6 +491,39 @@ mod tests {
         assert_eq!((due.standing, due.until, due.runs_in_day), (Standing::Due, None, Some(2)));
         // The interval comes first: within it the patrol is not due, whatever its day.
         assert_eq!(standing(&bounded, 30_001, false), Standing::NotDue);
+    }
+
+    #[test]
+    fn a_patrol_asked_for_is_due_past_its_interval_and_its_day_and_nothing_else() {
+        let asked = Seen { asked: Some(10_500), ..seen() };
+        let me = InstanceId::parse("me").unwrap();
+        let due = row(&asked, Some(&me), &[], 10_500, false);
+        assert_eq!((due.standing, due.asked), (Standing::Due, Some(10_500)));
+        let spent = Seen { max_runs_a_day: Some(1), ..asked.clone() };
+        assert_eq!(standing(&spent, 10_500, false), Standing::Due);
+        assert_eq!(standing(&asked, 10_500, true), Standing::Locked);
+        assert_eq!(standing(&Seen { open: 2, ..asked.clone() }, 10_500, false), Standing::Full);
+        let failed = Seen { failure: Some(9), ..asked.clone() };
+        assert_eq!(standing(&failed, 10_500, false), Standing::Failed);
+        let mine = Seen { claim: Some(claim("me")), ..asked.clone() };
+        assert_eq!(standing(&mine, 10_500, false), Standing::Running);
+        // Not asked for, the same patrol is not due.
+        assert_eq!(standing(&seen(), 10_500, false), Standing::NotDue);
+        assert_eq!(row(&seen(), Some(&me), &[], 10_500, false).asked, None);
+    }
+
+    #[test]
+    fn an_ask_is_taken_unless_what_still_holds_an_asked_run_holds_it() {
+        let beats = [("peer".to_string(), 10_500)];
+        assert_eq!(ask(&seen(), &beats, 10_500, false), Ok(()));
+        assert_eq!(ask(&seen(), &beats, 10_500, true), Err(Standing::Locked));
+        assert_eq!(ask(&Seen { open: 2, ..seen() }, &beats, 10_500, false), Err(Standing::Full));
+        let failed = Seen { failure: Some(9), ..seen() };
+        assert_eq!(ask(&failed, &beats, 10_500, false), Err(Standing::Failed));
+        // A run still going is one, whoever's it is; a dead peer's is a tick's to delete.
+        let going = Seen { claim: Some(claim("peer")), ..seen() };
+        assert_eq!(ask(&going, &beats, 10_500, false), Err(Standing::PeerRunning));
+        assert_eq!(ask(&going, &[], 10_500 + LEASE, false), Ok(()));
     }
 
     #[test]
@@ -530,5 +621,12 @@ mod tests {
         assert_eq!(write_run(&ran(77, &[5, 9])), "convoy:patrol-run ts=77 before=5,9");
         assert_eq!(read_run(&write_run(&ran(77, &[5, 9]))), Some(ran(77, &[5, 9])));
         assert_eq!(read_run("convoy:claim ts=77"), None);
+        let asked = Ran { asked: true, ..ran(77, &[5]) };
+        assert_eq!(write_run(&asked), "convoy:patrol-run ts=77 before=5 asked=human");
+        assert_eq!(read_run(&write_run(&asked)), Some(asked));
+        assert_eq!(asked_ref(Layout::Hidden, "triage"), "refs/convoy/asked/triage");
+        assert_eq!(write_asked(88, "h1"), "convoy:patrol-asked ts=88 host=h1");
+        assert_eq!(read_asked(&write_asked(88, "h1")), Some(88));
+        assert_eq!(read_asked("convoy:patrol-run ts=88"), None);
     }
 }

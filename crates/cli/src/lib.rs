@@ -415,6 +415,12 @@ enum Command {
         #[arg(long, env = ROLE_ENV)]
         role: Option<String>,
     },
+    /// Have a patrol run now, past its interval and its daily bound: the next tick runs it
+    #[command(after_long_help = include_str!("help/patrol-now.txt"))]
+    PatrolNow {
+        /// The patrol, as the repo's config names it under `patrols`
+        name: String,
+    },
     /// Declare a patrol's run or a proposal's over: the next tick ends it (a worker's command)
     #[command(after_long_help = include_str!("help/over.txt"))]
     Over {
@@ -681,7 +687,7 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 22] = [
+const ACTS: [&str; 23] = [
     "dispatch",
     "close",
     "escalate",
@@ -699,6 +705,7 @@ const ACTS: [&str; 22] = [
     "verdict",
     "intake",
     "lock",
+    "patrol-now",
     "over",
     "inspected",
     "gate",
@@ -937,6 +944,7 @@ impl Command {
             Command::Verdict { issue, .. } => of("verdict", issue, None),
             Command::Intake { issue, .. } => of("intake", issue, None),
             Command::Lock { issue, .. } => of("lock", issue, None),
+            Command::PatrolNow { name } => Acting::new("patrol-now").on(name.trim().to_string()),
             Command::Over { run } => Acting::new("over").on(format!("run {}", run.trim())),
             Command::Inspected { .. } => match std::env::var(INSPECTION_ENV) {
                 Ok(worker) => Acting::new("inspected").on(worker),
@@ -1187,6 +1195,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
             lock::lock(&config, &gh, issue.number(), role)
         }
+        Command::PatrolNow { name } => patrol::ask(name.trim(), &this_host(), now),
         Command::Over { run } => {
             if let Ok(issue) = std::env::var(ISSUE_ENV) {
                 anyhow::bail!(
@@ -1283,6 +1292,7 @@ mod tests {
         &["send", "7", "--stage", "build", "--text", "x"],
         &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
         &["lock", "7"],
+        &["patrol-now", "sweep"],
         &["over", "--run", "sweep"],
         &["inspected", "--found", "heavy", "--text", "x"],
         &["guard"],
@@ -1334,6 +1344,7 @@ mod tests {
         };
         assert_eq!(named(&["park", "--issue", "46", "--instance", "a-h1-1"]), "park #46");
         assert_eq!(named(&["over", "--run", " sweep "]), "over run sweep");
+        assert_eq!(named(&["patrol-now", "sweep"]), "patrol-now sweep");
         assert_eq!(
             named(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]),
             "takeover from b-h2-2"

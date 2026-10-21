@@ -87,10 +87,14 @@ fn standing(world: &World, now: u64) -> Vec<String> {
     .collect()
 }
 
-/// The fleet's refs the remote has for patrols.
+/// The fleet's refs the remote has for patrols: their runs, and the asks for one.
 fn refs(world: &World) -> Vec<String> {
     let listed = git(&world.bare, &["for-each-ref", "--format=%(refname)"]);
-    listed.lines().filter(|name| name.contains("patrol")).map(str::to_string).collect()
+    listed
+        .lines()
+        .filter(|name| name.contains("patrol") || name.contains("/asked/"))
+        .map(str::to_string)
+        .collect()
 }
 
 /// The checkout of the patrol `sweep`: the one its last run was started in.
@@ -900,4 +904,123 @@ fn a_patrol_that_ran_its_max_runs_a_day_waits_until_the_oldest_is_a_day_old() {
     assert_eq!(after["patrols"][0]["runs_in_day"], 1, "13_600 is a day old at 100_000");
     let spent = planned(&world, "alpha", 99_999);
     assert_eq!(spent["patrols"][0]["standing"], "not_due", "the interval comes first");
+}
+
+/// A human asks for a run of the patrol `sweep` now, at `now`.
+fn ask(world: &World, now: u64) -> common::Answer {
+    world.afk(&["patrol-now", "sweep", "--now", &now.to_string()])
+}
+
+/// The subject of the record of the patrol `sweep`'s last run.
+fn last_record(world: &World) -> String {
+    git(&world.bare, &["log", "-1", "--format=%s", "refs/convoy/patrol/sweep"])
+}
+
+#[test]
+fn a_human_asks_for_a_patrols_run_now_past_its_interval_and_its_day() {
+    let world = bound("[sweep]");
+    let team = world.root.join("github/acme/team");
+    let bounded = "```yaml\nby: dev\ndo: sweep\nevery: 1h\nmax_open: 2\nmax_runs_a_day: 2\n```\n";
+    commit(&team, "patrols/sweep.md", bounded);
+    let run = |at: u64| {
+        assert_eq!(patrolled(&tick(&world, at)), ["patrol sweep done"], "at {at}");
+        workers_leave(&world);
+        assert_eq!(patrolled(&tick(&world, at + 100)), ["end_patrol sweep done"]);
+    };
+    run(10_000);
+    run(13_600);
+    assert_eq!(standing(&world, 14_000), ["sweep not_due"]);
+    assert_eq!(standing(&world, 17_200), ["sweep spent"]);
+    assert!(!last_record(&world).contains("asked"), "a due run is no asked one");
+
+    // Within the interval, and the day's runs at the bound: asked for, it is due…
+    let asked = ask(&world, 14_000).ok();
+    assert_eq!(
+        asked,
+        json!({"patrol": "sweep", "asked": 14_000, "ref": "refs/convoy/asked/sweep",
+            "woke": false})
+    );
+    assert_eq!(git(&world.clone, &["status", "--porcelain"]), "", "no file changed");
+    let plan = planned(&world, "alpha", 14_010);
+    assert_eq!(plan["patrols"][0]["standing"], "due", "{plan}");
+    assert_eq!(plan["patrols"][0]["asked"], 14_000);
+    let page = world.render_panel(
+        "patrol-asked",
+        &["--instance", "alpha", "--host", "h1", "--now", "14010"],
+        (1440, 1000),
+    );
+    assert!(page.html.contains("due: a human asked for it, and the next tick runs it"));
+
+    // …the next tick runs it, records it as asked for, and the ask is answered.
+    assert_eq!(patrolled(&tick(&world, 14_010)), ["patrol sweep done"]);
+    assert_eq!(last_record(&world), "convoy:patrol-run ts=14010 before=10000,13600 asked=human");
+    assert_eq!(refs(&world), ["refs/convoy/claim/patrol-sweep", "refs/convoy/patrol/sweep"]);
+    let running = planned(&world, "alpha", 14_020);
+    assert_eq!(running["patrols"][0]["standing"], "running");
+    assert!(running["patrols"][0].get("asked").is_none(), "{running}");
+    workers_leave(&world);
+    assert_eq!(patrolled(&tick(&world, 14_100)), ["end_patrol sweep done"]);
+
+    // The schedule goes on from it: `every` after its start, and it is one of the day's.
+    assert_eq!(standing(&world, 17_609), ["sweep not_due"]);
+    let after = planned(&world, "alpha", 17_610);
+    assert_eq!(after["patrols"][0]["standing"], "spent", "{after}");
+    assert_eq!(after["patrols"][0]["runs_in_day"], 3);
+    assert_eq!(after["patrols"][0]["until"], 13_600 + 86_400);
+    assert_eq!(patrolled(&tick(&world, 17_610)), Vec::<String>::new());
+}
+
+#[test]
+fn an_ask_is_refused_with_why_while_what_holds_a_due_run_holds_it() {
+    let world = bound("[sweep]");
+    let asks = |world: &World| refs(world).into_iter().filter(|name| name.contains("asked"));
+
+    world.issue(30, &["fleet-lock"]);
+    let locked = ask(&world, 10_000);
+    assert_eq!(locked.json["see"], "afkconvoy help patrols");
+    let locked = locked.error();
+    assert!(locked.contains("a fleet lock stands (#30)"), "{locked}");
+    world.close_issue(30);
+
+    // A run still going, mine or a peer's.
+    assert_eq!(patrolled(&tick(&world, 10_000)), ["patrol sweep done"]);
+    let going = ask(&world, 10_010).error();
+    assert!(going.contains("a run of the patrol `sweep` is still going"), "{going}");
+    workers_leave(&world);
+    assert_eq!(patrolled(&tick(&world, 10_100)), ["end_patrol sweep done"]);
+
+    for issue in [12, 13] {
+        world.issue(issue, &[]);
+        take_in(&world, issue);
+    }
+    let full = ask(&world, 10_200).error();
+    assert!(full.contains("have reached its `max_open` (2 of 2)"), "{full}");
+
+    let unknown = world.afk(&["patrol-now", "audit", "--now", "10200"]).error();
+    assert!(unknown.contains("runs no patrol \"audit\": it runs sweep"), "{unknown}");
+    assert_eq!(asks(&world).count(), 0, "nothing was recorded");
+
+    // Room again: the ask is taken.
+    world.close_issue(13);
+    assert_eq!(ask(&world, 10_300).ok()["asked"], 10_300);
+    assert_eq!(asks(&world).collect::<Vec<_>>(), ["refs/convoy/asked/sweep"]);
+}
+
+#[test]
+fn of_two_hosts_asked_at_once_one_runs_the_patrol() {
+    let world = bound("[sweep]");
+    assert_eq!(patrolled(&tick_as(&world, "alpha", 10_000)), ["patrol sweep done"]);
+    workers_leave(&world);
+    assert_eq!(patrolled(&tick_as(&world, "alpha", 10_100)), ["end_patrol sweep done"]);
+
+    // Both ask; one ask stands, and one run answers it.
+    ask(&world, 10_200).ok();
+    ask(&world, 10_201).ok();
+    assert_eq!(standing(&world, 10_202), ["sweep due"]);
+    assert_eq!(patrolled(&tick_as(&world, "alpha", 10_210)), ["patrol sweep done"]);
+    assert_eq!(patrolled(&tick_as(&world, "beta", 10_211)), Vec::<String>::new());
+    assert_eq!(planned(&world, "beta", 10_212)["patrols"][0]["standing"], "peer_running");
+    workers_leave(&world);
+    assert_eq!(patrolled(&tick_as(&world, "alpha", 10_300)), ["end_patrol sweep done"]);
+    assert_eq!(standing(&world, 10_301), ["sweep not_due"], "the ask was answered");
 }
