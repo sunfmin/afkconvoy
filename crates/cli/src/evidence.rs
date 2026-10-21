@@ -104,7 +104,7 @@ pub fn of(worktree: &Worktree, worker: &str, since: u64) -> Option<PathBuf> {
 
 /// The processes `pids`, as `ps` says them: no environment, which may hold
 /// what a human keeps to themselves.
-fn tree(pids: &[u32]) -> String {
+pub(crate) fn tree(pids: &[u32]) -> String {
     if pids.is_empty() {
         return "(no process left)\n".to_string();
     }

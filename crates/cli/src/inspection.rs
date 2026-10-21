@@ -7,11 +7,19 @@
 //! Who inspects, which hot worker is next and what is typed are the core's
 //! (`afkconvoy_core::inspection`).
 //!
-//! One inspection runs on the host at a time, across its fleets: the `run`
-//! whose inspection runs holds the host's turn — a file of the cache it keeps
-//! locked, saying what runs — and another hot worker waits for it. A `run`
-//! that dies lets the turn go with it. An inspection takes no slot of the
-//! `concurrency`.
+//! When admission has held back new workers for one reason past its span, the
+//! host is inspected the same way (`afkconvoy_core::host_inspection`), once an
+//! episode: the stock consult, given what holds the disk, the load or the
+//! memory (`host_evidence`). What it found is kept in the cache every fleet of
+//! the host shares, for `doctor` and the panel to show beside admission's
+//! reading; where it found the fleet outgrowing its host, the fleet opens one
+//! issue saying so.
+//!
+//! One inspection runs on the host at a time, of either kind, across its
+//! fleets: the `run` whose inspection runs holds the host's turn — a file of
+//! the cache it keeps locked, saying what runs — and another waits for it. A
+//! `run` that dies lets the turn go with it. An inspection takes no slot of
+//! the `concurrency`.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Read;
@@ -20,9 +28,10 @@ use std::path::PathBuf;
 
 use afkconvoy_core::config::Bound;
 use afkconvoy_core::harness::Harness;
+use afkconvoy_core::host_inspection::{self, Act, Due, Holding, Item, Reason, act, covered};
 use afkconvoy_core::hot::Limits;
 use afkconvoy_core::inspection::{
-    self, CHECKOUT, Fields, Finding, Found, Hot, Inspected, Inspector as Who, inspector, over,
+    self, CHECKOUT, Fields, Finding, Found, Hot, Inspected, Inspector as Who, Kind, inspector, over,
 };
 use afkconvoy_core::role::{Facts, On, Start, workflow_of};
 use afkconvoy_core::stage_record::history;
@@ -32,14 +41,17 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::admission::Admission;
 use crate::copies::{Copies, Copy, cache};
 use crate::dispatch::Agent;
 use crate::evidence;
 use crate::fleet::Fleet;
 use crate::gh::GitHub;
 use crate::git::Repo;
+use crate::host_evidence::{self, Own};
 use crate::hot::{HotNow, held_said};
 use crate::log::What;
+use crate::measure;
 use crate::orca::{Source, Worktree};
 use crate::role::ToldRules;
 use crate::stage::records_of;
@@ -47,6 +59,12 @@ use crate::team::keep;
 
 /// The host's turn to inspect, in the cache every fleet of the host shares.
 const TURN: &str = "inspection.lock";
+
+/// What the last host inspection found, in the same cache.
+const LAST: &str = "host-inspection/last.json";
+
+/// What a host inspection's turn names as the worker it inspects.
+pub const THE_HOST: &str = "the host";
 
 /// An inspection running on the host, as its turn says it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +78,9 @@ pub struct Running {
     pub by: String,
     /// When it started, in epoch seconds.
     pub since: u64,
+    /// Of a host inspection: what admission held back for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_back_by: Option<Reason>,
 }
 
 fn turn_file() -> Result<PathBuf> {
@@ -110,16 +131,99 @@ pub fn on_host() -> Option<Running> {
 
 /// `running`, as `doctor` and the panel show it.
 pub fn json(running: &Running) -> Value {
-    json!({"repo": running.repo, "worker": running.worker, "issue": running.issue,
-        "by": running.by, "since": running.since})
+    let kind = if running.held_back_by.is_some() { Kind::Host } else { Kind::Worker };
+    json!({"kind": kind.word(), "repo": running.repo, "worker": running.worker,
+        "issue": running.issue, "by": running.by, "since": running.since,
+        "held_back_by": running.held_back_by.map(Reason::word)})
+}
+
+/// What the last host inspection on this host found, whichever of its fleets
+/// started it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Last {
+    /// The main checkout of the repo whose fleet started it.
+    pub repo: String,
+    pub reason: Reason,
+    /// What admission read as it started.
+    pub reading: String,
+    pub by: String,
+    pub started: u64,
+    pub ended: u64,
+    /// What it found, in its word; `nothing` where it said nothing in time.
+    pub found: String,
+    pub said: String,
+    /// The issue it had the fleet open, or the one already open that said so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<u64>,
+    /// What it freed, and what it named for a human to.
+    #[serde(default)]
+    pub reclaimed: Vec<Item>,
+    #[serde(default)]
+    pub named: Vec<Item>,
+}
+
+impl Last {
+    /// What it freed and named, in words; empty where neither.
+    pub fn freed_said(&self) -> String {
+        freed_said(&self.reclaimed, &self.named)
+    }
+}
+
+/// What a host inspection freed — `reclaimed` — and `named`, in words, each
+/// with what it held, for the log and the panel; empty where neither.
+pub fn freed_said(reclaimed: &[Item], named: &[Item]) -> String {
+    let each = |items: &[Item]| {
+        items
+            .iter()
+            .map(|item| format!("{} ({})", item.path, measure::said(item.bytes)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut said = vec![];
+    if !reclaimed.is_empty() {
+        let freed = measure::said(host_inspection::bytes_of(reclaimed));
+        said.push(format!("freed {freed}: {}", each(reclaimed)));
+    }
+    if !named.is_empty() {
+        said.push(format!("named for a human: {}", each(named)));
+    }
+    said.join(" · ")
+}
+
+/// What the last host inspection on this host found; none where none ended.
+pub fn last_on_host() -> Option<Last> {
+    let said = std::fs::read_to_string(cache().ok()?.join(LAST)).ok()?;
+    serde_json::from_str(&said).ok()
+}
+
+/// Keeps `last` as what the last host inspection on this host found.
+fn keep_last(last: &Last) -> Result<()> {
+    let file = cache()?.join(LAST);
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot make {}", dir.display()))?;
+    }
+    std::fs::write(&file, serde_json::to_vec_pretty(last)?)
+        .with_context(|| format!("cannot write {}", file.display()))
+}
+
+/// `last`, as `doctor` shows it beside admission's reading.
+pub fn last_json(last: &Last) -> Value {
+    serde_json::to_value(last).unwrap_or(Value::Null)
+}
+
+/// What an inspection this `run` started is of.
+enum Subject {
+    /// A hot worker: `why` it turned hot, and its terminal as the inspection
+    /// started, what is typed at.
+    Worker { hot: HotNow, why: String, terminal: Option<String> },
+    /// The host, on which admission held back for `reason` `since` then: what
+    /// it read, and the label the issue a `fleet` finding opens carries.
+    Host { reason: Reason, since: u64, reading: String, escalate_label: String },
 }
 
 /// An inspection this `run` started, while it runs.
 struct Inspection {
-    hot: HotNow,
-    why: String,
-    /// The hot worker's terminal, as the inspection started: what is typed at.
-    terminal: Option<String>,
+    on: Subject,
     checkout: Worktree,
     started: u64,
     by: String,
@@ -162,6 +266,23 @@ impl As {
             As::Bound { role, .. } => role,
         }
     }
+}
+
+/// The stock consult of the repo `bound` to a team, which inspects the host:
+/// on the repo's default harness.
+fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
+    let copies = Copies::here()?;
+    let kept = keep(&fleet.gh, &copies, &bound.team, &fleet.config.labels())?;
+    Ok(As::Bound {
+        harness: bound.harness,
+        role: stock::ROLE.to_string(),
+        skill: stock::SKILL.to_string(),
+        role_copy: copies.stock()?,
+        team_copy: kept.copy.clone(),
+        team_rules: kept.rules(),
+        host_user: kept.team.host_user,
+        escalate_label: kept.team.escalate_label.clone(),
+    })
 }
 
 /// Who inspects the hot worker on `issue` — none of a patrol's — in a repo
@@ -213,12 +334,48 @@ pub struct Inspector {
     limits: Limits,
     inspected: Inspected,
     running: Option<Box<Inspection>>,
+    /// Admission, tick after tick: the host is inspected once it held back
+    /// for one reason past `span`.
+    holding: Holding,
+    span: u64,
+    /// The main checkout of the repo, and each of its issues with its stage,
+    /// as the last tick saw them: what a host inspection lists its worktrees
+    /// with.
+    repo: PathBuf,
+    stages: Vec<(u64, String)>,
 }
 
 impl Inspector {
     /// The inspector of a `run` whose hot workers are found under `limits`.
     pub fn new(limits: Limits) -> Inspector {
-        Inspector { limits, inspected: Inspected::default(), running: None }
+        Inspector {
+            limits,
+            inspected: Inspected::default(),
+            running: None,
+            holding: Holding::default(),
+            span: host_inspection::SPAN,
+            repo: PathBuf::new(),
+            stages: vec![],
+        }
+    }
+
+    /// What a tick at `now` found: `admission` holding back or admitting, in
+    /// the repo whose main checkout is `repo`, its issues at `stages`.
+    pub fn ticked(
+        &mut self,
+        now: u64,
+        admission: &Admission,
+        repo: PathBuf,
+        stages: Vec<(u64, String)>,
+    ) {
+        self.holding.ticked(now, &admission.reasons());
+        self.span = admission.span;
+        (self.repo, self.stages) = (repo, stages);
+    }
+
+    /// The host inspection due at `now`, if one is.
+    fn host_due(&self, now: u64) -> Option<Due> {
+        self.holding.due(now, self.span)
     }
 
     /// The hot workers `hot`, as the core's rules see them.
@@ -233,13 +390,16 @@ impl Inspector {
 
     /// Whether it is to look again soon: its inspection runs, or a hot worker
     /// of `hot` waits for one.
-    pub fn busy(&self, hot: &[HotNow]) -> bool {
-        self.running.is_some() || self.inspected.next(&Inspector::seen(hot)).is_some()
+    pub fn busy(&self, hot: &[HotNow], now: u64) -> bool {
+        self.running.is_some()
+            || self.inspected.next(&Inspector::seen(hot)).is_some()
+            || self.host_due(now).is_some()
     }
 
     /// One look, at `now`, with `hot` the workers hot now: ends the
-    /// inspection that is over, and starts the next a hot worker waits for,
-    /// once the host's turn is free → what to log of it.
+    /// inspection that is over, and starts the next a hot worker waits for —
+    /// or, none waiting, the host's where one is due — once the host's turn
+    /// is free → what to log of it.
     pub fn step(&mut self, agent: &Agent, hot: &[HotNow], now: u64) -> Vec<What> {
         let mut said = vec![];
         if let Some(running) = &self.running {
@@ -249,11 +409,14 @@ impl Inspector {
                 return said;
             }
             let running = self.running.take().expect("running above");
-            said.push(end(running, finding));
+            said.push(end(running, finding, now));
         }
         let seen = Inspector::seen(hot);
         self.inspected.keep_to(&seen);
-        let Some(next) = self.inspected.next(&seen) else { return said };
+        let Some(next) = self.inspected.next(&seen) else {
+            said.extend(self.step_host(agent, now));
+            return said;
+        };
         let found = hot.iter().find(|hot| {
             hot.path.display().to_string() == next.worker && hot.episode.since == next.since
         });
@@ -277,6 +440,127 @@ impl Inspector {
             }
         }
         said
+    }
+
+    /// Starts the host's inspection at `now`, where one is due and no fleet
+    /// of the host inspected it in this episode → what to log of it.
+    fn step_host(&mut self, agent: &Agent, now: u64) -> Option<What> {
+        let due = self.host_due(now)?;
+        let reason = due.reason.word().to_string();
+        let last = last_on_host().map(|last| (last.reason, last.started));
+        if covered(last, &due) {
+            self.holding.record();
+            let said = "another fleet of this host inspected it in this episode".to_string();
+            return Some(What::HostInspected { reason, found: "covered".into(), said });
+        }
+        match self.start_host(agent, &due, now) {
+            Ok(Started::Waits) => None,
+            Ok(Started::Nobody(said)) => {
+                self.holding.record();
+                Some(What::HostInspected { reason, found: "none".into(), said })
+            }
+            Ok(Started::Running(inspection)) => {
+                self.holding.record();
+                let by = inspection.by.clone();
+                let reading = match &inspection.on {
+                    Subject::Host { reading, .. } => reading.clone(),
+                    Subject::Worker { .. } => String::new(),
+                };
+                self.running = Some(inspection);
+                Some(What::HostInspecting { reason, by, reading })
+            }
+            Err(error) => {
+                self.holding.record();
+                let said = format!("it could not be started: {error:#}");
+                Some(What::HostInspected { reason, found: "failed".into(), said })
+            }
+        }
+    }
+
+    /// Starts the host's inspection for `due` at `now`: the stock consult,
+    /// in a checkout of the base branch of its own, once the host's turn is
+    /// taken and what it is given is taken down.
+    fn start_host(&self, agent: &Agent, due: &Due, now: u64) -> Result<Started> {
+        if on_host().is_some() {
+            return Ok(Started::Waits);
+        }
+        let fleet = Fleet::open(now)?;
+        let (who, escalate_label) = match &fleet.config.bound {
+            Some(bound) => {
+                let who = stock_as(&fleet, bound)?;
+                let label = match &who {
+                    As::Bound { escalate_label, .. } => escalate_label.clone(),
+                    As::Unbound => fleet.config.escalate_label.clone(),
+                };
+                (who, label)
+            }
+            None => (As::Unbound, fleet.config.escalate_label.clone()),
+        };
+        let harness = match &who {
+            As::Unbound => fleet.config.harness(),
+            As::Bound { harness, .. } => *harness,
+        };
+        let launch = agent.command(harness)?;
+        let running = Running {
+            repo: fleet.repo.main_checkout()?.display().to_string(),
+            worker: THE_HOST.to_string(),
+            issue: None,
+            by: who.role().to_string(),
+            since: now,
+            held_back_by: Some(due.reason),
+        };
+        let Some(turn) = take_turn(&running)? else { return Ok(Started::Waits) };
+        // Read again as it starts: what it is given is what holds back now.
+        let admission = Admission::read(&fleet.repo.dir)?;
+        let reading = admission
+            .holds()
+            .iter()
+            .filter(|hold| Reason::of(hold) == due.reason)
+            .map(|hold| admission.said(hold))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let own = Own { repo: &self.repo, stages: &self.stages };
+        let evidence = host_evidence::take(&admission, due.reason, &own)?;
+        let source = Source::of(&fleet.repo)?;
+        if let Some(left) = Worktree::named(&source, CHECKOUT)? {
+            left.remove()?;
+        }
+        let checkout = Worktree::cut(&source, CHECKOUT, &fleet.base_tip()?, None)?;
+        let started = (|| {
+            checkout.record_inspection_kind(Kind::Host)?;
+            let path = checkout.path.display().to_string();
+            let fields = host_inspection::Fields {
+                reason: due.reason,
+                reading: if reading.is_empty() { "it admits again" } else { &reading },
+                minutes: now.saturating_sub(due.since) / 60,
+                evidence: &evidence.display().to_string(),
+                checkout: &path,
+                role: who.role(),
+                skill: match &who {
+                    As::Unbound => stock::SKILL,
+                    As::Bound { skill, .. } => skill,
+                },
+                instruction: matches!(who, As::Unbound).then_some(stock::INSTRUCTION),
+                inspected_command: &crate::own_command_in(&path).fixed(" inspected").own(),
+            };
+            let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
+            let brief = checkout.write_brief(&brief)?;
+            let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
+            let handle = checkout.start(&command, now)?;
+            checkout.await_ready(&handle, agent.ready_timeout)?;
+            checkout.deliver(&handle, &brief)
+        })();
+        if let Err(error) = started {
+            let _ = checkout.remove();
+            return Err(error);
+        }
+        Ok(Started::Running(Box::new(Inspection {
+            on: Subject::Host { reason: due.reason, since: due.since, reading, escalate_label },
+            checkout,
+            started: now,
+            by: who.role().to_string(),
+            _turn: turn,
+        })))
     }
 
     /// Starts the inspection of `hot` at `now`, in a checkout of the base
@@ -312,6 +596,7 @@ impl Inspector {
             issue: hot.issue,
             by: who.role().to_string(),
             since: now,
+            held_back_by: None,
         };
         let Some(turn) = take_turn(&running)? else { return Ok(Started::Waits) };
         let source = Source::of(&fleet.repo)?;
@@ -353,9 +638,7 @@ impl Inspector {
             return Err(error);
         }
         Ok(Started::Running(Box::new(Inspection {
-            hot: hot.clone(),
-            why,
-            terminal,
+            on: Subject::Worker { hot: hot.clone(), why, terminal },
             checkout,
             started: now,
             by: who.role().to_string(),
@@ -415,36 +698,146 @@ fn command(
     Ok(harness.in_role(launch, &start))
 }
 
-/// Ends `inspection`, which found `finding`: types it at the hot worker —
-/// not what is not its own — leaves it on the issue, and removes the
-/// inspection's checkout, its terminal with it → what to log of it. What
-/// cannot be done of it is said, and the rest done all the same.
-fn end(inspection: Box<Inspection>, finding: Option<Finding>) -> What {
-    let worker = inspection.hot.worker.clone();
+/// Ends `inspection`, which found `finding` — at `now` — and removes its
+/// checkout, its terminal with it → what to log of it. What cannot be done of
+/// it is said, and the rest done all the same.
+fn end(inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> What {
+    let mut what = match &inspection.on {
+        Subject::Worker { hot, why, terminal } => {
+            end_worker(hot, why, terminal.as_deref(), &inspection.by, finding)
+        }
+        Subject::Host { reason, since, reading, escalate_label } => {
+            let host = (*reason, *since, reading.as_str(), escalate_label.as_str());
+            end_host(host, &inspection, finding, now)
+        }
+    };
+    if let Err(error) = inspection.checkout.remove() {
+        let removed = format!(" · its checkout was not removed: {error:#}");
+        match &mut what {
+            What::Inspected { said, .. } | What::HostInspected { said, .. } => {
+                said.push_str(&removed)
+            }
+            _ => {}
+        }
+    }
+    what
+}
+
+/// Ends the host's inspection of what admission held back for — `reason`,
+/// `since` then, having read `reading` — which found `finding` at `now`: keeps it for
+/// `doctor` and the panel, and where it found the fleet outgrowing its host,
+/// opens one issue saying so with `escalate_label`, none while one is open.
+fn end_host(
+    (reason, since, reading, escalate_label): (Reason, u64, &str, &str),
+    inspection: &Inspection,
+    finding: Option<Finding>,
+    now: u64,
+) -> What {
+    let mut said = match &finding {
+        Some(finding) => finding.said.split_whitespace().collect::<Vec<_>>().join(" "),
+        None => format!("it said nothing in {} minutes", inspection::TIME_LIMIT / 60),
+    };
+    let found = finding.as_ref().map_or("nothing", |finding| finding.found.word());
+    let (reclaimed, named) = finding
+        .as_ref()
+        .map(|finding| (finding.reclaimed.clone(), finding.named.clone()))
+        .unwrap_or_default();
+    let freed = freed_said(&reclaimed, &named);
+    if !freed.is_empty() {
+        said.push_str(&format!(" · {freed}"));
+    }
+    let mut issue = None;
+    if let Some(finding) = finding.as_ref().filter(|finding| finding.found == Found::Fleet) {
+        // How long admission had held back as the inspection started.
+        let minutes = inspection.started.saturating_sub(since) / 60;
+        match open_outgrown((reason, minutes, reading), escalate_label, finding) {
+            Ok((number, opened)) => {
+                issue = Some(number);
+                let did = if opened { "opened" } else { "already open:" };
+                said.push_str(&format!(" · {did} #{number}"));
+            }
+            Err(error) => said.push_str(&format!(" · no issue was opened: {error:#}")),
+        }
+    }
+    let last = Last {
+        repo: Repo::here()
+            .and_then(|repo| repo.main_checkout())
+            .map(|main| main.display().to_string())
+            .unwrap_or_default(),
+        reason,
+        reading: reading.to_string(),
+        by: inspection.by.clone(),
+        started: inspection.started,
+        ended: now,
+        found: found.to_string(),
+        said: finding.as_ref().map_or_else(|| said.clone(), |finding| finding.said.clone()),
+        issue,
+        reclaimed,
+        named,
+    };
+    if let Err(error) = keep_last(&last) {
+        said.push_str(&format!(" · what it found was not kept: {error:#}"));
+    }
+    What::HostInspected { reason: reason.word().to_string(), found: found.to_string(), said }
+}
+
+/// Opens the issue that says the fleet outgrows its host — admission having
+/// held back for `reason` for `minutes`, reading `reading` — as `finding`
+/// said → its number, and whether it was opened now: none is while one is
+/// open.
+fn open_outgrown(
+    (reason, minutes, reading): (Reason, u64, &str),
+    escalate_label: &str,
+    finding: &Finding,
+) -> Result<(u64, bool)> {
+    let gh = GitHub { dir: Repo::here()?.dir };
+    let open = gh
+        .carrying(host_inspection::LABEL)?
+        .into_iter()
+        .find_map(|(number, closed)| closed.is_none().then_some(number));
+    match (act(finding.found, open), open) {
+        (Act::Record, Some(number)) => Ok((number, false)),
+        (Act::Record, None) => Err(anyhow!("{} opens no issue", finding.found.word())),
+        (Act::Open, _) => {
+            let body = host_inspection::report(reason, reading, &finding.said, minutes);
+            let labels = [escalate_label, host_inspection::LABEL];
+            Ok((gh.open_issue(host_inspection::TITLE, &body, &labels)?, true))
+        }
+    }
+}
+
+/// Ends the inspection of the hot worker `hot`, `why` it turned hot, by
+/// `by`, which found `finding`: types it at the worker's `terminal` — not
+/// what is not its own — and leaves it on the issue.
+fn end_worker(
+    hot: &HotNow,
+    why: &str,
+    terminal: Option<&str>,
+    by: &str,
+    finding: Option<Finding>,
+) -> What {
+    let worker = hot.worker.clone();
     let mut said = match &finding {
         Some(finding) => finding.said.split_whitespace().collect::<Vec<_>>().join(" "),
         None => format!("it said nothing in {} minutes", inspection::TIME_LIMIT / 60),
     };
     let typed = finding.as_ref().and_then(Finding::typed);
-    match (typed, &inspection.terminal) {
+    match (typed, terminal) {
         (Some(line), Some(terminal)) => {
-            if let Err(error) = inspection.hot.worktree().tell(terminal, &line) {
+            if let Err(error) = hot.worktree().tell(terminal, &line) {
                 said.push_str(&format!(" · it could not be typed at the worker: {error:#}"));
             }
         }
         (Some(_), None) => said.push_str(" · the worker had no terminal to type it at"),
         (None, _) => {}
     }
-    if let Some(issue) = inspection.hot.issue {
-        let body = inspection::comment(&worker, &inspection.why, &inspection.by, finding.as_ref());
+    if let Some(issue) = hot.issue {
+        let body = inspection::comment(&worker, why, by, finding.as_ref());
         let commented =
             Repo::here().and_then(|repo| GitHub { dir: repo.dir }.comment(issue, &body));
         if let Err(error) = commented {
             said.push_str(&format!(" · no comment was left on #{issue}: {error:#}"));
         }
-    }
-    if let Err(error) = inspection.checkout.remove() {
-        said.push_str(&format!(" · its checkout was not removed: {error:#}"));
     }
     let found = finding.map_or("nothing", |finding| finding.found.word());
     What::Inspected { worker, found: found.to_string(), said }
@@ -452,7 +845,11 @@ fn end(inspection: Box<Inspection>, finding: Option<Finding>) -> What {
 
 /// `afkconvoy inspected`: keeps what the inspection in this checkout found,
 /// for its `run` to type at the hot worker and leave on its issue.
-pub fn inspected(found: Found, said: &str) -> Result<Value> {
+///
+/// Of the host, it first frees `reclaim` — only where it found something
+/// `reclaimable`, and none of it where any may not be — and measures `name`,
+/// for a human to free.
+pub fn inspected(found: Found, said: &str, reclaim: &[PathBuf], name: &[PathBuf]) -> Result<Value> {
     if said.trim().is_empty() {
         anyhow::bail!("say what was found, where and why: the text is empty");
     }
@@ -465,6 +862,55 @@ pub fn inspected(found: Found, said: &str) -> Result<Value> {
             checkout.path.display()
         );
     }
-    checkout.record_inspected(&Finding { found, said: said.trim().to_string() })?;
-    Ok(json!({"inspected": true, "found": found.word()}))
+    let kind = checkout.inspection_kind()?;
+    if !found.of(kind) {
+        let words: Vec<&str> = kind.found().into_iter().map(Found::word).collect();
+        anyhow::bail!(
+            "an inspection of the {} finds one of: {}, not {}",
+            kind.word(),
+            words.join(", "),
+            found.word()
+        );
+    }
+    if kind == Kind::Worker && !(reclaim.is_empty() && name.is_empty()) {
+        anyhow::bail!("an inspection of a worker frees and names nothing on the host");
+    }
+    if found != Found::Reclaimable && !reclaim.is_empty() {
+        anyhow::bail!("only what is reclaimable is freed, not what is {}", found.word());
+    }
+    let named = crate::reclaim::name_all(name)?;
+    let reclaimed = crate::reclaim::reclaim_all(reclaim)?;
+    let finding = Finding { reclaimed, named, ..Finding::new(found, said.trim()) };
+    checkout.record_inspected(&finding)?;
+    Ok(json!({"inspected": true, "found": found.word(), "kind": kind.word(),
+        "reclaimed": finding.reclaimed, "freed": host_inspection::bytes_of(&finding.reclaimed),
+        "named": finding.named}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_turn_says_which_kind_of_inspection_holds_it() {
+        // As a `run` of a version before host inspections wrote it.
+        let worker: Running = serde_json::from_str(
+            r##"{"repo": "/src/widgets", "worker": "#7", "issue": 7, "by": "stock-consult", "since": 700}"##,
+        )
+        .unwrap();
+        assert_eq!(json(&worker)["kind"], "worker");
+        let host = Running {
+            worker: THE_HOST.into(),
+            issue: None,
+            held_back_by: Some(Reason::Disk),
+            ..worker
+        };
+        let said = json(&host);
+        assert_eq!(
+            (said["kind"].as_str(), said["held_back_by"].as_str()),
+            (Some("host"), Some("disk"))
+        );
+        let again: Running = serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        assert_eq!(again, host);
+    }
 }

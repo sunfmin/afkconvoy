@@ -1,42 +1,90 @@
 WHEN TO RUN IT
 
-  Once, as the last command of an inspection: a worker started on a hot worker — one
-  whose processes take more than their share of the host — to find out what takes so
-  much and why. Its brief ends with the exact line. It found one of three things:
+  Once, as the last command of an inspection. Its brief ends with the exact line. An
+  inspection is of one of two kinds, and finds in words of its own.
+
+  Of a hot worker — one whose processes take more than their share of the host — to
+  find out what takes so much and why. It found one of three things:
 
     wrong     the work is wrong: say what is wrong and where
     heavy     the work really is that heavy: say which command is
     not-its   what takes so much is not the worker's: a daemon outside its tree,
               another fleet's gate
 
+  Of the host, once admission has held back new workers for one reason — the load,
+  memory or disk — past its span (`afkconvoy run --help`, ADMISSION), to find out what
+  holds what admission read and why. It found one of three things:
+
+    reclaimable  something on the disk can be rebuilt — anywhere under the home
+                 folder, not only the fleet's worktrees: free it with --reclaim
+    fleet        the fleet's own shape outgrows the host — its concurrency times one
+                 worktree's fresh build past the free disk, say: say the arithmetic
+    not-its      what holds it is outside this fleet and cannot be rebuilt — another
+                 fleet's work, a daemon, a user's files: name it
+
+  A host inspection frees and names with paths under the home folder:
+
+    --reclaim <path>  with reclaimable only, and as often as wanted: frees the path.
+                      A git checkout no process uses — none has its working directory
+                      there or a file open there (`lsof`), the landing train's while a
+                      gate runs among them — and no worker holds: what git ignores in it
+                      (`git clean -fdX`: target/, node_modules, .build), never a file
+                      git tracks or a change no commit holds; and where it is the
+                      worktree of a closed issue holding no change, the worktree whole.
+                      A tool's cache, whole or a part: ~/Library/Caches,
+                      ~/Library/Developer/Xcode/DerivedData, ~/.cargo/registry/cache,
+                      ~/.cargo/git/checkouts, ~/.npm/_cacache, uv's and pip's caches,
+                      ~/.gradle/caches. Anything else is refused.
+    --name <path>     as often as wanted: names the path, with what it holds, for a
+                      human to free. What cannot be rebuilt or is expensive to fetch
+                      again — model weights (Hugging Face's and ModelScope's,
+                      ~/.ollama, ~/.lmstudio), Docker's images, ~/Downloads, media, a
+                      user's files — is named, and never deleted: --reclaim refuses it.
+
+  Every path is checked before any is freed: one that may not be is refused, saying
+  why, and nothing of the line is freed.
+
 WHO RUNS IT
 
   A worker started as an inspection, in its own worktree: the checkout it was started in
-  (`afkconvoy-inspection`). Run anywhere else it is refused.
+  (`afkconvoy-inspection`). Run anywhere else it is refused, and so is a word of the
+  other kind.
 
 WHAT IT READS AND WRITES
 
   It keeps what was found in that checkout's own git dir — a second run says it again,
   and the last one stands — and wakes the `run` of this host (`afkconvoy wake --help`).
-  That `run` ends the inspection at its next look, within 30 seconds: it types what was
-  found at the hot worker's terminal — not `not-its` — telling it to fix the work, or to
-  run the heavy command through `afkconvoy exclusive` from now on; leaves a comment on
-  the hot worker's issue saying what was found and why, which is no stage record; and
-  removes the inspection's checkout, its terminal with it. The issue stays at its stage,
-  and the hot worker keeps working.
+  That `run` ends the inspection at its next look, within 30 seconds, and removes its
+  checkout, its terminal with it.
+
+  Of a hot worker, it types what was found at the worker's terminal — not `not-its` —
+  telling it to fix the work, or to run the heavy command through `afkconvoy exclusive`
+  from now on, and leaves a comment on the worker's issue saying what was found and why,
+  which is no stage record. The issue stays at its stage, and the worker keeps working.
+
+  Of the host, it keeps what was found in the cache every fleet of the host shares
+  (host-inspection/; `afkconvoy help cache`), shown by the panel and `doctor` beside
+  admission's reading, with what was freed and named. For `fleet` it opens one issue
+  in the repo saying so — with the escalate label and the label fleet-outgrows-host —
+  and none while one carrying that label is open.
 
 WHAT IT ANSWERS
 
-  {"inspected": true, "found", "woke"} — what was found is kept; `woke` is whether a `run`
-  on this host was told.
+  {"inspected": true, "found", "kind", "reclaimed", "freed", "named", "woke"} — what
+  was found is kept; `kind` is worker or host; `reclaimed` and `named` are each
+  [{path, bytes}] it freed and named, `freed` the bytes freed in all; `woke` is
+  whether a `run` on this host was told.
 
-  Errors: the text is empty; the checkout it runs in is no inspection's.
+  Errors: the text is empty; the checkout it runs in is no inspection's; the word is
+  not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim
+  of another word than reclaimable; a path that may not be freed, or does not exist.
 
 WHAT TRIPS YOU UP
 
-  - An inspection is given 15 minutes. One that has said nothing by then is ended, and
-    nothing is typed at the worker; the comment says it found nothing in time.
-  - It types nothing itself: the `run` does. An inspection that types at the hot worker
-    as well tells it twice.
+  - An inspection is given 15 minutes. One that has said nothing by then is ended:
+    nothing is typed at the worker, and the comment, or the host's record, says it
+    found nothing in time.
+  - It types nothing itself, and opens no issue: the `run` does. An inspection that
+    does as well does it twice.
   - An inspection is held as a consult: it commits, pushes and changes the host never
-    (`afkconvoy guard --help`).
+    (`afkconvoy guard --help`). What a host inspection frees, `inspected` frees for it.

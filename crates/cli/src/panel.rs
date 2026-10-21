@@ -21,7 +21,7 @@ use crate::claims::Me;
 use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::hot::{HotNow, held_said};
-use crate::inspection::Running;
+use crate::inspection::{Last, Running};
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 
@@ -135,6 +135,9 @@ pub struct Panel {
     /// The inspection running on the host as the tick ended, whichever of
     /// its fleets started it.
     pub inspection: Option<Running>,
+    /// What the last host inspection of the host found, whichever of its
+    /// fleets started it.
+    pub host_inspected: Option<Last>,
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -244,6 +247,7 @@ impl Panel {
             now: fleet.now,
             hot: vec![],
             inspection: None,
+            host_inspected: None,
         }
     }
 
@@ -712,7 +716,19 @@ pub fn render(panel: &Panel) -> String {
         );
     }
 
-    if let Some(running) = &panel.inspection {
+    if let Some(reason) = panel.inspection.as_ref().and_then(|running| running.held_back_by) {
+        let running = panel.inspection.as_ref().expect("held back by above");
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\" data-inspection=\"host\"><b>Host inspection</b>: admission \
+             held back new workers for {} past its span; <b>the host</b> is inspected by \
+             <code>{by}</code>, for {} so far, for {}.</section>",
+            reason.word(),
+            lasted(panel.now.saturating_sub(running.since)),
+            esc(&running.repo),
+            by = esc(&running.by),
+        );
+    } else if let Some(running) = &panel.inspection {
         let issue = running.issue.map(|issue| format!(" on #{issue}")).unwrap_or_default();
         let _ = writeln!(
             out,
@@ -723,6 +739,24 @@ pub fn render(panel: &Panel) -> String {
             esc(&running.repo),
             worker = esc(&running.worker),
             by = esc(&running.by),
+        );
+    }
+
+    if let Some(last) = &panel.host_inspected {
+        let issue = last.issue.map(|issue| format!(" (#{issue})")).unwrap_or_default();
+        let freed = last.freed_said();
+        let freed = if freed.is_empty() { freed } else { format!(" · {}", esc(&freed)) };
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
+             {} ago: admission held back for {} ({}); <code>{by}</code> found \
+             <b>{found}</b>{issue}: {}{freed}</section>",
+            lasted(panel.now.saturating_sub(last.ended)),
+            last.reason.word(),
+            esc(&last.reading),
+            esc(&last.said),
+            found = esc(&last.found),
+            by = esc(&last.by),
         );
     }
 
@@ -857,6 +891,7 @@ mod tests {
             now,
             hot: vec![],
             inspection: None,
+            host_inspected: None,
         }
     }
 
@@ -880,6 +915,7 @@ mod tests {
             now: 1000,
             hot: vec![],
             inspection: None,
+            host_inspected: None,
         };
         let page = render(&panel);
         assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));
@@ -918,11 +954,65 @@ mod tests {
             issue: Some(7),
             by: "stock-consult".into(),
             since: 700,
+            held_back_by: None,
         });
         let inspecting = render(&panel);
         assert!(
             inspecting.contains("<b>#7</b> on #7 is inspected by <code>stock-consult</code>, for 5m so far, in /src/widgets."),
             "{inspecting}"
+        );
+    }
+
+    #[test]
+    fn a_host_inspection_is_shown_as_it_runs_and_what_it_found_beside_admission() {
+        use afkconvoy_core::host_inspection::Reason;
+        let mut panel = page_of(1000);
+        panel.inspection = Some(Running {
+            repo: "/src/widgets".into(),
+            worker: "the host".into(),
+            issue: None,
+            by: "stock-consult".into(),
+            since: 700,
+            held_back_by: Some(Reason::Disk),
+        });
+        let running = render(&panel);
+        assert!(running.contains("held back new workers for disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
+        for (found, issue) in [("reclaimable", None), ("fleet", Some(12)), ("not-its", None)] {
+            panel.inspection = None;
+            panel.host_inspected = Some(Last {
+                repo: "/src/widgets".into(),
+                reason: Reason::Disk,
+                reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it".into(),
+                by: "stock-consult".into(),
+                started: 100,
+                ended: 400,
+                found: found.into(),
+                said: "five worktrees of 14 GiB".into(),
+                issue,
+                reclaimed: vec![afkconvoy_core::host_inspection::Item {
+                    path: "/w/a/target".into(),
+                    bytes: 14 << 30,
+                }],
+                named: vec![],
+            });
+            let page = render(&panel);
+            if issue.is_some() {
+                assert!(page.contains("found <b>fleet</b> (#12)"), "{page}");
+            }
+            assert!(page.contains(&format!("data-host-inspected=\"{found}\"")), "{page}");
+            assert!(
+                page.contains(
+                    "admission held back for disk (22.9 GiB of the checkout's disk is free"
+                ),
+                "{page}"
+            );
+            assert!(page.contains(&format!("found <b>{found}</b>")), "{page}");
+        }
+        assert!(render(&panel).contains("found <b>not-its</b>: five worktrees"));
+        assert!(
+            render(&panel)
+                .contains("five worktrees of 14 GiB · freed 14.0 GiB: /w/a/target (14.0 GiB)"),
+            "what it freed is shown"
         );
     }
 

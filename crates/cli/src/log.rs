@@ -117,6 +117,15 @@ pub enum What {
     /// what it found (`wrong`, `heavy`, `not-its`), `nothing` in time, or
     /// `none` where nobody inspects it; `said` is what it said, or why.
     Inspected { worker: String, found: String, said: String },
+    /// Admission held back for `reason` past its span, and the host's
+    /// inspection started (`crate::inspection`), `by` the role it was
+    /// started in; `reading` is what admission read.
+    HostInspecting { reason: String, by: String, reading: String },
+    /// The host's inspection ended, or none was started: `found` is what it
+    /// found (`reclaimable`, `fleet`, `not-its`), `nothing` in time, `failed`
+    /// where it could not be started, or `covered` where another fleet of the
+    /// host inspected it in the episode; `said` is what it said, or why.
+    HostInspected { reason: String, found: String, said: String },
 }
 
 /// Why a tick started.
@@ -201,6 +210,13 @@ impl Entry {
             What::Inspected { worker, found, said } => {
                 format!("inspection: {worker}: {found} · {said}")
             }
+            What::HostInspecting { reason, by, reading } => format!(
+                "host inspection: admission held back for {reason} past its span ({reading}): \
+                 the host is inspected by {by}"
+            ),
+            What::HostInspected { reason, found, said } => {
+                format!("host inspection: held back for {reason}: {found} · {said}")
+            }
         }
     }
 
@@ -234,7 +250,9 @@ impl Entry {
             | What::Hot { .. }
             | What::Cooled { .. }
             | What::Inspecting { .. }
-            | What::Inspected { .. } => None,
+            | What::Inspected { .. }
+            | What::HostInspecting { .. }
+            | What::HostInspected { .. } => None,
         }
     }
 

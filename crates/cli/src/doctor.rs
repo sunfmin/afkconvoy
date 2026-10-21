@@ -1404,6 +1404,9 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
+    // Beside admission's reading: what the last host inspection found of it.
+    host["admission"]["inspected"] = crate::inspection::last_on_host()
+        .map_or(Value::Null, |last| crate::inspection::last_json(&last));
     let mut answer = json!({
         "host": host,
         "fleet": fleet_json(&run),

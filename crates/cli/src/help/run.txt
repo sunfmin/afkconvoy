@@ -45,6 +45,26 @@ WHAT IT READS AND WRITES
   error. What cannot be read holds nothing back. `plan` and `doctor` say the
   thresholds in force and what the host reads.
 
+  When admission has held back for one reason — load, memory or disk — at every tick
+  for ten minutes in a row (AFKCONVOY_ADMIT_INSPECT_AFTER, in whole seconds, says the
+  host's own span), `run` starts an inspection of the host: the stock consult, in a
+  checkout of its own, given what was taken down as it started — admission's reading
+  and shares; for disk, what each of this host's worktrees of every fleet holds, with
+  its issue, its stage and whether a worker holds it, the landing train's among them,
+  the fleet's caches and the largest directories of the whole volume under the home
+  folder outside them (`du -x`, at most five minutes); for load or
+  memory, the process trees of each worker and of the train, and the hottest processes
+  outside them. Holding back for reasons that change starts none. It runs once an
+  episode, which ends once admission has admitted for five minutes, and not where
+  another fleet of the host inspected it in the same episode. It says what it found
+  with `afkconvoy inspected`: reclaimable, fleet or not-its. For reclaimable it frees
+  what can be rebuilt under the home folder — what git ignores in a checkout no process
+  uses, a closed issue's worktree, a tool's cache — and names what cannot, never
+  deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the
+  repo, with the escalate label and the label fleet-outgrows-host, and no other while
+  that one is open. What it found is a line of the log, and shown by the panel and
+  `doctor` beside admission's reading.
+
   A `run` idle ten minutes checks then, tick due or not, and again ten minutes after
   a check that kept the host awake. It puts the host to sleep only when all hold:
     - it worked — held a claim, or had something on the landing train — since the
@@ -66,8 +86,10 @@ WHAT IT READS AND WRITES
   inspection of it once per episode: a worker in the role of the stage's consult, in
   a checkout of its own, that says what it found with `afkconvoy inspected`. One
   inspection runs on this host at a time, across its fleets; it takes no slot of the
-  `concurrency`, and is ended after 15 minutes. While one runs or a hot worker waits
-  for one, `run` sleeps 30 seconds at most.
+  `concurrency`, and is ended after 15 minutes. A host inspection is held to the same:
+  of either kind, one runs on the host at a time, and a hot worker waiting for one goes
+  first. While one runs, or a hot worker or the host waits for one, `run` sleeps 30
+  seconds at most.
 
   It also keeps a log on this host, in a file under the cache directory (runs/;
   `afkconvoy help cache` says where it is and what moves it): one line when it
