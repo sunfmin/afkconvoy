@@ -114,9 +114,9 @@ role that stage names.
                         bound it, and the rework past one escalates
      blocked            parked until the issues it waits on close
      already-satisfied  nothing needs changing: the workflow ends
-     escalate           to the stage's consult where it names one — a worker in a
-                        more senior role, who rules or lets it through — else to a
-                        human
+     escalate           to the stage's consult — a worker in a more senior role, or
+                        afkconvoy's stock consult where it names none, who rules or
+                        lets it through — or to a human where it says so
 4. The next stage. The tick that reads a verdict ends that stage's claim and starts
    the stage that follows, under a claim of its own, with a new worker: the one that
    judges a piece of work never inherits the reasoning of the one that wrote it.
@@ -529,7 +529,7 @@ nothing there.
         harness: claude-code           # optional
         model: <model>                 # optional; its harness's own name for it
         writes: false                  # optional; default true
-        escalate: { to: <role>, do: <skill> }                  # optional: the consult
+        escalate: { to: <role>, do: <skill> } | { to: human }  # optional: the consult
         on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
     land: { by: <role>, do: <skill> }  # required exactly when a pass leads to land
 ````
@@ -546,11 +546,10 @@ judges never inherits the reasoning of the one that wrote.
 Code, pi, or codex, Codex. It is a key of a stage a role performs and of a patrol —
 wherever `model` is one — and nowhere else. One that names none takes the default,
 which is the `harness` of the repo's config, and claude-code where that names none.
-`model` is passed to the harness; `afkconvoy check` holds it against the models pi
-lists.
+`model` is passed to the harness; `afkconvoy check` holds it against pi's models.
 
-`writes: false` has the guard refuse the stage's worker a commit and a push
-(`afkconvoy guard --help`): mark every stage that judges so.
+`writes: false` has the guard refuse the stage's worker a commit and a push: mark
+every stage that judges so.
 ````
 
 ### VERDICTS, AND WHERE EACH LEADS
@@ -564,7 +563,7 @@ issue. Where an issue is, is derived from those records each tick and stored now
     reject             back to the stage `on.reject` names: always an earlier one
     blocked            parked; the same stage runs again when its blockers close
     already-satisfied  the workflow ends, with nothing landed
-    escalate           to the stage's consult where it names one, else to a human
+    escalate           to the stage's consult (below), or a human where it says so
 
 Only `pass` and `reject` are keys of `on`: the other three mean the same at every
 stage. `done` ends the workflow with nothing to land; `land` hands the issue's PR to
@@ -603,14 +602,16 @@ is handed on (below), naming the breaker and every rework's stage and reason.
 ### A CONSULT
 
 ````text
-`escalate: { to, do }` names a more senior role to ask before a human is. Whatever
-would hand the issue to a human at that stage — its `escalate`, a tripped breaker, a
-failure, a workflow changed under it — starts a worker in the role `to`, skill `do`,
-where that human would stand, free to run what they would (`afkconvoy help humans`).
-It rules (`afkconvoy rule`: the stage runs again; on an `escalate` that is one more
-rework in total), sends the issue on, or lets it through. The same hand-off again
-goes to a human. The chain is one role long, and a consult writes no code: one that
-left a commit has failed. It runs on the default harness.
+A stage's consult is asked before a human is: whatever would hand the issue to a human
+there — its `escalate`, a tripped breaker, a failure, a workflow changed under it —
+starts it where that human would stand, free to run what they would (`afkconvoy help
+humans`). `escalate: { to, do }` names a more senior role, on the default harness;
+where a stage names none, the stock consult, afkconvoy's own, is asked on the stage's
+harness — its one instruction is to decide as the human would. `{ to: human }` names
+none: a human, straight. A consult rules (`afkconvoy rule`: the stage runs again; on an
+`escalate` that is one more rework in total), sends the issue on, or lets it through.
+The same hand-off again goes to a human. The chain is one role long, and a consult
+writes no code: one that left a commit has failed.
 ````
 
 ### A STAGE BY: HUMAN
@@ -621,9 +622,8 @@ no `harness` and no `model`; it starts no worker and holds no claim. The issue w
 there until a human declares the stage's verdict with `afkconvoy verdict`.
 
 Anywhere else a human is reached by an escalation: what a consult let through, or
-what a stage that names none hands on. The human answers
-with `afkconvoy rule`, and the stage runs again under the ruling, or puts the issue at
-a stage of their choosing with `afkconvoy send`.
+what a stage with `to: human` hands on. The human answers with `afkconvoy rule` — the
+stage runs again under the ruling — or `afkconvoy send`, to a stage of their choosing.
 ````
 
 ### A LANDING
@@ -1070,11 +1070,11 @@ checkout of the repo the issue is of.
 ````text
 Something failed — a worker went silent and its nudge changed nothing, a stage
 ended with no valid verdict, a gate stayed red, a stage that may not write left a
-commit, a `blocked` will never clear — or a stage declared `escalate`. Where the
-stage names a consult (`escalate: { to, do }` in its workflow), that consult was
-asked first, as a human would be, and let it through: a human is reached only then,
-or where the stage names none. The comment says which, and for an `escalate` gives
-the question, often with the options.
+commit, a `blocked` will never clear — or a stage declared `escalate`. A consult was
+asked first, as you would be, and let it through: the stage's own, or afkconvoy's
+stock consult where it names none and in an unbound repo — unless the stage says
+`escalate: { to: human }` or the config `escalate_to: human`. The comment says which,
+and for an `escalate` gives the question, often with the options.
 
 For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and
 what failed it once fails it again. In an unbound repo there is no stage to run again:
@@ -1116,7 +1116,7 @@ each, and any read-only command, the gate too; never commit, push or change the 
 ````text
 Rework went past what the workflow allows — in total, or as rejections in a row by
 one stage — and the issue went to the consult in place of that rework, and to a
-human where the stage names none or it trips again after the consult ruled. The
+human where the stage says `to: human` or it trips again after the consult ruled. The
 comment names the breaker and lists every rework with its stage and why. Answer as
 an escalation: `afkconvoy rule` with what settles it, or `afkconvoy send`.
 `afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
@@ -1448,8 +1448,8 @@ A limit on rework — in total for an issue, or as rejections in a row by one st
 _Avoid_: retry limit, circuit
 
 **Consult**:
-A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human.
-_Avoid_: review (a stage may be named it), second opinion, handoff
+A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human. Where a stage names none, and in an unbound repo, the **stock consult** stands in: afkconvoy's own, in no role of a team, whose one instruction is to decide as the human would. A stage that says `escalate: { to: human }`, or an unbound repo whose config says `escalate_to: human`, has no consult.
+_Avoid_: review (a stage may be named it), second opinion, handoff, default consult
 
 **Ruling**:
 What a consult or a human decides on an issue handed on. The stage runs again under it; a human's also hands the issue back to the fleet and starts the rework counts over, a consult's starts none over.

@@ -19,11 +19,11 @@ AN ESCALATION
 
   Something failed — a worker went silent and its nudge changed nothing, a stage
   ended with no valid verdict, a gate stayed red, a stage that may not write left a
-  commit, a `blocked` will never clear — or a stage declared `escalate`. Where the
-  stage names a consult (`escalate: { to, do }` in its workflow), that consult was
-  asked first, as a human would be, and let it through: a human is reached only then,
-  or where the stage names none. The comment says which, and for an `escalate` gives
-  the question, often with the options.
+  commit, a `blocked` will never clear — or a stage declared `escalate`. A consult was
+  asked first, as you would be, and let it through: the stage's own, or afkconvoy's
+  stock consult where it names none and in an unbound repo — unless the stage says
+  `escalate: { to: human }` or the config `escalate_to: human`. The comment says which,
+  and for an `escalate` gives the question, often with the options.
 
   For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and
   what failed it once fails it again. In an unbound repo there is no stage to run again:
@@ -61,7 +61,7 @@ A TRIPPED BREAKER
 
   Rework went past what the workflow allows — in total, or as rejections in a row by
   one stage — and the issue went to the consult in place of that rework, and to a
-  human where the stage names none or it trips again after the consult ruled. The
+  human where the stage says `to: human` or it trips again after the consult ruled. The
   comment names the breaker and lists every rework with its stage and why. Answer as
   an escalation: `afkconvoy rule` with what settles it, or `afkconvoy send`.
   `afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
