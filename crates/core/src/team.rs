@@ -73,6 +73,8 @@ const PRECEDENTS_KEY: &str = "precedents";
 /// The key of the team file that says whether a worker of the team is given
 /// the host user's skills and rules (`Team::host_user`).
 const HOST_USER_KEY: &str = "host_user";
+/// The key of a role named as a map that names its directory.
+const DIR_KEY: &str = "dir";
 /// The key of a stage and of a patrol that names the harness its worker
 /// runs: a key wherever `model` is one, and nowhere else.
 const HARNESS_KEY: &str = "harness";
@@ -83,6 +85,8 @@ const LABEL_KEY: &str = "label";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
 pub const TEAM_KEYS: [&str; 4] = ["escalate_label", "roles", PRECEDENTS_KEY, HOST_USER_KEY];
+/// The keys of a role named as a map, beside the directory that names it.
+pub const ROLE_KEYS: [&str; 2] = [DIR_KEY, HOST_USER_KEY];
 pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
 pub const WORKFLOW_KEYS: [&str; 5] =
     [LABEL_KEY, "max_rework", "max_consecutive_rework", "stages", LAND];
@@ -309,10 +313,11 @@ pub struct Team {
     /// Whether it has team rules: a `RULES` in its directory, which every
     /// worker of the team is given with that directory.
     pub rules: bool,
-    /// Whether every worker of the team is given the host user's own skills
-    /// and rules beside its role's (docs/adr/0017): `true` unless the team
-    /// file says `host_user: false`, which keeps a role the same on every
-    /// host.
+    /// Whether a worker of the team is given the host user's own skills and
+    /// rules beside its role's (docs/adr/0017): `true` unless the team file
+    /// says `host_user: false`, which keeps a role the same on every host.
+    /// The default of every role, which a role may set for itself
+    /// (`Role::host_user`); the stock consult takes it.
     pub host_user: bool,
     #[field(Vec<Role>[roles])]
     pub roles: Vec<Role>,
@@ -689,6 +694,10 @@ pub struct Role {
     pub name: String,
     /// Its directory: a whole repo, or a subdirectory of one.
     pub dir: RepoDir,
+    /// Whether its worker is given the host user's own skills and rules
+    /// beside its role's: what the team file says of it, `{ dir, host_user }`,
+    /// and the team's (`Team::host_user`) where it says nothing.
+    pub host_user: bool,
     /// The head of the repo's default branch when it was read.
     pub commit: String,
     pub skills: Vec<String>,
@@ -1016,7 +1025,7 @@ pub fn role_dirs(team: &File, at: Option<&RepoDir>) -> Vec<RepoDir> {
     let Ok(Node::Map(entries)) = &team.yaml else { return dirs };
     if let Some(Node::Map(roles)) = get(entries, "roles") {
         for (_, named) in roles {
-            if let Node::Text(named) = named
+            if let Some(named) = role_named(named)
                 && let Ok(dir) = role_dir(named, at)
                 && !dirs.contains(&dir)
             {
@@ -1025,6 +1034,19 @@ pub fn role_dirs(team: &File, at: Option<&RepoDir>) -> Vec<RepoDir> {
         }
     }
     dirs
+}
+
+/// The directory a role's entry of a team file names: the entry itself, or
+/// its `dir` where it is a map. `None` where it names none as text.
+fn role_named(entry: &Node) -> Option<&str> {
+    match entry {
+        Node::Text(named) => Some(named),
+        Node::Map(entries) => match get(entries, DIR_KEY) {
+            Some(Node::Text(named)) => Some(named),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The three ways a team's file names a role.
@@ -1123,9 +1145,9 @@ pub fn duration(text: &str) -> Option<u64> {
 /// The team `sources` define, or everything wrong with them.
 pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let mut faults: Vec<Fault> = vec![];
-    let (escalate_label, roles) = team_file(&mut faults, sources);
-    let precedents = precedents_key(&mut faults, sources, &roles);
     let host_user = host_user_key(&mut faults, sources);
+    let (escalate_label, roles) = team_file(&mut faults, sources, host_user);
+    let precedents = precedents_key(&mut faults, sources, &roles);
     let mut workflows: Vec<Workflow> = vec![];
     for file in &sources.workflows {
         let mut report = Report { file: &file.path, faults: &mut faults };
@@ -1356,8 +1378,13 @@ impl Roles<'_> {
     }
 }
 
-/// Reads the team file → its escalate label and its roles.
-fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Roles<'n>) {
+/// Reads the team file → its escalate label and its roles, each given the
+/// host user's skills and rules as `host_user` says unless it says otherwise.
+fn team_file<'n>(
+    faults: &mut Vec<Fault>,
+    sources: &'n Sources,
+    host_user: bool,
+) -> (String, Roles<'n>) {
     let mut report = Report { file: &sources.team.path, faults };
     let mut names: Vec<&str> = vec![];
     let mut loaded: Vec<Role> = vec![];
@@ -1399,17 +1426,12 @@ fn team_file<'n>(faults: &mut Vec<Fault>, sources: &'n Sources) -> (String, Role
                 .fault(&key, format!("a role cannot be named `{HUMAN}`: `by: {HUMAN}` is a human"));
             continue;
         }
-        let dir = match named {
-            Node::Text(named) => match role_dir(named, sources.at.as_ref()) {
-                Ok(dir) => dir,
-                Err(problem) => {
-                    report.fault(&key, problem);
-                    continue;
-                }
-            },
-            other => {
-                let problem =
-                    format!("must be a role's directory, as {ROLE_FORMS}, not {}", kind(other));
+        let Some((named, host_user)) = role_entry(&mut report, &key, named, host_user) else {
+            continue;
+        };
+        let dir = match role_dir(named, sources.at.as_ref()) {
+            Ok(dir) => dir,
+            Err(problem) => {
                 report.fault(&key, problem);
                 continue;
             }
@@ -1462,6 +1484,7 @@ of its own is added to them, and never stands in their place",
             Some((_, Ok(read))) => loaded.push(Role {
                 name: name.clone(),
                 dir,
+                host_user,
                 commit: read.commit.clone(),
                 skills: read.skills.clone(),
                 above: read.above.clone(),
@@ -1476,6 +1499,7 @@ of its own is added to them, and never stands in their place",
             Some((_, Err(Unread::Unreached(why)))) => loaded.push(Role {
                 name: name.clone(),
                 dir,
+                host_user,
                 commit: String::new(),
                 skills: vec![],
                 above: vec![],
@@ -1488,6 +1512,54 @@ of its own is added to them, and never stands in their place",
         }
     }
     (escalate_label, Roles { known: true, names, loaded })
+}
+
+/// Reads the entry `key` of a team file's `roles` → the directory it names
+/// and whether its worker is given the host user's skills and rules: `team`,
+/// the team's, unless it is a map that says. `None` when it is at fault,
+/// reported. Where its directory is right is `role_dir`'s to say.
+fn role_entry<'n>(
+    report: &mut Report,
+    key: &str,
+    entry: &'n Node,
+    team: bool,
+) -> Option<(&'n str, bool)> {
+    let entries = match entry {
+        Node::Text(named) => return Some((named, team)),
+        Node::Map(_) => map(report, key, entry, &ROLE_KEYS)?,
+        other => {
+            let problem = format!(
+                "must be a role's directory, as {ROLE_FORMS}, or a map of its `{DIR_KEY}` and \
+`{HOST_USER_KEY}`, not {}",
+                kind(other)
+            );
+            report.fault(key, problem);
+            return None;
+        }
+    };
+    let host_user = match get(entries, HOST_USER_KEY) {
+        None => Some(team),
+        Some(Node::Bool(host_user)) => Some(*host_user),
+        Some(other) => {
+            let problem = format!("must be true or false, not {}", kind(other));
+            report.fault(&under(key, HOST_USER_KEY), problem);
+            None
+        }
+    };
+    let named = match get(entries, DIR_KEY) {
+        Some(Node::Text(named)) => Some(named.as_str()),
+        None => {
+            report.fault(&under(key, DIR_KEY), "required, and it is missing".to_string());
+            None
+        }
+        Some(other) => {
+            let problem =
+                format!("must be a role's directory, as {ROLE_FORMS}, not {}", kind(other));
+            report.fault(&under(key, DIR_KEY), problem);
+            None
+        }
+    };
+    Some((named?, host_user?))
 }
 
 /// Reads the team file's `precedents` → who proposes a ruling as one;
@@ -2466,6 +2538,49 @@ land: { by: dev, do: land }
         }
     }
 
+    #[test]
+    fn a_role_may_set_its_own_host_user_and_one_named_by_its_directory_takes_the_team_s() {
+        let feature = [("workflows/feature.md", FEATURE)];
+        let host_user = |team: &str| -> Vec<(String, bool)> {
+            let team = load(&sources(team, &feature)).unwrap();
+            team.roles.iter().map(|role| (role.name.clone(), role.host_user)).collect()
+        };
+        let own = |value: &str, team: &str| {
+            format!(
+                "roles:\n  dev: acme/dev\n  reviewer: {{ dir: acme/reviewer, {value} }}\n{team}"
+            )
+        };
+        let said = |dev: bool, reviewer: bool| {
+            vec![("dev".to_string(), dev), ("reviewer".to_string(), reviewer)]
+        };
+        assert_eq!(host_user(&own("host_user: false", "")), said(true, false));
+        assert_eq!(host_user(&own("host_user: true", "host_user: false\n")), said(false, true));
+        assert_eq!(host_user(&own("host_user: false", "host_user: false\n")), said(false, false));
+        // A map that names its directory alone takes the team's too.
+        assert_eq!(
+            host_user("roles:\n  dev: acme/dev\n  reviewer: { dir: acme/reviewer }\n"),
+            said(true, true)
+        );
+        let fault = |team: &str| {
+            let faults = load(&sources(team, &feature)).unwrap_err();
+            let [fault] = &faults[..] else { panic!("one fault: {faults:#?}") };
+            (fault.key.clone(), fault.problem.clone())
+        };
+        let (key, problem) = fault(&own("host_user: \"no\"", ""));
+        assert_eq!(key, "roles.reviewer.host_user");
+        assert_eq!(problem, "must be true or false, not text");
+        let (key, problem) = fault(&own("host_user: false, model: opus", ""));
+        assert_eq!(key, "roles.reviewer.model");
+        assert!(problem.starts_with("unknown key; the keys here are: dir, host_user"), "{problem}");
+        let (key, problem) = fault("roles:\n  dev: acme/dev\n  reviewer: { host_user: false }\n");
+        assert_eq!(
+            (key.as_str(), problem.as_str()),
+            ("roles.reviewer.dir", "required, and it is missing")
+        );
+        let (key, _) = fault("roles:\n  dev: acme/dev\n  reviewer: [acme/reviewer]\n");
+        assert_eq!(key, "roles.reviewer");
+    }
+
     /// A workflow whose second stage, by `dev`, has `rest` as the rest of it,
     /// and whose `land` is `land`.
     fn landed(rest: &str, land: &str) -> String {
@@ -3188,7 +3303,8 @@ stages:
         }
         assert_eq!(
             misplaced("acme/hospital", "3"),
-            "must be a role's directory, as owner/repo, owner/repo/path or ./path, not a number"
+            "must be a role's directory, as owner/repo, owner/repo/path or ./path, or a map of \
+its `dir` and `host_user`, not a number"
         );
     }
 

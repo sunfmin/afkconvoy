@@ -69,7 +69,7 @@ The rules every role of a team works under, whatever its own rules add. They say
 _Avoid_: global rules, shared rules
 
 **Host user's skills and rules**:
-The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
+The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. A role may say it for itself, whatever the team says: `reviewer: { dir: ./roles/reviewer, host_user: false }` in `roles`; a role named by its directory alone takes the team's. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
 _Avoid_: global rules, user config, personal skills
 
 **Bound repo**:

@@ -871,6 +871,44 @@ fn a_worker_is_given_the_host_user_s_skills_and_rules_unless_its_team_turns_them
     dispatch(&world, 8).ok();
     let command = open_terminals(&world, &worktree(&world, 8))[0]["command"].clone();
     let command = command.as_str().unwrap();
-    assert!(!command.contains("host-user"), "{command}");
+    assert!(!command.contains(host_user(&world).to_str().unwrap()), "{command}");
     assert!(!world.cache().join("afkconvoy/harness/claude-code").exists());
+}
+
+#[test]
+fn a_role_may_keep_from_the_host_user_s_skills_and_rules_while_the_team_s_others_keep_them() {
+    let world = bound();
+    write(&world.home(), ".claude/CLAUDE.md", "the user's rules\n");
+    let team = world.root.join("github/acme/team");
+    let own = "reviewer: { dir: acme/reviewer, host_user: false }";
+    commit(&team, "team.md", &TEAM.replace("reviewer: acme/reviewer", own));
+    let command = |issue: u64| {
+        let command = open_terminals(&world, &worktree(&world, issue))[0]["command"].clone();
+        command.as_str().unwrap().to_string()
+    };
+    let kept = format!(" --add-dir '{}' ", host_user(&world).display());
+
+    // `dev` is named by its directory alone, and takes the team's: given them.
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(dispatch(&world, 7).ok()["stage"]["role"], "dev");
+    assert!(command(7).contains(&kept), "{}", command(7));
+    // `reviewer` says it for itself: given none of it.
+    world.issue(8, &["flow:audit"]);
+    assert_eq!(dispatch(&world, 8).ok()["stage"]["role"], "reviewer");
+    assert!(!command(8).contains(&kept), "{}", command(8));
+
+    // Whatever the team says: one that turns them off still has `reviewer`
+    // given them where it says so, and `dev` none.
+    let own = "reviewer: { dir: acme/reviewer, host_user: true }";
+    commit(
+        &team,
+        "team.md",
+        &TEAM.replace("reviewer: acme/reviewer", own).replace("```\n", "host_user: false\n```\n"),
+    );
+    world.issue(9, &["flow:feature"]);
+    dispatch(&world, 9).ok();
+    assert!(!command(9).contains(&kept), "{}", command(9));
+    world.issue(10, &["flow:audit"]);
+    dispatch(&world, 10).ok();
+    assert!(command(10).contains(&kept), "{}", command(10));
 }
