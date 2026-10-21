@@ -28,7 +28,7 @@ _Avoid_: namespace, fallback mode
 
 **Fleet state**:
 The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
-_Avoid_: run state, memory
+_Avoid_: run state, memory (a host's RAM)
 
 **Working set**:
 A tick's view of the fleet at one moment, derived from fleet state and dropped when the tick ends.
@@ -96,7 +96,7 @@ _Avoid_: type label
 
 **Intake**:
 Putting a flow label on an issue. A human does it on GitHub; a worker does it through the fleet, which records who did and holds the number of such issues still open under a limit.
-_Avoid_: enroll, admit, triage
+_Avoid_: enroll, admit (a tick starting new workers on a host not busy: admission), triage
 
 **Stage**:
 One step of a workflow: one skill of one role, performed by one new worker — or a decision waited for from a human.
