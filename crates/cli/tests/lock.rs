@@ -216,7 +216,7 @@ fn an_unbound_repo_names_its_own_lock_label_and_its_worker_is_on_record_with_no_
 }
 
 const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
-/// `build` names a consult; `review` names none.
+/// `build` names a consult; `review` goes to a human.
 const FEATURE: &str = "\
 ```yaml
 stages:
@@ -229,6 +229,7 @@ stages:
     by: reviewer
     do: review
     writes: false
+    escalate: { to: human }
     on: { pass: done, reject: build }
 ```
 ";
@@ -332,7 +333,7 @@ fn once_the_lock_closes_a_stage_that_declared_escalate_runs_again_and_a_pass_sta
         world.issue(issue, &["flow:feature"]);
     }
     assert_eq!(at_work(&world, 1000), ["dispatch 7 done", "dispatch 8 done", "dispatch 9 done"]);
-    // #8 is at `review`, which names no consult, before the base branch breaks.
+    // #8 is at `review`, which goes to a human, before the base branch breaks.
     declare(&world, 1010, 8, "build", "pass");
     assert_eq!(at_work(&world, 1020), ["advance 8 done", "dispatch 8 done"]);
 

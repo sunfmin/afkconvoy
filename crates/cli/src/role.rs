@@ -15,8 +15,8 @@ use afkconvoy_core::prompt::{
     stage_prompt,
 };
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
-use afkconvoy_core::stock;
 use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
+use afkconvoy_core::stock;
 use afkconvoy_core::team::{BY_DEFAULT, LAND, PRECEDENTS};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Context, Result, anyhow, bail};
@@ -150,7 +150,9 @@ impl Staged {
             .and_then(|stage| stage.harness(bound.harness))
             .unwrap_or(bound.harness);
         let (role, skill, role_copy) = match by {
-            Some((work, role)) => (role.name.clone(), work.skill.clone(), kept.role(role, harness)?),
+            Some((work, role)) => {
+                (role.name.clone(), work.skill.clone(), kept.role(role, harness)?)
+            }
             None => (stock::ROLE.to_string(), stock::SKILL.to_string(), Copies::here()?.stock()?),
         };
         Ok(Staged {

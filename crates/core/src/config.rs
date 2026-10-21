@@ -206,10 +206,12 @@ impl Config {
             (Some(_), Some(_)) => return Err(ConfigError::Unbound("escalate_to")),
             (Some(_), None) => None,
             (None, None) => Some(EscalateTo::Consult),
-            (None, Some(named)) => match EscalateTo::ALL.into_iter().find(|to| to.word() == named) {
-                Some(to) => Some(to),
-                None => return Err(ConfigError::NotAnEscalateTo(named.to_string())),
-            },
+            (None, Some(named)) => {
+                match EscalateTo::ALL.into_iter().find(|to| to.word() == named) {
+                    Some(to) => Some(to),
+                    None => return Err(ConfigError::NotAnEscalateTo(named.to_string())),
+                }
+            }
         };
         let bound = match settings.team {
             Some(team) => Some(Bound {

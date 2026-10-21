@@ -309,12 +309,13 @@ fn a_consult_s_own_escalate_always_goes_to_a_human() {
 }
 
 #[test]
-fn a_stage_that_names_no_consult_escalates_to_a_human_as_before() {
-    let world = bound(&FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", ""), 2);
+fn a_stage_that_says_to_a_human_escalates_to_a_human_as_before() {
+    let human = "    escalate: { to: human }\n";
+    let world = bound(&FEATURE.replace("    escalate: { to: reviewer, do: rule }\n", human), 2);
     asked(&world);
     let said = world.comments(7).join("\n");
     assert!(
-        said.contains("The stage `build` declared `escalate`, and it names no consult."),
+        said.contains("The stage `build` declared `escalate`, which it hands to a human."),
         "{said}"
     );
     assert!(world.labels(7).contains(&"ready-for-human".to_string()));

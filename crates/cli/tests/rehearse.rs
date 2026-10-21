@@ -13,6 +13,7 @@ stages:
   - name: plan
     by: dev
     do: plan
+    escalate: { to: human }
     on: { pass: build }
   - name: build
     by: dev
@@ -23,6 +24,7 @@ stages:
     by: reviewer
     do: review
     writes: false
+    escalate: { to: human }
     on: { pass: sign-off, reject: build }
   - name: sign-off
     by: human
@@ -152,7 +154,7 @@ fn blocked_parks_already_satisfied_ends_and_escalate_asks_the_consult_or_a_human
     let asked = rehearse(&world, "feature", &["escalate"]);
     assert_eq!(at(&asked["ends"]), "escalating plan by human: -");
     let reason = asked["ends"]["reason"].as_str().unwrap();
-    assert!(reason.contains("`plan` declared `escalate`, and it names no consult"), "{reason}");
+    assert!(reason.contains("`plan` declared `escalate`, which it hands to a human"), "{reason}");
 }
 
 #[test]
@@ -286,11 +288,11 @@ fn show_draws_every_stage_its_role_and_skill_and_every_pass_and_reject() {
     let feature = "\
 feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-┌───▶ plan      dev: plan · harness claude-code
+┌───▶ plan      dev: plan · harness claude-code · escalate → human
 │       ↓ pass → build
 │ ┌─▶ build     dev: implement · harness claude-code · escalate → reviewer: rule
 │ │     ↓ pass → review
-│ └── review    reviewer: review · harness claude-code · writes nothing · reject → build
+│ └── review    reviewer: review · harness claude-code · writes nothing · escalate → human · reject → build
 │       ↓ pass → sign-off
 └──── sign-off  human · reject → plan
         ↓ pass → land

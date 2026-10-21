@@ -133,7 +133,8 @@ pub enum ConsultOn {
 /// Why an issue is handed to a human.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// Its stage declared `escalate` and names no consult.
+    /// Its stage declared `escalate`, and hands that to a human: it says
+    /// `escalate: { to: human }`.
     Verdict,
     /// Its stage's consult let the escalation, or the hand-off, through.
     Consult,
@@ -152,7 +153,7 @@ impl Reason {
     /// The reason in the few words a tick's line has room for.
     pub fn brief(self) -> String {
         match self {
-            Reason::Verdict => "declared escalate, and names no consult".to_string(),
+            Reason::Verdict => "declared escalate, to a human".to_string(),
             Reason::Consult => "consult let it through".to_string(),
             Reason::Failed(failure) => failure.brief().to_string(),
             Reason::NoValidVerdict => "no valid verdict".to_string(),
@@ -166,7 +167,7 @@ impl Reason {
         let name = &stage.name;
         match self {
             Reason::Verdict => {
-                format!("the stage `{name}` declared `escalate`, and it names no consult")
+                format!("the stage `{name}` declared `escalate`, which it hands to a human")
             }
             Reason::Consult => format!("the consult of the stage `{name}` let it through"),
             Reason::Failed(failure) => format!("the stage `{name}` failed: {}", failure.brief()),
@@ -851,7 +852,7 @@ mod tests {
         // A human putting the issue at a stage starts what the consult ruled on over.
         let put = ruled.put(&workflow.stages()[1]);
         assert!(put.consults(Reason::Failed(Failure::Silent)));
-        // A stage that names no consult hands every failure to a human.
+        // A stage that goes to a human hands every failure to one.
         let planning = Place::enter(workflow);
         assert!(!planning.consults(Reason::Failed(Failure::Silent)));
         assert_eq!(said(&planning.failed(Failure::Refuted)), "human at plan: Failed(Refuted)");

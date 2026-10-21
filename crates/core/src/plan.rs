@@ -1052,7 +1052,7 @@ mod tests {
             reasons(&set.escalating),
             [
                 (4, "its flow label flow:chore names no workflow of the team".to_string()),
-                (8, "the stage `plan` declared `escalate`, and it names no consult".to_string()),
+                (8, "the stage `plan` declared `escalate`, which it hands to a human".to_string()),
                 (
                     12,
                     "its last stage passed it to the landing train, and no open PR closes it: \
