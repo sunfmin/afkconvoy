@@ -7,6 +7,7 @@
 //! a shell line; what a script, a variable or a quoted substitution hides
 //! gets past it. It stops a worker that errs, not one that means to get by.
 
+use crate::inspection::INSPECTION_ENV;
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
 use crate::precedent::PROPOSAL_ENV;
@@ -75,6 +76,9 @@ enum At {
     /// The proposal of a precedent: its worker commits and pushes, in its
     /// clone of the team's repo, and is held to what holds every worker.
     Proposal,
+    /// The inspection of the hot worker so named (docs/adr/0019): held as a
+    /// consult, whatever its facts say.
+    Inspection(String),
 }
 
 /// What the worker of one stage, or of one patrol, may not do, read from the
@@ -106,15 +110,18 @@ impl Limits {
         };
         // A patrol's worker is at no stage, and neither is a proposal's:
         // its facts name the patrol, or the issue whose ruling it proposes.
-        let at = match (var(PATROL_ENV), var(PROPOSAL_ENV)) {
-            (Some(patrol), _) => At::Patrol(patrol),
-            (None, Some(_)) => At::Proposal,
-            (None, None) => At::Stage(fact(STAGE_ENV)?),
+        // An inspection's is at none either: it names the hot worker.
+        let at = match (var(PATROL_ENV), var(PROPOSAL_ENV), var(INSPECTION_ENV)) {
+            (_, _, Some(worker)) => At::Inspection(worker),
+            (Some(patrol), _, None) => At::Patrol(patrol),
+            (None, Some(_), None) => At::Proposal,
+            (None, None, None) => At::Stage(fact(STAGE_ENV)?),
         };
+        let inspection = matches!(at, At::Inspection(_));
         Ok(Limits {
             at,
-            writes: flag(WRITES_ENV)?,
-            consult: flag(CONSULT_ENV)?,
+            writes: flag(WRITES_ENV)? && !inspection,
+            consult: flag(CONSULT_ENV)? || inspection,
             base_branch: fact(BASE_BRANCH_ENV)?,
             escalate_label: fact(ESCALATE_LABEL_ENV)?,
             lock_label: fact(LOCK_LABEL_ENV)?,
@@ -177,6 +184,12 @@ impl Limits {
             return Some(host_change(&format!("`git {subcommand}`")));
         }
         if COMMITS.contains(&subcommand) || subcommand == "push" {
+            if let At::Inspection(worker) = &self.at {
+                return Some(format!(
+                    "an inspection writes no code: `git {subcommand}` is refused. Say what you \
+                     found of {worker} with `afkconvoy inspected`, and the fleet tells it"
+                ));
+            }
             if self.consult {
                 return Some(format!(
                     "a consult writes no code: `git {subcommand}` is refused. Rule on what \
@@ -198,7 +211,7 @@ impl Limits {
                          nothing; say what you found in the text of your verdict"
                     ));
                 }
-                At::Stage(_) | At::Proposal => {}
+                At::Stage(_) | At::Proposal | At::Inspection(_) => {}
             }
         }
         None
@@ -599,6 +612,35 @@ mod tests {
         // The PR is a human's to merge.
         let merging = Call::shell("gh pr merge 31 --repo acme/team --squash");
         assert!(refused(&merging, &limits).is_some());
+    }
+
+    #[test]
+    fn an_inspection_is_held_as_a_consult_whatever_its_facts_say() {
+        // Started with a writing role's facts, it is held all the same.
+        let facts = Facts { on: On::Inspection("#7"), ..facts(true, false) };
+        let env = facts.env();
+        assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "an inspection has no stage");
+        let limits = Limits::read(|name| {
+            env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
+        })
+        .unwrap();
+        assert_eq!(
+            (&limits.at, limits.writes, limits.consult),
+            (&At::Inspection("#7".into()), false, true)
+        );
+        let commit = refused(&Call::shell("git commit -m x"), &limits).expect("a refusal");
+        assert!(
+            commit.contains("an inspection writes no code") && commit.contains("#7"),
+            "{commit}"
+        );
+        assert!(refused(&Call::shell("git push origin HEAD"), &limits).is_some());
+        for host in ["kill -9 4242", "rm -rf target", "git clean -fdx"] {
+            let why = refused(&Call::shell(host), &limits).unwrap_or_else(|| panic!("{host}"));
+            assert!(why.contains("does not change the host"), "{host}: {why}");
+        }
+        for looking in ["ps -o pid,command -p 4242", "sample 4242 5", "du -sh target"] {
+            assert_eq!(refused(&Call::shell(looking), &limits), None, "{looking}");
+        }
     }
 
     #[test]

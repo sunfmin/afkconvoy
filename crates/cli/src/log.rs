@@ -110,6 +110,13 @@ pub enum What {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         gone: bool,
     },
+    /// The inspection of a hot worker started (`crate::inspection`), `by`
+    /// the role it was started in.
+    Inspecting { worker: String, by: String },
+    /// The inspection of a hot worker ended, or none was started: `found` is
+    /// what it found (`wrong`, `heavy`, `not-its`), `nothing` in time, or
+    /// `none` where nobody inspects it; `said` is what it said, or why.
+    Inspected { worker: String, found: String, said: String },
 }
 
 /// Why a tick started.
@@ -188,6 +195,12 @@ impl Entry {
                     self.at.saturating_sub(*since)
                 )
             }
+            What::Inspecting { worker, by } => {
+                format!("inspection: {worker} is inspected by {by}")
+            }
+            What::Inspected { worker, found, said } => {
+                format!("inspection: {worker}: {found} · {said}")
+            }
         }
     }
 
@@ -219,7 +232,9 @@ impl Entry {
             | What::HostSleep { slept: false, .. }
             | What::Command { .. }
             | What::Hot { .. }
-            | What::Cooled { .. } => None,
+            | What::Cooled { .. }
+            | What::Inspecting { .. }
+            | What::Inspected { .. } => None,
         }
     }
 

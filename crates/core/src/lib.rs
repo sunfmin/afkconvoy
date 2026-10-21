@@ -22,6 +22,7 @@ pub mod guard;
 pub mod harness;
 pub mod host_sleep;
 pub mod hot;
+pub mod inspection;
 pub mod intake;
 pub mod joining;
 pub mod launch;

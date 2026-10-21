@@ -133,7 +133,7 @@ impl Acting {
 
 /// The commands only a worker runs: what one of a repo with no team runs,
 /// with nothing in its environment to say it is one.
-const WORKERS_OWN: [&str; 4] = ["gate", "land", "over", "wake"];
+const WORKERS_OWN: [&str; 5] = ["gate", "land", "over", "inspected", "wake"];
 
 /// Who ran `command`: a worker — started in a role, on an issue, a patrol or
 /// a proposal, or running a command only a worker runs — or the operator.

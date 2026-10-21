@@ -56,6 +56,11 @@ WHAT IT ANSWERS
                                  in, the issue of its worker, and when it asked and
                                  began to run, in epoch seconds. {error} when the
                                  queue cannot be read
+                inspection       the inspection of a hot worker running on this host,
+                                 whatever its repo: {repo, worker, issue, by, since} —
+                                 the repo whose fleet started it, the hot worker and its
+                                 issue, the role it runs in and when it started, in epoch
+                                 seconds; null with none (`afkconvoy inspected --help`)
     fleet     the `run` of this host for this repo:
                 alive            whether one is running now
                 instance, host   its fleet instance id: the one its log names, else the

@@ -10,8 +10,12 @@
 //! worktree, and every process under one of them: a process whose
 //! environment cannot be read — a system binary — is counted through the one
 //! it was started under. The landing train's worktree is no worker's.
+//!
+//! As a worker turns hot, what shows it is taken down there and then, on a
+//! thread of its own (`evidence`), and the `run` is woken: its inspector
+//! starts the worker's inspection (`crate::inspection`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -23,14 +27,19 @@ use afkconvoy_core::hot::{
 use afkconvoy_core::train::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
 use serde::Serialize;
 
+use crate::evidence::{self, Taken};
 use crate::git::Repo;
 use crate::log::What;
 use crate::measure;
 use crate::orca::{Source, TMP_DIR, Worktree};
+use crate::wake::Waker;
 
 /// How many samples go by before the worktrees are asked of orca again, and
 /// what each holds is measured again: that is slow.
 const LISTED_FOR: u32 = 6;
+/// How many samples of a worker's resident memory are kept for the evidence:
+/// the last five minutes'.
+const RESIDENT_KEPT: usize = 30;
 
 /// What the host says of the limits, where it says any: `--hot-cores`,
 /// `--hot-memory` and `--hot-written`.
@@ -67,7 +76,7 @@ fn free_disk() -> Option<u64> {
 /// kernel counts them for it; none where they cannot be read — a process of
 /// another user, or one gone.
 #[cfg(target_os = "macos")]
-fn written_by(pid: u32) -> u64 {
+pub(crate) fn written_by(pid: u32) -> u64 {
     let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
     // SAFETY: `usage` is a `rusage_info_v2`, the flavor asked for, and the
     // kernel writes no more than one of it.
@@ -82,7 +91,7 @@ fn written_by(pid: u32) -> u64 {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn written_by(pid: u32) -> u64 {
+pub(crate) fn written_by(pid: u32) -> u64 {
     let io = std::fs::read_to_string(format!("/proc/{pid}/io")).unwrap_or_default();
     let line = io.lines().find_map(|line| line.strip_prefix("write_bytes:"));
     line.and_then(|bytes| bytes.trim().parse().ok()).unwrap_or(0)
@@ -117,6 +126,25 @@ pub struct HotNow {
     /// `#7`, or the name of its worktree where it is linked to no issue.
     pub worker: String,
     pub episode: Episode,
+    /// Its worktree, and the issue orca links it to: what its inspection is
+    /// started on.
+    #[serde(skip)]
+    pub path: PathBuf,
+    #[serde(skip)]
+    pub branch: String,
+    #[serde(skip)]
+    pub issue: Option<u64>,
+}
+
+impl HotNow {
+    pub fn worktree(&self) -> Worktree {
+        Worktree::at(self.path.clone(), self.branch.clone())
+    }
+
+    /// Why it turned hot, in words, under `limits`.
+    pub fn why(&self, limits: &Limits) -> String {
+        why_said(self.episode.why, limits)
+    }
 }
 
 /// The workers that are hot now, shared between the sampler and the panel.
@@ -216,10 +244,33 @@ fn tree<'a>(procs: &'a [Proc], tmp: &str) -> Vec<&'a Proc> {
 /// One worker the sampler watches.
 struct Watched {
     worker: String,
+    worktree: Worktree,
+    issue: Option<u64>,
     watch: Watch,
     /// The CPU each of its processes had taken, and the bytes each had
     /// written, at the sample before; `None` before its first.
     before: Option<HashMap<u32, (u64, u64)>>,
+    /// Its processes at the last sample, and the one of them that took the
+    /// most CPU since the one before — or, taking none, held the most.
+    pids: Vec<u32>,
+    hottest: Option<u32>,
+    /// What they held resident at each of the last samples, oldest first.
+    resident: VecDeque<(u64, u64)>,
+}
+
+impl Watched {
+    fn new(worker: String, worktree: Worktree, issue: Option<u64>) -> Watched {
+        Watched {
+            worker,
+            worktree,
+            issue,
+            watch: Watch::default(),
+            before: None,
+            pids: vec![],
+            hottest: None,
+            resident: VecDeque::new(),
+        }
+    }
 }
 
 /// What a worker's processes took in one sample.
@@ -246,8 +297,30 @@ fn took(watched: &mut Watched, procs: &[&Proc]) -> Took {
         })
     };
     let (cpu_ms, written) = (since(|taken| taken.0), since(|taken| taken.1));
+    let busiest = watched.before.as_ref().and_then(|before| {
+        let taken = now.iter().map(|(pid, (ms, _))| {
+            (ms.saturating_sub(before.get(pid).map_or(0, |taken| taken.0)), *pid)
+        });
+        taken.filter(|(ms, _)| *ms > 0).max().map(|(_, pid)| pid)
+    });
+    let largest = procs.iter().max_by_key(|proc| proc.resident).map(|proc| proc.pid);
+    watched.hottest = busiest.or(largest);
+    watched.pids = procs.iter().map(|proc| proc.pid).collect();
     watched.before = Some(now);
     Took { cpu_ms, written, resident: procs.iter().map(|proc| proc.resident).sum() }
+}
+
+/// What was known of `watched` as it turned hot in `episode`, under `limits`.
+fn known(watched: &Watched, episode: &Episode, limits: &Limits) -> Taken {
+    Taken {
+        worker: watched.worker.clone(),
+        since: episode.since,
+        why: why_said(episode.why, limits),
+        held: held_said(episode),
+        pids: watched.pids.clone(),
+        hottest: watched.hottest,
+        resident: watched.resident.iter().copied().collect(),
+    }
 }
 
 /// What the worktree at `path` holds, by the train worktree's measure, with
@@ -264,8 +337,8 @@ fn held(path: &std::path::Path) -> Option<Built> {
 struct Sampler {
     limits: Limits,
     /// The worktrees of the workers, as orca last listed them, each with its
-    /// worker's name.
-    listed: Vec<(PathBuf, String)>,
+    /// worker's name and issue.
+    listed: Vec<(PathBuf, String, Worktree, Option<u64>)>,
     samples: u32,
     /// The workers watched, by their worktrees.
     watched: BTreeMap<PathBuf, Watched>,
@@ -274,8 +347,15 @@ struct Sampler {
 impl Sampler {
     /// Takes one sample of every worker, `every` seconds after the one before
     /// on the run's clock and `wall_ms` on the wall's, at `at` → each turn,
-    /// as a line of the log.
-    fn sample(&mut self, source: &Source, at: u64, every: u64, wall_ms: u64) -> Vec<What> {
+    /// as a line of the log, and what is to be taken down of each worker that
+    /// turned hot.
+    fn sample(
+        &mut self,
+        source: &Source,
+        at: u64,
+        every: u64,
+        wall_ms: u64,
+    ) -> (Vec<What>, Vec<(Worktree, Taken)>) {
         let measuring = self.samples.is_multiple_of(LISTED_FOR);
         if measuring {
             // One orca could not answer leaves the workers as they were.
@@ -289,7 +369,7 @@ impl Sampler {
                                 name.to_string_lossy().into_owned()
                             }),
                         };
-                        (worktree.path, worker)
+                        (worktree.path.clone(), worker, worktree, issue)
                     })
                     .collect();
             }
@@ -297,7 +377,7 @@ impl Sampler {
         self.samples = self.samples.wrapping_add(1);
         let mut turned = vec![];
         // A worker no longer listed is gone: hot, it stops being hot with it.
-        let listed: Vec<&PathBuf> = self.listed.iter().map(|(path, _)| path).collect();
+        let listed: Vec<&PathBuf> = self.listed.iter().map(|(path, ..)| path).collect();
         let gone: Vec<PathBuf> =
             self.watched.keys().filter(|path| !listed.contains(path)).cloned().collect();
         for path in gone {
@@ -308,13 +388,17 @@ impl Sampler {
         }
         let procs = processes();
         let mut taken = vec![];
-        for (path, worker) in &self.listed {
-            let watched = self.watched.entry(path.clone()).or_insert_with(|| Watched {
-                worker: worker.clone(),
-                watch: Watch::default(),
-                before: None,
-            });
+        let mut hot_now = vec![];
+        for (path, worker, worktree, issue) in &self.listed {
+            let watched = self
+                .watched
+                .entry(path.clone())
+                .or_insert_with(|| Watched::new(worker.clone(), worktree.clone(), *issue));
             let took = took(watched, &tree(&procs, &path.join(TMP_DIR).display().to_string()));
+            watched.resident.push_back((at, took.resident));
+            if watched.resident.len() > RESIDENT_KEPT {
+                watched.resident.pop_front();
+            }
             let held = if measuring { held(path) } else { None };
             taken.push((path.clone(), took, held));
         }
@@ -336,7 +420,9 @@ impl Sampler {
             let watched = self.watched.get_mut(&path).expect("watched above");
             match watched.watch.sampled(&sample, &self.limits, every) {
                 Some(Turned::Hot(episode)) => {
-                    turned.push(hot(watched.worker.clone(), &episode, &self.limits))
+                    turned.push(hot(watched.worker.clone(), &episode, &self.limits));
+                    hot_now
+                        .push((watched.worktree.clone(), known(watched, &episode, &self.limits)));
                 }
                 Some(Turned::Cooled { episode, .. }) => {
                     turned.push(cooled(watched.worker.clone(), &episode, false))
@@ -344,14 +430,20 @@ impl Sampler {
                 None => {}
             }
         }
-        turned
+        (turned, hot_now)
     }
 
     /// The workers hot now.
     fn hot(&self) -> Vec<HotNow> {
         let hot = self.watched.values().filter_map(|watched| {
             let episode = watched.watch.hot?;
-            Some(HotNow { worker: watched.worker.clone(), episode })
+            Some(HotNow {
+                worker: watched.worker.clone(),
+                episode,
+                path: watched.worktree.path.clone(),
+                branch: watched.worktree.branch.clone(),
+                issue: watched.issue,
+            })
         });
         hot.collect()
     }
@@ -409,8 +501,9 @@ fn cooled(worker: String, episode: &Episode, gone: bool) -> What {
 /// Watches every worker of the checkout `repo` is of, on a thread of its own,
 /// for as long as the process lives: a sample every `SAMPLE_EVERY` seconds of
 /// `second` each, timed by `clock` — the run's — and `keep` said of each turn
-/// (`Sampler::sample`). `hot` is kept as the workers hot now. A second that
-/// takes no time samples nothing.
+/// (`Sampler::sample`). `hot` is kept as the workers hot now. What shows a
+/// worker that turned hot is taken down on a thread of its own, and the `run`
+/// woken once it is. A second that takes no time samples nothing.
 pub fn watch(
     repo: &Repo,
     limits: Limits,
@@ -440,8 +533,23 @@ pub fn watch(
             let at = started.0 + elapsed / (second.as_millis() as u64).max(1);
             let wall_ms = before.elapsed().as_millis() as u64;
             before = Instant::now();
-            for turned in sampler.sample(source, at, SAMPLE_EVERY, wall_ms) {
+            let (turned, to_take) = sampler.sample(source, at, SAMPLE_EVERY, wall_ms);
+            for turned in turned {
                 keep(at, turned);
+            }
+            for (worktree, taken) in to_take {
+                let repo = Repo::new(repo.dir.clone());
+                std::thread::spawn(move || {
+                    if let Err(error) = evidence::take(&worktree, &taken) {
+                        eprintln!(
+                            "hot: what shows {} hot was not taken down: {error:#}",
+                            taken.worker
+                        );
+                    }
+                    if let Some(waker) = Waker::of(&repo) {
+                        waker.wake();
+                    }
+                });
             }
             *hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = sampler.hot();
         }
@@ -499,7 +607,8 @@ mod tests {
 
     #[test]
     fn what_a_worker_took_is_what_its_processes_took_since_the_sample_before() {
-        let mut watched = Watched { worker: "#7".into(), watch: Watch::default(), before: None };
+        let worktree = Worktree::at(PathBuf::from("/w/a"), "a".into());
+        let mut watched = Watched::new("#7".into(), worktree, Some(7));
         let at = |taken: &[(u32, u64, u64)]| -> Vec<Proc> {
             let one = |(pid, ms, written): &(u32, u64, u64)| Proc {
                 cpu_ms: *ms,
@@ -520,6 +629,8 @@ mod tests {
             took(&mut watched, &second.iter().collect::<Vec<_>>()),
             Took { cpu_ms: Some(2300), written: Some(5120), resident: 2048 }
         );
+        // 1 took the most since the sample before
+        assert_eq!((watched.hottest, watched.pids.clone()), (Some(1), vec![1, 3]));
     }
 
     #[test]
