@@ -37,11 +37,15 @@ fn report(world: &World, state: &str, since: u64) {
     });
 }
 
+/// The latest worktree cut for issue 7.
+fn worktree(world: &World) -> PathBuf {
+    let worktrees = world.orca()["worktrees"].clone();
+    PathBuf::from(worktrees.as_array().unwrap().last().unwrap()["path"].as_str().unwrap())
+}
+
 /// The brief of the latest worker started on issue 7.
 fn brief(world: &World) -> String {
-    let worktrees = world.orca()["worktrees"].clone();
-    let dir =
-        PathBuf::from(worktrees.as_array().unwrap().last().unwrap()["path"].as_str().unwrap());
+    let dir = worktree(world);
     let git_dir = common::git(&dir, &["rev-parse", "--absolute-git-dir"]);
     std::fs::read_to_string(PathBuf::from(git_dir).join("convoy-worker-prompt.md")).unwrap()
 }
@@ -195,4 +199,24 @@ fn escalate_to_human_sends_every_hand_off_to_a_human_as_before() {
     assert!(!world.comments(7).iter().any(|body| body.contains("convoy:consult")));
     let plan = world.afk(&["plan", "--now", "1200"]).ok();
     assert_eq!(plan["waiting_on_human"][0]["issue"], 7, "{plan}");
+}
+
+#[test]
+fn a_stock_consult_that_leaves_a_commit_has_failed_and_goes_to_a_human() {
+    let world = asked();
+    common::commit(&worktree(&world), "schema.txt", "v1\n");
+    // …and hands the issue back, as though that were its answer.
+    relabel(&world, 7, &["bug", "ready-for-agent"]);
+    report(&world, "done", 1200);
+    assert_eq!(did(&tick(&world, 1500)), ["judge 7 done"]);
+    assert_eq!(world.claims(), []);
+    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
+    let last = world.comments(7).last().unwrap().clone();
+    assert!(
+        last.contains(
+            "A consult writes no code, and the stock consult left a commit on the branch"
+        ),
+        "{last}"
+    );
+    assert_eq!(did(&tick(&world, 1590)), [] as [&str; 0]);
 }

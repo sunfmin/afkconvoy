@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
 use afkconvoy_core::prompt::{StockFields, WorkerFields, stock_prompt, worker_prompt};
@@ -201,6 +202,16 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
                 let launch = launch.as_str();
                 if let Some((staged, claim)) = staged.as_ref().zip(fleet.scan.claim_of(number)) {
                     staged.keep_start(cut, claim)?;
+                }
+                // The stock consult writes no code: where it started is kept
+                // to check, as a stage's consult's is.
+                if let Some(claim) = fleet.scan.claim_of(number).filter(|_| consult.is_some()) {
+                    cut.keep_writes_nothing(|tip| WritesNothing {
+                        claim: claim.id.clone(),
+                        tip,
+                        stage: stock::ROLE.to_string(),
+                        consult: true,
+                    })?;
                 }
                 terminal = Some(match &staged {
                     Some(staged) => cut.start(&staged.command(launch, cut)?, fleet.now)?,

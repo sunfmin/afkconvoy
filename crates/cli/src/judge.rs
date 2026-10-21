@@ -28,6 +28,7 @@ use afkconvoy_core::waiting::{Back, Waits, back};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+use crate::advance::stated;
 use crate::board::{escalated, last_word};
 use crate::claims::{Me, delete};
 use crate::copies::Copies;
@@ -408,15 +409,29 @@ fn consulted<'a>(
 }
 
 /// The tick's look at the stopped stock consult of an unbound repo's
-/// escalated issue: one that answered — put the ready label back, as a human
-/// would — ends its claim, the issue left as it put it, and is `Done`. What
-/// else it came to is `None`: its route is the judge's.
-fn answered(fleet: &mut Fleet, claim: &Claim) -> Result<Option<Outcome>> {
+/// escalated issue, in `worktree`: one that left a commit failed, and is
+/// escalated — a consult's own failure is a human's — and one that answered
+/// — put the ready label back, as a human would — ends its claim, the issue
+/// left as it put it. Either is `Done`. What else it came to is `None`: its
+/// route is the judge's.
+fn answered(
+    fleet: &mut Fleet,
+    claim: &Claim,
+    worktree: Option<Worktree>,
+) -> Result<Option<Outcome>> {
     let issue = claim.number;
+    if let Some(worktree) = &worktree
+        && let Some(started) = worktree.writes_nothing()?
+        && let Some(why) = started.broken(&claim.id, &worktree.tip()?)
+    {
+        let reason = Handed::new("its consult left a commit it may not", stated(&why, None, None));
+        let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
+        escalate_claim(fleet, claim, &reason, pr, Some(worktree))?;
+        return Ok(Some(Outcome::Done));
+    }
     if !fleet.gh.issue(issue)?.labels.contains(&fleet.config.ready_label) {
         return Ok(None);
     }
-    let worktree = worktree_of(fleet, issue)?;
     transition::hand_on(issue, false, |step| {
         match (step, &worktree) {
             // An unbound repo's board is moved by the worker started next.
@@ -532,7 +547,7 @@ pub fn judge(
             if let Some(claim) = mine(fleet, me, issue)? {
                 let comments = fleet.gh.comments(issue)?;
                 if consulted(fleet, comments.iter().map(|c| c.body.as_str()), &claim).is_some()
-                    && let Some(done) = answered(fleet, &claim)?
+                    && let Some(done) = answered(fleet, &claim, worktree_of(fleet, issue)?)?
                 {
                     return Ok(done);
                 }
@@ -614,7 +629,7 @@ fn judge_consult(
     start: bool,
 ) -> Result<Outcome> {
     let issue = claim.number;
-    if let Some(done) = answered(fleet, claim)? {
+    if let Some(done) = answered(fleet, claim, Some(worktree.clone()))? {
         return Ok(done);
     }
     let reason = match route {

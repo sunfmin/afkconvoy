@@ -38,7 +38,7 @@ fn pr_of(fleet: &Fleet, issue: u64) -> Result<Option<u64>> {
 /// A reason as the comment of an escalation opens: one sentence, where the
 /// stage said it when it did, and every round of the rework a breaker
 /// stopped when one did.
-fn stated(reason: &str, said: Option<&str>, rounds: Option<&str>) -> String {
+pub(crate) fn stated(reason: &str, said: Option<&str>, rounds: Option<&str>) -> String {
     let mut letters = reason.chars();
     let first = letters.next().map(|first| first.to_uppercase().to_string()).unwrap_or_default();
     let mut stated = format!("{first}{}.", letters.as_str());
