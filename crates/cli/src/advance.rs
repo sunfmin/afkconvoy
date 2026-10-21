@@ -6,6 +6,7 @@
 use afkconvoy_core::blocked::{Blocked, blocked_route};
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::position::Failure;
 use afkconvoy_core::prompt::stage_nudge_line;
 use afkconvoy_core::stage_record::{Advance, StageRecord};
 use afkconvoy_core::stopped::{
@@ -76,6 +77,35 @@ fn hand_on(
         }
         Ok(())
     })
+}
+
+/// Hands `claim` on for `failure`, said as `why`: to its stage's consult,
+/// where the stage names one that has not ruled on that kind of failure
+/// since a human last put the issue at a stage (docs/adr/0018) — the fleet
+/// leaves the record of the failure, with what a human handed it would be
+/// told, and ends the claim, the worktree kept for the consult — and else to
+/// a human, as ever.
+fn hand_off(
+    fleet: &mut Fleet,
+    flows: &Flows,
+    claim: &Claim,
+    failure: Failure,
+    why: &Handed,
+    worktree: Option<&Worktree>,
+) -> Result<Outcome> {
+    let issue = claim.number;
+    let Some(stage) = flows.consults(issue, failure) else {
+        escalate_claim(fleet, claim, why, pr_of(fleet, issue)?, worktree)?;
+        return Ok(Outcome::Done);
+    };
+    let record = StageRecord::failed(&stage, failure, &why.reason);
+    if !flows.ends_with(issue, &record) {
+        fleet.gh.comment(issue, &record.comment())?;
+    }
+    hand_on(fleet, claim, None, false)?;
+    // The consult is the next tick's to start.
+    let _ = wake(&fleet.repo, "");
+    Ok(Outcome::Done)
 }
 
 /// Leaves on `issue` the record that its stage `stage` runs again, the
@@ -182,8 +212,12 @@ fn ask_after(
             let reason = stage_stalled_reason(stage, consult, &silent, &tail);
             let brief = if consult { "its consult went silent" } else { "its worker went silent" };
             let reason = Handed::at(Some(stage), brief, reason);
-            escalate_claim(fleet, claim, &reason, pr_of(fleet, issue)?, Some(&worktree))?;
-            Ok(Outcome::Done)
+            if consult {
+                // A consult's own failure is a human's.
+                escalate_claim(fleet, claim, &reason, pr_of(fleet, issue)?, Some(&worktree))?;
+                return Ok(Outcome::Done);
+            }
+            hand_off(fleet, flows, claim, Failure::Silent, &reason, Some(&worktree))
         }
     }
 }
@@ -191,13 +225,13 @@ fn ask_after(
 /// Why the stage that declared under `claim` failed for what it left behind,
 /// when it did: marked as writing nothing, it left a commit on the branch. A
 /// guard refuses the commit as it is made; this is the check of what a guard
-/// missed (docs/adr/0012).
-fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<String>> {
+/// missed (docs/adr/0012). With it, whether the stage's consult left it.
+fn left_behind(fleet: &Fleet, claim: &Claim) -> Result<Option<(String, bool)>> {
     let Some(worktree) = Worktree::of_issue(&Source::of(&fleet.repo)?, claim.number)? else {
         return Ok(None);
     };
     let Some(started) = worktree.writes_nothing()? else { return Ok(None) };
-    Ok(started.broken(&claim.id, &worktree.tip()?))
+    Ok(started.broken(&claim.id, &worktree.tip()?).map(|why| (why, started.consult)))
 }
 
 /// The tick's look at one claim of mine at a stage → `Done` when that ended
@@ -221,12 +255,16 @@ pub fn advance(
     let said = called.said.as_deref();
     let stage = called.stage.as_deref();
     let declared = !matches!(called.advance, Advance::AskAfter);
-    if declared && let Some(failed) = left_behind(fleet, &claim)? {
+    if declared && let Some((failed, consult)) = left_behind(fleet, &claim)? {
         let worktree = worktree_of(fleet, issue)?;
         let reason = Handed::at(stage, "left a commit it may not", stated(&failed, said, None));
-        let pr = pr_of(fleet, issue)?;
-        escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
-        return Ok(Outcome::Done);
+        // A consult's own failure is a human's.
+        if consult {
+            let pr = pr_of(fleet, issue)?;
+            escalate_claim(fleet, &claim, &reason, pr, worktree.as_ref())?;
+            return Ok(Outcome::Done);
+        }
+        return hand_off(fleet, flows, &claim, Failure::LeftCommit, &reason, worktree.as_ref());
     }
     // What a fleet lock explains is run again, not carried out: its stage's
     // `escalate` goes neither to a consult nor to a human.
@@ -259,7 +297,8 @@ pub fn advance(
                 return Ok(Outcome::Done);
             }
             let reason = Why::Refuted.reason(said.unwrap_or("(its stage record)"));
-            Handed::at(stage, Why::Refuted.brief(), reason)
+            let why = Handed::at(stage, Why::Refuted.brief(), reason);
+            return hand_off(fleet, flows, &claim, Failure::Refuted, &why, worktree.as_ref());
         }
         Advance::Blocked(named) => match blocked_route(&standings(fleet, issue, &named)?) {
             Blocked::Park(parkable) => {
@@ -274,7 +313,16 @@ pub fn advance(
                 return Ok(Outcome::HandedOn);
             }
             Blocked::Escalate(reason) => {
-                Handed::at(stage, BLOCKED_BRIEF, stated(&reason.to_string(), said, None))
+                let why = Handed::at(stage, BLOCKED_BRIEF, stated(&reason, said, None));
+                let worktree = worktree_of(fleet, issue)?;
+                return hand_off(
+                    fleet,
+                    flows,
+                    &claim,
+                    Failure::Unblockable,
+                    &why,
+                    worktree.as_ref(),
+                );
             }
         },
         Advance::Escalate(reason) => {

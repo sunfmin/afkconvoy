@@ -247,7 +247,7 @@ fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_unde
     let record = world.comments(7).pop().unwrap();
     assert!(record.starts_with("<!--convoy:stage stage=build verdict=ruling by=consult "));
     assert!(
-        record.contains("the consult of the stage `build` ruled on its `escalate`"),
+        record.contains("the consult of the stage `build` ruled: the stage runs again"),
         "{record}"
     );
 
@@ -271,8 +271,11 @@ fn a_consult_s_ruling_is_a_stage_record_and_the_stage_that_asked_runs_again_unde
         "{again}"
     );
     let told = brief(&worktree(&world));
-    assert!(told.contains("the consult of the stage `build` ruled on its `escalate`"), "{told}");
-    assert!(told.contains("## Ruling\n\nThis stage declared `escalate`, and its consult ruled"));
+    assert!(
+        told.contains("the consult of the stage `build` ruled: the stage runs again"),
+        "{told}"
+    );
+    assert!(told.contains("## Ruling\n\nThis stage's consult ruled on what it handed on."));
     assert!(told.contains("> Keep the v1 schema."), "{told}");
     assert_eq!(did(&tick(&world, 1450)), [] as [&str; 0]);
 }
@@ -290,7 +293,7 @@ fn a_consult_s_own_escalate_always_goes_to_a_human() {
     assert!(said.contains("the consult of the stage `build` declared `escalate`"), "{said}");
     assert!(
         said.contains(
-            "The consult of the stage `build` let its `escalate` through.\n\nIts stage record: \
+            "The consult of the stage `build` let it through.\n\nIts stage record: \
              https://gh/c/"
         ),
         "{said}"
@@ -571,4 +574,269 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     assert!(world.labels(7).contains(&"flow:feature".to_string()));
     let plan = world.afk(&["plan", "--now", "1400"]).ok();
     assert_eq!(plan["waiting_on_human"], json!([]), "answered: it waits for nobody");
+}
+
+// Every hand-off goes to the consult first (docs/adr/0018): a failure the fleet
+// saw, a verdict the stage may not declare, a breaker, a `blocked` that cannot
+// clear, a changed workflow and an `already-satisfied` over work each start
+// the stage's consult and not a human. Its ruling starts no count over, the
+// same hand-off again goes to a human, and so does the consult's own failure.
+
+/// Whether issue 7 is handed to a human: the escalate label in place of its
+/// flow label.
+fn with_a_human(world: &World) -> bool {
+    let labels = world.labels(7);
+    labels.contains(&"ready-for-human".to_string()) && !labels.contains(&"flow:feature".to_string())
+}
+
+/// What issue 7 is with, after the tick that read a hand-off: its consult,
+/// which the next tick starts, briefed with what a human would have been
+/// told — `told` among it — and no human.
+fn consulted_on(world: &World, now: u64, told: &str) -> String {
+    assert!(!with_a_human(world), "{:?}", world.labels(7));
+    assert_eq!(shown(world)["position"]["is"], "consult");
+    assert_eq!(world.claims(), []);
+    assert_eq!(did(&tick(world, now)), ["dispatch 7 done"]);
+    assert!(started(world).pop().unwrap().contains("AFKCONVOY_CONSULT='true'"));
+    let brief = brief(&worktree(world));
+    for said in [
+        "## What was asked\n\nThe fleet would have handed this issue to a human, and told them:",
+        told,
+    ] {
+        assert!(brief.contains(said), "{said}\n{brief}");
+    }
+    brief
+}
+
+/// Issue 7's `build` dispatched at 1000, its worker silent at `stopped` and
+/// past its nudge: the tick at `stopped + 1990` reads it.
+fn silent(world: &World, stopped: u64) {
+    stop(world, stopped);
+    assert_eq!(did(&tick(world, stopped + 990)), ["advance 7 nudged"]);
+    stop(world, stopped + 1090);
+    assert_eq!(did(&tick(world, stopped + 1990)), ["advance 7 done"]);
+}
+
+#[test]
+fn a_worker_silent_past_its_nudge_goes_to_its_consult_and_the_same_again_to_a_human() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    silent(&world, 1010);
+    let record = world.comments(7).into_iter().find(|c| c.contains("verdict=failed-silent"));
+    assert!(
+        record
+            .unwrap()
+            .starts_with("<!--convoy:stage stage=build verdict=failed-silent by=fleet-->")
+    );
+    let brief = consulted_on(
+        &world,
+        3100,
+        "> The worker of the stage `build` stopped with no valid verdict",
+    );
+    // It names no check of its own, and where to look and what it may run.
+    for said in [
+        "## Where to look further",
+        "orca terminal list --worktree path:",
+        " gate`",
+        "    afkconvoy send --issue 7 --stage <stage> --text-file <file>\n",
+    ] {
+        assert!(brief.contains(said), "{said}\n{brief}");
+    }
+    // It is with the consult, not a human: `plan` lists nothing waiting on one.
+    assert_eq!(world.afk(&["plan", "--now", "3150"]).ok()["waiting_on_human"], json!([]));
+
+    // Its ruling runs `build` again, and starts no count over…
+    rule(&world, "The disk was full; it is not now. Run the gate again.");
+    assert_eq!(did(&tick(&world, 3200)), ["advance 7 done", "dispatch 7 done"]);
+    assert_eq!(shown(&world)["rework"]["had"], 0);
+    // …and the same failure again is a human's.
+    silent(&world, 3210);
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+    let said = world.comments(7).pop().unwrap();
+    assert!(said.contains("stopped with no valid verdict"), "{said}");
+    assert_eq!(did(&tick(&world, 5300)), [] as [&str; 0]);
+}
+
+#[test]
+fn a_verdict_its_stage_may_not_declare_goes_to_its_consult() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    // `build` has no `reject`.
+    declare(&world, "build", "reject", "Not mine.");
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    consulted_on(&world, 1180, "> No valid verdict was declared at the stage `build`.");
+    // The consult's own verdict that is none goes to a human.
+    let line = ["verdict", "pass", "--issue", "7", "--stage", "build", "--text", "Fine."];
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(line)
+        .env("AFKCONVOY_ROLE_COMMIT", "r1")
+        .env("AFKCONVOY_TEAM_COMMIT", "t1")
+        .env("AFKCONVOY_CONSULT", "true")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(did(&tick(&world, 1270)), ["advance 7 done"]);
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+}
+
+#[test]
+fn a_tripped_breaker_goes_to_its_consult_and_one_tripping_again_to_a_human() {
+    let world = bound(&FEATURE.replacen("```yaml\n", "```yaml\nmax_rework: 0\n", 1), 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    declare(&world, "build", "pass", "Built.");
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done", "dispatch 7 done"]);
+    declare(&world, "review", "reject", "Not yet.");
+    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done"]);
+    let brief = consulted_on(&world, 1270, "The breaker `max_rework` tripped");
+    assert!(brief.contains("1. `review` declared `reject` — https://gh/c/"), "{brief}");
+    rule(&world, "Ship it as it is.");
+    assert_eq!(did(&tick(&world, 1360)), ["advance 7 done", "dispatch 7 done"]);
+    declare(&world, "build", "pass", "Built again.");
+    assert_eq!(did(&tick(&world, 1450)), ["advance 7 done", "dispatch 7 done"]);
+    declare(&world, "review", "reject", "Still not.");
+    assert_eq!(did(&tick(&world, 1540)), ["advance 7 done"]);
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+    assert!(world.comments(7).pop().unwrap().contains("The breaker `max_rework` tripped"));
+}
+
+#[test]
+fn a_blocked_whose_waiting_closes_a_cycle_goes_to_its_consult() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:feature"]);
+    world.with_gh(|gh| gh["edges"]["8"] = json!([7]));
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    let line = ["verdict", "blocked", "--issue", "7", "--stage", "build", "--blocked-by", "8"];
+    let declared = world.afk(&[&line[..], &["--text", "Needs #8."], &COMMITS].concat()).ok();
+    assert_eq!(declared["declared"], true, "{declared}");
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    consulted_on(&world, 1180, "nothing will resolve what it waits on");
+}
+
+#[test]
+fn a_workflow_changed_under_the_issue_goes_to_its_consult() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    // A record of `deploy`, a stage the workflow had once, with `build` to perform.
+    world.comment(
+        7,
+        "<!--convoy:stage stage=deploy verdict=pass claim=c0 role_commit=r0 team_commit=t0-->\nold",
+    );
+    assert_eq!(shown(&world)["position"]["is"], "consult");
+    consulted_on(&world, 1000, "> The workflow changed under this issue");
+}
+
+#[test]
+fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    commit(&worktree(&world), "half.txt", "half\n");
+    declare(&world, "build", "already-satisfied", "Nothing to do.");
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    assert_eq!(world.state(7), "open");
+    consulted_on(&world, 1180, "already-satisfied");
+}
+
+#[test]
+fn a_stage_that_writes_nothing_and_left_a_commit_goes_to_its_consult() {
+    let review = "    writes: false\n    escalate: { to: reviewer, do: rule }\n";
+    let world = bound(&FEATURE.replace("    writes: false\n", review), 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    declare(&world, "build", "pass", "Built.");
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done", "dispatch 7 done"]);
+    commit(&worktree(&world), "fix.txt", "a fix while reviewing\n");
+    declare(&world, "review", "pass", "Fine.");
+    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done"]);
+    let told = consulted_on(&world, 1270, "is marked `writes: false`");
+    assert!(told.contains("- **Stage that asked:** `review`"), "{told}");
+}
+
+#[test]
+fn an_issue_handed_to_a_human_that_no_consult_saw_is_put_to_its_consult_once() {
+    let world = bound(FEATURE, 2);
+    world.issue(7, &["flow:feature"]);
+    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    // Handed over before every hand-off went to a consult first.
+    let line = ["escalate", "--issue", "7", "--instance", "alpha", "--host", "h1"];
+    world.afk(&[&line[..], &["--reason", "The gate stayed red: no space left."]].concat()).ok();
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+    let ticked = tick(&world, 1090);
+    assert_eq!(did(&ticked), ["dispatch 7 done"]);
+    assert!(!with_a_human(&world), "{:?}", world.labels(7));
+    let told = brief(&worktree(&world));
+    assert!(told.contains("> The gate stayed red: no space left."), "{told}");
+    let records =
+        world.comments(7).iter().filter(|c| c.contains("verdict=failed-escalated")).count();
+    assert_eq!(records, 1);
+    // Let through, it stays with the human: it is put once.
+    let_through(&world, "A host problem, not mine to fix.");
+    assert_eq!(did(&tick(&world, 1180)), ["advance 7 done"]);
+    assert!(with_a_human(&world), "{:?}", world.labels(7));
+    assert_eq!(did(&tick(&world, 1270)), [] as [&str; 0]);
+    assert!(with_a_human(&world));
+}
+
+#[test]
+fn a_consult_runs_the_commands_a_human_answering_runs_and_the_two_lists_are_one() {
+    use afkconvoy_core::waiting::ANSWERING;
+    // The commands the `humans` help names for answering an escalation.
+    let help = world_help("humans");
+    let section = help.split("ANSWERING AN ESCALATION").nth(1).expect("the section");
+    let section = section
+        .split("\n\n")
+        .skip(1)
+        .take_while(|para| !para.starts_with(|c: char| c.is_ascii_uppercase()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let named: Vec<&str> = section
+        .lines()
+        .filter_map(|line| line.strip_prefix("      "))
+        .filter(|line| line.starts_with("afkconvoy ") || line.starts_with("gh "))
+        .collect();
+    assert_eq!(named, ANSWERING, "{section}");
+    // The consult is given the same list, and its guard lets each through.
+    let world = bound(FEATURE, 2);
+    asked(&world);
+    tick(&world, 1180);
+    let told = brief(&worktree(&world));
+    for line in ANSWERING {
+        let line = line.replace("<n>", "7");
+        assert!(told.contains(&format!("    {line}\n")), "{line}\n{told}");
+    }
+    // A consult sends as a human does, under its claim.
+    let line = ["send", "--issue", "7", "--stage", "review", "--text", "Built already; review it."];
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(line)
+        .env("AFKCONVOY_ROLE_COMMIT", "r1")
+        .env("AFKCONVOY_TEAM_COMMIT", "t1")
+        .env("AFKCONVOY_CONSULT", "true")
+        .output()
+        .unwrap();
+    let sent: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((&sent["declared"], &sent["verdict"]), (&json!(true), &json!("sent")), "{sent}");
+    assert_eq!(did(&tick(&world, 1270)), ["advance 7 done", "dispatch 7 done"]);
+    let read = shown(&world);
+    assert_eq!(
+        (&read["position"]["is"], &read["position"]["stage"]),
+        (&json!("perform"), &json!("review"))
+    );
+    assert_eq!(read["rework"]["had"], 1, "an `escalate` it answers is rework, as by a ruling");
+}
+
+/// The text of `afkconvoy help <topic>`.
+fn world_help(topic: &str) -> String {
+    let world = World::new();
+    let out = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["help", topic])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
 }

@@ -115,11 +115,11 @@ A limit on rework — in total for an issue, or as rejections in a row by one st
 _Avoid_: retry limit, circuit
 
 **Consult**:
-A worker in a more senior role, asked to rule on a stage's `escalate` verdict before a human is. It rules or lets the escalation through; it writes no code.
+A worker in a more senior role, asked before a human is whenever its stage would hand the issue to a human — an `escalate` verdict, a failure, a tripped breaker, a workflow changed under the issue. It stands where that human stands: told what the human would be, and free to run what a human answering runs. It rules, sends the issue to a stage, closes it, or lets it through; it commits, pushes and changes the host never. The same hand-off again, and its own failure, go to a human.
 _Avoid_: review (a stage may be named it), second opinion, handoff
 
 **Ruling**:
-What a consult or a human decides on an escalated issue. The stage that asked runs again under it; a human's also hands the issue back to the fleet.
+What a consult or a human decides on an issue handed on. The stage runs again under it; a human's also hands the issue back to the fleet and starts the rework counts over, a consult's starts none over.
 _Avoid_: answer (what a command prints), decision (what a `by: human` stage waits for), override
 
 **Precedent**:
@@ -213,7 +213,7 @@ Recording a dependency a worker discovered as a blocker on its issue and releasi
 _Avoid_: defer, snooze, hold (a fleet instance holds its claims)
 
 **Escalate**:
-Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every failure escalates and nothing is retried; an `escalate` verdict escalates unless a consult rules on it first. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
+Handing an issue to a human: the reason is commented, with the line that answers it, the flow label is swapped for the escalate label, and the claim is released. Every hand-off — a failure, a tripped breaker, an `escalate` verdict, a changed workflow — goes first to the consult where the stage names one, and escalates when the consult lets it through or where none is named; nothing is retried. The issue then waits for a human, with every other open issue only one can move: `plan`, `doctor` and the panel list them, each with its line.
 _Avoid_: fail (what a command, a gate or one thing a tick does may), retry, give up (a landing train is given up: Abandon)
 
 **Status board**:

@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 
 use afkconvoy_core::config::{RepoDir, RepoLabels};
-use afkconvoy_core::position::{Breaker, Declared, Place, Position};
+use afkconvoy_core::position::{Breaker, ConsultOn, Declared, Place, Position};
 use afkconvoy_core::team::{
     DONE, Fault, File, LAND, Pass, RoleDir, Sources, TEAM_FILE, Team, Workflow, load,
 };
@@ -380,7 +380,11 @@ proptest! {
                     rework = 0;
                     in_a_row.fill(0);
                 }
-                (Position::Consult(..), Declared::Ruling) if runs(place.position) => rework += 1,
+                (Position::Consult(_, _, ConsultOn::Escalate), Declared::Ruling)
+                    if runs(place.position) =>
+                {
+                    rework += 1
+                }
                 (
                     Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage),
                     Declared::Reject,

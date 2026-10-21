@@ -135,8 +135,16 @@ pub fn tick(
     stop: &Stop,
     before: Option<&Before>,
 ) -> Result<(Ticked, Fleet)> {
-    let (mut fleet, open) = Fleet::read(me.now)?;
-    let (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
+    let (mut fleet, mut open) = Fleet::read(me.now)?;
+    let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
+    // What no consult saw goes to one first (docs/adr/0018), and is read
+    // again as the fleet's. A team that does not load puts nothing: the
+    // rebuild says why of each issue.
+    let put = crate::stage::put_to_consults(&fleet, &flows, &open.issues).unwrap_or_default();
+    if !put.is_empty() {
+        (fleet, open) = Fleet::read(me.now)?;
+        (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
+    }
     let me_said = me.instance.as_str();
     let lost = before.map(|before| before.lost(&fleet.scan.claims, me_said)).unwrap_or_default();
     let bound = set.bound(fleet.config.concurrency());

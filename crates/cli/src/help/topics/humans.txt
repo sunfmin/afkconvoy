@@ -10,44 +10,60 @@ WHERE TO LOOK
   it, the issue's number filled in. `afkconvoy plan` gives the same list, and the panel
   shows it as "With a human". One that has waited for more than an hour is a finding.
 
-  An escalated issue also says so itself: it carries the escalate label in place of
-  its flow label, whatever that is — `ready-for-agent` too, where its workflow names
-  that — the escalate label being `ready-for-human`, unless the team's file names
-  another; and the
-  comment of the escalation says why and ends with the same line. Run every command
-  below in a checkout of the repo the issue is of.
+  An escalated issue also carries the escalate label (`ready-for-human` unless the
+  team's file names another) in place of its flow label, and the comment of the
+  escalation says why and ends with the same line. Run every command below in a
+  checkout of the repo the issue is of.
 
 AN ESCALATION
 
-  A stage declared `escalate` and no consult ruled on it; or something failed — a
-  worker went silent and its nudge changed nothing, a stage ended with no verdict, a
-  gate stayed red, a stage that may not write left a commit. The comment says which,
-  and for an `escalate` gives the question, often with the options.
+  Something failed — a worker went silent and its nudge changed nothing, a stage
+  ended with no valid verdict, a gate stayed red, a stage that may not write left a
+  commit, a `blocked` will never clear — or a stage declared `escalate`. Where the
+  stage names a consult (`escalate: { to, do }` in its workflow), that consult was
+  asked first, as a human would be, and let it through: a human is reached only then,
+  or where the stage names none. The comment says which, and for an `escalate` gives
+  the question, often with the options.
 
-      afkconvoy rule --issue <n> --text-file <file>
-          Rule on it, where it stopped: that stage runs again with your ruling in its
-          brief, and both rework counts start over. `--text "<ruling>"` gives a
-          short one in place of a file. `afkconvoy rule --help`.
-      afkconvoy send --issue <n> --stage <stage> --text-file <file>
-          Put it at another stage of its workflow instead, whatever its stage records
-          say: when the approach changed, or the workflow changed under the issue and
-          a record names a stage that is gone. `afkconvoy send --help`.
-
-  For a failure, fix what failed first: a ruling starts the same stage anew, and what
-  failed it once fails it again. In an unbound repo there is no stage to run again:
+  For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and
+  what failed it once fails it again. In an unbound repo there is no stage to run again:
   fix what the comment names and put the ready label back, with the line the comment
   ends with. A PR the escalation kept is not started anew: the next worker takes it up
   — it reads the issue's comments, merges the base branch, gates and joins the
   landing train — so say on the issue what is to be done on it.
 
+ANSWERING AN ESCALATION
+
+  Every command a human runs to answer one, `<n>` the issue's number. A consult may run
+  each, and any read-only command, the gate too; never commit, push or change the host.
+
+      afkconvoy rule --issue <n> --text-file <file>
+          Rule on it, where it stopped: that stage runs again with your ruling in its
+          brief, and both rework counts start over — a consult's starts none over.
+          `afkconvoy rule --help`.
+      afkconvoy send --issue <n> --stage <stage> --text-file <file>
+          Put it at another stage of its workflow instead, whatever its stage records
+          say: when the approach changed, or the workflow changed under the issue and
+          a record names a stage that is gone. `afkconvoy send --help`.
+      gh issue close <n> --comment <why>
+          Nothing is left to do on it: the fleet leaves a closed issue alone.
+      gh issue create --title <title> --body-file <file> --label <ready label>
+          Open what it found outside this issue — a broken base branch, a host
+          problem, a defect of afkconvoy — for the fleet to work.
+      gh issue edit <n> --body-file <file>
+          Keep its body's "## Blocked by" in step with an edge added or removed.
+      gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id=<id>
+          Record it as blocked by the issue whose database id is `<id>`.
+      gh api -X DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>
+          Remove that edge: one whose waiting would never end, say.
+
 A TRIPPED BREAKER
 
-  Rework went past what the workflow allows — in total for the issue, or as rejections
-  in a row by one stage — and the issue escalated in place of the rework that would
-  have passed it. The comment names the breaker and lists every rework, each with its
-  stage and why. Two stages that cannot agree are asking a question neither can
-  decide. Read the list, then answer as an escalation is answered: `afkconvoy rule`
-  with what settles it, or `afkconvoy send` to the stage that should take it up.
+  Rework went past what the workflow allows — in total, or as rejections in a row by
+  one stage — and the issue went to the consult in place of that rework, and to a
+  human where the stage names none or it trips again after the consult ruled. The
+  comment names the breaker and lists every rework with its stage and why. Answer as
+  an escalation: `afkconvoy rule` with what settles it, or `afkconvoy send`.
   `afkconvoy doctor` says beforehand when an issue is one rework from a breaker.
 
 A STAGE `by: human`
@@ -67,8 +83,7 @@ A PATROL'S FAILED RUN
 
       gh issue close <n>
           Once you have looked: the patrol runs again when it is next due.
-          `afkconvoy plan` gives each patrol's standing, and `afkconvoy doctor` a
-          patrol that does not run as a finding.
+          `afkconvoy plan` gives each patrol's standing.
 
 A FLEET LOCK
 
@@ -106,6 +121,5 @@ AN ISSUE PAST THE END OF ITS WORKFLOW
 
 WHAT NOT TO DO
 
-  Do not move the labels by hand. A label is not where an issue is — its stage records
-  are — so an issue handed back with no ruling on record is escalated again at the
-  next tick. Rule on it, or send it.
+  Do not move the labels by hand: an issue's stage records say where it is, so one
+  handed back with no ruling on record is escalated again. Rule on it, or send it.

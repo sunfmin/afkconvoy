@@ -402,10 +402,12 @@ fn a_stage_that_stayed_silent_past_a_nudge_while_a_lock_stood_runs_again() {
     assert!(brief(&world, 7).contains("## After a fleet lock"));
 
     // The worker that ran it again is nudged once, like any, and its silence
-    // after that is a failure no lock explains.
+    // after that is a failure no lock explains: `build` names a consult, which
+    // it goes to.
     assert_eq!(worked(&tick(&world, 2400)), ["advance 7 nudged"]);
     assert_eq!(worked(&tick(&world, 2800)), ["advance 7 done"]);
-    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
+    assert!(world.comments(7).iter().any(|c| c.contains("verdict=failed-silent by=fleet")));
+    assert_eq!(position(&world, 7).0, "consult");
     let records = world.comments(7).iter().filter(|c| c.contains("verdict=lock-closed")).count();
     assert_eq!(records, 1);
 }

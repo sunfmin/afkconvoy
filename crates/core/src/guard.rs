@@ -31,6 +31,14 @@ const PUSH_VALUES: [&str; 4] = ["-o", "--push-option", "--repo", "--receive-pack
 const PUSH_EVERY: [&str; 3] = ["--all", "--mirror", "--branches"];
 /// The `git` subcommands that leave a commit on the branch.
 const COMMITS: [&str; 5] = ["commit", "merge", "cherry-pick", "revert", "am"];
+/// The programs that change the host — delete what is on it, or stop what
+/// runs on it — which a consult does not run (docs/adr/0018).
+const HOST_CHANGES: [&str; 7] = ["rm", "rmdir", "unlink", "shred", "kill", "pkill", "killall"];
+/// The `git` subcommands, with the word after them where it matters, that
+/// delete from the host.
+const GIT_DELETES: [(&str, Option<&str>); 3] =
+    [("clean", None), ("worktree", Some("remove")), ("worktree", Some("prune"))];
+
 /// The options of `gh` that take the next word as their value and may stand
 /// before the command's own words.
 const GH_VALUES: [&str; 2] = ["-R", "--repo"];
@@ -126,9 +134,21 @@ impl Limits {
             }
         };
         let args: Vec<&str> = rest.collect();
-        match program.rsplit('/').next() {
+        let name = program.rsplit('/').next();
+        if self.consult
+            && let Some(name) = name.filter(|name| HOST_CHANGES.contains(name))
+        {
+            return Some(host_change(&format!("`{name}`")));
+        }
+        match name {
             Some("git") => self.refuses_git(&args),
             Some("gh") => self.refuses_gh(&args),
+            Some("orca") if self.consult => {
+                let words = positionals(&args, &[]);
+                let removes = words.first() == Some(&"worktree")
+                    && words.get(1).is_some_and(|verb| ["rm", "remove"].contains(verb));
+                removes.then(|| host_change("`orca worktree rm`"))
+            }
             _ => None,
         }
     }
@@ -149,11 +169,18 @@ impl Limits {
                 ));
             }
         }
+        let next = words.get(1).copied();
+        let deletes = GIT_DELETES
+            .iter()
+            .any(|(sub, verb)| *sub == subcommand && verb.is_none_or(|verb| next == Some(verb)));
+        if self.consult && deletes {
+            return Some(host_change(&format!("`git {subcommand}`")));
+        }
         if COMMITS.contains(&subcommand) || subcommand == "push" {
             if self.consult {
                 return Some(format!(
-                    "a consult writes no code: `git {subcommand}` is refused. Rule on the \
-                     escalation, or let it through"
+                    "a consult writes no code: `git {subcommand}` is refused. Rule on what \
+                     you were asked, or let it through"
                 ));
             }
             match &self.at {
@@ -275,6 +302,13 @@ impl Limits {
              issue goes is read off the verdict its stage declares"
         ))
     }
+}
+
+fn host_change(what: &str) -> String {
+    format!(
+        "a consult does not change the host: {what} is refused. What needs it, rule to the stage \
+         that writes, or open as an issue"
+    )
 }
 
 fn merging() -> String {
@@ -751,6 +785,35 @@ mod tests {
         }
         // What every worker is refused, they are refused too.
         assert!(refused(&Call::shell("gh pr merge 70"), &limits(false, false)).is_some());
+    }
+
+    #[test]
+    fn a_consult_runs_what_a_human_answering_runs_and_changes_nothing_of_the_host() {
+        let consult = limits(true, true);
+        for line in crate::waiting::ANSWERING {
+            let line = line.replace("<n>", "7").replace("<ready label>", "ready-for-agent");
+            assert_eq!(refused(&Call::shell(&line), &consult), None, "{line}");
+        }
+        for line in ["df -h /", "uptime", "orca terminal list --worktree path:/w", "git status"] {
+            assert_eq!(refused(&Call::shell(line), &consult), None, "{line}");
+        }
+        let changes = [
+            "rm -rf ~/Library/Caches/x",
+            "/bin/rm target",
+            "sudo kill -9 4242",
+            "pkill cargo",
+            "git clean -fdx",
+            "git worktree remove /w/old",
+            "git worktree prune",
+            "orca worktree rm --worktree path:/w/old",
+        ];
+        for line in changes {
+            let why = refused(&Call::shell(line), &consult).expect(line);
+            assert!(why.contains("a consult does not change the host"), "{why}");
+        }
+        // A stage's worker is held to none of it.
+        assert_eq!(refused(&Call::shell("rm -rf target"), &limits(true, false)), None);
+        assert_eq!(refused(&Call::shell("git worktree list"), &consult), None);
     }
 
     #[test]

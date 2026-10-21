@@ -161,8 +161,11 @@ fn a_reject_from_a_stage_with_no_reject_is_no_valid_verdict() {
     let rehearsed = rehearse(&world, "feature", &["pass", "reject"]);
     let step = last(&rehearsed);
     assert_eq!((&step["stage"], &step["valid"]), (&json!("build"), &json!(false)));
-    assert_eq!(at(&step["position"]), "escalating build by human: -");
+    // `build` names a consult: the hand-off goes to it before a human.
+    assert_eq!(at(&step["position"]), "consult build by reviewer: rule");
     assert_eq!(step["position"]["reason"], "no valid verdict was declared at the stage `build`");
+    let alone = rehearse(&world, "feature", &["reject"]);
+    assert_eq!(at(&last(&alone)["position"]), "escalating plan by human: -");
     assert_eq!((&step["breaker"], &step["rework"]), (&Value::Null, &json!(0)));
     assert_eq!(rehearsed["steps"][0]["valid"], true);
     // Nothing is declared on an issue that has ended: it is in no stage.
@@ -197,9 +200,16 @@ fn the_rework_counts_are_answered_and_the_verdict_that_trips_a_breaker_is_marked
     let tripped = all[6];
     assert_eq!(tripped["breaker"], "max_consecutive_rework");
     assert_eq!(counts(tripped), (2, 2, 0), "the rework a breaker refuses is not counted");
-    assert_eq!(at(&tripped["position"]), "escalating build by human: -");
+    assert_eq!(at(&tripped["position"]), "consult build by reviewer: rule");
     let reason = tripped["position"]["reason"].as_str().unwrap();
     assert!(reason.contains("the breaker `max_consecutive_rework` tripped"), "{reason}");
+    // Its consult's ruling starts no count over, and the breaker that trips
+    // again goes to a human.
+    let again = [&twice[..], &["reject", "ruling", "pass", "reject"]].concat();
+    let rehearsed = rehearse(&world, "feature", &again);
+    let all: Vec<_> = rehearsed["steps"].as_array().unwrap().iter().collect();
+    assert_eq!(counts(all[7]), (2, 2, 0));
+    assert_eq!(at(&all[9]["position"]), "escalating build by human: -");
     // Only the consecutive counts of stages that may reject are answered.
     assert_eq!(tripped["consecutive_rework"], json!({"review": 2, "sign-off": 0}));
 
@@ -217,16 +227,17 @@ fn the_rework_counts_are_answered_and_the_verdict_that_trips_a_breaker_is_marked
 #[test]
 fn a_human_ruling_starts_both_counts_over() {
     let world = team();
-    let tripped = ["pass", "pass", "reject", "pass", "reject", "pass", "reject"];
+    // A breaker its consult let through, then a human's ruling.
+    let tripped = ["pass", "pass", "reject", "pass", "reject", "pass", "reject", "escalate"];
     let rehearsed =
         rehearse(&world, "feature", &[&tripped[..], &["ruling", "pass", "reject"]].concat());
     let all: Vec<_> = rehearsed["steps"].as_array().unwrap().iter().collect();
-    let ruled = all[7];
+    let ruled = all[8];
     assert_eq!((&ruled["stage"], &ruled["valid"]), (&json!("build"), &json!(true)));
     assert_eq!(at(&ruled["position"]), "perform build by dev: implement");
     assert_eq!(ruled["rework"], 0);
     assert_eq!(ruled["consecutive_rework"], json!({"review": 0, "sign-off": 0}));
-    assert_eq!((&all[9]["rework"], &all[9]["breaker"]), (&json!(1), &Value::Null));
+    assert_eq!((&all[10]["rework"], &all[10]["breaker"]), (&json!(1), &Value::Null));
     // A ruling nobody asked for is no valid verdict.
     let stray = rehearse(&world, "feature", &["ruling"]);
     assert_eq!(last(&stray)["valid"], false);

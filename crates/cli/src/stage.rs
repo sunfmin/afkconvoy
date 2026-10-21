@@ -8,15 +8,16 @@ use afkconvoy_core::claims::Claim;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::{opened_by, taken_in};
 use afkconvoy_core::plan::{PullRequest, closing_pr, label_bar};
-use afkconvoy_core::position::{Declared, Position};
+use afkconvoy_core::position::{Declared, Failure, Position};
 use afkconvoy_core::precedent::{Ruling, proposed, rulings};
 use afkconvoy_core::role::{Due, due, followed, workflow_of};
 use afkconvoy_core::stage_record::{
-    Advance, Author, StageRecord, Stated, advance, history, label_moves, lands, stage_records,
+    Advance, Author, StageRecord, Stated, Unconsulted, advance, history, label_moves, lands,
+    stage_records, unconsulted,
 };
 use afkconvoy_core::team::{FlowLabels, LAND, Team, Workflow};
 use afkconvoy_core::tick::Outcome;
-use afkconvoy_core::transition::escalated_at;
+use afkconvoy_core::transition::{Relabel, escalated_at};
 use afkconvoy_core::waiting::{Back, Waits, back, waits};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Map, Value, json};
@@ -113,6 +114,105 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
         answer["standing"] = json!(standing.stated.word());
     }
     Ok(answer)
+}
+
+/// Puts each open issue of a bound repo that was handed to a human, and that
+/// no consult saw, to its stage's consult — once (`stage_record::unconsulted`):
+/// the fleet leaves the record of its escalation, carrying what the comment
+/// of it told a human, where its records do not already have it with the
+/// consult, and swaps the escalate label back for its flow label → the issues
+/// put. Made by an acting tick on its rebuild's read of the team, `flows`;
+/// `plan` makes none.
+pub fn put_to_consults(fleet: &Fleet, flows: &Flows, open: &OpenIssues) -> Result<Vec<u64>> {
+    if fleet.config.bound.is_none() {
+        return Ok(vec![]);
+    }
+    let team = flows.team()?;
+    let mut put = vec![];
+    for issue in &open.rows {
+        if !issue.labels.contains(&team.escalate_label) || !team.flows(&issue.labels).is_empty() {
+            continue;
+        }
+        let comments = open.comments(issue.number);
+        let bodies = || comments.iter().map(|comment| comment.body.as_str());
+        let Some(at) = escalated_at(bodies()) else { continue };
+        let Ok(workflow) = followed(team, &issue.labels, bodies()) else { continue };
+        let (records, _) = records_in(comments);
+        let read = history(workflow, &records);
+        let Some(unconsulted) = unconsulted(&read, &records) else { continue };
+        if let Unconsulted::Record(stage) = unconsulted {
+            let said = comments.get(at).map_or("", |comment| comment.body.as_str());
+            // The comment of the escalation, but for its marker.
+            let said = said.split_once("-->").map_or(said, |(_, said)| said).trim();
+            let record = StageRecord::failed(&stage, Failure::Escalated, said);
+            fleet.gh.comment(issue.number, &record.comment())?;
+        }
+        let back = Relabel::back(&issue.labels, workflow.flow_label(), &team.escalate_label);
+        if let Some(label) = &back.add {
+            fleet.gh.add_label(issue.number, label)?;
+        }
+        for label in &back.remove {
+            fleet.gh.remove_label(issue.number, label)?;
+        }
+        put.push(issue.number);
+    }
+    Ok(put)
+}
+
+/// A consult's `afkconvoy send`: put issue `number`, with its stage's
+/// consult, at the stage `stage` of its workflow, with `text` as why — a
+/// stage record under the claim the consult holds, as its ruling is, which
+/// moves no label: the issue never left the fleet. Its rework counts are
+/// not started over (docs/adr/0018).
+///
+///   {"issue", "stage", "verdict": "sent", "claim", "declared", "woke"}
+pub fn consult_send(
+    repo: &Repo,
+    team: &Team,
+    number: u64,
+    stage: &str,
+    text: String,
+    ran: Ran,
+) -> Result<Value> {
+    if text.trim().is_empty() {
+        bail!("a stage record carries why the issue is sent: there is none");
+    }
+    let gh = GitHub { dir: repo.dir.clone() };
+    let issue = gh.issue(number)?;
+    let comments = gh.comments(number)?;
+    let workflow = workflow_of(team, &issue.labels)
+        .map_err(|why| anyhow!("issue #{number} cannot be sent to a stage: {why}"))?;
+    if workflow.place_of(stage).is_none() {
+        let has: Vec<&str> = workflow.stages().iter().map(|stage| stage.name.as_str()).collect();
+        bail!(
+            "the workflow `{}` issue #{number} follows has no stage `{stage}`; it has: {}",
+            workflow.name,
+            has.join(", ")
+        );
+    }
+    let (records, _) = records_in(&comments);
+    if !matches!(history(workflow, &records).place.position, Position::Consult(..)) {
+        bail!("issue #{number} is not with its stage's consult; nothing was written");
+    }
+    let Some(claim) = Scan::read(repo)?.claim_of(number).map(|claim| claim.id.clone()) else {
+        bail!("issue #{number} is not claimed: a consult sends under the claim it holds");
+    };
+    let Ran { role_commit, team_commit, harness } = ran;
+    let by =
+        Author::Worker { consult: true, claim: claim.clone(), role_commit, team_commit, harness };
+    let record = StageRecord {
+        stage: stage.to_string(),
+        stated: Stated::Sent,
+        by,
+        blocked_by: vec![],
+        text,
+    };
+    let standing = records.iter().any(|standing| standing.claim() == record.claim());
+    if !standing {
+        gh.comment(number, &record.comment())?;
+    }
+    Ok(json!({"issue": number, "stage": stage, "verdict": "sent", "claim": claim,
+        "declared": !standing}))
 }
 
 /// The stage records among `comments`, oldest first, each with the URL of
@@ -513,6 +613,25 @@ impl Flows {
             stage: history.place.position.stage().map(|stage| stage.name.clone()),
             said: verdict.and_then(|at| issue.urls.get(at).cloned()),
             rounds: history.rounds_said(&issue.records, &issue.urls),
+        })
+    }
+
+    /// The stage of issue `number` whose consult a hand-off for `reason`
+    /// goes to (`Place::consults`); `None` where it goes to a human.
+    pub fn consults(&self, number: u64, failure: Failure) -> Option<String> {
+        let issue = self.issues.iter().find(|issue| issue.number == number)?;
+        let workflow = workflow_of(self.team().ok()?, &issue.labels).ok()?;
+        let place = history(workflow, &issue.records).place;
+        // The stage it is at, or the one whose verdict the failure refutes.
+        let refuted = issue.records.iter().rev().find(|record| {
+            matches!(record.by, Author::Worker { consult: false, .. })
+                && matches!(record.stated, Stated::Declared(_))
+        });
+        let at = place.position.stage().map(|stage| stage.name.clone());
+        [at, refuted.map(|record| record.stage.clone())].into_iter().flatten().find(|stage| {
+            let mut records = issue.records.clone();
+            records.push(StageRecord::failed(stage, failure, ""));
+            matches!(history(workflow, &records).place.position, Position::Consult(..))
         })
     }
 
