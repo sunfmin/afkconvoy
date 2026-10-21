@@ -10,11 +10,14 @@ use std::time::{Duration, Instant};
 use common::World;
 
 /// `afkconvoy exclusive -- sh -c <script>`, started in `world`'s checkout on
-/// the host whose cache is `cache`, as the worker of `issue`.
+/// the host whose cache is `cache`, as the worker of `issue`. The script
+/// names the cache `$CACHE`: a tick log keeps only the start of a long
+/// command, and a temporary directory's path may be long.
 fn exclusive(world: &World, cache: &Path, issue: u64, script: &str) -> Child {
     world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .env("XDG_CACHE_HOME", cache)
+        .env("CACHE", cache)
         .env("AFKCONVOY_ISSUE", issue.to_string())
         .args(["exclusive", "--", "sh", "-c", script])
         .stdout(Stdio::piped())
@@ -77,7 +80,7 @@ fn two_commands_of_two_repos_fleets_run_one_after_the_other_in_the_order_they_as
     let host = tempfile::tempdir().unwrap();
     let cache = host.path().to_path_buf();
     let order = cache.join("order");
-    let say = |what: &str| format!("echo {what} >> '{}'", order.display());
+    let say = |what: &str| format!("echo {what} >> \"$CACHE/order\"");
     let held =
         exclusive(&first, &cache, 11, &format!("{}; sleep 1; {}", say("a-start"), say("a-end")));
     until(|| lines(&order).len() == 1);
@@ -138,10 +141,9 @@ fn a_waiter_killed_leaves_the_queue_and_a_holder_that_dies_frees_its_place() {
     let cache = host.path().to_path_buf();
     let pid: PathBuf = cache.join("pid");
     let order = cache.join("order");
-    let say = |what: &str| format!("echo {what} >> '{}'", order.display());
+    let say = |what: &str| format!("echo {what} >> \"$CACHE/order\"");
     // the holder's command: it runs on past its holder, and is ended at the end
-    let mut holder =
-        exclusive(&world, &cache, 1, &format!("echo $$ > '{}'; sleep 5", pid.display()));
+    let mut holder = exclusive(&world, &cache, 1, "echo $$ > \"$CACHE/pid\"; sleep 5");
     until(|| pid.exists() && !lines(&pid).is_empty());
     let mut killed = exclusive(&world, &cache, 2, &say("killed-ran"));
     until(|| tickets(&cache) == 2);
