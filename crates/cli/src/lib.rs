@@ -1220,6 +1220,7 @@ mod tests {
         &["lock", "7"],
         &["over", "--run", "sweep"],
         &["guard"],
+        &["exclusive", "--", "true"],
         &["dispatch", "7", "--instance", "a-h1-1"],
         &["recovery", "7"],
         &["close", "7", "--instance", "a-h1-1"],
