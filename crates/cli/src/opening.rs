@@ -139,11 +139,17 @@ fn ask(dir: &Path, port: u16) -> Result<Value> {
 mod tests {
     use super::*;
 
+    /// Listens where a `run` would in `dir`, named from inside it as a `run`
+    /// names it: a temporary directory's path may be too long for a socket's.
+    fn bind(dir: &Path) -> UnixListener {
+        named_inside(dir, SOCKET, |name| UnixListener::bind(name)).unwrap()
+    }
+
     /// A git dir with something other than a `run` listening in it, which
     /// answers each asker with `line`.
     fn stand_in(line: &'static str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        let listener = UnixListener::bind(dir.path().join(SOCKET)).unwrap();
+        let listener = bind(dir.path());
         std::thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
                 let _ = BufReader::new(&stream).read_line(&mut String::new());
@@ -175,7 +181,7 @@ mod tests {
         assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");
 
         // a `run` that ended left its socket: nobody listens on it
-        drop(UnixListener::bind(nobody.path().join(SOCKET)).unwrap());
+        drop(bind(nobody.path()));
         let error = format!("{:#}", ask(nobody.path(), 0).err().unwrap());
         assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");
 

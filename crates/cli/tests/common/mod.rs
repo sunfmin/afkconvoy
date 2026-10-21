@@ -111,6 +111,9 @@ impl World {
             .env("XDG_CACHE_HOME", self.cache())
             .env("HOME", self.home())
             .envs(GIT_ENV)
+            // No checkout above the world is one of its: a test's directory
+            // is in this repo's, when a worker's TMPDIR is in its worktree.
+            .env("GIT_CEILING_DIRECTORIES", self.root.parent().unwrap())
             .env_remove("ANTHROPIC_BASE_URL")
             // A `run` keeps its host awake, but where a test says otherwise
             // (`World::host_sleeps`).

@@ -129,9 +129,11 @@ fn with_no_run_to_wake_a_wake_succeeds_and_does_nothing() {
 #[test]
 fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
     let world = World::new();
-    // something listens where a run would, and answers nothing
-    let socket = world.clone.join(".git/convoy-wake.sock");
-    let mute = std::os::unix::net::UnixDatagram::bind(socket).unwrap();
+    // something listens where a run would, and answers nothing: named from
+    // inside the git dir, as a run names it, whose path may be too long for a
+    // socket's. Each test is a process of its own under nextest.
+    std::env::set_current_dir(world.clone.join(".git")).unwrap();
+    let mute = std::os::unix::net::UnixDatagram::bind("convoy-wake.sock").unwrap();
 
     let started = Instant::now();
     let answer = wake(&world, &world.clone);
