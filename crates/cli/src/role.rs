@@ -63,8 +63,8 @@ pub struct Staged {
     team_copy: Copy,
     /// The team rules, in the team's copy, of a team that has them.
     team_rules: Option<String>,
-    /// Whether the worker is given the host user's skills and rules
-    /// (`Team::host_user`).
+    /// Whether the worker is given the host user's skills and rules: its
+    /// role's say (`Role::host_user`), or the team's for the stock consult.
     host_user: bool,
     /// The team's workflows, by name: what a stage that splits its issue
     /// may take a child in to.
@@ -149,11 +149,16 @@ impl Staged {
             .filter(|_| !consult || by.is_none())
             .and_then(|stage| stage.harness(bound.harness))
             .unwrap_or(bound.harness);
-        let (role, skill, role_copy) = match by {
+        let (role, skill, role_copy, host_user) = match by {
             Some((work, role)) => {
-                (role.name.clone(), work.skill.clone(), kept.role(role, harness)?)
+                (role.name.clone(), work.skill.clone(), kept.role(role, harness)?, role.host_user)
             }
-            None => (stock::ROLE.to_string(), stock::SKILL.to_string(), Copies::here()?.stock()?),
+            None => (
+                stock::ROLE.to_string(),
+                stock::SKILL.to_string(),
+                Copies::here()?.stock()?,
+                kept.team.host_user,
+            ),
         };
         Ok(Staged {
             verdicts: verdicts
@@ -182,7 +187,7 @@ impl Staged {
             role_copy,
             team_copy: kept.copy.clone(),
             team_rules: kept.rules(),
-            host_user: kept.team.host_user,
+            host_user,
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
     }

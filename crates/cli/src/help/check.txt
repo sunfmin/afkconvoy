@@ -59,14 +59,17 @@ WHAT IT ANSWERS
   which every one of its workers is given.
   `host_user` is whether its workers are given the host user's own skills and rules
   beside their role's: true unless the team file says `host_user: false`, and a value
-  that is not true or false is a fault (`afkconvoy help roles`).
+  that is not true or false is a fault (`afkconvoy help roles`). It is each role's
+  default, and the stock consult's.
   `harness` is the default harness: the one the config of this checkout names, and
   claude-code where it names none — and with `--team` and `--dir`, which read no
   config. Each of
-  `roles` is {"name", "repo", "path", "commit", "skills", "above", "limits"}: `path` is
-  the role's directory in `repo`, "" for a whole repo; `commit` the one the role's repo
-  was read at; `above` each `CLAUDE.md` and `.claude/` a directory above the role holds
-  in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`,
+  `roles` is {"name", "repo", "path", "commit", "host_user", "skills", "above",
+  "limits"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the
+  one the role's repo was read at; `host_user` whether its workers are given the host
+  user's skills and rules — its own say, `{ dir, host_user }`, or the team's; a key of
+  that map but those two, or a `host_user` that is not true or false, is a fault;
+  `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`,
   where the team's directory is above the role: those are the team rules, which a
   worker is given; `limits` the harnesses the role holds
   limits for — a hook or a denied permission in its `.claude/settings.json` for

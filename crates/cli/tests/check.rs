@@ -93,9 +93,9 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
         read["roles"],
         json!([
             {"name": "dev", "repo": "acme/dev", "path": "", "commit": head(&world, "acme/dev"),
-             "skills": ["implement", "land"], "above": [], "limits": []},
+             "host_user": true, "skills": ["implement", "land"], "above": [], "limits": []},
             {"name": "reviewer", "repo": "acme/reviewer", "path": "",
-             "commit": head(&world, "acme/reviewer"), "skills": ["review", "rule"], "above": [],
+             "commit": head(&world, "acme/reviewer"), "host_user": true, "skills": ["review", "rule"], "above": [],
              "limits": []},
         ])
     );
@@ -480,7 +480,8 @@ fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
     assert_eq!(
         read["roles"],
         json!([{"name": "fellow", "repo": "acme/hospital", "path": "roles/fellow",
-            "commit": commit, "skills": ["treat"], "above": [], "limits": []}])
+            "commit": commit, "host_user": true, "skills": ["treat"], "above": [],
+            "limits": []}])
     );
     // The team's commit is its roles': the repo was read once.
     assert_eq!(read["commit"], commit);
@@ -511,7 +512,7 @@ fn a_role_is_named_by_repo_by_repo_and_path_and_twice_over() {
     let read = world.afk(&["check"]).ok();
     let role = |name: &str, repo: &str, path: &str, skill: &str| {
         json!({"name": name, "repo": repo, "path": path, "commit": head(&world, repo),
-            "skills": [skill], "above": [], "limits": []})
+            "host_user": true, "skills": [skill], "above": [], "limits": []})
     };
     assert_eq!(
         read["roles"],
@@ -1176,4 +1177,33 @@ fn a_team_file_may_turn_the_host_user_s_skills_and_rules_off_with_true_or_false_
     let problem = answer.json["faults"][0]["problem"].as_str().unwrap();
     assert_eq!(problem, "must be true or false, not text");
     see(&answer.json["faults"][0]);
+}
+
+#[test]
+fn a_role_named_with_its_dir_says_its_own_host_user_and_check_answers_each_role_s() {
+    let own = TEAM
+        .replace("reviewer: acme/reviewer", "reviewer: { dir: acme/reviewer, host_user: false }");
+    let world = bound(&[("team.md", &own), ("workflows/feature.md", FEATURE)]);
+    let read = world.afk(&["check"]).ok();
+    assert_eq!(read["host_user"], true);
+    let said: Vec<_> = read["roles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["name"].clone(), r["host_user"].clone()))
+        .collect();
+    assert_eq!(said, [(json!("dev"), json!(true)), (json!("reviewer"), json!(false))]);
+
+    let team = world.root.join("github/acme/team");
+    let wrong = TEAM.replace(
+        "reviewer: acme/reviewer",
+        "reviewer: { dir: acme/reviewer, host_user: 0, at: x }",
+    );
+    commit(&team, "team.md", &wrong);
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 1);
+    assert_eq!(
+        faults(&answer.json),
+        ["team.md: roles.reviewer.at", "team.md: roles.reviewer.host_user"]
+    );
 }

@@ -756,3 +756,27 @@ fn a_pi_worker_is_given_the_host_user_s_skills_and_rules_after_its_role_s() {
     assert!(line.contains(&skills), "{line}");
     assert!(line.contains(&format!("PI_CODING_AGENT_DIR='{}'", kept.display())), "{line}");
 }
+
+#[test]
+fn a_pi_worker_of_a_role_that_keeps_from_the_host_user_s_skills_and_rules_is_given_none() {
+    let own = "reviewer: { dir: acme/reviewer, host_user: false }";
+    let world = bound_with(&TEAM.replace("reviewer: acme/reviewer", own));
+    world.issue(7, &["flow:feature"]);
+    world.issue(8, &["flow:audit"]);
+    let ticked = tick(&world, 1000).ok();
+    let did = did(&ticked);
+    assert!(did.contains(&"dispatch 7 done".to_string()), "{ticked}");
+    assert!(did.contains(&"dispatch 8 done".to_string()), "{ticked}");
+    // `dev` takes the team's, and is given them; `reviewer` says otherwise.
+    let given = |issue: u64| {
+        let line = started(&world, &worktree(&world, issue));
+        let (with, alone) = (
+            format!("'{}'", kept(&world).display()),
+            format!("'{}'", kept_alone(&world).display()),
+        );
+        assert_ne!(line.contains(&with), line.contains(&alone), "{line}");
+        line.contains(&with)
+    };
+    assert!(given(7), "dev is started on pi with the host user's");
+    assert!(!given(8), "reviewer is started on pi with none of the host user's");
+}

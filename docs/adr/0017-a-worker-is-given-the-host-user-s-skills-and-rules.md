@@ -33,3 +33,4 @@ What is linked is kept in a directory of the fleet's own, apart from the one kep
 - A role may behave differently on two hosts: its author's skills are not another host user's. A team that needs the same role on every host says `host_user: false`.
 - Under `host_user: false` a Codex worker still loads the skills of the host user's home (`~/.agents/skills`), as ADR-0013 says; a role's skill of the same name still wins there.
 - `check` accepts the key, refuses a value that is not true or false, and answers with it.
+- The team's key is every role's default. A role may set its own, whatever the team says, by naming its directory as a map: `reviewer: { dir: ./roles/reviewer, host_user: false }` — a role that carries its own copies of the skills it reviews by and should review by those alone, while the team's other roles keep the host's. `check` answers each role's.

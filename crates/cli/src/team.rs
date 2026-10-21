@@ -774,8 +774,8 @@ fn answer(loaded: &Loaded) -> Value {
         .iter()
         .map(|role| {
             json!({"name": role.name, "repo": role.dir.repo, "path": role.dir.path(),
-                "commit": role.commit, "skills": role.skills, "above": role.above,
-                "limits": role.limits})
+                "commit": role.commit, "host_user": role.host_user, "skills": role.skills,
+                "above": role.above, "limits": role.limits})
         })
         .collect();
     json!({

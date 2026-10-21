@@ -120,7 +120,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;
-    let host_user = kept.team.host_user;
+    let host_user = role.host_user;
     let (kept_dir, shadowed) = crate::kept::for_worker(harness, host_user, &role_copy.dir)?;
     let start = Start {
         role_dir: &role_copy.dir.display().to_string(),

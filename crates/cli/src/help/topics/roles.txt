@@ -89,7 +89,10 @@ THE HOST USER'S SKILLS AND RULES
   over one of theirs of the same name, and the brief, the role's rules, the team rules
   and the repo's own rules win over theirs; the brief says so. The cost: a role may
   behave differently on two hosts. A team file that says `host_user: false` gives its
-  workers none of it, and every role is what its directory says on every host.
+  workers none of it, and every role is what its directory says on every host. One role
+  may say it for itself, whatever the team says — `reviewer: { dir: ./roles/reviewer,
+  host_user: false }` — and its workers alone are given none of it, on every harness;
+  the team's other roles keep the team's (`afkconvoy help team`).
 
 WHAT MAKES A ROLE GOOD
 
