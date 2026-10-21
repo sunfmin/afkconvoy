@@ -515,6 +515,15 @@ impl<'w> Place<'w> {
         next
     }
 
+    /// Where the fleet's record of `failure` of the last verdict declared at
+    /// `stage` leaves an issue that verdict moved on: back at that stage, the
+    /// counts as they were, and handed on from there.
+    #[spec(fn(Place[@p], &Stage{v: v.n == p.n && v.roles == p.roles}, Failure) -> Place[p])]
+    pub fn refuted(mut self, stage: &'w Stage, failure: Failure) -> Place<'w> {
+        self.position = at(stage);
+        self.failed(failure)
+    }
+
     /// Whether `declared` is something that may be declared where the issue is.
     pub fn takes(&self, declared: Declared) -> bool {
         self.valid(declared).is_some()

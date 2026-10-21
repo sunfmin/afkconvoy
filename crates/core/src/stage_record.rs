@@ -332,10 +332,9 @@ pub struct History<'w> {
 #[spec(fn(&Workflow[@w], &[StageRecord]) -> History[w.n, w.roles])]
 pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'w> {
     let mut place = Place::enter(workflow);
-    // Where the issue was before the last verdict of a stage's own worker,
-    // and that stage: a failure the fleet saw of that verdict is handed on
-    // from there.
-    let mut refuted: Option<(usize, Place)> = None;
+    // The stage of the last verdict of a stage's own worker: a failure the
+    // fleet saw of that verdict is handed on from that stage.
+    let mut refuted: Option<usize> = None;
     let mut spent: Vec<&str> = vec![];
     let mut readings = vec![];
     let mut rounds = vec![];
@@ -370,19 +369,14 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
                 rounds.clear();
                 Reading::Sent
             } else if let Stated::Failed(failure) = record.stated {
-                match (own, refuted.take()) {
-                    (Some(_), _) => {
-                        place = place.failed(failure);
-                        Reading::Failed
-                    }
-                    (None, Some((stage, before))) if stage == named => {
-                        place = before.failed(failure);
-                        Reading::Failed
-                    }
-                    (None, other) => {
-                        refuted = other;
-                        Reading::OtherStage
-                    }
+                if own.is_some() {
+                    place = place.failed(failure);
+                    Reading::Failed
+                } else if refuted.take() == Some(named) {
+                    place = place.refuted(workflow.stage(named), failure);
+                    Reading::Failed
+                } else {
+                    Reading::OtherStage
                 }
             } else if own.is_none() {
                 Reading::OtherStage
@@ -402,7 +396,7 @@ pub fn history<'w>(workflow: &'w Workflow, records: &[StageRecord]) -> History<'
                 let before = place.position;
                 let had = place.rework();
                 if matches!(record.by, Author::Worker { consult: false, .. }) {
-                    refuted = Some((named, place.clone()));
+                    refuted = Some(named);
                 }
                 place = place.after(declared);
                 // The counts are the one account of what is rework: a round is
@@ -524,7 +518,9 @@ pub fn unconsulted(history: &History, records: &[StageRecord]) -> Option<Unconsu
     if let Position::Consult(..) = place.position {
         return Some(Unconsulted::Back);
     }
-    let since = records.iter().rposition(StageRecord::puts).map_or(0, |at| at + 1);
+    // From the last record that put the issue at a stage: a human's, so
+    // neither a consult's nor the fleet's.
+    let since = records.iter().rposition(StageRecord::puts).unwrap_or(0);
     let seen = records.get(since..).unwrap_or_default().iter().any(|record| {
         matches!(record.by, Author::Worker { consult: true, .. })
             || matches!(record.stated, Stated::Failed(_))
