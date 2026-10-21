@@ -179,6 +179,7 @@ Of each definition file — the team file, a workflow's, a patrol's — only the
     escalate_label: ready-for-human    # default
     roles:
       <short name>: <its directory>    # owner/repo, owner/repo/path or ./path
+      <short name>: { dir: <its directory>, host_user: false }   # its own host_user
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
     host_user: true                    # default
 
@@ -189,7 +190,7 @@ escalated issue (`afkconvoy rule`) a worker in the role `by`, with the skill `do
 opens a PR on the team's repo that appends one entry to `precedents.md`, unless
 `max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`,
 true or false, says whether a worker is given the host user's own skills and rules
-beside its role's: `afkconvoy help roles`.
+beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
 ````
 
 ### HOW IT NAMES A ROLE
@@ -395,7 +396,10 @@ the guard and orca's report stay the only hooks the fleet adds. A role's skill w
 over one of theirs of the same name, and the brief, the role's rules, the team rules
 and the repo's own rules win over theirs; the brief says so. The cost: a role may
 behave differently on two hosts. A team file that says `host_user: false` gives its
-workers none of it, and every role is what its directory says on every host.
+workers none of it, and every role is what its directory says on every host. One role
+may say it for itself, whatever the team says — `reviewer: { dir: ./roles/reviewer,
+host_user: false }` — and its workers alone are given none of it, on every harness;
+the team's other roles keep the team's (`afkconvoy help team`).
 ````
 
 ### WHAT MAKES A ROLE GOOD
@@ -1412,7 +1416,7 @@ The rules every role of a team works under, whatever its own rules add. They say
 _Avoid_: global rules, shared rules
 
 **Host user's skills and rules**:
-The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
+The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. A role may say it for itself, whatever the team says: `reviewer: { dir: ./roles/reviewer, host_user: false }` in `roles`; a role named by its directory alone takes the team's. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
 _Avoid_: global rules, user config, personal skills
 
 **Bound repo**:
