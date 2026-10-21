@@ -61,8 +61,9 @@ fi
 [ -n "$pinned" ] || exit 1
 # Every run, the gate's or a hand's, stops a solver query of one function past
 # twenty seconds as an error naming it, checks on past it so one run names
-# every slow function, and times each: a run is never held up by one query.
-FLUXFLAGS="-Ftimings -Ffixpoint-timeout=20 -Fcatch-bugs${FLUXFLAGS:+ $FLUXFLAGS}"
+# every slow function, and times each, the file of timings kept out of the
+# tree: a run is never held up by one query.
+FLUXFLAGS="-Ftimings -Ffixpoint-timeout=20 -Fcatch-bugs -Flog-dir=$PWD/../../target/flux-log${FLUXFLAGS:+ $FLUXFLAGS}"
 export FLUXFLAGS
 case "${1:-}" in
 "" | -* | check) ;;
