@@ -1572,6 +1572,7 @@ mod tests {
             runs_in_day: None,
             until: None,
             failure: None,
+            asked: None,
             claim: None,
         }
     }

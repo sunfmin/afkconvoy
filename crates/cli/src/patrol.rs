@@ -1,19 +1,23 @@
 //! Patrols on a bound repo (docs/adr/0008): what a rebuild reads of each one
-//! the repo names, the start of a run, and its end. When a patrol runs and
+//! the repo names, a human's ask for a run now, the start of a run, and its
+//! end. When a patrol runs and
 //! what makes a run a failed one is the core's (`afkconvoy_core::patrol`).
 
 use afkconvoy_core::intake::opened_by;
+use afkconvoy_core::lock;
 use afkconvoy_core::patrol::{
-    Ran, Row, Seen, Standing, broke, checkout_name, claim_key, failure_of, failure_report,
-    failure_title, held_until, is_due, read_run, run_over, run_ref, write_run,
+    Ran, Row, Seen, Standing, asked_ref, broke, checkout_name, claim_key, failure_of,
+    failure_report, failure_title, held_until, is_due, read_asked, read_run, run_over, run_ref,
+    write_run,
 };
 use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 
-use crate::claims::{Me, drop_run, take_run};
+use crate::claims::{Ask, Me, drop_ask, drop_run, push_ask, take_run};
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
@@ -55,16 +59,83 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
         claim: fleet.scan.runs.iter().find(|run| run.key == claim_key(&patrol.name)).cloned(),
         open: opened.iter().filter(|by| **by == patrol.name).count() as u64,
         failure: failure_of(issues, &patrol.name, escalate),
+        asked: fleet.scan.asks.get(&patrol.name).map(|ask| ask.ts),
     };
     Ok(named.iter().map(seen).collect())
 }
 
+/// `afkconvoy patrol-now <name>`: a human's ask for a run of the patrol `name`
+/// now, on `host` at `now`. It is recorded on the remote for the next tick of
+/// whichever host claims the run, past `every` and `max_runs_a_day`; the
+/// fleet is woken as the command ends (`crate::acting`). Refused, with
+/// nothing recorded, when what holds an asked run holds it: a fleet lock, the
+/// patrol's `max_open`, a failed run nobody answered, a run still going.
+///
+///   {"patrol", "asked", "ref"}
+pub fn ask(name: &str, host: &str, now: u64) -> Result<Value> {
+    let (mut fleet, open) = crate::fleet::Fleet::read(now)?;
+    let read = Flows::read(&fleet, &open.issues)?;
+    let patrols = seen(&fleet, &read, &open.issues)?;
+    let Some(patrol) = patrols.iter().find(|patrol| patrol.name == name) else {
+        let names: Vec<&str> = patrols.iter().map(|patrol| patrol.name.as_str()).collect();
+        return Err(See::Patrols.refusal(format!(
+            "this repo runs no patrol {name:?}: it runs {}. A repo runs the patrols its config \
+             names, under `patrols`",
+            if names.is_empty() { "none".to_string() } else { names.join(", ") }
+        )));
+    };
+    let locks = lock::standing(&open.issues.rows, &fleet.config);
+    let held = afkconvoy_core::patrol::ask(patrol, &fleet.scan.beats(), now, !locks.is_empty());
+    if let Err(held) = held {
+        return Err(See::Patrols.refusal(refused(patrol, held, &locks)));
+    }
+    let refname = push_ask(&fleet.repo, &mut fleet.scan, name, host, now)?;
+    Ok(json!({"patrol": name, "asked": now, "ref": refname}))
+}
+
+/// Why an ask for a run of `patrol` is refused, held as `held`, and what
+/// clears it; `locks` are the fleet locks standing.
+fn refused(patrol: &Seen, held: Standing, locks: &[u64]) -> String {
+    let name = &patrol.name;
+    match held {
+        Standing::Locked => {
+            let numbers: Vec<String> = locks.iter().map(|lock| format!("#{lock}")).collect();
+            format!(
+                "a fleet lock stands ({}): no patrol runs while one does, asked for or not. It \
+                 ends when the last lock issue closes",
+                numbers.join(", ")
+            )
+        }
+        Standing::Full => format!(
+            "the open issues the patrol `{name}` opened have reached its `max_open` ({} of {}): \
+             it runs once one of them closes, or once `max_open` in patrols/{name}.md is raised",
+            patrol.open, patrol.max_open
+        ),
+        Standing::Failed => match patrol.failure {
+            Some(failure) => format!(
+                "the last run of the patrol `{name}` failed, and #{failure} reports it: it runs \
+                 once you have looked and closed it (gh issue close {failure})"
+            ),
+            None => format!("the last run of the patrol `{name}` failed"),
+        },
+        Standing::Running | Standing::PeerRunning => format!(
+            "a run of the patrol `{name}` is still going: ask again once it has ended — once its \
+             worker declares it over with `afkconvoy over`, or is gone, or has stopped for a \
+             grace period; `afkconvoy plan` says when it has"
+        ),
+        Standing::Due | Standing::NotDue | Standing::Spent | Standing::StaleRun => {
+            format!("the patrol `{name}` cannot be asked for now")
+        }
+    }
+}
+
 /// Runs the patrol `row`, due as the rebuild read it: claims the run, has
 /// orca cut the patrol a checkout of the base branch as it stands, starts a
-/// worker in the patrol's role there, and records the run. A checkout an
+/// worker in the patrol's role there, and records the run — one a human
+/// asked for as such, the ask then answered and deleted. A checkout an
 /// earlier run left — one that failed, or whose end was cut short — is
 /// removed first: a run starts in a new one. `Lost` when a peer
-/// claimed it, or ran it since the rebuild.
+/// claimed it, or ran it since the rebuild — what was asked for included.
 ///
 /// A step that fails is an error with the claim still held and no run
 /// recorded: a later tick finds the run over and ends it, and the patrol is
@@ -87,8 +158,13 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let recorded = run_ref(fleet.repo.layout(), name);
     let last = fleet.repo.remote_records(&recorded)?.pop();
     let last = last.and_then(|record| read_run(&record.subject));
-    if !is_due(row.every, last.as_ref().map(|ran| ran.ts), me.now)
-        || held_until(row.max_runs_a_day, last.as_ref(), me.now).is_some()
+    // …and answered the ask it is due by: one standing still passes the schedule.
+    let ask = fleet.repo.remote_records(&asked_ref(fleet.repo.layout(), name))?.pop();
+    let ask =
+        ask.and_then(|record| Some(Ask { ts: read_asked(&record.subject)?, sha: record.sha }));
+    if ask.is_none()
+        && (!is_due(row.every, last.as_ref().map(|ran| ran.ts), me.now)
+            || held_until(row.max_runs_a_day, last.as_ref(), me.now).is_some())
     {
         drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
         return Ok(Outcome::Lost);
@@ -154,10 +230,13 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     checkout.deliver(&terminal, &brief)?;
 
     // The record carries the runs of the day before it: they are counted from it alone.
-    let ran = Ran::after(last.as_ref(), me.now);
+    let ran = Ran::after(last.as_ref(), me.now, ask.is_some());
     let sha = fleet.repo.record_commit(&write_run(&ran))?;
     fleet.repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{recorded}")])?;
     fleet.scan.last_runs.insert(name.to_string(), ran);
+    if let Some(ask) = &ask {
+        drop_ask(&fleet.repo, &mut fleet.scan, name, ask)?;
+    }
     Ok(Outcome::Done)
 }
 

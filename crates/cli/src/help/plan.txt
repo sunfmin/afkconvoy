@@ -104,9 +104,12 @@ WHAT IT ANSWERS
                    `every` in seconds, `last_run` when its last recorded run started
                    (null: it never ran), `open` the open issues it opened. A patrol
                    whose file says `max_runs_a_day` has it too, and `runs_in_day`: how
-                   many of its runs started in the last 24 hours. standing says what a
-                   tick does about it:
-                     due           its interval has passed: a tick runs it
+                   many of its runs started in the last 24 hours. One a human asked to
+                   run now (`afkconvoy patrol-now --help`) has `asked`: when the ask was
+                   made, until a tick starts the run. standing says what a tick does
+                   about it:
+                     due           its interval has passed, or a human asked for it:
+                                   a tick runs it
                      not_due       its interval has not passed since `last_run`
                      spent         `runs_in_day` has reached `max_runs_a_day`: it is
                                    held until `until`, in this case only — when the
