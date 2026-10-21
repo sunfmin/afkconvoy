@@ -114,7 +114,8 @@ fn doctor_shows_the_thresholds_in_force_and_what_the_host_reads() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert_eq!(said, ["AFKCONVOY_ADMIT_LOAD", "AFKCONVOY_ADMIT_MEMORY", "AFKCONVOY_ADMIT_DISK"]);
+    assert_eq!(said, ["AFKCONVOY_ADMIT_LOAD", "AFKCONVOY_ADMIT_MEMORY"]);
+    assert_eq!(admission["reading"]["disk_free_bytes"], 500u64 << 30, "the stand-in `df`");
     assert_eq!(
         admission["held_back_by"],
         serde_json::json!(["80% of its memory is free, under 90%"])

@@ -75,7 +75,7 @@ impl World {
         }
         write_script(&bin.join("shell"), SHELL);
         // The host a fleet would put to sleep: nothing of the one the tests run on.
-        for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG)] {
+        for (name, script) in [("pmset", PMSET), ("sysctl", SYSCTL), ("ioreg", IOREG), ("df", DF)] {
             write_script(&bin.join(name), script);
         }
         let world = World {
@@ -114,10 +114,7 @@ impl World {
             .env_remove("ANTHROPIC_BASE_URL")
             // A `run` keeps its host awake, but where a test says otherwise
             // (`World::host_sleeps`).
-            .env("AFKCONVOY_NO_HOST_SLEEP", "true")
-            // Admission reads the stand-in host's load and memory, never the
-            // disk of whoever runs the tests (`World::busy`).
-            .env("AFKCONVOY_ADMIT_DISK", "0");
+            .env("AFKCONVOY_NO_HOST_SLEEP", "true");
         cmd
     }
 
@@ -658,6 +655,13 @@ case "$*" in
     echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"
     ;;
 esac
+"#;
+
+/// The stand-in `df`, for admission: a disk of 1000 GiB, half of it free —
+/// never the disk of whoever runs the tests.
+const DF: &str = r#"#!/bin/sh
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/stand-in 1048576000 524288000 524288000 50% /"
 "#;
 
 /// The stand-in `ioreg`: the keyboard and mouse untouched for the seconds in
