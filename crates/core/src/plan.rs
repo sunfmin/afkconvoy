@@ -5,6 +5,7 @@
 use flux_rs::attrs::*;
 use serde::Serialize;
 
+use crate::admission::Hold;
 use crate::claims::{Claim, InstanceId};
 use crate::closing::issues_closed_by;
 use crate::config::Config;
@@ -252,6 +253,12 @@ pub struct WorkingSet {
     /// again.
     #[serde(skip)]
     pub outgrown_train: Option<Built>,
+    /// The thresholds of its host that admission is past (`admission::holds`):
+    /// while there is one, a pass starts no new worker into a free slot. Read
+    /// of the host, not of GitHub: what assembles the set leaves it empty,
+    /// and the effect layer puts in what it read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub held_back: Vec<Hold>,
 }
 
 impl WorkingSet {
@@ -505,6 +512,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         proposals: vec![],
         slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
         outgrown_train: seen.idle_train.filter(|built| built.outgrown()),
+        held_back: vec![],
     };
     let locked = !set.locks.is_empty();
     for patrol in seen.patrols {

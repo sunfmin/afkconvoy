@@ -348,7 +348,7 @@ fn read_host() -> Host {
 }
 
 /// The output of `program` with `args`, which must succeed.
-fn output(program: &str, args: &[&str]) -> Result<String> {
+pub(crate) fn output(program: &str, args: &[&str]) -> Result<String> {
     let out = Command::new(program)
         .args(args)
         .output()
