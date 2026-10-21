@@ -15,13 +15,34 @@ WHEN TO RUN IT
   memory or disk — past its span (`afkconvoy run --help`, ADMISSION), to find out what
   holds what admission read and why. It found one of three things:
 
-    reclaimable  the fleet holds what it no longer needs — a worktree whose issue is
-                 closed, the build output of a worktree whose next stage rebuilds it
-                 anyway: name each, with how much
+    reclaimable  something on the disk can be rebuilt — anywhere under the home
+                 folder, not only the fleet's worktrees: free it with --reclaim
     fleet        the fleet's own shape outgrows the host — its concurrency times one
                  worktree's fresh build past the free disk, say: say the arithmetic
-    not-its      what holds it is outside this fleet — another fleet, a daemon, a
-                 user's files: name it
+    not-its      what holds it is outside this fleet and cannot be rebuilt — another
+                 fleet's work, a daemon, a user's files: name it
+
+  A host inspection frees and names with paths under the home folder:
+
+    --reclaim <path>  with reclaimable only, and as often as wanted: frees the path.
+                      A git checkout no process uses — none has its working directory
+                      there or a file open there (`lsof`), the landing train's while a
+                      gate runs among them — and no worker holds: what git ignores in it
+                      (`git clean -fdX`: target/, node_modules, .build), never a file
+                      git tracks or a change no commit holds; and where it is the
+                      worktree of a closed issue holding no change, the worktree whole.
+                      A tool's cache, whole or a part: ~/Library/Caches,
+                      ~/Library/Developer/Xcode/DerivedData, ~/.cargo/registry/cache,
+                      ~/.cargo/git/checkouts, ~/.npm/_cacache, ~/.cache/uv, ~/.cache/pip,
+                      ~/.gradle/caches. Anything else is refused.
+    --name <path>     as often as wanted: names the path, with what it holds, for a
+                      human to free. What cannot be rebuilt or is expensive to fetch
+                      again — model weights (~/.cache/huggingface, ~/.cache/modelscope,
+                      ~/.ollama, ~/.lmstudio), Docker's images, ~/Downloads, media, a
+                      user's files — is named, and never deleted: --reclaim refuses it.
+
+  Every path is checked before any is freed: one that may not be is refused, saying
+  why, and nothing of the line is freed.
 
 WHO RUNS IT
 
@@ -43,17 +64,20 @@ WHAT IT READS AND WRITES
 
   Of the host, it keeps what was found in the cache every fleet of the host shares
   (host-inspection/; `afkconvoy help cache`), shown by the panel and `doctor` beside
-  admission's reading. It deletes nothing on its word. For `fleet` it opens one issue
+  admission's reading, with what was freed and named. For `fleet` it opens one issue
   in the repo saying so — with the escalate label and the label fleet-outgrows-host —
   and none while one carrying that label is open.
 
 WHAT IT ANSWERS
 
-  {"inspected": true, "found", "kind", "woke"} — what was found is kept; `kind` is worker
-  or host; `woke` is whether a `run` on this host was told.
+  {"inspected": true, "found", "kind", "reclaimed", "freed", "named", "woke"} — what
+  was found is kept; `kind` is worker or host; `reclaimed` and `named` are each
+  [{path, bytes}] it freed and named, `freed` the bytes freed in all; `woke` is
+  whether a `run` on this host was told.
 
   Errors: the text is empty; the checkout it runs in is no inspection's; the word is
-  not one its kind finds.
+  not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim
+  of another word than reclaimable; a path that may not be freed, or does not exist.
 
 WHAT TRIPS YOU UP
 
@@ -63,4 +87,4 @@ WHAT TRIPS YOU UP
   - It types nothing itself, and opens no issue: the `run` does. An inspection that
     does as well does it twice.
   - An inspection is held as a consult: it commits, pushes and changes the host never
-    (`afkconvoy guard --help`).
+    (`afkconvoy guard --help`). What a host inspection frees, `inspected` frees for it.

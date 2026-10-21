@@ -50,10 +50,11 @@ WHAT IT ANSWERS
                                  finding. Its inspected is what the last host
                                  inspection on this host found, whichever fleet started
                                  it: {repo, reason, reading, by, started, ended, found,
-                                 said, issue} — what admission held back for and read,
-                                 the role, reclaimable, fleet, not-its or nothing, its
-                                 words, and the issue a fleet finding opened; null with
-                                 none
+                                 said, issue, reclaimed, named} — what admission held
+                                 back for and read, the role, reclaimable, fleet,
+                                 not-its or nothing, its words, the issue a fleet
+                                 finding opened, and each [{path, bytes}] it freed and
+                                 named for a human; null with none
                 exclusive        the host's queue of `afkconvoy exclusive`, whatever
                                  its repo: {running, waiting} — running is the command
                                  that runs alone now, null with none; waiting, those
