@@ -33,11 +33,11 @@ WHEN TO RUN IT
                       worktree of a closed issue holding no change, the worktree whole.
                       A tool's cache, whole or a part: ~/Library/Caches,
                       ~/Library/Developer/Xcode/DerivedData, ~/.cargo/registry/cache,
-                      ~/.cargo/git/checkouts, ~/.npm/_cacache, ~/.cache/uv, ~/.cache/pip,
+                      ~/.cargo/git/checkouts, ~/.npm/_cacache, uv's and pip's caches,
                       ~/.gradle/caches. Anything else is refused.
     --name <path>     as often as wanted: names the path, with what it holds, for a
                       human to free. What cannot be rebuilt or is expensive to fetch
-                      again — model weights (~/.cache/huggingface, ~/.cache/modelscope,
+                      again — model weights (Hugging Face's and ModelScope's,
                       ~/.ollama, ~/.lmstudio), Docker's images, ~/Downloads, media, a
                       user's files — is named, and never deleted: --reclaim refuses it.
 
