@@ -149,7 +149,14 @@ impl Inspected {
     /// The hot worker to inspect next, of `hot`: the one hot longest whose
     /// evidence is taken down and whose episode was not inspected yet.
     pub fn next<'h>(&self, hot: &'h [Hot]) -> Option<&'h Hot> {
-        hot.iter().filter(|hot| hot.evidence && !self.has(hot)).min_by_key(|hot| hot.since)
+        let mut next: Option<&Hot> = None;
+        for one in hot {
+            let due = one.evidence && !self.has(one);
+            if due && next.is_none_or(|next| one.since < next.since) {
+                next = Some(one);
+            }
+        }
+        next
     }
 }
 
