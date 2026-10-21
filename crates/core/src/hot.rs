@@ -38,7 +38,7 @@ impl Limits {
 /// The thousandths of a core a process tree took, having taken `cpu_ms`
 /// milliseconds of CPU in `wall_ms` milliseconds; none in no time at all.
 pub fn millicores(cpu_ms: u64, wall_ms: u64) -> u64 {
-    if wall_ms == 0 { 0 } else { cpu_ms.saturating_mul(1000) / wall_ms }
+    cpu_ms.saturating_mul(1000).checked_div(wall_ms).unwrap_or(0)
 }
 
 /// One sample of one worker's processes.

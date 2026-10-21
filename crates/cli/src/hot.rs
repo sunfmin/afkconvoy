@@ -201,7 +201,7 @@ impl Sampler {
     /// on the run's clock and `wall_ms` on the wall's, at `at` → each turn,
     /// as a line of the log.
     fn sample(&mut self, source: &Source, at: u64, every: u64, wall_ms: u64) -> Vec<What> {
-        if self.samples % LISTED_FOR == 0 {
+        if self.samples.is_multiple_of(LISTED_FOR) {
             // One orca could not answer leaves the workers as they were.
             if let Ok(listed) = Worktree::of_workers(source) {
                 self.listed = listed

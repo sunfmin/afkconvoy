@@ -831,6 +831,7 @@ mod tests {
             patrols: vec![],
             exclusive: vec![],
             now,
+            hot: vec![],
         }
     }
 
