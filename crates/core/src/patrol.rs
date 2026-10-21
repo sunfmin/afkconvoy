@@ -43,14 +43,78 @@ pub fn claimed(key: &str) -> Option<&str> {
     key.strip_prefix(CLAIM_KEY)
 }
 
-/// The record of a run started at `ts`.
-pub fn write_run(ts: u64) -> String {
-    record::write(RUN, &[("ts", &ts.to_string())])
+/// The window `max_runs_a_day` counts a patrol's runs in, in seconds: the
+/// last 24 hours, rolling.
+pub const DAY: u64 = 86_400;
+
+/// What the record of a patrol's last run says: when it started, and when
+/// the runs before it that the day before it holds did. Each run's record
+/// carries the day of the one before, so the runs of a day are read off the
+/// one ref the last run is recorded under.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Ran {
+    /// When the run started.
+    pub ts: u64,
+    /// When each earlier run of the day before `ts` started, oldest first.
+    pub before: Vec<u64>,
 }
 
-/// A commit subject → when the run it records started.
-pub fn read_run(subject: &str) -> Option<u64> {
-    record::read(RUN, subject)?.number("ts")
+impl Ran {
+    /// The run started at `now`, after the run `last` recorded: it carries
+    /// every start of `last` the day before `now` still holds.
+    pub fn after(last: Option<&Ran>, now: u64) -> Ran {
+        let mut before: Vec<u64> = match last {
+            Some(last) => last.before.iter().copied().chain([last.ts]).collect(),
+            None => vec![],
+        };
+        before.retain(|start| in_day(*start, now));
+        Ran { ts: now, before }
+    }
+
+    /// The starts it records that the day before `now` holds, oldest first.
+    pub fn day(&self, now: u64) -> Vec<u64> {
+        let mut day: Vec<u64> = self.before.iter().copied().chain([self.ts]).collect();
+        day.retain(|start| in_day(*start, now));
+        day.sort_unstable();
+        day
+    }
+}
+
+/// Whether a run started at `start` is one of the day before `now`: less
+/// than `DAY` old, and no further ahead of `now` than `SKEW`.
+fn in_day(start: u64, now: u64) -> bool {
+    if start <= now { now - start < DAY } else { start - now <= SKEW }
+}
+
+/// The record of the run `ran`.
+pub fn write_run(ran: &Ran) -> String {
+    let before: Vec<String> = ran.before.iter().map(u64::to_string).collect();
+    record::write(RUN, &[("ts", &ran.ts.to_string()), ("before", &before.join(","))])
+}
+
+/// A commit subject → the run it records.
+pub fn read_run(subject: &str) -> Option<Ran> {
+    let fields = record::read(RUN, subject)?;
+    Some(Ran { ts: fields.number("ts")?, before: fields.numbers("before") })
+}
+
+/// How many runs a day a patrol run every `every` seconds has at most: as
+/// many as fit in `DAY` that far apart. A `max_runs_a_day` of as many or more
+/// bounds nothing.
+pub fn runs_a_day(every: u64) -> u64 {
+    if every == 0 { u64::MAX } else { DAY / every + u64::from(DAY % every != 0) }
+}
+
+/// Until when a patrol that may run `max` times a day, whose last recorded
+/// run is `last`, is held by that bound at `now`: the moment enough of the
+/// runs of the day before `now` are a day old that fewer than `max` are left.
+/// `None` when it is not held: it has no bound, or ran fewer times.
+pub fn held_until(max: Option<u64>, last: Option<&Ran>, now: u64) -> Option<u64> {
+    let (max, last) = (max?, last?);
+    let day = last.day(now);
+    let over = (day.len() as u64).checked_sub(max)?;
+    let oldest = day.get(usize::try_from(over).ok()?)?;
+    Some(oldest.saturating_add(DAY))
 }
 
 /// Whether a patrol run every `every` seconds, whose last run started at
@@ -78,9 +142,11 @@ pub struct Seen {
     pub name: String,
     /// Its interval, in seconds.
     pub every: u64,
+    /// How many runs the day before may hold, when it says.
+    pub max_runs_a_day: Option<u64>,
     pub max_open: u64,
-    /// When its last recorded run started.
-    pub last_run: Option<u64>,
+    /// Its last recorded run.
+    pub last_run: Option<Ran>,
     /// The claim on its run, while one stands.
     pub claim: Option<RunClaim>,
     /// How many open issues it opened.
@@ -97,6 +163,8 @@ pub enum Standing {
     Due,
     /// Its interval has not passed since its last recorded run.
     NotDue,
+    /// The runs of the last `DAY` have reached its `max_runs_a_day`.
+    Spent,
     /// A fleet lock stands: no patrol runs.
     Locked,
     /// The open issues it opened have reached its `max_open`.
@@ -121,6 +189,15 @@ pub struct Row {
     pub open: u64,
     pub max_open: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_runs_a_day: Option<u64>,
+    /// How many of its runs started in the last `DAY`, where it has a
+    /// `max_runs_a_day` to hold them against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runs_in_day: Option<u64>,
+    /// Until when `max_runs_a_day` holds it: `Spent` in this case only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<u64>,
     /// The claim on its run, while one stands.
     #[serde(skip)]
@@ -131,7 +208,8 @@ pub struct Row {
 /// each instance's heartbeat in `heartbeats`, and `locked` when a fleet lock
 /// stands. A run still going comes first — whoever holds it, the patrol is
 /// skipped, however long it has been due; then the failure nobody answered,
-/// the interval, the lock, and the limit on what it opened.
+/// the interval, the runs of the day, the lock, and the limit on what it
+/// opened.
 pub fn row(
     seen: &Seen,
     me: Option<&InstanceId>,
@@ -139,6 +217,8 @@ pub fn row(
     now: u64,
     locked: bool,
 ) -> Row {
+    let last = seen.last_run.as_ref();
+    let until = held_until(seen.max_runs_a_day, last, now);
     let standing = match &seen.claim {
         Some(claim) => match claim.holder(me, heartbeats, now) {
             Holder::Mine => Standing::Running,
@@ -146,7 +226,8 @@ pub fn row(
             Holder::Peer => Standing::PeerRunning,
         },
         None if seen.failure.is_some() => Standing::Failed,
-        None if !is_due(seen.every, seen.last_run, now) => Standing::NotDue,
+        None if !is_due(seen.every, last.map(|ran| ran.ts), now) => Standing::NotDue,
+        None if until.is_some() => Standing::Spent,
         None if locked => Standing::Locked,
         None if seen.open >= seen.max_open => Standing::Full,
         None => Standing::Due,
@@ -155,9 +236,12 @@ pub fn row(
         name: seen.name.clone(),
         standing,
         every: seen.every,
-        last_run: seen.last_run,
+        last_run: last.map(|ran| ran.ts),
         open: seen.open,
         max_open: seen.max_open,
+        max_runs_a_day: seen.max_runs_a_day,
+        runs_in_day: seen.max_runs_a_day.map(|_| last.map_or(0, |ran| ran.day(now).len() as u64)),
+        until: until.filter(|_| standing == Standing::Spent),
         failure: seen.failure,
         claim: seen.claim.clone(),
     }
@@ -263,12 +347,17 @@ mod tests {
         Seen {
             name: "triage".to_string(),
             every: 3600,
+            max_runs_a_day: None,
             max_open: 2,
-            last_run: Some(10_000),
+            last_run: Some(ran(10_000, &[])),
             claim: None,
             open: 0,
             failure: None,
         }
+    }
+
+    fn ran(ts: u64, before: &[u64]) -> Ran {
+        Ran { ts, before: before.to_vec() }
     }
 
     fn claim(instance: &str) -> RunClaim {
@@ -306,6 +395,50 @@ mod tests {
         assert_eq!(standing(&Seen { open: 1, ..seen() }, 13_600, false), Standing::Due);
         let failed = Seen { failure: Some(9), ..seen() };
         assert_eq!(standing(&failed, 13_600, false), Standing::Failed);
+    }
+
+    #[test]
+    fn a_runs_record_carries_the_starts_of_the_day_before_it() {
+        let first = Ran::after(None, 1000);
+        assert_eq!(first, ran(1000, &[]));
+        let second = Ran::after(Some(&first), 5000);
+        assert_eq!(second, ran(5000, &[1000]));
+        // A start a day old is no longer carried.
+        let third = Ran::after(Some(&second), 1000 + DAY);
+        assert_eq!(third, ran(1000 + DAY, &[5000]));
+        assert_eq!(third.day(5000 + DAY - 1), [5000, 1000 + DAY]);
+        assert_eq!(third.day(5000 + DAY), [1000 + DAY]);
+    }
+
+    #[test]
+    fn a_patrol_that_ran_its_max_runs_a_day_is_held_until_the_oldest_is_a_day_old() {
+        let day = ran(30_000, &[10_000, 20_000]);
+        assert_eq!(held_until(None, Some(&day), 30_001), None, "no bound");
+        assert_eq!(held_until(Some(3), None, 30_001), None, "no run");
+        assert_eq!(held_until(Some(4), Some(&day), 30_001), None, "fewer runs");
+        assert_eq!(held_until(Some(3), Some(&day), 30_001), Some(10_000 + DAY));
+        // One more than it may: held until the second oldest is a day old too.
+        assert_eq!(held_until(Some(2), Some(&day), 30_001), Some(20_000 + DAY));
+        assert_eq!(held_until(Some(3), Some(&day), 10_000 + DAY), None);
+
+        let bounded = Seen { max_runs_a_day: Some(3), last_run: Some(day), ..seen() };
+        let me = InstanceId::parse("me").unwrap();
+        let held = row(&bounded, Some(&me), &[], 30_000 + 3600, false);
+        assert_eq!((held.standing, held.until), (Standing::Spent, Some(10_000 + DAY)));
+        assert_eq!(held.runs_in_day, Some(3));
+        let due = row(&bounded, Some(&me), &[], 10_000 + DAY, false);
+        assert_eq!((due.standing, due.until, due.runs_in_day), (Standing::Due, None, Some(2)));
+        // The interval comes first: within it the patrol is not due, whatever its day.
+        assert_eq!(standing(&bounded, 30_001, false), Standing::NotDue);
+    }
+
+    #[test]
+    fn a_patrol_runs_at_most_as_many_times_a_day_as_its_interval_fits() {
+        assert_eq!(runs_a_day(3600), 24);
+        assert_eq!(runs_a_day(7 * 3600), 4);
+        assert_eq!(runs_a_day(DAY), 1);
+        assert_eq!(runs_a_day(2 * DAY), 1);
+        assert_eq!(runs_a_day(60), 1440);
     }
 
     #[test]
@@ -390,7 +523,9 @@ mod tests {
         assert_eq!(run_ref(Layout::Hidden, "triage"), "refs/convoy/patrol/triage");
         let claim = claim_ref(Layout::Hidden, &claim_key("triage"));
         assert_eq!(claim, "refs/convoy/claim/patrol-triage");
-        assert_eq!(read_run(&write_run(77)), Some(77));
+        assert_eq!(read_run(&write_run(&ran(77, &[]))), Some(ran(77, &[])));
+        assert_eq!(write_run(&ran(77, &[5, 9])), "convoy:patrol-run ts=77 before=5,9");
+        assert_eq!(read_run(&write_run(&ran(77, &[5, 9]))), Some(ran(77, &[5, 9])));
         assert_eq!(read_run("convoy:claim ts=77"), None);
     }
 }

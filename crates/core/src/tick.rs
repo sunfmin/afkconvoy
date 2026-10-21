@@ -808,6 +808,9 @@ mod tests {
             last_run: None,
             open: 0,
             max_open: 1,
+            max_runs_a_day: None,
+            runs_in_day: None,
+            until: None,
             failure: None,
             claim: None,
         };
