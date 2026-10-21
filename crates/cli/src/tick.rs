@@ -28,6 +28,7 @@ use crate::gh::{Gone, unreached};
 use crate::git::Repo;
 use crate::host_sleep::{Checked, HostSleep};
 use crate::hot::{self, Hot};
+use crate::inspection::{self, Inspector};
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
 use crate::measure;
@@ -814,6 +815,10 @@ fn start_line(took: &Value) -> Option<String> {
 /// stop.
 const HEARS_WITHIN: Duration = Duration::from_millis(250);
 
+/// The longest, in seconds, a `run` sleeps while its inspection runs or a
+/// hot worker waits for one: an inspection's time limit is kept to within it.
+const INSPECTING_EVERY: u64 = 30;
+
 /// How many seconds past its length a rest takes before the host is taken to
 /// have slept through it.
 const SLEPT_PAST: u64 = 60;
@@ -942,7 +947,10 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// heard during a tick, said as it is heard — and prints each as it is
 /// written (`Said`); nothing here ever reads the log. It watches what each
 /// worker's processes take, and says as one turns hot and as it stops being
-/// hot (`hot::watch`, docs/adr/0019). Unless told `--no-host-sleep`, it puts the
+/// hot (`hot::watch`, docs/adr/0019); after each tick its inspector ends the
+/// inspection that is over and starts the next a hot worker waits for, and
+/// it looks again within `INSPECTING_EVERY` while either is so
+/// (`Inspector`). Unless told `--no-host-sleep`, it puts the
 /// host to sleep once every fleet on it has been idle long enough
 /// (`HostSleep`, docs/adr/0016).
 pub fn run(
@@ -973,6 +981,7 @@ pub fn run(
     };
     let wakes = Listener::open(&repo, during);
     let hot = Hot::default();
+    let mut inspector = Inspector::new(pacing.hot);
     {
         let said = Arc::clone(&said);
         let keep = move |at, what| said.keep(at, what);
@@ -1050,13 +1059,19 @@ pub fn run(
                 (format!("FAILED: {error}"), sleep, (None, None, Some(error)))
             }
         };
+        let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        for what in inspector.step(agent, &hot_now, clock()) {
+            said.keep(clock(), what);
+        }
+        let sleep = if inspector.busy(&hot_now) { sleep.min(INSPECTING_EVERY) } else { sleep };
         let (bound, answer, error) = logged;
         let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
         said.keep(clock(), log::What::Tick(tick));
         if served {
             // A tick that failed leaves the page as the last one found it.
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
-            shown.hot = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+            shown.hot = hot_now;
+            shown.inspection = inspection::on_host();
             live.show(panel::render(&shown));
         }
         let mut due_now = check_host(&mut host, &said, &stop, &clock);

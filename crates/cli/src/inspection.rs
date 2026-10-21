@@ -129,7 +129,7 @@ struct Inspection {
 
 /// What a start came to.
 enum Started {
-    Running(Inspection),
+    Running(Box<Inspection>),
     /// Nobody inspects the worker, for this reason.
     Nobody(String),
     /// Another inspection holds the host's turn.
@@ -212,7 +212,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
 pub struct Inspector {
     limits: Limits,
     inspected: Inspected,
-    running: Option<Inspection>,
+    running: Option<Box<Inspection>>,
 }
 
 impl Inspector {
@@ -282,6 +282,10 @@ impl Inspector {
     /// Starts the inspection of `hot` at `now`, in a checkout of the base
     /// branch of its own, once the host's turn is taken.
     fn start(&self, agent: &Agent, hot: &HotNow, now: u64) -> Result<Started> {
+        // Asked first: a worker waiting its turn reads nothing of GitHub.
+        if on_host().is_some() {
+            return Ok(Started::Waits);
+        }
         let fleet = Fleet::open(now)?;
         let worktree = hot.worktree();
         let evidence = evidence::of(&worktree, &hot.worker, hot.episode.since)
@@ -348,7 +352,7 @@ impl Inspector {
             let _ = checkout.remove();
             return Err(error);
         }
-        Ok(Started::Running(Inspection {
+        Ok(Started::Running(Box::new(Inspection {
             hot: hot.clone(),
             why,
             terminal,
@@ -356,7 +360,7 @@ impl Inspector {
             started: now,
             by: who.role().to_string(),
             _turn: turn,
-        }))
+        })))
     }
 }
 
@@ -415,7 +419,7 @@ fn command(
 /// not what is not its own — leaves it on the issue, and removes the
 /// inspection's checkout, its terminal with it → what to log of it. What
 /// cannot be done of it is said, and the rest done all the same.
-fn end(inspection: Inspection, finding: Option<Finding>) -> What {
+fn end(inspection: Box<Inspection>, finding: Option<Finding>) -> What {
     let worker = inspection.hot.worker.clone();
     let mut said = match &finding {
         Some(finding) => finding.said.split_whitespace().collect::<Vec<_>>().join(" "),

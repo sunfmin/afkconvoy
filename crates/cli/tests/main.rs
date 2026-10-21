@@ -25,6 +25,7 @@ mod goodbye;
 mod guard;
 mod help;
 mod host_sleep;
+mod inspected;
 mod intake;
 mod joining;
 mod lander;

@@ -21,6 +21,7 @@ use crate::claims::Me;
 use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::hot::{HotNow, held_said};
+use crate::inspection::Running;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 
@@ -131,6 +132,9 @@ pub struct Panel {
     /// The workers hot as the tick ended, as the `run` that made the page
     /// found them; none of a panel no `run` made.
     pub hot: Vec<HotNow>,
+    /// The inspection running on the host as the tick ended, whichever of
+    /// its fleets started it.
+    pub inspection: Option<Running>,
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -239,6 +243,7 @@ impl Panel {
             exclusive: vec![],
             now: fleet.now,
             hot: vec![],
+            inspection: None,
         }
     }
 
@@ -702,6 +707,20 @@ pub fn render(panel: &Panel) -> String {
         );
     }
 
+    if let Some(running) = &panel.inspection {
+        let issue = running.issue.map(|issue| format!(" on #{issue}")).unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\" data-inspection=\"{worker}\"><b>Inspection</b>: \
+             <b>{worker}</b>{issue} is inspected by <code>{by}</code>, for {} so far, in {}.\
+             </section>",
+            lasted(panel.now.saturating_sub(running.since)),
+            esc(&running.repo),
+            worker = esc(&running.worker),
+            by = esc(&running.by),
+        );
+    }
+
     for lane in &panel.lanes {
         let _ = write!(
             out,
@@ -832,6 +851,7 @@ mod tests {
             exclusive: vec![],
             now,
             hot: vec![],
+            inspection: None,
         }
     }
 
@@ -854,6 +874,7 @@ mod tests {
             exclusive: vec![],
             now: 1000,
             hot: vec![],
+            inspection: None,
         };
         let page = render(&panel);
         assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));
@@ -874,9 +895,28 @@ mod tests {
             millicores: 6200,
             resident: 3 << 29,
         };
-        panel.hot = vec![HotNow { worker: "#7".into(), episode }];
+        panel.hot = vec![HotNow {
+            worker: "#7".into(),
+            episode,
+            path: "/w/a".into(),
+            branch: "a".into(),
+            issue: Some(7),
+        }];
         let hot = render(&panel);
         assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> hot for 12m, holding at most 6.2 cores, 1.5 GiB resident</li>"), "{hot}");
+        assert!(!hot.contains("Inspection"), "{hot}");
+        panel.inspection = Some(Running {
+            repo: "/src/widgets".into(),
+            worker: "#7".into(),
+            issue: Some(7),
+            by: "stock-consult".into(),
+            since: 700,
+        });
+        let inspecting = render(&panel);
+        assert!(
+            inspecting.contains("<b>#7</b> on #7 is inspected by <code>stock-consult</code>, for 5m so far, in /src/widgets."),
+            "{inspecting}"
+        );
     }
 
     #[test]

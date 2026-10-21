@@ -62,7 +62,7 @@ THE COMMANDS, by who runs them
 
   A worker — its prompt names each one as it is needed. Read them only when you are a
   worker, or are finding out why one stopped (`rule`, below, is a consult's too):
-      gate  land  verdict  intake  lock  over  wake  exclusive
+      gate  land  verdict  intake  lock  over  wake  exclusive  inspected
 
   A human an issue waits for — in a bound repo. Read them to answer an escalated issue,
   to put an issue at a stage of your choosing, or to see what a `by: human` stage asks:

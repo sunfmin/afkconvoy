@@ -1413,6 +1413,8 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         "findings": found,
     });
     answer["host"]["exclusive"] = exclusive_json(Queue::of_host().and_then(|q| q.standing()));
+    answer["host"]["inspection"] = crate::inspection::on_host()
+        .map_or(Value::Null, |running| crate::inspection::json(&running));
     if found.iter().any(|finding| finding.severity == Severity::Critical) {
         return Err(Unwell(answer).into());
     }

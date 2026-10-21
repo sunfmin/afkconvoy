@@ -10,6 +10,7 @@ use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::config::{RepoDir, RepoName};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::host_sleep::IDLE_WAIT;
+use afkconvoy_core::inspection::{Found, INSPECTION_ENV};
 use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
@@ -415,6 +416,16 @@ enum Command {
         #[arg(long)]
         run: String,
     },
+    /// Say what an inspection of a hot worker found: its `run` types it at the worker and
+    /// leaves it on the issue (an inspection's command)
+    #[command(after_long_help = include_str!("help/inspected.txt"))]
+    Inspected {
+        /// What it found: wrong, heavy, or not-its
+        #[arg(long, value_parser = found)]
+        found: Found,
+        #[command(flatten)]
+        text: TextArgs,
+    },
     /// Run a heavy command alone on this host, once no other `exclusive` command runs (a
     /// worker's command)
     #[command(after_long_help = include_str!("help/exclusive.txt"))]
@@ -664,7 +675,7 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 21] = [
+const ACTS: [&str; 22] = [
     "dispatch",
     "close",
     "escalate",
@@ -683,6 +694,7 @@ const ACTS: [&str; 21] = [
     "intake",
     "lock",
     "over",
+    "inspected",
     "gate",
     "wake",
     "tick",
@@ -746,6 +758,13 @@ fn verdict(text: &str) -> Result<Declared, String> {
     verdicts().find(|declared| declared.word() == text).ok_or_else(|| {
         let words: Vec<&str> = verdicts().map(Declared::word).collect();
         format!("a verdict is one of: {}", words.join(", "))
+    })
+}
+
+fn found(text: &str) -> Result<Found, String> {
+    Found::read(text).ok_or_else(|| {
+        let words: Vec<&str> = Found::ALL.into_iter().map(Found::word).collect();
+        format!("what an inspection found is one of: {}", words.join(", "))
     })
 }
 
@@ -913,6 +932,10 @@ impl Command {
             Command::Intake { issue, .. } => of("intake", issue, None),
             Command::Lock { issue, .. } => of("lock", issue, None),
             Command::Over { run } => Acting::new("over").on(format!("run {}", run.trim())),
+            Command::Inspected { .. } => match std::env::var(INSPECTION_ENV) {
+                Ok(worker) => Acting::new("inspected").on(worker),
+                Err(_) => Acting::new("inspected"),
+            },
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Wake => Acting::new("wake").on_own_issue(),
             Command::Tick { who, .. } => as_who("tick", who),
@@ -1165,6 +1188,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             }
             claims::declare_over(&Repo::here()?, run.trim())
         }
+        Command::Inspected { found, text } => inspection::inspected(found, &text.read()?),
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
         Command::Exclusive { .. } => {
@@ -1252,6 +1276,7 @@ mod tests {
         &["intake", "7", "--workflow", "w", "--role", "r", "--from", "3"],
         &["lock", "7"],
         &["over", "--run", "sweep"],
+        &["inspected", "--found", "heavy", "--text", "x"],
         &["guard"],
         &["exclusive", "--", "true"],
         &["dispatch", "7", "--instance", "a-h1-1"],
