@@ -194,7 +194,7 @@ fn a_tick_says_which_issue_it_skipped_for_a_blocker_read_after_its_rebuild() {
     // the rebuild reads no blocker of #3: GitHub records it as it answers the dispatch
     world.with_gh(|gh| {
         gh["edges"]["3"] = json!([5]);
-        gh["issues"][0]["blocked_by"] = json!(0);
+        gh["issues"][0]["blockers_at_rebuild"] = json!([]);
     });
     let (lines, _) = run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
     assert_eq!(
