@@ -8,6 +8,7 @@
 
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Issue, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::stock;
 use afkconvoy_core::stopped::standing_verdict;
@@ -32,7 +33,13 @@ use crate::train::Train;
 
 pub struct Fleet {
     pub repo: Repo,
+    /// The repo's config, its default harness this host's chosen one where
+    /// a switch chose one (`chosen`).
     pub config: Config,
+    /// The harness a switch on this host chose for the repo: every worker
+    /// this host starts for it is of this one, whatever the config, a stage
+    /// or a patrol names (`switch::chosen`).
+    pub chosen: Option<Harness>,
     pub gh: GitHub,
     pub scan: Scan,
     /// The base branch and the fleet's refs as the remote had them when this
@@ -62,13 +69,18 @@ impl Fleet {
     /// The fleet's view from the checkout the command was run in.
     pub fn open(now: u64) -> Result<Fleet> {
         let repo = Repo::here()?;
-        let config = config::load(&repo.dir.join(config::FILE))?;
+        let mut config = config::load(&repo.dir.join(config::FILE))?;
+        let chosen = crate::switch::chosen(&repo)?;
+        if let Some((bound, chosen)) = config.bound.as_mut().zip(chosen) {
+            bound.harness = chosen;
+        }
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), listing.records.clone());
         let gh = GitHub { dir: repo.dir.clone() };
         Ok(Fleet {
             repo,
             config,
+            chosen,
             gh,
             scan,
             listing,
@@ -91,6 +103,18 @@ impl Fleet {
             (Fleet::open(now), beside(open))
         });
         Ok((fleet?, open?))
+    }
+
+    /// The harness of a worker nothing else names one for: this host's
+    /// chosen one, else the config's default.
+    pub fn harness(&self) -> Harness {
+        self.chosen.unwrap_or(self.config.harness())
+    }
+
+    /// The harness of a worker a stage or a patrol names `named` for: this
+    /// host's chosen one wins over it.
+    pub fn harness_of(&self, named: Harness) -> Harness {
+        self.chosen.unwrap_or(named)
     }
 
     /// The base branch's tip on the remote, its commits in this repo.

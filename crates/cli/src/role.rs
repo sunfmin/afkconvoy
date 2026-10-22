@@ -145,10 +145,12 @@ impl Staged {
         // The stage's harness and its model are its own worker's: a workflow
         // names none for a consult it names. The stock consult runs on the
         // stage's harness.
-        let harness = at
+        // This host's chosen harness, where a switch chose one, wins over both.
+        let named = at
             .filter(|_| !consult || by.is_none())
             .and_then(|stage| stage.harness(bound.harness))
             .unwrap_or(bound.harness);
+        let harness = fleet.harness_of(named);
         let (role, skill, role_copy, host_user) = match by {
             Some((work, role)) => {
                 (role.name.clone(), work.skill.clone(), kept.role(role, harness)?, role.host_user)
@@ -179,7 +181,10 @@ impl Staged {
             writes: at.is_none_or(|stage| stage.writes),
             consult,
             harness,
-            model: at.filter(|_| !consult).and_then(|stage| stage.model.clone()),
+            // A model is its stage's harness's: another harness knows it not.
+            model: at
+                .filter(|_| !consult && harness == named)
+                .and_then(|stage| stage.model.clone()),
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
@@ -425,6 +430,11 @@ pub struct Checked {
 /// read or does not load calls for the default alone: no worker is started
 /// under it, and each tick says why.
 pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<String>)> {
+    // A harness this host's switch chose is the one every worker starts on.
+    let chosen = crate::git::Repo::here().ok().and_then(|repo| crate::switch::chosen(&repo).ok());
+    if let Some(chosen) = chosen.flatten() {
+        return vec![(chosen, vec![crate::switch::CHOSEN_BY.to_string()])];
+    }
     let gh = GitHub { dir: PathBuf::from(".") };
     match Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels)) {
         Ok(kept) => kept.team.harnesses(bound.harness, &bound.patrols),
@@ -471,8 +481,36 @@ impl Checked {
 /// what calls for it and the line that fixes it: none is started in
 /// another's place, so a start that cannot start them all starts no worker.
 pub fn probe(launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
+    match refusal(check(launches, &called_for(bound, labels))?) {
+        Some(why) => bail!(why),
+        None => Ok(()),
+    }
+}
+
+/// Checks that a worker of `harness` can be started on this host, for what
+/// `caller` says calls for it, as `probe` checks each harness — and whether
+/// it holds credentials even where it is the default harness, which a start
+/// looks for apart. An error names the harness and every fault.
+pub fn startable(launches: &Launches, harness: Harness, caller: &str) -> Result<()> {
+    let mut checked = check(launches, &[(harness, vec![caller.to_string()])])?;
+    if checked.is_empty() {
+        bail!("the harness `{}` has no worker launch command known here", harness.key());
+    }
+    for checked in &mut checked {
+        if checked.tool.is_none() {
+            checked.tool = launches.of(harness)?.and_then(tools::harness);
+        }
+    }
+    match refusal(checked) {
+        Some(why) => bail!("the harness `{}` cannot be started here: {why}", harness.key()),
+        None => Ok(()),
+    }
+}
+
+/// Why the harnesses `checked` cannot all be started, when they cannot.
+fn refusal(checked: Vec<Checked>) -> Option<String> {
     let (mut lacking, mut faults) = (vec![], vec![]);
-    for checked in check(launches, &called_for(bound, labels))? {
+    for checked in checked {
         let missing = checked.missing();
         if let Some((tool, found)) = &checked.tool {
             lacking.extend(fault(*tool, found, None, &checked.callers));
@@ -482,8 +520,5 @@ pub fn probe(launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<
         }
     }
     let faults = (!faults.is_empty()).then(|| faults.join("\n"));
-    match refused(&lacking, faults.as_deref()) {
-        Some(why) => bail!(why),
-        None => Ok(()),
-    }
+    refused(&lacking, faults.as_deref())
 }

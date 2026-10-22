@@ -310,7 +310,9 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         }
         // The stock consult runs on the stage's.
         Some(Who::Stock) => (
-            stage.and_then(|stage| stage.harness(bound.harness)).unwrap_or(bound.harness),
+            fleet.harness_of(
+                stage.and_then(|stage| stage.harness(bound.harness)).unwrap_or(bound.harness),
+            ),
             stock::ROLE.to_string(),
             stock::SKILL.to_string(),
             copies.stock()?,
@@ -497,7 +499,7 @@ impl Inspector {
             None => (As::Unbound, fleet.config.escalate_label.clone()),
         };
         let harness = match &who {
-            As::Unbound => fleet.config.harness(),
+            As::Unbound => fleet.harness(),
             As::Bound { harness, .. } => *harness,
         };
         let launch = agent.command(harness)?;
@@ -586,7 +588,7 @@ impl Inspector {
             return Ok(Started::Nobody(why.to_string()));
         };
         let harness = match &who {
-            As::Unbound => fleet.config.harness(),
+            As::Unbound => fleet.harness(),
             As::Bound { harness, .. } => *harness,
         };
         let launch = agent.command(harness)?;

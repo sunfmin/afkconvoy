@@ -18,16 +18,55 @@ pub struct JoinRecord {
     pub restarted: Option<u64>,
     /// When it was taken off an abandoned train.
     pub abandoned: Option<u64>,
+    /// Each switch of its worker onto another harness, oldest first.
+    pub switched: Vec<Switch>,
     /// Which of the PR's comments carries the record, when one does: the one
     /// a new fact is written into.
     pub comment: Option<usize>,
+}
+
+/// One switch of a PR's worker onto another harness (`afkconvoy switch`): no
+/// restart, and nothing the silence ladder counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Switch {
+    /// When, in epoch seconds.
+    pub at: u64,
+    /// The harness the worker ended ran on, and the one its successor runs on,
+    /// each by its key.
+    pub from: String,
+    pub to: String,
+    /// The fleet instance that switched it.
+    pub by: String,
+}
+
+impl Switch {
+    /// As the record's field writes it: `at/from/to/by`.
+    fn written(&self) -> String {
+        format!("{}/{}/{}/{}", self.at, self.from, self.to, self.by)
+    }
+
+    /// One the record's field wrote; `None` for anything else.
+    fn read(written: &str) -> Option<Switch> {
+        let mut parts = written.splitn(4, '/');
+        let at = record::fleet_number(parts.next()?)?;
+        let (from, to, by) = (parts.next()?, parts.next()?, parts.next()?);
+        if [from, to, by].iter().any(|part| part.is_empty()) {
+            return None;
+        }
+        Some(Switch { at, from: from.to_string(), to: to.to_string(), by: by.to_string() })
+    }
 }
 
 /// The comment that carries a PR's join record.
 pub fn join_comment(record: &JoinRecord) -> String {
     let stamp = |at: Option<u64>| at.map(|at| at.to_string()).unwrap_or_default();
     let (restarted, abandoned) = (stamp(record.restarted), stamp(record.abandoned));
-    let mut body = record::marker(JOIN, &[("restarted", &restarted), ("abandoned", &abandoned)]);
+    let switched: Vec<String> = record.switched.iter().map(Switch::written).collect();
+    let switched = switched.join(",");
+    let mut body = record::marker(
+        JOIN,
+        &[("restarted", &restarted), ("abandoned", &abandoned), ("switched", &switched)],
+    );
     if record.restarted.is_some() {
         body.push_str(
             "\nafkconvoy: the worker joining this PR to the landing train went silent, and was \
@@ -40,6 +79,13 @@ pub fn join_comment(record: &JoinRecord) -> String {
              its worker stayed silent — and the PR joins the next one. A second time, the issue \
              is handed to a human instead.",
         );
+    }
+    for switch in &record.switched {
+        body.push_str(&format!(
+            "\nafkconvoy: the worker of this PR was switched from `{}` to `{}` by `{}` at {}: \
+             a new worker in the same worktree, on the same branch, at the same stage.",
+            switch.from, switch.to, switch.by, switch.at
+        ));
     }
     body
 }
@@ -54,6 +100,12 @@ pub fn read_join<'a>(bodies: impl IntoIterator<Item = &'a str>) -> JoinRecord {
         record.comment = record.comment.or(Some(at));
         record.restarted = record.restarted.or(fields.number("restarted"));
         record.abandoned = record.abandoned.or(fields.number("abandoned"));
+        let switched = fields.get("switched").unwrap_or("").split(',').filter_map(Switch::read);
+        for switch in switched {
+            if !record.switched.contains(&switch) {
+                record.switched.push(switch);
+            }
+        }
     }
     record
 }
@@ -295,9 +347,38 @@ mod tests {
         let other = join_comment(&JoinRecord { abandoned: Some(9), ..JoinRecord::default() });
         let other = other.as_str();
         let read = read_join([join_comment(&JoinRecord::default()).as_str(), other]);
-        assert_eq!(read, JoinRecord { restarted: None, abandoned: Some(9), comment: Some(0) });
+        let read_back =
+            JoinRecord { abandoned: Some(9), comment: Some(0), ..JoinRecord::default() };
+        assert_eq!(read, read_back);
         assert_eq!(read_join(["<!--convoy:join restarted=soon-->"]).restarted, None);
         assert_eq!(read_join(["convoy:join restarted=1"]), JoinRecord::default());
+    }
+
+    #[test]
+    fn a_switch_is_recorded_beside_the_restart_and_counts_as_none() {
+        let switch = |at, from: &str, to: &str| Switch {
+            at,
+            from: from.to_string(),
+            to: to.to_string(),
+            by: "a-h1-1".to_string(),
+        };
+        let record = JoinRecord {
+            switched: vec![switch(10, "claude-code", "codex"), switch(20, "codex", "pi")],
+            ..JoinRecord::default()
+        };
+        let said = join_comment(&record);
+        assert!(
+            said.starts_with(
+                "<!--convoy:join switched=10/claude-code/codex/a-h1-1,20/codex/pi/a-h1-1-->\n"
+            ),
+            "{said}"
+        );
+        assert!(said.contains("switched from `claude-code` to `codex` by `a-h1-1`"), "{said}");
+        let read = read_join([said.as_str()]);
+        assert_eq!(read, JoinRecord { comment: Some(0), ..record });
+        assert_eq!(read.restarted, None, "a switch is no restart");
+        // what the fleet did not write is no switch
+        assert_eq!(read_join(["<!--convoy:join switched=soon/a/b/c,1/a//c-->"]).switched, []);
     }
 
     #[test]

@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
-use afkconvoy_core::prompt::{StockFields, WorkerFields, stock_prompt, worker_prompt};
+use afkconvoy_core::plan::closing_pr;
+use afkconvoy_core::prompt::{
+    StockFields, Switched, WorkerFields, stock_prompt, switched, worker_prompt,
+};
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
 use afkconvoy_core::stock;
 use afkconvoy_core::tick::Outcome;
@@ -13,14 +16,14 @@ use afkconvoy_core::transition::escalated_at;
 use afkconvoy_core::worker::{
     DispatchStep, branch_comment, dispatch_steps, recorded_branches, worktree_name,
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::claims::{Me, Take, take};
 use crate::fleet::Fleet;
 use crate::forget::forget;
 use crate::gh::{IssueRead, gone};
-use crate::git::REMOTE;
+use crate::git::{REMOTE, Repo};
 use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
@@ -80,7 +83,21 @@ pub fn dispatch(
     number: u64,
     from: StartFrom,
 ) -> Result<Value> {
-    let started = start(fleet, me, agent, number, from);
+    dispatch_continuing(fleet, me, agent, number, from, None)
+}
+
+/// `dispatch`, whose brief also says what of the work of the worker before
+/// it is there, where `continuing` says that worker was ended mid-way
+/// (`switch`).
+pub(crate) fn dispatch_continuing(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    number: u64,
+    from: StartFrom,
+    continuing: Option<&Continuing>,
+) -> Result<Value> {
+    let started = start(fleet, me, agent, number, from, continuing);
     let Some(how) = started.as_ref().err().and_then(gone).cloned() else { return started };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
     let released = held && forget(fleet, me, number)? == Outcome::Done;
@@ -95,8 +112,23 @@ pub fn dispatch(
     Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
 }
 
+/// What the brief of a worker that continues one ended mid-way says of it.
+pub(crate) struct Continuing {
+    /// The harness the worker ended ran on.
+    pub from: Harness,
+    /// The last lines its terminal showed, read before it was closed.
+    pub said: Vec<String>,
+}
+
 /// `dispatch`, but for an issue found gone on the way, which it fails on.
-fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom) -> Result<Value> {
+fn start(
+    fleet: &mut Fleet,
+    me: &Me,
+    agent: &Agent,
+    number: u64,
+    from: StartFrom,
+    continuing: Option<&Continuing>,
+) -> Result<Value> {
     let issue = fleet.gh.issue(number)?;
     if issue.is_closed() {
         // before the claim: never lock a closed issue
@@ -111,10 +143,11 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
     };
     // Before the claim too: an issue whose harness cannot be started here is
     // never locked.
-    let launch = agent.command(match &staged {
+    let harness = match &staged {
         Some(staged) => staged.harness(),
-        None => fleet.config.harness(),
-    })?;
+        None => fleet.harness(),
+    };
+    let launch = agent.command(harness)?;
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
     // In an unbound repo, an escalated issue is the stock consult's.
     let consult = match staged {
@@ -196,6 +229,10 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
                     }
                     (None, None) => write_brief(fleet, cut, number, &issue.title, plan.variant)?,
                 });
+                if let Some(continuing) = continuing {
+                    let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
+                    continue_brief(fleet, cut, pr, continuing)?;
+                }
             }
             DispatchStep::Start => {
                 let cut = worktree.as_ref().ok_or_else(undecided)?;
@@ -213,6 +250,7 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
                         consult: true,
                     })?;
                 }
+                cut.keep_harness(harness)?;
                 terminal = Some(match &staged {
                     Some(staged) => cut.start(&staged.command(launch, cut)?, fleet.now)?,
                     None => cut.start(launch, fleet.now)?,
@@ -235,7 +273,7 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
         "claim": if held { "held" } else { "won" },
         "tier": plan.tier.number(), "action": plan.tier.word(),
         "prompt": plan.variant.word(), "reason": plan.reason,
-        "worktree": cut.path, "branch": cut.branch, "terminal": terminal});
+        "worktree": cut.path, "branch": cut.branch, "terminal": terminal, "harness": harness});
     if let Some(staged) = &staged {
         started["prompt"] = json!(staged.prompt());
         started["stage"] = staged.json();
@@ -247,6 +285,40 @@ fn start(fleet: &mut Fleet, me: &Me, agent: &Agent, number: u64, from: StartFrom
         started["discarded"] = discarded;
     }
     Ok(started)
+}
+
+/// Adds to the brief in `worktree` what of the work of the worker before is
+/// there (`prompt::switched`): its commits ahead of the base branch, its open
+/// `pr`, and what that worker last said.
+pub(crate) fn continue_brief(
+    fleet: &Fleet,
+    worktree: &Worktree,
+    pr: Option<u64>,
+    continuing: &Continuing,
+) -> Result<()> {
+    let base = fleet.base_tip()?;
+    let log = Repo::new(worktree.path.clone()).git(&[
+        "log",
+        "--oneline",
+        "--no-decorate",
+        "-n",
+        "20",
+        &format!("{base}..HEAD"),
+    ])?;
+    let commits: Vec<String> = log.lines().map(str::to_string).collect();
+    let added = switched(&Switched {
+        from: continuing.from.key(),
+        base_branch: &fleet.config.base_branch,
+        commits: &commits,
+        pr,
+        said: &continuing.said,
+    });
+    let brief = worktree.brief()?;
+    let mut text = std::fs::read_to_string(&brief)
+        .with_context(|| format!("cannot read the worker's brief {}", brief.display()))?;
+    text.push_str(&added);
+    worktree.write_brief(&text)?;
+    Ok(())
 }
 
 /// What the stock consult of an unbound repo's escalated issue `number` is

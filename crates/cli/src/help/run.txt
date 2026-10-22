@@ -249,7 +249,11 @@ WHAT TRIPS YOU UP
   - With ANTHROPIC_BASE_URL set and no terminal it needs `--worker-command`.
   - `--worker-command` has two forms, and is given once for each harness.
     `--worker-command <command>` is the worker launch command of the default harness:
-    the one the repo's config names, Claude Code where it names none.
+    the one the repo's config names, Claude Code where it names none. A change of the
+    config's `harness` moves only workers started after it; to move running work onto
+    another harness — and every worker this host starts for the repo from then on —
+    run `afkconvoy switch --instance <id> --harness <key> --all` (`afkconvoy switch
+    --help`).
     `--worker-command <harness>=<command>` is that of one harness, by its key
     (`claude-code`, `pi`, `codex`). A value is the second form when its first word holds an
     `=`. A harness given none is started with its stock command: Claude Code with
