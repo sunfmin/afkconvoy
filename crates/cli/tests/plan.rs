@@ -24,7 +24,7 @@ fn backlog() -> World {
     world.issue(9, READY);
     world.issue(10, READY);
     world.with_gh(|gh| {
-        gh["issues"][8]["blocked_by"] = json!(1); // #9
+        gh["edges"]["9"] = json!([7]); // #9 waits on #7
         gh["issues"][5]["state"] = json!("closed"); // #6
         gh["issues"][9]["state"] = json!("closed"); // #10
     });
@@ -60,7 +60,7 @@ fn plan_assembles_the_working_set() {
             (5, "has an open linked PR"),
             (7, "no ready-for-agent label"),
             (8, "epic label (prd)"),
-            (9, "1 open blocker(s)"),
+            (9, "open blockers: #7"),
         ]
     );
     assert_eq!(
@@ -149,4 +149,24 @@ fn a_pr_closes_what_its_body_says_whatever_github_linked() {
     });
     let plan = world.afk(&["plan"]).ok();
     assert_eq!(numbers(&plan["frontier"]), [2]);
+}
+
+#[test]
+fn plan_and_doctor_name_only_the_open_blockers_whatever_the_summary_says() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    for n in [71, 72, 73] {
+        world.issue(n, &["bug"]);
+    }
+    world.close(72, "completed");
+    world.with_gh(|gh| {
+        // #74 is gone: neither API returns it, as before.
+        gh["edges"]["7"] = json!([73, 72, 71, 74]);
+        gh["issues"][0]["blocked_by"] = json!(0);
+    });
+    let plan = world.afk(&["plan"]).ok();
+    assert_eq!(plan["frontier"], json!([]));
+    assert_eq!(plan["excluded"][0]["reason"], "open blockers: #71, #73");
+    let doctor = world.afk(&["doctor"]).ok();
+    assert_eq!(doctor["issues"]["excluded"][0]["reason"], plan["excluded"][0]["reason"]);
 }

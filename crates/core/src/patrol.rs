@@ -597,7 +597,7 @@ mod tests {
             number,
             title: title.to_string(),
             labels: labels.iter().map(|l| l.to_string()).collect(),
-            open_blockers: 0,
+            open_blockers: vec![],
         };
         let title = failure_title("triage");
         let issues = [

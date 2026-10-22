@@ -88,7 +88,10 @@ impl Before {
         for issue in issues {
             let bar = label_bar(&issue.labels, config, flows);
             let barred = matches!(bar, Some(LabelBar::NotReady(_) | LabelBar::NoFlow));
-            open.insert(issue.number, Looked { barred, open_blockers: issue.open_blockers });
+            open.insert(
+                issue.number,
+                Looked { barred, open_blockers: issue.open_blockers.len() as u64 },
+            );
         }
         Before { tick: 0, held, beat, open }
     }

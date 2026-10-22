@@ -25,8 +25,8 @@ pub struct Issue {
     pub number: u64,
     pub title: String,
     pub labels: Vec<String>,
-    /// How many open issues block it.
-    pub open_blockers: u64,
+    /// The open issues that block it, lowest number first.
+    pub open_blockers: Vec<u64>,
 }
 
 /// One open pull request.
@@ -433,17 +433,24 @@ enum Call<'d> {
     Nothing(String),
 }
 
+fn blocker_reason(blockers: &[u64]) -> String {
+    let named: Vec<String> = blockers.iter().map(|number| format!("#{number}")).collect();
+    format!("open blockers: {}", named.join(", "))
+}
+
 fn call<'d>(issue: &Issue, due: &'d [(u64, Due<'d>)]) -> Call<'d> {
     // Where its stage records put it decides. An open PR declares nothing.
     match due.iter().find(|(number, _)| *number == issue.number).map(|(_, due)| due) {
         Some(Due::Human(reason)) => Call::Human(reason.clone()),
         Some(Due::Nothing(why)) => Call::Nothing(why.clone()),
-        Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_)) if issue.open_blockers > 0 => {
-            Call::Nothing(format!("{} open blocker(s)", issue.open_blockers))
+        Some(Due::Worker(_) | Due::Consult(_) | Due::Lander(_))
+            if !issue.open_blockers.is_empty() =>
+        {
+            Call::Nothing(blocker_reason(&issue.open_blockers))
         }
         // Apart: Flux reads no pattern that joins it to those of an entry.
-        Some(Due::Stock(..)) if issue.open_blockers > 0 => {
-            Call::Nothing(format!("{} open blocker(s)", issue.open_blockers))
+        Some(Due::Stock(..)) if !issue.open_blockers.is_empty() => {
+            Call::Nothing(blocker_reason(&issue.open_blockers))
         }
         Some(due @ Due::Lander(_)) => Call::Start(LAND.to_string(), due),
         // A consult is started at the stage that asked it.
@@ -530,7 +537,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         // consult, whatever PR it has: the escalation kept it.
         let consult = seen.consults.contains(&number) && !claimed;
         let epic = matches!(label_bar(&issue.labels, config, seen.flows), Some(LabelBar::Epic(_)));
-        if consult && !epic && issue.open_blockers == 0 {
+        if consult && !epic && issue.open_blockers.is_empty() {
             set.frontier.push(Dispatchable { number, title, stage: None });
             continue;
         }
@@ -557,8 +564,8 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
             ON_TRAIN.to_string()
         } else if closing_pr(seen.prs, number).is_some() && !seen.kept.contains(&number) {
             NOT_OURS.to_string()
-        } else if issue.open_blockers > 0 {
-            format!("{} open blocker(s)", issue.open_blockers)
+        } else if !issue.open_blockers.is_empty() {
+            blocker_reason(&issue.open_blockers)
         } else {
             set.frontier.push(Dispatchable { number, title, stage: None });
             continue;
@@ -669,7 +676,7 @@ mod tests {
             number,
             title: format!("issue {number}"),
             labels: labels.iter().map(|l| l.to_string()).collect(),
-            open_blockers: 0,
+            open_blockers: vec![],
         }
     }
 
@@ -697,7 +704,7 @@ mod tests {
     #[test]
     fn the_frontier_is_every_issue_nothing_bars() {
         let mut blocked = issue(6, READY);
-        blocked.open_blockers = 2;
+        blocked.open_blockers = vec![41, 42];
         let issues = [
             issue(9, READY),
             issue(1, READY),
@@ -742,7 +749,7 @@ mod tests {
                 (3, "epic label (epic)"),
                 (4, "already claimed"),
                 (5, "has an open linked PR"),
-                (6, "2 open blocker(s)"),
+                (6, "open blockers: #41, #42"),
             ]
         );
     }
@@ -1010,7 +1017,7 @@ mod tests {
         let escalated = [record("plan", Declared::Escalate, "c1")];
         let ended = [record("plan", Declared::AlreadySatisfied, "c1")];
         let mut waiting = issue(6, &["flow:feature"]);
-        waiting.open_blockers = 1;
+        waiting.open_blockers = vec![41];
         let issues = [
             issue(1, &["flow:feature"]),
             issue(2, READY),
@@ -1098,7 +1105,7 @@ mod tests {
             [
                 (2, "no flow label".to_string()),
                 (3, "epic label (epic)".to_string()),
-                (6, "1 open blocker(s)".to_string()),
+                (6, "open blockers: #41".to_string()),
                 (9, "its workflow has ended".to_string()),
                 (10, "already claimed".to_string()),
             ]

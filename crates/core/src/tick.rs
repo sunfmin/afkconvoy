@@ -960,7 +960,7 @@ mod tests {
             number,
             title: String::new(),
             labels: vec!["flow:feature".to_string()],
-            open_blockers: 0,
+            open_blockers: vec![],
         };
         set.flowing = [4, 9].iter().map(flowing).collect();
         let pass = run_pass(&set, 3, 1, |step| match step {

@@ -504,14 +504,20 @@ fn open_issues(st: &State) -> ! {
         .filter(|issue| is_open(issue))
         .map(|issue| {
             let number = issue["number"].to_string();
-            let open_blockers =
-                blockers(st, &number).iter().filter(|blocker| is_open(blocker)).count() as u64;
+            let edges: Vec<Value> = blockers(st, &number)
+                .iter()
+                .map(|blocker| {
+                    json!({"number": blocker["number"],
+                    "state": blocker["state"].as_str().unwrap_or("open").to_uppercase()})
+                })
+                .collect();
             let mut with = comments(st, &number);
             let more = with.len() > COMMENTS_WITH;
             with.truncate(COMMENTS_WITH);
             json!({"number": issue["number"], "title": issue["title"],
                 "labels": issue["labels"],
-                "blocked_by": issue["blocked_by"].as_u64().unwrap_or(open_blockers),
+                "blockers": issue["blockers_at_rebuild"].as_array().unwrap_or(&edges),
+                "blockers_more": false,
                 "more": more, "comments": with})
             .to_string()
         })
