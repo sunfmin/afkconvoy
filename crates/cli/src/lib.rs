@@ -525,7 +525,7 @@ enum Command {
         #[command(flatten)]
         agent: AgentArgs,
     },
-    /// Move running work onto another harness: this host's workers of the repo, from now on, and the worker of a claim of mine now
+    /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
     #[command(after_long_help = include_str!("help/switch.txt"))]
     Switch {
         /// The harness to move onto: claude-code, pi or codex — or `config`, the one the

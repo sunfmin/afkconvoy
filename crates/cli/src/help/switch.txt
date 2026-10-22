@@ -8,7 +8,11 @@ WHEN TO RUN IT
   It works on a worker that is busy, idle at its prompt, blocked from receiving
   input, or already gone. It needs no nudge first, no grace period and no PR.
 
-WHAT IT CHOOSES
+WHO RUNS IT
+
+  The operator, in a checkout of the repo, on the host the workers run on.
+
+WHAT IT READS AND WRITES
 
   The harness is this host's choice for the repo, kept in the repo's git dir on this
   host and never pushed: whoever else works the repo runs the harness they have,
@@ -20,7 +24,7 @@ WHAT IT CHOOSES
   With no ISSUE, `--patrol` or `--all`, only the choice is made: running workers are
   left on the harness they run.
 
-WHAT IT MOVES
+  Then it moves the workers named:
 
   ISSUE      the worker of the instance's claim on that issue
   --patrol   the worker of the instance's run of that patrol, in the run's checkout
@@ -38,10 +42,6 @@ WHAT IT MOVES
   from which harness to which, by which instance, and when. It is no restart, no
   rework and no nudge: no breaker count moves, and a joining worker keeps its one
   restart.
-
-WHO RUNS IT
-
-  The operator, in a checkout of the repo, on the host the workers run on.
 
 WHAT IT ANSWERS
 

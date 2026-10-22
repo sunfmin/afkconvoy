@@ -158,7 +158,7 @@ _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the
 
 **Switch**:
 Moving running work onto another harness in one command: the host's choice of harness for a repo, kept on that host and never pushed — whoever else works the repo runs the harness they have — and each worker named ended and one of that harness started in its place, in the same worktree, on the same branch, at the same stage, briefed to continue what is there. Every worker the host starts for the repo afterwards is of the chosen harness, whatever the config, a stage or a patrol names, until a switch chooses again. The claim, the branch and the PR are untouched, the switch is recorded on the PR, and it is no restart, rework or nudge.
-_Avoid_: failover, migrate, re-dispatch
+_Avoid_: harness change (what the config's `harness` key makes)
 
 **Worker launch command**:
 The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host says it, per harness, and a harness it says none for has a stock one; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
