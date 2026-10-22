@@ -1289,6 +1289,69 @@ pub fn stage_nudge_line(brief: &str) -> String {
     )
 }
 
+/// What a worker switched onto another harness finds of the work it takes
+/// over (`switched`).
+#[derive(Debug, Clone)]
+pub struct Switched<'a> {
+    /// The harness the worker before it ran on.
+    pub from: &'a str,
+    /// The base branch, which the commits are ahead of.
+    pub base_branch: &'a str,
+    /// The commits on the branch ahead of the base branch, newest first, each
+    /// as `git log --oneline` says it.
+    pub commits: &'a [String],
+    /// The open PR of the issue, when it has one.
+    pub pr: Option<u64>,
+    /// The last lines the worker before it showed in its terminal; none when
+    /// it had no terminal left.
+    pub said: &'a [String],
+}
+
+/// What the brief of a worker started by a switch says after the rest: that
+/// it continues the work of a worker of another harness, ended mid-way, and
+/// what is there of it.
+pub fn switched(switched: &Switched) -> String {
+    let mut text = format!(
+        "\n\n## You continue earlier work\n\nA worker on `{}` was at this before you, and was \
+         ended mid-way so that this work goes on on another harness: nothing of it is thrown \
+         away. Take up where it stood, and redo nothing it finished.\n",
+        switched.from
+    );
+    match switched.commits {
+        [] => text.push_str(&format!(
+            "\n- **Commits:** none on the branch ahead of `origin/{}` yet; see `git status` for \
+             what it left uncommitted.\n",
+            switched.base_branch
+        )),
+        commits => {
+            text.push_str(&format!(
+                "\n- **Commits:** {} on the branch ahead of `origin/{}`:\n",
+                commits.len(),
+                switched.base_branch
+            ));
+            for commit in commits {
+                text.push_str(&format!("  - `{commit}`\n"));
+            }
+        }
+    }
+    text.push_str(&match switched.pr {
+        Some(pr) => format!("- **PR:** #{pr} is open; push to its branch, and open no other.\n"),
+        None => "- **PR:** none is open yet.\n".to_string(),
+    });
+    match switched.said {
+        [] => text.push_str("- **Last said:** its terminal was already gone.\n"),
+        said => {
+            text.push_str("- **Last said**, the end of its terminal:\n\n```\n");
+            for line in said {
+                text.push_str(line.trim_end());
+                text.push('\n');
+            }
+            text.push_str("```\n");
+        }
+    }
+    text
+}
+
 /// Fills every `{name}` of `template` in one pass, so a value is never itself
 /// read for placeholders: a title naming `{branch}` reaches the worker as it
 /// was given. A placeholder no field answers to, or a field with nothing in

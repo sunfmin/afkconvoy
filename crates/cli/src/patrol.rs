@@ -3,6 +3,7 @@
 //! end. When a patrol runs and
 //! what makes a run a failed one is the core's (`afkconvoy_core::patrol`).
 
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::intake::opened_by;
 use afkconvoy_core::lock;
 use afkconvoy_core::patrol::{
@@ -14,17 +15,18 @@ use afkconvoy_core::prompt::{PatrolFields, patrol_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::claims::{Ask, Me, drop_ask, drop_run, push_ask, take_run};
-use crate::dispatch::Agent;
+use crate::copies::Copies;
+use crate::dispatch::{Agent, Continuing};
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
 use crate::git::REMOTE;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
-use crate::team::unknown_patrols;
+use crate::team::{Kept, keep, unknown_patrols};
 use crate::topic::See;
 
 /// What the remote and GitHub say of each patrol the repo names, in the
@@ -147,8 +149,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
-    let harness = patrol.harness(bound.harness);
-    let role_copy = kept.role(role, harness)?;
+    let harness = fleet.harness_of(patrol.harness(bound.harness));
+    kept.role(role, harness)?;
     // Before the claim: a patrol whose harness cannot be started here runs nothing.
     let launch = agent.command(harness)?;
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, &claim_key(name))? else {
@@ -199,6 +201,40 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         over_command: &own().fixed(" over --run ").word(&claim.key).own(),
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
+    let line = in_role(fleet, kept, name, harness, launch.as_str(), &checkout)?;
+    checkout.keep_harness(harness)?;
+    let terminal = checkout.start(&line, me.now)?;
+    checkout.await_ready(&terminal, agent.ready_timeout)?;
+    checkout.deliver(&terminal, &brief)?;
+
+    // The record carries the runs of the day before it: they are counted from it alone.
+    let ran = Ran::after(last.as_ref(), me.now, ask.is_some());
+    let sha = fleet.repo.record_commit(&write_run(&ran))?;
+    fleet.repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{recorded}")])?;
+    fleet.scan.last_runs.insert(name.to_string(), ran);
+    if let Some(ask) = &ask {
+        drop_ask(&fleet.repo, &mut fleet.scan, name, ask)?;
+    }
+    Ok(Outcome::Done)
+}
+
+/// The line the terminal in `checkout` runs to start the worker of a run of
+/// the patrol `name` on `harness`, with `launch`, the worker launch command of
+/// that harness. What this host keeps for it is put in place first.
+fn in_role(
+    fleet: &Fleet,
+    kept: &Kept,
+    name: &str,
+    harness: Harness,
+    launch: &str,
+    checkout: &Worktree,
+) -> Result<String> {
+    let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
+    let patrol = kept.team.patrol(name).ok_or_else(none)?;
+    let role = kept.team.role_of(&patrol.work);
+    let role_copy = kept.role(role, harness)?;
+    let path = checkout.path.display().to_string();
+    let team_rules = kept.rules();
     let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;
     let host_user = role.host_user;
     let (kept_dir, shadowed) = crate::kept::for_worker(harness, host_user, &role_copy.dir)?;
@@ -206,7 +242,11 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
         team_dir: &kept.copy.dir.display().to_string(),
-        model: patrol.model.as_deref(),
+        // A model is its patrol's harness's: another harness knows it not.
+        model: patrol.model.as_deref().filter(|_| {
+            let bound = fleet.config.bound.as_ref();
+            bound.is_some_and(|bound| patrol.harness(bound.harness) == harness)
+        }),
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &kept_dir,
         host_user,
@@ -225,19 +265,45 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&harness.in_role(launch.as_str(), &start), me.now)?;
-    checkout.await_ready(&terminal, agent.ready_timeout)?;
-    checkout.deliver(&terminal, &brief)?;
+    Ok(harness.in_role(launch, &start))
+}
 
-    // The record carries the runs of the day before it: they are counted from it alone.
-    let ran = Ran::after(last.as_ref(), me.now, ask.is_some());
-    let sha = fleet.repo.record_commit(&write_run(&ran))?;
-    fleet.repo.git(&["push", "--quiet", "--force", REMOTE, &format!("{sha}:{recorded}")])?;
-    fleet.scan.last_runs.insert(name.to_string(), ran);
-    if let Some(ask) = &ask {
-        drop_ask(&fleet.repo, &mut fleet.scan, name, ask)?;
+/// Ends the worker of my run of the patrol `name` and starts one of `harness`
+/// in its checkout, briefed as it was, and told what of the run is there
+/// (`continuing`). The run, its claim and its record are untouched: no new
+/// run starts, and it ends as any does.
+pub(crate) fn switch(
+    fleet: &Fleet,
+    me: &Me,
+    agent: &Agent,
+    name: &str,
+    harness: Harness,
+    said: impl FnOnce(&Worktree) -> Continuing,
+) -> Result<Value> {
+    let key = claim_key(name);
+    let mine = fleet.scan.runs.iter().find(|run| {
+        run.key == key
+            && run.owner.as_ref().is_some_and(|owner| owner.instance == me.instance.as_str())
+    });
+    if mine.is_none() {
+        bail!("{} holds no run of the patrol {name:?}; nothing was switched", me.instance);
     }
-    Ok(Outcome::Done)
+    let source = Source::of(&fleet.repo)?;
+    let Some(checkout) = Worktree::named(&source, &checkout_name(name))? else {
+        bail!("the run of the patrol {name:?} has no checkout on this host; nothing was switched");
+    };
+    let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
+    let kept = keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?;
+    let launch = agent.command(harness)?;
+    let line = in_role(fleet, &kept, name, harness, launch.as_str(), &checkout)?;
+    let continuing = said(&checkout);
+    crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
+    checkout.keep_harness(harness)?;
+    let terminal = checkout.start(&line, me.now)?;
+    checkout.await_ready(&terminal, agent.ready_timeout)?;
+    checkout.deliver(&terminal, &checkout.brief()?)?;
+    Ok(json!({"patrol": name, "from": continuing.from, "to": harness,
+        "worktree": checkout.path, "terminal": terminal}))
 }
 
 /// Ends the run of the patrol `row` once it is over: a peer's presumed dead

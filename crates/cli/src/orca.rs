@@ -6,6 +6,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use afkconvoy_core::guard::WritesNothing;
+use afkconvoy_core::harness::Harness;
 use afkconvoy_core::inspection::{self, Finding, Kind};
 use afkconvoy_core::launch::{Waited, until_ready};
 use afkconvoy_core::line::niced;
@@ -45,6 +46,8 @@ const STARTED_FILE: &str = "convoy-patrol-started";
 const ANSWERED_FILE: &str = "convoy-answered";
 /// What a bound repo's worker here was started under (`Under`).
 const UNDER_FILE: &str = "convoy-started-under";
+/// The harness the worker here was last started on, as its key.
+const HARNESS_FILE: &str = "convoy-harness";
 /// What was taken down as the worker here turned hot (`evidence`).
 const EVIDENCE_DIR: &str = "convoy-hot";
 /// What the inspection in this checkout found, as it said it.
@@ -632,6 +635,19 @@ impl Worktree {
     pub fn keep_under(&self, under: &Under) -> Result<()> {
         let file = self.note(UNDER_FILE)?;
         std::fs::write(&file, serde_json::to_string(under)?)
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The harness the worker here was last started on, where a start kept it.
+    pub fn harness(&self) -> Result<Option<Harness>> {
+        let kept = std::fs::read_to_string(self.note(HARNESS_FILE)?).unwrap_or_default();
+        Ok(Harness::read(kept.trim()))
+    }
+
+    /// Keeps the harness the worker here is started on.
+    pub fn keep_harness(&self, harness: Harness) -> Result<()> {
+        let file = self.note(HARNESS_FILE)?;
+        std::fs::write(&file, harness.key())
             .with_context(|| format!("cannot write {}", file.display()))
     }
 

@@ -70,6 +70,7 @@ pub mod slow_gate;
 pub mod stage;
 pub mod steer;
 pub mod stop;
+pub mod switch;
 pub mod takeover;
 pub mod team;
 pub mod tend;
@@ -524,6 +525,27 @@ enum Command {
         #[command(flatten)]
         agent: AgentArgs,
     },
+    /// Move running work onto another harness: this host's workers of the repo, from now on, and the worker of a claim of mine now
+    #[command(after_long_help = include_str!("help/switch.txt"))]
+    Switch {
+        /// The harness to move onto: claude-code, pi or codex — or `config`, the one the
+        /// repo's config names, which forgets this host's choice
+        #[arg(long, value_parser = chosen_harness)]
+        harness: Chosen,
+        /// The issue whose worker to move
+        #[arg(value_name = "ISSUE", conflicts_with_all = ["all", "patrol"])]
+        issue: Option<u64>,
+        /// The patrol whose running worker to move
+        #[arg(long, conflicts_with = "all")]
+        patrol: Option<String>,
+        /// Move the worker of every claim of the instance on this host, one after another
+        #[arg(long)]
+        all: bool,
+        #[command(flatten)]
+        who: Who,
+        #[command(flatten)]
+        agent: AgentArgs,
+    },
     /// Give up the landing train, its worker silent past a nudge, with nothing landed
     #[command(after_long_help = include_str!("help/abandon.txt"))]
     Abandon {
@@ -698,13 +720,14 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 23] = [
+const ACTS: [&str; 24] = [
     "dispatch",
     "close",
     "escalate",
     "park",
     "nudge",
     "restart",
+    "switch",
     "abandon",
     "takeover",
     "claim",
@@ -790,6 +813,17 @@ fn found(text: &str) -> Result<Found, String> {
         let words: Vec<&str> = Found::ALL.into_iter().map(Found::word).collect();
         format!("what an inspection found is one of: {}", words.join(", "))
     })
+}
+
+/// A harness `switch` moves onto: one by its key, or the config's.
+#[derive(Debug, Clone, Copy)]
+struct Chosen(Option<Harness>);
+
+fn chosen_harness(text: &str) -> Result<Chosen, String> {
+    match text {
+        "config" => Ok(Chosen(None)),
+        _ => harness(text).map(|harness| Chosen(Some(harness))),
+    }
 }
 
 fn harness(text: &str) -> Result<Harness, String> {
@@ -933,6 +967,15 @@ impl Command {
             Command::Park { issue, who } => of("park", issue, Some(who)),
             Command::Nudge { issue, who } => of("nudge", issue, Some(who)),
             Command::Restart { issue, who, .. } => of("restart", issue, Some(who)),
+            Command::Switch { issue, patrol, all, who, .. } => {
+                let acting = Acting::new("switch").as_instance(who.instance.as_str());
+                match (issue, patrol, all) {
+                    (Some(issue), _, _) => acting.on_issue(Some(*issue)),
+                    (None, Some(patrol), _) => acting.on(format!("patrol {}", patrol.trim())),
+                    (None, None, true) => acting.on("all".to_string()),
+                    (None, None, false) => acting,
+                }
+            }
             Command::Abandon { who } => as_who("abandon", who),
             Command::Takeover { list: true, .. } => return None,
             Command::Takeover { from, instance, .. } => {
@@ -1248,6 +1291,16 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Restart { issue, who, agent } => {
             watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue.number())
         }
+        Command::Switch { harness, issue, patrol, all, who, agent } => {
+            let which = match (issue, patrol, all) {
+                (Some(issue), _, _) => switch::Which::Issue(issue),
+                (None, Some(patrol), _) => switch::Which::Patrol(patrol.trim().to_string()),
+                (None, None, true) => switch::Which::All,
+                (None, None, false) => switch::Which::Nothing,
+            };
+            let mut fleet = Fleet::open(now)?;
+            switch::switch(&mut fleet, &who.me(now), &agent.agent()?, harness.0, which)
+        }
         Command::Abandon { who } => abandon::abandon_by_hand(&mut Fleet::open(now)?, &who.me(now)),
         Command::Takeover { list, from, yes, instance, host } => {
             let mut fleet = Fleet::open(now)?;
@@ -1317,6 +1370,7 @@ mod tests {
         &["park", "7", "--instance", "a-h1-1"],
         &["nudge", "7", "--instance", "a-h1-1"],
         &["restart", "7", "--instance", "a-h1-1"],
+        &["switch", "7", "--harness", "codex", "--instance", "a-h1-1"],
         &["abandon", "--instance", "a-h1-1"],
         &["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"],
         &["wake"],
