@@ -1512,12 +1512,16 @@ _Avoid_: freeze, pause, kill switch
 #### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third. A stage names the one its worker runs, or takes the fleet's default.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third. A stage names the one its worker runs, or takes the fleet's default. A host where a switch chose one starts every worker of the repo on that one.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Worker**:
 A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to join its PR to the landing train — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
+
+**Switch**:
+Moving running work onto another harness in one command: the host's choice of harness for a repo, kept on that host and never pushed — whoever else works the repo runs the harness they have — and each worker named ended and one of that harness started in its place, in the same worktree, on the same branch, at the same stage, briefed to continue what is there. Every worker the host starts for the repo afterwards is of the chosen harness, whatever the config, a stage or a patrol names, until a switch chooses again. The claim, the branch and the PR are untouched, the switch is recorded on the PR, and it is no restart, rework or nudge.
+_Avoid_: failover, migrate, re-dispatch
 
 **Worker launch command**:
 The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host says it, per harness, and a harness it says none for has a stock one; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
