@@ -154,7 +154,7 @@ fn a_consult_that_opens_an_issue_it_waits_on_hands_it_back_blocked() {
     let plan = world.afk(&["plan", "--now", "1510"]).ok();
     let excluded = plan["excluded"].as_array().unwrap();
     let seven = excluded.iter().find(|row| row["number"] == 7).expect("7 is held back");
-    assert_eq!(seven["reason"], "1 open blocker(s)", "{plan}");
+    assert_eq!(seven["reason"], "open blockers: #8", "{plan}");
 }
 
 #[test]

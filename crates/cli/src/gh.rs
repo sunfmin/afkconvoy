@@ -13,8 +13,8 @@ use afkconvoy_core::plan::{Issue, PullRequest};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// The open issues, a page at a time, each with its labels, how many open
-/// issues block it, and its first `COMMENTS_WITH` comments: one call a page,
+/// The open issues, a page at a time, each with its labels, blockers and
+/// its first `COMMENTS_WITH` comments: one call a page,
 /// however many of the issues have comments to read. `gh api graphql` fills
 /// `{owner}` and `{repo}` in, and `$endCursor` page after page.
 pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $endCursor: String) { \
@@ -23,13 +23,14 @@ pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $end
     orderBy: {field: CREATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
     nodes { number title labels(first: 100) { nodes { name } } \
-    issueDependenciesSummary { blockedBy } \
+    blockedBy(first: 100) { pageInfo { hasNextPage } nodes { number state } } \
     comments(first: 100) { pageInfo { hasNextPage } \
     nodes { fullDatabaseId body url createdAt } } } } } }";
 /// What is read of every open issue: `more` says its comments go on past
 /// those that came with it.
 pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, title, \
-    labels: [.labels.nodes[].name], blocked_by: (.issueDependenciesSummary.blockedBy // 0), \
+    labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | {number, state}], \
+    blockers_more: .blockedBy.pageInfo.hasNextPage, \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
 /// How many comments of an issue come with it (`OPEN_ISSUES_QUERY`).
@@ -76,6 +77,19 @@ pub struct IssueRead {
 pub struct BlockedBy {
     pub number: u64,
     pub state: String,
+}
+
+/// The one answer to which blockers are open, for both paged rebuilds and
+/// the fresh read before a claim. REST and GraphQL spell state differently.
+fn open_blockers(edges: Vec<BlockedBy>) -> Vec<u64> {
+    let mut open: Vec<u64> = edges
+        .into_iter()
+        .filter(|edge| edge.state.eq_ignore_ascii_case("open"))
+        .map(|edge| edge.number)
+        .collect();
+    open.sort_unstable();
+    open.dedup();
+    open
 }
 
 /// One comment on an issue or a pull request.
@@ -362,7 +376,8 @@ impl GitHub {
             number: u64,
             title: String,
             labels: Vec<String>,
-            blocked_by: u64,
+            blockers: Vec<BlockedBy>,
+            blockers_more: bool,
             more: bool,
             comments: Vec<Comment>,
         }
@@ -384,13 +399,22 @@ impl GitHub {
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row =
                 serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
+            // Native dependencies are capped below this page size. Refuse a
+            // truncated answer if GitHub ever raises that limit; never infer
+            // an unblocked issue from an incomplete read.
+            if row.blockers_more {
+                bail!(
+                    "GitHub returned more than 100 blockers for #{}; cannot rebuild a complete frontier",
+                    row.number
+                );
+            }
             let comments = if row.more { self.comments(row.number)? } else { row.comments };
             open.comments.insert(row.number, comments);
             open.rows.push(Issue {
                 number: row.number,
                 title: row.title,
                 labels: row.labels,
-                open_blockers: row.blocked_by,
+                open_blockers: open_blockers(row.blockers),
             });
         }
         Ok(open)
@@ -624,8 +648,7 @@ impl GitHub {
 
     /// The open issues among those `number` is blocked by.
     pub fn open_blockers(&self, number: u64) -> Result<Vec<u64>> {
-        let open = self.blocked_by(number)?.into_iter().filter(|edge| edge.state == "open");
-        Ok(open.map(|edge| edge.number).collect())
+        Ok(open_blockers(self.blocked_by(number)?))
     }
 
     /// Records `number` as blocked by the issue whose database id is `blocker_id`.

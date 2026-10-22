@@ -287,7 +287,7 @@ fn a_blocker_added_after_the_rebuild_gives_the_slot_to_the_next_frontier_issue()
             gh["edges"][n] = json!([71]);
         }
         for row in gh["issues"].as_array_mut().unwrap() {
-            row["blocked_by"] = json!(0);
+            row["blockers_at_rebuild"] = json!([]);
         }
     });
     let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
@@ -318,4 +318,31 @@ fn a_blocker_added_after_the_rebuild_gives_the_slot_to_the_next_frontier_issue()
     }
     assert_eq!(world.boards(71).len(), 1);
     assert_eq!(world.open_terminals().len(), 1);
+}
+
+#[test]
+fn a_stale_dependency_summary_does_not_hold_a_closed_blockers_issue_out_of_the_frontier() {
+    let world = ready_world();
+    world.issue(71, &["bug"]);
+    world.close(71, "completed");
+    world.with_gh(|gh| {
+        gh["edges"]["7"] = json!([71]);
+        gh["issues"][0]["blocked_by"] = json!(1);
+    });
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    let ticked = world
+        .afk(&[
+            "tick",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            "1000",
+            "--worker-command",
+            COMMAND,
+        ])
+        .ok();
+    assert_eq!(world.claims(), [(7, "alpha".to_string())], "{ticked}");
 }

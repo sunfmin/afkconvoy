@@ -100,10 +100,10 @@ fn a_claim_waiting_on_open_blockers_is_parked_edges_first() {
     assert_eq!(world.comments(7).len(), 2, "the branch record and the verdict: nothing is said");
 
     // off the frontier exactly while a blocker it named is open
-    assert_eq!(excluded(&world, 7).as_deref(), Some("2 open blocker(s)"));
+    assert_eq!(excluded(&world, 7).as_deref(), Some("open blockers: #41, #43"));
     assert_eq!(did(&tick(&world, 1270)), [] as [String; 0]);
     world.close(41, "completed");
-    assert_eq!(excluded(&world, 7).as_deref(), Some("1 open blocker(s)"));
+    assert_eq!(excluded(&world, 7).as_deref(), Some("open blockers: #43"));
     world.close(43, "completed");
     assert_eq!(excluded(&world, 7), None);
     assert_eq!(did(&tick(&world, 1360)), ["dispatch 7 done", "heartbeat done"]);

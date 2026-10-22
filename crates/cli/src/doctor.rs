@@ -1942,7 +1942,7 @@ mod tests {
             ["afkconvoy flows"]
         );
         // held up by something else: the issue itself says what
-        state.set.excluded = vec![excluded(9, "1 open blocker(s)")];
+        state.set.excluded = vec![excluded(9, "open blockers: #41")];
         assert_eq!(
             fixes(&self::found(&host(), &run(vec![]), &state), "the fleet lock #9"),
             ["gh issue view 9"]

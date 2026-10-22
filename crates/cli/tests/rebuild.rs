@@ -63,6 +63,18 @@ fn asked_of_github(flowing: u64) -> Vec<String> {
         world.issue(number, &["flow:feature"]);
         world.comment(number, "a word on it");
     }
+    // Every flowing issue has a dependency, whose own state is closed even
+    // while GitHub's summary claims it is open. No per-issue read is needed.
+    world.issue(999, &["bug"]);
+    world.close(999, "completed");
+    world.with_gh(|gh| {
+        for number in 1..=flowing {
+            gh["edges"][number.to_string()] = serde_json::json!([999]);
+        }
+        for issue in gh["issues"].as_array_mut().unwrap() {
+            issue["blocked_by"] = serde_json::json!(1);
+        }
+    });
     // the team is kept on this host by the first read of it
     plan(&world);
     world.gh_calls();

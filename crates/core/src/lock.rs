@@ -115,7 +115,7 @@ mod tests {
             number,
             title: String::new(),
             labels: labels.iter().map(|label| label.to_string()).collect(),
-            open_blockers: 0,
+            open_blockers: vec![],
         }
     }
 

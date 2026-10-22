@@ -116,7 +116,7 @@ fn a_blocker_added_on_github_is_named_on_the_skip_with_since_when() {
             gh["issues"][0]["labels"] = json!(["ready-for-agent"]);
             // the rebuild reads no blocker of #3: the dispatch reads it
             gh["edges"]["3"] = json!([5]);
-            gh["issues"][0]["blocked_by"] = json!(0);
+            gh["issues"][0]["blockers_at_rebuild"] = json!([]);
         });
     });
     assert_eq!(
