@@ -62,7 +62,8 @@ WHAT IT ANSWERS
   the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in
   by workers may be open (default 50), and the default harness: the one every worker
   runs that its stage or its patrol names none for (default claude-code, Claude Code;
-  the others are pi and codex, Codex). A repo that names no team is unbound and answers
+  the others are pi and codex, Codex). A host where `afkconvoy switch` chose a harness
+  starts every worker of the repo on that one instead, whatever this key says. A repo that names no team is unbound and answers
   the eight above and one more: {"escalate_to"} — where a hand-off to a human goes first.
   `consult` (the default): the stock consult, afkconvoy's own, is asked first and stands
   where the human would; a human is reached only where it lets the issue through, or

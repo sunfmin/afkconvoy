@@ -56,6 +56,7 @@ mod stage;
 mod steer;
 mod stock;
 mod stopped;
+mod switch;
 mod takeover;
 mod tend;
 mod tick;
