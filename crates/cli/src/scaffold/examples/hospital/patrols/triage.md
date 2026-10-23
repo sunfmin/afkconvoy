@@ -6,6 +6,5 @@ Routes the open issues that are in no workflow.
 by: triage-nurse
 do: triage
 every: 10m
-model: sonnet
 max_open: 10
 ```

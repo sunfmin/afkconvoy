@@ -9,6 +9,7 @@ use afkconvoy_core::harness::Harness;
 fn bound() -> World {
     let world = World::new();
     world.hold_every_harness();
+    world.kit_models("dsh", &["deepseek-test"]);
     world.repo(
         "acme/dev",
         &[
@@ -17,26 +18,24 @@ fn bound() -> World {
         ],
     );
     world.repo("acme/team", &[
-        ("team.md", "```yaml\nroles: { dev: acme/dev }\n```\n"),
-        ("workflows/feature.md", "```yaml\nstages:\n  - name: build\n    by: dev\n    do: build\n    harness: dsh\n    model: deepseek-test\n    on: { pass: done }\n```\n"),
-        ("patrols/sweep.md", "```yaml\nby: dev\ndo: build\nharness: dsh\nevery: 1h\nmax_open: 1\n```\n"),
+        ("team.md", "```yaml\nroles: { dev: acme/dev }\nroster: { dev: { run: [{ harness: dsh, model: deepseek-test }] } }\n```\n"),
+        ("workflows/feature.md", "```yaml\nstages:\n  - name: build\n    by: dev\n    do: build\n    on: { pass: done }\n```\n"),
+        ("patrols/sweep.md", "```yaml\nby: dev\ndo: build\nevery: 1h\nmax_open: 1\n```\n"),
     ]);
     write(
         &world.clone,
         "docs/agents/afkconvoy.md",
-        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\nharness: dsh\n```\n",
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n",
     );
     world
 }
 
 #[test]
-fn dsh_is_read_on_stages_patrols_and_the_repo_and_is_probed_before_start() {
+fn dsh_is_read_in_a_role_s_range_and_is_probed_before_start() {
     let world = bound();
     let read = world.afk(&["check"]).ok();
-    assert_eq!(read["workflows"][0]["stages"][0]["harness"], "dsh");
-    assert_eq!(read["patrols"][0]["harness"], "dsh");
-    let config = world.afk(&["config"]).ok();
-    assert_eq!(config["harness"], "dsh");
+    let range = &read["roles"][0]["range"];
+    assert_eq!(*range, serde_json::json!([{"harness": "dsh", "models": ["deepseek-test"]}]));
     // All entry points refuse a wrapper that cannot take the overlay.
     for args in [
         vec!["tick", "--instance", "a", "--host", "h1", "--now", "1000"],

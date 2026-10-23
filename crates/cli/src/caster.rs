@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use afkconvoy_core::casting::{
-    CASTER_WORKTREE, Caster, Casting, Held, Offered, ToCast, any_choice, caster_prompt,
-    choice, held_by_none, holds, stage_ranges, to_cast as is_to_cast, uncast,
+    CASTER_WORKTREE, Caster, Casting, Held, Offered, ToCast, any_choice, caster_prompt, choice,
+    held_by_none, holds, stage_ranges, to_cast as is_to_cast, uncast,
 };
 use afkconvoy_core::config::Config;
 use afkconvoy_core::plan::Issue;
@@ -208,10 +208,14 @@ pub fn cast(now: u64) -> Result<Value> {
         Some(_) => union(&each_ranges.iter().flat_map(|(_, r)| r.clone()).collect::<Vec<_>>()),
         None => range.clone(),
     };
-    let how: Vec<String> = team.iter().flat_map(|team| &team.roles).filter_map(|role| {
-        let how = role.roster.as_ref()?.cast.as_ref()?;
-        Some(format!("{}: {how}", role.name))
-    }).collect();
+    let how: Vec<String> = team
+        .iter()
+        .flat_map(|team| &team.roles)
+        .filter_map(|role| {
+            let how = role.roster.as_ref()?.cast.as_ref()?;
+            Some(format!("{}: {how}", role.name))
+        })
+        .collect();
     let first = fleet.first()?;
     let launch = kit.command(first.harness).context("the host kit holds no harness")?;
     let kept = crate::kept::keep(first.harness, false)?.display().to_string();

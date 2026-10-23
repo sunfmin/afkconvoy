@@ -18,7 +18,6 @@ stages:
   - name: build
     by: dev
     do: implement
-    model: opus
     escalate: { to: reviewer, do: rule }
     on: { pass: review }
   - name: review

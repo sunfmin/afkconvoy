@@ -21,7 +21,7 @@ stages:
 ```
 ";
 const SWEEP: &str = "```yaml\nby: dev\ndo: sweep\nevery: 1h\nmax_open: 2\n```\n";
-const AUDIT: &str = "```yaml\nby: dev\ndo: sweep\nevery: 2d\nmodel: opus\nmax_open: 1\n```\n";
+const AUDIT: &str = "```yaml\nby: dev\ndo: sweep\nevery: 2d\nmax_open: 1\n```\n";
 
 /// A world whose repo is bound to a team with the patrols `sweep` and
 /// `audit`, and names `patrols` of them.

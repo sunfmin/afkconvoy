@@ -4,7 +4,6 @@
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
-
 /// The escalate label where nothing names one: a repo's, and a team's.
 pub const ESCALATE_LABEL: &str = "ready-for-human";
 

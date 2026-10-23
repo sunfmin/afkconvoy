@@ -14,6 +14,40 @@ struct Back {
     to: usize,
 }
 
+/// What `team`'s roster says each of its roles may run, in plain text, as
+/// `show` ends: a row per role in the team's order, each harness and model
+/// it allows in order of preference with what it is good at, and how the
+/// team says to cast among them under it. A role the roster names none for
+/// may run whatever the host kit holds.
+pub fn roster(team: &Team) -> String {
+    let mut width = 0;
+    for role in &team.roles {
+        width = width.max(role.name.chars().count());
+    }
+    let mut out = "roster\n\n".to_string();
+    for role in &team.roles {
+        let Some(entry) = &role.roster else {
+            out.push_str(&format!("  {:<width$}  the host kit whole\n", role.name));
+            continue;
+        };
+        let each: Vec<String> = entry
+            .run
+            .iter()
+            .map(|allowed| {
+                let model = allowed.model.as_deref().unwrap_or("any model");
+                let good_at =
+                    allowed.good_at.as_ref().map(|good| format!(" ({good})")).unwrap_or_default();
+                format!("{} {model}{good_at}", allowed.harness.key())
+            })
+            .collect();
+        out.push_str(&format!("  {:<width$}  {}\n", role.name, each.join(" · ")));
+        if let Some(cast) = &entry.cast {
+            out.push_str(&format!("  {:<width$}  cast: {cast}\n", ""));
+        }
+    }
+    out
+}
+
 /// The drawing of `workflow`, one of `team`: lines, each ended by a
 /// newline. What a stage's worker runs is its role's range's to say.
 #[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}) -> String)]
@@ -66,13 +100,7 @@ pub fn draw(team: &Team, workflow: &Workflow) -> String {
 /// what is said of it, and its `pass` under it.
 #[spec(fn(&Team[@roles], &Workflow[@w], &Stage{v: v.n == w.n && v.roles == roles}, &[Back], usize)
     -> String requires w.roles == roles)]
-fn rows(
-    team: &Team,
-    workflow: &Workflow,
-    stage: &Stage,
-    backs: &[Back],
-    width: usize,
-) -> String {
+fn rows(team: &Team, workflow: &Workflow, stage: &Stage, backs: &[Back], width: usize) -> String {
     let mut said = vec![match &stage.by {
         Performer::Human => HUMAN.to_string(),
         Performer::Role(work) => work_said(team, work),
@@ -153,7 +181,7 @@ fn between(backs: &[Back], stage: &Stage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::team::tests::{FEATURE, one};
+    use crate::team::tests::{FEATURE, one, rostered};
 
     #[test]
     fn every_stage_its_role_and_skill_and_every_edge_is_drawn() {
@@ -171,6 +199,24 @@ feature — flow:feature — max_rework 3, max_consecutive_rework 2
 └──── sign-off  human · reject → plan
         ↓ pass → land
       land      dev: land
+";
+        assert_eq!(drawn, expected, "\n{drawn}");
+    }
+
+    #[test]
+    fn the_roster_says_what_each_role_may_run_and_how_it_is_cast() {
+        let team = rostered(
+            "  dev:\n    cast: Hard work on opus.\n    run:\n      - { harness: claude-code, \
+             model: opus, good_at: hard work }\n      - { harness: pi }\n",
+        )
+        .unwrap();
+        let drawn = roster(&team);
+        let expected = "\
+roster
+
+  dev       claude-code opus (hard work) · pi any model
+            cast: Hard work on opus.
+  reviewer  the host kit whole
 ";
         assert_eq!(drawn, expected, "\n{drawn}");
     }

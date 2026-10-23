@@ -9,13 +9,11 @@ stages:
   - name: treatment
     by: fellow
     do: treat
-    model: sonnet
     escalate: { to: attending, do: consult }
     on: { pass: code-review }
   - name: code-review
     by: attending
     do: review-code
-    model: sonnet
     writes: false
     on: { pass: land, reject: treatment }
 land: { by: discharge-nurse, do: land }

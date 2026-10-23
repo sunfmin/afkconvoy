@@ -91,7 +91,8 @@ pub fn check(launches: &Launches) -> Result<()> {
         bail!(why);
     }
     let fault = launch.and_then(Proposed::fault);
-    let fault = fault.map(|fault| launches.said(&fault, default, &[crate::role::BY_FIRST.to_string()]));
+    let fault =
+        fault.map(|fault| launches.said(&fault, default, &[crate::role::BY_FIRST.to_string()]));
     match refusal(&looked.found, looked.host.as_deref(), fault.as_deref()) {
         Some(why) => bail!(why),
         None => Ok(()),

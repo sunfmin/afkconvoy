@@ -17,7 +17,6 @@ stages:
   - name: build
     by: dev
     do: implement
-    model: opus
     on: { pass: review }
   - name: review
     by: reviewer

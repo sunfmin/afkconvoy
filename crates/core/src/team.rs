@@ -1504,8 +1504,7 @@ fn roster_entry(report: &mut Report, key: &str, node: &Node) -> Option<Entry> {
             return None;
         }
         Some(other) => {
-            let problem =
-                format!("must be a list of harnesses and models, not {}", kind(other));
+            let problem = format!("must be a list of harnesses and models, not {}", kind(other));
             report.fault(&at, problem);
             return None;
         }
@@ -2736,7 +2735,7 @@ land: { by: dev, do: land }
     }
 
     /// The usual team with `roster` as its team file's roster, and `FEATURE`.
-    fn rostered(roster: &str) -> Result<Team, Vec<(String, String, String)>> {
+    pub fn rostered(roster: &str) -> Result<Team, Vec<(String, String, String)>> {
         let team = format!("{TEAM}roster:\n{roster}");
         let loaded = load(&sources(&team, &[("workflows/feature.md", FEATURE)]));
         loaded.map_err(|faults| {
@@ -2784,8 +2783,14 @@ land: { by: dev, do: land }
         assert_eq!(keys("  dev: { run: [] }\n"), ["team.md: roster.dev.run"]);
         assert_eq!(keys("  dev: { cast: x }\n"), ["team.md: roster.dev.run"]);
         assert_eq!(keys("  dev: { run: pi }\n"), ["team.md: roster.dev.run"]);
-        assert_eq!(keys("  dev: { run: [{ harness: aider }] }\n"), ["team.md: roster.dev.run[0].harness"]);
-        assert_eq!(keys("  dev: { run: [{ model: opus }] }\n"), ["team.md: roster.dev.run[0].harness"]);
+        assert_eq!(
+            keys("  dev: { run: [{ harness: aider }] }\n"),
+            ["team.md: roster.dev.run[0].harness"]
+        );
+        assert_eq!(
+            keys("  dev: { run: [{ model: opus }] }\n"),
+            ["team.md: roster.dev.run[0].harness"]
+        );
         assert_eq!(
             keys("  dev: { run: [{ harness: pi, effort: high }] }\n"),
             ["team.md: roster.dev.run[0].effort"]
@@ -2794,7 +2799,10 @@ land: { by: dev, do: land }
             keys("  dev: { run: [{ harness: pi, model: a }, { harness: pi, model: a }] }\n"),
             ["team.md: roster.dev.run[1]"]
         );
-        assert_eq!(keys("  dev: { run: [{ harness: pi }], how: x }\n"), ["team.md: roster.dev.how"]);
+        assert_eq!(
+            keys("  dev: { run: [{ harness: pi }], how: x }\n"),
+            ["team.md: roster.dev.how"]
+        );
         let faults = load(&sources(&format!("{TEAM}roster: [dev]\n"), &[])).unwrap_err();
         assert_eq!(places(&faults), ["team.md: roster"]);
         let (_, _, problem) = &rostered("  boss: { run: [{ harness: pi }] }\n").unwrap_err()[0];
@@ -2811,8 +2819,7 @@ land: { by: dev, do: land }
         patrol: &str,
         roster: &str,
     ) -> Result<Team, Vec<Fault>> {
-        let team =
-            format!("{TEAM}precedents: {{ by: reviewer, do: rule, max_open: 4 }}\n{roster}");
+        let team = format!("{TEAM}precedents: {{ by: reviewer, do: rule, max_open: 4 }}\n{roster}");
         let mut sources = sources(&team, &[("workflows/feature.md", workflow)]);
         sources.patrols = vec![file("patrols/sweep.md", patrol)];
         for (role, limits) in [(DEV, dev), (REVIEWER, reviewer)] {

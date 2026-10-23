@@ -13,7 +13,30 @@ roles:
   research: ./roles/research
   safety: ./roles/safety
 precedents: { by: safety, do: record-precedent, max_open: 10 }
+roster:
+  fellow:
+    cast: Hard or wide work — a diagnosis across modules, a change many files feel — on fable; the rest on opus.
+    run:
+      - { harness: claude-code, model: opus, good_at: most diagnoses and treatments }
+      - { harness: claude-code, model: fable, good_at: hard or wide work }
+  attending:
+    cast: A plan is reviewed by another harness than wrote it; code on opus.
+    run:
+      - { harness: pi, model: openai-codex/gpt-5.5, good_at: a second view of a plan }
+      - { harness: claude-code, model: opus, good_at: reviewing code }
+  discharge-nurse:
+    run: [{ harness: claude-code, model: sonnet }]
+  triage-nurse:
+    run: [{ harness: claude-code, model: sonnet }]
+  infection-control:
+    run: [{ harness: claude-code, model: sonnet }]
+  research:
+    run: [{ harness: claude-code, model: opus }]
+  safety:
+    run: [{ harness: claude-code, model: opus }]
 ```
+
+The roster says what each role's workers may run, in order of preference; on a host its range is that, cut to what the host kit holds. An issue's casting — its `harness:` and `model:` labels, put on by the caster or a human — picks among it: a stage whose role's range holds the casting runs it, one whose range does not runs its range's first, and a range of one is run whatever the casting.
 
 | Role | What it does | Where |
 |---|---|---|

@@ -15,16 +15,18 @@ use std::process::{Command, Stdio};
 use common::{World, git, write};
 use serde_json::{Value, json};
 
-const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
-/// A workflow whose first stage is on Codex and whose second names no harness.
+/// A team whose `dev` runs Codex on one model, whose `auditor` runs Codex as
+/// its command is written and whose `reviewer` runs Claude Code.
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n  auditor: acme/auditor\n\
+roster:\n  dev: { run: [{ harness: codex, model: gpt-5.5 }] }\n  auditor: { run: [{ harness: codex }] }\n\
+\x20 reviewer: { run: [{ harness: claude-code }] }\n```\n";
+/// A workflow whose first stage is on Codex and whose second on Claude Code.
 const FEATURE: &str = "\
 ```yaml
 stages:
   - name: build
     by: dev
     do: implement
-    harness: codex
-    model: gpt-5.5
     on: { pass: review }
   - name: review
     by: reviewer
@@ -33,20 +35,18 @@ stages:
     on: { pass: done, reject: build }
 ```
 ";
-/// A workflow whose one stage reviews, on Codex: no model, and nothing written.
+/// A workflow whose one stage reviews, on Codex, and writes nothing.
 const AUDIT: &str = "\
 ```yaml
 stages:
   - name: look
-    by: reviewer
+    by: auditor
     do: review
-    harness: codex
     writes: false
     on: { pass: done }
 ```
 ";
-const SWEEP: &str =
-    "```yaml\nby: dev\ndo: implement\nharness: codex\nevery: 1h\nmax_open: 1\n```\n";
+const SWEEP: &str = "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 1\n```\n";
 const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
 
 /// A world whose repo is bound to a team of two roles and two workflows.
@@ -67,6 +67,7 @@ fn bound_with(team: &str) -> World {
     let world = World::new();
     world.hold_every_harness();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
+    world.kit_models("codex", &["gpt-5.5"]);
     world.repo(
         "acme/dev",
         &[
@@ -79,6 +80,10 @@ fn bound_with(team: &str) -> World {
     );
     world.repo(
         "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
+    world.repo(
+        "acme/auditor",
         &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
     );
     world.repo(
@@ -166,37 +171,25 @@ fn started(world: &World, dir: &Path) -> String {
     open[0]["command"].as_str().unwrap().to_string()
 }
 
-/// Each stage `check` reads, as "workflow/stage on harness", and the harness
-/// of the one patrol.
-fn harnesses(world: &World) -> (Vec<String>, Value) {
+/// Each role `check` reads, as "role on harness, …" of its range.
+fn ranges(world: &World) -> Vec<String> {
     let read = world.afk(&["check"]).ok();
-    let stages = read["workflows"].as_array().unwrap().iter().flat_map(|workflow| {
-        let name = workflow["name"].as_str().unwrap().to_string();
-        let stages = workflow["stages"].as_array().unwrap().clone();
-        stages.into_iter().map(move |stage| {
-            format!("{name}/{}", stage["name"].as_str().unwrap())
-                + " on "
-                + stage["harness"].as_str().unwrap()
-        })
+    let roles = read["roles"].as_array().unwrap().iter().map(|role| {
+        let range = role["range"].as_array().unwrap().iter();
+        let on: Vec<String> = range.map(|held| held["harness"].as_str().unwrap().into()).collect();
+        format!("{} on {}", role["name"].as_str().unwrap(), on.join(", "))
     });
-    let mut stages: Vec<String> = stages.collect();
-    stages.sort();
-    (stages, read["patrols"][0]["harness"].clone())
+    roles.collect()
 }
 
 #[test]
-fn a_stage_a_patrol_and_a_config_name_codex_and_codex_has_a_stock_worker_launch_command() {
+fn a_role_s_range_holds_codex_and_codex_has_a_stock_worker_launch_command() {
     let world = bound();
-    let (stages, patrol) = harnesses(&world);
-    assert_eq!(
-        stages,
-        ["audit/look on codex", "feature/build on codex", "feature/review on claude-code"]
-    );
-    assert_eq!(patrol, "codex");
+    assert_eq!(ranges(&world), ["dev on codex", "reviewer on claude-code", "auditor on codex"]);
     let afk = env!("CARGO_BIN_EXE_afkconvoy");
     let shown = world.command(afk, &world.clone).args(["show", "feature"]).output().unwrap();
     let shown = String::from_utf8(shown.stdout).unwrap();
-    assert!(shown.contains("build   dev: implement · harness codex · model gpt-5.5"), "{shown}");
+    assert!(shown.contains("  dev       codex gpt-5.5\n"), "{shown}");
 
     // Nobody said what starts a Codex worker: its stock command does, checked
     // by the start beside Claude Code's — each asked for its own flags.
@@ -217,11 +210,12 @@ fn a_stage_a_patrol_and_a_config_name_codex_and_codex_has_a_stock_worker_launch_
         "{line}"
     );
 
-    // A repo's config names it as its default: a stage that names none is on it.
+    // A repo's config names no harness: the one that does is told the line
+    // to delete.
     let world = bound();
     configure(&world, &CONFIG.replace("team: acme/team\n", "team: acme/team\nharness: codex\n"));
-    let (stages, _) = harnesses(&world);
-    assert_eq!(stages[2], "feature/review on codex");
+    let why = world.afk(&["check"]).error();
+    assert!(why.contains("delete the line `harness: codex`"), "{why}");
 }
 
 #[test]
@@ -248,7 +242,7 @@ fn a_command_that_does_not_take_what_the_fleet_adds_for_codex_starts_nothing() {
         assert!(why.contains(named), "{why}");
         assert!(why.contains("must end in Codex taking flags"), "{why}");
         assert!(why.contains("the worker launch command of the harness `codex`"), "{why}");
-        assert!(why.contains("the stage `look` of the workflow `audit`"), "{why}");
+        assert!(why.contains("the range of the role `auditor`"), "{why}");
     }
     assert!(world.worktrees().is_empty());
     let found = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json.to_string();
@@ -284,8 +278,7 @@ fn doctor_finds(world: &World) -> Vec<(String, String)> {
     of_codex.map(|finding| (text(&finding["what"]), text(&finding["fix"]))).collect()
 }
 
-const CALLED: &str = "called for by the stage `look` of the workflow `audit`, the stage `build` of \
-                      the workflow `feature`";
+const CALLED: &str = "called for by the range of the role `dev`, the range of the role `auditor`";
 
 #[test]
 fn a_host_without_codex_or_with_no_login_a_worker_can_use_is_refused_before_a_worker_is_started() {
@@ -463,15 +456,15 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     );
 
     // The next start follows what the user has by then: a login gone. The
-    // directory is there all the same, and a stage that names no model names
-    // none to Codex.
+    // directory is there all the same, and a role whose roster names no
+    // model runs its range's one: the host kit's for Codex.
     std::fs::remove_file(home.join(".codex/auth.json")).unwrap();
     world.issue(8, &["flow:audit"]);
     let ticked = did(&tick(&world, 1100).ok());
     assert!(ticked.contains(&"dispatch 8 done".to_string()), "{ticked:?}");
     assert_eq!(held(&kept), [] as [&str; 0], "a link to no login is left");
     let line = started(&world, &worktree(&world, 8));
-    assert!(line.ends_with(" --config skills.bundled.enabled=false"), "{line}");
+    assert!(line.ends_with(" --config skills.bundled.enabled=false --model 'gpt-5.5'"), "{line}");
 }
 
 /// What the stand-in Codex was told in `ran` as a developer's: the rules the
@@ -1148,15 +1141,15 @@ fn a_codex_worker_is_given_the_host_user_s_skills_and_rules_and_its_role_s_skill
 
 #[test]
 fn a_codex_worker_of_a_role_that_keeps_from_the_host_user_s_skills_and_rules_is_given_none() {
-    let own = "reviewer: { dir: acme/reviewer, host_user: false }";
-    let world = bound_with(&TEAM.replace("reviewer: acme/reviewer", own));
+    let own = "auditor: { dir: acme/auditor, host_user: false }";
+    let world = bound_with(&TEAM.replace("auditor: acme/auditor", own));
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:audit"]);
     let ticked = tick(&world, 1000).ok();
     let did = did(&ticked);
     assert!(did.contains(&"dispatch 7 done".to_string()), "{ticked}");
     assert!(did.contains(&"dispatch 8 done".to_string()), "{ticked}");
-    // `dev` takes the team's, and is given them; `reviewer` says otherwise.
+    // `dev` takes the team's, and is given them; `auditor` says otherwise.
     let given = |issue: u64| {
         let line = started(&world, &worktree(&world, issue));
         let (with, alone) = (
@@ -1167,5 +1160,5 @@ fn a_codex_worker_of_a_role_that_keeps_from_the_host_user_s_skills_and_rules_is_
         line.contains(&with)
     };
     assert!(given(7), "dev is started on Codex with the host user's");
-    assert!(!given(8), "reviewer is started on Codex with none of the host user's");
+    assert!(!given(8), "auditor is started on Codex with none of the host user's");
 }

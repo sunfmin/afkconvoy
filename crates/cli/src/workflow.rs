@@ -2,8 +2,8 @@
 //! a list of verdicts with no worker started. Both only put into words what
 //! the core decides (`afkconvoy_core::graph`, `afkconvoy_core::position`).
 
-use afkconvoy_core::graph;
 use afkconvoy_core::casting;
+use afkconvoy_core::graph;
 use afkconvoy_core::position::{ConsultOn, Declared, Place, Position};
 use afkconvoy_core::stock;
 use afkconvoy_core::team::{Consult, HUMAN, Team, Workflow};
@@ -35,7 +35,7 @@ pub fn show(loaded: &Loaded, name: Option<&str>) -> Result<String> {
     if drawn.is_empty() {
         bail!("the team {} has no workflow to draw", loaded.name);
     }
-    Ok(drawn.join("\n"))
+    Ok(drawn.join("\n") + "\n" + &graph::roster(&loaded.team))
 }
 
 /// Where an issue of the workflow named `name` is after each of `declared`,

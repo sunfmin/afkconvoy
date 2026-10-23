@@ -173,7 +173,10 @@ the host kit with `afkconvoy kit`, or allow it one the host kit holds in the tea
         }
         for held in &range {
             if let Some(problem) = crate::team::unlimited(role, held.harness) {
-                faults.push(format!("{problem} — its range on this host holds `{}`: {sides}", held.harness.key()));
+                faults.push(format!(
+                    "{problem} — its range on this host holds `{}`: {sides}",
+                    held.harness.key()
+                ));
             }
         }
     }
@@ -655,7 +658,10 @@ mod tests {
         assert_eq!(held(7, &["model:a/b"], None, 1000), ForCaster::Dispatch);
         let alone = [Held { harness: Harness::Pi, models: vec!["a/b".into()] }];
         assert_eq!(for_caster(7, &[], choice(&alone), None, None, 0), ForCaster::Dispatch);
-        assert_eq!(for_caster(7, &[], choice(&range), Some(Harness::Pi), None, 0), ForCaster::Dispatch);
+        assert_eq!(
+            for_caster(7, &[], choice(&range), Some(Harness::Pi), None, 0),
+            ForCaster::Dispatch
+        );
     }
 
     #[test]
@@ -761,7 +767,10 @@ mod tests {
         assert_eq!(cast(&["harness:pi"]), ran(Harness::Pi, None, Why::Casting));
         assert_eq!(cast(&[]), ran(Harness::Pi, Some("a/b"), Why::RangeFirst));
         assert_eq!(cast(&["harness:dsh"]), ran(Harness::Pi, Some("a/b"), Why::Outside));
-        assert_eq!(cast(&["harness:codex", "model:a/b"]), ran(Harness::Pi, Some("a/b"), Why::Outside));
+        assert_eq!(
+            cast(&["harness:codex", "model:a/b"]),
+            ran(Harness::Pi, Some("a/b"), Why::Outside)
+        );
         assert!(cast(&["harness:nope"]).unwrap_err().contains("is no harness"));
         // A range of one is run whatever the casting.
         let one = [Held { harness: Harness::Codex, models: vec!["gpt-x".into()] }];
@@ -780,7 +789,8 @@ mod tests {
     #[test]
     fn a_casting_no_stage_s_range_holds_is_said_with_each_range() {
         let one = vec![Held { harness: Harness::Codex, models: vec!["gpt-x".into()] }];
-        let ranges = vec![("plan (dev)".to_string(), one), ("review (reviewer)".to_string(), range())];
+        let ranges =
+            vec![("plan (dev)".to_string(), one), ("review (reviewer)".to_string(), range())];
         let none = |names: &[&str]| held_by_none(&labels(names), &ranges, None);
         assert_eq!(none(&[]), None);
         assert_eq!(none(&["harness:codex", "model:gpt-x"]), None);

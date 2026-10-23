@@ -13,8 +13,8 @@ use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::stock;
-use afkconvoy_core::team::{Consult, Role, Team, Workflow};
 use afkconvoy_core::stopped::standing_verdict;
+use afkconvoy_core::team::{Consult, Role, Team, Workflow};
 use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
@@ -474,7 +474,11 @@ impl Fleet {
 /// The role of the worker due on an issue at `position` in `workflow`, one
 /// of `team`'s: the stage's, its consult's or its landing's. `None` of the
 /// stock consult, and where no worker is due.
-pub fn due_role<'t>(team: &'t Team, workflow: &'t Workflow, position: Position<'t>) -> Option<&'t Role> {
+pub fn due_role<'t>(
+    team: &'t Team,
+    workflow: &'t Workflow,
+    position: Position<'t>,
+) -> Option<&'t Role> {
     let work = match position {
         Position::Landing => workflow.land.as_ref(),
         Position::Consult(_, Consult::Stock, _) => None,
