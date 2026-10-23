@@ -7,11 +7,11 @@
 use std::time::Duration;
 
 use afkconvoy_core::casting::{
-    CASTER_WORKTREE, Caster, Casting, Offered, ToCast, caster_prompt, choice,
-    to_cast as is_to_cast, uncast,
+    CASTER_WORKTREE, Caster, Casting, Offered, Paused, ToCast, caster_comment, caster_prompt,
+    choice, paused_of, to_cast as is_to_cast, to_recast, uncast, without_casting,
 };
 use afkconvoy_core::config::Config;
-use afkconvoy_core::plan::Issue;
+use afkconvoy_core::worker::recorded_branches;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Context, Result, bail};
@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 
 use crate::dispatch::Agent;
 use crate::fleet::Fleet;
+use crate::gh::{Comment, OpenIssues};
 use crate::git::Repo;
 use crate::kit::Kit;
 use crate::orca::{Source, Worktree};
@@ -28,15 +29,30 @@ use crate::orca::{Source, Worktree};
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(540);
 
 /// The open issues of an unbound repo a caster started now is given, lowest
-/// number first (`casting::to_cast`).
-pub fn to_cast(config: &Config, issues: &[Issue]) -> Vec<u64> {
-    let mut numbers: Vec<u64> = issues
+/// number first: those with no casting (`casting::to_cast`), and those to be
+/// cast again because a caster cast them to a harness now `paused` (`recast`).
+pub fn to_cast(config: &Config, open: &OpenIssues, paused: &[Paused]) -> Vec<u64> {
+    let (ready, epics) = (&config.ready_label, &config.epic_labels);
+    let mut numbers: Vec<u64> = open
+        .rows
         .iter()
-        .filter(|issue| is_to_cast(&issue.labels, &config.ready_label, &config.epic_labels))
+        .filter(|issue| {
+            is_to_cast(&issue.labels, ready, epics)
+                || (is_to_cast(&without_casting(&issue.labels), ready, epics)
+                    && recast(&issue.labels, open.comments(issue.number), paused))
+        })
         .map(|issue| issue.number)
         .collect();
     numbers.sort_unstable();
     numbers
+}
+
+/// Whether an issue labelled `labels`, with `comments`, is to be cast again:
+/// a caster cast it to a harness now `paused`, and no worker has started on
+/// it — none has recorded its branch on it (`casting::to_recast`).
+pub fn recast(labels: &[String], comments: &[Comment], paused: &[Paused]) -> bool {
+    let bodies = || comments.iter().map(|comment| comment.body.as_str());
+    to_recast(labels, bodies(), !recorded_branches(bodies()).is_empty(), paused)
 }
 
 /// The last caster this host started for the repo, where it can be read: a
@@ -99,17 +115,15 @@ fn read_castings(answer: &str) -> Vec<Casting> {
     read
 }
 
-/// What a caster puts on one issue as its comment.
-fn comment(casting: &Casting, labels: &[String]) -> String {
-    let named: Vec<String> = labels.iter().map(|label| format!("`{label}`")).collect();
-    format!("Cast {}: {}", named.join(" and "), casting.why.trim())
-}
 
 /// `afkconvoy cast`: sends the host kit's first, in one prompt, every issue
 /// of this unbound repo that is to be cast, the host kit's harnesses and
 /// models in order with what each is good at — then puts on each issue the
 /// casting it answered, where the host kit holds it, with a comment saying
-/// why. An issue that was cast in the meantime is left as it is.
+/// why. An issue that was cast in the meantime is left as it is. The host
+/// kit is the one this host can start now, without its paused harnesses; an
+/// issue a caster cast to one of them is cast again, its casting taken off,
+/// and its comment says why.
 ///
 ///   {"cast": [{issue, harness, model, why}], "uncast": [{issue, why}]}
 pub fn cast(now: u64) -> Result<Value> {
@@ -117,13 +131,13 @@ pub fn cast(now: u64) -> Result<Value> {
     if fleet.config.bound.is_some() {
         bail!("a bound repo's issues are cast within its roster, which no caster reads yet");
     }
-    let kit = crate::kit::load()?;
+    let (kit, paused) = crate::kit::running()?;
     let range = kit.range();
     if !choice(&range) {
         return Ok(json!({"cast": [], "uncast": [],
             "said": "the host kit holds one harness and model: there is no choice to make"}));
     }
-    let numbers = to_cast(&fleet.config, &open.issues.rows);
+    let numbers = to_cast(&fleet.config, &open.issues, &paused);
     if numbers.is_empty() {
         return Ok(json!({"cast": [], "uncast": [], "said": "no issue is to be cast"}));
     }
@@ -163,15 +177,31 @@ pub fn cast(now: u64) -> Result<Value> {
                 continue;
             }
         };
-        // A human may have cast it while the model was asked.
-        if !uncast(&fleet.gh.issue(number)?.labels) {
+        // A human may have cast it while the model was asked. One cast to a
+        // paused harness is cast again: what was read of it said so.
+        let now_labels = fleet.gh.issue(number)?.labels;
+        let again = paused_of(&now_labels, &paused);
+        if !uncast(&now_labels) && again.is_none() {
             left.push(json!({"issue": number, "why": "it was cast meanwhile"}));
             continue;
+        }
+        for label in now_labels.iter().filter(|label| !uncast(std::slice::from_ref(*label))) {
+            fleet.gh.remove_label(number, label)?;
         }
         for label in &labels {
             fleet.gh.add_label(number, label)?;
         }
-        fleet.gh.comment(number, &comment(casting, &labels))?;
+        let mut said = caster_comment(&labels, &casting.why);
+        if let Some(pause) = again {
+            let was = now_labels.iter().filter(|label| !uncast(std::slice::from_ref(*label)));
+            let was: Vec<String> = was.map(|label| format!("`{label}`")).collect();
+            said.push_str(&format!(
+                "\n\nCast again, in place of {}: {}",
+                was.join(" and "),
+                crate::paused::said(pause, now)
+            ));
+        }
+        fleet.gh.comment(number, &said)?;
         cast.push(json!({"issue": number, "harness": casting.harness,
             "model": casting.model, "why": casting.why}));
     }

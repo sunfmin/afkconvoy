@@ -138,6 +138,7 @@ kinds! {
     NoRun: Critical, "no `afkconvoy run` is alive";
     StepFailed: Critical, "failed in each of the last";
     HarnessDown: Critical, "harness is down";
+    HarnessPaused: Warning, "is paused on this host";
     TeamUnread: Critical, "the team this repo names cannot be read";
     TeamFaulty: Critical, "has a fault at its head";
     LockUnworked: Critical, "stands and cannot be worked";
@@ -1238,7 +1239,7 @@ fn read_unclaimed(fleet: &Fleet) -> Vec<Unclaimed> {
         .collect()
 }
 
-fn host_json(host: &Host) -> Value {
+fn host_json(host: &Host, now: u64) -> Value {
     let tool = |(tool, found): &(Tool, Found)| {
         let state = match found {
             Found::Ready => "ready",
@@ -1252,7 +1253,7 @@ fn host_json(host: &Host) -> Value {
     };
     json!({
         "tools": host.looked_for().map(|(looked, _)| tool(looked)).collect::<Vec<_>>(),
-        "host_kit": crate::kit::show(),
+        "host_kit": crate::kit::show(now),
         "worker_commands": host.launches.iter().map(|Launch { checked }| json!({
             // An unbound repo knows of no harness: nothing calls for one.
             "harness": (!checked.callers.is_empty()).then_some(checked.harness),
@@ -1389,6 +1390,7 @@ pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value
     };
     let mut found = findings(&seen);
     found.extend(crate::harness_down::findings(&repo, run.instance.as_deref())?);
+    found.extend(crate::paused::findings(now));
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
@@ -1398,7 +1400,7 @@ pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value
         ),
         Err(_) => (vec![], Value::Null, Value::Null),
     };
-    let mut host = host_json(&seen_host);
+    let mut host = host_json(&seen_host, now);
     host["worker_no_proxy"] = launches.proxy_json();
     host["admission"] = match Admission::read(&repo.dir) {
         Ok(admission) => admission.json(),
@@ -1677,7 +1679,7 @@ mod tests {
                 .ends_with("called for by the stage `build` of the workflow `feature`")
         );
         assert_eq!(found[0].severity, Severity::Critical);
-        assert_eq!(host_json(&missing)["tools"][3], json!({"name": "pi", "state": "missing"}));
+        assert_eq!(host_json(&missing, 0)["tools"][3], json!({"name": "pi", "state": "missing"}));
 
         let mut logged_out = pi(Found::LoggedOut);
         logged_out.launches[1].checked.fault = None;
