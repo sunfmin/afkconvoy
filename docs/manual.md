@@ -288,8 +288,6 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
   that runs it on the other is a fault. A role with no limits is right for every
   harness. That its limits for two harnesses refuse alike is the role's to see to.
 - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
-
-Every term: `afkconvoy help glossary`.
 ````
 
 
