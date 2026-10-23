@@ -28,6 +28,7 @@ pub mod acting;
 pub mod admission;
 pub mod advance;
 pub mod board;
+pub mod caster;
 pub mod claims;
 pub mod config;
 pub mod copies;
@@ -137,6 +138,9 @@ enum Command {
     /// Inspect and edit this host's worker launch commands
     #[command(after_long_help = include_str!("help/kit.txt"))]
     Kit,
+    /// Cast every uncast issue that has a choice to make, in one session of the host kit's first
+    #[command(after_long_help = include_str!("help/cast.txt"))]
+    Cast,
     /// Print the repo's config as JSON, defaults filled
     #[command(after_long_help = include_str!("help/config.txt"))]
     Config {
@@ -748,8 +752,9 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 24] = [
+const ACTS: [&str; 25] = [
     "dispatch",
+    "cast",
     "close",
     "escalate",
     "park",
@@ -1041,6 +1046,7 @@ impl Command {
             },
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Wake => Acting::new("wake").on_own_issue(),
+            Command::Cast => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             Command::Kit
             | Command::Config { .. }
@@ -1067,6 +1073,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
         Command::Kit => kit::configure(),
+        Command::Cast => caster::cast(now),
         Command::Config { file } => {
             let file = match file {
                 Some(file) => file,

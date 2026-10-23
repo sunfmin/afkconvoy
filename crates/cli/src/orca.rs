@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use afkconvoy_core::casting::CASTER_WORKTREE;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::inspection::{self, Finding, Kind};
@@ -31,6 +32,9 @@ pub const TMP_DIR: &str = ".afkconvoy-tmp";
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
 /// The train's tip its worker was last told about, and when, beside the brief.
 const TOLD_FILE: &str = "convoy-train-told";
+/// When the caster here was started (epoch seconds), and the issues it was
+/// given, beside the brief.
+const CASTER_FILE: &str = "convoy-caster";
 /// When the worker here was nudged (epoch seconds), beside the brief.
 const NUDGE_FILE: &str = "convoy-nudged";
 /// When the worker here was first seen waiting on its own background work
@@ -206,7 +210,7 @@ pub struct OnHost {
     /// The main checkout of its repo, where orca says one.
     pub repo: Option<PathBuf>,
     pub issue: Option<u64>,
-    /// The landing train's, or an inspection's: the fleet's own.
+    /// The landing train's, the caster's, or an inspection's: the fleet's own.
     pub fleets: bool,
     /// A worker holds it: a terminal of it is live.
     pub held: bool,
@@ -234,6 +238,7 @@ fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
             });
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
             let fleets = is_worktree_named(name, TRAIN_WORKTREE)
+                || is_worktree_named(name, CASTER_WORKTREE)
                 || is_worktree_named(name, inspection::CHECKOUT);
             Some(OnHost { issue: row["linkedIssue"].as_u64(), path, repo, fleets, held })
         })
@@ -369,11 +374,13 @@ impl Worktree {
         Ok(on_host(&repos, &listed, &ps))
     }
 
-    /// Whether this is the landing train's worktree, or an inspection's: the
+    /// Whether this is the landing train's worktree, the caster's or an inspection's: the
     /// fleet's own, and no worker's.
     fn is_fleets(&self) -> bool {
         let name = self.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
-        is_worktree_named(name, TRAIN_WORKTREE) || is_worktree_named(name, inspection::CHECKOUT)
+        is_worktree_named(name, TRAIN_WORKTREE)
+            || is_worktree_named(name, CASTER_WORKTREE)
+            || is_worktree_named(name, inspection::CHECKOUT)
     }
 
     /// The checkout the command runs in, as a worker's worktree.
@@ -498,6 +505,22 @@ impl Worktree {
         self.forget(NUDGE_FILE)?;
         let file = self.note(TOLD_FILE)?;
         std::fs::write(&file, format!("{tip} {at}"))
+            .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// When the caster here was started, and the issues it was given.
+    pub fn caster(&self) -> Result<Option<(u64, Vec<u64>)>> {
+        let kept = std::fs::read_to_string(self.note(CASTER_FILE)?).unwrap_or_default();
+        let mut words = kept.split_whitespace().map(str::parse::<u64>);
+        let Some(Ok(since)) = words.next() else { return Ok(None) };
+        Ok(Some((since, words.filter_map(Result::ok).collect())))
+    }
+
+    /// Records that the caster here was started at `since`, given `given`.
+    pub fn record_caster(&self, since: u64, given: &[u64]) -> Result<()> {
+        let file = self.note(CASTER_FILE)?;
+        let numbers: Vec<String> = given.iter().map(u64::to_string).collect();
+        std::fs::write(&file, format!("{since} {}", numbers.join(" ")))
             .with_context(|| format!("cannot write {}", file.display()))
     }
 

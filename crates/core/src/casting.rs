@@ -49,6 +49,8 @@ pub enum Why {
     First,
     /// A switch on this host chose the harness, whatever the casting.
     Switch,
+    /// The issue was a caster's to cast, and is not: the range's first.
+    Uncast,
 }
 
 impl Why {
@@ -58,8 +60,188 @@ impl Why {
             Why::Casting => "its casting labels",
             Why::First => "no casting: the host kit's first",
             Why::Switch => "this host's switch, over any casting",
+            Why::Uncast => "the caster did not cast it in ten minutes: the host kit's first",
         }
     }
+}
+
+/// How long the issues a caster is to cast are held back for it, from its
+/// start: after that they are dispatched uncast.
+pub const CASTER_SECONDS: u64 = 600;
+
+/// Whether `range` leaves a choice to make: it holds more than one harness
+/// and model, a harness held with no model being one.
+pub fn choice(range: &[Held]) -> bool {
+    let options: usize = range.iter().map(|held| held.models.len().max(1)).sum();
+    options > 1
+}
+
+/// Whether `labels` name no casting: no `harness:` label and no `model:`
+/// one. An issue with either is a human's to change, never a caster's.
+pub fn uncast(labels: &[String]) -> bool {
+    !labels.iter().any(|label| label.starts_with(HARNESS_LABEL) || label.starts_with(MODEL_LABEL))
+}
+
+/// The last caster started for a repo on this host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Caster {
+    /// When it was started, in epoch seconds.
+    pub since: u64,
+    /// The issues it was given to cast.
+    pub given: Vec<u64>,
+    /// Its terminal is still live.
+    pub live: bool,
+}
+
+impl Caster {
+    /// Whether it still holds back the issues it is to cast: live, and
+    /// started less than `CASTER_SECONDS` ago. No second one starts while it
+    /// does.
+    pub fn running(&self, now: u64) -> bool {
+        self.live && now.saturating_sub(self.since) < CASTER_SECONDS
+    }
+}
+
+/// An unbound repo's caster as a tick sees it, while one runs or is due.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Standing {
+    /// When the caster that runs was started; `None`: none runs.
+    pub running_since: Option<u64>,
+    /// A caster is to be started: the pass starts one.
+    pub due: bool,
+    /// The frontier's issues held back for it, lowest number first.
+    pub held: Vec<u64>,
+    /// Every issue of the repo a caster started now is given, lowest number
+    /// first: open, with the ready label, no epic label and no casting.
+    pub to_cast: Vec<u64>,
+}
+
+/// Why a frontier issue is not dispatched while it waits for the caster.
+pub const HELD_FOR_CASTER: &str =
+    "held for the caster: dispatched once it is cast, or uncast after ten minutes";
+
+/// The name a caster's worktree is created under — one per repo on a
+/// machine — and so, with a `-<k>` when the name was taken, the name of its
+/// directory.
+pub const CASTER_WORKTREE: &str = "convoy-caster";
+
+/// Whether an unbound repo's issue labelled `labels` is a caster's to cast,
+/// given a choice to make: it carries the `ready` label, none of `epics`,
+/// and no casting.
+pub fn to_cast(labels: &[String], ready: &str, epics: &[String]) -> bool {
+    labels.iter().any(|label| label == ready)
+        && !labels.iter().any(|label| epics.contains(label))
+        && uncast(labels)
+}
+
+/// What a tick does with an issue on the frontier, for the caster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForCaster {
+    /// Nothing: it is dispatched as its casting says.
+    Dispatch,
+    /// It is held back while the caster runs.
+    Wait,
+    /// It is held back, and a caster is to be started.
+    Due,
+    /// The caster had it and did not cast it: it is dispatched uncast.
+    Late,
+}
+
+/// What an issue labelled `labels` on the frontier waits for, within `range`,
+/// under the harness a switch `chosen`, with `caster` the last one started,
+/// `now`. An issue that has a casting, a range with no choice to make and a
+/// switch, which chooses whatever the casting, leave nothing to cast.
+pub fn for_caster(
+    number: u64,
+    labels: &[String],
+    range: &[Held],
+    chosen: Option<Harness>,
+    caster: Option<&Caster>,
+    now: u64,
+) -> ForCaster {
+    if chosen.is_some() || !uncast(labels) || !choice(range) {
+        return ForCaster::Dispatch;
+    }
+    match caster {
+        Some(caster) if caster.running(now) => ForCaster::Wait,
+        Some(caster) if caster.given.contains(&number) => ForCaster::Late,
+        _ => ForCaster::Due,
+    }
+}
+
+/// What a caster puts on one issue: its `harness:` label, and its `model:`
+/// one where it names a model, with why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Casting {
+    pub issue: u64,
+    pub harness: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub why: String,
+}
+
+impl Casting {
+    /// Its labels, where `range` holds what it names; an error says what it
+    /// does not.
+    pub fn labels(&self, range: &[Held]) -> Result<Vec<String>, String> {
+        let mut labels = vec![format!("{HARNESS_LABEL}{}", self.harness)];
+        labels.extend(self.model.iter().map(|model| format!("{MODEL_LABEL}{model}")));
+        cast(&labels, range, None)?;
+        if self.why.trim().is_empty() {
+            return Err("it says nothing of why".to_string());
+        }
+        Ok(labels)
+    }
+}
+
+/// One issue a caster is to cast, as its prompt gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToCast {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+}
+
+/// One model of a range as a caster's prompt gives it, with what the host
+/// kit says it is good at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offered {
+    pub harness: Harness,
+    pub model: Option<String>,
+    pub good_at: Option<String>,
+}
+
+/// How much of an issue's body a caster's prompt gives: the prompt is one
+/// argument of a command line.
+const BODY_CHARS: usize = 3000;
+
+/// The prompt a caster's model is sent: every issue in `issues`, what
+/// `offered` holds in order of preference, and the one JSON line a casting
+/// it is to answer with.
+pub fn caster_prompt(issues: &[ToCast], offered: &[Offered]) -> String {
+    let mut prompt = String::from(
+        "You are the caster of a fleet of coding agents. For each GitHub issue below, choose \
+         the harness and model whose worker suits the work best: how hard the work is and what \
+         kind it is. Choose only among those listed, which are in order of preference: prefer \
+         the earlier where the work does not call for another.\n\nHarnesses and models:\n",
+    );
+    for each in offered {
+        let model = each.model.as_deref().map_or(String::new(), |model| format!(" {model}"));
+        let good = each.good_at.as_deref().map_or(String::new(), |good| format!(": {good}"));
+        prompt.push_str(&format!("- {}{model}{good}\n", each.harness.key()));
+    }
+    prompt.push_str("\nIssues:\n");
+    for issue in issues {
+        let body: String = issue.body.chars().take(BODY_CHARS).collect();
+        let cut = if body.len() < issue.body.len() { " […]" } else { "" };
+        prompt.push_str(&format!("\n## #{} {}\n{}{cut}\n", issue.number, issue.title, body.trim()));
+    }
+    prompt.push_str(
+        "\nAnswer with one line for each issue and nothing else, each one JSON object: \
+         {\"issue\": <number>, \"harness\": \"<harness>\", \"model\": \"<model>\" or null where \
+         the harness is listed with none, \"why\": \"<one or two sentences>\"}\n",
+    );
+    prompt
 }
 
 /// The casting `labels` name: a harness, and a model of it. `None` of an
@@ -239,5 +421,90 @@ mod tests {
         // A casting the host kit does not hold is no refusal under a switch.
         assert_eq!(cast(&["harness:dsh"], Harness::Pi), ran(Harness::Pi, Some("a/b"), Why::Switch));
         assert_eq!(cast(&[], Harness::Codex), ran(Harness::Codex, None, Why::Switch));
+    }
+
+    #[test]
+    fn a_range_of_more_than_one_harness_and_model_leaves_a_choice_to_make() {
+        assert!(choice(&range()));
+        let one = |models: &[&str]| {
+            let models = models.iter().map(|model| model.to_string()).collect();
+            vec![Held { harness: Harness::Pi, models }]
+        };
+        assert!(!choice(&one(&["a/b"])));
+        assert!(!choice(&one(&[])), "a harness on no model is one");
+        assert!(choice(&one(&["a/b", "c/d"])));
+        assert!(!choice(&[]));
+    }
+
+    #[test]
+    fn an_uncast_issue_waits_for_the_caster_for_ten_minutes_from_its_start() {
+        let range = range();
+        let given = Caster { since: 1000, given: vec![7], live: true };
+        let held = |number, names: &[&str], caster: Option<&Caster>, now| {
+            for_caster(number, &labels(names), &range, None, caster, now)
+        };
+        assert_eq!(held(7, &["bug"], None, 1000), ForCaster::Due);
+        assert_eq!(held(7, &["bug"], Some(&given), 1599), ForCaster::Wait);
+        // One it was not given waits too: no second starts while it runs.
+        assert_eq!(held(8, &[], Some(&given), 1599), ForCaster::Wait);
+        assert_eq!(held(7, &[], Some(&given), 1600), ForCaster::Late);
+        assert_eq!(held(8, &[], Some(&given), 1600), ForCaster::Due);
+        // A caster that ended had its chance at what it was given.
+        let ended = Caster { live: false, ..given.clone() };
+        assert_eq!(held(7, &[], Some(&ended), 1001), ForCaster::Late);
+        assert_eq!(held(8, &[], Some(&ended), 1001), ForCaster::Due);
+        // A casting a human put on, no choice and a switch hold nothing back.
+        assert_eq!(held(7, &["harness:pi"], None, 1000), ForCaster::Dispatch);
+        assert_eq!(held(7, &["model:a/b"], None, 1000), ForCaster::Dispatch);
+        let alone = [Held { harness: Harness::Pi, models: vec!["a/b".into()] }];
+        assert_eq!(for_caster(7, &[], &alone, None, None, 0), ForCaster::Dispatch);
+        assert_eq!(for_caster(7, &[], &range, Some(Harness::Pi), None, 0), ForCaster::Dispatch);
+    }
+
+    #[test]
+    fn a_caster_casts_open_ready_issues_with_no_casting_and_no_epic_label() {
+        let epics = ["epic".to_string()];
+        let to = |names: &[&str]| to_cast(&labels(names), "ready", &epics);
+        assert!(to(&["ready", "bug"]));
+        assert!(!to(&["bug"]));
+        assert!(!to(&["ready", "epic"]));
+        assert!(!to(&["ready", "harness:pi"]));
+    }
+
+    #[test]
+    fn a_casting_is_put_on_only_within_the_range_and_with_why() {
+        let casting = |harness: &str, model: Option<&str>, why: &str| Casting {
+            issue: 7,
+            harness: harness.to_string(),
+            model: model.map(str::to_string),
+            why: why.to_string(),
+        };
+        let range = range();
+        assert_eq!(
+            casting("pi", Some("c/d"), "small").labels(&range),
+            Ok(labels(&["harness:pi", "model:c/d"]))
+        );
+        assert_eq!(casting("codex", None, "big").labels(&range), Ok(labels(&["harness:codex"])));
+        assert!(casting("dsh", None, "x").labels(&range).unwrap_err().contains("does not hold"));
+        assert!(casting("pi", Some("x/y"), "x").labels(&range).is_err());
+        assert!(casting("pi", None, " ").labels(&range).unwrap_err().contains("why"));
+    }
+
+    #[test]
+    fn a_caster_s_prompt_gives_each_issue_and_each_harness_and_model_in_order() {
+        let issues = [ToCast { number: 7, title: "Fix it".into(), body: "x".repeat(4000) }];
+        let offered = [
+            Offered {
+                harness: Harness::Pi,
+                model: Some("a/b".into()),
+                good_at: Some("speed".into()),
+            },
+            Offered { harness: Harness::Codex, model: None, good_at: None },
+        ];
+        let prompt = caster_prompt(&issues, &offered);
+        assert!(prompt.contains("- pi a/b: speed\n- codex\n"), "{prompt}");
+        assert!(prompt.contains("## #7 Fix it\n"), "{prompt}");
+        assert!(prompt.contains(" […]"), "a long body is cut");
+        assert!(prompt.len() < 4000, "{}", prompt.len());
     }
 }

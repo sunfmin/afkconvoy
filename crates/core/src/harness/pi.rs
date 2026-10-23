@@ -202,21 +202,24 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
 /// The line that sends `model` of pi's the one-line `prompt` through
 /// `command`, under the user directory `kept` a worker of it is given, and
 /// prints its answer.
-pub(super) fn prompt_question(command: &str, kept: &str, model: &str, prompt: &str) -> String {
-    Line::new()
+pub(super) fn prompt_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    let line = Line::new()
         .fixed("export ")
         .fixed(USER_DIR)
         .fixed("=")
         .word(kept)
         .fixed(" && ")
-        .launch(command)
-        .fixed(" ")
-        .fixed(MODEL)
-        .fixed(" ")
-        .word(model)
-        .fixed(" --print ")
-        .word(prompt)
-        .done()
+        .launch(command);
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(" --print ").word(prompt).done()
 }
 
 /// The models pi lists in `answer`, what it printed for `models_question`,

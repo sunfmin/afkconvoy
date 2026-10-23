@@ -1,0 +1,51 @@
+WHEN TO RUN IT
+
+  Run `afkconvoy cast` in an unbound repo to cast its issues now, at the
+  terminal, rather than wait for a tick to start a caster. It casts the same
+  issues a caster does, the same way.
+
+WHO RUNS IT
+
+  A human, in the repo's checkout. A tick runs it too: the caster it starts is
+  this command, in an orca terminal of the repo's `convoy-caster` worktree.
+
+WHAT IT READS AND WRITES
+
+  An issue is cast by its `harness:` and `model:` labels. It is a caster's to
+  cast while it is open and carries the ready label, no epic label, and no
+  `harness:` or `model:` label — and while the host kit leaves a choice to
+  make: more than one harness and model, a harness held with no model being
+  one.
+
+  1. It reads every such issue, its title and its body.
+  2. It sends them, in one prompt, to the host kit's first — its first harness
+     on its first model, in the login shell a worker gets — with the host
+     kit's harnesses and models in order, each with what the host kit says it
+     is good at (`good_at`, beside the model in the host kit's file), and
+     waits up to nine minutes for its answer: one line a casting.
+  3. On each issue it was answered for, where the host kit holds the harness
+     and the model named, it puts the `harness:` label and, with a model, the
+     `model:` label, and comments saying why. An issue cast meanwhile is left
+     as it is.
+
+  A casting a human put on is never changed: an issue with a `harness:` or a
+  `model:` label is never given to the caster.
+
+WHAT IT ANSWERS
+
+  {cast, uncast}: cast lists {issue, harness, model, why} of each issue it
+  labelled, uncast {issue, why} of each it did not. With no choice to make or
+  no issue to cast, both are empty and `said` says why. Errors: a bound repo;
+  a host kit that cannot be read; a first harness that can be sent no prompt
+  but in a worker's terminal (DSH); a model that did not answer.
+
+WHAT TRIPS YOU UP
+
+  A tick holds an issue that waits for a caster back while one runs, for ten
+  minutes at most from its start, and starts no second one meanwhile; `plan`
+  shows it as `caster` and the issue as "held for the caster". An issue the
+  caster had and did not cast is dispatched uncast, on the host kit's first,
+  and `plan` and the panel say so. A switch chooses whatever the casting:
+  while one stands, nothing is held for a caster.
+  Casting sends the host kit's first a real prompt: it spends some of its
+  login.

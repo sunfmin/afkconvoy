@@ -251,15 +251,16 @@ impl Harness {
         }
     }
 
-    /// The shell line that sends `model` the one-line `prompt` through the
-    /// worker launch command `command`, with what the host keeps for it in
-    /// `kept`, and prints the model's answer. `None`: the fleet has no way
-    /// to send it one but a worker's terminal.
+    /// The shell line that sends `model` the `prompt` through the worker
+    /// launch command `command`, with what the host keeps for it in `kept`,
+    /// and prints the model's answer: with no model, the one the command
+    /// starts on. `None`: the fleet has no way to send it one but a worker's
+    /// terminal.
     pub fn prompt_question(
         self,
         command: &str,
         kept: &str,
-        model: &str,
+        model: Option<&str>,
         prompt: &str,
     ) -> Option<String> {
         match self {
@@ -448,7 +449,8 @@ mod tests {
 
     #[test]
     fn a_model_is_probed_through_the_command_with_one_line_and_nothing_else() {
-        let asked = |harness: Harness| harness.prompt_question("agent -x", "/k", "m 1", "Say OK.");
+        let asked =
+            |harness: Harness| harness.prompt_question("agent -x", "/k", Some("m 1"), "Say OK.");
         assert_eq!(asked(Harness::ClaudeCode).unwrap(), "agent -x --model 'm 1' --print 'Say OK.'");
         assert_eq!(
             asked(Harness::Pi).unwrap(),

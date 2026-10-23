@@ -45,6 +45,8 @@ fn blocked() -> World {
     let world = World::new();
     world.issue(7, &["ready-for-agent", "bug"]);
     tick(&world, 700);
+    // Every harness is held once the worker started: no caster held 7 back.
+    world.hold_every_harness();
     let dir = worktree(&world, 7);
     commit(&dir, "seven.txt", "7\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
@@ -129,6 +131,7 @@ fn all_moves_every_claim_of_the_instance_and_a_claim_it_does_not_hold_is_refused
     world.issue(7, &["ready-for-agent", "bug"]);
     world.issue(8, &["ready-for-agent", "bug"]);
     tick(&world, 700);
+    world.hold_every_harness();
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
     // one worker is already gone: it is started again all the same
     world.with_orca(|orca| {

@@ -266,7 +266,7 @@ pub fn probe(harness: Harness, command: &str, model: &str) -> crate::kit::Answer
     use crate::kit::Answer;
     let Ok(kept) = crate::kept::keep(harness, false) else { return Answer::Silent };
     let kept = kept.display().to_string();
-    let Some(question) = harness.prompt_question(command, &kept, model, PROBE_PROMPT) else {
+    let Some(question) = harness.prompt_question(command, &kept, Some(model), PROBE_PROMPT) else {
         return Answer::Unsendable;
     };
     let started = Instant::now();
@@ -301,7 +301,7 @@ pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
 }
 
 /// `ask_login_shell`, given `timeout` to answer.
-fn ask_login_shell_within(script: &str, timeout: Duration) -> Option<(bool, String)> {
+pub(crate) fn ask_login_shell_within(script: &str, timeout: Duration) -> Option<(bool, String)> {
     let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty());
     let mut child = Command::new(shell.as_deref().unwrap_or("/bin/zsh"))
         .args(["-lic", script])

@@ -65,6 +65,7 @@ fn bound_alone() -> World {
 /// `bound`, of the team file `team`.
 fn bound_with(team: &str) -> World {
     let world = World::new();
+    world.hold_every_harness();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     world.repo(
         "acme/dev",

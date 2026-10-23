@@ -330,6 +330,10 @@ fn carry_out(
             }
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
+        TickStep::Cast => match &read.set.caster {
+            Some(caster) => crate::caster::start(fleet, agent, &caster.to_cast),
+            None => Ok(Outcome::Nothing),
+        },
         TickStep::SlowGate => match &read.set.slow_gate {
             Some(slow) => slow_gate::open(fleet, me, slow),
             None => Ok(Outcome::Nothing),
@@ -360,6 +364,7 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
+        TickStep::Cast => ("cast", None),
         TickStep::SlowGate => ("slow_gate", None),
         TickStep::Board { issue, .. } => ("board", Some(issue)),
         TickStep::StageLabel { issue } => ("stage_label", Some(issue)),
@@ -797,6 +802,11 @@ impl Ticked {
                 measure::said(cut.built)
             ));
         }
+        if self.pass.did.contains(&(TickStep::Cast, Outcome::Done))
+            && let Some(caster) = &self.set.caster
+        {
+            parts.push(format!("started a caster on {} issues", caster.to_cast.len()));
+        }
         if self.pass.did.contains(&(TickStep::SlowGate, Outcome::Done)) {
             parts.push("opened an issue for the slow gate".to_string());
         }
@@ -811,6 +821,9 @@ impl Ticked {
             parts.push("nothing to do".to_string());
         }
         parts.extend(self.holding());
+        if let Some(caster) = self.set.caster.as_ref().filter(|caster| !caster.held.is_empty()) {
+            parts.push(format!("{} held for the caster", caster.held.len()));
+        }
         parts.push(format!("frontier {}", self.pass.frontier_remaining));
         // One cause is said once, however many steps it stopped.
         for (failure, steps) in log::by_cause(&self.failures, |failure| &failure.error) {

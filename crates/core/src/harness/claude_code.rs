@@ -56,16 +56,13 @@ const HELP: &str = " --help";
 /// The line that sends `model` the one-line `prompt` through `command`, a
 /// worker launch command of Claude Code's, and prints its answer. Claude
 /// Code keeps its logins with the host's user, as a worker finds them.
-pub(super) fn prompt_question(command: &str, model: &str, prompt: &str) -> String {
-    Line::new()
-        .launch(command)
-        .fixed(" ")
-        .fixed(MODEL)
-        .fixed(" ")
-        .word(model)
-        .fixed(" --print ")
-        .word(prompt)
-        .done()
+pub(super) fn prompt_question(command: &str, model: Option<&str>, prompt: &str) -> String {
+    let line = Line::new().launch(command);
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(" --print ").word(prompt).done()
 }
 
 /// The settings a worker loads: those of the directory it starts in — its
