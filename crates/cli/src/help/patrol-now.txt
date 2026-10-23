@@ -28,15 +28,15 @@ WHAT IT READS AND WRITES
     - passes `every` and `max_runs_a_day`: it runs though the interval has not passed
       since the last run, and though the day's runs have reached the bound;
     - is still held by what holds a due run: a fleet lock, the patrol's open issues
-      having reached `max_open` or `max_landed_a_day`, a failed run whose report is still open, and a run of
-      it still going. Each refuses the ask, and nothing is recorded;
+      having reached `max_open`, its completed issues having reached `max_landed_a_day`,
+      a failed run whose report is still open, and a run of it still going. Each refuses the ask, and nothing is recorded;
     - is claimed on the remote as a due run is: of several hosts asked at once, one
       runs it and the others' ticks say `lost`;
     - is recorded as the patrol's run, with `asked=human` in its record: its start is
       the last run `every` counts from, and one of the day's starts `max_runs_a_day`
       counts. The ask is deleted as the run is recorded.
 
-  Until a tick starts the run, `afkconvoy plan` shows the patrol `due`, with `asked`:
+  Until a tick starts the run, `afkconvoy plan` shows `asked` (normally `due`; new\n  completions may hold it again):
   when the ask was made. The panel says a human asked for it.
 
 WHAT IT ANSWERS

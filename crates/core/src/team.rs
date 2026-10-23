@@ -96,7 +96,7 @@ pub const STAGE_KEYS: [&str; 8] =
 pub const ON_KEYS: [&str; 2] = ["pass", "reject"];
 pub const ESCALATE_KEYS: [&str; 2] = ["to", "do"];
 pub const LAND_KEYS: [&str; 2] = ["by", "do"];
-pub const PATROL_KEYS: [&str; 7] =
+pub const PATROL_KEYS: [&str; 8] =
     ["by", "do", "every", HARNESS_KEY, "model", "max_open", "max_runs_a_day", "max_landed_a_day"];
 
 /// One value of a definition file's yaml, as it was parsed.

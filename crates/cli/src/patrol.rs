@@ -78,7 +78,7 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
 /// whichever host claims the run, past `every` and `max_runs_a_day`; the
 /// fleet is woken as the command ends (`crate::acting`). Refused, with
 /// nothing recorded, when what holds an asked run holds it: a fleet lock, the
-/// patrol's `max_open`, a failed run nobody answered, a run still going.
+/// patrol's `max_open` or `max_landed_a_day`, a failed run nobody answered, a run still going.
 ///
 ///   {"patrol", "asked", "ref"}
 pub fn ask(name: &str, host: &str, now: u64) -> Result<Value> {
