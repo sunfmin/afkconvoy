@@ -113,11 +113,6 @@ impl Launches {
         self.starts
     }
 
-    /// Whether the host kit holds this harness.
-    pub fn says(&self, harness: Harness) -> bool {
-        self.kit.as_ref().is_ok_and(|kit| kit.commands.contains_key(harness.key()))
-    }
-
     /// The host kit's command, with its first word resolved in the login shell.
     /// An absent harness is an error; no stock command is substituted.
     pub fn of(&self, harness: Harness) -> Result<Option<&Proposed>> {

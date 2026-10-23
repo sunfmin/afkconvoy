@@ -48,7 +48,7 @@ pub enum What {
     /// A `run` started, the worker launch command of its default harness
     /// beginning with this word: the word a login shell is asked about, and
     /// never what follows it. `harness_commands` is the same word of each
-    /// other harness `--worker-command` said one for, by the harness's key.
+    /// other harness in the host kit, by the harness's key.
     Start {
         worker_command: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

@@ -678,6 +678,10 @@ impl TextArgs {
 /// How a command that starts a worker starts it.
 #[derive(clap::Args)]
 struct AgentArgs {
+    // Keep only a diagnostic for callers migrating from the removed flag.
+    #[arg(long = "worker-command", hide = true, value_parser = removed_worker_command)]
+    _worker_command: Option<String>,
+
     /// Seconds an agent is given to be ready for its prompt
     #[arg(long, default_value_t = 120, hide = true)]
     ready_timeout: u64,
@@ -844,6 +848,11 @@ pub(crate) fn this_host() -> String {
     gethostname::gethostname().to_string_lossy().into()
 }
 
+fn removed_worker_command(_: &str) -> Result<String, String> {
+    Err("--worker-command is gone: run `afkconvoy kit` to set this host's worker launch commands"
+        .into())
+}
+
 impl AgentArgs {
     /// Reads this host's host kit (`Launches::new`), with no probe:
     /// the one worker a command started this way starts is refused where its
@@ -880,15 +889,6 @@ impl AgentArgs {
 /// harness that asks it, in that harness's way: for Claude Code, a hook's,
 /// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
-    let args: Vec<OsString> = args.into_iter().collect();
-    if args.iter().any(|arg| {
-        arg == "--worker-command" || arg.to_string_lossy().starts_with("--worker-command=")
-    }) {
-        return fail(
-            2,
-            "--worker-command is gone: run `afkconvoy kit` to set this host's worker launch commands",
-        );
-    }
     let parsed =
         cli().try_get_matches_from(args).and_then(|matches| Cli::from_arg_matches(&matches));
     let cli = match parsed {

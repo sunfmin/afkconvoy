@@ -961,7 +961,7 @@ impl Said {
         let instance = me.instance.as_str().to_string();
         let mut said =
             Said { log: log.ok(), instance, host: me.host.clone(), one: Mutex::default() };
-        // First words alone (`Launches::logged`): a command is written to no file.
+        // First words alone (`Launches::logged`): full commands stay in the host kit.
         let (worker_command, harness_commands) = agent.launches.logged();
         said.keep(me.now, log::What::Start { worker_command, harness_commands });
         said.log = said.log.filter(|log| log.file.exists());

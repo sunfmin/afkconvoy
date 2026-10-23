@@ -106,10 +106,8 @@ WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start no
   --worker-command is gone
       Run `afkconvoy kit` to edit this host's worker launch commands.
   is no harness
-      The harness name is unknown: use claude-code, pi, codex or dsh.
-
+      Use claude-code, pi, codex or dsh.
 WHAT NEITHER SAYS
-
   An issue is not worked
       `afkconvoy plan` has it under `excluded`, with why. Remove what the reason names.
   A changed role or team did not reach a worker

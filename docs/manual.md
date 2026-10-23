@@ -1357,7 +1357,7 @@ cannot read the host kit
 --worker-command is gone
     Run `afkconvoy kit` to edit this host's worker launch commands.
 is no harness
-    The harness name is unknown: use claude-code, pi, codex or dsh.
+    Use claude-code, pi, codex or dsh.
 ````
 
 ### WHAT NEITHER SAYS
