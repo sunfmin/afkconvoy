@@ -84,7 +84,8 @@ const MODEL_KEY: &str = "model";
 const LABEL_KEY: &str = "label";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
-pub const TEAM_KEYS: [&str; 4] = ["escalate_label", "roles", PRECEDENTS_KEY, HOST_USER_KEY];
+pub const TEAM_KEYS: [&str; 5] =
+    ["escalate_label", "roles", PRECEDENTS_KEY, HOST_USER_KEY, "split"];
 /// The keys of a role named as a map, beside the directory that names it.
 pub const ROLE_KEYS: [&str; 2] = [DIR_KEY, HOST_USER_KEY];
 pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
@@ -319,6 +320,8 @@ pub struct Team {
     /// The default of every role, which a role may set for itself
     /// (`Role::host_user`); the stock consult takes it.
     pub host_user: bool,
+    /// Whether stage briefs offer splitting an issue: true unless `split: false`.
+    pub split: bool,
     #[field(Vec<Role>[roles])]
     pub roles: Vec<Role>,
     #[field(Vec<Workflow{v: v.roles == roles}>)]
@@ -1145,7 +1148,8 @@ pub fn duration(text: &str) -> Option<u64> {
 /// The team `sources` define, or everything wrong with them.
 pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let mut faults: Vec<Fault> = vec![];
-    let host_user = host_user_key(&mut faults, sources);
+    let host_user = team_bool_key(&mut faults, sources, HOST_USER_KEY);
+    let split = team_bool_key(&mut faults, sources, "split");
     let (escalate_label, roles) = team_file(&mut faults, sources, host_user);
     let precedents = precedents_key(&mut faults, sources, &roles);
     let mut workflows: Vec<Workflow> = vec![];
@@ -1168,6 +1172,7 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
             escalate_label,
             rules: sources.rules,
             host_user,
+            split,
             roles: roles.loaded,
             workflows,
             patrols,
@@ -1537,7 +1542,7 @@ fn role_entry<'n>(
             return None;
         }
     };
-    let host_user = match get(entries, HOST_USER_KEY) {
+    let host_user = match get(entries, key) {
         None => Some(team),
         Some(Node::Bool(host_user)) => Some(*host_user),
         Some(other) => {
@@ -1580,17 +1585,15 @@ fn precedents_key(
     Some(Some(Precedents { work: work?, max_open: max_open? }))
 }
 
-/// Whether the team file has its workers given the host user's skills and
-/// rules: `true` where it says nothing. Anything but true or false is
-/// reported, and read as the default.
-fn host_user_key(faults: &mut Vec<Fault>, sources: &Sources) -> bool {
+/// A boolean team setting, true where unsaid. A wrong type is reported.
+fn team_bool_key(faults: &mut Vec<Fault>, sources: &Sources, key: &str) -> bool {
     let mut report = Report { file: &sources.team.path, faults };
     let Ok(Node::Map(entries)) = &sources.team.yaml else { return true };
     match get(entries, HOST_USER_KEY) {
         None => true,
         Some(Node::Bool(host_user)) => *host_user,
         Some(other) => {
-            report.fault(HOST_USER_KEY, format!("must be true or false, not {}", kind(other)));
+            report.fault(key, format!("must be true or false, not {}", kind(other)));
             true
         }
     }
@@ -2521,6 +2524,21 @@ land: { by: dev, do: land }
         assert_eq!(team.escalate_label, "stuck");
         assert!(team.roles.is_empty());
         assert!(load(&sources("{}", &[])).unwrap().workflows.is_empty());
+    }
+
+    #[test]
+    fn a_team_offers_splitting_unless_it_turns_it_off() {
+        let feature = [("workflows/feature.md", FEATURE)];
+        assert!(load(&sources(TEAM, &feature)).unwrap().split);
+        let said = |value: &str| load(&sources(&format!("{TEAM}split: {value}\n"), &feature));
+        assert!(said("true").unwrap().split);
+        assert!(!said("false").unwrap().split);
+        for value in ["no", "0", "[false]", "null"] {
+            let faults = said(value).unwrap_err();
+            let [fault] = &faults[..] else { panic!("one fault: {faults:#?}") };
+            assert_eq!((fault.file.as_str(), fault.key.as_str()), (TEAM_FILE, "split"));
+            assert!(fault.problem.starts_with("must be true or false, not "));
+        }
     }
 
     #[test]
