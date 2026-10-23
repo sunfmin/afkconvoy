@@ -141,9 +141,9 @@ fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to
     assert!(held.as_str().unwrap().starts_with("held for the caster: "), "{planned}");
     assert_eq!(said(&planned, 8)["why"], "only");
 
-    world.caster_answers(concat!(
-        "{\"issue\": 7, \"harness\": \"pi\", \"model\": \"a/fast\", \"why\": \"A small fix.\"}\n"
-    ));
+    world.caster_answers(
+        "{\"issue\": 7, \"harness\": \"pi\", \"model\": \"a/fast\", \"why\": \"A small fix.\"}\n",
+    );
     let answered = world.afk(&["cast", "--now", "1000"]).ok();
     assert_eq!(
         answered["cast"],
