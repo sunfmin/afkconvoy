@@ -44,6 +44,7 @@ fn the_worker_shell_extends_both_spellings_and_preserves_every_other_proxy() {
 #[test]
 fn plan_and_doctor_show_the_hosts_effective_per_harness_lists() {
     let world = World::new();
+    write(&world.root, "shell-proxy", "rc greeting\nAFKCONVOY_PROXY\0localhost\0internal");
     for command in ["plan", "doctor"] {
         let answer = world
             .afk(&[command, "--now", "1000", "--worker-no-proxy", "codex=api.example,internal"])
@@ -54,10 +55,13 @@ fn plan_and_doctor_show_the_hosts_effective_per_harness_lists() {
             &answer["worker_no_proxy"]
         };
         let dsh = lists.as_array().unwrap().iter().find(|list| list["harness"] == "dsh").unwrap();
-        assert_eq!(dsh["no_proxy"], "api.deepseek.com");
+        assert_eq!(dsh["no_proxy"], "localhost,internal,api.deepseek.com");
         let codex =
             lists.as_array().unwrap().iter().find(|list| list["harness"] == "codex").unwrap();
-        assert_eq!(codex["no_proxy"], "api.example,internal");
+        assert_eq!(codex["no_proxy"], "localhost,internal,api.example,internal");
+        let pi = lists.as_array().unwrap().iter().find(|list| list["harness"] == "pi").unwrap();
+        assert_eq!(pi["no_proxy"], "localhost");
+        assert_eq!(pi["NO_PROXY"], "internal");
         assert_eq!(codex["NO_PROXY"], codex["no_proxy"]);
     }
 }

@@ -133,11 +133,13 @@ impl Launches {
 
     /// Per harness, what a worker's login shell would export now.
     pub fn proxy_json(&self) -> serde_json::Value {
+        // A login rc file may print anything before the answer. Frame the
+        // two values so those lines cannot become proxy bypass hosts.
         let inherited =
-            login_shell("printf '%s\\n' \"${no_proxy-}\" \"${NO_PROXY-}\"").unwrap_or_default();
-        let mut values = inherited.lines();
-        let lower = values.next().unwrap_or_default();
-        let upper = values.next().unwrap_or_default();
+            login_shell("printf 'AFKCONVOY_PROXY\\000%s\\000%s' \"${no_proxy-}\" \"${NO_PROXY-}\"")
+                .unwrap_or_default();
+        let values = inherited.split_once("AFKCONVOY_PROXY\0").map_or("", |(_, values)| values);
+        let (lower, upper) = values.split_once('\0').unwrap_or(("", ""));
         serde_json::Value::Array(Harness::ALL.into_iter().map(|harness| {
             let addition = afkconvoy_core::proxy::addition(&self.bypass, harness);
             let (lower, upper) = afkconvoy_core::proxy::effective(lower, upper, addition);
