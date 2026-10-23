@@ -76,6 +76,7 @@ fn bound_with(team: &str) -> World {
 /// A world whose repo is bound to a team of two roles, made of `team`.
 fn bound_to(team: &[(&str, &str)]) -> World {
     let world = World::new();
+    world.hold_every_harness();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     world.repo(
         "acme/dev",

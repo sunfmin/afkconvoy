@@ -28,6 +28,7 @@ pub mod acting;
 pub mod admission;
 pub mod advance;
 pub mod board;
+pub mod caster;
 pub mod claims;
 pub mod config;
 pub mod copies;
@@ -121,9 +122,12 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
 /// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
 /// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
-/// `help` is this crate's own, not clap's: it prints a topic too.
+/// `help` is this crate's own, not clap's: it prints a topic too. The
+/// listing goes straight from the usage line to the commands: one line less,
+/// so that `-h` stays one screen.
 #[derive(Parser)]
-#[command(name = "afkconvoy", version = VERSION, about, long_about = guide(), disable_help_subcommand = true)]
+#[command(name = "afkconvoy", version = VERSION, about, long_about = guide(), disable_help_subcommand = true,
+    help_template = "{before-help}{about-with-newline}\n{usage-heading} {usage}\n{all-args}{after-help}")]
 struct Cli {
     /// The time to act at, in epoch seconds [default: the clock's]
     #[arg(long, global = true, hide = true)]
@@ -137,6 +141,9 @@ enum Command {
     /// Inspect and edit this host's worker launch commands
     #[command(after_long_help = include_str!("help/kit.txt"))]
     Kit,
+    /// Cast every uncast issue that has a choice to make, in one session of the host kit's first
+    #[command(after_long_help = include_str!("help/cast.txt"))]
+    Cast,
     /// Print the repo's config as JSON, defaults filled
     #[command(after_long_help = include_str!("help/config.txt"))]
     Config {
@@ -750,8 +757,9 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 24] = [
+const ACTS: [&str; 25] = [
     "dispatch",
+    "cast",
     "close",
     "escalate",
     "park",
@@ -1041,6 +1049,7 @@ impl Command {
             },
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Wake => Acting::new("wake").on_own_issue(),
+            Command::Cast => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             Command::Kit
             | Command::Config { .. }
@@ -1067,6 +1076,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
         Command::Kit => kit::configure(),
+        Command::Cast => caster::cast(now),
         Command::Config { file } => {
             let file = match file {
                 Some(file) => file,
@@ -1418,6 +1428,7 @@ mod tests {
         &["abandon", "--instance", "a-h1-1"],
         &["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"],
         &["wake"],
+        &["cast"],
         &["scan"],
         &["claim", "7", "--instance", "a-h1-1"],
         &["release", "7", "--instance", "a-h1-1"],

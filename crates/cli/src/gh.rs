@@ -51,7 +51,7 @@ pub const LANDED_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
 /// How many comments of an issue come with it (`OPEN_ISSUES_QUERY`).
 pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
-pub const ISSUE_JQ: &str = "{id, title, state, state_reason, labels: [.labels[].name], \
+pub const ISSUE_JQ: &str = "{id, title, body, state, state_reason, labels: [.labels[].name], \
     pull_request: (.pull_request != null), closed_by: .closed_by.login}";
 /// What is read of each closed issue that carries one label.
 pub const CLOSED_JQ: &str = ".[] | select(.pull_request == null) | \
@@ -85,6 +85,9 @@ pub struct IssueRead {
     /// The login of whoever closed it, where GitHub says.
     #[serde(default)]
     pub closed_by: Option<String>,
+    /// What it says, where it says anything.
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 /// One issue another is recorded as blocked by — a native dependency edge.

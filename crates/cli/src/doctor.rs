@@ -1505,6 +1505,7 @@ mod tests {
             slow_gate: None,
             outgrown_train: None,
             held_back: vec![],
+            caster: None,
         }
     }
 

@@ -64,6 +64,10 @@ pub enum TickStep {
     /// Start a worker on the due proposal at this place among the working
     /// set's, into a free slot.
     Propose { proposal: usize },
+    /// Start a caster, which casts every uncast issue of an unbound repo
+    /// that has a choice to make (`WorkingSet::caster`). It holds no claim
+    /// and takes no slot.
+    Cast,
     /// Open the issue that says the gate is slow, while none is open. It
     /// takes no slot.
     SlowGate,
@@ -267,7 +271,8 @@ fn dispatched(did: &[(TickStep, Outcome)], issue: u64) -> bool {
 /// not on the train yet — starting, into the slot its claim freed, the worker
 /// of the stage a verdict led to — end the patrol runs and the proposals that are over, delete the stale
 /// locks on closed issues, hand to a
-/// human the unclaimed issues that call for one, take stale
+/// human the unclaimed issues that call for one, start a caster where one is due
+/// (none while admission holds), take stale
 /// claims, then the due patrols, then frontier issues into the free slots,
 /// lowest number first, then the due proposals of precedents — none of
 /// these while admission holds (`WorkingSet::held_back`) —
@@ -310,6 +315,12 @@ where
         did.push((step, carry_out(step)));
     }
     let held = hand_over(set, concurrency, held, &mut did, &mut carry_out);
+    // Ahead of the frontier, whose issues it casts: none is dispatched while
+    // it runs. It starts a worker, which admission holds back as any.
+    if set.caster.as_ref().is_some_and(|caster| caster.due) && set.held_back.is_empty() {
+        let step = TickStep::Cast;
+        did.push((step, carry_out(step)));
+    }
     let held = admit(set, concurrency, held, &mut did, &mut carry_out);
     if set.slow_gate.as_ref().is_some_and(|slow| slow.issue.is_none()) {
         let step = TickStep::SlowGate;
@@ -831,6 +842,7 @@ mod tests {
             slow_gate: None,
             outgrown_train: None,
             held_back: vec![],
+            caster: None,
         }
     }
 
@@ -1563,6 +1575,24 @@ mod tests {
         assert!(admitted.did.contains(&(Reclaim { issue: 3 }, Done)));
         assert!(admitted.did.contains(&(Dispatch { issue: 7 }, Done)));
         assert!(!admitted.held_back(&busy));
+    }
+
+    #[test]
+    fn a_caster_that_is_due_is_started_ahead_of_the_frontier_and_takes_no_slot() {
+        use crate::admission::Hold;
+        use crate::casting::Standing;
+        let mut set = set(&[9], &[]);
+        let due = |due| Standing { running_since: None, due, held: vec![7], to_cast: vec![7] };
+        set.caster = Some(due(true));
+        let pass = run_pass(&set, 1, 0, |_| Done);
+        assert_eq!(steps(&pass), [Cast, Dispatch { issue: 9 }, Heartbeat]);
+        assert_eq!(pass.held, 1);
+        // One that runs is not started again, and none while admission holds.
+        set.caster = Some(due(false));
+        assert!(!steps(&run_pass(&set, 1, 0, |_| Done)).contains(&Cast));
+        set.caster = Some(due(true));
+        set.held_back = vec![Hold::Memory { free: 3, floor: 10 }];
+        assert!(!steps(&run_pass(&set, 1, 0, |_| Done)).contains(&Cast));
     }
 
     #[test]

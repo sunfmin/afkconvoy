@@ -38,11 +38,13 @@ WHAT IT ANSWERS
    "stale_closed", "free_slots", "now", "locks", "admission", "host_kit", "worker_no_proxy"} — "held_back" while
    admission holds; and in a bound repo "intake", "patrols" where it names some, and
    "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate"
-   while the gate is slow
+   while the gate is slow; and in an unbound repo "caster" while one runs or is due
 
     host_kit       {path, harnesses, stock_consult}: this host's kit file; each
                    harness in order of preference, first first, as {harness,
-                   command, models}, each model {model, probed: {at, seconds}}
+                   command, models}, each model {model, probed: {at, seconds},
+                   good_at} — good_at, where the human wrote one, what a caster
+                   is told the model is good at —
                    in order — `at` when it last answered a probe, in epoch
                    seconds, and `probed` null for one held unprobed; and
                    {harness, model, named} that the stock consult runs, named
@@ -57,13 +59,23 @@ WHAT IT ANSWERS
                    repo each but the stock consult's has cast: {harness, model, why}:
                    what its worker would run, model null for its command as written,
                    and why — `casting` (its `harness:` and `model:` labels, which the
-                   host kit holds), `first` (no casting: the host kit's first) or
-                   `switch` (this host's switch, over any casting)
+                   host kit holds), `first` (no casting: the host kit's first),
+                   `switch` (this host's switch, over any casting) or `uncast` (a
+                   caster had it and did not cast it in ten minutes: the host
+                   kit's first)
     excluded       every other open issue, with why: {number, title, reason}. An
                    escalated issue says so — "escalated: waits for a ruling" — and
                    not that it lacks the label its escalation took off. An unbound
                    repo's issue whose casting the host kit does not hold is "not
-                   dispatched: ", naming the label and what the host kit holds
+                   dispatched: ", naming the label and what the host kit holds; one
+                   that waits for the caster is "held for the caster: "
+    caster         in an unbound repo, while a caster runs or one is due:
+                   {running_since, due, held, to_cast} — when the one that runs
+                   was started (null: none runs), whether a tick starts one now,
+                   the frontier's issues held back for it, and every issue a
+                   caster started now is given. An uncast issue with a choice to
+                   make waits for one, for ten minutes at most from its start:
+                   `afkconvoy cast --help`
     waiting_on_human
                    every open issue nobody holds that waits for a human, lowest number
                    first: {issue, title, why, since, answer} — why in a few words,

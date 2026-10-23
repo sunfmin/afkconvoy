@@ -264,6 +264,11 @@ pub struct WorkingSet {
     /// and the effect layer puts in what it read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub held_back: Vec<Hold>,
+    /// An unbound repo's caster, while one runs or is due, and the issues
+    /// held back for it. Read of the host kit and this host's caster: what
+    /// assembles the set leaves it out, and the effect layer puts it in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caster: Option<crate::casting::Standing>,
 }
 
 impl WorkingSet {
@@ -525,6 +530,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         slow_gate: slow(seen.landings, config.gate_seconds(), seen.slow_gate),
         outgrown_train: seen.idle_train.filter(|built| built.outgrown()),
         held_back: vec![],
+        caster: None,
     };
     let locked = !set.locks.is_empty();
     for patrol in seen.patrols {

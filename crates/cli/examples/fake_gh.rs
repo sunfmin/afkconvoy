@@ -382,7 +382,7 @@ fn api(st: &mut State) -> ! {
             let Some(issue) = issue(st, number) else {
                 st.finish("", 1, "gh: Not Found (HTTP 404)\n")
             };
-            let row = json!({"id": issue_id(issue), "title": issue["title"],
+            let row = json!({"id": issue_id(issue), "title": issue["title"], "body": issue["body"],
                 "state": issue["state"].as_str().unwrap_or("open"),
                 "state_reason": issue["state_reason"], "labels": issue["labels"],
                 "pull_request": issue["pull_request"].as_bool().unwrap_or(false),

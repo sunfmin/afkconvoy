@@ -6,7 +6,7 @@
 //! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
 //! grows with the issues in flight.
 
-use afkconvoy_core::casting::{self, Cast};
+use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, Why};
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
@@ -254,18 +254,59 @@ impl Fleet {
     /// not dispatched, and is excluded with why. The stock consult's runs
     /// what the host kit names for it, and is cast by nothing. A host kit
     /// that cannot be read casts nothing: a start refuses it, saying so.
+    ///
+    /// An uncast issue with a choice to make is held back for the caster
+    /// while one runs, and starts one where none does
+    /// (`casting::for_caster`); one a caster had and did not cast runs the
+    /// host kit's first.
     fn cast_frontier(&self, set: &mut WorkingSet, issues: &[Issue], consults: &[u64]) {
         let Ok(range) = crate::kit::load().map(|kit| kit.range()) else { return };
+        let labels_of = |number: u64| {
+            let open = issues.iter().find(|open| open.number == number);
+            open.map_or(&[][..], |open| open.labels.as_slice())
+        };
+        // This host's caster is asked after only where an issue waits for one.
+        let waits = set.frontier.iter().any(|issue| {
+            casting::for_caster(issue.number, labels_of(issue.number), &range, self.chosen, None, 0)
+                != ForCaster::Dispatch
+        });
+        let caster = if waits { crate::caster::last(&self.repo, self.now) } else { None };
+        let mut standing = Standing {
+            running_since: caster.as_ref().filter(|c| c.running(self.now)).map(|c| c.since),
+            due: false,
+            held: vec![],
+            to_cast: crate::caster::to_cast(&self.config, issues),
+        };
         let frontier = std::mem::take(&mut set.frontier);
         for mut issue in frontier {
-            let labels = issues.iter().find(|open| open.number == issue.number);
-            let labels = labels.map_or(&[][..], |open| open.labels.as_slice());
+            let labels = labels_of(issue.number);
             if consults.contains(&issue.number) {
                 set.frontier.push(issue);
                 continue;
             }
+            let held = casting::for_caster(
+                issue.number,
+                labels,
+                &range,
+                self.chosen,
+                caster.as_ref(),
+                self.now,
+            );
+            if matches!(held, ForCaster::Wait | ForCaster::Due) {
+                standing.due |= held == ForCaster::Due;
+                standing.held.push(issue.number);
+                set.excluded.push(Excluded {
+                    number: issue.number,
+                    title: issue.title,
+                    reason: HELD_FOR_CASTER.to_string(),
+                });
+                continue;
+            }
             match casting::cast(labels, &range, self.chosen) {
-                Ok(cast) => {
+                Ok(mut cast) => {
+                    if held == ForCaster::Late {
+                        cast.why = Why::Uncast;
+                    }
                     issue.cast = Some(cast);
                     set.frontier.push(issue);
                 }
@@ -277,6 +318,9 @@ impl Fleet {
             }
         }
         set.excluded.sort_by_key(|excluded| excluded.number);
+        if standing.running_since.is_some() || !standing.held.is_empty() {
+            set.caster = Some(standing);
+        }
     }
 
     /// What the last landing measured of this machine's train's worktree;

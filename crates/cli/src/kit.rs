@@ -48,6 +48,10 @@ pub struct Seen {
     /// is held as the human named it.
     #[serde(default)]
     pub probed: Option<Probed>,
+    /// What it is good at, as the human wrote it in the host kit: what a
+    /// caster is told of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub good_at: Option<String>,
 }
 
 /// A probe a model answered.
@@ -410,7 +414,12 @@ fn edit(
             Answer::Silent => continue,
         };
         if let Some(held) = harnesses.iter_mut().find(|held| held.harness == harness) {
-            held.models.push(Seen { model, probed });
+            // What the human wrote of it stays.
+            let good_at = current
+                .held(harness)
+                .and_then(|held| held.models.iter().find(|seen| seen.model == model))
+                .and_then(|seen| seen.good_at.clone());
+            held.models.push(Seen { model, probed, good_at });
         }
     }
 
@@ -497,6 +506,7 @@ mod tests {
             .map(|model| Seen {
                 model: model.to_string(),
                 probed: Some(Probed { at: 1, seconds: 1.0 }),
+                good_at: None,
             })
             .collect();
         Held { harness, command: command.into(), models }

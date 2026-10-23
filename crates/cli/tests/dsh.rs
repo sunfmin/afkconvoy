@@ -8,6 +8,7 @@ use afkconvoy_core::harness::Harness;
 
 fn bound() -> World {
     let world = World::new();
+    world.hold_every_harness();
     world.repo(
         "acme/dev",
         &[

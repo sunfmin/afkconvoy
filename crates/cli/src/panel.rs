@@ -138,6 +138,9 @@ pub struct Panel {
     /// What the last host inspection of the host found, whichever of its
     /// fleets started it.
     pub host_inspected: Option<Last>,
+    /// An unbound repo's caster, while one runs or is due, and the issues
+    /// held back for it.
+    pub caster: Option<afkconvoy_core::casting::Standing>,
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -248,6 +251,7 @@ impl Panel {
             hot: vec![],
             inspection: None,
             host_inspected: None,
+            caster: None,
         }
     }
 
@@ -258,6 +262,7 @@ impl Panel {
         let set = seen.set;
         self.lanes = lanes(seen);
         self.locks = set.locks.clone();
+        self.caster = set.caster.clone();
         self.patrols = set.patrols.clone();
         let mut put = Put { panel: &mut self, seen };
 
@@ -709,6 +714,25 @@ pub fn render(panel: &Panel) -> String {
         );
     }
 
+    if let Some(caster) = &panel.caster {
+        let running = match caster.running_since {
+            Some(since) => format!(
+                "<b>A caster runs</b>, for {} so far",
+                lasted(panel.now.saturating_sub(since))
+            ),
+            None => "<b>A caster is started</b>".to_string(),
+        };
+        let held: Vec<String> = caster.held.iter().map(|issue| format!("#{issue}")).collect();
+        let held = match held.as_slice() {
+            [] => String::new(),
+            held => format!(
+                ": {} held for it, and dispatched uncast after ten minutes",
+                held.join(", ")
+            ),
+        };
+        let _ = writeln!(out, "<p class=\"tick\" data-caster>{running}{held}.</p>");
+    }
+
     if !panel.hot.is_empty() {
         let hot: Vec<String> = panel
             .hot
@@ -908,6 +932,7 @@ mod tests {
             hot: vec![],
             inspection: None,
             host_inspected: None,
+            caster: None,
         }
     }
 
@@ -932,6 +957,7 @@ mod tests {
             hot: vec![],
             inspection: None,
             host_inspected: None,
+            caster: None,
         };
         let page = render(&panel);
         assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));

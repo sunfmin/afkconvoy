@@ -52,6 +52,9 @@ impl Answer {
 }
 
 impl World {
+    /// A repo with a remote, the stand-ins on PATH, and a host kit that holds
+    /// Claude Code alone, on no model: it leaves no choice to make, so no
+    /// caster is started (`hold_every_harness` holds the others).
     pub fn new() -> World {
         let dir = TempDir::new().unwrap();
         let root = dir.path().canonicalize().unwrap();
@@ -92,10 +95,33 @@ impl World {
         world.write_orca(&json!({"repos": [{"id": "repo-1", "path": world.clone}],
             "root": world.root.join("wt"), "worktrees": [], "terminals": [], "calls": []}));
         world.kit_command("claude-code", "agent");
-        world.kit_command("pi", afkconvoy_core::harness::Harness::Pi.stock());
-        world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
-        world.kit_command("dsh", afkconvoy_core::harness::Harness::Dsh.stock());
         world
+    }
+
+    /// Has the host kit hold every harness after Claude Code, each on its stock
+    /// command: a choice to make.
+    pub fn hold_every_harness(&self) {
+        self.kit_command("pi", afkconvoy_core::harness::Harness::Pi.stock());
+        self.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+        self.kit_command("dsh", afkconvoy_core::harness::Harness::Dsh.stock());
+    }
+
+    /// Changes the host kit in place.
+    pub fn with_kit(&self, change: impl FnOnce(&mut Value)) {
+        let mut kit: Value =
+            serde_json::from_slice(&std::fs::read(self.kit_path()).unwrap()).unwrap();
+        change(&mut kit);
+        std::fs::write(self.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+    }
+
+    /// What the host kit's first answers a caster's prompt with.
+    pub fn caster_answers(&self, answer: &str) {
+        std::fs::write(self.root.join("caster-answer"), answer).unwrap();
+    }
+
+    /// The last prompt a caster sent; empty when none was.
+    pub fn caster_asked(&self) -> String {
+        std::fs::read_to_string(self.root.join("caster-asked")).unwrap_or_default()
     }
 
     /// A command with the stand-ins first on PATH and nothing of the caller's
@@ -605,6 +631,11 @@ const SHELL: &str = r#"#!/bin/sh
 root=${0%/*}/..
 echo "$2" >> "$root/shell-asked"
 case "$2" in
+  *"You are the caster of a fleet"*)
+    # A caster's prompt: answered with what `caster-answer` holds.
+    printf '%s' "$2" > "$root/caster-asked"
+    if [ -f "$root/caster-answer" ]; then cat "$root/caster-answer"; exit 0; fi
+    exit 1 ;;
   "gh auth status"*)
     if [ -e "$root/logged-out-gh" ]; then echo "not logged in" >&2; exit 1; fi
     exit 0 ;;
