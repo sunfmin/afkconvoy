@@ -43,6 +43,7 @@ mod pi;
 mod plan;
 mod precedent;
 mod probe;
+mod proxy;
 mod rebuild;
 mod rehearse;
 mod release;
