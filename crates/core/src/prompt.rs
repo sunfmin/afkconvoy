@@ -2046,7 +2046,6 @@ mod tests {
             gate_alone_command: "/opt/bin/afkconvoy gate",
             enters: Enters::Intake {
                 command: "/opt/bin/afkconvoy intake --train",
-                split: true,
                 workflows: &workflows,
             },
         };
@@ -2163,6 +2162,7 @@ mod tests {
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
             intake_command: "/opt/bin/afkconvoy intake",
+            split: true,
             workflows: &workflows,
             gate: None,
         };
