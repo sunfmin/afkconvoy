@@ -284,7 +284,7 @@ fn plan_and_doctor_show_the_host_kit() {
     std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
     let shown = world.afk(&["plan", "--now", "1000"]).json;
     let error = shown["host_kit"]["error"].as_str().unwrap();
-    assert!(error.contains("invalid host kit") && error.contains("a/none"), "{error}");
+    assert!(error.contains("cannot read the host kit") && error.contains("a/none"), "{error}");
 }
 
 #[test]

@@ -145,7 +145,7 @@ pub fn load() -> Result<Kit> {
     let text = std::fs::read_to_string(&file).with_context(unreadable)?;
     let kit: Kit = serde_json::from_str(&text).with_context(unreadable)?;
     if let Some(fault) = kit.fault() {
-        bail!("invalid host kit at {}: {fault}: run `afkconvoy kit`", file.display());
+        bail!("cannot read the host kit at {}: {fault}: run `afkconvoy kit`", file.display());
     }
     Ok(kit)
 }

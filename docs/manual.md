@@ -1356,9 +1356,6 @@ the host kit has no worker launch command
     Run `afkconvoy kit` at a terminal to add the harness and confirm its command.
 cannot read the host kit
     Run `afkconvoy kit` at a terminal on this host before starting the fleet.
-invalid host kit
-    It holds a harness twice, or names a stock consult it does not hold. Run
-    `afkconvoy kit` at a terminal to write it again.
 --worker-command is gone
     Run `afkconvoy kit` to edit this host's worker launch commands.
 is no harness
