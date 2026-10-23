@@ -240,7 +240,7 @@ fn a_flow_labelled_issue_is_dispatched_to_its_first_stage_with_the_worker_in_its
          AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
          AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
          AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
-         AFKCONVOY_HARNESS='claude-code' && \
+         AFKCONVOY_HARNESS='claude-code' AFKCONVOY_MODEL='opus' && \
          {STOCK} --add-dir '{worktree}' --add-dir '{team_dir}' --add-dir '{host_user}' \
          --setting-sources project --settings '{guard}' --model 'opus'",
         guard = added_settings(terminals[0]["command"].as_str().unwrap()),

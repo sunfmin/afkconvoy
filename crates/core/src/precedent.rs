@@ -421,6 +421,7 @@ mod tests {
             role_commit: "r".into(),
             team_commit: "t".into(),
             harness: Harness::ClaudeCode,
+            model: None,
         };
         let records = [
             record(Author::Human, Declared::Ruling),

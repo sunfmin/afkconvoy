@@ -162,14 +162,23 @@ fn start(
     };
     // Before the claim too: an issue whose harness cannot be started here is
     // never locked. An unbound repo's stock consult runs what the host kit
-    // names for it.
+    // names for it, and its other workers their issue's casting: one the
+    // host kit does not hold is not dispatched, but a claim already held —
+    // its landing — runs the host kit's first.
     let (harness, model) = match (&staged, &consult) {
         (Some(staged), _) => (staged.harness(), None),
         (None, Some(_)) => {
             let stock = fleet.stock_consult()?;
             (stock.harness, stock.model)
         }
-        (None, None) => (fleet.harness(), None),
+        (None, None) => {
+            let cast = match fleet.cast(&issue.labels)? {
+                Ok(cast) => cast,
+                Err(_) if held => fleet.first()?,
+                Err(why) => bail!("issue #{number} is not dispatched: {why}"),
+            };
+            (cast.harness, cast.model)
+        }
     };
     let launch = agent.command(harness)?;
     if crate::harness_down::down(&fleet.repo, harness, fleet.now)? {
@@ -300,7 +309,8 @@ fn start(
         "claim": if held { "held" } else { "won" },
         "tier": plan.tier.number(), "action": plan.tier.word(),
         "prompt": plan.variant.word(), "reason": plan.reason,
-        "worktree": cut.path, "branch": cut.branch, "terminal": terminal, "harness": harness});
+        "worktree": cut.path, "branch": cut.branch, "terminal": terminal, "harness": harness,
+        "model": model});
     if let Some(staged) = &staged {
         started["prompt"] = json!(staged.prompt());
         started["stage"] = staged.json();

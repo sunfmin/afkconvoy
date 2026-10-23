@@ -493,7 +493,7 @@ mod tests {
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
              AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' \
-             AFKCONVOY_HARNESS='codex' && \
+             AFKCONVOY_HARNESS='codex' AFKCONVOY_MODEL='gpt-5.5' && \
              codex --dangerously-bypass-approvals-and-sandbox --add-dir '/wt/issue 7' \
              --dangerously-bypass-hook-trust \
              --config 'projects={{\"/copies/acme/dev/abc\"={{trust_level=\"trusted\"}}}}' \

@@ -52,5 +52,6 @@ WHAT TRIPS YOU UP
   command. `--worker-command` is gone: edit the host kit with `afkconvoy kit`.
   A command is an opaque shell string; an unbound repo starts it as written,
   under nice with its worktree's TMPDIR, adding only its harness's model flag
-  for the stock consult's model. A bound repo adds its role flags.
+  for the model an issue's casting, the host kit's first or the stock consult
+  names. A bound repo adds its role flags.
   Probing sends each model a real prompt: it spends a little of each login.

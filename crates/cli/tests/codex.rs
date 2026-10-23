@@ -397,7 +397,7 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
              AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
              AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
-             AFKCONVOY_HARNESS='codex' && codex --dangerously-bypass-approvals-and-sandbox \
+             AFKCONVOY_HARNESS='codex' AFKCONVOY_MODEL='gpt-5.5' && codex --dangerously-bypass-approvals-and-sandbox \
              --add-dir '{worktree}' --dangerously-bypass-hook-trust \
              --config 'projects={{\"{role}\"={{trust_level=\"trusted\"}}}}' \
              --config 'project_doc_fallback_filenames=[\"CLAUDE.md\"]' \
@@ -874,9 +874,13 @@ fn a_stage_record_of_a_codex_worker_names_codex() {
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
     let comments = world.comments(7);
     let record = comments.iter().find(|comment| comment.contains(" stage=build ")).unwrap();
-    assert!(record.contains(" verdict=pass ") && record.contains(" harness=codex-->"), "{record}");
+    assert!(
+        record.contains(" verdict=pass ") && record.contains(" harness=codex model=gpt-5.5-->"),
+        "{record}"
+    );
     let shown = world.afk(&["show", "--issue", "7"]).ok();
     assert_eq!(shown["records"][0]["harness"], "codex", "{shown}");
+    assert_eq!(shown["records"][0]["model"], "gpt-5.5", "{shown}");
 }
 
 #[test]

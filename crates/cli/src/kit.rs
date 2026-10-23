@@ -97,6 +97,16 @@ impl Kit {
         Some(Named { harness: held.harness, model: held.models.first().map(|m| m.model.clone()) })
     }
 
+    /// The host kit as a range (docs/adr/0020): each harness in order, with
+    /// its models in order.
+    pub fn range(&self) -> Vec<afkconvoy_core::casting::Held> {
+        let held = |held: &Held| afkconvoy_core::casting::Held {
+            harness: held.harness,
+            models: held.models.iter().map(|seen| seen.model.clone()).collect(),
+        };
+        self.harnesses.iter().map(held).collect()
+    }
+
     /// What the stock consult runs: the harness and model named for it, or
     /// the host kit's first.
     pub fn stock_consult(&self) -> Option<Named> {

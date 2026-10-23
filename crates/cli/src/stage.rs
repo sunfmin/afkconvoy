@@ -53,6 +53,8 @@ pub struct Ran {
     pub team_commit: String,
     /// The harness it is a session of.
     pub harness: Harness,
+    /// The model it runs, where it was started on one.
+    pub model: Option<String>,
 }
 
 /// `afkconvoy verdict`, and a consult's `afkconvoy rule`: write the stage
@@ -101,7 +103,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
         }
         return Ok(json!({"issue": issue, "verdict": declared.word(), "declared": true}));
     }
-    let Some(Ran { role_commit, team_commit, harness }) = ran else {
+    let Some(Ran { role_commit, team_commit, harness, model }) = ran else {
         if !blocked_by.is_empty() {
             bail!("--blocked-by is a worker's: nobody parks an issue no fleet instance holds");
         }
@@ -118,7 +120,14 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     let record = StageRecord {
         stage,
         stated: Stated::Declared(declared),
-        by: Author::Worker { consult, claim: claim.id.clone(), role_commit, team_commit, harness },
+        by: Author::Worker {
+            consult,
+            claim: claim.id.clone(),
+            role_commit,
+            team_commit,
+            harness,
+            model,
+        },
         blocked_by,
         text,
     };
@@ -221,9 +230,15 @@ pub fn consult_send(
     let Some(claim) = Scan::read(repo)?.claim_of(number).map(|claim| claim.id.clone()) else {
         bail!("issue #{number} is not claimed: a consult sends under the claim it holds");
     };
-    let Ran { role_commit, team_commit, harness } = ran;
-    let by =
-        Author::Worker { consult: true, claim: claim.clone(), role_commit, team_commit, harness };
+    let Ran { role_commit, team_commit, harness, model } = ran;
+    let by = Author::Worker {
+        consult: true,
+        claim: claim.clone(),
+        role_commit,
+        team_commit,
+        harness,
+        model,
+    };
     let record = StageRecord {
         stage: stage.to_string(),
         stated: Stated::Sent,
@@ -293,15 +308,16 @@ pub fn show_issue(gh: &GitHub, team: &Team, default: Harness, number: u64) -> Re
         .zip(&urls)
         .zip(&history.readings)
         .map(|((record, url), reading)| {
-            let (role_commit, team_commit, harness) = match &record.by {
-                Author::Worker { role_commit, team_commit, harness, .. } => {
-                    (Some(role_commit), Some(team_commit), Some(harness))
+            let (role_commit, team_commit, harness, model) = match &record.by {
+                Author::Worker { role_commit, team_commit, harness, model, .. } => {
+                    (Some(role_commit), Some(team_commit), Some(harness), model.as_ref())
                 }
-                Author::Human | Author::Fleet => (None, None, None),
+                Author::Human | Author::Fleet => (None, None, None, None),
             };
             json!({"stage": record.stage, "verdict": record.stated.word(),
                 "reads": reading.word(), "by": record.by.word(), "claim": record.claim(),
                 "role_commit": role_commit, "team_commit": team_commit, "harness": harness,
+                "model": model,
                 "url": url})
         })
         .collect();

@@ -78,6 +78,9 @@ pub enum Author {
         /// The harness it was a session of. The commits do not say: the
         /// default is the project's.
         harness: Harness,
+        /// The model it ran, where it was started on one: its harness's own
+        /// name for it.
+        model: Option<String>,
     },
     /// A human, through the fleet, on an issue nobody held.
     Human,
@@ -195,13 +198,21 @@ impl StageRecord {
     /// then the text.
     pub fn comment(&self) -> String {
         let blocked_by: Vec<String> = self.blocked_by.iter().map(u64::to_string).collect();
-        let (claim, role_commit, team_commit, harness, by) = match &self.by {
-            Author::Worker { consult, claim, role_commit, team_commit, harness } => {
+        let (claim, role_commit, team_commit, harness, model, by) = match &self.by {
+            Author::Worker { consult, claim, role_commit, team_commit, harness, model } => {
                 let by = if *consult { CONSULT } else { "" };
-                (claim.as_str(), role_commit.as_str(), team_commit.as_str(), harness.key(), by)
+                let model = model.as_deref().unwrap_or("");
+                (
+                    claim.as_str(),
+                    role_commit.as_str(),
+                    team_commit.as_str(),
+                    harness.key(),
+                    model,
+                    by,
+                )
             }
-            Author::Human => ("", "", "", "", HUMAN),
-            Author::Fleet => ("", "", "", "", FLEET),
+            Author::Human => ("", "", "", "", "", HUMAN),
+            Author::Fleet => ("", "", "", "", "", FLEET),
         };
         let marker = record::marker(
             STAGE_RECORD,
@@ -213,6 +224,7 @@ impl StageRecord {
                 ("role_commit", role_commit),
                 ("team_commit", team_commit),
                 ("harness", harness),
+                ("model", model),
                 ("blocked_by", &blocked_by.join(",")),
             ],
         );
@@ -240,6 +252,7 @@ impl StageRecord {
                     Some(harness) => Harness::read(harness)?,
                     None => Harness::UNNAMED,
                 },
+                model: fields.get("model").map(str::to_string),
             },
         };
         Some(StageRecord {
@@ -646,6 +659,7 @@ mod tests {
                 role_commit: "r1".to_string(),
                 team_commit: "t1".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             },
             blocked_by: vec![],
             text: format!("{stage} is done"),
@@ -670,6 +684,7 @@ mod tests {
             role_commit: "abc".to_string(),
             team_commit: "def".to_string(),
             harness: Harness::ClaudeCode,
+            model: None,
         };
         let consult = Author::Worker {
             consult: true,
@@ -677,6 +692,7 @@ mod tests {
             role_commit: "abc".to_string(),
             team_commit: "def".to_string(),
             harness: Harness::ClaudeCode,
+            model: None,
         };
         let stated = Declared::ALL.into_iter().map(Stated::Declared).chain([Stated::Sent]);
         let by = [worker, consult, Human];
@@ -736,6 +752,19 @@ mod tests {
         // A human, and the fleet, are a session of none.
         assert!(!human("build", Stated::Declared(Pass)).comment().contains("harness"));
         assert!(!StageRecord::lock_closed("build", 3).comment().contains("harness"));
+    }
+
+    #[test]
+    fn a_worker_s_record_names_the_model_it_ran_where_it_ran_one() {
+        let mut written = record("build", Pass, "c1");
+        if let Author::Worker { harness, model, .. } = &mut written.by {
+            (*harness, *model) = (Harness::Pi, Some("openai/gpt-5.5".to_string()));
+        }
+        let comment = written.comment();
+        assert!(comment.contains(" harness=pi model=openai/gpt-5.5-->"), "{comment}");
+        assert_eq!(StageRecord::read(&comment), Some(written));
+        // One started on its command as written names none.
+        assert!(!record("build", Pass, "c1").comment().contains("model="));
     }
 
     #[test]

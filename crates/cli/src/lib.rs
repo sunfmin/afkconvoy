@@ -15,7 +15,8 @@ use afkconvoy_core::line::Line;
 use afkconvoy_core::patrol::PATROL_ENV;
 use afkconvoy_core::position::Declared;
 use afkconvoy_core::role::{
-    CONSULT_ENV, HARNESS_ENV, ISSUE_ENV, ROLE_COMMIT_ENV, ROLE_ENV, STAGE_ENV, TEAM_COMMIT_ENV,
+    CONSULT_ENV, HARNESS_ENV, ISSUE_ENV, MODEL_ENV, ROLE_COMMIT_ENV, ROLE_ENV, STAGE_ENV,
+    TEAM_COMMIT_ENV,
 };
 
 use anyhow::Context;
@@ -345,6 +346,9 @@ enum Command {
         /// The harness a worker's stage ran on [a human names none]
         #[arg(long, env = HARNESS_ENV, value_parser = harness, requires = "role_commit")]
         harness: Option<Harness>,
+        /// The model a worker ran, where it was started on one [a human names none]
+        #[arg(long, env = MODEL_ENV, requires = "role_commit")]
+        model: Option<String>,
         /// The worker is the stage's consult, letting its `escalate` through [a human is none]
         #[arg(long, env = CONSULT_ENV)]
         consult: bool,
@@ -370,6 +374,9 @@ enum Command {
         /// The harness a consult ran on [a human names none]
         #[arg(long, env = HARNESS_ENV, value_parser = harness, requires = "role_commit")]
         harness: Option<Harness>,
+        /// The model a worker ran, where it was started on one [a human names none]
+        #[arg(long, env = MODEL_ENV, requires = "role_commit")]
+        model: Option<String>,
     },
     /// Send an issue to a named stage of its workflow (a human's command, and a consult's)
     #[command(after_long_help = include_str!("help/send.txt"))]
@@ -390,6 +397,9 @@ enum Command {
         /// The harness a consult ran on [a human names none]
         #[arg(long, env = HARNESS_ENV, value_parser = harness, requires = "role_commit")]
         harness: Option<Harness>,
+        /// The model a worker ran, where it was started on one [a human names none]
+        #[arg(long, env = MODEL_ENV, requires = "role_commit")]
+        model: Option<String>,
         /// The worker is the stage's consult [a human is none]
         #[arg(long, env = CONSULT_ENV)]
         consult: bool,
@@ -855,9 +865,11 @@ fn ran(
     role_commit: Option<String>,
     team_commit: Option<String>,
     harness: Option<Harness>,
+    model: Option<String>,
 ) -> Option<stage::Ran> {
     let (role_commit, team_commit) = role_commit.zip(team_commit)?;
-    Some(stage::Ran { role_commit, team_commit, harness: harness.unwrap_or(Harness::UNNAMED) })
+    let harness = harness.unwrap_or(Harness::UNNAMED);
+    Some(stage::Ran { role_commit, team_commit, harness, model })
 }
 
 pub(crate) fn this_host() -> String {
@@ -1184,6 +1196,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             role_commit,
             team_commit,
             harness,
+            model,
             consult,
         } => {
             let declaring = stage::Declaring {
@@ -1192,16 +1205,16 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 declared: verdict,
                 blocked_by,
                 text: text.read()?,
-                ran: ran(role_commit, team_commit, harness),
+                ran: ran(role_commit, team_commit, harness, model),
                 consult,
             };
             stage::verdict(&Repo::here()?, declaring)
         }
-        Command::Rule { issue, text, stage, role_commit, team_commit, harness } => {
+        Command::Rule { issue, text, stage, role_commit, team_commit, harness, model } => {
             let issue = issue.number();
             // With the commits it ran under, the ruling is a consult's: a
             // stage record under its claim, as a verdict is.
-            if let Some(ran) = ran(role_commit, team_commit, harness) {
+            if let Some(ran) = ran(role_commit, team_commit, harness, model) {
                 let Some(stage) = stage else {
                     anyhow::bail!(
                         "a consult rules with `--stage`, the stage that asked it: its brief \
@@ -1223,12 +1236,12 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let team = team::load(team::From::Config)?.team;
             steer::rule(&Repo::here()?, &team, issue, text.read()?)
         }
-        Command::Send { issue, stage, text, role_commit, team_commit, harness, consult } => {
+        Command::Send { issue, stage, text, role_commit, team_commit, harness, model, consult } => {
             let issue = issue.number();
             let team = team::load(team::From::Config)?.team;
             // With the commits it ran under, the sending is a consult's: a
             // stage record under its claim, as its ruling is.
-            if let Some(ran) = ran(role_commit, team_commit, harness) {
+            if let Some(ran) = ran(role_commit, team_commit, harness, model) {
                 if !consult {
                     anyhow::bail!(
                         "a worker sends an issue to a stage only as its stage's consult: a \

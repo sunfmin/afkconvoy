@@ -71,8 +71,9 @@ pub fn propose(
     let ruling = row.ruling;
     let kept = read.kept()?;
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
-    // The proposal of a precedent runs on the default: a team names no harness for it.
-    let (team, harness) = (&bound.team, bound.harness);
+    // The proposal of a precedent is cast by nothing: it runs the host kit's first.
+    let first = fleet.first()?;
+    let (team, harness) = (&bound.team, first.harness);
     let launch = agent.command(harness)?;
     let work = &kept
         .team
@@ -134,7 +135,7 @@ pub fn propose(
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
         team_dir: &kept.copy.dir.display().to_string(),
-        model: None,
+        model: first.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &kept_dir,
         host_user,

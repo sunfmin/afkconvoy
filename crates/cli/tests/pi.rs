@@ -359,7 +359,8 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
              AFKCONVOY_WRITES='true' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
              AFKCONVOY_ROLE_COMMIT='{dev}' AFKCONVOY_TEAM_COMMIT='{team}' \
-             AFKCONVOY_HARNESS='pi' && pi --approve --no-skills --skill '{role}/.claude/skills' \
+             AFKCONVOY_HARNESS='pi' AFKCONVOY_MODEL='openai/gpt-5.5' && pi --approve --no-skills \
+             --skill '{role}/.claude/skills' \
              --extension '{kept}/afkconvoy.js' --model 'openai/gpt-5.5'",
             guard = env!("CARGO_BIN_EXE_afkconvoy"),
             role = role.display(),

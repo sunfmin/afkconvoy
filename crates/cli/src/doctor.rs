@@ -1840,8 +1840,12 @@ mod tests {
     #[test]
     fn a_frontier_nothing_was_dispatched_from_names_the_failed_step_or_the_dispatch() {
         let mut state = state();
-        let waiting =
-            |number| Dispatchable { number, title: format!("issue {number}"), stage: None };
+        let waiting = |number| Dispatchable {
+            number,
+            title: format!("issue {number}"),
+            stage: None,
+            cast: None,
+        };
         state.set.frontier = vec![waiting(3), waiting(5)];
         // the last tick left the frontier with a slot free, and nothing failed in it
         let left = |held: u64| {
