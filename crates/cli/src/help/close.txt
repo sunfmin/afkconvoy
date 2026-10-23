@@ -25,6 +25,7 @@ WHAT IT ANSWERS
 WHAT TRIPS YOU UP
 
   - `--instance` is required, and must be the instance that holds the claim.
-  - It does not read the verdict. Any claim of the instance whose worktree has no commit
-    past the base branch and nothing uncommitted is closed — one whose worker has only
-    just started as well.
+  - It does not read the verdict. Any claim of the instance whose committed tree equals
+    the base branch's current tree on the remote and has nothing uncommitted is closed,
+    whatever commits the branch holds — one whose worker has only just started as well.
+    A refusal names the differing files.

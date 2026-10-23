@@ -623,8 +623,13 @@ mod tests {
 
     #[test]
     fn close_releases_after_the_issue_is_closed() {
-        let clean =
-            Progress { commits_ahead: Some(0), dirty: false, last_commit: None, touched: None };
+        let clean = Progress {
+            commits_ahead: Some(0),
+            trees_equal: Some(true),
+            dirty: false,
+            last_commit: None,
+            touched: None,
+        };
         let proof = Workless::of(&clean).unwrap();
         let mut did = vec![];
         let released = close::<(), _>(7, &proof, |step| {

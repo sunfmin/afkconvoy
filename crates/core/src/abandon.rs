@@ -218,7 +218,13 @@ mod tests {
     const STOPPED: WorkerState = WorkerState::Idle { quiet: Some(GRACE) };
 
     fn held() -> Progress {
-        Progress { commits_ahead: Some(2), dirty: true, last_commit: Some(1), touched: Some(1) }
+        Progress {
+            commits_ahead: Some(2),
+            trees_equal: Some(false),
+            dirty: true,
+            last_commit: Some(1),
+            touched: Some(1),
+        }
     }
 
     fn silent() -> Silent {

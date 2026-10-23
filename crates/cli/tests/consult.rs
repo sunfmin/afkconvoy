@@ -831,6 +831,7 @@ fn already_satisfied_over_a_branch_that_holds_work_goes_to_its_consult() {
     declare(&world, "build", "already-satisfied", "Nothing to do.");
     assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
     assert_eq!(world.state(7), "open");
+    assert!(world.comments(7).last().unwrap().contains("half.txt"));
     consulted_on(&world, 1180, "already-satisfied");
 }
 
