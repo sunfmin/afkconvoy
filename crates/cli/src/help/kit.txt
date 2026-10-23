@@ -59,3 +59,8 @@ WHAT TRIPS YOU UP
   for the model an issue's casting, the host kit's first or the stock consult
   names. A bound repo adds its role flags.
   Probing sends each model a real prompt: it spends a little of each login.
+  A harness the fleet finds refusing every prompt is paused on this host: left
+  out of the host kit, and so of every range, until a probe finds it working.
+  Each is probed every hour; one that answers here is back too. The pause is
+  the host's running state, in its cache: this file is not changed. `plan`,
+  `doctor` and the panel say which is paused, since when and why.

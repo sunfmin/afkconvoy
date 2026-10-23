@@ -172,14 +172,23 @@ fn start(
             (stock.harness, stock.model)
         }
         (None, None) => {
-            let cast = match fleet.cast(&issue.labels)? {
-                Ok(cast) => cast,
-                Err(_) if held => fleet.first()?,
-                Err(why) => bail!("issue #{number} is not dispatched: {why}"),
+            // A caster's casting to a paused harness is cast again: until it
+            // is, the issue runs as one with no casting.
+            let recast = !held && fleet.recast(number, &issue.labels)?;
+            let cast = match fleet.cast(&issue.labels, recast) {
+                Ok(Ok(cast)) => cast,
+                Ok(Err(_)) if held => fleet.first()?,
+                Err(error) if held && error.is::<crate::paused::Held>() => fleet.first()?,
+                Ok(Err(why)) => bail!("issue #{number} is not dispatched: {why}"),
+                Err(error) => return Err(error),
             };
             (cast.harness, cast.model)
         }
     };
+    // No worker is started on a harness paused on this host.
+    if let Some(pause) = crate::paused::Pauses::here()?.of(harness)? {
+        return Err(crate::paused::Held::of(&pause, fleet.now).into());
+    }
     let launch = agent.command(harness)?;
     if crate::harness_down::down(&fleet.repo, harness, fleet.now)? {
         return Err(crate::harness_down::Held.into());

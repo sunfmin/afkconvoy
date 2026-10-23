@@ -49,6 +49,7 @@ mod rebuild;
 mod rehearse;
 mod release;
 mod role;
+mod roster;
 mod scaffold;
 mod slow_gate;
 mod smoke;

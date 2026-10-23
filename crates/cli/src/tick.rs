@@ -67,7 +67,7 @@ struct Failure {
 
 /// Since when a worker has waited on its own background work, as a tick's line
 /// says it: `since 2026-10-20 23:03 UTC, 12m ago`.
-fn waiting_since(since: u64, now: u64) -> String {
+pub(crate) fn waiting_since(since: u64, now: u64) -> String {
     let days = since / 86_400;
     let (hour, minute) = (since % 86_400 / 3600, since % 3600 / 60);
     // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`).
@@ -142,6 +142,12 @@ pub fn tick(
     stop: &Stop,
     before: Option<&Before>,
 ) -> Result<(Ticked, Fleet)> {
+    // Each harness paused on this host is probed every hour (docs/adr/0020):
+    // one that answers is back in the host kit for this tick's rebuild. A
+    // probe that cannot be made leaves it paused, and costs the tick nothing.
+    if let Ok(repo) = Repo::here() {
+        let _ = crate::paused::probe(&repo, me.instance.as_str(), &me.host, me.now);
+    }
     let (mut fleet, mut open) = Fleet::read(me.now)?;
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
     // What no consult saw goes to one first (docs/adr/0018), and is read
@@ -173,7 +179,7 @@ pub fn tick(
         };
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
-            if error.is::<crate::harness_down::Held>() {
+            if error.is::<crate::harness_down::Held>() || error.is::<crate::paused::Held>() {
                 if let TickStep::Dispatch { issue } = step
                     && !fleet
                         .scan

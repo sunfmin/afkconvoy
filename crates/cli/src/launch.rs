@@ -265,11 +265,11 @@ const PROBE_MARK: &str = "AFKCONVOY_PROBE_ANSWER";
 /// Sends `model` of `harness` the one-line probe through the worker launch
 /// command `command`, in the login shell a worker gets, with what this host
 /// keeps for it → whether it answered within the time limit, and how fast.
-pub fn probe(harness: Harness, command: &str, model: &str) -> crate::kit::Answer {
+pub fn probe(harness: Harness, command: &str, model: Option<&str>) -> crate::kit::Answer {
     use crate::kit::Answer;
     let Ok(kept) = crate::kept::keep(harness, false) else { return Answer::Silent };
     let kept = kept.display().to_string();
-    let Some(question) = harness.prompt_question(command, &kept, Some(model), PROBE_PROMPT) else {
+    let Some(question) = harness.prompt_question(command, &kept, model, PROBE_PROMPT) else {
         return Answer::Unsendable;
     };
     let started = Instant::now();

@@ -111,6 +111,22 @@ impl Kit {
         self.harnesses.iter().map(held).collect()
     }
 
+    /// The host kit as this host can start it now: without the harnesses
+    /// `paused` on it (docs/adr/0020), and with no stock consult named on
+    /// one of them — it then runs the first of the rest.
+    pub fn without(&self, paused: &[afkconvoy_core::casting::Paused]) -> Kit {
+        let is_paused = |harness: Harness| paused.iter().any(|pause| pause.harness == harness);
+        Kit {
+            harnesses: self
+                .harnesses
+                .iter()
+                .filter(|held| !is_paused(held.harness))
+                .cloned()
+                .collect(),
+            stock_consult: self.stock_consult.clone().filter(|named| !is_paused(named.harness)),
+        }
+    }
+
     /// What the stock consult runs: the harness and model named for it, or
     /// the host kit's first.
     pub fn stock_consult(&self) -> Option<Named> {
@@ -164,6 +180,13 @@ pub fn load() -> Result<Kit> {
     Ok(kit)
 }
 
+/// The host kit as this host can start it now: its file without the
+/// harnesses paused on it (`Kit::without`), with them.
+pub fn running() -> Result<(Kit, Vec<afkconvoy_core::casting::Paused>)> {
+    let paused = crate::paused::read();
+    Ok((load()?.without(&paused), paused))
+}
+
 /// The harness and model the stock consult runs, as this host's host kit
 /// says (`Kit::stock_consult`).
 pub fn stock_consult() -> Result<Named> {
@@ -172,20 +195,34 @@ pub fn stock_consult() -> Result<Named> {
 
 /// The host kit as `doctor` and `plan` show it: where it is kept, each
 /// harness in order with its command and its models in order, each with when
-/// it was last probed, and what the stock consult runs.
-pub fn show() -> Value {
+/// it was last probed, what the stock consult runs, and each harness paused
+/// on the host, since when and why — which is left out of it until a probe
+/// finds it working.
+pub fn show(now: u64) -> Value {
     let file = path().map(|path| path.display().to_string()).ok();
+    let paused = crate::paused::read();
+    let paused_said: Vec<Value> = paused
+        .iter()
+        .map(|pause| {
+            json!({"harness": pause.harness, "since": pause.since, "why": pause.why,
+                "probed": pause.probed, "said": crate::paused::said(pause, now)})
+        })
+        .collect();
     match load() {
-        Ok(kit) => json!({
-            "path": file,
-            "harnesses": kit.harnesses,
-            "stock_consult": kit.stock_consult().map(|named| json!({
-                "harness": named.harness,
-                "model": named.model,
-                "named": kit.stock_consult.is_some(),
-            })),
-        }),
-        Err(error) => json!({"path": file, "error": format!("{error:#}")}),
+        Ok(kit) => {
+            let running = kit.without(&paused);
+            json!({
+                "path": file,
+                "harnesses": kit.harnesses,
+                "stock_consult": running.stock_consult().map(|named| json!({
+                    "harness": named.harness,
+                    "model": named.model,
+                    "named": running.stock_consult.is_some(),
+                })),
+                "paused": paused_said,
+            })
+        }
+        Err(error) => json!({"path": file, "error": format!("{error:#}"), "paused": paused_said}),
     }
 }
 
@@ -229,6 +266,13 @@ pub fn configure() -> Result<Value> {
     let temporary = file.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&temporary, serde_json::to_vec_pretty(&kit)?)?;
     std::fs::rename(&temporary, &file)?;
+    // A harness paused on the host that answered its probe here is back.
+    let pauses = crate::paused::Pauses::here()?;
+    for held in
+        kit.harnesses.iter().filter(|held| held.models.iter().any(|seen| seen.probed.is_some()))
+    {
+        pauses.resume(held.harness)?;
+    }
     Ok(json!({"path": file, "written": true, "kit": kit}))
 }
 
@@ -243,7 +287,7 @@ fn probe_all(asked: &[Asked]) -> Vec<Answer> {
             let running: Vec<_> = batch
                 .iter()
                 .map(|(harness, command, model)| {
-                    scope.spawn(move || crate::launch::probe(*harness, command, model))
+                    scope.spawn(move || crate::launch::probe(*harness, command, Some(model)))
                 })
                 .collect();
             answers.extend(running.into_iter().map(|run| run.join().unwrap_or(Answer::Silent)));

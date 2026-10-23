@@ -1,6 +1,6 @@
 WHEN TO RUN IT
 
-  Run `afkconvoy cast` in an unbound repo to cast its issues now, at the
+  Run `afkconvoy cast` in a repo to cast its issues now, at the
   terminal, rather than wait for a tick to start a caster. It casts the same
   issues a caster does, the same way.
 
@@ -16,6 +16,13 @@ WHAT IT READS AND WRITES
   `harness:` or `model:` label — and while the host kit leaves a choice to
   make: more than one harness and model, a harness held with no model being
   one.
+
+  In a bound repo an issue is the caster's while it carries a flow label, no epic
+  label and no casting, and one of its workflow's stages' ranges leaves a choice
+  (`afkconvoy help roster`). Each is sent with its stages, each with its role's
+  range, and the prompt says how the roster says to cast in each role; what is
+  offered is what those ranges hold, with what the roster says each model is good
+  at. A casting none of its stages' ranges holds is not put on.
 
   1. It reads every such issue, its title and its body.
   2. It sends them, in one prompt, to the host kit's first — its first harness
@@ -35,8 +42,8 @@ WHAT IT ANSWERS
 
   {cast, uncast}: cast lists {issue, harness, model, why} of each issue it
   labelled, uncast {issue, why} of each it did not. With no choice to make or
-  no issue to cast, both are empty and `said` says why. Errors: a bound repo;
-  a host kit that cannot be read; a first harness that can be sent no prompt
+  no issue to cast, both are empty and `said` says why. Errors: a host kit,
+  or a bound repo's team, that cannot be read; a first harness that can be sent no prompt
   but in a worker's terminal (DSH); a model that did not answer.
 
 WHAT TRIPS YOU UP
@@ -44,7 +51,7 @@ WHAT TRIPS YOU UP
   A tick holds an issue that waits for a caster back while one runs, for ten
   minutes at most from its start, and starts no second one meanwhile; `plan`
   shows it as `caster` and the issue as "held for the caster". An issue the
-  caster had and did not cast is dispatched uncast, on the host kit's first,
+  caster had and did not cast is dispatched uncast, on its range's first,
   and `plan` and the panel say so. A switch chooses whatever the casting:
   while one stands, nothing is held for a caster.
   Casting sends the host kit's first a real prompt: it spends some of its

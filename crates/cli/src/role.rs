@@ -147,9 +147,15 @@ impl Staged {
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
         // A casting none of the workflow's stages' ranges holds is not
         // dispatched (docs/adr/0020).
-        let kit = crate::kit::load()?.range();
+        // A caster's casting to a paused harness is cast again: until it is,
+        // the issue runs as one with no casting.
+        let labels = match fleet.recast(issue, labels)? {
+            true => casting::without_casting(labels),
+            false => labels.to_vec(),
+        };
+        let kit = crate::kit::running()?.0.range();
         let ranges = casting::stage_ranges(&kept.team, workflow, &kit);
-        if let Some(why) = casting::held_by_none(labels, &ranges, fleet.chosen) {
+        if let Some(why) = casting::held_by_none(&labels, &ranges, fleet.chosen) {
             return Err(See::Workflows.refusal(format!("issue #{issue} is not dispatched: {why}")));
         }
         // A worker in a role runs the issue's casting within its role's
@@ -157,7 +163,7 @@ impl Staged {
         // host's chosen harness, where a switch chose one, wins over both.
         let (harness, model) = match &by {
             Some((_, role)) => {
-                let cast = fleet.cast_in(role, labels)?;
+                let cast = fleet.cast_in(role, &labels)?;
                 (cast.harness, cast.model)
             }
             None => {
