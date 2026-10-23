@@ -7,6 +7,7 @@ mod common;
 mod abandon;
 mod admission;
 mod board;
+mod casting;
 mod check;
 mod claims;
 mod codex;

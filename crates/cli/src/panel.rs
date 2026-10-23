@@ -286,7 +286,13 @@ impl Panel {
             put.at(None, card, List::AtWork);
         }
         for issue in &set.frontier {
-            let card = Card::new(issue.number, &issue.title);
+            let mut card = Card::new(issue.number, &issue.title);
+            // An unbound repo's says what its worker would run, and why.
+            if let Some(cast) = &issue.cast {
+                let on =
+                    cast.model.as_deref().map_or(String::new(), |model| format!(" on {model}"));
+                card = card.noted(&format!("runs {}{on}: {}", cast.harness.key(), cast.why.said()));
+            }
             put.at(issue.stage.as_deref(), card, List::Queued);
         }
         for waiting in &set.waiting_on_human {
