@@ -815,15 +815,23 @@ impl Worktree {
     /// Types one line at the worker and submits it. Typed but unsubmitted, a
     /// worker sits idle forever, indistinguishable from one that finished.
     pub fn tell(&self, terminal: &str, line: &str) -> Result<()> {
-        crate::harness_down::tell(self, terminal, crate::clock(), || {
-            self.tell_unchecked(terminal, line)
-        })
+        self.tell_at(terminal, line, crate::clock())
+    }
+
+    pub fn tell_at(&self, terminal: &str, line: &str, now: u64) -> Result<()> {
+        crate::harness_down::tell(self, terminal, now, || self.tell_unchecked(terminal, line))
     }
 
     fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
         let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
         if sent["send"]["accepted"] != true {
-            bail!("terminal {terminal} did not accept the line");
+            return Err(PromptBlocked(
+                sent["send"]["blockedReason"]
+                    .as_str()
+                    .unwrap_or("terminal did not accept the line")
+                    .to_string(),
+            )
+            .into());
         }
         Ok(())
     }

@@ -1271,6 +1271,9 @@ stands and cannot be worked
     nothing. `fix` gives the issue what it lacks; `afkconvoy help humans`.
 the fleet's state cannot be read
     GitHub, the remote or the config failed to answer; `evidence` says which.
+harness is down
+    Identical prompt refusals hold claims; one pending prompt probes every 5m.
+    Run `afkconvoy switch --harness codex --all` (another if Codex is down).
 ````
 
 ### WHAT `doctor` FINDS — warning: one issue or one patrol is held up. A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
@@ -1360,15 +1363,6 @@ Another host's fleet died
 Everything must stop now
     Kill `run`, then close the workers' terminals in orca. Every issue keeps its
     labels and stage records: a later `run` goes on from where each one was.
-
-HARNESS IS DOWN
-  Three consecutive identical `agent_prompt_blocked` send failures hold that
-  harness on this host. Its claims and progress stay in place; silence does not
-  escalate them. One pending prompt probes after five minutes, and acceptance
-  resumes sends automatically. Other harnesses continue. `doctor` names the
-  harness and refusal. To move the held work immediately:
-    afkconvoy switch --harness codex --all
-  Use another installed harness if Codex is the one that is down.
 ````
 
 

@@ -254,6 +254,14 @@ fn answer_trust(st: &mut State, at: usize) -> ! {
 
 fn terminal_send(st: &mut State) -> ! {
     let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
+    if let Some(reason) = st.doc["prompt_blocked"].as_str() {
+        st.finish(
+            &json!({"ok": false, "error": {"code": "agent_prompt_blocked", "message": reason}})
+                .to_string(),
+            1,
+            "",
+        );
+    }
     if st.doc["send_refused"] == true {
         done(st, json!({"send": {"accepted": false}}));
     }

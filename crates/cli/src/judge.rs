@@ -493,7 +493,7 @@ pub(crate) fn nudge_worker(
     };
     let brief = worktree.brief()?.display().to_string();
     afkconvoy_core::stopped::nudge(unnudged, |step| match step {
-        NudgeStep::Tell => worktree.tell(&terminal, &line(&brief)),
+        NudgeStep::Tell => worktree.tell_at(&terminal, &line(&brief), now),
         NudgeStep::Record => worktree.record_nudge(now),
     })?;
     Ok(terminal)
