@@ -325,9 +325,9 @@ fn troubleshooting_has_a_row_for_every_finding_doctor_can_give() {
         "cannot read the config file",
         "that push would be refused",
         "the remote rejects the fleet's refs under both",
-        "--worker-command was given twice for the harness",
+        "the host kit has no worker launch command",
         "is no harness",
-        "this fleet runs on a custom provider",
+        "cannot read the host kit",
     ] {
         assert!(heads.contains(&refusal), "no row for the refusal {refusal:?}");
     }
@@ -647,7 +647,7 @@ fn the_readme_explains_no_concept_and_sends_its_reader_to_the_help() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 49, "{short}");
+    assert!(short.lines().count() <= 50, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -815,7 +815,7 @@ fn a_help_names_every_key_its_command_answers_with() {
         }
         seen.insert(command.to_string());
     };
-    let agent = ["--worker-command", "agent"];
+    let agent = [];
     let on =
         |issue: &'static str, instance: &'static str| ["--issue", issue, "--instance", instance];
 

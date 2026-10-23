@@ -9,8 +9,7 @@ const LINE: &str = "refs/convoy/train/line/main";
 
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", &now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];
     world.afk(&args).ok()
 }
 
@@ -302,7 +301,7 @@ fn an_abandon_by_hand_is_refused_unless_the_tick_would_abandon() {
 fn the_loop_says_when_it_nudged_the_train_worker_and_abandoned_the_train() {
     let world = train(&[7]);
     let run = |now: &str| {
-        let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+        let args = ["run", "--host", "h1", "--second-ms", "0"];
         let more = ["--instance", "alpha", "--ticks", "1", "--now", now];
         world.afk_lines(&[&args[..], &more[..]].concat()).0
     };

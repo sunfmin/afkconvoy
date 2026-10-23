@@ -45,7 +45,7 @@ THE COMMANDS, by who runs them
   what to run when something looks wrong, or you are asked whether the fleet is working:
   it says what the fleet on this host is doing and what is wrong, each finding with the
   line that fixes it:
-      doctor  config  check  plan  run  panel  tick  takeover  patrol-now  switch
+      doctor  kit  config  check  plan  run  panel  tick  takeover  patrol-now  switch
 
   Whoever designs a team — `scaffold` to start one or a role of it from a skeleton,
   then, once `check` accepts it, the others: to review a workflow, to try one out with
@@ -93,12 +93,9 @@ RULES TO KNOW BEFORE YOU START
     one's claims: never start one beside a fleet that is running.
   - `run` never returns. Do not wait on it: start it in the background and read its
     lines, or use `tick` for one pass that exits.
-  - With a custom provider (ANTHROPIC_BASE_URL set) and no terminal, a command that
-    starts a worker needs `--worker-command`: there is nobody to ask.
-  - A fleet instance has one worker launch command for each harness its workers run.
-    `--worker-command <command>` says the default harness's, and
-    `--worker-command <harness>=<command>` one harness's, by its key: once for each.
-    A harness nobody said one for is started with its stock command.
+  - Each harness's worker launch command comes from this host's host kit, kept
+    outside the repo. Run `afkconvoy kit` at a terminal to inspect or edit it.
+    `--worker-command` is gone. A missing harness refuses the start.
   - In a bound repo the worker launch command must end in its harness — Claude Code,
     pi or Codex — taking flags: the fleet adds to it what starts each worker in its
     role and under the guard (`afkconvoy run --help` says what, for each harness), and

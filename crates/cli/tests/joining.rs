@@ -7,8 +7,7 @@ use serde_json::{Value, json};
 
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", &now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];
     world.afk(&args).ok()
 }
 
@@ -74,7 +73,7 @@ fn pr_is_open(world: &World) -> bool {
 
 fn restart(world: &World, now: &str) -> common::Answer {
     let args = ["restart", "--issue", "7", "--instance", "alpha", "--host", "h1", "--now", now];
-    world.afk(&[&args[..], &["--worker-command", "agent"]].concat())
+    world.afk(&[&args[..], &[]].concat())
 }
 
 #[test]
@@ -142,7 +141,7 @@ fn the_loop_says_which_worker_it_restarted_and_which_claim_it_escalated() {
     let world = joining();
     tick(&world, 1090);
     let run = |now: &str| {
-        let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+        let args = ["run", "--host", "h1", "--second-ms", "0"];
         let more = ["--instance", "alpha", "--ticks", "1", "--now", now];
         world.afk_lines(&[&args[..], &more[..]].concat()).0
     };

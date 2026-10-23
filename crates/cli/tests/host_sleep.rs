@@ -40,7 +40,7 @@ fn worked() -> World {
 fn run(world: &World, ticks: &str) -> Vec<String> {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let args = ["run", "--instance", "alpha", "--host", "h1"];
     let pacing = ["--second-ms", "0", "--ticks", ticks, "--host-sleep-after", "0"];
     let out = command.args(args).args(pacing).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -75,7 +75,7 @@ impl Peer {
         let mut command = peer.command(env!("CARGO_BIN_EXE_afkconvoy"), &peer.clone);
         peer.host_sleeps(&mut command);
         command.env("XDG_CACHE_HOME", world.cache());
-        let args = ["run", "--instance", "beta", "--host", "h1", "--worker-command", "agent"];
+        let args = ["run", "--instance", "beta", "--host", "h1"];
         command.args(args);
         if told {
             command.arg("--no-host-sleep");
@@ -163,7 +163,7 @@ fn an_instance_idle_less_than_ten_minutes_makes_no_check() {
     let world = worked();
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let args = ["run", "--instance", "alpha", "--host", "h1"];
     let out = command.args(args).args(["--second-ms", "0", "--ticks", "3"]).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
@@ -252,7 +252,7 @@ fn a_run_told_to_stop_while_a_check_waits_for_the_ticks_stops_at_once() {
     never_ticks(&world);
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let args = ["run", "--instance", "alpha", "--host", "h1"];
     let pacing = ["--second-ms", "0", "--host-sleep-after", "0"];
     let mut run = command.args(args).args(pacing).stdout(Stdio::piped()).spawn().unwrap();
     let mut lines = BufReader::new(run.stdout.take().unwrap()).lines();

@@ -39,6 +39,7 @@ fn worker_starts(world: &World, extra: &[&str]) -> Vec<Answer> {
 /// A repo with a backlog, whose remote logs every push.
 fn backlog() -> World {
     let world = World::new();
+    world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     world.issue(7, &["ready-for-agent"]);
     world.watch_pushes(None);
     world
@@ -215,7 +216,8 @@ fn claude_is_checked_only_as_the_first_word_of_the_worker_launch_command() {
     world.logged_out("claude");
     world.shell_knows("kim", Some("kim is an alias for claude --dangerously-skip-permissions"));
     for command in ["agent", "kim"] {
-        for start in worker_starts(&world, &["--worker-command", command]) {
+        world.kit_command("claude-code", command);
+        for start in worker_starts(&world, &[]) {
             // all a start says is that the probe that passed still stands
             let said: Vec<&str> =
                 start.stderr.lines().filter(|line| !line.starts_with("note: ")).collect();
@@ -229,8 +231,9 @@ fn claude_is_checked_only_as_the_first_word_of_the_worker_launch_command() {
 }
 
 #[test]
-fn on_a_custom_provider_plan_foresees_no_command_and_checks_claude_for_nothing() {
+fn on_a_custom_provider_plan_reads_the_host_kit_and_checks_its_command() {
     let world = backlog();
+    world.kit_command("claude-code", "agent");
     world.shell_knows("claude", None);
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
@@ -240,16 +243,18 @@ fn on_a_custom_provider_plan_foresees_no_command_and_checks_claude_for_nothing()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
     let asked = world.shell_asked();
-    assert_eq!(asked.len(), 2, "only GitHub login and the current proxy exports are read");
-    assert_eq!(asked[0], "gh auth status");
-    assert!(asked[1].starts_with("printf 'AFKCONVOY_PROXY"));
+    assert_eq!(asked.len(), 3, "the host kit's command, GitHub login and proxy exports are read");
+    assert_eq!(asked[0], "type -- 'agent'");
+    assert_eq!(asked[1], "gh auth status");
+    assert!(asked[2].starts_with("printf 'AFKCONVOY_PROXY"));
 }
 
 #[test]
 fn a_wrapper_that_resolves_to_nothing_is_refused_with_no_install_line_invented() {
     let world = backlog();
     world.shell_knows("ckim", None);
-    let passed = ["--worker-command", "ckim --yolo"];
+    world.kit_command("claude-code", "ckim --yolo");
+    let passed: [&str; 0] = [];
     for start in worker_starts(&world, &passed) {
         let error = start.error();
         assert!(error.starts_with("the worker launch command \"ckim --yolo\" cannot"), "{error}");

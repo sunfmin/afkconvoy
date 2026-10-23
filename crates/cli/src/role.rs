@@ -464,7 +464,22 @@ pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<Strin
 pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<Vec<Checked>> {
     let mut checked = vec![];
     for (harness, callers) in called {
-        let Some(proposed) = launches.of(*harness)? else { continue };
+        let proposed = match launches.of(*harness) {
+            Ok(Some(proposed)) => proposed,
+            Ok(None) => continue,
+            Err(error) => {
+                checked.push(Checked {
+                    harness: *harness,
+                    callers: callers.clone(),
+                    command: String::new(),
+                    tool: None,
+                    fault: Some(launches.said(&format!("{error:#}"), *harness, callers)),
+                    flags_fault: None,
+                });
+                continue;
+            }
+        };
+
         let said = |fault: String| launches.said(&fault, *harness, callers);
         let takes = || harness.takes(proposed.as_str(), proposed.flags().as_deref());
         checked.push(Checked {

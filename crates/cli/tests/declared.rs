@@ -8,8 +8,7 @@ use serde_json::{Value, json};
 
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", &now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];
     world.afk(&args).ok()
 }
 
@@ -54,7 +53,7 @@ fn declare(world: &World, marker: &str, at: u64) {
 }
 
 fn run_line(world: &World, now: &str) -> Vec<String> {
-    let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let args = ["run", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "1", "--now", now];
     world.afk_lines(&[&args[..], &more[..]].concat()).0
 }

@@ -1,22 +1,48 @@
 //! A host's per-harness additions to the worker login shell's proxy bypass.
 use crate::harness::Harness;
-use crate::launch::{Supplied, supplied};
+
 use crate::line::quoted;
 
-/// Reads the same bare/default and named forms as a worker launch command.
-/// An empty list explicitly leaves the inherited environment alone.
-pub fn lists(given: &[String], default: Harness) -> Result<Supplied, String> {
-    supplied(given, default).map_err(|why| {
-        why.replace("--worker-command", "--worker-no-proxy")
-            .replace("worker launch command", "worker proxy bypass list")
-            .replace("<command>", "<hosts>")
-            .replace("command", "list")
-    })
+/// The host's explicit per-harness proxy bypass lists.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Lists {
+    values: Vec<(Harness, String)>,
+}
+
+impl Lists {
+    pub fn of(&self, harness: Harness) -> Option<&str> {
+        self.values.iter().find(|(named, _)| *named == harness).map(|(_, value)| value.as_str())
+    }
+}
+
+/// Read bare/default and harness=hosts forms. Empty explicitly disables stock.
+pub fn lists(given: &[String], default: Harness) -> Result<Lists, String> {
+    let mut values: Vec<(Harness, String)> = vec![];
+    for value in given {
+        let named = value.split_once('=').filter(|(name, _)| !name.contains(char::is_whitespace));
+        let (harness, hosts) = match named {
+            Some((name, hosts)) => match Harness::read(name) {
+                Some(harness) => (harness, hosts),
+                None => {
+                    return Err(format!("--worker-no-proxy {value:?}: {}", Harness::unknown(name)));
+                }
+            },
+            None => (default, value.as_str()),
+        };
+        if values.iter().any(|(named, _)| *named == harness) {
+            return Err(format!(
+                "--worker-no-proxy was given twice for the harness `{}`",
+                harness.key()
+            ));
+        }
+        values.push((harness, hosts.to_string()));
+    }
+    Ok(Lists { values })
 }
 
 /// The host's addition, or the harness's stock list. None leaves both
 /// inherited spellings untouched; an explicitly empty list turns stock off.
-pub fn addition(said: &Supplied, harness: Harness) -> Option<&str> {
+pub fn addition(said: &Lists, harness: Harness) -> Option<&str> {
     said.of(harness)
         .or(if harness == Harness::Dsh { Some("api.deepseek.com") } else { None })
         .filter(|list| !list.is_empty())
@@ -67,7 +93,7 @@ mod tests {
 
     #[test]
     fn dsh_alone_has_a_stock_addition_which_a_host_can_turn_off() {
-        let stock = Supplied::default();
+        let stock = Lists::default();
         for harness in Harness::ALL {
             assert_eq!(
                 addition(&stock, harness),

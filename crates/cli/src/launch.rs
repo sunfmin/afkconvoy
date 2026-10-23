@@ -1,24 +1,16 @@
-//! Settles the worker launch commands of a start, one for each harness its
-//! workers run: asks the login shell — the one a worker gets — what a
-//! command's first word is, and a human which command, when nobody said and
-//! the fleet is on a custom provider.
-//!
-//! A command goes to orca as it was given, but started under `nice` with a
-//! `TMPDIR` of its worktree's own (`Worktree::start`). It is put in no file and
-//! no environment, and nothing of this process's environment goes with it.
+//! Reads this host's worker launch commands from its host kit and checks
+//! their first words in the login shell a worker gets. Commands are passed
+//! to orca as written, under nice with the worker's own TMPDIR.
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
-use std::io::{BufRead, IsTerminal, Read, Write};
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::gate::key;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::launch::{
-    LaunchCommand, Source, Supplied, candidates, checked, first_word, no_reply, of_harness,
-    question, replied, source, supplied,
-};
+use afkconvoy_core::launch::{LaunchCommand, checked, first_word, of_harness};
 use anyhow::{Result, anyhow, bail};
 
 use crate::config;
@@ -72,12 +64,10 @@ impl Proposed {
     }
 }
 
-/// The worker launch commands of one start: what `--worker-command` said,
-/// and the command of each harness as it was proposed — looked up, and a
-/// human asked, the first time that harness's is wanted, and once.
+/// One start's snapshot of the host kit, with shell resolutions checked once.
 pub struct Launches {
-    supplied: Supplied,
-    bypass: Supplied,
+    kit: Result<crate::kit::Kit, String>,
+    bypass: afkconvoy_core::proxy::Lists,
     /// The default harness of the repo here: the one the bare form names.
     default: Harness,
     /// Whether the repo here is bound: an unbound repo knows of no harness,
@@ -91,26 +81,21 @@ pub struct Launches {
 }
 
 impl Launches {
-    /// The commands of a start given the values `given` to
-    /// `--worker-command`. The default harness is the one the config of the
-    /// repo here names — Claude Code where no config can be read: whatever
-    /// kept it from being read is the startup probe's to report, after the
-    /// commands that read it were looked for. An error is `supplied`'s.
-    pub fn new(given: &[String], starts: bool) -> Result<Launches> {
-        let mut launches = Launches::foreseen();
-        let supplied = supplied(given, launches.default);
-        launches.supplied = supplied.map_err(|why| See::Troubleshooting.refusal(why))?;
+    /// Read the host kit for a start that may start workers.
+    pub fn new(starts: bool) -> Result<Launches> {
+        let mut launches = Self::foreseen();
+        if let Err(why) = &launches.kit {
+            bail!("{why}");
+        }
         launches.starts = starts;
         Ok(launches)
     }
 
-    /// The commands a `run` started here with no `--worker-command` would
-    /// give its workers, for a start that starts none (`plan`).
     pub fn foreseen() -> Launches {
         let config = config::default_file().and_then(|file| config::load(&file)).ok();
         Launches {
-            supplied: Supplied::default(),
-            bypass: Supplied::default(),
+            kit: crate::kit::load().map_err(|error| format!("{error:#}")),
+            bypass: afkconvoy_core::proxy::Lists::default(),
             default: config.as_ref().map_or(Harness::DEFAULT, |config| config.harness()),
             bound: config.is_some_and(|config| config.bound.is_some()),
             starts: false,
@@ -118,7 +103,7 @@ impl Launches {
         }
     }
 
-    /// The host's proxy bypass additions, given like its worker commands.
+    /// The host's proxy bypass additions, keyed by harness or bare for the default.
     pub fn with_no_proxy(mut self, given: &[String]) -> Result<Self> {
         self.bypass = afkconvoy_core::proxy::lists(given, self.default)
             .map_err(|why| See::Troubleshooting.refusal(why))?;
@@ -159,16 +144,8 @@ impl Launches {
         self.starts
     }
 
-    /// Whether `--worker-command` said the command of `harness`.
-    pub fn says(&self, harness: Harness) -> bool {
-        self.supplied.of(harness).is_some()
-    }
-
-    /// The command the workers of `harness` would be started with: what
-    /// `--worker-command` said for it, its stock one, or a human's answer,
-    /// with its first word looked up in a login shell. `None` only of a
-    /// start that starts no worker: on a custom provider, where a human
-    /// would be asked, it is unknown. An error is nobody to ask, or no reply.
+    /// The host kit's command, with its first word resolved in the login shell.
+    /// An absent harness is an error; no stock command is substituted.
     pub fn of(&self, harness: Harness) -> Result<Option<&Proposed>> {
         let cell = self.proposed.iter().find(|(named, _)| *named == harness).map(|(_, cell)| cell);
         let cell = cell.ok_or_else(|| anyhow!("`{}` is no harness", harness.key()))?;
@@ -185,22 +162,11 @@ impl Launches {
     }
 
     fn propose(&self, harness: Harness) -> Result<Option<Proposed>> {
-        let provider = harness.provider_variable().and_then(|name| std::env::var(name).ok());
-        let terminal =
-            self.starts && std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
-        let command =
-            match source(harness, provider.as_deref(), self.supplied.of(harness), terminal) {
-                Source::Given(command) => command,
-                Source::Ask => ask(
-                    provider.as_deref().unwrap_or_default(),
-                    harness,
-                    &login_shell("alias").unwrap_or_default(),
-                    &mut std::io::stdin().lock(),
-                    &mut std::io::stderr(),
-                )?,
-                Source::Refuse(why) if self.starts => bail!(why),
-                Source::Refuse(_) => return Ok(None),
-            };
+        let kit = self.kit.as_ref().map_err(|why| anyhow!("{why}"))?;
+        let command = kit.commands.get(harness.key()).cloned().ok_or_else(|| anyhow!(
+            "the host kit has no worker launch command for the harness `{}`: run `afkconvoy kit`",
+            harness.key()
+        ))?;
         let resolution = first_word(&command)
             .and_then(|word| login_shell(&format!("type -- '{}'", word.replace('\'', "'\\''"))))
             .filter(|answer| !answer.trim().is_empty());
@@ -211,7 +177,10 @@ impl Launches {
     /// resolve in a login shell: no worker is started on one that does not.
     pub fn command(&self, harness: Harness) -> Result<LaunchCommand> {
         let proposed = self.of(harness)?;
-        let proposed = proposed.ok_or_else(|| See::Troubleshooting.refusal(no_reply()))?;
+        let proposed = proposed.ok_or_else(|| {
+            See::Troubleshooting
+                .refusal("no worker launch command in the host kit: run `afkconvoy kit`")
+        })?;
         let checked = proposed.checked();
         checked.map_err(|why| See::Troubleshooting.refusal(self.said(&why, harness, &[])))
     }
@@ -230,47 +199,47 @@ impl Launches {
         }
     }
 
-    /// What tells one start's commands from another's, for a startup probe
-    /// that checked them (`gate::key`: a command is written to no file): the
-    /// default harness's, and what `--worker-command` said. `None`: the
-    /// default's is unknown.
+    /// Fingerprint the entire kit so any edit invalidates a standing probe.
     pub fn key(&self) -> Result<Option<u64>> {
         let Some(default) = self.of(self.default)? else { return Ok(None) };
         let mut text = default.as_str().to_string();
-        for (harness, command) in self.supplied.each() {
+        for (harness, command) in
+            self.kit.as_ref().into_iter().flat_map(|kit| kit.commands.iter()).filter_map(
+                |(name, command)| Harness::read(name).map(|harness| (harness, command.as_str())),
+            )
+        {
             text.push_str(&format!("\n{}={command}", harness.key()));
         }
         Ok(Some(key(&text)))
     }
 
-    /// What a `run` logs of its commands: the first word of the default
-    /// harness's, and that of each other one `--worker-command` said, by the
-    /// harness's key. A first word alone: what follows may name what a human
-    /// keeps to themselves.
+    /// First words alone for the run log; commands remain in the host kit.
     pub fn logged(&self) -> (String, BTreeMap<String, String>) {
         let word = |command: &str| first_word(command).unwrap_or_default().to_string();
         let default = self.of(self.default).ok().flatten().map(|command| word(command.as_str()));
-        let others = self.supplied.each().filter(|(harness, _)| *harness != self.default);
+        let others = self
+            .kit
+            .as_ref()
+            .into_iter()
+            .flat_map(|kit| kit.commands.iter())
+            .filter_map(|(name, command)| {
+                Harness::read(name).map(|harness| (harness, command.as_str()))
+            })
+            .filter(|(harness, _)| *harness != self.default);
         let others = others.map(|(harness, command)| (harness.key().to_string(), word(command)));
         (default.unwrap_or_default(), others.collect())
     }
 }
 
-/// Asks which command starts a worker of `harness`, offering the aliases
-/// `alias` printed → the answer.
-fn ask(
-    provider: &str,
-    harness: Harness,
-    aliases: &str,
-    replies: &mut impl BufRead,
-    out: &mut impl Write,
-) -> Result<String> {
-    let offered = candidates(aliases, harness);
-    write!(out, "{}", question(provider, harness, &offered))?;
-    out.flush()?;
-    let mut reply = String::new();
-    replies.read_line(&mut reply)?;
-    replied(&reply, &offered).ok_or_else(|| anyhow!(no_reply()))
+/// Whether the harness program is installed on this host's PATH.
+pub fn on_path(program: &str) -> bool {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join(program))
+        .any(|file| {
+            use std::os::unix::fs::PermissionsExt;
+            file.is_file()
+                && file.metadata().is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+        })
 }
 
 /// The models `harness` knows on this host, as it says them to a login shell
@@ -326,42 +295,4 @@ pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
         }
     };
     Some((status.success(), reader.join().ok()?))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ALIASES: &str = "kim='ANTHROPIC_BASE_URL=https://kimi claude --yolo'\nll='ls -l'\n";
-
-    fn asked(reply: &str) -> (Result<String>, String) {
-        let mut out = vec![];
-        let answer =
-            ask("https://kimi", Harness::ClaudeCode, ALIASES, &mut reply.as_bytes(), &mut out);
-        (answer, String::from_utf8(out).unwrap())
-    }
-
-    #[test]
-    fn the_human_is_shown_the_aliases_and_picks_one() {
-        let (answer, shown) = asked("1\n");
-        assert_eq!(answer.unwrap(), "kim");
-        assert!(
-            shown.contains("1. kim = ANTHROPIC_BASE_URL=https://kimi claude --yolo"),
-            "{shown}"
-        );
-        assert!(!shown.contains("ls -l"), "only the ones that start Claude: {shown}");
-    }
-
-    #[test]
-    fn a_typed_command_is_the_answer_as_typed() {
-        assert_eq!(asked("glm  --model 'big one'\n").0.unwrap(), "glm  --model 'big one'");
-    }
-
-    #[test]
-    fn no_reply_starts_nothing() {
-        for nothing in ["\n", ""] {
-            let error = asked(nothing).0.unwrap_err().to_string();
-            assert!(error.contains("nothing was started"), "{error}");
-        }
-    }
 }

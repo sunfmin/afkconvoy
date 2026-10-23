@@ -79,8 +79,6 @@ fn dispatch_applies_the_host_list_without_putting_it_in_repo_config() {
             "h1",
             "--now",
             "1000",
-            "--worker-command",
-            "agent",
             "--worker-no-proxy",
             "direct.example",
         ])

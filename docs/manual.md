@@ -1352,13 +1352,14 @@ that push would be refused
 the remote rejects the fleet's refs under both
     The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be
     kept. A push rule of the remote's is what refuses: lift it for one of the two.
---worker-command was given twice for the harness
-    The bare form is the default harness's. Give each harness one command.
+the host kit has no worker launch command
+    Run `afkconvoy kit` at a terminal to add the harness and confirm its command.
+cannot read the host kit
+    Run `afkconvoy kit` at a terminal on this host before starting the fleet.
+--worker-command is gone
+    Run `afkconvoy kit` to edit this host's worker launch commands.
 is no harness
-    `--worker-command <name>=<command>` named a harness there is none of.
-this fleet runs on a custom provider
-    A worker's shell inherits nothing of yours, and no terminal is here to ask on
-    what starts one. Say it: `--worker-command <harness>=<command>`.
+    Use claude-code, pi, codex or dsh.
 ````
 
 ### WHAT NEITHER SAYS
@@ -1564,7 +1565,7 @@ Moving running work onto another harness in one command: the host's choice of ha
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, and a harness it says none for has a stock one; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and edited with `afkconvoy kit`; a harness absent from it is refused; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:

@@ -8,8 +8,7 @@ use serde_json::{Value, json};
 const LINE: &str = "refs/convoy/train/line/main";
 
 fn tick(world: &World, now: &str) -> Value {
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", now];
     world.afk(&args).ok()
 }
 

@@ -53,8 +53,11 @@ fn dsh_is_read_on_stages_patrols_and_the_repo_and_is_probed_before_start() {
             "0",
         ],
     ] {
-        let why =
-            world.afk(&[args.as_slice(), &["--worker-command", "dsh=agent"]].concat()).error();
+        let why = {
+            world.kit_command("dsh", "agent");
+            world.afk(&args)
+        }
+        .error();
         assert!(why.contains("names no --patch"), "{why}");
         assert!(why.contains("DeepSeek Harness taking flags"), "{why}");
     }

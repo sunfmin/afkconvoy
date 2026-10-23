@@ -65,6 +65,7 @@ fn bound_alone() -> World {
 /// `bound`, of the team file `team`.
 fn bound_with(team: &str) -> World {
     let world = World::new();
+    world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     world.repo(
         "acme/dev",
         &[
@@ -226,7 +227,8 @@ fn a_stage_a_patrol_and_a_config_name_codex_and_codex_has_a_stock_worker_launch_
 fn a_command_that_does_not_take_what_the_fleet_adds_for_codex_starts_nothing() {
     let world = bound();
     world.issue(7, &["flow:audit"]);
-    let given = ["--worker-command", "codex=agent"];
+    world.kit_command("codex", "agent");
+    let given: [&str; 0] = [];
     let named = "`agent --help` names no --dangerously-bypass-hook-trust, no --config.";
     // …nor does the stock command of a Codex that is older than those flags,
     // which `plan` and `doctor` check as a start does.
@@ -234,6 +236,7 @@ fn a_command_that_does_not_take_what_the_fleet_adds_for_codex_starts_nothing() {
     let old = format!("`{stock} --help` names no --dangerously-bypass-hook-trust, no --config.");
     let said = world.afk(&[&TICK[..], &given].concat()).error();
     assert!(said.contains(named), "{said}");
+    world.kit_command("codex", stock);
     world.shell_help(Some("--add-dir --setting-sources --settings --model"));
     let refusals = [
         (named, said),

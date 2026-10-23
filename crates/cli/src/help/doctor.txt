@@ -35,13 +35,11 @@ WHAT IT ANSWERS
                                  {harness, called_for_by, command, from,
                                  starts_a_worker, takes_role_flags} — called_for_by is
                                  the repo's default, and each stage and each patrol the
-                                 repo runs that names the harness; from is `run`, when
-                                 this host's `run` logged the first word of what it
-                                 started that harness with (all it logs of it), else
-                                 `default`: what a `run` started now would use. In an
-                                 unbound repo it is the one command, of no harness:
-                                 harness is null and called_for_by empty. A harness is
-                                 left out on a custom provider with no `run` to say
+                                 repo runs that names the harness; from is `host_kit`.
+                                 Commands come from this host's kit, never a run log.
+                host_kit         {path, commands}: where the kit is kept, each harness
+                                 and its full worker launch command; {path, error}
+                                 when unreadable. Edit it with `afkconvoy kit`.
                 admission        whether a tick would start a new worker on this host
                                  now, the thresholds in force and what the host reads:
                                  as `plan` answers it (`afkconvoy plan --help`), or

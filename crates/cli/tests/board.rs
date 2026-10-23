@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 fn tick_as(world: &World, instance: &str, now: u64) -> Value {
     let now = now.to_string();
     let args = ["tick", "--instance", instance, "--host", "h1", "--now", &now];
-    world.afk(&[&args[..], &["--worker-command", "agent"]].concat()).ok()
+    world.afk(&[&args[..], &[]].concat()).ok()
 }
 
 fn tick(world: &World, now: u64) -> Value {

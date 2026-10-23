@@ -9,8 +9,7 @@ const BRANCH: &str = "tester/issue-7-issue-7";
 
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", &now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];
     world.afk(&args).ok()
 }
 
@@ -81,7 +80,7 @@ fn recovery(world: &World) -> Value {
 
 fn dispatch(world: &World, more: &[&str]) -> common::Answer {
     let mut args = vec!["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1"];
-    args.extend(["--now", "1100", "--worker-command", "agent"]);
+    args.extend(["--now", "1100"]);
     args.extend(more);
     world.afk(&args)
 }

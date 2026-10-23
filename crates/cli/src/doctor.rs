@@ -184,9 +184,6 @@ pub struct Launch {
     /// The harness, what calls for it, its command and that command's
     /// faults, each said with the harness and what calls for it.
     pub checked: Checked,
-    /// Whether the `run` on this host said so in its log; else it is the one
-    /// a `run` started now with no `--worker-command` for it would use.
-    pub of_run: bool,
 }
 
 /// What this host has of what the fleet needs.
@@ -495,7 +492,7 @@ fn host_findings(host: &Host) -> Vec<Finding> {
                 kind,
                 format!("the worker launch command `{}` {}", checked.command, kind.symptom()),
                 why.clone(),
-                "afkconvoy run --help".to_string(),
+                "afkconvoy kit".to_string(),
             ));
         }
     }
@@ -972,14 +969,9 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found
 }
 
-/// What this host has of what the fleet needs. `started_with` is what the
-/// `run` here was given as its worker launch commands, as its log has them
-/// (`read_log`); with none to say, each is the one a `run` started now would
-/// use. No human is asked.
-fn read_host(config: Option<&Config>, started_with: Option<&[String]>) -> Host {
-    let said = started_with.and_then(|given| Launches::new(given, false).ok());
-    let of_run = said.is_some();
-    let launches = said.unwrap_or_else(Launches::foreseen);
+/// What this host has of what the fleet needs, read from its current host kit.
+fn read_host(config: Option<&Config>) -> Host {
+    let launches = Launches::foreseen();
     let default = launches.default();
     let looked = tools::look(launches.of(default).ok().flatten());
     // An unbound repo knows of no harness: nothing calls for its one command's.
@@ -988,11 +980,7 @@ fn read_host(config: Option<&Config>, started_with: Option<&[String]>) -> Host {
         None => vec![(default, vec![])],
     };
     let checked = role::check(&launches, &called).unwrap_or_default();
-    let launch = |checked: Checked| Launch {
-        // A `run` says its default harness's command, and each other it was given.
-        of_run: of_run && (checked.harness == default || launches.says(checked.harness)),
-        checked,
-    };
+    let launch = |checked: Checked| Launch { checked };
     Host {
         tools: looked.found,
         gh_host: looked.host,
@@ -1002,7 +990,7 @@ fn read_host(config: Option<&Config>, started_with: Option<&[String]>) -> Host {
 }
 
 /// The worker launch commands a `run` said it started with: the first word
-/// of each, as `--worker-command` would be given them.
+/// of each, retained only as log evidence, never used to select commands.
 type StartedWith = Vec<String>;
 
 /// What the log says of the `run` of `host`: its fleet instance, the worker
@@ -1264,12 +1252,13 @@ fn host_json(host: &Host) -> Value {
     };
     json!({
         "tools": host.looked_for().map(|(looked, _)| tool(looked)).collect::<Vec<_>>(),
-        "worker_commands": host.launches.iter().map(|Launch { checked, of_run }| json!({
+        "host_kit": crate::kit::show(),
+        "worker_commands": host.launches.iter().map(|Launch { checked }| json!({
             // An unbound repo knows of no harness: nothing calls for one.
             "harness": (!checked.callers.is_empty()).then_some(checked.harness),
             "called_for_by": checked.callers,
             "command": checked.command,
-            "from": if *of_run { "run" } else { "default" },
+            "from": "host_kit",
             "starts_a_worker": checked.fault.is_none(),
             "takes_role_flags": checked.flags_fault.is_none(),
         })).collect::<Vec<_>>(),
@@ -1374,7 +1363,7 @@ pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value
     let repo = Repo::here()?;
     let log = Log::of(&repo).ok();
     let entries = log.as_ref().and_then(Log::read);
-    let (instance, started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
+    let (instance, _started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
     let mut run = Run {
         alive: listening(&repo),
         instance,
@@ -1389,7 +1378,7 @@ pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
-    let seen_host = read_host(config.as_ref().ok(), started_with.as_deref());
+    let seen_host = read_host(config.as_ref().ok());
     let state = read_state(now, &mut run).map_err(|error| format!("{error:#}"));
     let seen = Seen {
         now,
@@ -1463,7 +1452,6 @@ mod tests {
                     fault: None,
                     flags_fault: None,
                 },
-                of_run: true,
             }],
         }
     }
@@ -1659,7 +1647,7 @@ mod tests {
         let mut flagless = host();
         flagless.launches[0].checked.flags_fault = Some("it takes no --settings".into());
         let found = self::found(&flagless, &run(vec![]), &state());
-        assert_eq!(fixes(&found, "cannot start a worker in its role"), ["afkconvoy run --help"]);
+        assert_eq!(fixes(&found, "cannot start a worker in its role"), ["afkconvoy kit"]);
     }
 
     #[test]
@@ -1675,7 +1663,6 @@ mod tests {
                     fault: Some("\"pi\" resolves to nothing in a login shell".into()),
                     flags_fault: Some("`pi --help` failed in a login shell".into()),
                 },
-                of_run: false,
             });
             host
         };
@@ -2263,7 +2250,7 @@ mod tests {
         ];
         let (instance, command, ticks) = read_log(&entries, "h1");
         assert_eq!(instance.as_deref(), Some("alpha"));
-        // as `--worker-command` would be given them: the default harness's bare
+        // as the legacy start record represents them: the default harness's bare
         assert_eq!(command.unwrap(), ["claude --yolo", "pi=pi"]);
         let counts: Vec<(u64, u64)> = ticks.iter().map(|(at, tick)| (*at, tick.count)).collect();
         assert_eq!(counts, [(40, 1), (50, 2)], "its own ticks only");

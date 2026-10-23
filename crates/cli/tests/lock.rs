@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use common::{World, git, write};
 use serde_json::{Value, json};
 
-const AGENT: [&str; 2] = ["--worker-command", "agent"];
+const AGENT: [&str; 0] = [];
 
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();

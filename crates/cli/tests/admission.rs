@@ -21,7 +21,7 @@ fn backlog(numbers: &[u64]) -> World {
 
 fn tick(world: &World, now: &str) -> Value {
     let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", now];
-    world.afk(&[&args[..], &["--worker-command", "agent"]].concat()).ok()
+    world.afk(&[&args[..], &[]].concat()).ok()
 }
 
 fn dispatched(ticked: &Value) -> Vec<u64> {
@@ -54,7 +54,7 @@ fn the_tick_log_line_says_which_threshold_held_it_back() {
     let world = backlog(&[3]);
     world.busy(PAST_ANY);
     let args = ["run", "--instance", "alpha", "--host", "h1", "--ticks", "1", "--now", "1000"];
-    let more = ["--second-ms", "0", "--worker-command", "agent"];
+    let more = ["--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &more[..]].concat());
     let line = lines.iter().find(|line| line.contains("admission holds back new workers"));
     let line = line.unwrap_or_else(|| panic!("{lines:#?}"));

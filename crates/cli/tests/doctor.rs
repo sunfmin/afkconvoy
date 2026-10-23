@@ -16,7 +16,7 @@ fn doctor(world: &World, now: &str) -> Answer {
 }
 
 fn run(world: &World, extra: &[&str]) -> Vec<String> {
-    let mut args = vec!["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let mut args = vec!["run", "--host", "h1", "--second-ms", "0"];
     args.extend(extra);
     world.afk_lines(&args).0
 }
@@ -95,7 +95,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     assert_eq!(tools, [("git", "ready"), ("gh", "ready"), ("orca", "ready")]);
     // the command the `run` here said it started with
     assert_eq!(host["worker_commands"][0]["command"], "agent");
-    assert_eq!(host["worker_commands"][0]["from"], "run");
+    assert_eq!(host["worker_commands"][0]["from"], "host_kit");
 
     // the instance is found with no `--instance`: its log names it
     let fleet = &answer["fleet"];
@@ -137,7 +137,7 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     assert_eq!(answer["claims"], json!([]));
     assert_eq!(answer["issues"]["frontier"][0]["number"], 3);
     // with no `run` to say, the command is the one a `run` would use now
-    assert_eq!(answer["host"]["worker_commands"][0]["from"], "default");
+    assert_eq!(answer["host"]["worker_commands"][0]["from"], "host_kit");
     assert_eq!(answer["host"]["exclusive"], json!({"running": null, "waiting": []}));
 }
 
@@ -209,7 +209,7 @@ fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
-    let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let args = ["run", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "2", "--now", "1000"];
     let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
     let log = log(&world);
@@ -341,7 +341,7 @@ impl Drop for Running {
 }
 
 fn start(world: &World) -> Running {
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let args = ["run", "--instance", "alpha", "--host", "h1"];
     let child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args)
@@ -615,7 +615,7 @@ fn a_worktree_kept_with_no_claim_is_named_with_what_it_holds_and_how_to_remove_i
     world.issue(7, &["ready-for-agent"]);
     world.issue(8, &["ready-for-agent"]);
     let tick = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
-    world.afk(&[&tick[..], &["--worker-command", "agent"]].concat()).ok();
+    world.afk(&[&tick[..], &[]].concat()).ok();
     let orca = world.orca();
     let of = |issue: u64| {
         let rows = orca["worktrees"].as_array().unwrap();

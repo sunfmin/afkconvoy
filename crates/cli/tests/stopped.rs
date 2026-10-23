@@ -7,8 +7,7 @@ use serde_json::{Value, json};
 
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", &now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];
     world.afk(&args).ok()
 }
 
@@ -269,7 +268,7 @@ const ENDED: [&str; 4] = [
 /// The lines one tick of `run` at `now` prints.
 fn run_line(world: &World, now: u64) -> Vec<String> {
     let now = now.to_string();
-    let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let args = ["run", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "1", "--now", &now];
     world.afk_lines(&[&args[..], &more[..]].concat()).0
 }
@@ -596,17 +595,7 @@ fn a_refusing_harness_holds_claims_reports_once_and_recovers_without_restart() {
         orca["prompt_blocked"] = json!("organization disabled subscription access")
     });
     for now in [1300, 1390, 1480] {
-        world.afk(&[
-            "tick",
-            "--instance",
-            "alpha",
-            "--host",
-            "h1",
-            "--now",
-            &now.to_string(),
-            "--worker-command",
-            "agent",
-        ]);
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now.to_string()]);
     }
     assert_eq!(world.claims().len(), 1);
     world.orca_calls();
@@ -667,17 +656,7 @@ fn a_down_harness_refusing_a_new_dispatch_takes_no_slot() {
     report(&world, "done", 1000, 1000);
     world.with_orca(|orca| orca["prompt_blocked"] = json!("subscription disabled"));
     for now in [1300, 1390, 1480] {
-        world.afk(&[
-            "tick",
-            "--instance",
-            "alpha",
-            "--host",
-            "h1",
-            "--now",
-            &now.to_string(),
-            "--worker-command",
-            "agent",
-        ]);
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now.to_string()]);
     }
     world.close_issue(7);
     world.issue(9, &["ready-for-agent"]);
