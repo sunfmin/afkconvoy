@@ -18,7 +18,7 @@ use afkconvoy_core::prompt::{
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
 use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
 use afkconvoy_core::stock;
-use afkconvoy_core::team::{LAND, PRECEDENTS};
+use afkconvoy_core::team::{LAND, PRECEDENTS, Team};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -455,13 +455,20 @@ fn call(called: &mut Vec<(Harness, Vec<String>)>, harness: Harness, by: String) 
     }
 }
 
-/// Every harness the fleet of a repo `bound` to a team could be asked for,
+/// The team a repo is `bound` to as it stands now, read against the repo's
+/// `labels`: `None` where it cannot be read or does not load — no worker is
+/// started under it, and each tick says why.
+pub fn current(bound: &Bound, labels: &RepoLabels) -> Option<Team> {
+    let gh = GitHub { dir: PathBuf::from(".") };
+    let kept = Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels));
+    kept.ok().map(|kept| kept.team)
+}
+
+/// Every harness the fleet of a repo bound to `team` could be asked for,
 /// each with what calls for it: the host kit's first, every harness of each
-/// role's range (`casting::range`), as the team stands now, read against
-/// the repo's `labels`, and the stock consult's, as the host kit names it. A
-/// team that cannot be read or does not load calls for the first alone: no
-/// worker is started under it, and each tick says why.
-pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<String>)> {
+/// role's range (`casting::range`), and the stock consult's, as the host kit
+/// names it. No team (`current`) calls for the first alone.
+pub fn called_for(team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
     // A harness this host's switch chose is the one every worker starts on.
     let chosen = crate::git::Repo::here().ok().and_then(|repo| crate::switch::chosen(&repo).ok());
     if let Some(chosen) = chosen.flatten() {
@@ -472,9 +479,8 @@ pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<Strin
     if let Some(first) = kit.first() {
         call(&mut called, first.harness, BY_FIRST.to_string());
     }
-    let gh = GitHub { dir: PathBuf::from(".") };
-    if let Ok(kept) = Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels)) {
-        for role in &kept.team.roles {
+    if let Some(team) = team {
+        for role in &team.roles {
             for held in casting::range(role.roster.as_ref(), &kit.range()) {
                 call(&mut called, held.harness, format!("the range of the role `{}`", role.name));
             }
@@ -544,23 +550,22 @@ impl Checked {
 /// what calls for it and the line that fixes it: none is started in
 /// another's place, so a start that cannot start them all starts no worker.
 pub fn probe(launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
-    if let Some(why) = refusal(check(launches, &called_for(bound, labels))?) {
+    let team = current(bound, labels);
+    if let Some(why) = refusal(check(launches, &called_for(team.as_ref()))?) {
         bail!(why);
     }
-    ranged(bound, labels)
+    match team {
+        Some(team) => ranged(&team),
+        None => Ok(()),
+    }
 }
 
 /// Refuses a team one of whose roles' ranges on this host
 /// (`casting::range_faults`) holds a harness the role has no limits for,
 /// or nothing at all (docs/adr/0013, docs/adr/0020): every such role is
-/// named, with what the roster allows it and what the host kit holds. A
-/// team that cannot be read is no refusal here: each tick says why.
-pub fn ranged(bound: &Bound, labels: &RepoLabels) -> Result<()> {
-    let gh = GitHub { dir: PathBuf::from(".") };
-    let Ok(kept) = Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels)) else {
-        return Ok(());
-    };
-    let faults = casting::range_faults(&kept.team, &crate::kit::load()?.range());
+/// named, with what the roster allows it and what the host kit holds.
+fn ranged(team: &Team) -> Result<()> {
+    let faults = casting::range_faults(team, &crate::kit::load()?.range());
     if faults.is_empty() {
         return Ok(());
     }

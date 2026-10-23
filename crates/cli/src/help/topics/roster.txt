@@ -1,0 +1,66 @@
+ROSTER
+
+  A team's roster says what each of its roles' workers may run: which harnesses, on
+  which models, in what order. Read this to write one, to see why a worker started on
+  the harness it did, or to understand a refusal of `afkconvoy run` that names a range.
+
+THE ROSTER
+
+  The `roster` of the team file (`afkconvoy help team`) holds an entry per role it
+  names, by the role's short name:
+
+      roster:
+        dev:
+          cast: Hard or wide work on fable; the rest on opus.   # optional
+          run:                           # one at least, in order of preference
+            - { harness: claude-code, model: opus, good_at: most work }
+            - { harness: claude-code, model: fable, good_at: hard or wide work }
+            - { harness: pi }            # any model the host kit holds for pi
+        reviewer:
+          run: [{ harness: codex, model: gpt-5.5 }]
+
+  Each of `run` names a `harness` — claude-code, pi, codex or dsh — and may name a
+  `model`, its harness's own name for it, and `good_at`, what it is good at, which the
+  caster is told. One that names no model allows any model the host kit holds for the
+  harness, or the harness's command as written where the host kit holds none. `cast`
+  says, in the team's words, how an issue is to be cast among them: the caster is told
+  it too. A role the roster names no entry for may run whatever the host kit holds.
+
+A ROLE'S RANGE
+
+  On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`),
+  in the roster's order: a harness, or a model, the host kit does not hold is left out.
+  `afkconvoy check` answers each role's entry and its range on the host it runs on;
+  `afkconvoy show` draws the roster under the workflows.
+
+AN ISSUE'S CASTING
+
+  An issue's casting is its `harness:` and `model:` labels, which the caster
+  (`afkconvoy cast --help`) or a human puts on; the caster is given each stage's range,
+  and casts only an issue some range leaves a choice in. A worker for an issue — its
+  stage's, its consult's, its landing's — runs the casting when its role's range holds
+  it, the range's first when it does not or the issue has none, and the range's one
+  where it holds one harness and one model, whatever the casting. `afkconvoy plan`
+  says which, and why. A casting no range of the issue's workflow's stages holds is
+  not dispatched, and `plan` says why. A patrol's worker, which has no issue, runs its
+  role's range's first. A harness `afkconvoy switch` chose on a host runs every worker
+  there, whatever the roster and the casting say.
+
+WHAT IS REFUSED
+
+  - A stage, a patrol and a config name no harness and no model: `check` refuses one
+    that does, with the line to delete and the roster entry to write in its place.
+  - In the roster, `check` refuses an entry for a name that is no role, a `run` that is
+    missing or empty, a harness that is none, an allowance written twice, and a
+    harness the role holds no limits for while it holds limits for another.
+  - `afkconvoy run`, `tick` and `plan` refuse a role whose range on their host is
+    empty, or holds a harness the role holds no limits for, naming what the roster
+    allows it and what the host kit holds: add to the host kit with `afkconvoy kit`,
+    or change the roster.
+
+WHERE TO READ ON
+
+  `afkconvoy help team`       the team file the roster is a key of
+  `afkconvoy kit --help`      what this host can start, and on which models
+  `afkconvoy cast --help`     the caster, and the labels it puts on
+  `afkconvoy help glossary`   each term used here, with its one definition

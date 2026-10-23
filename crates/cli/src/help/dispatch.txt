@@ -41,17 +41,17 @@ WHAT IT READS AND WRITES
   changes to the role's copy, puts the stage's facts in the environment (AFKCONVOY_ISSUE,
   _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT, _HARNESS), and
   starts the worker launch command with the worktree and the team's copy added as
-  directories, the user's own settings left out, and the stage's model when it names
-  one — as Claude Code takes them; what a pi worker and a Codex worker are started
-  with is in `afkconvoy run --help`. The worker's harness is the one the stage names, or the default of the repo's
-  config; a consult's and a landing worker's is the default.
+  directories, the user's own settings left out, and its model when it has one — as
+  Claude Code takes them; what a pi worker and a Codex worker are started with is in
+  `afkconvoy run --help`. The worker's harness and model are its role's range's answer
+  to the issue's casting (`afkconvoy help roster`), or this host's switch's.
 
   Where the stage declared `escalate` and names a consult, the worker is started as
   that consult instead: in the consult's role, on a brief that names the skill, the
   stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`,
   or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is
-  `true` in its environment, the guard refuses its commits, and the stage's model is
-  not its own.
+  `true` in its environment, the guard refuses its commits, and it runs its own
+  role's range, not the stage's.
 
   Once the issue's last stage has passed to `land`, the worker is started in the
   workflow's landing role instead, on the join-only brief with that role's landing skill

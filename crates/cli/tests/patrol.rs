@@ -166,10 +166,10 @@ fn check_reads_patrol_files_and_holds_the_repos_patrols_against_them() {
         read["patrols"],
         json!([
             {"name": "audit", "by": "dev", "do": "sweep", "every": 172_800,
-                "harness": "claude-code", "model": "opus", "max_open": 1, "max_runs_a_day": null, "max_landed_a_day": null,
+                "max_open": 1, "max_runs_a_day": null, "max_landed_a_day": null,
                 "runs_here": false},
             {"name": "sweep", "by": "dev", "do": "sweep", "every": 3600,
-                "harness": "claude-code", "model": null, "max_open": 2, "max_runs_a_day": null, "max_landed_a_day": null,
+                "max_open": 2, "max_runs_a_day": null, "max_landed_a_day": null,
                 "runs_here": true},
         ])
     );

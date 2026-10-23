@@ -32,12 +32,11 @@ THE CONFIG FILE
       team: acme/team                    # naming a team binds the repo
       patrols: []
       intake_limit: 50
-      harness: claude-code
       ```
 
   A key left out is at the value shown, so the shortest config is the first two lines,
-  and a bound repo's those and `team`. The last three are read only beside `team`: an
-  unbound repo leaves all four out, and may say one key more, never beside `team`:
+  and a bound repo's those and `team`. The last two are read only beside `team`: an
+  unbound repo leaves all three out, and may say one key more, never beside `team`:
 
       escalate_to: consult               # or human
 
@@ -55,16 +54,14 @@ WHAT IT ANSWERS
   is the label of a fleet lock (default fleet-lock): while an open issue carries it,
   the fleet works lock issues only (`afkconvoy lock --help`).
 
-  A repo whose config names a team is a bound repo, and answers four keys more:
-  {"team", "patrols", "intake_limit", "harness"} — the team's directory as owner/repo or
+  A repo whose config names a team is a bound repo, and answers three keys more:
+  {"team", "patrols", "intake_limit"} — the team's directory as owner/repo or
   owner/repo/path (a whole repo, or a subdirectory of one), which
   of its patrols run here, by name (default none; `afkconvoy check` holds them against
   the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in
-  by workers may be open (default 50), and the default harness: the one every worker
-  runs that its stage or its patrol names none for (default claude-code, Claude Code;
-  the others are pi, codex (Codex), and dsh (DeepSeek Harness)). A host where
-  `afkconvoy switch` chose a harness
-  starts every worker of the repo on that one instead, whatever this key says. A repo that names no team is unbound and answers
+  by workers may be open (default 50). A config names no harness: what each worker
+  runs is its team's `roster`'s to say (`afkconvoy help roster`), within what the host
+  kit holds (`afkconvoy kit --help`). A repo that names no team is unbound and answers
   the eight above and one more: {"escalate_to"} — where a hand-off to a human goes first.
   `consult` (the default): the stock consult, afkconvoy's own, is asked first and stands
   where the human would; a human is reached only where it lets the issue through, or
@@ -74,8 +71,8 @@ WHAT IT ANSWERS
   Errors: the file cannot be read; it has no ```yaml block; `base_branch` or
   `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is
   not a whole number from 1; `team` is neither
-  owner/repo nor owner/repo/path; `harness` names no harness; `patrols`, `intake_limit` or `harness` is set
-  where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team`
+  owner/repo nor owner/repo/path; a `harness`, which a config names no more — the
+  error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team`
   — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
 
 WHAT TRIPS YOU UP

@@ -36,23 +36,33 @@ WHAT IT ANSWERS
 
       feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-      ┌───▶ plan      dev: plan · harness claude-code
+      ┌───▶ plan      dev: plan
       │       ↓ pass → build
-      │ ┌─▶ build     dev: implement · harness claude-code · model opus · escalate → reviewer: rule
+      │ ┌─▶ build     dev: implement · escalate → reviewer: rule
       │ │     ↓ pass → review
-      │ └── review    reviewer: review · harness claude-code · writes nothing · reject → build
+      │ └── review    reviewer: review · writes nothing · reject → build
       │       ↓ pass → sign-off
       └──── sign-off  human · reject → plan
               ↓ pass → land
             land      dev: land
 
+      roster
+
+        dev       claude-code opus (most work) · claude-code fable (hard or wide work)
+                  cast: Hard or wide work on fable; the rest on opus.
+        reviewer  the host kit whole
+
   The first line is the workflow, its flow label and its two breakers. Then one row per
   stage, in the order its file lists them — an issue enters at the first — with who
-  performs it, as `<role>: <skill>` or `human`, the harness its worker runs — the one
-  it names, or the default of this checkout's config — and what else its file sets.
+  performs it, as `<role>: <skill>` or `human`, and what else its file sets.
   Under each stage is where its `pass` leads. A `reject` is said on its stage's row and
   drawn as the line that leaves that row to the left and comes back in, at the arrow, to the
   stage it leads to. The last rows are the ends: `land` with who lands, and `done`.
+  Under the drawings, once, is the team's roster: a row per role, each harness and model
+  it may run in order of preference — `any model` where the entry names none — with
+  what it is good at, and how the team says to cast among them under it; `the host kit
+  whole` for a role the roster names no entry for (`afkconvoy help roster`). What a role's
+  range is on this host is `afkconvoy check`'s to answer.
 
   With `--issue`, JSON:
 

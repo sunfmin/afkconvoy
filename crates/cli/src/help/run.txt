@@ -258,17 +258,19 @@ WHAT TRIPS YOU UP
     `TMPDIR`: `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it.
     Nothing else of an unbound repo's worker launch command is touched.
   - In a bound repo, before any worker is started, the command of every harness the
-    fleet could be asked for is checked: the repo's default, each harness a stage of
-    the team's workflows names, and each a patrol the repo runs names. One that
-    cannot be started refuses the start, named with its harness and the stage or
-    patrol that calls for it, and no worker at all is started: no harness is ever
-    started in another's place.
+    fleet could be asked for is checked: the host kit's first, each harness of each
+    role's range (`afkconvoy help roster`), and the stock consult's. One that cannot
+    be started refuses the start, named with its harness and the range that calls for
+    it, and no worker at all is started: no harness is ever started in another's place.
+    So does a role whose range on this host is empty, or holds a harness the role holds
+    no limits for: the refusal names the role, what the roster allows it and what the
+    host kit holds.
   - A Claude Code worker of a bound repo starts in its role's directory, with the rest
     added to the worker launch command:
         cd <the role's copy> && export <the stage's facts> && <worker launch command>
           --add-dir <the issue's worktree> --add-dir <the team's copy>
           [--add-dir <the fleet's own, with yours>]
-          --setting-sources project --settings <the fleet's> [--model <the stage's>]
+          --setting-sources project --settings <the fleet's> [--model <its model>]
     The role's rules, skills and hooks load because it starts there. The repo's own
     rules load from the added worktree, and its hooks do not; the team rules load from
     the team's copy. Your own skills and rules load too, unless the team file says
@@ -285,12 +287,12 @@ WHAT TRIPS YOU UP
     AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL,
     AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's
     worker has AFKCONVOY_PATROL in place of the first three.
-  - A pi worker — of a stage or a patrol that says `harness: pi` — starts in its
+  - A pi worker — of a role whose range runs it pi — starts in its
     role's directory like any other, with what pi does not load from there added:
         cd <the role's copy> && export PI_CODING_AGENT_DIR=<the fleet's own>
           <the stage's facts> && <worker launch command> --approve --no-skills
           --skill <the role's copy>/.claude/skills [--skill <the fleet's own>/skills]
-          --extension <the fleet's own>/afkconvoy.js [--model <the stage's>]
+          --extension <the fleet's own>/afkconvoy.js [--model <its model>]
     `--approve` answers on the line what pi would ask at its terminal, and has it
     load the role's own limits (`.pi/extensions/`). The role's skills are named, then
     yours, and pi looks for no other; of two skills of one name pi keeps the first,
@@ -365,8 +367,8 @@ WHAT TRIPS YOU UP
     sandbox: a worker is limited by the guard, and a host that wants a sandbox says
     a command of its own. A command you give for Codex must take `--add-dir`,
     `--dangerously-bypass-hook-trust`, `--config` and `--model`.
-  - A stage's model is its harness's own name for it: pi's is `<provider>/<id>`. A
-    stage on pi that names none gets whichever model pi picks for itself. A provider
+  - A worker's model is its harness's own name for it: pi's is `<provider>/<id>`. A
+    worker on pi with none gets whichever model pi picks for itself. A provider
     whose key is in your login shell's environment is reached too, and a rules file
     in a directory above the fleet's copies (~/AGENTS.md) is one pi loads.
 
@@ -393,7 +395,7 @@ WHAT TRIPS YOU UP
   stays in its cache and its --patch overlay is still last, after the role's
   limits, with required guard dependencies. User settings cannot disable it.
   The fleet's plugin supplies role, repo and team rules, role skills before
-  yours, and the stage's model as written. It asks `afkconvoy guard` before
+  yours, and the worker's model as written. It asks `afkconvoy guard` before
   every tool call and reports running/idle, including interruption, to orca.
   The TUI and agent loop require the guard plugin's loader service, so a
   missing or broken plugin starts neither. Ctrl+C interrupts the running turn

@@ -36,12 +36,11 @@ use crate::train::Train;
 
 pub struct Fleet {
     pub repo: Repo,
-    /// The repo's config, its default harness this host's chosen one where
-    /// a switch chose one (`chosen`).
+    /// The repo's config.
     pub config: Config,
     /// The harness a switch on this host chose for the repo: every worker
-    /// this host starts for it is of this one, whatever the config, a stage
-    /// or a patrol names (`switch::chosen`).
+    /// this host starts for it is of this one, whatever a role's range or an
+    /// issue's casting says (`switch::chosen`).
     pub chosen: Option<Harness>,
     pub gh: GitHub,
     pub scan: Scan,
