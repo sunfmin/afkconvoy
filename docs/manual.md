@@ -156,8 +156,7 @@ role that stage names.
 ````text
 A team is a directory — a whole repo, or a subdirectory of one — that names a set of
 roles and holds the workflows, patrols and precedents they work by. Read this to write a
-team's directory, to bind a repo to one, or when `afkconvoy check` names a fault in a
-team file or a role.
+team, bind a repo to one, or understand a fault from `afkconvoy check`.
 ````
 
 ### WHAT ITS DIRECTORY HOLDS
@@ -169,8 +168,7 @@ team file or a role.
     patrols/<name>.md       one file per patrol: `afkconvoy help patrols`
     precedents.md           the precedents: one line per ruling a human accepted
 
-Of each definition file — the team file, a workflow's, a patrol's — only the first
-```yaml block is read: the rest is yours to explain it in.
+Only each definition file's first ```yaml block is read; the rest explains it.
 ````
 
 ### THE TEAM FILE
@@ -182,7 +180,7 @@ Of each definition file — the team file, a workflow's, a patrol's — only the
       <short name>: { dir: <its directory>, host_user: false }   # its own host_user
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
     host_user: true                    # default
-    split: true                        # default; false leaves splitting out of stage briefs
+    split: true                        # default; false omits splitting from stage briefs
 
 `escalate_label` is the label an issue handed to a human carries in place of its flow
 label. `roles` gives each role the short name a `by` or a `to` says. `precedents`
@@ -193,10 +191,8 @@ opens a PR on the team's repo that appends one entry to `precedents.md`, unless
 true or false, says whether a worker is given the host user's own skills and rules
 beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
 
-`split`, true or false, says whether stage briefs offer splitting an issue. Set
-`split: false` to leave the procedure out of every stage brief of this team, including
-when a stage runs again after a park. Left unsaid or true, the brief is unchanged.
-This controls the brief; it does not guard issue creation or parking on blockers.
+`split: false` leaves splitting out of all stage briefs, including after a park.
+True or unsaid keeps the brief unchanged; this setting adds no guard.
 ````
 
 ### HOW IT NAMES A ROLE
@@ -255,10 +251,8 @@ role's rules and the precedents; the host user's rules give way to all four. Who
     the repo's own    of the repo an issue is of: under claude-code its CLAUDE.md;
                       under pi and codex its AGENTS.md, or CLAUDE.md where it has none
 
-Claude Code and pi load the three. Codex loads its role's, and nothing from a
-directory above it; the fleet says the other two to it on the line that starts it,
-each as what it is. The brief copies none of the four, and says where each is. What
-each is for, and where a sentence belongs: `afkconvoy help roles`.
+Claude Code and pi load the three; the fleet names the other two to Codex.
+The brief says where each is. What each is for: `afkconvoy help roles`.
 ````
 
 ### HOW A REPO IS BOUND TO IT
@@ -288,6 +282,15 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
   that runs it on the other is a fault. A role with no limits is right for every
   harness. That its limits for two harnesses refuse alike is the role's to see to.
 - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
+````
+
+### WHERE TO READ ON
+
+````text
+`afkconvoy help roles`      what goes where in a role, and what makes one good
+`afkconvoy help workflows`  the stages an issue passes through, and every key of them
+`afkconvoy help patrols`    a role run on a schedule, intake and the fleet lock
+`afkconvoy help glossary`   each term used here, with its one definition
 ````
 
 
