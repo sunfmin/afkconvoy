@@ -94,7 +94,7 @@ pub fn switch(
 ) -> Result<Value> {
     let was = fleet.chosen;
     // What a worker started before any switch kept its harness ran on.
-    let before = fleet.harness();
+    let before = fleet.first().map_or(Harness::DEFAULT, |first| first.harness);
     if let Some(to) = to {
         startable(&agent.launches, to, CHOSEN_BY)?;
     }

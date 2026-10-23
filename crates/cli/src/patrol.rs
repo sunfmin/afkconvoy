@@ -3,7 +3,7 @@
 //! end. When a patrol runs and
 //! what makes a run a failed one is the core's (`afkconvoy_core::patrol`).
 
-use afkconvoy_core::harness::Harness;
+use afkconvoy_core::casting::Cast;
 use afkconvoy_core::intake::opened_by;
 use afkconvoy_core::lock;
 use afkconvoy_core::patrol::{
@@ -161,8 +161,10 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
-    let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
-    let harness = fleet.harness_of(patrol.harness(bound.harness));
+    // A patrol has no issue, and so no casting: its role's range's first,
+    // or this host's switch.
+    let cast = fleet.cast_in(role, &[])?;
+    let harness = cast.harness;
     kept.role(role, harness)?;
     // Before the claim: a patrol whose harness cannot be started here runs nothing.
     let launch = agent.command(harness)?;
@@ -214,7 +216,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         over_command: &own().fixed(" over --run ").word(&claim.key).own(),
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
-    let line = in_role(fleet, kept, name, harness, launch.as_str(), &checkout)?;
+    let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
     checkout.keep_harness(harness)?;
     let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
@@ -232,19 +234,20 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
 }
 
 /// The line the terminal in `checkout` runs to start the worker of a run of
-/// the patrol `name` on `harness`, with `launch`, the worker launch command of
-/// that harness. What this host keeps for it is put in place first.
+/// the patrol `name` on what `cast` says, with `launch`, the worker launch
+/// command of its harness. What this host keeps for it is put in place first.
 fn in_role(
     fleet: &Fleet,
     kept: &Kept,
     name: &str,
-    harness: Harness,
+    cast: &Cast,
     launch: &str,
     checkout: &Worktree,
 ) -> Result<String> {
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let role = kept.team.role_of(&patrol.work);
+    let harness = cast.harness;
     let role_copy = kept.role(role, harness)?;
     let path = checkout.path.display().to_string();
     let team_rules = kept.rules();
@@ -255,11 +258,7 @@ fn in_role(
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
         team_dir: &kept.copy.dir.display().to_string(),
-        // A model is its patrol's harness's: another harness knows it not.
-        model: patrol.model.as_deref().filter(|_| {
-            let bound = fleet.config.bound.as_ref();
-            bound.is_some_and(|bound| patrol.harness(bound.harness) == harness)
-        }),
+        model: cast.model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &kept_dir,
         host_user,
@@ -309,9 +308,11 @@ pub(crate) fn switch(
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
     let kept = keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?;
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
-    let harness = fleet.harness_of(kept.team.patrol(name).ok_or_else(none)?.harness(bound.harness));
+    let patrol = kept.team.patrol(name).ok_or_else(none)?;
+    let cast = fleet.cast_in(kept.team.role_of(&patrol.work), &[])?;
+    let harness = cast.harness;
     let launch = agent.command(harness)?;
-    let line = in_role(fleet, &kept, name, harness, launch.as_str(), &checkout)?;
+    let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
     checkout.keep_harness(harness)?;

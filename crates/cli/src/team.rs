@@ -5,6 +5,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use afkconvoy_core::casting;
 use afkconvoy_core::config::{Config, RepoDir, RepoLabels, RepoName};
 use afkconvoy_core::harness::{Harness, Held};
 use afkconvoy_core::stock;
@@ -18,7 +19,6 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::copies::{self, Copies, Copy};
 use crate::gh::{GitHub, Unreached, unreached};
-use crate::launch;
 use crate::topic::See;
 
 /// Where a team's own files are taken from. Its roles' directories are
@@ -177,9 +177,6 @@ pub struct Loaded {
     /// The patrols the repo of this checkout names, when it is its team that
     /// was read: the ones that run on it.
     pub runs: Vec<String>,
-    /// The default harness: the one the config of this checkout names, when
-    /// it is its team that was read, and Claude Code where no config was.
-    pub harness: Harness,
     /// Whether the team's directory holds a `.claude/`: hooks and skills no
     /// worker loads.
     pub settings: bool,
@@ -269,72 +266,19 @@ pub fn check(from: From) -> Result<Value> {
     Ok(answer(&loaded))
 }
 
-/// Holds the team `loaded` to the harnesses its workers would run on, on this
-/// host (`Team::held`) → every fault that finds, each harness that can say
-/// which models it knows being asked where the team names a model. A model
-/// named with no harness that the default harness does not know is a fault of
-/// what set that default: the repo's config. What may be wrong and cannot be
-/// known is said on stderr: a model named for a harness that could not be
-/// asked, and one that reads as another harness's under a default that said
-/// nothing of which models it knows.
+/// Holds the team `loaded` to the harnesses its workers may run, on this
+/// host (`Team::held`) → every fault that finds. A role the roster names
+/// none for may run what this host's host kit holds: none, on a host
+/// without one. What may be wrong is said on stderr.
 fn held(loaded: &Loaded) -> Vec<Fault> {
-    let (team, default) = (&loaded.team, loaded.harness);
-    let stages = team.workflows.iter().flat_map(|workflow| workflow.stages());
-    let stages = stages.filter(|stage| stage.model.is_some());
-    let mut models_on: Vec<Harness> = stages.filter_map(|stage| stage.harness(default)).collect();
-    let patrols = team.patrols.iter().filter(|patrol| patrol.model.is_some());
-    models_on.extend(patrols.map(|patrol| patrol.harness(default)));
-    let mut listed = vec![];
-    for harness in Harness::ALL.into_iter().filter(|_| !models_on.is_empty()) {
-        match launch::models(harness, harness.stock()) {
-            Some(Ok(models)) => listed.push((harness, models)),
-            Some(Err(question)) if models_on.contains(&harness) => eprintln!(
-                "note: {} could not be asked which models it knows on this host — `{question}` \
-                 failed in a login shell, or listed none: a model named for it is passed as \
-                 written",
-                harness.name()
-            ),
-            _ => {}
-        }
-    }
-    let held = team.held(default, &listed);
+    let kit: Vec<Harness> = crate::kit::load()
+        .map(|kit| kit.harnesses.iter().map(|held| held.harness).collect())
+        .unwrap_or_default();
+    let held = loaded.team.held(&kit);
     for note in &held.notes {
         eprintln!("note: {note}");
     }
-    let mut faults = held.faults;
-    for (model, by, other) in &held.elsewhere {
-        eprintln!(
-            "warning: {by} names the model `{model}` and no harness, so it runs on the default \
-             harness, `{}` — and `{model}` is `{}`'s name for a model: the team may be written \
-             for another default. Name the harness beside the model, or set `harness` in {}. \
-             {} said nothing of which models it knows here: the model is passed to it as \
-             written",
-            default.key(),
-            other.key(),
-            config::FILE,
-            default.name()
-        );
-    }
-    if !held.unknown.is_empty() {
-        let named: Vec<String> =
-            held.unknown.iter().map(|(model, by)| format!("`{model}` ({by})")).collect();
-        let lists = listed.iter().find(|(lists, _)| *lists == default);
-        let lists = lists.map(|(_, models)| team::some(models)).unwrap_or_default();
-        faults.push(Fault {
-            file: config::FILE.to_string(),
-            key: "harness".to_string(),
-            problem: format!(
-                "the team {} names models and no harness for them — {} — so each runs on `{}`, \
-                 this repo's default, which knows no such model on this host: it lists {lists}. \
-                 The team is written for another default harness: set `harness` to that one \
-                 here, or name each one's harness in the team, beside its model",
-                loaded.called,
-                named.join(", "),
-                default.key()
-            ),
-        });
-    }
-    faults
+    held.faults
 }
 
 /// Reads the team `from` names and every role's directory, and loads it
@@ -346,9 +290,9 @@ pub fn load(from: From) -> Result<Loaded> {
     let copies = Copies::here()?;
     let here = config::default_file().and_then(|file| config::load(&file));
     let labels = here.as_ref().map(|config| config.labels()).unwrap_or_default();
-    // The patrols this checkout's repo names and its default harness, when
-    // it is its team that is read.
-    let (mut named, mut harness) = (vec![], Harness::DEFAULT);
+    // The patrols this checkout's repo names, when it is its team that is
+    // read.
+    let mut named = vec![];
     let team = match from {
         From::Dir(dir, of) => {
             if !dir.is_dir() {
@@ -358,7 +302,7 @@ pub fn load(from: From) -> Result<Loaded> {
             let settings = dir.join(SETTINGS).is_dir();
             let (sources, roles) = read(&Tree { dir }, of, None, &gh, &copies, &labels)?;
             roles.reached()?;
-            return loaded(name, None, copies, sources, named, harness, settings);
+            return loaded(name, None, copies, sources, named, settings);
         }
         From::Repo(team) => team,
         From::Config => {
@@ -368,7 +312,7 @@ pub fn load(from: From) -> Result<Loaded> {
                      or a directory of a team's files with --dir"
                 );
             };
-            (named, harness) = (bound.patrols, bound.harness);
+            named = bound.patrols;
             bound.team
         }
     };
@@ -376,13 +320,13 @@ pub fn load(from: From) -> Result<Loaded> {
     roles.reached()?;
     let settings = within(&copy, &team).join(SETTINGS).is_dir();
     let at = Some((team.clone(), copy.commit));
-    loaded(team.repo.to_string(), at, copies, sources, named, harness, settings)
+    loaded(team.repo.to_string(), at, copies, sources, named, settings)
 }
 
 /// The team that `sources` load as — read from `name`: out of `copies`, from
 /// the directory on GitHub and at the commit `at` says, or from a directory
-/// of this host — on a repo whose config names the patrols `runs` and the
-/// default harness `harness`. `settings` is whether its directory holds a
+/// of this host — on a repo whose config names the patrols `runs`.
+/// `settings` is whether its directory holds a
 /// `.claude/`.
 fn loaded(
     name: String,
@@ -390,7 +334,6 @@ fn loaded(
     copies: Copies,
     sources: Sources,
     runs: Vec<String>,
-    harness: Harness,
     settings: bool,
 ) -> Result<Loaded> {
     let mut files = vec![sources.team.path.clone()];
@@ -410,7 +353,7 @@ fn loaded(
     }
     let (dir, commit) = at.unzip();
     let path = dir.as_ref().map(|dir: &RepoDir| dir.path().to_string());
-    Ok(Loaded { name, called, path, commit, files, runs, harness, settings, team, dir, copies })
+    Ok(Loaded { name, called, path, commit, files, runs, settings, team, dir, copies })
 }
 
 /// What reading the repo of each role of a team came to, by the repo's name.
@@ -767,15 +710,38 @@ pub fn flow_labels(gh: &GitHub, config: &Config) -> FlowLabels {
     kept.map(|kept| kept.team.flow_labels()).unwrap_or_default()
 }
 
+/// A role's entry in the roster, as `check` and `show` answer it.
+fn roster_entry(entry: &team::Entry) -> Value {
+    let run: Vec<Value> = entry
+        .run
+        .iter()
+        .map(|allowed| {
+            json!({"harness": allowed.harness, "model": allowed.model, "good_at": allowed.good_at})
+        })
+        .collect();
+    json!({"cast": entry.cast, "run": run})
+}
+
+/// A role's range on this host, as `check` and `show` answer it: each
+/// harness with its models, in order.
+fn range_json(range: &[casting::Held]) -> Value {
+    let each = |held: &casting::Held| json!({"harness": held.harness, "models": held.models});
+    Value::Array(range.iter().map(each).collect())
+}
+
 fn answer(loaded: &Loaded) -> Value {
     let team = &loaded.team;
+    // A role's range is this host's: none where it has no host kit.
+    let kit = crate::kit::load().ok().map(|kit| kit.range());
     let roles: Vec<Value> = team
         .roles
         .iter()
         .map(|role| {
             json!({"name": role.name, "repo": role.dir.repo, "path": role.dir.path(),
                 "commit": role.commit, "host_user": role.host_user, "dsh_profile": role.dsh_profile.key(), "skills": role.skills,
-                "above": role.above, "limits": role.limits})
+                "above": role.above, "limits": role.limits,
+                "roster": role.roster.as_ref().map(roster_entry),
+                "range": kit.as_ref().map(|kit| range_json(&casting::range(role.roster.as_ref(), kit)))})
         })
         .collect();
     json!({
@@ -787,7 +753,6 @@ fn answer(loaded: &Loaded) -> Value {
         "rules": team.rules,
         "host_user": team.host_user, "dsh_profile": team.dsh_profile.key(),
         "split": team.split,
-        "harness": loaded.harness,
         "roles": roles,
         "workflows": team.workflows.iter().map(|w| workflow(loaded, w)).collect::<Vec<_>>(),
         "patrols": team.patrols.iter().map(|p| patrol(loaded, p)).collect::<Vec<_>>(),
@@ -798,16 +763,14 @@ fn answer(loaded: &Loaded) -> Value {
     })
 }
 
-/// One patrol of the team `loaded`, with the harness it runs — its own or
-/// the default — and whether it is among the ones the repo names.
+/// One patrol of the team `loaded`, and whether it is among the ones the
+/// repo names.
 fn patrol(loaded: &Loaded, patrol: &Patrol) -> Value {
     json!({
         "name": patrol.name,
         "by": loaded.team.role_of(&patrol.work).name,
         "do": patrol.work.skill,
         "every": patrol.every,
-        "harness": patrol.harness(loaded.harness),
-        "model": patrol.model,
         "max_open": patrol.max_open,
         "max_runs_a_day": patrol.max_runs_a_day,
         "max_landed_a_day": patrol.max_landed_a_day,
@@ -815,8 +778,7 @@ fn patrol(loaded: &Loaded, patrol: &Patrol) -> Value {
     })
 }
 
-/// One workflow of the team `loaded`, each stage a worker performs with the
-/// harness it runs: its own or the default.
+/// One workflow of the team `loaded`.
 fn workflow(loaded: &Loaded, workflow: &Workflow) -> Value {
     let team = &loaded.team;
     let name = |at: usize| workflow.stage(at).name.clone();
@@ -835,8 +797,6 @@ fn workflow(loaded: &Loaded, workflow: &Workflow) -> Value {
             "name": stage.name,
             "by": by,
             "do": skill,
-            "harness": stage.harness(loaded.harness),
-            "model": stage.model,
             "writes": stage.writes,
             "escalate": match (&stage.consult, &stage.by) {
                 (Some(Consult::Role(work)), _) => json!({"to": role(work), "do": work.skill}),

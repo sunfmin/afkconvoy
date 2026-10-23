@@ -3,7 +3,7 @@
 //! the core decides (`afkconvoy_core::graph`, `afkconvoy_core::position`).
 
 use afkconvoy_core::graph;
-use afkconvoy_core::harness::Harness;
+use afkconvoy_core::casting;
 use afkconvoy_core::position::{ConsultOn, Declared, Place, Position};
 use afkconvoy_core::stock;
 use afkconvoy_core::team::{Consult, HUMAN, Team, Workflow};
@@ -27,7 +27,7 @@ fn named<'t>(loaded: &'t Loaded, name: &str) -> Result<&'t Workflow> {
 /// The drawing of the workflow named `name`, or of every workflow of the
 /// team, a blank line between two.
 pub fn show(loaded: &Loaded, name: Option<&str>) -> Result<String> {
-    let draw = |flow: &Workflow| graph::draw(&loaded.team, flow, loaded.harness);
+    let draw = |flow: &Workflow| graph::draw(&loaded.team, flow);
     let drawn: Vec<String> = match name {
         Some(name) => vec![draw(named(loaded, name)?)],
         None => loaded.team.workflows.iter().map(draw).collect(),
@@ -43,7 +43,7 @@ pub fn show(loaded: &Loaded, name: Option<&str>) -> Result<String> {
 pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Value> {
     let workflow = named(loaded, name)?;
     let mut place = Place::enter(workflow);
-    let enters = position(&loaded.team, workflow, loaded.harness, place.position);
+    let enters = position(&loaded.team, workflow, place.position);
     let mut steps: Vec<Value> = vec![];
     for declared in declared {
         let stage = place.position.stage().map(|stage| stage.name.as_str());
@@ -63,7 +63,7 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
             "stage": stage,
             "valid": valid,
             "breaker": breaker,
-            "position": position(&loaded.team, workflow, loaded.harness, next.position),
+            "position": position(&loaded.team, workflow, next.position),
             "rework": next.rework(),
             "consecutive_rework": in_a_row,
         }));
@@ -75,20 +75,15 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
         "max_consecutive_rework": workflow.max_consecutive_rework,
         "enters": enters,
         "steps": steps,
-        "ends": position(&loaded.team, workflow, loaded.harness, place.position),
+        "ends": position(&loaded.team, workflow, place.position),
     }))
 }
 
 /// A position as a command answers it: what it is, at which stage, who acts
-/// on it, and — where a worker does — on which harness, in a repo whose
-/// default is `default`: a stage's own worker on the stage's, a consult and a
-/// landing worker on the default, the stock consult on the host kit's.
-pub(crate) fn position(
-    team: &Team,
-    workflow: &Workflow,
-    default: Harness,
-    position: Position,
-) -> Value {
+/// on it, and — where a worker does — on which harness with no casting on
+/// this host: a worker in a role on its range's first, the stock consult on
+/// the host kit's. None on a host without a host kit.
+pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> Value {
     let is = match position {
         Position::Perform(..) => "perform",
         Position::Waiting(_) => "waiting",
@@ -109,14 +104,16 @@ pub(crate) fn position(
         _ if stock => Some(stock::ROLE),
         _ => worker.map(|work| team.role_of(work).name.as_str()),
     };
-    // The stock consult runs what this host's host kit says: none, on a
-    // host without one.
+    // What runs is this host's host kit's to say: none, on a host without one.
     let harness = match position {
-        Position::Perform(stage, ..) => stage.harness(default),
         Position::Consult(_, Consult::Stock, _) => {
             crate::kit::stock_consult().ok().map(|named| named.harness)
         }
-        _ => worker.map(|_| default),
+        _ => worker.and_then(|work| {
+            let range = crate::kit::load().ok()?.range();
+            let range = casting::range(team.role_of(work).roster.as_ref(), &range);
+            range.first().map(|held| held.harness)
+        }),
     };
     // Why it is with a human — or with its stage's consult, for a hand-off
     // that would have gone to one.

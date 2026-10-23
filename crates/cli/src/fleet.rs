@@ -6,12 +6,14 @@
 //! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
 //! grows with the issues in flight.
 
-use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, Why};
+use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, Why, choice};
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
+use afkconvoy_core::position::Position;
 use afkconvoy_core::stock;
+use afkconvoy_core::team::{Consult, Role, Team, Workflow};
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
@@ -70,11 +72,8 @@ impl Fleet {
     /// The fleet's view from the checkout the command was run in.
     pub fn open(now: u64) -> Result<Fleet> {
         let repo = Repo::here()?;
-        let mut config = config::load(&repo.dir.join(config::FILE))?;
+        let config = config::load(&repo.dir.join(config::FILE))?;
         let chosen = crate::switch::chosen(&repo)?;
-        if let Some((bound, chosen)) = config.bound.as_mut().zip(chosen) {
-            bound.harness = chosen;
-        }
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), listing.records.clone());
         let gh = GitHub { dir: repo.dir.clone() };
@@ -106,16 +105,18 @@ impl Fleet {
         Ok((fleet?, open?))
     }
 
-    /// The harness of a worker nothing else names one for: this host's
-    /// chosen one, else the config's default.
-    pub fn harness(&self) -> Harness {
-        self.chosen.unwrap_or(self.config.harness())
+    /// The range of `role` on this host (`casting::range`): its roster
+    /// entry cut to the host kit, or the host kit whole.
+    pub fn range(&self, role: &Role) -> Result<Vec<casting::Held>> {
+        Ok(casting::range(role.roster.as_ref(), &crate::kit::load()?.range()))
     }
 
-    /// The harness of a worker a stage or a patrol names `named` for: this
-    /// host's chosen one wins over it.
-    pub fn harness_of(&self, named: Harness) -> Harness {
-        self.chosen.unwrap_or(named)
+    /// What a worker of `role` runs for an issue labelled `labels`
+    /// (`casting::cast_within`) within its range, and this host's switch →
+    /// it, or why it cannot be started.
+    pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
+        casting::cast_within(labels, &self.range(role)?, self.chosen)
+            .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
     }
 
     /// The harness and model the stock consult runs: the host kit's
@@ -243,8 +244,9 @@ impl Fleet {
             consults: &consults,
         };
         let mut set = assemble(&seen, me, self.now, &self.config);
-        if self.config.bound.is_none() {
-            self.cast_frontier(&mut set, issues, &consults);
+        match self.config.bound {
+            None => self.cast_frontier(&mut set, issues, &consults),
+            Some(_) => self.cast_bound_frontier(&mut set, issues, &stages),
         }
         Ok((set, stages))
     }
@@ -267,7 +269,8 @@ impl Fleet {
         };
         // This host's caster is asked after only where an issue waits for one.
         let waits = set.frontier.iter().any(|issue| {
-            casting::for_caster(issue.number, labels_of(issue.number), &range, self.chosen, None, 0)
+            let labels = labels_of(issue.number);
+            casting::for_caster(issue.number, labels, choice(&range), self.chosen, None, 0)
                 != ForCaster::Dispatch
         });
         let caster = if waits { crate::caster::last(&self.repo, self.now) } else { None };
@@ -287,7 +290,7 @@ impl Fleet {
             let held = casting::for_caster(
                 issue.number,
                 labels,
-                &range,
+                choice(&range),
                 self.chosen,
                 caster.as_ref(),
                 self.now,
@@ -315,6 +318,100 @@ impl Fleet {
                     title: issue.title,
                     reason: format!("not dispatched: {why}"),
                 }),
+            }
+        }
+        set.excluded.sort_by_key(|excluded| excluded.number);
+        if standing.running_since.is_some() || !standing.held.is_empty() {
+            set.caster = Some(standing);
+        }
+    }
+
+    /// Says of each issue on a bound repo's frontier what the worker due on
+    /// it runs, and why (`casting::cast_within`): its casting where its
+    /// role's range holds it, the range's first where not. One whose casting
+    /// none of its workflow's stages' ranges holds is not dispatched, and is
+    /// excluded with why (`casting::held_by_none`). The stock consult's runs
+    /// what the host kit names for it, and is cast by nothing. A host kit or
+    /// a team that cannot be read casts nothing: a start refuses it.
+    ///
+    /// An uncast issue one of whose stages has a choice to make is held back
+    /// for the caster as in an unbound repo (`cast_frontier`).
+    fn cast_bound_frontier(&self, set: &mut WorkingSet, issues: &[Issue], stages: &Flows) {
+        let Ok(kit) = crate::kit::load().map(|kit| kit.range()) else { return };
+        let Ok(team) = stages.team() else { return };
+        let positions = stages.positions();
+        let labels_of = |number: u64| {
+            let open = issues.iter().find(|open| open.number == number);
+            open.map_or(&[][..], |open| open.labels.as_slice())
+        };
+        let placed = |number: u64| positions.iter().find(|(at, ..)| *at == number);
+        let choice_of = |number: u64| {
+            placed(number).is_some_and(|(_, workflow, _)| {
+                casting::any_choice(&casting::stage_ranges(team, workflow, &kit))
+            })
+        };
+        let waits = set.frontier.iter().any(|issue| {
+            let choice = choice_of(issue.number);
+            casting::for_caster(issue.number, labels_of(issue.number), choice, self.chosen, None, 0)
+                != ForCaster::Dispatch
+        });
+        let caster = if waits { crate::caster::last(&self.repo, self.now) } else { None };
+        let mut standing = Standing {
+            running_since: caster.as_ref().filter(|c| c.running(self.now)).map(|c| c.since),
+            due: false,
+            held: vec![],
+            to_cast: crate::caster::to_cast_bound(&self.config, team, issues, &kit),
+        };
+        let frontier = std::mem::take(&mut set.frontier);
+        for mut issue in frontier {
+            let labels = labels_of(issue.number);
+            let Some((_, workflow, position)) = placed(issue.number) else {
+                set.frontier.push(issue);
+                continue;
+            };
+            // The stock consult is no role's, and has no range.
+            let Some(role) = due_role(team, workflow, *position) else {
+                set.frontier.push(issue);
+                continue;
+            };
+            let ranges = casting::stage_ranges(team, workflow, &kit);
+            let excluded = |reason: String| Excluded {
+                number: issue.number,
+                title: issue.title.clone(),
+                reason: format!("not dispatched: {reason}"),
+            };
+            if let Some(why) = casting::held_by_none(labels, &ranges, self.chosen) {
+                set.excluded.push(excluded(why));
+                continue;
+            }
+            let held = casting::for_caster(
+                issue.number,
+                labels,
+                casting::any_choice(&ranges),
+                self.chosen,
+                caster.as_ref(),
+                self.now,
+            );
+            if matches!(held, ForCaster::Wait | ForCaster::Due) {
+                standing.due |= held == ForCaster::Due;
+                standing.held.push(issue.number);
+                set.excluded.push(Excluded {
+                    number: issue.number,
+                    title: issue.title,
+                    reason: HELD_FOR_CASTER.to_string(),
+                });
+                continue;
+            }
+            let range = casting::range(role.roster.as_ref(), &kit);
+            match casting::cast_within(labels, &range, self.chosen) {
+                Ok(mut cast) => {
+                    if held == ForCaster::Late && cast.why == Why::RangeFirst {
+                        cast.why = Why::Uncast;
+                    }
+                    issue.cast = Some(cast);
+                    set.frontier.push(issue);
+                }
+                Err(why) => set.excluded.push(excluded(format!("the role `{}`: {why}", role.name))),
             }
         }
         set.excluded.sort_by_key(|excluded| excluded.number);
@@ -372,4 +469,16 @@ impl Fleet {
                 standing_verdict(Some(verdict), Some(&said.url), answered.as_deref()).is_some()
             })
     }
+}
+
+/// The role of the worker due on an issue at `position` in `workflow`, one
+/// of `team`'s: the stage's, its consult's or its landing's. `None` of the
+/// stock consult, and where no worker is due.
+pub fn due_role<'t>(team: &'t Team, workflow: &'t Workflow, position: Position<'t>) -> Option<&'t Role> {
+    let work = match position {
+        Position::Landing => workflow.land.as_ref(),
+        Position::Consult(_, Consult::Stock, _) => None,
+        at => at.worker(),
+    };
+    work.map(|work| team.role_of(work))
 }

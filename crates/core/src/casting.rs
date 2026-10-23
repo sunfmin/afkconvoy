@@ -3,10 +3,11 @@
 //! a role's roster entry cut to the host kit (`range`), and in an unbound
 //! repo the host kit whole.
 
+use flux_rs::attrs::*;
 use serde::Serialize;
 
 use crate::harness::Harness;
-use crate::team::Entry;
+use crate::team::{Entry, Performer, Team, Workflow};
 
 /// What the label that names an issue's harness starts with.
 pub const HARNESS_LABEL: &str = "harness:";
@@ -117,6 +118,71 @@ pub fn range(entry: Option<&Entry>, kit: &[Held]) -> Vec<Held> {
         }
     }
     range
+}
+
+/// The range of each stage of `workflow`, one of `team`'s, that a role
+/// performs, on a host whose host kit holds `kit`: each with the stage's
+/// name and its role's, as `<stage> (<role>)`.
+#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}, &[Held]) -> Vec<(String, Vec<Held>)>)]
+pub fn stage_ranges(team: &Team, workflow: &Workflow, kit: &[Held]) -> Vec<(String, Vec<Held>)> {
+    let mut ranges = vec![];
+    for stage in workflow.stages() {
+        if let Performer::Role(work) = &stage.by {
+            let role = team.role_of(work);
+            let by = format!("{} ({})", stage.name, role.name);
+            ranges.push((by, range(role.roster.as_ref(), kit)));
+        }
+    }
+    ranges
+}
+
+/// What `entry` allows, as a human is told it: the host kit whole where it
+/// names none.
+pub fn allows(entry: Option<&Entry>) -> String {
+    let Some(entry) = entry else { return "the host kit whole".to_string() };
+    let each: Vec<String> = entry
+        .run
+        .iter()
+        .map(|allowed| match &allowed.model {
+            Some(model) => format!("{} ({model})", allowed.harness.key()),
+            None => format!("{} (any model)", allowed.harness.key()),
+        })
+        .collect();
+    each.join("; ")
+}
+
+/// What keeps `team`'s workers from starting on a host whose host kit holds
+/// `kit`: each role whose range there holds nothing, or holds a harness the
+/// role holds no limits for (`team::unlimited`), with what its roster entry
+/// allows and what the host kit holds.
+pub fn range_faults(team: &Team, kit: &[Held]) -> Vec<String> {
+    let mut faults = vec![];
+    for role in &team.roles {
+        let range = range(role.roster.as_ref(), kit);
+        let sides = format!(
+            "the roster allows it {}, and the host kit holds {}",
+            allows(role.roster.as_ref()),
+            holds(kit)
+        );
+        if range.is_empty() {
+            faults.push(format!(
+                "the role `{}` has an empty range on this host: {sides}. Add one it allows to \
+the host kit with `afkconvoy kit`, or allow it one the host kit holds in the team's `roster`",
+                role.name
+            ));
+        }
+        for held in &range {
+            if let Some(problem) = crate::team::unlimited(role, held.harness) {
+                faults.push(format!("{problem} — its range on this host holds `{}`: {sides}", held.harness.key()));
+            }
+        }
+    }
+    faults
+}
+
+/// Whether any of `ranges` leaves a choice to make (`choice`).
+pub fn any_choice(ranges: &[(String, Vec<Held>)]) -> bool {
+    ranges.iter().any(|(_, range)| choice(range))
 }
 
 /// What `range` holds, as a human is told it.

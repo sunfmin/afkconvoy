@@ -6,7 +6,6 @@
 
 use std::os::unix::fs::PermissionsExt;
 
-use afkconvoy_core::team::BY_DEFAULT;
 use afkconvoy_core::tools::{ALWAYS, Found, Tool, refusal, remote_host};
 use anyhow::{Result, bail};
 
@@ -92,7 +91,7 @@ pub fn check(launches: &Launches) -> Result<()> {
         bail!(why);
     }
     let fault = launch.and_then(Proposed::fault);
-    let fault = fault.map(|fault| launches.said(&fault, default, &[BY_DEFAULT.to_string()]));
+    let fault = fault.map(|fault| launches.said(&fault, default, &[crate::role::BY_FIRST.to_string()]));
     match refusal(&looked.found, looked.host.as_deref(), fault.as_deref()) {
         Some(why) => bail!(why),
         None => Ok(()),
