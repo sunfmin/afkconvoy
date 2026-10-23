@@ -6,8 +6,8 @@ WHEN TO RUN IT
 
 WHO RUNS IT
 
-  Whoever designs the team, in a checkout of it: the team's working tree. The fleet
-  never runs it, and never changes a team's roster.
+  The operator, or whoever designs the team, in a checkout of it: the team's working
+  tree. The fleet never runs it, and never changes a team's roster.
 
 WHAT IT READS AND WRITES
 

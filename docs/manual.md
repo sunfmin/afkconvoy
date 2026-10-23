@@ -461,6 +461,12 @@ caster is told. One that names no model allows any model the host kit holds for 
 harness, or the harness's command as written where the host kit holds none. `cast`
 says, in the team's words, how an issue is to be cast among them: the caster is told
 it too. A role the roster names no entry for may run whatever the host kit holds.
+
+A roster is drafted rather than written from nothing: `afkconvoy draft`, in a
+checkout of the team, writes one into team.md from this host's host kit — every
+role, every harness and model in the host kit's order, what the host kit's first
+model says each is good at and how to cast — and commits nothing. A human reads
+it, edits it and commits it; the fleet never changes a team's roster.
 ````
 
 ### A ROLE'S RANGE
@@ -505,6 +511,7 @@ there, whatever the roster and the casting say.
 
 ````text
 `afkconvoy help team`       the team file the roster is a key of
+`afkconvoy draft --help`    a roster drafted from the host kit
 `afkconvoy kit --help`      what this host can start, and on which models
 `afkconvoy cast --help`     the caster, and the labels it puts on
 `afkconvoy help glossary`   each term used here, with its one definition
@@ -1596,7 +1603,7 @@ _Avoid_: rule (a role's rules and the team rules; the command `rule`), policy, g
 
 **Proposal**:
 One human's ruling put forward as a precedent: a PR on the team's repo that appends one entry to its precedents file. A ruling gets one; a human merging it is what accepts the precedent.
-_Avoid_: suggestion, draft, candidate (a key of what `recovery` answers)
+_Avoid_: suggestion, draft (a roster `afkconvoy draft` writes), candidate (a key of what `recovery` answers)
 
 **Split**:
 Parking an issue on issues its own stage opened. When they have all closed, that stage runs again and judges the whole.
@@ -1617,7 +1624,7 @@ The program a worker is a session of: it runs a model, with tools, on the work i
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:
-A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team, written under the team file's `roster`: for each role it names, a `run` listing `{ harness, model, good_at }` in that order of preference — a harness named with no model allows any model the host kit holds for it — and a `cast` saying how to cast among them. A role's **range** on a host is its entry cut to the host kit, in the roster's order; a role it names no entry for, and an unbound repo, having no team, range over the host kit whole. A stage, a patrol and a config name no harness and no model: what a worker runs is its role's range's to say.
+A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team, written under the team file's `roster`: for each role it names, a `run` listing `{ harness, model, good_at }` in that order of preference — a harness named with no model allows any model the host kit holds for it — and a `cast` saying how to cast among them. A role's **range** on a host is its entry cut to the host kit, in the roster's order; a role it names no entry for, and an unbound repo, having no team, range over the host kit whole. A stage, a patrol and a config name no harness and no model: what a worker runs is its role's range's to say. A roster is drafted by `afkconvoy draft` from a host kit into the team's working tree — every role, every harness and model in the host kit's order, what the host kit's first model says each is good at and how to cast — and committed by a human; the fleet never changes it.
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:

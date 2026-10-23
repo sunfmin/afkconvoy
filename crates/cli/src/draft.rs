@@ -140,7 +140,7 @@ fn is_roster_key(line: &str) -> bool {
 /// none. A line in the block counts as under the key while it is indented or
 /// empty, and the empty lines before the next key stay. `None`: it has no
 /// yaml block.
-fn with_roster<'m>(markdown: &'m str, roster: &str) -> Option<(String, Vec<&'m str>)> {
+fn with_roster<'m>(markdown: &'m str, roster: &'m str) -> Option<(String, Vec<&'m str>)> {
     enum At {
         Above,
         In,
@@ -168,7 +168,7 @@ fn with_roster<'m>(markdown: &'m str, roster: &str) -> Option<(String, Vec<&'m s
             At::In => {
                 if under {
                     under = false;
-                    out.extend(blank.drain(..));
+                    out.append(&mut blank);
                 }
                 if line.trim_end() == "```" {
                     if !placed {

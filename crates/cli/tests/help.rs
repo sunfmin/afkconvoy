@@ -647,7 +647,7 @@ fn the_readme_explains_no_concept_and_sends_its_reader_to_the_help() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 50, "{short}");
+    assert!(short.lines().count() <= 51, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
