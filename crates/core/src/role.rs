@@ -26,6 +26,9 @@ pub const TEAM_COMMIT_ENV: &str = "AFKCONVOY_TEAM_COMMIT";
 /// The variable it carries the harness the worker is a session of in: the
 /// command that declares a verdict reads it too.
 pub const HARNESS_ENV: &str = "AFKCONVOY_HARNESS";
+/// The variable it carries the model the worker runs in, where it was
+/// started on one: the command that declares a verdict reads it too.
+pub const MODEL_ENV: &str = "AFKCONVOY_MODEL";
 /// The variables it carries the issue its worker is on and the worker's role
 /// in: the command that takes an issue in reads them.
 pub const ISSUE_ENV: &str = "AFKCONVOY_ISSUE";
@@ -393,6 +396,7 @@ land: { by: boss, do: implement }
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             },
             blocked_by: vec![],
             text: "done".to_string(),
@@ -480,6 +484,7 @@ land: { by: boss, do: implement }
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             },
             ..record("build", declared)
         };

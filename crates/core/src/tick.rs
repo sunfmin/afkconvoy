@@ -797,7 +797,12 @@ mod tests {
         WorkingSet {
             frontier: frontier
                 .iter()
-                .map(|&number| Dispatchable { number, title: String::new(), stage: None })
+                .map(|&number| Dispatchable {
+                    number,
+                    title: String::new(),
+                    stage: None,
+                    cast: None,
+                })
                 .collect(),
             escalating: vec![],
             excluded: vec![],

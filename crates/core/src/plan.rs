@@ -132,6 +132,11 @@ pub struct Dispatchable {
     /// stages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// In an unbound repo, the harness and model its worker would run, and
+    /// why (`casting::cast`); `None` of a bound repo's issue, the stock
+    /// consult's, and any while the host kit cannot be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cast: Option<crate::casting::Cast>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -538,7 +543,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         let consult = seen.consults.contains(&number) && !claimed;
         let epic = matches!(label_bar(&issue.labels, config, seen.flows), Some(LabelBar::Epic(_)));
         if consult && !epic && issue.open_blockers.is_empty() {
-            set.frontier.push(Dispatchable { number, title, stage: None });
+            set.frontier.push(Dispatchable { number, title, stage: None, cast: None });
             continue;
         }
         let reason = if let Some(bar) = label_bar(&issue.labels, config, seen.flows) {
@@ -556,7 +561,12 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
                 }
                 Call::Nothing(why) => why,
                 Call::Start(stage, _) => {
-                    set.frontier.push(Dispatchable { number, title, stage: Some(stage) });
+                    set.frontier.push(Dispatchable {
+                        number,
+                        title,
+                        stage: Some(stage),
+                        cast: None,
+                    });
                     continue;
                 }
             }
@@ -567,7 +577,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         } else if !issue.open_blockers.is_empty() {
             blocker_reason(&issue.open_blockers)
         } else {
-            set.frontier.push(Dispatchable { number, title, stage: None });
+            set.frontier.push(Dispatchable { number, title, stage: None, cast: None });
             continue;
         };
         set.excluded.push(Excluded { number, title, reason });
@@ -924,6 +934,7 @@ mod tests {
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             },
             blocked_by: vec![],
             text: "stuck".to_string(),
@@ -1002,6 +1013,7 @@ mod tests {
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             },
             blocked_by: vec![],
             text: "done".to_string(),

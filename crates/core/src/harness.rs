@@ -10,7 +10,7 @@ use serde::Deserializer;
 
 use crate::guard::Call;
 use crate::line::Line;
-use crate::role::{HARNESS_ENV, Start};
+use crate::role::{HARNESS_ENV, MODEL_ENV, Start};
 
 mod claude_code;
 mod codex;
@@ -339,6 +339,9 @@ impl Harness {
             line = line.fixed(" ").fixed(name).fixed("=").word(&value);
         }
         line = line.fixed(" ").fixed(HARNESS_ENV).fixed("=").word(self.key());
+        if let Some(model) = start.model {
+            line = line.fixed(" ").fixed(MODEL_ENV).fixed("=").word(model);
+        }
         let line = line.fixed(" && ").launch(command);
         match self {
             Harness::ClaudeCode => claude_code::added(line, start),

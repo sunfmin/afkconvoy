@@ -77,10 +77,16 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     match terminal {
         Some(terminal) => worktree.tell(&terminal, &train_pointer(&brief))?,
         None => {
-            // The train worker has no role, and no stage to name its
-            // harness: it is a session of the default one.
-            let launch = agent.command(fleet.harness())?;
-            let terminal = agent.start(&worktree, fleet.harness(), launch.as_str(), fleet.now)?;
+            // The train worker is in no role, and nothing casts it: it runs
+            // the host kit's first.
+            let first = fleet.first()?;
+            let launch = agent.command(first.harness)?;
+            let terminal = agent.start(
+                &worktree,
+                first.harness,
+                &first.command(launch.as_str()),
+                fleet.now,
+            )?;
             worktree.await_ready(&terminal, agent.ready_timeout)?;
             worktree.tell(&terminal, &brief_pointer(&brief))?;
         }

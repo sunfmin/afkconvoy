@@ -6,10 +6,11 @@
 //! (`Repo::listing`), and what is open on GitHub (`GitHub::open`). Neither
 //! grows with the issues in flight.
 
+use afkconvoy_core::casting::{self, Cast};
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::plan::{Issue, Observed, WorkingSet, assemble, closing_pr};
+use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::stock;
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::train::{Built, on_train};
@@ -130,6 +131,20 @@ impl Fleet {
         })
     }
 
+    /// What the worker of an unbound repo's issue labelled `labels` runs
+    /// (`casting::cast`) within the host kit, and this host's switch → it,
+    /// or why the issue is not dispatched. Either error is the host kit's.
+    pub fn cast(&self, labels: &[String]) -> Result<Result<Cast, String>> {
+        Ok(casting::cast(labels, &crate::kit::load()?.range(), self.chosen))
+    }
+
+    /// What a worker nothing casts runs — the proposal of a precedent, and
+    /// a landing whose casting the host kit does not hold: the host kit's
+    /// first, or this host's switch.
+    pub fn first(&self) -> Result<Cast> {
+        self.cast(&[])?.map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))
+    }
+
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
@@ -201,6 +216,7 @@ impl Fleet {
                 declared.push(claim.number);
             }
         }
+        let consults = self.stock_consults(open);
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
         let seen = Observed {
@@ -224,10 +240,43 @@ impl Fleet {
             landings: &landings,
             slow_gate: &slow_gate,
             idle_train: if train.tip == train.base { self.train_built() } else { None },
-            consults: &self.stock_consults(open),
+            consults: &consults,
         };
-        let set = assemble(&seen, me, self.now, &self.config);
+        let mut set = assemble(&seen, me, self.now, &self.config);
+        if self.config.bound.is_none() {
+            self.cast_frontier(&mut set, issues, &consults);
+        }
         Ok((set, stages))
+    }
+
+    /// Says of each issue on an unbound repo's frontier what its worker
+    /// would run, and why; one whose casting the host kit does not hold is
+    /// not dispatched, and is excluded with why. The stock consult's runs
+    /// what the host kit names for it, and is cast by nothing. A host kit
+    /// that cannot be read casts nothing: a start refuses it, saying so.
+    fn cast_frontier(&self, set: &mut WorkingSet, issues: &[Issue], consults: &[u64]) {
+        let Ok(range) = crate::kit::load().map(|kit| kit.range()) else { return };
+        let frontier = std::mem::take(&mut set.frontier);
+        for mut issue in frontier {
+            let labels = issues.iter().find(|open| open.number == issue.number);
+            let labels = labels.map_or(&[][..], |open| open.labels.as_slice());
+            if consults.contains(&issue.number) {
+                set.frontier.push(issue);
+                continue;
+            }
+            match casting::cast(labels, &range, self.chosen) {
+                Ok(cast) => {
+                    issue.cast = Some(cast);
+                    set.frontier.push(issue);
+                }
+                Err(why) => set.excluded.push(Excluded {
+                    number: issue.number,
+                    title: issue.title,
+                    reason: format!("not dispatched: {why}"),
+                }),
+            }
+        }
+        set.excluded.sort_by_key(|excluded| excluded.number);
     }
 
     /// What the last landing measured of this machine's train's worktree;

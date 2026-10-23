@@ -345,7 +345,7 @@ mod tests {
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
              AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' \
-             AFKCONVOY_HARNESS='pi' && \
+             AFKCONVOY_HARNESS='pi' AFKCONVOY_MODEL='openai/gpt-5.5' && \
              pi --approve --no-skills --skill '/copies/acme/dev/abc/.claude/skills' \
              --extension '/cache/harness/pi/afkconvoy.js' --model 'openai/gpt-5.5'"
         );

@@ -380,7 +380,7 @@ mod tests {
              AFKCONVOY_WRITES='false' AFKCONVOY_CONSULT='false' AFKCONVOY_BASE_BRANCH='main' \
              AFKCONVOY_ESCALATE_LABEL='ready-for-human' AFKCONVOY_LOCK_LABEL='fleet-lock' \
              AFKCONVOY_ROLE_COMMIT='abc' AFKCONVOY_TEAM_COMMIT='def' \
-             AFKCONVOY_HARNESS='claude-code' && \
+             AFKCONVOY_HARNESS='claude-code' AFKCONVOY_MODEL='opus' && \
              kim --yolo --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' \
              --setting-sources project --settings '"
                 .to_string()

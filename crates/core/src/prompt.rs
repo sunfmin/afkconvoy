@@ -1607,6 +1607,7 @@ mod tests {
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             };
             left(stage, Stated::Declared(declared), by, text)
         };
@@ -1672,6 +1673,7 @@ mod tests {
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             };
             left("build", Stated::Declared(declared), by, text)
         };
@@ -1794,6 +1796,7 @@ mod tests {
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             },
             blocked_by: vec![11, 12],
             text: "Split in two:\n#11 the parser, #12 the printer.".to_string(),
@@ -2154,6 +2157,7 @@ mod tests {
                 role_commit: "r".to_string(),
                 team_commit: "t".to_string(),
                 harness: Harness::ClaudeCode,
+                model: None,
             },
             blocked_by: vec![],
             text: "v1 or v2?".to_string(),
