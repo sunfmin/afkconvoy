@@ -41,6 +41,17 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Starts every kind of worker with its harness's host network settings.
+    pub fn start(
+        &self,
+        worktree: &Worktree,
+        harness: Harness,
+        command: &str,
+        now: u64,
+    ) -> Result<String> {
+        worktree.start(&self.launches.worker_line(harness, command), now)
+    }
+
     /// The worker launch command a worker of `harness` is started with. An
     /// error is a harness that cannot be started on this host: no other is
     /// ever started in its place.
@@ -255,8 +266,10 @@ fn start(
                 }
                 cut.keep_harness(harness)?;
                 terminal = Some(match &staged {
-                    Some(staged) => cut.start(&staged.command(launch, cut)?, fleet.now)?,
-                    None => cut.start(launch, fleet.now)?,
+                    Some(staged) => {
+                        agent.start(cut, harness, &staged.command(launch, cut)?, fleet.now)?
+                    }
+                    None => agent.start(cut, harness, launch, fleet.now)?,
                 });
             }
             DispatchStep::AwaitReady => {

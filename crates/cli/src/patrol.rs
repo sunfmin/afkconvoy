@@ -216,7 +216,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, harness, launch.as_str(), &checkout)?;
     checkout.keep_harness(harness)?;
-    let terminal = checkout.start(&line, me.now)?;
+    let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 
@@ -313,7 +313,7 @@ pub(crate) fn switch(
     let continuing = said(&checkout);
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
     checkout.keep_harness(harness)?;
-    let terminal = checkout.start(&line, me.now)?;
+    let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
     Ok(json!({"patrol": name, "from": continuing.from, "to": harness,

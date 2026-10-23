@@ -155,7 +155,8 @@ pub fn propose(
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal = checkout.start(&harness.in_role(launch.as_str(), &start), me.now)?;
+    let terminal =
+        agent.start(&checkout, harness, &harness.in_role(launch.as_str(), &start), me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
     Ok(Outcome::Done)

@@ -583,3 +583,32 @@ export function apply(ctx, config) {
     assert!(!root.join("started").exists());
     assert!(String::from_utf8_lossy(&output.stderr).contains("afkconvoyGuard"));
 }
+
+#[test]
+fn dsh_workers_receive_the_stock_proxy_bypass_or_the_hosts_own_list() {
+    for hosts in [None, Some("dsh=custom.example"), Some("dsh=")] {
+        let world = bound();
+        world.issue(7, &["flow:feature"]);
+        let mut args = vec!["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+        if let Some(hosts) = hosts {
+            args.extend(["--worker-no-proxy", hosts]);
+        }
+        world.afk(&args).ok();
+        let orca = world.orca();
+        let commands: Vec<_> = orca["terminals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|terminal| terminal["command"].as_str())
+            .collect();
+        let line = commands
+            .iter()
+            .find(|line| line.contains("dsh-tui"))
+            .unwrap_or_else(|| panic!("{orca}"));
+        match hosts {
+            None => assert!(line.contains("'api.deepseek.com' && export NO_PROXY="), "{line}"),
+            Some("dsh=") => assert!(!line.contains("export no_proxy="), "{line}"),
+            Some(_) => assert!(line.contains("'custom.example' && export NO_PROXY="), "{line}"),
+        }
+    }
+}

@@ -596,6 +596,9 @@ case "$2" in
   'test -f "$HOME/.codex/auth.json" && codex login status')
     if [ -e "$root/logged-out-codex" ]; then exit 1; fi
     echo "Logged in using ChatGPT"; exit 0 ;;
+  "printf 'AFKCONVOY_PROXY"*)
+    if [ -f "$root/shell-proxy" ]; then cat "$root/shell-proxy"; else printf 'AFKCONVOY_PROXY\000\000'; fi
+    exit 0 ;;
   alias) cat "$root/shell-aliases" 2>/dev/null; exit 0 ;;
   "codex "*" --help")
     if [ -f "$root/shell-help" ]; then cat "$root/shell-help"; exit 0; fi

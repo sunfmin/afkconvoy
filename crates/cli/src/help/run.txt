@@ -406,3 +406,22 @@ WHAT TRIPS YOU UP
   The TUI and agent loop require the guard plugin's loader service, so a
   missing or broken plugin starts neither. Ctrl+C interrupts the running turn
   and leaves the interactive session open.
+
+WORKER PROXY BYPASS (HOST ONLY)
+
+  --worker-no-proxy [HARNESS=]HOSTS says a comma-separated list of hosts
+  workers reach directly. Like --worker-command, the bare form is for the
+  default harness; repeat it for other harnesses, never twice for one. It is
+  a setting of this start on this host, never a key of the repo's config.
+  Example: --worker-no-proxy dsh=api.deepseek.com,internal.example
+
+  The worker's login shell extends its exported no_proxy and NO_PROXY with
+  this list and exports the joined list under both names before it starts
+  the worker. Every other proxy variable stays as it was. Without a list,
+  both spellings stay untouched, except DSH's stock api.deepseek.com addition.
+  Say --worker-no-proxy dsh= to turn that stock addition off. These settings
+  apply to every worker, including patrols, consults and the train worker.
+  doctor and plan accept the same flag and show worker_no_proxy per harness:
+  {harness, addition, no_proxy, NO_PROXY}. addition is null when no list is
+  added; the other fields show the login shell's resulting comma-separated
+  values. They describe a start now, with the flags given to that command.
