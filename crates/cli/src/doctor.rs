@@ -977,7 +977,7 @@ fn read_host(config: Option<&Config>) -> Host {
     let looked = tools::look(launches.of(default).ok().flatten());
     // An unbound repo knows of no harness: nothing calls for its one command's.
     let called = match config.and_then(|config| config.bound.as_ref()) {
-        Some(bound) => role::called_for(bound, &config.unwrap().labels()),
+        Some(bound) => role::called_for(role::current(bound, &config.unwrap().labels()).as_ref()),
         None => vec![(default, vec![])],
     };
     let checked = role::check(&launches, &called).unwrap_or_default();

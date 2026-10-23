@@ -7,6 +7,7 @@
 - [`afkconvoy help concepts`](#afkconvoy-help-concepts) — one issue from intake to landing, and the four things that carry it
 - [`afkconvoy help team`](#afkconvoy-help-team) — a team's directory, its file, how it names a role, binding a repo
 - [`afkconvoy help roles`](#afkconvoy-help-roles) — what a role is, what goes where in one, and the four kinds of text
+- [`afkconvoy help roster`](#afkconvoy-help-roster) — what each role's workers may run, a role's range, an issue's casting
 - [`afkconvoy help skill-file`](#afkconvoy-help-skill-file) — a skill's file: where it is, its frontmatter, what `check` holds it to
 - [`afkconvoy help workflows`](#afkconvoy-help-workflows) — stages, verdicts, rework, a consult, a landing: a workflow's file
 - [`afkconvoy help patrols`](#afkconvoy-help-patrols) — a role run on a schedule: a patrol's file, intake, the fleet lock
@@ -178,6 +179,9 @@ Only each definition file's first ```yaml block is read; the rest explains it.
     roles:
       <short name>: <its directory>    # owner/repo, owner/repo/path or ./path
       <short name>: { dir: <its directory>, host_user: false }   # its own host_user
+    roster:                            # optional: `afkconvoy help roster`
+      <short name>: { cast: <how to cast>, run: [{ harness: pi, model: <model>,
+        good_at: <what it does best> }] }   # cast, model and good_at optional
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
     host_user: true                    # default
     dsh_profile: fleet                # fleet (default) or host-user; DSH only
@@ -191,7 +195,6 @@ opens a PR on the team's repo that appends one entry to `precedents.md`, unless
 `max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`,
 true or false, says whether a worker is given the host user's own skills and rules
 beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
-
 `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`.
 A role's `{ dir, dsh_profile }` says its own. Details: `afkconvoy run --help`.
 `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
@@ -223,9 +226,8 @@ another role's nor is inside one. It holds:
     .dsh/cordis.patch.yml              its limits for dsh: a DSH overlay
 
 Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
-an entry of `.claude/skills/` in the role. Rules and skills are written once.
-How each harness loads a role: `afkconvoy run --help`. Limits are written per harness,
-in its own form: pi and Codex run no hook of `.claude/settings.json`.
+an entry of `.claude/skills/` in the role. Rules and skills are written once; limits
+per harness, in its own form (`afkconvoy run --help` says how each loads a role).
 
 A worker is given its role's directory alone, and nothing else of its repo: a
 `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
@@ -263,7 +265,6 @@ By its config, on its base branch (`afkconvoy config --help` shows the file whol
     team            owner/repo or owner/repo/path: naming it is what binds the repo
     patrols         which of the team's patrols run here, by name; none by default
     intake_limit    the open issues taken in by workers, at most; 50 by default
-    harness         of a worker whose stage or patrol names none; claude-code by default
 
 The team is read at the head of its repo's default branch: pushing is the only way an
 edit reaches a worker. An issue of a bound repo is the fleet's to work only while it
@@ -278,9 +279,8 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 - A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an
   `AGENTS.override.md` is a fault: pi and Codex load one in place of `CLAUDE.md`.
 - A role that holds limits for one harness and none for another is right for the
-  first alone: a stage, a patrol, a consult, a landing or the proposal of a precedent
-  that runs it on the other is a fault. A role with no limits is right for every
-  harness. That its limits for two harnesses refuse alike is the role's to see to.
+  first alone: a roster entry that lets it run the other is a fault. One with no
+  limits is right for every harness; two that refuse alike are the role's to see to.
 - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
 ````
 
@@ -288,6 +288,7 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 
 ````text
 `afkconvoy help roles`      what goes where in a role, and what makes one good
+`afkconvoy help roster`     what each role's workers may run, and an issue's casting
 `afkconvoy help workflows`  the stages an issue passes through, and every key of them
 `afkconvoy help patrols`    a role run on a schedule, intake and the fleet lock
 `afkconvoy help glossary`   each term used here, with its one definition
@@ -430,6 +431,86 @@ the team's other roles keep the team's (`afkconvoy help team`).
 ````
 
 
+## afkconvoy help roster
+
+````text
+A team's roster says what each of its roles' workers may run: which harnesses, on
+which models, in what order. Read this to write one, to see why a worker started on
+the harness it did, or to understand a refusal of `afkconvoy run` that names a range.
+````
+
+### THE ROSTER
+
+````text
+The `roster` of the team file (`afkconvoy help team`) holds an entry per role it
+names, by the role's short name:
+
+    roster:
+      dev:
+        cast: Hard or wide work on fable; the rest on opus.   # optional
+        run:                           # one at least, in order of preference
+          - { harness: claude-code, model: opus, good_at: most work }
+          - { harness: claude-code, model: fable, good_at: hard or wide work }
+          - { harness: pi }            # any model the host kit holds for pi
+      reviewer:
+        run: [{ harness: codex, model: gpt-5.5 }]
+
+Each of `run` names a `harness` — claude-code, pi, codex or dsh — and may name a
+`model`, its harness's own name for it, and `good_at`, what it is good at, which the
+caster is told. One that names no model allows any model the host kit holds for the
+harness, or the harness's command as written where the host kit holds none. `cast`
+says, in the team's words, how an issue is to be cast among them: the caster is told
+it too. A role the roster names no entry for may run whatever the host kit holds.
+````
+
+### A ROLE'S RANGE
+
+````text
+On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`),
+in the roster's order: a harness, or a model, the host kit does not hold is left out.
+`afkconvoy check` answers each role's entry and its range on the host it runs on;
+`afkconvoy show` draws the roster under the workflows.
+````
+
+### AN ISSUE'S CASTING
+
+````text
+An issue's casting is its `harness:` and `model:` labels, which the caster
+(`afkconvoy cast --help`) or a human puts on; the caster is given each stage's range,
+and casts only an issue some range leaves a choice in. A worker for an issue — its
+stage's, its consult's, its landing's — runs the casting when its role's range holds
+it, the range's first when it does not or the issue has none, and the range's one
+where it holds one harness and one model, whatever the casting. `afkconvoy plan`
+says which, and why. A casting no range of the issue's workflow's stages holds is
+not dispatched, and `plan` says why. A patrol's worker, which has no issue, runs its
+role's range's first. A harness `afkconvoy switch` chose on a host runs every worker
+there, whatever the roster and the casting say.
+````
+
+### WHAT IS REFUSED
+
+````text
+- A stage, a patrol and a config name no harness and no model: `check` refuses one
+  that does, with the line to delete and the roster entry to write in its place.
+- In the roster, `check` refuses an entry for a name that is no role, a `run` that is
+  missing or empty, a harness that is none, an allowance written twice, and a
+  harness the role holds no limits for while it holds limits for another.
+- `afkconvoy run`, `tick` and `plan` refuse a role whose range on their host is
+  empty, or holds a harness the role holds no limits for, naming what the roster
+  allows it and what the host kit holds: add to the host kit with `afkconvoy kit`,
+  or change the roster.
+````
+
+### WHERE TO READ ON
+
+````text
+`afkconvoy help team`       the team file the roster is a key of
+`afkconvoy kit --help`      what this host can start, and on which models
+`afkconvoy cast --help`     the caster, and the labels it puts on
+`afkconvoy help glossary`   each term used here, with its one definition
+````
+
+
 ## afkconvoy help skill-file
 
 ````text
@@ -531,8 +612,6 @@ nothing there.
       - name: <unique; not land, done or human>
         by: <role> | human
         do: <skill>                    # required unless by: human
-        harness: claude-code           # optional
-        model: <model>                 # optional; its harness's own name for it
         writes: false                  # optional; default true
         escalate: { to: <role>, do: <skill> } | { to: human }  # optional: the consult
         on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
@@ -547,11 +626,8 @@ the team file, `do` an entry of that role's `.claude/skills/`. The worker of a s
 knows nothing of the one before it but what the stage records say, so a stage that
 judges never inherits the reasoning of the one that wrote.
 
-`harness` names the harness the stage's worker is a session of: claude-code, Claude
-Code, pi, or codex, Codex. It is a key of a stage a role performs and of a patrol —
-wherever `model` is one — and nowhere else. One that names none takes the default,
-which is the `harness` of the repo's config, and claude-code where that names none.
-`model` is passed to the harness; `afkconvoy check` holds it against pi's models.
+A stage names neither a harness nor a model. What its worker runs is its role's
+range's to say, picked among by the issue's casting (`afkconvoy help roster`).
 
 `writes: false` has the guard refuse the stage's worker a commit and a push: mark
 every stage that judges so.
@@ -610,11 +686,12 @@ is handed on (below), naming the breaker and every rework's stage and reason.
 A stage's consult is asked before a human is: whatever would hand the issue to a human
 there — its `escalate`, a tripped breaker, a failure, a workflow changed under it —
 starts it where that human would stand, free to run what they would (`afkconvoy help
-humans`). `escalate: { to, do }` names a more senior role, on the default harness;
-where a stage names none, the stock consult, afkconvoy's own, is asked on the stage's
-harness — its one instruction is to decide as the human would. `{ to: human }` names
-none: a human, straight. A consult rules (`afkconvoy rule`: the stage runs again; on an
-`escalate` that is one more rework in total), sends, closes, parks or lets it through.
+humans`). `escalate: { to, do }` names a more senior role, run within its range
+(`afkconvoy help roster`); where a stage names none, the stock consult, afkconvoy's
+own, is asked on what the host kit names for it — its one instruction is to decide as
+the human would. `{ to: human }` names none: a human, straight. A consult rules
+(`afkconvoy rule`: the stage runs again; on an `escalate` that is one more rework in
+total), sends, closes, parks or lets it through.
 Close and park add no rework (`afkconvoy help humans` says how to bring a park back).
 The same hand-off again goes to a human. A consult writes no code.
 ````
@@ -622,8 +699,8 @@ The same hand-off again goes to a human. A consult writes no code.
 ### A STAGE BY: HUMAN
 
 ````text
-No human stands in a workflow unless it names one. A stage `by: human` has no `do`,
-no `harness` and no `model`; it starts no worker and holds no claim. The issue waits
+No human stands in a workflow unless it names one. A stage `by: human` has no `do`;
+it starts no worker and holds no claim. The issue waits
 there until a human declares the stage's verdict with `afkconvoy verdict`.
 
 Anywhere else a human is reached by an escalation: what a consult let through, or
@@ -635,8 +712,8 @@ stage runs again under the ruling — or `afkconvoy send`, to a stage of their c
 
 ````text
 A workflow in which a pass leads to `land` names who lands: `land: { by, do }`. The
-tick after that `pass` starts a new worker in the role `by`, with the skill `do`, on
-the default harness. It runs the gate on the issue's PR and joins it to the landing
+tick after that `pass` starts a new worker in the role `by`, with the skill `do`, within
+its role's range. It runs the gate on the issue's PR and joins it to the landing
 train (`afkconvoy land --help`), which lands it on the base branch as it lands any
 PR. A `land:` no pass leads to is a fault, and so is a `pass: land` with no `land:`.
 ````
@@ -683,16 +760,14 @@ Of the file only the first ```yaml block is read:
     by: <role>
     do: <skill>
     every: 6h                          # required: a whole number from 1, then m, h or d
-    harness: claude-code               # optional
-    model: <model>                     # optional; its harness's own name for it
     max_open: 5                        # required
     max_runs_a_day: 4                  # optional: a whole number from 1
     max_landed_a_day: 5                # optional: a whole number from 1
 
 `by` is a short name of the team file and `do` a skill of that role. `every` is how
 long after its last run a patrol is due: it is due or it is not, and one that missed
-ten intervals runs once. `harness` and `model` are what they are for a stage
-(`afkconvoy help workflows`). `max_open` bounds what a patrol gives the fleet: it is
+ten intervals runs once. Its worker runs its role's range's first
+(`afkconvoy help roster`). `max_open` bounds what a patrol gives the fleet: it is
 not run while that many issues it opened are open.
 
 `max_runs_a_day` bounds how often it runs besides `every`: a patrol whose runs that
@@ -845,9 +920,9 @@ answers with it, and the role `triage-nurse` routes by it.
       Five stages, then the landing. A reviewer that writes nothing: `plan-review`
       and `code-review` are marked `writes: false`, as `workup` and `discharge` are,
       and the guard refuses their workers a commit and a push.
-      A stage on another harness: `plan-review` names `harness: pi` and pi's own name
-      for its model, so the plan is reviewed by something other than what wrote it.
-      It is the stage chosen because it writes nothing.
+      A role on another harness: the roster lets the attending run pi first, on pi's
+      own name for its model, so `plan-review` has the plan reviewed by something
+      other than what wrote it; the caster puts its code reviews on Claude Code.
       A stage with a consult: `workup` and `treatment` carry
       `escalate: { to: attending, do: consult }`. Their `escalate` goes first to a
       worker in that role, which lets through to a human only what nobody decided.
@@ -957,15 +1032,15 @@ Until then `skills-loaded.sh` refuses every `pass` and `reject` of those two rol
 and the attending's `limits.ts` does under pi. The hooks call `jq`: every host of
 the fleet needs it.
 
-`plan-review` runs on pi, so every host needs `pi`, logged in to the provider of the
-stage's model: `openai-codex/gpt-5.5`, as written. `check` holds that name against
-the models pi lists on the host. Write another of them — or take `harness` and
-`model` out of the stage, and it runs on the repo's default harness as the others
-do. A host without pi starts nothing: `plan`, `tick` and `run` refuse, `doctor`
-finds the same, and each names the stage that calls for it and the line that
-installs it:
+The roster lets the attending run pi first, so a host whose host kit holds pi needs
+`pi`, logged in to the provider of its model: `openai-codex/gpt-5.5`, as written —
+`afkconvoy kit` adds it to the host kit, and probes it. Write another model pi lists
+— or take pi out of the attending's entry, and it runs Claude Code as the others do.
+A host kit holding pi on a host without it starts nothing: `plan`, `tick` and `run`
+refuse, `doctor` finds the same, and each names the range that calls for it and the
+line that installs it:
 
-    pi is not installed, called for by the stage `plan-review` of the workflow `fix`
+    pi is not installed, called for by the range of the role `attending`
 ````
 
 ### ONE ISSUE, FROM ITS LABEL TO THE BASE BRANCH
@@ -1542,7 +1617,7 @@ The program a worker is a session of: it runs a model, with tools, on the work i
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:
-A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team; a role's range on a host is the part of it the host kit holds, and an unbound repo, having no team, ranges over the host kit whole.
+A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team, written under the team file's `roster`: for each role it names, a `run` listing `{ harness, model, good_at }` in that order of preference — a harness named with no model allows any model the host kit holds for it — and a `cast` saying how to cast among them. A role's **range** on a host is its entry cut to the host kit, in the roster's order; a role it names no entry for, and an unbound repo, having no team, range over the host kit whole. A stage, a patrol and a config name no harness and no model: what a worker runs is its role's range's to say.
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
@@ -1550,11 +1625,11 @@ The harnesses and models one host can start now — each harness's worker launch
 _Avoid_: roster (the team's), host config, inventory
 
 **Casting**:
-The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, and one whose range does not runs its range's first; an issue none of whose stages has a choice to make is not cast. In an unbound repo the host kit is the range: its worker runs the casting where the host kit holds it, and the host kit's first where the issue has none; one it does not hold is not dispatched, and `plan` says which label and what the host kit holds. A harness named with no model starts its command as written. A label a human put on is never recast.
+The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, one whose range does not runs its range's first, and one whose range holds one harness and one model runs that, whatever the casting; a casting none of an issue's stages' ranges holds is not dispatched, and `plan` says why; an issue none of whose stages has a choice to make is not cast. In an unbound repo the host kit is the range: its worker runs the casting where the host kit holds it, and the host kit's first where the issue has none; one it does not hold is not dispatched, and `plan` says which label and what the host kit holds. A harness named with no model starts its command as written. A label a human put on is never recast.
 _Avoid_: assignment (a GitHub assignee), routing, dispatch (starting a worker)
 
 **Caster**:
-A worker in no role that casts, in one session, every open issue of the repo's that carries a flow label, has a choice to make and no casting, by the roster and the host kit. A tick that finds such an issue on the frontier and no caster running starts one, which runs `afkconvoy cast` on the host kit's first; the tick holds those issues back while it runs, for ten minutes at most from its start, and dispatches what it did not cast uncast, on the host kit's first. A human runs the same casting with `afkconvoy cast`.
+A worker in no role that casts, in one session, every open issue of the repo's that carries a flow label, has a choice to make and no casting, by the roster and the host kit. A tick that finds such an issue on the frontier and no caster running starts one, which runs `afkconvoy cast` on the host kit's first; the tick holds those issues back while it runs, for ten minutes at most from its start, and dispatches what it did not cast uncast, on its range's first. A human runs the same casting with `afkconvoy cast`.
 _Avoid_: assigner, router, dispatcher
 
 **Worker**:

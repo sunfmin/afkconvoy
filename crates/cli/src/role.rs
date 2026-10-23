@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use afkconvoy_core::casting;
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::config::{Bound, RepoLabels};
 use afkconvoy_core::guard::WritesNothing;
@@ -17,7 +18,7 @@ use afkconvoy_core::prompt::{
 use afkconvoy_core::role::{Due, Facts, On, Rules, Start, Told, due};
 use afkconvoy_core::stage_record::{History, Reading, StageRecord, Stated, history};
 use afkconvoy_core::stock;
-use afkconvoy_core::team::{BY_DEFAULT, LAND, PRECEDENTS};
+use afkconvoy_core::team::{LAND, PRECEDENTS, Team};
 use afkconvoy_core::tools::{Found, Tool, fault, refused};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -47,9 +48,8 @@ pub struct Staged {
     /// Whether the worker is the stage's consult: it rules on the stage's
     /// `escalate`, and writes no code whatever the stage may.
     consult: bool,
-    /// The harness the worker is a session of: the stage's own worker's is
-    /// the one the stage names; a consult's, a landing worker's and that of
-    /// a stage naming none is the default the repo's config names.
+    /// The harness the worker is a session of: what its role's range makes
+    /// of the issue's casting (`Fleet::cast_in`), or the stock consult's.
     harness: Harness,
     model: Option<String>,
     /// What the guard holds every worker to: the repo's base branch, the
@@ -145,19 +145,32 @@ impl Staged {
         let history = history(workflow, &records);
         let handed = handed_said(&history, &records, &urls);
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
-        // The stage's harness and its model are its own worker's: a workflow
-        // names none for a consult it names. The stock consult runs what the
-        // host kit names for it.
-        // This host's chosen harness, where a switch chose one, wins over both.
-        let stock = if by.is_none() { Some(fleet.stock_consult()?) } else { None };
-        let named = match &stock {
-            Some(stock) => stock.harness,
-            None => at
-                .filter(|_| !consult)
-                .and_then(|stage| stage.harness(bound.harness))
-                .unwrap_or(bound.harness),
+        // A casting none of the workflow's stages' ranges holds is not
+        // dispatched (docs/adr/0020).
+        // A caster's casting to a paused harness is cast again: until it is,
+        // the issue runs as one with no casting.
+        let labels = match fleet.recast(issue, labels)? {
+            true => casting::without_casting(labels),
+            false => labels.to_vec(),
         };
-        let harness = fleet.harness_of(named);
+        let kit = crate::kit::running()?.0.range();
+        let ranges = casting::stage_ranges(&kept.team, workflow, &kit);
+        if let Some(why) = casting::held_by_none(&labels, &ranges, fleet.chosen) {
+            return Err(See::Workflows.refusal(format!("issue #{issue} is not dispatched: {why}")));
+        }
+        // A worker in a role runs the issue's casting within its role's
+        // range; the stock consult runs what the host kit names for it. This
+        // host's chosen harness, where a switch chose one, wins over both.
+        let (harness, model) = match &by {
+            Some((_, role)) => {
+                let cast = fleet.cast_in(role, &labels)?;
+                (cast.harness, cast.model)
+            }
+            None => {
+                let stock = fleet.stock_consult()?;
+                (stock.harness, stock.model)
+            }
+        };
         let (role, skill, role_copy, host_user, dsh_profile) = match by {
             Some((work, role)) => (
                 role.name.clone(),
@@ -193,13 +206,7 @@ impl Staged {
             writes: at.is_none_or(|stage| stage.writes),
             consult,
             harness,
-            // A model is its stage's harness's: another harness knows it not.
-            model: match stock {
-                Some(stock) => stock.model,
-                None => at
-                    .filter(|_| !consult && harness == named)
-                    .and_then(|stage| stage.model.clone()),
-            },
+            model,
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
@@ -442,31 +449,52 @@ pub struct Checked {
     pub flags_fault: Option<String>,
 }
 
-/// Every harness the fleet of a repo `bound` to a team could be asked for,
-/// each with what calls for it (`Team::harnesses`): the repo's default, and
-/// whatever the team's workflows and the patrols the repo runs name, as the
-/// team stands now, read against the repo's `labels`, and the stock
-/// consult's, as the host kit names it. A team that cannot be
-/// read or does not load calls for the default alone: no worker is started
-/// under it, and each tick says why.
-pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<String>)> {
+/// What calls for the host kit's first: every worker in no role but the
+/// stock consult, and whatever nothing casts.
+pub const BY_FIRST: &str = "the host kit's first";
+
+/// Adds `by` to what calls for `harness` in `called`.
+fn call(called: &mut Vec<(Harness, Vec<String>)>, harness: Harness, by: String) {
+    match called.iter_mut().find(|(named, _)| *named == harness) {
+        Some((_, callers)) => callers.push(by),
+        None => called.push((harness, vec![by])),
+    }
+}
+
+/// The team a repo is `bound` to as it stands now, read against the repo's
+/// `labels`: `None` where it cannot be read or does not load — no worker is
+/// started under it, and each tick says why.
+pub fn current(bound: &Bound, labels: &RepoLabels) -> Option<Team> {
+    let gh = GitHub { dir: PathBuf::from(".") };
+    let kept = Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels));
+    kept.ok().map(|kept| kept.team)
+}
+
+/// Every harness the fleet of a repo bound to `team` could be asked for,
+/// each with what calls for it: the host kit's first, every harness of each
+/// role's range (`casting::range`), and the stock consult's, as the host kit
+/// names it. No team (`current`) calls for the first alone.
+pub fn called_for(team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
     // A harness this host's switch chose is the one every worker starts on.
     let chosen = crate::git::Repo::here().ok().and_then(|repo| crate::switch::chosen(&repo).ok());
     if let Some(chosen) = chosen.flatten() {
         return vec![(chosen, vec![crate::switch::CHOSEN_BY.to_string()])];
     }
-    let gh = GitHub { dir: PathBuf::from(".") };
-    let mut called = match Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels))
-    {
-        Ok(kept) => kept.team.harnesses(bound.harness, &bound.patrols),
-        Err(_) => vec![(bound.harness, vec![BY_DEFAULT.to_string()])],
-    };
-    // The stock consult runs what the host kit names for it.
-    if let Ok(stock) = crate::kit::stock_consult() {
-        match called.iter_mut().find(|(harness, _)| *harness == stock.harness) {
-            Some((_, callers)) => callers.push(BY_STOCK_CONSULT.to_string()),
-            None => called.push((stock.harness, vec![BY_STOCK_CONSULT.to_string()])),
+    let Ok(kit) = crate::kit::load() else { return vec![] };
+    let mut called = vec![];
+    if let Some(first) = kit.first() {
+        call(&mut called, first.harness, BY_FIRST.to_string());
+    }
+    if let Some(team) = team {
+        for role in &team.roles {
+            for held in casting::range(role.roster.as_ref(), &kit.range()) {
+                call(&mut called, held.harness, format!("the range of the role `{}`", role.name));
+            }
         }
+    }
+    // The stock consult runs what the host kit names for it.
+    if let Some(stock) = kit.stock_consult() {
+        call(&mut called, stock.harness, BY_STOCK_CONSULT.to_string());
     }
     called
 }
@@ -528,10 +556,26 @@ impl Checked {
 /// what calls for it and the line that fixes it: none is started in
 /// another's place, so a start that cannot start them all starts no worker.
 pub fn probe(launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
-    match refusal(check(launches, &called_for(bound, labels))?) {
-        Some(why) => bail!(why),
+    let team = current(bound, labels);
+    if let Some(why) = refusal(check(launches, &called_for(team.as_ref()))?) {
+        bail!(why);
+    }
+    match team {
+        Some(team) => ranged(&team),
         None => Ok(()),
     }
+}
+
+/// Refuses a team one of whose roles' ranges on this host
+/// (`casting::range_faults`) holds a harness the role has no limits for,
+/// or nothing at all (docs/adr/0013, docs/adr/0020): every such role is
+/// named, with what the roster allows it and what the host kit holds.
+fn ranged(team: &Team) -> Result<()> {
+    let faults = casting::range_faults(team, &crate::kit::load()?.range());
+    if faults.is_empty() {
+        return Ok(());
+    }
+    Err(See::Team.refusal(faults.join("\n")))
 }
 
 /// Checks that a worker of `harness` can be started on this host, for what

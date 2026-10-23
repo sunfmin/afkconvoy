@@ -1101,7 +1101,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             match issue.or(numbered) {
                 Some(issue) => {
                     let gh = gh::GitHub { dir: Repo::here()?.dir };
-                    stage::show_issue(&gh, &loaded.team, loaded.harness, issue)
+                    stage::show_issue(&gh, &loaded.team, issue)
                 }
                 None => Ok(Value::String(workflow::show(&loaded, workflow.as_deref())?)),
             }

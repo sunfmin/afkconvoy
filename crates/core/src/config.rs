@@ -4,8 +4,6 @@
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
-use crate::harness::Harness;
-
 /// The escalate label where nothing names one: a repo's, and a team's.
 pub const ESCALATE_LABEL: &str = "ready-for-human";
 
@@ -71,6 +69,7 @@ pub struct Settings {
     pub patrols: Option<Vec<String>>,
     pub lock_label: Option<String>,
     pub intake_limit: Option<u64>,
+    /// Read only to be refused: a config names no harness (docs/adr/0020).
     pub harness: Option<String>,
     pub escalate_to: Option<String>,
 }
@@ -84,10 +83,6 @@ pub struct Bound {
     pub patrols: Vec<String>,
     /// How many issues taken in by workers may be open at once.
     pub intake_limit: u64,
-    /// The harness of every worker nothing of the team names one for: a
-    /// stage's or a patrol's that names none, a consult, a landing and the
-    /// proposal of a precedent.
-    pub harness: Harness,
 }
 
 /// A config a fleet can run on: every key present, defaults filled.
@@ -137,8 +132,8 @@ pub enum ConfigError {
     NotARepo(&'static str),
     /// A key that means something only in a bound repo, in a repo naming no team.
     NeedsTeam(&'static str),
-    /// `harness` names none: what it was set to.
-    NotAHarness(String),
+    /// `harness`, which a config names no more: what it was set to.
+    Harness(String),
     /// A key that means something only in an unbound repo, in a repo naming a team.
     Unbound(&'static str),
     /// `escalate_to` is neither `consult` nor `human`: what it was set to.
@@ -166,7 +161,12 @@ impl std::fmt::Display for ConfigError {
             ConfigError::NeedsTeam(key) => {
                 write!(f, "{key}: is read only in a bound repo, and this one names no team")
             }
-            ConfigError::NotAHarness(named) => write!(f, "harness: {}", Harness::unknown(named)),
+            ConfigError::Harness(named) => write!(
+                f,
+                "harness: a config names no harness any more (docs/adr/0020): delete the line \
+                 `harness: {named}`. A team's `roster` says which harnesses and models each role's \
+                 workers may run, and the host kit (`afkconvoy kit`) which this host can start"
+            ),
             ConfigError::Unbound(key) => write!(
                 f,
                 "{key}: is read only in an unbound repo: a bound repo's stage says where its \
@@ -182,16 +182,12 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Config {
-    /// The harness of every worker nothing names one for: the one a bound
-    /// repo's config names. An unbound repo knows of no harness, and its one
-    /// worker launch command is kept as the default's.
-    pub fn harness(&self) -> Harness {
-        self.bound.as_ref().map_or(Harness::DEFAULT, |bound| bound.harness)
-    }
-
     /// The config `settings` asks for, defaults filled — or the first key that
     /// is missing or cannot be run on.
     pub fn new(settings: Settings) -> Result<Config, ConfigError> {
+        if let Some(named) = settings.harness {
+            return Err(ConfigError::Harness(named));
+        }
         let base_branch = required("base_branch", settings.base_branch)?;
         let gate_command = required("gate_command", settings.gate_command)?;
         let ready_label = label("ready_label", settings.ready_label, "ready-for-agent")?;
@@ -218,16 +214,11 @@ impl Config {
                 team: repo("team", team)?,
                 patrols: settings.patrols.unwrap_or_default(),
                 intake_limit: settings.intake_limit.unwrap_or(50),
-                harness: match settings.harness {
-                    Some(named) => Harness::read(&named).ok_or(ConfigError::NotAHarness(named))?,
-                    None => Harness::DEFAULT,
-                },
             }),
             None if settings.patrols.is_some() => return Err(ConfigError::NeedsTeam("patrols")),
             None if settings.intake_limit.is_some() => {
                 return Err(ConfigError::NeedsTeam("intake_limit"));
             }
-            None if settings.harness.is_some() => return Err(ConfigError::NeedsTeam("harness")),
             None => None,
         };
         let concurrency = settings.concurrency.unwrap_or(3);
@@ -518,11 +509,6 @@ mod tests {
         assert_eq!(bound.team.to_string(), "acme/team");
         assert_eq!(bound.patrols, Vec::<String>::new());
         assert_eq!(bound.intake_limit, 50);
-        assert_eq!(
-            bound.harness,
-            Harness::ClaudeCode,
-            "a config that names none means Claude Code"
-        );
         let set = Settings {
             team: Some("acme/team".into()),
             patrols: Some(vec!["triage".into()]),
@@ -586,26 +572,17 @@ mod tests {
         assert_eq!(Config::new(patrols), Err(ConfigError::NeedsTeam("patrols")));
         let limit = Settings { intake_limit: Some(1), ..minimal() };
         assert_eq!(Config::new(limit), Err(ConfigError::NeedsTeam("intake_limit")));
-        let harness = Settings { harness: Some("claude-code".into()), ..minimal() };
-        assert_eq!(Config::new(harness), Err(ConfigError::NeedsTeam("harness")));
     }
 
     #[test]
-    fn a_bound_repo_names_the_default_harness_by_its_key() {
-        let named = |harness: &str| Settings {
-            team: Some("acme/team".into()),
-            harness: Some(harness.into()),
-            ..minimal()
-        };
-        let bound = Config::new(named("claude-code")).unwrap().bound.unwrap();
-        assert_eq!(bound.harness, Harness::ClaudeCode);
-        assert_eq!(Config::new(named("pi")).unwrap().bound.unwrap().harness, Harness::Pi);
-        assert_eq!(Config::new(named("codex")).unwrap().bound.unwrap().harness, Harness::Codex);
-        for none in ["aider", "Claude Code", "claude", ""] {
-            let refused = Config::new(named(none)).unwrap_err();
-            assert_eq!(refused, ConfigError::NotAHarness(none.to_string()));
+    fn a_config_that_names_a_harness_is_refused_with_the_line_to_delete() {
+        for team in [None, Some("acme/team".to_string())] {
+            let named = Settings { team, harness: Some("pi".into()), ..minimal() };
+            let refused = Config::new(named).unwrap_err();
+            assert_eq!(refused, ConfigError::Harness("pi".to_string()));
             let said = refused.to_string();
-            assert!(said.starts_with("harness: ") && said.contains("claude-code"), "{said}");
+            assert!(said.contains("delete the line `harness: pi`"), "{said}");
+            assert!(said.contains("`roster`"), "{said}");
         }
     }
 

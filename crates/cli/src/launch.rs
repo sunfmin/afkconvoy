@@ -93,10 +93,13 @@ impl Launches {
 
     pub fn foreseen() -> Launches {
         let config = config::default_file().and_then(|file| config::load(&file)).ok();
+        let kit = crate::kit::load().map_err(|error| format!("{error:#}"));
+        // The host kit's first is what a worker nothing casts runs.
+        let first = kit.as_ref().ok().and_then(|kit| kit.first()).map(|first| first.harness);
         Launches {
-            kit: crate::kit::load().map_err(|error| format!("{error:#}")),
+            kit,
             bypass: afkconvoy_core::proxy::Lists::default(),
-            default: config.as_ref().map_or(Harness::DEFAULT, |config| config.harness()),
+            default: first.unwrap_or(Harness::DEFAULT),
             bound: config.is_some_and(|config| config.bound.is_some()),
             starts: false,
             proposed: Harness::ALL.map(|harness| (harness, OnceCell::new())).into(),

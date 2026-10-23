@@ -13,16 +13,18 @@ use std::process::{Command, Stdio};
 use common::{World, git, write};
 use serde_json::{Value, json};
 
-const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
-/// A workflow whose first stage is on pi and whose second names no harness.
+/// A team whose `dev` runs pi on one model, whose `auditor` runs pi as its
+/// command is written and whose `reviewer` runs Claude Code.
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n  auditor: acme/auditor\n\
+roster:\n  dev: { run: [{ harness: pi, model: openai/gpt-5.5 }] }\n  auditor: { run: [{ harness: pi }] }\n\
+\x20 reviewer: { run: [{ harness: claude-code }] }\n```\n";
+/// A workflow whose first stage is on pi and whose second on Claude Code.
 const FEATURE: &str = "\
 ```yaml
 stages:
   - name: build
     by: dev
     do: implement
-    harness: pi
-    model: openai/gpt-5.5
     on: { pass: review }
   - name: review
     by: reviewer
@@ -36,14 +38,13 @@ const AUDIT: &str = "\
 ```yaml
 stages:
   - name: look
-    by: reviewer
+    by: auditor
     do: review
-    harness: pi
     writes: false
     on: { pass: done }
 ```
 ";
-const SWEEP: &str = "```yaml\nby: dev\ndo: implement\nharness: pi\nevery: 1h\nmax_open: 1\n```\n";
+const SWEEP: &str = "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 1\n```\n";
 const CONFIG: &str = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
 
 /// The fleet's extension for pi, as the tool carries it.
@@ -78,6 +79,7 @@ fn bound_to(team: &[(&str, &str)]) -> World {
     let world = World::new();
     world.hold_every_harness();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
+    world.kit_models("pi", &["openai/gpt-5.5"]);
     world.repo(
         "acme/dev",
         &[
@@ -90,6 +92,10 @@ fn bound_to(team: &[(&str, &str)]) -> World {
     );
     world.repo(
         "acme/reviewer",
+        &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
+    );
+    world.repo(
+        "acme/auditor",
         &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
     );
     world.repo("acme/team", team);
@@ -158,25 +164,17 @@ fn started(world: &World, dir: &Path) -> String {
 }
 
 #[test]
-fn a_stage_and_a_patrol_name_pi_and_pi_has_a_stock_worker_launch_command() {
+fn a_role_s_range_holds_pi_and_pi_has_a_stock_worker_launch_command() {
     let world = bound();
     let read = world.afk(&["check"]).ok();
-    let stages = read["workflows"].as_array().unwrap().iter().flat_map(|workflow| {
-        let name = workflow["name"].as_str().unwrap().to_string();
-        let stages = workflow["stages"].as_array().unwrap().clone();
-        stages.into_iter().map(move |stage| {
-            format!("{name}/{}", stage["name"].as_str().unwrap())
-                + " on "
-                + stage["harness"].as_str().unwrap()
-        })
+    let roles = read["roles"].as_array().unwrap().iter().map(|role| {
+        let range = role["range"].as_array().unwrap().iter();
+        let on: Vec<String> = range.map(|held| held["harness"].as_str().unwrap().into()).collect();
+        format!("{} on {}", role["name"].as_str().unwrap(), on.join(", "))
     });
-    let mut stages: Vec<String> = stages.collect();
-    stages.sort();
-    assert_eq!(
-        stages,
-        ["audit/look on pi", "feature/build on pi", "feature/review on claude-code"]
-    );
-    assert_eq!(read["patrols"][0]["harness"], "pi");
+    let roles: Vec<String> = roles.collect();
+    assert_eq!(roles, ["dev on pi", "reviewer on claude-code", "auditor on pi"]);
+    assert_eq!(read["roles"][0]["range"][0]["models"], json!(["openai/gpt-5.5"]));
 
     // Nobody said what starts a pi worker: its stock command does, checked
     // by the start beside Claude Code's — each asked for its own flags.
@@ -203,7 +201,7 @@ fn a_stage_and_a_patrol_name_pi_and_pi_has_a_stock_worker_launch_command() {
     .error();
     assert!(why.contains("`agent --help` names no --approve, no --no-skills,"), "{why}");
     assert!(why.contains("the worker launch command of the harness `pi`"), "{why}");
-    assert!(why.contains("the stage `look` of the workflow `audit`"), "{why}");
+    assert!(why.contains("the range of the role `auditor`"), "{why}");
     assert!(world.worktrees().is_empty());
 }
 
@@ -235,11 +233,10 @@ fn doctor_finds(world: &World) -> Vec<(String, String)> {
     of_pi.map(|finding| (text(&finding["what"]), text(&finding["fix"]))).collect()
 }
 
-const CALLED: &str = "called for by the stage `look` of the workflow `audit`, the stage `build` of \
-                      the workflow `feature`";
+const CALLED: &str = "called for by the range of the role `dev`, the range of the role `auditor`";
 
 #[test]
-fn a_host_without_pi_is_refused_with_the_stages_that_call_for_it_and_its_installer() {
+fn a_host_without_pi_is_refused_with_the_ranges_that_call_for_it_and_its_installer() {
     let world = bound();
     world.shell_knows("pi", None);
     world.issue(7, &["flow:feature"]);
@@ -291,12 +288,13 @@ fn a_pi_that_holds_no_credentials_is_refused_with_the_line_that_logs_it_in() {
 }
 
 #[test]
-fn a_host_without_pi_is_told_nothing_of_it_by_a_team_that_names_no_pi_stage() {
-    let on_claude = FEATURE.replace("    harness: pi\n    model: openai/gpt-5.5\n", "");
-    // …nor by a patrol on pi that this repo does not run
+fn a_host_without_pi_is_told_nothing_of_it_by_a_team_whose_roster_names_no_pi() {
+    let on_claude = TEAM
+        .replace("{ harness: pi, model: openai/gpt-5.5 }", "{ harness: claude-code }")
+        .replace("{ harness: pi }", "{ harness: claude-code }");
     let world = bound_to(&[
-        ("team.md", TEAM),
-        ("workflows/feature.md", &on_claude),
+        ("team.md", &on_claude),
+        ("workflows/feature.md", FEATURE),
         ("patrols/sweep.md", SWEEP),
     ]);
     world.shell_knows("pi", None);
@@ -415,9 +413,11 @@ fn a_pi_worker_starts_in_its_role_with_what_pi_does_not_load_from_there() {
     assert!(kept.join("extensions/orca-agent-status.ts").symlink_metadata().is_err());
     assert_eq!(link("models.json"), home.join(".pi/agent/models.json"));
     assert_eq!(std::fs::read_to_string(kept.join("afkconvoy.js")).unwrap(), EXTENSION);
-    // A stage that names no model names none to pi.
+    // A role whose roster names no model runs its range's one: the host
+    // kit's for pi.
     let line = started(&world, &worktree(&world, 8));
-    assert!(line.ends_with(&format!("--extension '{}/afkconvoy.js'", kept.display())), "{line}");
+    assert!(line.contains("--model 'openai/gpt-5.5'"), "{line}");
+    assert!(line.contains(&format!("--extension '{}/afkconvoy.js'", kept.display())), "{line}");
 }
 
 #[test]
@@ -770,15 +770,15 @@ fn a_pi_worker_is_given_the_host_user_s_skills_and_rules_after_its_role_s() {
 
 #[test]
 fn a_pi_worker_of_a_role_that_keeps_from_the_host_user_s_skills_and_rules_is_given_none() {
-    let own = "reviewer: { dir: acme/reviewer, host_user: false }";
-    let world = bound_with(&TEAM.replace("reviewer: acme/reviewer", own));
+    let own = "auditor: { dir: acme/auditor, host_user: false }";
+    let world = bound_with(&TEAM.replace("auditor: acme/auditor", own));
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:audit"]);
     let ticked = tick(&world, 1000).ok();
     let did = did(&ticked);
     assert!(did.contains(&"dispatch 7 done".to_string()), "{ticked}");
     assert!(did.contains(&"dispatch 8 done".to_string()), "{ticked}");
-    // `dev` takes the team's, and is given them; `reviewer` says otherwise.
+    // `dev` takes the team's, and is given them; `auditor` says otherwise.
     let given = |issue: u64| {
         let line = started(&world, &worktree(&world, issue));
         let (with, alone) = (
@@ -789,5 +789,5 @@ fn a_pi_worker_of_a_role_that_keeps_from_the_host_user_s_skills_and_rules_is_giv
         line.contains(&with)
     };
     assert!(given(7), "dev is started on pi with the host user's");
-    assert!(!given(8), "reviewer is started on pi with none of the host user's");
+    assert!(!given(8), "auditor is started on pi with none of the host user's");
 }

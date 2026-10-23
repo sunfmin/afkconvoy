@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 use common::{World, commit, git, write};
 use serde_json::{Value, json};
 
-const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+/// A team whose `dev` runs opus and whose `reviewer` runs sonnet, each alone.
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\nroster:\n  \
+                    dev: { run: [{ harness: claude-code, model: opus }] }\n  \
+                    reviewer: { run: [{ harness: claude-code, model: sonnet }] }\n```\n";
 /// `build` names a consult; `review` names none.
 const FEATURE: &str = "\
 ```yaml
@@ -18,7 +21,6 @@ stages:
   - name: build
     by: dev
     do: implement
-    model: opus
     escalate: { to: reviewer, do: rule }
     on: { pass: review }
   - name: review
@@ -33,6 +35,7 @@ stages:
 /// and runs `concurrency` workers at once.
 fn bound(feature: &str, concurrency: u64) -> World {
     let world = World::new();
+    world.kit_models("claude-code", &["opus", "sonnet"]);
     world.repo(
         "acme/dev",
         &[(".claude/skills/implement/SKILL.md", "---\nname: implement\ndescription: build\n---\n")],
@@ -214,8 +217,9 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
     ] {
         assert!(consult.contains(said), "{said} in {consult}");
     }
-    // The stage's model is its own worker's.
-    assert!(commands[0].contains("--model 'opus'") && !consult.contains("--model"), "{consult}");
+    // A consult runs its own role's range, not the stage's.
+    assert!(commands[0].contains("--model 'opus'"), "{}", commands[0]);
+    assert!(consult.contains("--model 'sonnet'"), "{consult}");
 
     let dir = worktree(&world);
     let told = brief(&dir);
@@ -394,8 +398,11 @@ fn the_stock_consult_runs_what_the_host_kit_names_for_it_or_its_first() {
         let mut kit: Value =
             serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
         let probed = json!({"at": 900, "seconds": 2.5});
-        kit["harnesses"][0]["models"] =
-            json!([{"model": "opus", "probed": probed}, {"model": "haiku", "probed": probed}]);
+        kit["harnesses"][0]["models"] = json!([
+            {"model": "opus", "probed": probed},
+            {"model": "sonnet", "probed": probed},
+            {"model": "haiku", "probed": probed}
+        ]);
         if let Some(named) = named {
             kit["stock_consult"] = named;
         }

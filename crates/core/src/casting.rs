@@ -1,10 +1,13 @@
 //! An issue's casting (docs/adr/0020): the harness and model its `harness:`
-//! and `model:` labels name — and what a worker of an unbound repo runs by
-//! it, within the host kit, which is an unbound repo's whole range.
+//! and `model:` labels name — and what a worker runs by it, within its range:
+//! a role's roster entry cut to the host kit (`range`), and in an unbound
+//! repo the host kit whole.
 
+use flux_rs::attrs::*;
 use serde::Serialize;
 
 use crate::harness::Harness;
+use crate::team::{Entry, Performer, Team, Workflow};
 
 /// What the label that names an issue's harness starts with.
 pub const HARNESS_LABEL: &str = "harness:";
@@ -51,6 +54,12 @@ pub enum Why {
     Switch,
     /// The issue was a caster's to cast, and is not: the range's first.
     Uncast,
+    /// A bound repo's issue has no casting: its role's range's first.
+    RangeFirst,
+    /// Its role's range does not hold the casting: the range's first.
+    Outside,
+    /// Its role's range holds one harness and model, whatever the casting.
+    Only,
 }
 
 impl Why {
@@ -60,7 +69,10 @@ impl Why {
             Why::Casting => "its casting labels",
             Why::First => "no casting: the host kit's first",
             Why::Switch => "this host's switch, over any casting",
-            Why::Uncast => "the caster did not cast it in ten minutes: the host kit's first",
+            Why::Uncast => "the caster did not cast it in ten minutes: its range's first",
+            Why::RangeFirst => "no casting: its role's range's first",
+            Why::Outside => "its role's range does not hold its casting: the range's first",
+            Why::Only => "its role's range holds one harness and model",
         }
     }
 }
@@ -74,6 +86,188 @@ pub const CASTER_SECONDS: u64 = 600;
 pub fn choice(range: &[Held]) -> bool {
     let options: usize = range.iter().map(|held| held.models.len().max(1)).sum();
     options > 1
+}
+
+/// A role's range on a host whose host kit holds `kit`, in its order: its
+/// roster `entry` cut to the host kit, in the roster's order, each harness
+/// once, with the models of it the entry allows and the host kit holds — a
+/// harness the entry allows on any model, with every model the host kit
+/// holds for it. A role the roster names none for ranges over the host kit
+/// whole. What the host kit does not hold is cut.
+pub fn range(entry: Option<&Entry>, kit: &[Held]) -> Vec<Held> {
+    let Some(entry) = entry else { return kit.to_vec() };
+    let mut range: Vec<Held> = vec![];
+    for allowed in &entry.run {
+        let Some(held) = kit.iter().find(|held| held.harness == allowed.harness) else {
+            continue;
+        };
+        let models: Vec<String> = match &allowed.model {
+            Some(model) if held.models.contains(model) => vec![model.clone()],
+            Some(_) => continue,
+            None => held.models.clone(),
+        };
+        match range.iter_mut().find(|had| had.harness == allowed.harness) {
+            Some(had) => {
+                for model in models {
+                    if !had.models.contains(&model) {
+                        had.models.push(model);
+                    }
+                }
+            }
+            None => range.push(Held { harness: allowed.harness, models }),
+        }
+    }
+    range
+}
+
+/// The range of each stage of `workflow`, one of `team`'s, that a role
+/// performs, on a host whose host kit holds `kit`: each with the stage's
+/// name and its role's, as `<stage> (<role>)`.
+#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}, &[Held]) -> Vec<(String, Vec<Held>)>)]
+pub fn stage_ranges(team: &Team, workflow: &Workflow, kit: &[Held]) -> Vec<(String, Vec<Held>)> {
+    let mut ranges = vec![];
+    for stage in workflow.stages() {
+        if let Performer::Role(work) = &stage.by {
+            let role = team.role_of(work);
+            let by = format!("{} ({})", stage.name, role.name);
+            ranges.push((by, range(role.roster.as_ref(), kit)));
+        }
+    }
+    ranges
+}
+
+/// What `entry` allows, as a human is told it: the host kit whole where it
+/// names none.
+pub fn allows(entry: Option<&Entry>) -> String {
+    let Some(entry) = entry else { return "the host kit whole".to_string() };
+    let each: Vec<String> = entry
+        .run
+        .iter()
+        .map(|allowed| match &allowed.model {
+            Some(model) => format!("{} ({model})", allowed.harness.key()),
+            None => format!("{} (any model)", allowed.harness.key()),
+        })
+        .collect();
+    each.join("; ")
+}
+
+/// What keeps `team`'s workers from starting on a host whose host kit holds
+/// `kit`: each role whose range there holds nothing, or holds a harness the
+/// role holds no limits for (`team::unlimited`), with what its roster entry
+/// allows and what the host kit holds.
+pub fn range_faults(team: &Team, kit: &[Held]) -> Vec<String> {
+    let mut faults = vec![];
+    for role in &team.roles {
+        let range = range(role.roster.as_ref(), kit);
+        let sides = format!(
+            "the roster allows it {}, and the host kit holds {}",
+            allows(role.roster.as_ref()),
+            holds(kit)
+        );
+        if range.is_empty() {
+            faults.push(format!(
+                "the role `{}` has an empty range on this host: {sides}. Add one it allows to \
+the host kit with `afkconvoy kit`, or allow it one the host kit holds in the team's `roster`",
+                role.name
+            ));
+        }
+        for held in &range {
+            if let Some(problem) = crate::team::unlimited(role, held.harness) {
+                faults.push(format!(
+                    "{problem} — its range on this host holds `{}`: {sides}",
+                    held.harness.key()
+                ));
+            }
+        }
+    }
+    faults
+}
+
+/// Whether any of `ranges` leaves a choice to make (`choice`).
+pub fn any_choice(ranges: &[(String, Vec<Held>)]) -> bool {
+    ranges.iter().any(|(_, range)| choice(range))
+}
+
+/// What `range` holds, as a human is told it.
+pub fn holds(range: &[Held]) -> String {
+    if range.is_empty() {
+        return "nothing".to_string();
+    }
+    let each: Vec<String> = range
+        .iter()
+        .map(|held| match held.models.as_slice() {
+            [] => format!("{} (no model)", held.harness.key()),
+            models => format!("{} ({})", held.harness.key(), models.join(", ")),
+        })
+        .collect();
+    each.join("; ")
+}
+
+/// Whether `range` holds the casting `harness` on `model`.
+fn holds_cast(range: &[Held], harness: Harness, model: Option<&String>) -> bool {
+    range.iter().any(|held| {
+        held.harness == harness && model.is_none_or(|model| held.models.contains(model))
+    })
+}
+
+/// What a bound repo's worker of an issue labelled `labels` runs within its
+/// role's `range`: a harness `chosen` by a switch, whatever the casting; else
+/// a range of one, whatever the casting; else the casting, where the range
+/// holds it; else the range's first. An error is an issue that is not
+/// dispatched, with why: labels that are no casting, or an empty range.
+pub fn cast_within(
+    labels: &[String],
+    range: &[Held],
+    chosen: Option<Harness>,
+) -> Result<Cast, String> {
+    if chosen.is_some() {
+        return cast(labels, range, chosen);
+    }
+    let named = casting(labels)?;
+    let first = range.first().ok_or("its role's range holds nothing on this host")?;
+    let first = |why| Cast { harness: first.harness, model: first.models.first().cloned(), why };
+    if !choice(range) {
+        return Ok(first(Why::Only));
+    }
+    match named {
+        None => Ok(first(Why::RangeFirst)),
+        Some((harness, model)) if holds_cast(range, harness, model.as_ref()) => {
+            Ok(Cast { harness, model, why: Why::Casting })
+        }
+        Some(_) => Ok(first(Why::Outside)),
+    }
+}
+
+/// Why an issue labelled `labels` is not dispatched where `ranges` are its
+/// workflow's stages' — each with what names it — and none holds its
+/// casting. `None` where one does, where it has no casting, and under a
+/// switch, which chooses whatever the casting.
+pub fn held_by_none(
+    labels: &[String],
+    ranges: &[(String, Vec<Held>)],
+    chosen: Option<Harness>,
+) -> Option<String> {
+    if chosen.is_some() || ranges.is_empty() {
+        return None;
+    }
+    let (harness, model) = match casting(labels) {
+        Ok(Some(named)) => named,
+        Ok(None) => return None,
+        Err(why) => return Some(why),
+    };
+    if ranges.iter().any(|(_, range)| holds_cast(range, harness, model.as_ref())) {
+        return None;
+    }
+    let mut named = format!("{HARNESS_LABEL}{}", harness.key());
+    if let Some(model) = &model {
+        named.push_str(&format!("` and `{MODEL_LABEL}{model}"));
+    }
+    let each: Vec<String> =
+        ranges.iter().map(|(by, range)| format!("{by}: {}", holds(range))).collect();
+    Some(format!(
+        "its casting `{named}` is held by no range of its workflow's stages: {}",
+        each.join(" · ")
+    ))
 }
 
 /// Whether `labels` name no casting: no `harness:` label and no `model:`
@@ -159,12 +353,12 @@ pub enum ForCaster {
 pub fn for_caster(
     number: u64,
     labels: &[String],
-    range: &[Held],
+    choice: bool,
     chosen: Option<Harness>,
     caster: Option<&Caster>,
     now: u64,
 ) -> ForCaster {
-    if chosen.is_some() || !uncast(labels) || !choice(range) {
+    if chosen.is_some() || !uncast(labels) || !choice {
         return ForCaster::Dispatch;
     }
     match caster {
@@ -293,6 +487,9 @@ pub struct ToCast {
     pub number: u64,
     pub title: String,
     pub body: String,
+    /// Of a bound repo's issue, each stage of its workflow a role performs,
+    /// with what its role's range holds (`holds`); none in an unbound repo.
+    pub stages: Vec<String>,
 }
 
 /// One model of a range as a caster's prompt gives it, with what the host
@@ -309,9 +506,10 @@ pub struct Offered {
 const BODY_CHARS: usize = 3000;
 
 /// The prompt a caster's model is sent: every issue in `issues`, what
-/// `offered` holds in order of preference, and the one JSON line a casting
+/// `offered` holds in order of preference, how the team's roster says to
+/// cast among them (`how`, each a role's), and the one JSON line a casting
 /// it is to answer with.
-pub fn caster_prompt(issues: &[ToCast], offered: &[Offered]) -> String {
+pub fn caster_prompt(issues: &[ToCast], offered: &[Offered], how: &[String]) -> String {
     let mut prompt = String::from(
         "You are the caster of a fleet of coding agents. For each GitHub issue below, choose \
          the harness and model whose worker suits the work best: how hard the work is and what \
@@ -323,11 +521,28 @@ pub fn caster_prompt(issues: &[ToCast], offered: &[Offered]) -> String {
         let good = each.good_at.as_deref().map_or(String::new(), |good| format!(": {good}"));
         prompt.push_str(&format!("- {}{model}{good}\n", each.harness.key()));
     }
+    if !how.is_empty() {
+        prompt.push_str("\nHow the team says to cast among them, by role:\n");
+        for said in how {
+            prompt.push_str(&format!("- {said}\n"));
+        }
+    }
+    if issues.iter().any(|issue| !issue.stages.is_empty()) {
+        prompt.push_str(
+            "\nEach issue below lists its stages and what each one's role may run. A stage \
+             whose role may not run the casting runs its own first: choose what suits the \
+             stages that have a choice to make.\n",
+        );
+    }
     prompt.push_str("\nIssues:\n");
     for issue in issues {
         let body: String = issue.body.chars().take(BODY_CHARS).collect();
         let cut = if body.len() < issue.body.len() { " […]" } else { "" };
-        prompt.push_str(&format!("\n## #{} {}\n{}{cut}\n", issue.number, issue.title, body.trim()));
+        prompt.push_str(&format!("\n## #{} {}\n", issue.number, issue.title));
+        for stage in &issue.stages {
+            prompt.push_str(&format!("Stage {stage}\n"));
+        }
+        prompt.push_str(&format!("{}{cut}\n", body.trim()));
     }
     prompt.push_str(
         "\nAnswer with one line for each issue and nothing else, each one JSON object: \
@@ -369,21 +584,6 @@ fn casting(labels: &[String]) -> Result<Option<(Harness, Option<String>)>, Strin
     let harness = Harness::read(key)
         .ok_or_else(|| format!("its label `{HARNESS_LABEL}{key}`: {}", Harness::unknown(key)))?;
     Ok(Some((harness, model)))
-}
-
-/// What the host kit holds, as a human is told it.
-fn holds(range: &[Held]) -> String {
-    if range.is_empty() {
-        return "nothing".to_string();
-    }
-    let each: Vec<String> = range
-        .iter()
-        .map(|held| match held.models.as_slice() {
-            [] => format!("{} (no model)", held.harness.key()),
-            models => format!("{} ({})", held.harness.key(), models.join(", ")),
-        })
-        .collect();
-    each.join("; ")
 }
 
 /// What the worker of an issue labelled `labels` runs within `range`, the
@@ -534,7 +734,7 @@ mod tests {
         let range = range();
         let given = Caster { since: 1000, given: vec![7], live: true };
         let held = |number, names: &[&str], caster: Option<&Caster>, now| {
-            for_caster(number, &labels(names), &range, None, caster, now)
+            for_caster(number, &labels(names), choice(&range), None, caster, now)
         };
         assert_eq!(held(7, &["bug"], None, 1000), ForCaster::Due);
         assert_eq!(held(7, &["bug"], Some(&given), 1599), ForCaster::Wait);
@@ -550,8 +750,11 @@ mod tests {
         assert_eq!(held(7, &["harness:pi"], None, 1000), ForCaster::Dispatch);
         assert_eq!(held(7, &["model:a/b"], None, 1000), ForCaster::Dispatch);
         let alone = [Held { harness: Harness::Pi, models: vec!["a/b".into()] }];
-        assert_eq!(for_caster(7, &[], &alone, None, None, 0), ForCaster::Dispatch);
-        assert_eq!(for_caster(7, &[], &range, Some(Harness::Pi), None, 0), ForCaster::Dispatch);
+        assert_eq!(for_caster(7, &[], choice(&alone), None, None, 0), ForCaster::Dispatch);
+        assert_eq!(
+            for_caster(7, &[], choice(&range), Some(Harness::Pi), None, 0),
+            ForCaster::Dispatch
+        );
     }
 
     #[test]
@@ -613,7 +816,12 @@ mod tests {
 
     #[test]
     fn a_caster_s_prompt_gives_each_issue_and_each_harness_and_model_in_order() {
-        let issues = [ToCast { number: 7, title: "Fix it".into(), body: "x".repeat(4000) }];
+        let issues = [ToCast {
+            number: 7,
+            title: "Fix it".into(),
+            body: "x".repeat(4000),
+            stages: vec!["build (dev): pi (a/b)".into()],
+        }];
         let offered = [
             Offered {
                 harness: Harness::Pi,
@@ -622,10 +830,100 @@ mod tests {
             },
             Offered { harness: Harness::Codex, model: None, good_at: None },
         ];
-        let prompt = caster_prompt(&issues, &offered);
+        let prompt = caster_prompt(&issues, &offered, &["dev: small work on pi".into()]);
         assert!(prompt.contains("- pi a/b: speed\n- codex\n"), "{prompt}");
-        assert!(prompt.contains("## #7 Fix it\n"), "{prompt}");
+        assert!(prompt.contains("## #7 Fix it\nStage build (dev): pi (a/b)\n"), "{prompt}");
+        assert!(prompt.contains("- dev: small work on pi\n"), "{prompt}");
         assert!(prompt.contains(" […]"), "a long body is cut");
         assert!(prompt.len() < 4000, "{}", prompt.len());
+    }
+
+    fn entry(run: &[(Harness, Option<&str>)]) -> Entry {
+        let run = run.iter().map(|(harness, model)| crate::team::Allowed {
+            harness: *harness,
+            model: model.map(str::to_string),
+            good_at: None,
+        });
+        Entry { cast: None, run: run.collect() }
+    }
+
+    #[test]
+    fn a_role_s_range_is_its_roster_entry_cut_to_the_host_kit_in_the_roster_s_order() {
+        let kit = range();
+        let held = |harness, models: &[&str]| Held {
+            harness,
+            models: models.iter().map(|model| model.to_string()).collect(),
+        };
+        // None named: the host kit whole.
+        assert_eq!(super::range(None, &kit), kit);
+        let entry = entry(&[
+            (Harness::Codex, Some("gpt-x")),
+            (Harness::Pi, Some("c/d")),
+            (Harness::Dsh, None),
+            (Harness::Pi, Some("x/y")),
+            (Harness::Codex, Some("gone")),
+            (Harness::ClaudeCode, None),
+            (Harness::Pi, None),
+        ]);
+        assert_eq!(
+            super::range(Some(&entry), &kit),
+            [
+                held(Harness::Codex, &["gpt-x"]),
+                held(Harness::Pi, &["c/d", "a/b"]),
+                held(Harness::ClaudeCode, &[]),
+            ]
+        );
+        let nothing = self::entry(&[(Harness::Dsh, None), (Harness::Codex, Some("gone"))]);
+        assert_eq!(super::range(Some(&nothing), &kit), []);
+    }
+
+    #[test]
+    fn a_stage_runs_its_casting_where_its_range_holds_it_and_its_range_s_first_where_not() {
+        let range = range();
+        let cast = |names: &[&str]| cast_within(&labels(names), &range, None);
+        assert_eq!(
+            cast(&["harness:codex", "model:gpt-x"]),
+            ran(Harness::Codex, Some("gpt-x"), Why::Casting)
+        );
+        assert_eq!(cast(&["harness:pi"]), ran(Harness::Pi, None, Why::Casting));
+        assert_eq!(cast(&[]), ran(Harness::Pi, Some("a/b"), Why::RangeFirst));
+        assert_eq!(cast(&["harness:dsh"]), ran(Harness::Pi, Some("a/b"), Why::Outside));
+        assert_eq!(
+            cast(&["harness:codex", "model:a/b"]),
+            ran(Harness::Pi, Some("a/b"), Why::Outside)
+        );
+        assert!(cast(&["harness:nope"]).unwrap_err().contains("is no harness"));
+        // A range of one is run whatever the casting.
+        let one = [Held { harness: Harness::Codex, models: vec!["gpt-x".into()] }];
+        assert_eq!(
+            cast_within(&labels(&["harness:pi"]), &one, None),
+            ran(Harness::Codex, Some("gpt-x"), Why::Only)
+        );
+        assert!(cast_within(&[], &[], None).unwrap_err().contains("holds nothing"));
+        // A switch wins over both.
+        assert_eq!(
+            cast_within(&labels(&["harness:pi"]), &one, Some(Harness::Dsh)),
+            ran(Harness::Dsh, None, Why::Switch)
+        );
+    }
+
+    #[test]
+    fn a_casting_no_stage_s_range_holds_is_said_with_each_range() {
+        let one = vec![Held { harness: Harness::Codex, models: vec!["gpt-x".into()] }];
+        let ranges =
+            vec![("plan (dev)".to_string(), one), ("review (reviewer)".to_string(), range())];
+        let none = |names: &[&str]| held_by_none(&labels(names), &ranges, None);
+        assert_eq!(none(&[]), None);
+        assert_eq!(none(&["harness:codex", "model:gpt-x"]), None);
+        assert_eq!(none(&["harness:pi", "model:c/d"]), None);
+        let said = none(&["harness:dsh"]).unwrap();
+        assert_eq!(
+            said,
+            "its casting `harness:dsh` is held by no range of its workflow's stages: plan (dev): \
+             codex (gpt-x) · review (reviewer): pi (a/b, c/d); codex (gpt-x); claude-code (no \
+             model)"
+        );
+        assert!(none(&["harness:pi", "model:z"]).unwrap().contains("`harness:pi` and `model:z`"));
+        assert_eq!(held_by_none(&labels(&["harness:dsh"]), &ranges, Some(Harness::Pi)), None);
     }
 }

@@ -38,7 +38,7 @@ WHAT IT ANSWERS
    "stale_closed", "free_slots", "now", "locks", "admission", "host_kit", "worker_no_proxy"} — "held_back" while
    admission holds; and in a bound repo "intake", "patrols" where it names some, and
    "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate"
-   while the gate is slow; and in an unbound repo "caster" while one runs or is due
+   while the gate is slow; and "caster" while one runs or is due
 
     host_kit       {path, harnesses, stock_consult}: this host's kit file; each
                    harness in order of preference, first first, as {harness,
@@ -55,21 +55,26 @@ WHAT IT ANSWERS
                    those a stage has already declared on ahead of those never started;
                    an issue whose stage's `escalate` waits for its consult is here
                    too, at that stage; the stage is `land` once the last one passed to the landing train
-                   and the issue's PR waits for a worker to join it. In an unbound
-                   repo each but the stock consult's has cast: {harness, model, why}:
-                   what its worker would run, model null for its command as written,
-                   and why — `casting` (its `harness:` and `model:` labels, which the
-                   host kit holds), `first` (no casting: the host kit's first),
-                   `switch` (this host's switch, over any casting) or `uncast` (a
-                   caster had it and did not cast it in ten minutes: the host
-                   kit's first)
+                   and the issue's PR waits for a worker to join it. Each but the
+                   stock consult's has cast: {harness, model, why}: what its worker
+                   would run, model null for its command as written, and why —
+                   `casting` (its `harness:` and `model:` labels, which the range
+                   holds), `switch` (this host's switch, over any casting), `uncast`
+                   (a caster had it and did not cast it in ten minutes: the range's
+                   first); in an unbound repo `first` (no casting: the host kit's
+                   first); in a bound repo, of its stage's role's range
+                   (`afkconvoy help roster`), `range_first` (no casting: its first),
+                   `outside` (it does not hold the casting: its first) or `only` (it
+                   holds one harness and model, whatever the casting)
     excluded       every other open issue, with why: {number, title, reason}. An
                    escalated issue says so — "escalated: waits for a ruling" — and
                    not that it lacks the label its escalation took off. An unbound
                    repo's issue whose casting the host kit does not hold is "not
-                   dispatched: ", naming the label and what the host kit holds; one
+                   dispatched: ", naming the label and what the host kit holds — a
+                   bound repo's whose casting no range of its workflow's stages
+                   holds, naming each stage's range; one
                    that waits for the caster is "held for the caster: "
-    caster         in an unbound repo, while a caster runs or one is due:
+    caster         while a caster runs or one is due:
                    {running_since, due, held, to_cast} — when the one that runs
                    was started (null: none runs), whether a tick starts one now,
                    the frontier's issues held back for it, and every issue a

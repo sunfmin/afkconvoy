@@ -322,13 +322,14 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
     let stage = place.as_ref().and_then(|place| place.position.stage());
     let (harness, model, role, skill, role_copy, host_user, dsh_profile) = match inspector(stage) {
         None => return Ok(None),
-        // A consult a stage names runs on the repo's default harness.
+        // A consult a stage names runs its role's range's first.
         Some(Who::Role(work)) => {
             let role = kept.team.role_of(work);
-            let copy = kept.role(role, bound.harness)?;
+            let cast = fleet.cast_in(role, &[])?;
+            let copy = kept.role(role, cast.harness)?;
             (
-                bound.harness,
-                None,
+                cast.harness,
+                cast.model,
                 role.name.clone(),
                 work.skill.clone(),
                 copy,

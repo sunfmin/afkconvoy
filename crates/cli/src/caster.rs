@@ -1,16 +1,19 @@
 //! The caster (docs/adr/0020): a worker in no role that casts, in one
-//! session, every issue of an unbound repo that has a choice to make and no
-//! casting. A tick starts one in the caster's worktree, where it runs
+//! session, every issue of the repo that has a choice to make and no
+//! casting — in a bound repo, one of whose stages' ranges leaves one. A tick starts one in the caster's worktree, where it runs
 //! `afkconvoy cast`; a human runs that in the foreground. What is held back
 //! for it, and for how long, is the core's (`casting::for_caster`).
 
 use std::time::Duration;
 
 use afkconvoy_core::casting::{
-    CASTER_WORKTREE, Caster, Casting, Offered, Paused, ToCast, caster_comment, caster_prompt,
-    choice, is_casting, paused_of, to_cast as is_to_cast, to_recast, uncast, without_casting,
+    CASTER_WORKTREE, Caster, Casting, Held, Offered, Paused, ToCast, any_choice, caster_comment,
+    caster_prompt, choice, held_by_none, holds, is_casting, paused_of, stage_ranges,
+    to_cast as is_to_cast, to_recast, uncast, without_casting,
 };
 use afkconvoy_core::config::Config;
+use afkconvoy_core::role::workflow_of;
+use afkconvoy_core::team::Team;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::worker::WorkerState;
 use afkconvoy_core::worker::recorded_branches;
@@ -40,6 +43,36 @@ pub fn to_cast(config: &Config, open: &OpenIssues, paused: &[Paused]) -> Vec<u64
             is_to_cast(&issue.labels, ready, epics)
                 || (is_to_cast(&without_casting(&issue.labels), ready, epics)
                     && recast(&issue.labels, open.comments(issue.number), paused))
+        })
+        .map(|issue| issue.number)
+        .collect();
+    numbers.sort_unstable();
+    numbers
+}
+
+/// The open issues of a bound repo a caster started now is given, lowest
+/// number first: each follows one workflow of `team`, carries no epic label,
+/// and has no casting or is to be cast again (`recast`) — and one of its
+/// workflow's stages' ranges on a host whose host kit holds `kit` leaves a
+/// choice to make.
+pub fn to_cast_bound(
+    config: &Config,
+    team: &Team,
+    open: &OpenIssues,
+    kit: &[Held],
+    paused: &[Paused],
+) -> Vec<u64> {
+    let mut numbers: Vec<u64> = open
+        .rows
+        .iter()
+        .filter(|issue| {
+            let labels = &issue.labels;
+            (uncast(labels)
+                || (uncast(&without_casting(labels))
+                    && recast(labels, open.comments(issue.number), paused)))
+                && !labels.iter().any(|label| config.epic_labels.contains(label))
+                && workflow_of(team, labels)
+                    .is_ok_and(|workflow| any_choice(&stage_ranges(team, workflow, kit)))
         })
         .map(|issue| issue.number)
         .collect();
@@ -82,23 +115,54 @@ pub fn start(fleet: &Fleet, agent: &Agent, given: &[u64]) -> Result<Outcome> {
     Ok(Outcome::Done)
 }
 
-/// Each harness and model of the host kit, in order, with what it says
-/// each is good at: a harness held with no model is one, on its command.
-fn offered(kit: &Kit) -> Vec<Offered> {
+/// Each harness and model `range` holds, in order, with what `team`'s
+/// roster says each is good at, or else the host kit: a harness held with
+/// no model is one, on its command.
+fn offered(kit: &Kit, team: Option<&Team>, range: &[Held]) -> Vec<Offered> {
+    let rostered = |harness, model: Option<&String>| {
+        let entries = team.into_iter().flat_map(|team| &team.roles);
+        let allowed = entries.filter_map(|role| role.roster.as_ref()).flat_map(|e| &e.run);
+        allowed
+            .filter(|allowed| allowed.harness == harness && allowed.model.as_ref() == model)
+            .find_map(|allowed| allowed.good_at.clone())
+    };
+    let seen = |harness, model: &String| {
+        let held = kit.harnesses.iter().find(|held| held.harness == harness)?;
+        held.models.iter().find(|seen| &seen.model == model)?.good_at.clone()
+    };
     let mut offered = vec![];
-    for held in &kit.harnesses {
+    for held in range {
         if held.models.is_empty() {
-            offered.push(Offered { harness: held.harness, model: None, good_at: None });
+            let good_at = rostered(held.harness, None);
+            offered.push(Offered { harness: held.harness, model: None, good_at });
         }
-        for seen in &held.models {
-            offered.push(Offered {
-                harness: held.harness,
-                model: Some(seen.model.clone()),
-                good_at: seen.good_at.clone(),
-            });
+        for model in &held.models {
+            let good_at = rostered(held.harness, Some(model)).or_else(|| seen(held.harness, model));
+            offered.push(Offered { harness: held.harness, model: Some(model.clone()), good_at });
         }
     }
     offered
+}
+
+/// Every harness and model any of `ranges` holds, in the order each is
+/// first held.
+fn union(ranges: &[(String, Vec<Held>)]) -> Vec<Held> {
+    let mut all: Vec<Held> = vec![];
+    for (_, range) in ranges {
+        for held in range {
+            match all.iter_mut().find(|had| had.harness == held.harness) {
+                Some(had) => {
+                    for model in &held.models {
+                        if !had.models.contains(model) {
+                            had.models.push(model.clone());
+                        }
+                    }
+                }
+                None => all.push(held.clone()),
+            }
+        }
+    }
+    all
 }
 
 /// The castings a caster's model answered in `answer`: one JSON object a
@@ -116,39 +180,71 @@ fn read_castings(answer: &str) -> Vec<Casting> {
 }
 
 /// `afkconvoy cast`: sends the host kit's first, in one prompt, every issue
-/// of this unbound repo that is to be cast, the host kit's harnesses and
-/// models in order with what each is good at — then puts on each issue the
-/// casting it answered, where the host kit holds it, with a comment saying
-/// why. An issue that was cast in the meantime is left as it is. The host
-/// kit is the one this host can start now, without its paused harnesses; an
-/// issue a caster cast to one of them is cast again, its casting taken off,
-/// and its comment says why.
+/// of this repo that is to be cast, the harnesses and models they may run in
+/// order with what each is good at — in a bound repo, each issue's stages
+/// with their ranges and how the roster says to cast — then puts on each
+/// issue the casting it answered, where its range holds it (in a bound repo,
+/// one of its stages' ranges), with a comment saying why. An issue that was
+/// cast in the meantime is left as it is. The host kit is the one this host
+/// can start now, without its paused harnesses; an issue a caster cast to
+/// one of them is cast again, its casting taken off, and its comment says
+/// why.
 ///
 ///   {"cast": [{issue, harness, model, why}], "uncast": [{issue, why}]}
 pub fn cast(now: u64) -> Result<Value> {
     let (fleet, open) = Fleet::read(now)?;
-    if fleet.config.bound.is_some() {
-        bail!("a bound repo's issues are cast within its roster, which no caster reads yet");
-    }
     let (kit, paused) = crate::kit::running()?;
     let range = kit.range();
-    if !choice(&range) {
-        return Ok(json!({"cast": [], "uncast": [],
-            "said": "the host kit holds one harness and model: there is no choice to make"}));
-    }
-    let numbers = to_cast(&fleet.config, &open.issues, &paused);
+    let team = match fleet.config.bound {
+        Some(_) => Some(crate::team::load(crate::team::From::Config)?.team),
+        None => None,
+    };
+    // Each issue's stages' ranges, in a bound repo.
+    let ranges_of = |labels: &[String]| -> Vec<(String, Vec<Held>)> {
+        let Some(team) = &team else { return vec![] };
+        workflow_of(team, labels).map_or(vec![], |workflow| stage_ranges(team, workflow, &range))
+    };
+    let numbers = match &team {
+        None if !choice(&range) => {
+            return Ok(json!({"cast": [], "uncast": [],
+                "said": "the host kit holds one harness and model: there is no choice to make"}));
+        }
+        None => to_cast(&fleet.config, &open.issues, &paused),
+        Some(team) => to_cast_bound(&fleet.config, team, &open.issues, &range, &paused),
+    };
     if numbers.is_empty() {
         return Ok(json!({"cast": [], "uncast": [], "said": "no issue is to be cast"}));
     }
     let mut issues = vec![];
+    let mut each_ranges = vec![];
     for &number in &numbers {
         let read = fleet.gh.issue(number)?;
-        issues.push(ToCast { number, title: read.title, body: read.body.unwrap_or_default() });
+        let ranges = ranges_of(&read.labels);
+        let stages = ranges.iter().map(|(by, range)| format!("{by}: {}", holds(range))).collect();
+        issues.push(ToCast {
+            number,
+            title: read.title,
+            body: read.body.unwrap_or_default(),
+            stages,
+        });
+        each_ranges.push((number, ranges));
     }
+    let offers = match &team {
+        Some(_) => union(&each_ranges.iter().flat_map(|(_, r)| r.clone()).collect::<Vec<_>>()),
+        None => range.clone(),
+    };
+    let how: Vec<String> = team
+        .iter()
+        .flat_map(|team| &team.roles)
+        .filter_map(|role| {
+            let how = role.roster.as_ref()?.cast.as_ref()?;
+            Some(format!("{}: {how}", role.name))
+        })
+        .collect();
     let first = fleet.first()?;
     let launch = kit.command(first.harness).context("the host kit holds no harness")?;
     let kept = crate::kept::keep(first.harness, false)?.display().to_string();
-    let prompt = caster_prompt(&issues, &offered(&kit));
+    let prompt = caster_prompt(&issues, &offered(&kit, team.as_ref(), &offers), &how);
     let Some(question) =
         first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt)
     else {
@@ -169,7 +265,18 @@ pub fn cast(now: u64) -> Result<Value> {
             left.push(json!({"issue": number, "why": "its model named no casting for it"}));
             continue;
         };
-        let labels = match casting.labels(&range) {
+        // In a bound repo, one of its stages' ranges is to hold it.
+        let ranges = each_ranges.iter().find(|(at, _)| *at == number).map(|(_, r)| r.as_slice());
+        let labels = match (casting.labels(&offers), ranges) {
+            (Ok(labels), Some(ranges)) if team.is_some() => {
+                match held_by_none(&labels, ranges, None) {
+                    Some(why) => Err(why),
+                    None => Ok(labels),
+                }
+            }
+            (labels, _) => labels,
+        };
+        let labels = match labels {
             Ok(labels) => labels,
             Err(why) => {
                 left.push(json!({"issue": number, "why": why}));

@@ -34,6 +34,7 @@ pub const TOPICS: &[Topic] = &[
     topic!("concepts", "one issue from intake to landing, and the four things that carry it"),
     topic!("team", "a team's directory, its file, how it names a role, binding a repo"),
     topic!("roles", "what a role is, what goes where in one, and the four kinds of text"),
+    topic!("roster", "what each role's workers may run, a role's range, an issue's casting"),
     topic!("skill-file", "a skill's file: where it is, its frontmatter, what `check` holds it to"),
     topic!("workflows", "stages, verdicts, rework, a consult, a landing: a workflow's file"),
     topic!("patrols", "a role run on a schedule: a patrol's file, intake, the fleet lock"),

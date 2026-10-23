@@ -106,6 +106,17 @@ impl World {
         self.kit_command("dsh", afkconvoy_core::harness::Harness::Dsh.stock());
     }
 
+    /// Has the host kit hold `models` for `harness`, in that order, as seen
+    /// to answer.
+    pub fn kit_models(&self, harness: &str, models: &[&str]) {
+        let models: Vec<Value> = models.iter().map(|model| json!({"model": model})).collect();
+        self.with_kit(|kit| {
+            let held = kit["harnesses"].as_array_mut().unwrap();
+            let held = held.iter_mut().find(|held| held["harness"] == harness).unwrap();
+            held["models"] = json!(models);
+        });
+    }
+
     /// Changes the host kit in place.
     pub fn with_kit(&self, change: impl FnOnce(&mut Value)) {
         let mut kit: Value =

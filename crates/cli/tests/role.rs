@@ -10,14 +10,15 @@ use std::path::{Path, PathBuf};
 use common::{World, commit, git, write};
 use serde_json::{Value, json};
 
-const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+/// A team whose `dev` runs opus; `reviewer` runs what the host kit holds.
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\nroster:\n  \
+                    dev: { run: [{ harness: claude-code, model: opus }] }\n```\n";
 const FEATURE: &str = "\
 ```yaml
 stages:
   - name: build
     by: dev
     do: implement
-    model: opus
     on: { pass: review }
   - name: review
     by: reviewer
@@ -26,7 +27,7 @@ stages:
     on: { pass: done, reject: build }
 ```
 ";
-/// A workflow whose first stage reviews: no model, and nothing written.
+/// A workflow whose first stage reviews, and writes nothing.
 const AUDIT: &str = "\
 ```yaml
 stages:
@@ -48,6 +49,7 @@ const IMPLEMENT: &str = "---\nname: implement\ndescription: build\n---\n";
 fn bound() -> World {
     let world = World::new();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
+    world.kit_models("claude-code", &["opus"]);
     world.repo(
         "acme/dev",
         &[
@@ -297,15 +299,19 @@ fn a_dispatch_answers_with_the_stage_and_the_commits_fixed_for_it() {
     assert_eq!(
         started["stage"],
         json!({"flow": "audit", "name": "look", "role": "reviewer", "skill": "review",
-            "writes": false, "consult": false, "harness": "claude-code", "model": null,
+            "writes": false, "consult": false, "harness": "claude-code", "model": "opus",
             "role_commit": reviewer, "role_dir": copy(&world, "acme/reviewer", &reviewer),
             "team_commit": team, "team_dir": copy(&world, "acme/team", &team)})
     );
-    // A stage that names no model starts with none, and says it writes nothing.
+    // A role the roster names none for runs the host kit's one model, and
+    // its stage says it writes nothing.
     let command = open_terminals(&world, &worktree(&world, 7))[0]["command"].clone();
     let command = command.as_str().unwrap();
     // …but never without the guard: the reviewer's repo holds no hook of its own.
-    let guarded = format!("--setting-sources project --settings '{}'", added_settings(command));
+    let guarded = format!(
+        "--setting-sources project --settings '{}' --model 'opus'",
+        added_settings(command)
+    );
     assert!(command.ends_with(&guarded), "{command}");
     assert!(command.contains(" AFKCONVOY_STAGE='look' AFKCONVOY_ROLE='reviewer' "), "{command}");
     assert!(command.contains(" AFKCONVOY_WRITES='false' "), "{command}");
@@ -417,12 +423,10 @@ fn a_start_refuses_a_launch_command_that_does_not_take_the_flags() {
 fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_each() {
     let world = bound();
     world.issue(7, &["flow:feature"]);
-    // A stage and a patrol name their harness; the repo runs one patrol of the two.
-    let named = FEATURE.replace("model: opus\n", "harness: claude-code\n");
-    let patrol =
-        "```yaml\nby: reviewer\ndo: review\nevery: 1d\nharness: claude-code\nmax_open: 1\n```\n";
+    // A role's range holds it, and so does the host kit's first; the repo
+    // runs one patrol of the two.
+    let patrol = "```yaml\nby: reviewer\ndo: review\nevery: 1d\nmax_open: 1\n```\n";
     let team = world.root.join("github/acme/team");
-    write(&team, "workflows/feature.md", &named);
     write(&team, "patrols/sweep.md", patrol);
     write(&team, "patrols/idle.md", patrol);
     git(&team, &["add", "-A"]);
@@ -432,8 +436,8 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     git(&world.clone, &["commit", "-q", "-am", "run a patrol"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
     let called = "it is the worker launch command of the harness `claude-code`, called for by the \
-                  repo's default, the stage `build` of the workflow `feature`, the patrol `sweep`, \
-                  the host kit's stock consult";
+                  host kit's first, the range of the role `dev`, the range of the role \
+                  `reviewer`, the host kit's stock consult";
 
     // One that takes no role flags: a start, `plan` and `doctor` each say so.
     world.shell_help(Some("Usage: agent [options]\n  --model <model>\n"));
@@ -453,9 +457,9 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     assert_eq!(
         commands[0]["called_for_by"],
         json!([
-            "the repo's default",
-            "the stage `build` of the workflow `feature`",
-            "the patrol `sweep`",
+            "the host kit's first",
+            "the range of the role `dev`",
+            "the range of the role `reviewer`",
             "the host kit's stock consult"
         ])
     );
@@ -475,7 +479,7 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     let refused = refused.error();
     assert!(refused.contains("\"ckim\" resolves to nothing in a login shell"), "{refused}");
     assert!(
-        refused.contains("of the harness `claude-code`, called for by the repo's default"),
+        refused.contains("of the harness `claude-code`, called for by the host kit's first"),
         "{refused}"
     );
 

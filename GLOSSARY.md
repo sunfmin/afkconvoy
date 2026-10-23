@@ -157,7 +157,7 @@ The program a worker is a session of: it runs a model, with tools, on the work i
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:
-A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team; a role's range on a host is the part of it the host kit holds, and an unbound repo, having no team, ranges over the host kit whole.
+A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team, written under the team file's `roster`: for each role it names, a `run` listing `{ harness, model, good_at }` in that order of preference — a harness named with no model allows any model the host kit holds for it — and a `cast` saying how to cast among them. A role's **range** on a host is its entry cut to the host kit, in the roster's order; a role it names no entry for, and an unbound repo, having no team, range over the host kit whole. A stage, a patrol and a config name no harness and no model: what a worker runs is its role's range's to say.
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
@@ -165,11 +165,11 @@ The harnesses and models one host can start now — each harness's worker launch
 _Avoid_: roster (the team's), host config, inventory
 
 **Casting**:
-The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, and one whose range does not runs its range's first; an issue none of whose stages has a choice to make is not cast. In an unbound repo the host kit is the range: its worker runs the casting where the host kit holds it, and the host kit's first where the issue has none; one it does not hold is not dispatched, and `plan` says which label and what the host kit holds. A harness named with no model starts its command as written. A label a human put on is never recast.
+The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, one whose range does not runs its range's first, and one whose range holds one harness and one model runs that, whatever the casting; a casting none of an issue's stages' ranges holds is not dispatched, and `plan` says why; an issue none of whose stages has a choice to make is not cast. In an unbound repo the host kit is the range: its worker runs the casting where the host kit holds it, and the host kit's first where the issue has none; one it does not hold is not dispatched, and `plan` says which label and what the host kit holds. A harness named with no model starts its command as written. A label a human put on is never recast.
 _Avoid_: assignment (a GitHub assignee), routing, dispatch (starting a worker)
 
 **Caster**:
-A worker in no role that casts, in one session, every open issue of the repo's that carries a flow label, has a choice to make and no casting, by the roster and the host kit. A tick that finds such an issue on the frontier and no caster running starts one, which runs `afkconvoy cast` on the host kit's first; the tick holds those issues back while it runs, for ten minutes at most from its start, and dispatches what it did not cast uncast, on the host kit's first. A human runs the same casting with `afkconvoy cast`.
+A worker in no role that casts, in one session, every open issue of the repo's that carries a flow label, has a choice to make and no casting, by the roster and the host kit. A tick that finds such an issue on the frontier and no caster running starts one, which runs `afkconvoy cast` on the host kit's first; the tick holds those issues back while it runs, for ten minutes at most from its start, and dispatches what it did not cast uncast, on its range's first. A human runs the same casting with `afkconvoy cast`.
 _Avoid_: assigner, router, dispatcher
 
 **Worker**:

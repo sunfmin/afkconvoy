@@ -461,11 +461,11 @@ fn shows(text: &str, key: &str) -> bool {
 #[test]
 fn every_key_the_loader_knows_is_described_in_the_topic_of_its_file_and_in_no_other() {
     use afkconvoy_core::team::{
-        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PRECEDENTS_KEYS, STAGE_KEYS, TEAM_KEYS,
-        WORKFLOW_KEYS,
+        ESCALATE_KEYS, LAND_KEYS, ON_KEYS, PATROL_KEYS, PRECEDENTS_KEYS, ROSTER_ENTRY_KEYS,
+        RUN_KEYS, STAGE_KEYS, TEAM_KEYS, WORKFLOW_KEYS,
     };
     let files = [
-        ("team", [&TEAM_KEYS[..], &PRECEDENTS_KEYS].concat()),
+        ("team", [&TEAM_KEYS[..], &PRECEDENTS_KEYS, &ROSTER_ENTRY_KEYS, &RUN_KEYS].concat()),
         (
             "workflows",
             [&WORKFLOW_KEYS[..], &STAGE_KEYS, &ON_KEYS, &ESCALATE_KEYS, &LAND_KEYS].concat(),

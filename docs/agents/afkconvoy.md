@@ -16,5 +16,5 @@ escalate_label: ready-for-human   # swapped in for ready_label when the fleet gi
 shown, and so do the two left out here: `lock_label`, `fleet-lock`, and `gate_seconds`,
 the gate limit, 3600.
 
-This repo names no `team`, so it is unbound. A bound repo's four keys more —
-`team`, `patrols`, `intake_limit`, `harness` — are in `afkconvoy config --help`.
+This repo names no `team`, so it is unbound. A bound repo's three keys more —
+`team`, `patrols`, `intake_limit` — are in `afkconvoy config --help`.

@@ -286,7 +286,7 @@ pub(crate) fn records_of(gh: &GitHub, number: u64) -> Result<(Vec<StageRecord>, 
 /// it was on and the intake record's comment, or by a `human`. `follows` is
 /// the position a `pass` declared now leads to; null where none can be
 /// declared.
-pub fn show_issue(gh: &GitHub, team: &Team, default: Harness, number: u64) -> Result<Value> {
+pub fn show_issue(gh: &GitHub, team: &Team, number: u64) -> Result<Value> {
     let issue = gh.issue(number)?;
     let comments = gh.comments(number)?;
     let workflow = followed(team, &issue.labels, comments.iter().map(|c| c.body.as_str()))
@@ -296,7 +296,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, default: Harness, number: u64) -> Re
     let place = &history.place;
     let follows = place
         .takes(Declared::Pass)
-        .then(|| position(team, workflow, default, place.clone().after(Declared::Pass).position));
+        .then(|| position(team, workflow, place.clone().after(Declared::Pass).position));
     let mut in_a_row = Map::new();
     for stage in workflow.stages().iter().filter(|stage| stage.reject().is_some()) {
         let had = place.consecutive_rework(stage);
@@ -325,7 +325,7 @@ pub fn show_issue(gh: &GitHub, team: &Team, default: Harness, number: u64) -> Re
         "issue": number,
         "workflow": workflow.name,
         "intake": came_in(team, &issue.labels, &comments),
-        "position": position(team, workflow, default, place.position),
+        "position": position(team, workflow, place.position),
         "follows": follows,
         "rework": {"had": place.rework(), "left": place.rework_left()},
         "consecutive_rework": in_a_row,

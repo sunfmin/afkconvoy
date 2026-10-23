@@ -7,7 +7,6 @@ stages:
   - name: proposal
     by: fellow
     do: diagnose
-    model: opus
     writes: false
     on: { pass: sign-off }
   - name: sign-off

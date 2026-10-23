@@ -25,16 +25,14 @@ A PATROL'S FILE
       by: <role>
       do: <skill>
       every: 6h                          # required: a whole number from 1, then m, h or d
-      harness: claude-code               # optional
-      model: <model>                     # optional; its harness's own name for it
       max_open: 5                        # required
       max_runs_a_day: 4                  # optional: a whole number from 1
       max_landed_a_day: 5                # optional: a whole number from 1
 
   `by` is a short name of the team file and `do` a skill of that role. `every` is how
   long after its last run a patrol is due: it is due or it is not, and one that missed
-  ten intervals runs once. `harness` and `model` are what they are for a stage
-  (`afkconvoy help workflows`). `max_open` bounds what a patrol gives the fleet: it is
+  ten intervals runs once. Its worker runs its role's range's first
+  (`afkconvoy help roster`). `max_open` bounds what a patrol gives the fleet: it is
   not run while that many issues it opened are open.
 
   `max_runs_a_day` bounds how often it runs besides `every`: a patrol whose runs that

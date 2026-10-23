@@ -18,15 +18,15 @@ BEFORE A FLEET WORKS WITH IT
   and the attending's `limits.ts` does under pi. The hooks call `jq`: every host of
   the fleet needs it.
 
-  `plan-review` runs on pi, so every host needs `pi`, logged in to the provider of the
-  stage's model: `openai-codex/gpt-5.5`, as written. `check` holds that name against
-  the models pi lists on the host. Write another of them — or take `harness` and
-  `model` out of the stage, and it runs on the repo's default harness as the others
-  do. A host without pi starts nothing: `plan`, `tick` and `run` refuse, `doctor`
-  finds the same, and each names the stage that calls for it and the line that
-  installs it:
+  The roster lets the attending run pi first, so a host whose host kit holds pi needs
+  `pi`, logged in to the provider of its model: `openai-codex/gpt-5.5`, as written —
+  `afkconvoy kit` adds it to the host kit, and probes it. Write another model pi lists
+  — or take pi out of the attending's entry, and it runs Claude Code as the others do.
+  A host kit holding pi on a host without it starts nothing: `plan`, `tick` and `run`
+  refuse, `doctor` finds the same, and each names the range that calls for it and the
+  line that installs it:
 
-      pi is not installed, called for by the stage `plan-review` of the workflow `fix`
+      pi is not installed, called for by the range of the role `attending`
 
 ONE ISSUE, FROM ITS LABEL TO THE BASE BRANCH
 

@@ -34,8 +34,8 @@ WHAT IT ANSWERS
                 worker_commands  one for each harness the fleet could be asked for:
                                  {harness, called_for_by, command, from,
                                  starts_a_worker, takes_role_flags} — called_for_by is
-                                 the repo's default, and each stage and each patrol the
-                                 repo runs that names the harness; from is `host_kit`.
+                                 the host kit's first, each role whose range holds the
+                                 harness, and the stock consult; from is `host_kit`.
                                  Commands come from this host's kit, never a run log.
                 host_kit         {path, harnesses, stock_consult}: where the kit is
                                  kept; each harness in order, first first, with its

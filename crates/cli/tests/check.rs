@@ -81,7 +81,11 @@ fn faults(refused: &Value) -> Vec<String> {
 
 #[test]
 fn a_well_formed_team_is_accepted_with_what_was_read() {
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let roster = "roster:\n  dev:\n    cast: Hard work on opus.\n    run:\n      - { harness: \
+                  claude-code, model: opus, good_at: hard work }\n      - { harness: claude-code }\n```";
+    let team = TEAM.replacen("```", "@@", 1).replacen("```", roster, 1).replacen("@@", "```", 1);
+    let world = bound(&[("team.md", &team), ("workflows/feature.md", FEATURE)]);
+    world.kit_models("claude-code", &["sonnet", "opus"]);
     let read = world.afk(&["check"]).ok();
     assert_eq!((&read["team"], &read["path"]), (&json!("acme/team"), &json!("")));
     assert_eq!(read["commit"], head(&world, "acme/team"));
@@ -93,10 +97,15 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
         read["roles"],
         json!([
             {"name": "dev", "repo": "acme/dev", "path": "", "commit": head(&world, "acme/dev"),
-             "host_user": true, "dsh_profile": "fleet", "skills": ["implement", "land"], "above": [], "limits": []},
+             "host_user": true, "dsh_profile": "fleet", "skills": ["implement", "land"], "above": [], "limits": [],
+             "roster": {"cast": "Hard work on opus.", "run": [
+                 {"harness": "claude-code", "model": "opus", "good_at": "hard work"},
+                 {"harness": "claude-code", "model": null, "good_at": null}]},
+             "range": [{"harness": "claude-code", "models": ["opus", "sonnet"]}]},
             {"name": "reviewer", "repo": "acme/reviewer", "path": "",
              "commit": head(&world, "acme/reviewer"), "host_user": true, "dsh_profile": "fleet", "skills": ["review", "rule"], "above": [],
-             "limits": []},
+             "limits": [], "roster": null,
+             "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}]},
         ])
     );
     assert_eq!(
@@ -107,11 +116,9 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
             "max_rework": 3,
             "max_consecutive_rework": 2,
             "stages": [
-                {"name": "build", "by": "dev", "do": "implement", "harness": "claude-code",
-                 "model": null, "writes": true,
+                {"name": "build", "by": "dev", "do": "implement", "writes": true,
                  "escalate": {"to": "reviewer", "do": "rule"}, "pass": "review", "reject": null},
-                {"name": "review", "by": "reviewer", "do": "review", "harness": "claude-code",
-                 "model": null, "writes": false, "escalate": {"to": "stock-consult"}, "pass": "land", "reject": "build"},
+                {"name": "review", "by": "reviewer", "do": "review", "writes": false, "escalate": {"to": "stock-consult"}, "pass": "land", "reject": "build"},
             ],
             "land": {"by": "dev", "do": "land"},
         }])
@@ -272,62 +279,113 @@ fn a_skill_whose_file_is_not_in_the_form_of_one_is_a_fault_at_the_do_that_names_
 }
 
 #[test]
-fn a_stage_and_a_patrol_answer_their_harness_and_a_name_that_is_none_is_a_fault() {
-    // Named or not, each stage and each patrol answers the harness it runs.
-    let named = FEATURE.replace("do: implement\n", "do: implement\n    harness: claude-code\n");
-    let sweep = "```yaml\nby: dev\ndo: implement\nevery: 1h\nmax_open: 1\n```\n";
-    let world =
-        bound(&[("team.md", TEAM), ("workflows/feature.md", &named), ("patrols/sweep.md", sweep)]);
-    let read = world.afk(&["check"]).ok();
-    assert_eq!(read["harness"], "claude-code");
-    let stages = read["workflows"][0]["stages"].as_array().unwrap();
-    assert_eq!(stages.len(), 2);
-    for stage in stages {
-        assert_eq!(stage["harness"], "claude-code", "{stage}");
-    }
-    assert_eq!(read["patrols"][0]["harness"], "claude-code");
-
-    // It is a key where `model` is one, and nowhere else.
+fn a_stage_or_a_patrol_that_names_a_harness_or_a_model_is_told_the_line_to_delete() {
     let feature = FEATURE
-        .replace("do: implement\n", "do: implement\n    harness: aider\n")
-        .replace("do: rule }", "do: rule, harness: claude-code }")
-        .replace("do: land }", "do: land, harness: claude-code }");
-    let signed = "```yaml\nstages:\n  - { name: sign, by: human, harness: claude-code, on: { pass: done } }\n```\n";
-    let team = TEAM.replace(
-        "```\n",
-        "precedents: { by: dev, do: implement, max_open: 1, harness: claude-code }\n```\n",
-    );
+        .replace("do: implement\n", "do: implement\n    harness: pi\n    model: openai/gpt-5.5\n")
+        .replace("do: review\n", "do: review\n    model: opus\n");
+    let sweep =
+        "```yaml\nby: dev\ndo: implement\nharness: claude-code\nevery: 1h\nmax_open: 1\n```\n";
     let world = bound(&[
-        ("team.md", &team),
+        ("team.md", TEAM),
         ("workflows/feature.md", &feature),
-        ("workflows/signed.md", signed),
-        ("patrols/sweep.md", &sweep.replace("every", "harness: Claude Code\nevery")),
+        ("patrols/sweep.md", sweep),
     ]);
     let answer = world.afk(&["check"]);
     assert_eq!(answer.code, 1);
     assert_eq!(
         faults(&answer.json),
         [
-            "team.md: precedents.harness",
-            "workflows/feature.md: land.harness",
             "workflows/feature.md: stages[0].harness",
-            "workflows/feature.md: stages[0].escalate.harness",
-            "workflows/signed.md: stages[0].harness",
+            "workflows/feature.md: stages[0].model",
+            "workflows/feature.md: stages[1].model",
             "patrols/sweep.md: harness",
         ]
     );
     let error = answer.error();
-    let said = "workflows/feature.md: stages[0].harness: `aider` is no harness; the harnesses are: \
-                claude-code, pi, codex";
-    assert!(error.contains(said), "{error}");
+    for said in [
+        "stages[0].harness: names its worker's harness, which a stage and a patrol name no more \
+         (docs/adr/0020): delete the line `harness: pi`, and say what the role `dev` may run in \
+         team.md's `roster`: `roster: { dev: { run: [{ harness: pi, model: openai/gpt-5.5 }] } }`",
+        "stages[1].model: names its worker's model, which a stage and a patrol name no more \
+         (docs/adr/0020): delete the line `model: opus`, and say what the role `reviewer` may \
+         run in team.md's `roster`: `roster: { reviewer: { run: [{ harness: <harness>, model: \
+         opus }] } }`",
+    ] {
+        assert!(error.contains(said), "{said}\n{error}");
+    }
 
-    // The config's is a fault with its file and key.
+    // Nor is it a key of a consult, a landing or the precedents.
+    let feature = FEATURE
+        .replace("do: rule }", "do: rule, harness: claude-code }")
+        .replace("do: land }", "do: land, model: opus }");
+    let team = TEAM.replace(
+        "```\n",
+        "precedents: { by: dev, do: implement, max_open: 1, harness: claude-code }\n```\n",
+    );
+    let world = bound(&[("team.md", &team), ("workflows/feature.md", &feature)]);
+    assert_eq!(
+        faults(&world.afk(&["check"]).json),
+        [
+            "team.md: precedents.harness",
+            "workflows/feature.md: land.model",
+            "workflows/feature.md: stages[0].escalate.harness",
+        ]
+    );
+
+    // The config's is a fault with the line to delete.
     let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\nharness: aider\n```\n";
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     let error = world.afk(&["check"]).error();
     assert!(error.contains("docs/agents/afkconvoy.md"), "{error}");
-    assert!(error.contains("harness: `aider` is no harness"), "{error}");
+    assert!(error.contains("delete the line `harness: aider`"), "{error}");
+}
+
+/// `TEAM` with `roster` — its lines, each ended by a newline — as its roster.
+fn rostered(roster: &str) -> String {
+    TEAM.replace("```\n", &format!("roster:\n{roster}```\n"))
+}
+
+#[test]
+fn a_roster_entry_names_harnesses_and_models_its_role_may_run_and_nothing_else() {
+    let world = bound(&[
+        ("team.md", &rostered("  dev: { run: [{ harness: pi, model: openai/gpt-5.5 }] }\n")),
+        ("workflows/feature.md", FEATURE),
+    ]);
+    let read = world.afk(&["check"]).ok();
+    assert_eq!(
+        read["roles"][0]["roster"],
+        json!({"cast": null, "run": [{"harness": "pi", "model": "openai/gpt-5.5", "good_at": null}]})
+    );
+    // The host kit holds no pi: the role's range on this host is empty, and
+    // `run` refuses it (`afkconvoy run --help`). `check` says what it is.
+    assert_eq!(read["roles"][0]["range"], json!([]));
+    assert_eq!(read["roles"][1]["range"], json!([{"harness": "claude-code", "models": []}]));
+
+    let world = bound(&[
+        (
+            "team.md",
+            &rostered(
+                "  dev: { run: [{ harness: aider }, { harness: pi }, { harness: pi }], with: 1 }\n  \
+                 tester: { run: [{ harness: pi }] }\n  reviewer: { run: [] }\n",
+            ),
+        ),
+        ("workflows/feature.md", FEATURE),
+    ]);
+    let answer = world.afk(&["check"]);
+    assert_eq!(
+        faults(&answer.json),
+        [
+            "team.md: roster.dev.with",
+            "team.md: roster.dev.run[0].harness",
+            "team.md: roster.dev.run[2]",
+            "team.md: roster.tester",
+            "team.md: roster.reviewer.run",
+        ]
+    );
+    let error = answer.error();
+    assert!(error.contains("roster.dev.run[0].harness: `aider` is no harness"), "{error}");
+    assert!(error.contains("roster.tester: `tester` is not a role of the team"), "{error}");
 }
 
 #[test]
@@ -393,7 +451,7 @@ fn a_team_that_cannot_be_read_and_an_unbound_repo_are_errors() {
 }
 
 #[test]
-fn a_bound_repos_config_answers_its_four_keys_more() {
+fn a_bound_repos_config_answers_its_three_keys_more_and_refuses_a_harness() {
     let world = World::new();
     let config = |yaml: &str| {
         let text = format!("```yaml\nbase_branch: main\ngate_command: make\n{yaml}\n```\n");
@@ -405,8 +463,7 @@ fn a_bound_repos_config_answers_its_four_keys_more() {
     assert_eq!(bound["patrols"], json!([]));
     assert_eq!(bound["lock_label"], "fleet-lock", "a key every repo has");
     assert_eq!(bound["intake_limit"], 50);
-    assert_eq!(bound["harness"], "claude-code", "a config that names none means Claude Code");
-    assert_eq!(config("team: acme/team\nharness: claude-code").ok()["harness"], "claude-code");
+    assert_eq!(bound["harness"], Value::Null, "a team's roster says what its workers run");
     assert_eq!(bound["concurrency"], 3, "the keys every repo has are read as before");
     let set = config("team: acme/team\npatrols: [triage]\nlock_label: stop\nintake_limit: 9").ok();
     assert_eq!(set["patrols"], json!(["triage"]));
@@ -418,8 +475,8 @@ fn a_bound_repos_config_answers_its_four_keys_more() {
         ("team: acme/team\npatrols: triage", "patrols"),
         ("patrols: [triage]", "patrols"),
         ("intake_limit: 5", "intake_limit"),
-        ("harness: claude-code", "harness: is read only in a bound repo"),
-        ("team: acme/team\nharness: aider", "harness: `aider` is no harness"),
+        ("harness: claude-code", "delete the line `harness: claude-code`"),
+        ("team: acme/team\nharness: aider", "delete the line `harness: aider`"),
         ("team: acme/team\nharness: [claude-code]", "harness"),
     ] {
         let error = config(yaml).error();
@@ -481,7 +538,7 @@ fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
         read["roles"],
         json!([{"name": "fellow", "repo": "acme/hospital", "path": "roles/fellow",
             "commit": commit, "host_user": true, "dsh_profile": "fleet", "skills": ["treat"], "above": [],
-            "limits": []}])
+            "limits": [], "roster": null, "range": [{"harness": "claude-code", "models": []}]}])
     );
     // The team's commit is its roles': the repo was read once.
     assert_eq!(read["commit"], commit);
@@ -512,7 +569,8 @@ fn a_role_is_named_by_repo_by_repo_and_path_and_twice_over() {
     let read = world.afk(&["check"]).ok();
     let role = |name: &str, repo: &str, path: &str, skill: &str| {
         json!({"name": name, "repo": repo, "path": path, "commit": head(&world, repo),
-            "host_user": true, "dsh_profile": "fleet", "skills": [skill], "above": [], "limits": []})
+            "host_user": true, "dsh_profile": "fleet", "skills": [skill], "above": [], "limits": [],
+            "roster": null, "range": [{"harness": "claude-code", "models": []}]})
     };
     assert_eq!(
         read["roles"],
@@ -736,12 +794,6 @@ fn a_directory_of_a_team_s_files_names_its_repo_to_read_a_path_in_it() {
 /// One hook, as a role's settings for Claude Code hold a limit.
 const HOOKED: &str = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}}"#;
 
-/// `FEATURE`, its first stage with `keys` — each a line — after its `do`.
-fn building(keys: &[&str]) -> String {
-    let keys: String = keys.iter().map(|key| format!("    {key}\n")).collect();
-    FEATURE.replace("do: implement\n", &format!("do: implement\n{keys}"))
-}
-
 fn dev(world: &World) -> std::path::PathBuf {
     world.root.join("github/acme/dev")
 }
@@ -764,12 +816,12 @@ fn a_role_whose_files_would_have_pi_or_codex_load_other_rules_is_a_fault_naming_
         ),
         "{error}"
     );
-    // A stage on `codex` is refused for `AGENTS.override.md` too, which
+    // A role that may run `codex` is refused for `AGENTS.override.md` too, which
     // Codex loads before either.
-    let on_codex = building(&["harness: codex"]);
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_codex)]);
+    let on_codex = rostered("  dev: { run: [{ harness: codex }] }\n");
+    let world = bound(&[("team.md", &on_codex), ("workflows/feature.md", FEATURE)]);
     commit(&dev(&world), "CLAUDE.md", "the rules\n");
-    assert_eq!(world.afk(&["check"]).ok()["workflows"][0]["stages"][0]["harness"], "codex");
+    world.afk(&["check"]).ok();
     commit(&dev(&world), "AGENTS.override.md", "other rules\n");
     let answer = world.afk(&["check"]);
     assert_eq!(faults(&answer.json), ["team.md: roles.dev"]);
@@ -781,26 +833,27 @@ fn a_role_whose_files_would_have_pi_or_codex_load_other_rules_is_a_fault_naming_
 }
 
 #[test]
-fn a_stage_on_a_harness_its_role_holds_no_limits_for_while_it_holds_some_is_a_fault() {
-    let on_pi = building(&["harness: pi"]);
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_pi)]);
+fn a_roster_that_lets_a_role_run_a_harness_it_holds_no_limits_for_while_it_holds_some_is_a_fault() {
+    let on_pi = rostered("  dev: { run: [{ harness: claude-code }, { harness: pi }] }\n");
+    let world = bound(&[("team.md", &on_pi), ("workflows/feature.md", FEATURE)]);
     // A role with no limits at all is right for every harness: a skeleton's
     // settings name no hook.
     commit(&dev(&world), ".claude/settings.json", "{\n  \"hooks\": {}\n}\n");
     let read = world.afk(&["check"]).ok();
     assert_eq!(read["roles"][0]["limits"], json!([]));
-    assert_eq!(read["workflows"][0]["stages"][0]["harness"], "pi");
     // One that holds limits for Claude Code and none for pi is not right for
-    // a stage on pi.
+    // pi.
     commit(&dev(&world), ".claude/settings.json", HOOKED);
     let answer = world.afk(&["check"]);
     assert_eq!(answer.code, 1);
-    assert_eq!(faults(&answer.json), ["workflows/feature.md: stages[0].harness"]);
+    assert_eq!(faults(&answer.json), ["team.md: roster.dev.run[1].harness"]);
     let error = answer.error();
     assert!(
         error.contains(
-            "the stage `build` of the workflow `feature` runs on `pi`, and its role `dev` holds \
-             limits for `claude-code` (in its `.claude/settings.json`) and none for `pi`"
+            "the role `dev` may run `pi`, and holds limits for `claude-code` (in its \
+             `.claude/settings.json`) and none for `pi`: a worker there would be held to none of \
+             them. Write the role's limits for `pi` in its `.pi/extensions`, in that harness's \
+             own form, or allow it only harnesses it holds limits for"
         ),
         "{error}"
     );
@@ -808,23 +861,10 @@ fn a_stage_on_a_harness_its_role_holds_no_limits_for_while_it_holds_some_is_a_fa
     commit(&dev(&world), ".pi/extensions/limits.ts", "export default function () {}\n");
     let read = world.afk(&["check"]).ok();
     assert_eq!(read["roles"][0]["limits"], json!(["claude-code", "pi"]));
-    // And a role with limits for pi alone is right for pi alone: every stage,
-    // consult and landing that runs it on the default is refused, at once.
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_pi)]);
-    for role in ["acme/dev", "acme/reviewer"] {
-        commit(&world.root.join("github").join(role), ".pi/extensions/limits.ts", "//\n");
-    }
-    let answer = world.afk(&["check"]);
-    assert_eq!(
-        faults(&answer.json),
-        [
-            "workflows/feature.md: stages[0].escalate.to",
-            "workflows/feature.md: stages[1].harness",
-            "workflows/feature.md: land.by",
-        ]
-    );
-    let error = answer.error();
-    assert!(error.contains("runs on `claude-code`, the repo's default, and its role"), "{error}");
+    // A role the roster names none for may run what the host kit holds:
+    // `run` holds it to that (`afkconvoy run --help`), and `check` does not.
+    commit(&world.root.join("github/acme/reviewer"), ".pi/extensions/limits.ts", "//\n");
+    world.afk(&["check"]).ok();
     // Settings that cannot be read hold limits nobody can count on.
     commit(&dev(&world), ".claude/settings.json", "{ hooks");
     let answer = world.afk(&["check"]);
@@ -840,11 +880,9 @@ fn a_stage_on_a_harness_its_role_holds_no_limits_for_while_it_holds_some_is_a_fa
 /// some when the file names a hook at some event, whichever event that is.
 #[test]
 fn a_role_holds_limits_for_codex_when_its_hooks_file_names_a_hook_at_some_event() {
-    // Every worker of this repo is on Codex: it is the repo's default.
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
-    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
-                  harness: codex\n```\n";
-    write(&world.clone, "docs/agents/afkconvoy.md", config);
+    // The role `dev` runs Codex alone.
+    let on_codex = rostered("  dev: { run: [{ harness: codex }] }\n");
+    let world = bound(&[("team.md", &on_codex), ("workflows/feature.md", FEATURE)]);
     let limits = |world: &World| world.afk(&["check"]).ok()["roles"][0]["limits"].clone();
     // No file, and a file that names no hook — a skeleton's, or one whose
     // every event is empty — hold no limit.
@@ -880,22 +918,23 @@ fn a_role_holds_limits_for_codex_when_its_hooks_file_names_a_hook_at_some_event(
     assert!(unread(&world).contains("it is a directory, not a file of hooks"));
 }
 
-/// A stage is never moved to Codex into fewer limits unseen: the message is
+/// A role is never let run Codex into fewer limits unseen: the message is
 /// the one every other harness gets.
 #[test]
-fn a_stage_on_codex_whose_role_holds_limits_for_another_harness_and_none_for_codex_is_refused() {
-    let on_codex = building(&["harness: codex"]);
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_codex)]);
+fn a_roster_that_lets_a_role_run_codex_while_it_holds_limits_for_another_and_none_for_codex_is_refused()
+ {
+    let on_codex = rostered("  dev: { run: [{ harness: codex }, { harness: claude-code }] }\n");
+    let world = bound(&[("team.md", &on_codex), ("workflows/feature.md", FEATURE)]);
     let refused = |held: &str| {
         let answer = world.afk(&["check"]);
         assert_eq!(answer.code, 1);
-        assert_eq!(faults(&answer.json), ["workflows/feature.md: stages[0].harness"]);
+        assert_eq!(faults(&answer.json), ["team.md: roster.dev.run[0].harness"]);
         let error = answer.error();
         let said = format!(
-            "the stage `build` of the workflow `feature` runs on `codex`, and its role `dev` \
-             holds limits for {held} and none for `codex`: a worker there would be held to none \
-             of them. Write the role's limits for `codex` in its `.codex/hooks.json`, in that \
-             harness's own form, or run this on a harness the role holds limits for"
+            "the role `dev` may run `codex`, and holds limits for {held} and none for `codex`: a \
+             worker there would be held to none of them. Write the role's limits for `codex` in \
+             its `.codex/hooks.json`, in that harness's own form, or allow it only harnesses it \
+             holds limits for"
         );
         assert!(error.contains(&said), "{error}");
     };
@@ -907,227 +946,23 @@ fn a_stage_on_codex_whose_role_holds_limits_for_another_harness_and_none_for_cod
     // Limits for pi too: still none for Codex.
     commit(&dev(&world), ".pi/extensions/limits.ts", "export default function () {}\n");
     refused("`claude-code` (in its `.claude/settings.json`) and `pi` (in its `.pi/extensions`)");
-    // Once it holds them for Codex, in Codex's form, the stage is right; the
-    // stages on the default harness always were.
+    // Once it holds them for Codex, in Codex's form, the role is right.
     commit(&dev(&world), ".codex/hooks.json", HOOKED);
     let read = world.afk(&["check"]).ok();
     assert_eq!(read["roles"][0]["limits"], json!(["claude-code", "pi", "codex"]));
-    assert_eq!(read["workflows"][0]["stages"][0]["harness"], "codex");
     // And a role with limits for Codex alone is right for Codex alone.
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &on_codex)]);
+    let world = bound(&[("team.md", &on_codex), ("workflows/feature.md", FEATURE)]);
     commit(&dev(&world), ".codex/hooks.json", HOOKED);
     let answer = world.afk(&["check"]);
-    assert_eq!(faults(&answer.json), ["workflows/feature.md: land.by"]);
+    assert_eq!(faults(&answer.json), ["team.md: roster.dev.run[1].harness"]);
     let error = answer.error();
     assert!(
         error.contains(
-            "runs on `claude-code`, the repo's default, and its role `dev` holds limits for \
-             `codex` (in its `.codex/hooks.json`) and none for `claude-code`"
+            "the role `dev` may run `claude-code`, and holds limits for `codex` (in its \
+             `.codex/hooks.json`) and none for `claude-code`"
         ),
         "{error}"
     );
-}
-
-#[test]
-fn a_model_its_harness_does_not_know_is_a_fault_where_the_harness_can_say() {
-    let named = |model: &str| building(&["harness: pi", &format!("model: {model}")]);
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &named("opus"))]);
-    let team = world.root.join("github/acme/team");
-    // pi could not be asked on this host: the model is passed as written.
-    let answer = world.afk(&["check"]);
-    assert!(
-        answer.stderr.contains("note: pi could not be asked which models it knows on this host"),
-        "{}",
-        answer.stderr
-    );
-    assert_eq!(answer.ok()["workflows"][0]["stages"][0]["model"], "opus");
-    // Asked, in the shell a worker gets and under the directory the fleet
-    // keeps for it, pi lists the models it knows: `opus` is none of them.
-    world.shell_models(&["openai-codex/gpt-5.5", "zai/glm-5.2"]);
-    let answer = world.afk(&["check"]);
-    assert_eq!(answer.code, 1);
-    assert_eq!(faults(&answer.json), ["workflows/feature.md: stages[0].model"]);
-    let error = answer.error();
-    assert!(
-        error.contains(
-            "`opus` is no model pi knows on this host: it lists openai-codex/gpt-5.5, zai/glm-5.2."
-        ),
-        "{error}"
-    );
-    let kept = world.cache().join("afkconvoy/harness/pi");
-    let asked = format!("export PI_CODING_AGENT_DIR='{}' && pi --list-models", kept.display());
-    assert!(world.shell_asked().contains(&asked), "{:?}", world.shell_asked());
-    // One it lists is known by its id, and a model of Claude Code's is passed
-    // as written: Claude Code cannot say which it knows.
-    let sweep =
-        "```yaml\nby: dev\ndo: implement\nevery: 1h\nmodel: no-such-model\nmax_open: 1\n```\n";
-    commit(&team, "patrols/sweep.md", sweep);
-    commit(&team, "workflows/feature.md", &named("gpt-5.5:high"));
-    let answer = world.afk(&["check"]);
-    assert_eq!(answer.stderr, "");
-    assert_eq!(answer.ok()["patrols"][0]["model"], "no-such-model");
-    // A patrol's model is held to its harness as a stage's is.
-    commit(&team, "patrols/sweep.md", &sweep.replace("model:", "harness: pi\nmodel:"));
-    let answer = world.afk(&["check"]);
-    assert_eq!(faults(&answer.json), ["patrols/sweep.md: model"]);
-    assert_eq!(see(&answer.json["faults"][0]), "afkconvoy help patrols");
-}
-
-#[test]
-fn a_repo_bound_to_a_team_whose_models_fit_another_default_harness_is_told_so() {
-    // The team names models and no harness: it is written for one default.
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &building(&["model: opus"]))]);
-    world.shell_models(&["openai-codex/gpt-5.5"]);
-    let answer = world.afk(&["check"]);
-    assert_eq!(answer.stderr, "");
-    answer.ok();
-    // A repo that binds it under pi is told, as a fault of its own config.
-    let config =
-        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\nharness: pi\n```\n";
-    write(&world.clone, "docs/agents/afkconvoy.md", config);
-    let answer = world.afk(&["check"]);
-    assert_eq!(answer.code, 1);
-    assert_eq!(faults(&answer.json), ["docs/agents/afkconvoy.md: harness"]);
-    // The topic of the team says which keys of a config bind a repo to one.
-    assert_eq!(see(&answer.json["faults"][0]), "afkconvoy help team");
-    let error = answer.error();
-    for said in [
-        "the team acme/team names models and no harness for them — `opus` (the stage `build` of \
-         the workflow `feature`) — so each runs on `pi`, this repo's default",
-        "it lists openai-codex/gpt-5.5.",
-        "The team is written for another default harness",
-    ] {
-        assert!(error.contains(said), "{said:?} is not in {error}");
-    }
-    // The other way round Claude Code cannot say, and the model is passed as
-    // written — with a warning where it is pi's whole name for one it lists.
-    let team = world.root.join("github/acme/team");
-    commit(&team, "workflows/feature.md", &building(&["model: openai-codex/gpt-5.5"]));
-    world.afk(&["check"]).ok();
-    write(&world.clone, "docs/agents/afkconvoy.md", &config.replace("harness: pi\n", ""));
-    let answer = world.afk(&["check"]);
-    assert!(
-        answer.stderr.contains(
-            "warning: the stage `build` of the workflow `feature` names the model \
-             `openai-codex/gpt-5.5` and no harness, so it runs on the default harness, \
-             `claude-code` — and `openai-codex/gpt-5.5` is `pi`'s name for a model"
-        ),
-        "{}",
-        answer.stderr
-    );
-    answer.ok();
-}
-
-#[test]
-fn a_model_named_for_codex_is_held_to_the_ones_codex_lists_on_this_host() {
-    let named = |model: &str| building(&["harness: codex", &format!("model: {model}")]);
-    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", &named("opus"))]);
-    let team = world.root.join("github/acme/team");
-    // Codex could not be asked on this host: the model is passed as written.
-    let answer = world.afk(&["check"]);
-    assert!(
-        answer.stderr.contains("note: Codex could not be asked which models it knows on this host"),
-        "{}",
-        answer.stderr
-    );
-    assert_eq!(answer.ok()["workflows"][0]["stages"][0]["model"], "opus");
-    // Asked, in the shell a worker gets and under the directory the fleet
-    // keeps for it, its worker launch command lists the models it was built
-    // with: `opus` is none of them.
-    world.shell_built_with(&["gpt-5.5", "gpt-6-sol"]);
-    let answer = world.afk(&["check"]);
-    assert_eq!(answer.code, 1);
-    assert_eq!(faults(&answer.json), ["workflows/feature.md: stages[0].model"]);
-    let error = answer.error();
-    assert!(
-        error.contains("`opus` is no model Codex knows on this host: it lists gpt-5.5, gpt-6-sol."),
-        "{error}"
-    );
-    let kept = world.cache().join("afkconvoy/harness/codex");
-    let asked = format!(
-        "export CODEX_HOME='{}' && {} debug models --bundled",
-        kept.display(),
-        afkconvoy_core::harness::Harness::Codex.stock()
-    );
-    assert!(world.shell_asked().contains(&asked), "{:?}", world.shell_asked());
-    // One it lists is known by its whole name, and by no part of it.
-    commit(&team, "workflows/feature.md", &named("gpt-6-sol"));
-    let answer = world.afk(&["check"]);
-    assert_eq!(answer.stderr, "");
-    answer.ok();
-    commit(&team, "workflows/feature.md", &named("gpt-6"));
-    assert_eq!(faults(&world.afk(&["check"]).json), ["workflows/feature.md: stages[0].model"]);
-    // A Codex that lists nothing has said nothing: the model is passed as
-    // written.
-    world.shell_built_with(&[]);
-    let answer = world.afk(&["check"]);
-    assert!(answer.stderr.contains("or listed none: a model named for it is passed as written"));
-    assert_eq!(answer.ok()["workflows"][0]["stages"][0]["model"], "gpt-6");
-}
-
-#[test]
-fn a_model_of_codex_s_named_with_no_harness_under_another_default_is_told_so() {
-    let world =
-        bound(&[("team.md", TEAM), ("workflows/feature.md", &building(&["model: gpt-6-sol"]))]);
-    world.shell_built_with(&["gpt-5.5", "gpt-6-sol"]);
-    // Claude Code cannot say which models it knows, and the model is passed
-    // as written — with a warning: it is Codex's name for one it lists.
-    let answer = world.afk(&["check"]);
-    assert!(
-        answer.stderr.contains(
-            "warning: the stage `build` of the workflow `feature` names the model `gpt-6-sol` \
-             and no harness, so it runs on the default harness, `claude-code` — and `gpt-6-sol` \
-             is `codex`'s name for a model"
-        ),
-        "{}",
-        answer.stderr
-    );
-    answer.ok();
-    // pi can say, and lists no such model: a fault of the repo's own config.
-    world.shell_models(&["zai/glm-5.2"]);
-    let config = |harness: &str| {
-        format!(
-            "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
-             harness: {harness}\n```\n"
-        )
-    };
-    write(&world.clone, "docs/agents/afkconvoy.md", &config("pi"));
-    let answer = world.afk(&["check"]);
-    assert_eq!(faults(&answer.json), ["docs/agents/afkconvoy.md: harness"]);
-    let error = answer.error();
-    assert!(error.contains("`gpt-6-sol` (the stage `build` of the workflow `feature`)"), "{error}");
-    assert!(error.contains("so each runs on `pi`, this repo's default"), "{error}");
-    // Under Codex it is one Codex lists — and a model of another harness's
-    // is the fault there.
-    write(&world.clone, "docs/agents/afkconvoy.md", &config("codex"));
-    let answer = world.afk(&["check"]);
-    assert_eq!(answer.stderr, "");
-    answer.ok();
-    let team = world.root.join("github/acme/team");
-    commit(&team, "workflows/feature.md", &building(&["model: zai/glm-5.2"]));
-    let answer = world.afk(&["check"]);
-    assert_eq!(faults(&answer.json), ["docs/agents/afkconvoy.md: harness"]);
-    let error = answer.error();
-    assert!(error.contains("so each runs on `codex`, this repo's default"), "{error}");
-    assert!(error.contains("it lists gpt-5.5, gpt-6-sol."), "{error}");
-}
-
-/// What a model named for Codex is checked against is said where `check` is
-/// described.
-#[test]
-fn the_help_of_check_says_what_a_model_named_for_codex_is_checked_against() {
-    let world = World::new();
-    let out = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.root)
-        .args(["check", "--help"])
-        .output();
-    let help = String::from_utf8(out.unwrap().stdout).unwrap();
-    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
-    let asked =
-        format!("{} debug models --bundled", afkconvoy_core::harness::Harness::Codex.stock());
-    for said in [asked.as_str(), "each by its `slug`", "Codex knows a model by the whole `slug`"] {
-        assert!(help.contains(said), "check --help never says {said:?}");
-    }
 }
 
 /// Where a role's limits for each harness go is said wherever a role's files

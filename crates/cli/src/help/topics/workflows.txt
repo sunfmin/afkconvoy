@@ -20,8 +20,6 @@ A WORKFLOW'S FILE
         - name: <unique; not land, done or human>
           by: <role> | human
           do: <skill>                    # required unless by: human
-          harness: claude-code           # optional
-          model: <model>                 # optional; its harness's own name for it
           writes: false                  # optional; default true
           escalate: { to: <role>, do: <skill> } | { to: human }  # optional: the consult
           on: { pass: <stage> | land | done, reject: <earlier stage> }   # reject optional
@@ -34,11 +32,8 @@ STAGES
   knows nothing of the one before it but what the stage records say, so a stage that
   judges never inherits the reasoning of the one that wrote.
 
-  `harness` names the harness the stage's worker is a session of: claude-code, Claude
-  Code, pi, or codex, Codex. It is a key of a stage a role performs and of a patrol —
-  wherever `model` is one — and nowhere else. One that names none takes the default,
-  which is the `harness` of the repo's config, and claude-code where that names none.
-  `model` is passed to the harness; `afkconvoy check` holds it against pi's models.
+  A stage names neither a harness nor a model. What its worker runs is its role's
+  range's to say, picked among by the issue's casting (`afkconvoy help roster`).
 
   `writes: false` has the guard refuse the stage's worker a commit and a push: mark
   every stage that judges so.
@@ -91,18 +86,19 @@ A CONSULT
   A stage's consult is asked before a human is: whatever would hand the issue to a human
   there — its `escalate`, a tripped breaker, a failure, a workflow changed under it —
   starts it where that human would stand, free to run what they would (`afkconvoy help
-  humans`). `escalate: { to, do }` names a more senior role, on the default harness;
-  where a stage names none, the stock consult, afkconvoy's own, is asked on the stage's
-  harness — its one instruction is to decide as the human would. `{ to: human }` names
-  none: a human, straight. A consult rules (`afkconvoy rule`: the stage runs again; on an
-  `escalate` that is one more rework in total), sends, closes, parks or lets it through.
+  humans`). `escalate: { to, do }` names a more senior role, run within its range
+  (`afkconvoy help roster`); where a stage names none, the stock consult, afkconvoy's
+  own, is asked on what the host kit names for it — its one instruction is to decide as
+  the human would. `{ to: human }` names none: a human, straight. A consult rules
+  (`afkconvoy rule`: the stage runs again; on an `escalate` that is one more rework in
+  total), sends, closes, parks or lets it through.
   Close and park add no rework (`afkconvoy help humans` says how to bring a park back).
   The same hand-off again goes to a human. A consult writes no code.
 
 A STAGE BY: HUMAN
 
-  No human stands in a workflow unless it names one. A stage `by: human` has no `do`,
-  no `harness` and no `model`; it starts no worker and holds no claim. The issue waits
+  No human stands in a workflow unless it names one. A stage `by: human` has no `do`;
+  it starts no worker and holds no claim. The issue waits
   there until a human declares the stage's verdict with `afkconvoy verdict`.
 
   Anywhere else a human is reached by an escalation: what a consult let through, or
@@ -112,8 +108,8 @@ A STAGE BY: HUMAN
 A LANDING
 
   A workflow in which a pass leads to `land` names who lands: `land: { by, do }`. The
-  tick after that `pass` starts a new worker in the role `by`, with the skill `do`, on
-  the default harness. It runs the gate on the issue's PR and joins it to the landing
+  tick after that `pass` starts a new worker in the role `by`, with the skill `do`, within
+  its role's range. It runs the gate on the issue's PR and joins it to the landing
   train (`afkconvoy land --help`), which lands it on the base branch as it lands any
   PR. A `land:` no pass leads to is a fault, and so is a `pass: land` with no `land:`.
 

@@ -6,7 +6,9 @@ use crate::common;
 use common::World;
 use serde_json::{Value, json};
 
-const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n";
+const TEAM: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\nroster:\n  dev:\n    \
+                    cast: A plan on pi.\n    run: [{ harness: claude-code, model: opus, good_at: \
+                    code }, { harness: pi }]\n```\n";
 const FEATURE: &str = "\
 ```yaml
 stages:
@@ -39,6 +41,7 @@ const TRIAGE: &str =
 /// workflows `feature` and `triage`.
 fn team() -> World {
     let world = World::new();
+    world.kit_models("claude-code", &["opus"]);
     for (role, skills) in
         [("acme/dev", &["plan", "implement", "land"][..]), ("acme/reviewer", &["review", "rule"])]
     {
@@ -103,8 +106,8 @@ fn each_verdict_is_answered_with_its_stage_and_the_position_that_follows() {
     let landed = rehearse(&world, "feature", &["pass", "pass", "pass", "pass"]);
     assert_eq!(at(&landed["ends"]), "landing - by dev: land");
     assert_eq!(at(&rehearse(&world, "triage", &["pass"])["ends"]), "ended - by -: -");
-    // Where a worker acts, the position says its harness: the default, in a
-    // team and a config that name none. A human is a session of none.
+    // Where a worker acts, the position says its harness: its role's range's
+    // first on this host. A human is a session of none.
     let harness = |rehearsed: &Value| rehearsed["ends"]["harness"].clone();
     assert_eq!(harness(&rehearse(&world, "feature", &[])), "claude-code");
     assert_eq!(harness(&rehearse(&world, "feature", &["pass", "escalate"])), "claude-code");
@@ -288,26 +291,34 @@ fn show_draws_every_stage_its_role_and_skill_and_every_pass_and_reject() {
     let feature = "\
 feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-┌───▶ plan      dev: plan · harness claude-code · escalate → human
+┌───▶ plan      dev: plan · escalate → human
 │       ↓ pass → build
-│ ┌─▶ build     dev: implement · harness claude-code · escalate → reviewer: rule
+│ ┌─▶ build     dev: implement · escalate → reviewer: rule
 │ │     ↓ pass → review
-│ └── review    reviewer: review · harness claude-code · writes nothing · escalate → human · reject → build
+│ └── review    reviewer: review · writes nothing · escalate → human · reject → build
 │       ↓ pass → sign-off
 └──── sign-off  human · reject → plan
         ↓ pass → land
       land      dev: land
 ";
-    assert_eq!(shown(&world, &["feature"]), feature);
     let triage = "\
 triage — flow:triage — max_rework 3, max_consecutive_rework 2
 
-  sort  reviewer: review · harness claude-code
+  sort  reviewer: review
     ↓ pass → done
   done
 ";
+    // Under the drawing, what each role may run, as the roster says.
+    let roster = "\
+roster
+
+  dev       claude-code opus (code) · pi any model
+            cast: A plan on pi.
+  reviewer  the host kit whole
+";
+    assert_eq!(shown(&world, &["feature"]), format!("{feature}\n{roster}"));
     // With no name, every workflow of the team.
-    assert_eq!(shown(&world, &[]), format!("{feature}\n{triage}"));
+    assert_eq!(shown(&world, &[]), format!("{feature}\n{triage}\n{roster}"));
     // A drawing has no tab and no trailing space: it survives a paste into
     // a code block of a GitHub comment.
     assert!(!feature.contains('\t') && feature.lines().all(|line| line == line.trim_end()));

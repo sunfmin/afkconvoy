@@ -11,9 +11,7 @@ WHO RUNS IT
 
 WHAT IT READS AND WRITES
 
-  It writes nothing but a copy the fleet has not got yet (below), and what this host
-  keeps for pi and for Codex before each is asked a question (`afkconvoy run --help`).
-  It reads a
+  It writes nothing but a copy the fleet has not got yet (below). It reads a
   team's files, and of each role's directory which skills it holds and what each one's
   `SKILL.md` opens with, which harnesses it holds limits for, and whether a file of it
   would have a harness load other rules.
@@ -22,7 +20,7 @@ WHAT IT READS AND WRITES
 
   Without a flag it reads the config of this checkout for `team`, and that directory
   from GitHub at the head of its repo's default branch — and holds the config's
-  `patrols` against the patrols that team has, and takes its `harness` as the default.
+  `patrols` against the patrols that team has.
   `--team owner/repo` or `--team owner/repo/path` names the team instead.
   `--dir <path>` reads a team's files from a directory as they are, committed or not.
   Every role is always read from GitHub, at the head of its repo's default branch. A
@@ -40,17 +38,12 @@ WHAT IT READS AND WRITES
   asked and cloned once however many roles it holds, and a role in the team's own repo
   is read at the team's commit. The repos are read at once, not one after another.
 
-  Where the team names a `model`, each harness that can say which models it knows is
-  asked, in a login shell — the one a worker gets — under the user directory the fleet
-  keeps for it. pi, with `pi --list-models`: it lists the models pi has a login for on
-  this host. Codex, with `codex --dangerously-bypass-approvals-and-sandbox debug models
-  --bundled`, its stock worker launch command: it lists the models this host's Codex was
-  built with, each by its `slug`, and asks no network. Claude Code has no such answer,
-  and is asked nothing.
+  It reads this host's host kit (`afkconvoy kit --help`) for each role's range, and
+  asks no harness anything: which models a harness knows is the host kit's to hold.
 
 WHAT IT ANSWERS
 
-  {"team", "path", "commit", "files", "escalate_label", "rules", "host_user", "dsh_profile", "split", "harness",
+  {"team", "path", "commit", "files", "escalate_label", "rules", "host_user", "dsh_profile", "split",
   "roles", "workflows", "patrols", "precedents"} — what it read.
   `team` is the team's repo and `path` its directory there, "" for a whole repo — with
   `--dir`, the directory read and null. `commit` is the team's commit read, null with
@@ -63,15 +56,12 @@ WHAT IT ANSWERS
   default, and the stock consult's.
   `split` is whether stage briefs offer splitting: true unless the team file says
   `split: false`. Anything but true or false is a fault (`afkconvoy help team`).
-  `harness` is the default harness: the one the config of this checkout names, and
-  claude-code where it names none — and with `--team` and `--dir`, which read no
-  config.
   `dsh_profile` is `fleet` (default) or `host-user`: which profile DSH workers
   load, independently of host_user. A role may say its own choice; check
   answers its effective dsh_profile and refuses every other value.
 
   Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above",
-  "limits"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the
+  "limits", "roster", "range"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the
   one the role's repo was read at; `host_user` whether its workers are given the host
   user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of
   that map but those three, or a `host_user` that is not true or false, is a fault;
@@ -80,14 +70,17 @@ WHAT IT ANSWERS
   worker is given; `limits` the harnesses the role holds
   limits for — a hook or a denied permission in its `.claude/settings.json` for
   claude-code, an entry of its `.pi/extensions/` for pi, a hook in its
-  `.codex/hooks.json` for codex, a `.dsh/cordis.patch.yml` overlay for dsh. Each of `workflows` is {"name", "flow_label", "max_rework",
+  `.codex/hooks.json` for codex, a `.dsh/cordis.patch.yml` overlay for dsh; `roster`
+  its entry in the team's roster, {"cast", "run": [{"harness", "model", "good_at"}]}
+  with null for what it leaves out, and null for a role it names none for; `range` its
+  range on this host, [{"harness", "models"}] in the order a worker takes them — the
+  host kit whole for a role with no entry, and null where this host has no host kit
+  (`afkconvoy help roster`). Each of `workflows` is {"name", "flow_label", "max_rework",
   "max_consecutive_rework", "stages", "land"}, the defaults filled in; each stage is
-  {"name", "by", "do", "harness", "model", "writes", "escalate", "pass", "reject"}.
-  Each of `patrols` is {"name", "by", "do", "every", "harness", "model", "max_open",
+  {"name", "by", "do", "writes", "escalate", "pass", "reject"}.
+  Each of `patrols` is {"name", "by", "do", "every", "max_open",
   "max_runs_a_day", "max_landed_a_day", "runs_here"}: `every` in seconds, `max_runs_a_day` null where the
-  file says none. A `harness` is the one the stage's worker, or the
-  patrol's, runs: the one it names, or the default — and null of a stage a human
-  performs. `runs_here` is whether the config of this checkout names the patrol — false
+  file says none. `runs_here` is whether the config of this checkout names the patrol — false
   with `--team` and `--dir`, which read no config. `precedents` is {"by", "do",
   "max_open"}, or null where the team names nobody to propose them.
 
@@ -115,10 +108,13 @@ WHAT IT ANSWERS
   directory that a harness would load in place of `CLAUDE.md`, its rules under every
   harness — pi `AGENTS.override.md`, `AGENTS.md` or `AGENTS.MD`, Codex
   `AGENTS.override.md` or `AGENTS.md` — the fault naming the file and each harness
-  that would load it, whatever harness the role's stages run on; a role's limits that cannot be
+  that would load it, whatever harnesses the role may run; a role's limits that cannot be
   read; a skill its role's directory does not hold; a
-  missing `by`, `do` or `on`; a `harness` that names no harness, or one on a stage a
-  human performs; a flow label two workflows take, or one that is the team's escalate
+  missing `by`, `do` or `on`; a `harness` or a `model` in a stage or a patrol, which
+  name none any more — the fault says the line to delete and the roster entry to write
+  in its place; in the `roster`, an entry for a name that is no role of the team, a
+  `run` that is missing or empty, a `harness` that names no harness, or an allowance
+  written twice; a flow label two workflows take, or one that is the team's escalate
   label, the repo's lock label or an epic label — under `label`, or the file where it
   is the `flow:<name>` it names none in place of; a patrol file whose name is not a patrol's; an `every`
   that is no duration; a missing `every` or `max_open`; and — in the config,
@@ -134,33 +130,15 @@ WHAT IT ANSWERS
     `stages[1].escalate.do`, `land.do`, a patrol's `do`, and `precedents.do` in
     team.md — and each `do` that names it has the fault. The form is in
     `afkconvoy help skill-file`. A skill no `do` names is not held to it.
-  - A worker on a harness its role holds no limits for, while the role holds limits for
-    another: the fault names what runs it, the role and both harnesses. Its key is the
-    `harness` of the stage (`stages[1].harness`) or of the patrol, written there or
-    not; for a worker that always runs on the default, the key that names its role —
-    `stages[1].escalate.to`, `land.by`, and `precedents.by` in team.md. A role with no
-    limits at all is no fault.
-  - A `model` its harness does not know, where the stage or the patrol names that
-    harness and the harness could be asked: the key is the `model`. pi knows a model
-    it lists by its `provider/id`, its id or a part of its id, with a thinking level
-    after a `:` or not. Codex knows a model by the whole `slug` it lists it under, as
-    written, and no other way: the ones it shows in no menu are among them. A model
-    named for a harness that cannot say — claude-code — or could not be asked, or that
-    listed nothing, is passed as written.
-  - In the config, docs/agents/afkconvoy.md, under `harness`: a team that names models
-    and no harness for them, none of which the repo's default harness knows. Such a team
-    is written for another default; the fault lists each model and what names it.
+  - A roster entry that lets a role run a harness it holds no limits for, while it
+    holds limits for another: the fault names the role and both harnesses, and its key
+    is that `harness` of the entry (`roster.dev.run[1].harness`). A role with no limits
+    at all is no fault. A role the roster names no entry for is held to the host kit by
+    `afkconvoy run`, which refuses the same of a range on its host.
 
   A warning, on stderr, for each workflow whose file says nothing above its yaml block:
   that prose is what `afkconvoy flows` answers as what the workflow is for, and whoever
   hands the fleet work chooses a workflow by it. The team loads all the same.
-
-  A warning, on stderr, for each model named with no harness that reads as another
-  harness's — pi's whole `provider/id` for a model it lists, or a `slug` Codex lists —
-  while the default harness said nothing of which models it knows: the team may be
-  written for another default. And a
-  note for a harness a model is named for that could not be asked: its command failed
-  in a login shell, or listed no model. The team loads all the same.
 
   A note, on stderr, for each role with something in `above`: a session opened by hand
   in the role's directory loads those rules too, and a worker, given the role's
@@ -179,7 +157,7 @@ WHAT IT ANSWERS
 
   Other errors, as {"error": …}: the repo's config names no team and no flag was given;
   the config cannot be read, the error naming its file and the key — a `harness` there
-  that names no harness is one; the team's repo cannot be read, or the team's path is no
+  is one, which a config names no more; the team's repo cannot be read, or the team's path is no
   directory at its head.
 
 WHAT TRIPS YOU UP
@@ -187,10 +165,8 @@ WHAT TRIPS YOU UP
   - From GitHub it reads what is pushed to the default branch. An edit in a checkout
     of the team is checked with `--dir`; a role's is checked only once it is pushed,
     wherever the role is — in the team's own repo too.
-  - Which models pi knows is this host's answer: the ones pi has a login for here,
-    asked of the stock command `pi`. Which Codex knows is this host's too: the ones the
-    Codex installed here was built with, whatever it has a login for. Run `check` on
-    the host the fleet runs on.
+  - A role's `range` is this host's: run `check` on the host the fleet runs on, after
+    `afkconvoy kit`.
   - Only `check` holds a team to its harnesses, and a skill's file to its form: a tick
     loads the team and starts its workers without asking again.
   - Following `pass` alone from any stage must end. A loop back is made with `reject`,
