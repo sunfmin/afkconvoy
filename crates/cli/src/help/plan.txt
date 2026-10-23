@@ -104,7 +104,9 @@ WHAT IT ANSWERS
                    `every` in seconds, `last_run` when its last recorded run started
                    (null: it never ran), `open` the open issues it opened. A patrol
                    whose file says `max_runs_a_day` has it too, and `runs_in_day`: how
-                   many of its runs started in the last 24 hours. One a human asked to
+                   many of its runs started in the last 24 hours. A patrol with
+                   `max_landed_a_day` reports it and `landed_in_day`: the issues it
+                   opened that closed as completed in the last rolling 24 hours. One a human asked to
                    run now (`afkconvoy patrol-now --help`) has `asked`: when the ask was
                    made, until a tick starts the run. standing says what a tick does
                    about it:
@@ -112,8 +114,12 @@ WHAT IT ANSWERS
                                    a tick runs it
                      not_due       its interval has not passed since `last_run`
                      spent         `runs_in_day` has reached `max_runs_a_day`: it is
-                                   held until `until`, in this case only — when the
+                                   held until `until` — when the
                                    oldest of those runs is 24 hours old
+                     landed        `landed_in_day` reached `max_landed_a_day`: held
+                                   until `until`, when enough completions are 24
+                                   hours old to fall below the bound. A human's ask
+                                   respects this bound too
                      locked        a fleet lock stands: no patrol runs
                      full          `open` has reached `max_open`
                      failed        its last run failed, and the issue that reports it —
