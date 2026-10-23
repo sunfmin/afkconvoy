@@ -57,6 +57,16 @@ impl Evidence {
 fn file(repo: &Repo, harness: Harness) -> Result<std::path::PathBuf> {
     repo.note(&format!("convoy-harness-down-{}.json", harness.key()))
 }
+/// Where a harness found down is paused: on this host — but a unit test's
+/// own repo, so that no test pauses a harness of whoever runs it.
+fn pauses(repo: &Repo) -> Result<crate::paused::Pauses> {
+    if cfg!(test) {
+        return Ok(crate::paused::Pauses::at(repo.note("convoy-paused.json")?));
+    }
+    let _ = repo;
+    crate::paused::Pauses::here()
+}
+
 fn read(path: &Path) -> Result<Evidence> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
@@ -114,6 +124,10 @@ pub fn tell(
             if evidence.failures > 0 {
                 keep(&path, &Evidence::default())?;
             }
+            // A prompt it took is a probe it answered.
+            if evidence.down() {
+                pauses(&repo)?.resume(harness)?;
+            }
             Ok(())
         }
         Err(error) => {
@@ -126,6 +140,8 @@ pub fn tell(
                 }
                 keep(&path, &evidence)?;
                 if report {
+                    // No worker is started on it until a probe finds it working.
+                    pauses(&repo)?.pause(harness, now, &evidence.reason)?;
                     let instance = crate::log::Log::of(&repo)
                         .ok()
                         .and_then(|log| log.read())
@@ -181,7 +197,7 @@ fn switch_command(harness: Harness, instance: Option<&str>) -> String {
 
 fn description(harness: Harness, reason: &str, instance: Option<&str>) -> String {
     format!(
-        "{} harness is down: {reason}; claims are held, prompts stop, and one pending prompt probes every {PROBE_SECONDS}s; switch with `{}`",
+        "{} harness is down: {reason}; it is paused on this host, claims are held, prompts stop, and one pending prompt probes every {PROBE_SECONDS}s; switch with `{}`",
         harness.key(),
         switch_command(harness, instance)
     )
@@ -237,6 +253,11 @@ mod tests {
             assert!(tell(&worker, terminal, 100, refuse).is_err());
         }
         assert_eq!(sends.get(), 3);
+        let paused = pauses(&repo).unwrap().of(Harness::ClaudeCode).unwrap().unwrap();
+        assert_eq!(
+            (paused.since, paused.why.as_str()),
+            (100, "organization disabled subscription access")
+        );
         assert!(holds(&worker, 101).unwrap());
         assert!(!down(&repo, Harness::Codex, 101).unwrap());
         let found = findings(&repo, Some("alpha")).unwrap();
@@ -257,6 +278,7 @@ mod tests {
         assert_eq!(sends.get(), 4);
         tell(&worker, "three", 700, || Ok(())).unwrap();
         assert!(findings(&repo, None).unwrap().is_empty());
+        assert_eq!(pauses(&repo).unwrap().of(Harness::ClaudeCode).unwrap(), None, "it answered");
         assert!(!holds(&worker, 700).unwrap());
         tell(&worker, "one", 701, || {
             sends.set(sends.get() + 1);

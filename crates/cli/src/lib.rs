@@ -62,6 +62,7 @@ pub mod orca;
 pub mod panel;
 pub mod park;
 pub mod patrol;
+pub mod paused;
 pub mod precedent;
 pub mod probe;
 pub mod reclaim;
@@ -1127,7 +1128,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
             }
             plan["admission"] = admission.json();
-            plan["host_kit"] = kit::show();
+            plan["host_kit"] = kit::show(now);
             plan["worker_no_proxy"] = launches.proxy_json();
             Ok(plan)
         }

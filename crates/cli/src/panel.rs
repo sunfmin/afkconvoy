@@ -141,6 +141,9 @@ pub struct Panel {
     /// An unbound repo's caster, while one runs or is due, and the issues
     /// held back for it.
     pub caster: Option<afkconvoy_core::casting::Standing>,
+    /// The harnesses paused on this host, since when and why: no worker is
+    /// started on one until a probe finds it working.
+    pub paused: Vec<afkconvoy_core::casting::Paused>,
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -252,6 +255,7 @@ impl Panel {
             inspection: None,
             host_inspected: None,
             caster: None,
+            paused: crate::paused::read(),
         }
     }
 
@@ -733,6 +737,17 @@ pub fn render(panel: &Panel) -> String {
         let _ = writeln!(out, "<p class=\"tick\" data-caster>{running}{held}.</p>");
     }
 
+    for pause in &panel.paused {
+        let _ = writeln!(
+            out,
+            "<p class=\"lock\" data-paused=\"{key}\"><b>The harness {key} is paused on this \
+             host</b>, for {}: {}. No worker is started on it; it is probed every hour.</p>",
+            lasted(panel.now.saturating_sub(pause.since)),
+            esc(&pause.why),
+            key = esc(pause.harness.key()),
+        );
+    }
+
     if !panel.hot.is_empty() {
         let hot: Vec<String> = panel
             .hot
@@ -912,6 +927,25 @@ mod tests {
         assert!(page.find("cargo test").unwrap() < page.find("make bench").unwrap());
     }
 
+    #[test]
+    fn a_paused_harness_is_shown_with_since_when_and_why() {
+        let mut panel = page_of(1000 + 7200);
+        panel.paused = vec![afkconvoy_core::casting::Paused {
+            harness: afkconvoy_core::harness::Harness::Pi,
+            since: 1000,
+            why: "subscription <disabled>".into(),
+            probed: None,
+        }];
+        let page = render(&panel);
+        assert!(
+            page.contains(
+                "data-paused=\"pi\"><b>The harness pi is paused on this host</b>, for 2h"
+            ),
+            "{page}"
+        );
+        assert!(page.contains("subscription &lt;disabled&gt;"), "{page}");
+    }
+
     fn page_of(now: u64) -> Panel {
         Panel {
             repo: "r".into(),
@@ -933,6 +967,7 @@ mod tests {
             inspection: None,
             host_inspected: None,
             caster: None,
+            paused: vec![],
         }
     }
 
@@ -958,6 +993,7 @@ mod tests {
             inspection: None,
             host_inspected: None,
             caster: None,
+            paused: vec![],
         };
         let page = render(&panel);
         assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));

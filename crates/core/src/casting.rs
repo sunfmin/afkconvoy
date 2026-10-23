@@ -79,7 +79,12 @@ pub fn choice(range: &[Held]) -> bool {
 /// Whether `labels` name no casting: no `harness:` label and no `model:`
 /// one. An issue with either is a human's to change, never a caster's.
 pub fn uncast(labels: &[String]) -> bool {
-    !labels.iter().any(|label| label.starts_with(HARNESS_LABEL) || label.starts_with(MODEL_LABEL))
+    !labels.iter().any(|label| is_casting(label))
+}
+
+/// Whether `label` is one of a casting: a `harness:` or a `model:` label.
+pub fn is_casting(label: &str) -> bool {
+    label.starts_with(HARNESS_LABEL) || label.starts_with(MODEL_LABEL)
 }
 
 /// The last caster started for a repo on this host.
@@ -167,6 +172,94 @@ pub fn for_caster(
         Some(caster) if caster.given.contains(&number) => ForCaster::Late,
         _ => ForCaster::Due,
     }
+}
+
+/// How often a paused harness is probed, in seconds: one that answers is no
+/// longer paused.
+pub const PAUSE_PROBE_SECONDS: u64 = 3600;
+
+/// A harness paused on the host (docs/adr/0020): left out of the host kit,
+/// and so of every range, until a probe finds it working. It is the host's
+/// running state; the host kit's file is not changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Paused {
+    #[serde(deserialize_with = "harness_key")]
+    pub harness: Harness,
+    /// When it was paused, in epoch seconds.
+    pub since: u64,
+    /// What the fleet found of it.
+    pub why: String,
+    /// Its last probe, which it did not answer; `None`: none yet.
+    #[serde(default)]
+    pub probed: Option<u64>,
+}
+
+impl Paused {
+    /// Whether it is to be probed `now`: an hour after it was paused, or
+    /// after its last probe.
+    pub fn due(&self, now: u64) -> bool {
+        now.saturating_sub(self.probed.unwrap_or(self.since)) >= PAUSE_PROBE_SECONDS
+    }
+}
+
+fn harness_key<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Harness, D::Error> {
+    let key = <String as serde::Deserialize>::deserialize(deserializer)?;
+    Harness::read(&key).ok_or_else(|| serde::de::Error::custom(Harness::unknown(&key)))
+}
+
+/// The pause of the harness `labels` cast an issue to, where it is paused.
+pub fn paused_of<'a>(labels: &[String], paused: &'a [Paused]) -> Option<&'a Paused> {
+    let key = labels.iter().find_map(|label| label.strip_prefix(HARNESS_LABEL))?;
+    paused.iter().find(|pause| pause.harness.key() == key)
+}
+
+/// `labels` without the casting: what an issue cast again carries.
+pub fn without_casting(labels: &[String]) -> Vec<String> {
+    let mut kept = vec![];
+    for label in labels {
+        if !is_casting(label) {
+            kept.push(label.clone());
+        }
+    }
+    kept
+}
+
+/// What a caster says on an issue it cast to `labels`, with why.
+pub fn caster_comment(labels: &[String], why: &str) -> String {
+    format!("Cast {}: {}", said_labels(labels), why.trim())
+}
+
+fn said_labels(labels: &[String]) -> String {
+    let named: Vec<String> = labels.iter().map(|label| format!("`{label}`")).collect();
+    named.join(" and ")
+}
+
+/// Whether the casting `labels` carry is a caster's: a comment of `bodies`
+/// is the one a caster leaves as it puts that casting on. A human's casting
+/// is never cast again.
+pub fn by_caster<'a>(labels: &[String], bodies: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut casting = vec![];
+    for label in labels {
+        if is_casting(label) {
+            casting.push(label.clone());
+        }
+    }
+    if casting.is_empty() {
+        return false;
+    }
+    let head = format!("Cast {}: ", said_labels(&casting));
+    bodies.into_iter().any(|body| body.starts_with(&head))
+}
+
+/// Whether an issue labelled `labels` is to be cast again: a caster cast it
+/// to a harness that is now `paused`, and no worker has `started` on it.
+pub fn to_recast<'a>(
+    labels: &[String],
+    bodies: impl IntoIterator<Item = &'a str>,
+    started: bool,
+    paused: &[Paused],
+) -> bool {
+    !started && paused_of(labels, paused).is_some() && by_caster(labels, bodies)
 }
 
 /// What a caster puts on one issue: its `harness:` label, and its `model:`
@@ -488,6 +581,34 @@ mod tests {
         assert!(casting("dsh", None, "x").labels(&range).unwrap_err().contains("does not hold"));
         assert!(casting("pi", Some("x/y"), "x").labels(&range).is_err());
         assert!(casting("pi", None, " ").labels(&range).unwrap_err().contains("why"));
+    }
+
+    #[test]
+    fn a_caster_s_casting_to_a_paused_harness_is_cast_again_until_a_worker_started() {
+        let paused =
+            [Paused { harness: Harness::Pi, since: 10, why: "refused".into(), probed: None }];
+        let cast = labels(&["ready", "harness:pi", "model:a/b"]);
+        let said = caster_comment(&labels(&["harness:pi", "model:a/b"]), "small ");
+        assert_eq!(said, "Cast `harness:pi` and `model:a/b`: small");
+        assert!(to_recast(&cast, [said.as_str()], false, &paused));
+        assert!(!to_recast(&cast, [said.as_str()], true, &paused), "a worker started on it");
+        // A human's casting is never cast again.
+        assert!(!to_recast(&cast, ["Cast it to pi, please"], false, &paused));
+        // Nor one to a harness that is not paused.
+        let codex = labels(&["harness:codex"]);
+        assert!(!to_recast(&codex, ["Cast `harness:codex`: big"], false, &paused));
+        assert_eq!(paused_of(&cast, &paused), Some(&paused[0]));
+        assert_eq!(without_casting(&cast), labels(&["ready"]));
+    }
+
+    #[test]
+    fn a_paused_harness_is_probed_an_hour_after_it_was_paused_or_last_probed() {
+        let mut pause = Paused { harness: Harness::Pi, since: 100, why: "x".into(), probed: None };
+        assert!(!pause.due(100 + PAUSE_PROBE_SECONDS - 1));
+        assert!(pause.due(100 + PAUSE_PROBE_SECONDS));
+        pause.probed = Some(5000);
+        assert!(!pause.due(5000 + PAUSE_PROBE_SECONDS - 1));
+        assert!(pause.due(5000 + PAUSE_PROBE_SECONDS));
     }
 
     #[test]
