@@ -73,6 +73,25 @@ const PRECEDENTS_KEY: &str = "precedents";
 /// The key of the team file that says whether a worker of the team is given
 /// the host user's skills and rules (`Team::host_user`).
 const HOST_USER_KEY: &str = "host_user";
+const DSH_PROFILE_KEY: &str = "dsh_profile";
+
+/// The profile a DSH worker loads, independent of host skills and rules.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DshProfile {
+    #[default]
+    Fleet,
+    HostUser,
+}
+
+impl DshProfile {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Fleet => "fleet",
+            Self::HostUser => "host-user",
+        }
+    }
+}
+
 /// The key of a role named as a map that names its directory.
 const DIR_KEY: &str = "dir";
 /// The key of a stage and of a patrol that names the harness its worker
@@ -84,10 +103,10 @@ const MODEL_KEY: &str = "model";
 const LABEL_KEY: &str = "label";
 
 /// The keys of each map a definition holds: what `check`'s help must name.
-pub const TEAM_KEYS: [&str; 5] =
-    ["escalate_label", "roles", PRECEDENTS_KEY, HOST_USER_KEY, "split"];
+pub const TEAM_KEYS: [&str; 6] =
+    ["escalate_label", "roles", PRECEDENTS_KEY, HOST_USER_KEY, DSH_PROFILE_KEY, "split"];
 /// The keys of a role named as a map, beside the directory that names it.
-pub const ROLE_KEYS: [&str; 2] = [DIR_KEY, HOST_USER_KEY];
+pub const ROLE_KEYS: [&str; 3] = [DIR_KEY, HOST_USER_KEY, DSH_PROFILE_KEY];
 pub const PRECEDENTS_KEYS: [&str; 3] = ["by", "do", "max_open"];
 pub const WORKFLOW_KEYS: [&str; 5] =
     [LABEL_KEY, "max_rework", "max_consecutive_rework", "stages", LAND];
@@ -320,6 +339,8 @@ pub struct Team {
     /// The default of every role, which a role may set for itself
     /// (`Role::host_user`); the stock consult takes it.
     pub host_user: bool,
+    /// The team's default or the role's own DSH profile choice.
+    pub dsh_profile: DshProfile,
     /// Whether stage briefs offer splitting an issue: true unless `split: false`.
     pub split: bool,
     #[field(Vec<Role>[roles])]
@@ -701,6 +722,8 @@ pub struct Role {
     /// beside its role's: what the team file says of it, `{ dir, host_user }`,
     /// and the team's (`Team::host_user`) where it says nothing.
     pub host_user: bool,
+    /// The team's default or the role's own DSH profile choice.
+    pub dsh_profile: DshProfile,
     /// The head of the repo's default branch when it was read.
     pub commit: String,
     pub skills: Vec<String>,
@@ -1151,8 +1174,18 @@ pub fn duration(text: &str) -> Option<u64> {
 pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
     let mut faults: Vec<Fault> = vec![];
     let host_user = team_bool_key(&mut faults, sources, HOST_USER_KEY);
+    let mut report = Report { file: &sources.team.path, faults: &mut faults };
+    let dsh_profile = match &sources.team.yaml {
+        Ok(Node::Map(entries)) => profile_key(
+            &mut report,
+            DSH_PROFILE_KEY,
+            get(entries, DSH_PROFILE_KEY),
+            DshProfile::Fleet,
+        ),
+        _ => DshProfile::Fleet,
+    };
     let split = team_bool_key(&mut faults, sources, "split");
-    let (escalate_label, roles) = team_file(&mut faults, sources, host_user);
+    let (escalate_label, roles) = team_file(&mut faults, sources, host_user, dsh_profile);
     let precedents = precedents_key(&mut faults, sources, &roles);
     let mut workflows: Vec<Workflow> = vec![];
     for file in &sources.workflows {
@@ -1174,6 +1207,7 @@ pub fn load(sources: &Sources) -> Result<Team, Vec<Fault>> {
             escalate_label,
             rules: sources.rules,
             host_user,
+            dsh_profile,
             split,
             roles: roles.loaded,
             workflows,
@@ -1391,6 +1425,7 @@ fn team_file<'n>(
     faults: &mut Vec<Fault>,
     sources: &'n Sources,
     host_user: bool,
+    dsh_profile: DshProfile,
 ) -> (String, Roles<'n>) {
     let mut report = Report { file: &sources.team.path, faults };
     let mut names: Vec<&str> = vec![];
@@ -1433,7 +1468,9 @@ fn team_file<'n>(
                 .fault(&key, format!("a role cannot be named `{HUMAN}`: `by: {HUMAN}` is a human"));
             continue;
         }
-        let Some((named, host_user)) = role_entry(&mut report, &key, named, host_user) else {
+        let Some((named, host_user, dsh_profile)) =
+            role_entry(&mut report, &key, named, host_user, dsh_profile)
+        else {
             continue;
         };
         let dir = match role_dir(named, sources.at.as_ref()) {
@@ -1492,6 +1529,7 @@ of its own is added to them, and never stands in their place",
                 name: name.clone(),
                 dir,
                 host_user,
+                dsh_profile,
                 commit: read.commit.clone(),
                 skills: read.skills.clone(),
                 above: read.above.clone(),
@@ -1507,6 +1545,7 @@ of its own is added to them, and never stands in their place",
                 name: name.clone(),
                 dir,
                 host_user,
+                dsh_profile,
                 commit: String::new(),
                 skills: vec![],
                 above: vec![],
@@ -1530,9 +1569,10 @@ fn role_entry<'n>(
     key: &str,
     entry: &'n Node,
     team: bool,
-) -> Option<(&'n str, bool)> {
+    profile: DshProfile,
+) -> Option<(&'n str, bool, DshProfile)> {
     let entries = match entry {
-        Node::Text(named) => return Some((named, team)),
+        Node::Text(named) => return Some((named, team, profile)),
         Node::Map(_) => map(report, key, entry, &ROLE_KEYS)?,
         other => {
             let problem = format!(
@@ -1566,7 +1606,27 @@ fn role_entry<'n>(
             None
         }
     };
-    Some((named?, host_user?))
+    let profile =
+        profile_key(report, &under(key, DSH_PROFILE_KEY), get(entries, DSH_PROFILE_KEY), profile);
+    Some((named?, host_user?, profile))
+}
+
+/// Reads a profile choice, reporting every value outside the two named choices.
+fn profile_key(
+    report: &mut Report,
+    key: &str,
+    node: Option<&Node>,
+    default: DshProfile,
+) -> DshProfile {
+    match node {
+        None => default,
+        Some(Node::Text(value)) if value == "fleet" => DshProfile::Fleet,
+        Some(Node::Text(value)) if value == "host-user" => DshProfile::HostUser,
+        Some(_) => {
+            report.fault(key, "must be fleet or host-user".to_string());
+            default
+        }
+    }
 }
 
 /// Reads the team file's `precedents` → who proposes a ruling as one;

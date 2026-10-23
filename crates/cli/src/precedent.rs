@@ -138,6 +138,7 @@ pub fn propose(
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &kept_dir,
         host_user,
+        dsh_profile: role.dsh_profile,
         shadowed: &shadowed,
         told: told.told(),
         facts: Facts {

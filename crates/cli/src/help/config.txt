@@ -86,6 +86,10 @@ WHAT TRIPS YOU UP
     once it is on the base branch.
 
   DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH,
-  on a fleet-owned DSH_HOME. The --patch overlay loads the guard
+  on the DSH profile its team or role names: `dsh_profile: fleet` (default)
+  or `host-user` (`afkconvoy help team`). The latter loads the host user's
+  dsh-tui profile with its plugins, MCP servers, patches, theme and settings.
+  Neither edits the user's DSH_HOME; both keep the role's limits.
+  The --patch overlay, applied last on either profile, loads the guard
   and orca state plugin; the role's directory, skills, rules, stage model
   and issue's worktree are supplied as described in `afkconvoy run --help`.

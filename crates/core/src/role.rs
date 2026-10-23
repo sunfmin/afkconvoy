@@ -263,6 +263,8 @@ pub struct Start<'a> {
     /// (`Team::host_user`): the directory `kept` is then the one kept with
     /// them (`Kept::host_user`).
     pub host_user: bool,
+    /// The DSH profile selected by the team or role.
+    pub dsh_profile: crate::team::DshProfile,
     /// The files of the host user's skills that a role's skill of the same
     /// name stands for, where its harness would show both
     /// (`Harness::shadowed_in`): each is turned off.

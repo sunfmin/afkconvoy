@@ -1221,3 +1221,43 @@ fn check_reports_whether_the_team_offers_splitting() {
     assert_eq!(answer.code, 1);
     assert_eq!(faults(&answer.json), ["team.md: split"]);
 }
+
+#[test]
+fn dsh_profile_defaults_to_fleet_and_roles_override_the_team_in_either_direction() {
+    for (team_key, inherited, own) in
+        [("", "fleet", "host-user"), ("dsh_profile: host-user\n", "host-user", "fleet")]
+    {
+        let text = TEAM.replace("```\n", &format!("{team_key}```\n")).replace(
+            "reviewer: acme/reviewer",
+            &format!("reviewer: {{ dir: acme/reviewer, dsh_profile: {own}, host_user: false }}"),
+        );
+        let world = bound(&[("team.md", &text), ("workflows/feature.md", FEATURE)]);
+        let read = world.afk(&["check"]).ok();
+        assert_eq!(read["dsh_profile"], inherited);
+        assert_eq!(read["roles"][0]["dsh_profile"], inherited);
+        assert_eq!(read["roles"][1]["dsh_profile"], own);
+        assert_eq!(read["roles"][1]["host_user"], false);
+    }
+    let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
+    let team = world.root.join("github/acme/team");
+    for value in ["true", "0", "null", "[fleet]", "{}", "other", "''"] {
+        for role in [false, true] {
+            let text = if role {
+                TEAM.replace(
+                    "reviewer: acme/reviewer",
+                    &format!("reviewer: {{ dir: acme/reviewer, dsh_profile: {value} }}"),
+                )
+            } else {
+                TEAM.replace("```\n", &format!("dsh_profile: {value}\n```\n"))
+            };
+            commit(&team, "team.md", &text);
+            let answer = world.afk(&["check"]);
+            assert_eq!(answer.code, 1);
+            assert_eq!(
+                faults(&answer.json),
+                [if role { "team.md: roles.reviewer.dsh_profile" } else { "team.md: dsh_profile" }]
+            );
+            assert_eq!(answer.json["faults"][0]["problem"], "must be fleet or host-user");
+        }
+    }
+}

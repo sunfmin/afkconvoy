@@ -77,7 +77,7 @@ export function apply(ctx) {
   const guard = fact('AFKCONVOY_GUARD')
   const worktree = fact('AFKCONVOY_WORKTREE')
   const team = fact('AFKCONVOY_TEAM_DIR')
-  const home = fact('DSH_HOME')
+  const home = process.env.AFKCONVOY_DSH_KEPT || fact('DSH_HOME')
   const role = process.cwd()
   ctx.on('tools/pre-execute', (exec, next) => {
     const asked = spawnSync('sh', ['-c', guard], {

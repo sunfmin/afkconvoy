@@ -180,6 +180,7 @@ Only each definition file's first ```yaml block is read; the rest explains it.
       <short name>: { dir: <its directory>, host_user: false }   # its own host_user
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
     host_user: true                    # default
+    dsh_profile: fleet                # fleet (default) or host-user; DSH only
     split: true                        # default; false omits splitting
 
 `escalate_label` is the label an issue handed to a human carries in place of its flow
@@ -190,6 +191,16 @@ opens a PR on the team's repo that appends one entry to `precedents.md`, unless
 `max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`,
 true or false, says whether a worker is given the host user's own skills and rules
 beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
+
+`dsh_profile` chooses the DSH profile: `fleet` (default) loads the fleet's own;
+`host-user` loads the host user's dsh-tui profile, with its plugins, MCP servers,
+patches, theme and settings. A role may override either choice with
+`reviewer: { dir: ./roles/reviewer, dsh_profile: host-user }`. Any other value
+is refused. It is independent of `host_user`: the host profile may itself load
+user skills and rules even with host_user: false. Neither choice edits the user's
+DSH_HOME. Both add the role's limits and the fleet's guard and orca state report
+last; host settings cannot turn them off. A host profile may differ on two hosts.
+Other harnesses ignore this choice. `afkconvoy check` answers each role's.
 
 `split: false` leaves splitting out of all stage briefs, including after a park.
 True or unsaid keeps the brief unchanged; this setting adds no guard.
@@ -222,7 +233,7 @@ another role's nor is inside one. It holds:
 
 Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
 an entry of `.claude/skills/` in the role. Rules and skills are written once.
-DSH runs dsh-tui with a fleet-owned DSH_HOME and --patch guard. How every harness
+DSH runs dsh-tui on its chosen DSH profile, with the --patch guard. How every harness
 loads the role is in `afkconvoy run --help`. Limits are written once for each harness,
 in its own form: pi and Codex run no hook of `.claude/settings.json`.
 
@@ -390,7 +401,8 @@ each other are a defect of the files, and nothing says which holds.
 A worker is also given the skills and the rules of the host's own user, as a session
 that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's
 and Codex's in ~/.pi/agent and ~/.codex — so a role need not copy in the skills its
-author relies on everywhere. Never their settings, hooks, MCP servers or extensions:
+author relies on everywhere. Except for DSH's explicit `dsh_profile: host-user`
+choice (`afkconvoy help team`), never their settings, hooks, MCP servers or extensions:
 the guard and orca's report stay the only hooks the fleet adds. A role's skill wins
 over one of theirs of the same name, and the brief, the role's rules, the team rules
 and the repo's own rules win over theirs; the brief says so. The cost: a role may
@@ -1454,8 +1466,12 @@ Whether a tick starts new workers on its host: not while the host is past a shar
 _Avoid_: throttling, backpressure
 
 **Host user's skills and rules**:
-The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. A role may say it for itself, whatever the team says: `reviewer: { dir: ./roles/reviewer, host_user: false }` in `roles`; a role named by its directory alone takes the team's. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. Never the user's settings, hooks or MCP servers.
+The skills and the rules the host's own user has for a harness, which a session they start by hand loads: a worker of a bound repo is given them beside its role's, unless its team file says `host_user: false`. A role may say it for itself, whatever the team says: `reviewer: { dir: ./roles/reviewer, host_user: false }` in `roles`; a role named by its directory alone takes the team's. Its role's skills win over them, and the brief, its role's rules, the team rules and the repo's own rules win over theirs. DSH alone may load those too when its role chooses the host user's DSH profile.
 _Avoid_: global rules, user config, personal skills
+
+**DSH profile**:
+What a DSH worker loads of bundles, plugins, MCP servers, patches, themes and settings: the fleet's own (`dsh_profile: fleet`, the default), or the host user's `dsh-tui` profile (`dsh_profile: host-user`). The team chooses for every role; a role may choose its own, independently of `host_user`, and both keep the guard and the role's limits.
+_Avoid_: provider profile, persona
 
 **Bound repo**:
 A repo whose config names a team. An unbound repo has no roles and one fixed path for every issue: one worker, then the landing train.

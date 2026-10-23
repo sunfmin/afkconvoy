@@ -392,6 +392,14 @@ WHAT TRIPS YOU UP
   its canonical skills ahead of these user roots. Dependency resolution uses
   your installed dsh-tui dependencies; its manifest and patches,
   and your home patches, MCP servers and plugins, are never loaded or edited.
+  A team or role may instead choose `dsh_profile: host-user` (independent of
+  host_user): DSH_HOME stays the host user's (default ~/.dsh), DSH_AGENTS_HOME
+  stays theirs (default ~/.agents), and dsh-tui loads their manifest, dependencies,
+  plugins, MCP servers, theme, settings and both profile and home patches.
+  This can differ across hosts and the profile may itself load user skills and
+  rules even with host_user: false. The fleet writes no file there: its plugin
+  stays in its cache and its --patch overlay is still last, after the role's
+  limits, with required guard dependencies. User settings cannot disable it.
   The fleet's plugin supplies role, repo and team rules, role skills before
   yours, and the stage's model as written. It asks `afkconvoy guard` before
   every tool call and reports running/idle, including interruption, to orca.

@@ -233,12 +233,12 @@ fn the_generated_line_uses_native_guard_dependencies_and_quotes_every_path() {
         "worker.mjs",
         r#"
 import { pathToFileURL } from 'node:url'
-const { apply } = await import(pathToFileURL(process.env.DSH_HOME + '/afkconvoy.mjs'))
+const { apply } = await import(pathToFileURL(process.env.AFKCONVOY_DSH_KEPT + '/afkconvoy.mjs'))
 apply({ on() {}, systemPrompt: { section() {} }, provide() {} })
 process.stdin.once('data', input => {
   console.log(JSON.stringify({ input: input.toString(), cwd: process.cwd(),
     harness: process.env.AFKCONVOY_HARNESS, stage: process.env.AFKCONVOY_STAGE,
-    model: process.env.AFKCONVOY_DSH_MODEL, args: process.argv.slice(2) }))
+    home: process.env.DSH_HOME, agents: process.env.DSH_AGENTS_HOME, permission: process.env.DSH_PERMISSION_MODE, model: process.env.AFKCONVOY_DSH_MODEL, args: process.argv.slice(2) }))
   process.exit(0)
 })
 "#,
@@ -251,6 +251,7 @@ process.stdin.once('data', input => {
         guard: "true",
         kept: kept.to_str().unwrap(),
         host_user: false,
+        dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
         shadowed: &[],
         told: Told::default(),
         facts: Facts {
@@ -294,12 +295,67 @@ process.stdin.once('data', input => {
         read["args"],
         serde_json::json!([
             "--patch",
+            kept.join("fleet.patch.yml"),
+            "--patch",
             role.join(".dsh/cordis.patch.yml"),
             "--patch",
             kept.join("afkconvoy.patch.yml"),
             project,
         ])
     );
+    // The host profile is loaded in place. No profile path is ever linked or
+    // written into: plugins, MCP servers and both patch layers stay its own.
+    let host = root.join("host user's DSH home");
+    let agents = root.join("host agents");
+    write(&host, "profiles/dsh-tui/package.json", "host manifest");
+    write(&host, "profiles/dsh-tui/cordis.patch.yml", "host profile patch");
+    write(&host, "cordis.patch.yml", "host home patch");
+    let host_start = Start { dsh_profile: afkconvoy_core::team::DshProfile::HostUser, ..start };
+    let host_line = Harness::Dsh.in_role(&launch, &host_start);
+    let output = Command::new("sh")
+        .args(["-c", &host_line])
+        .env("DSH_HOME", &host)
+        .env("DSH_AGENTS_HOME", &agents)
+        .env("DSH_PERMISSION_MODE", "host-setting")
+        .stdin(std::fs::File::open(role.join("CLAUDE.md")).unwrap())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(read["home"], host.to_str().unwrap());
+    assert_eq!(read["agents"], agents.to_str().unwrap());
+    assert_eq!(read["permission"], "host-setting");
+    assert_eq!(
+        read["args"],
+        serde_json::json!([
+            "--patch",
+            role.join(".dsh/cordis.patch.yml"),
+            "--patch",
+            kept.join("afkconvoy.patch.yml"),
+            project,
+        ])
+    );
+    for (file, text) in [
+        ("profiles/dsh-tui/package.json", "host manifest"),
+        ("profiles/dsh-tui/cordis.patch.yml", "host profile patch"),
+        ("cordis.patch.yml", "host home patch"),
+    ] {
+        assert_eq!(std::fs::read_to_string(host.join(file)).unwrap(), text);
+    }
+    // Default home paths are resolved in the launching shell, without a
+    // dependency on the fleet process's own environment.
+    let output = Command::new("sh")
+        .args(["-c", &host_line])
+        .env_remove("DSH_HOME")
+        .env_remove("DSH_AGENTS_HOME")
+        .env("HOME", &host)
+        .stdin(std::fs::File::open(role.join("CLAUDE.md")).unwrap())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(read["home"], host.join(".dsh").to_str().unwrap());
+    assert_eq!(read["agents"], host.join(".agents").to_str().unwrap());
     std::fs::remove_file(kept.join("afkconvoy.mjs")).unwrap();
     let output = run(&line);
     assert!(!output.status.success());
