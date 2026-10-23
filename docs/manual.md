@@ -1077,8 +1077,7 @@ None of it is fleet state: that is in GitHub and on the repo's remote.
 ## afkconvoy help humans
 
 ````text
-Every way the fleet stops for a human, and the command that answers each. A human is
-asked by exception, and nothing tells you so: you look.
+Every way the fleet stops for a human, and the command that answers each.
 ````
 
 ### WHERE TO LOOK
@@ -1089,10 +1088,9 @@ asked by exception, and nothing tells you so: you look.
 `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting
 more than an hour is a finding.
 
-An escalated issue also carries the escalate label (`ready-for-human` unless the
-team's file names another) in place of its flow label, and the comment of the
-escalation says why and ends with the same line. Run every command below in a
-checkout of the repo the issue is of.
+An escalated issue carries the escalate label (`ready-for-human` unless renamed)
+in place of its flow label. Its comment says why and ends with the line to answer.
+Run every command below in a checkout of the repo.
 ````
 
 ### AN ESCALATION
@@ -1118,9 +1116,8 @@ Every command a human runs to answer one, `<n>` the issue's number. A consult ma
 each, and any read-only command, the gate too; never commit, push or change the host.
 
     afkconvoy rule --issue <n> --text-file <file>
-        Rule on it, where it stopped: that stage runs again with your ruling in its
-        brief, and both rework counts start over — a consult's starts none over.
-        `afkconvoy rule --help`.
+        The stage runs again under your ruling; both rework counts start over
+        (a consult's starts none over). `afkconvoy rule --help`.
     afkconvoy send --issue <n> --stage <stage> --text-file <file>
         Put it at another stage, when the approach or workflow changed, or bring it
         back from a park. `afkconvoy send --help`.
