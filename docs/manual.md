@@ -613,9 +613,9 @@ humans`). `escalate: { to, do }` names a more senior role, on the default harnes
 where a stage names none, the stock consult, afkconvoy's own, is asked on the stage's
 harness — its one instruction is to decide as the human would. `{ to: human }` names
 none: a human, straight. A consult rules (`afkconvoy rule`: the stage runs again; on an
-`escalate` that is one more rework in total), sends the issue on, or lets it through.
-The same hand-off again goes to a human. The chain is one role long, and a consult
-writes no code: one that left a commit has failed.
+`escalate` that is one more rework in total), sends, closes, parks or lets it through.
+Close and park add no rework (`afkconvoy help humans` says how to bring a park back).
+The same hand-off again goes to a human. A consult writes no code.
 ````
 
 ### A STAGE BY: HUMAN
@@ -1090,34 +1090,29 @@ None of it is fleet state: that is in GitHub and on the repo's remote.
 ## afkconvoy help humans
 
 ````text
-Every way the fleet stops for a human, and the command that answers each. A human is
-asked by exception, and nothing tells you so: you look.
+Every way the fleet stops for a human, and the command that answers each.
 ````
 
 ### WHERE TO LOOK
 
 ````text
 `afkconvoy doctor` lists every open issue that waits for a human under
-`waiting_on_human`, each with why, since when, and `answer`: the line that answers
-it, the issue's number filled in. `afkconvoy plan` gives the same list, and the panel
-shows it as "With a human". One that has waited for more than an hour is a finding.
+`waiting_on_human`, with why, since when and `answer`: the line to run for that issue.
+`afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting
+more than an hour is a finding.
 
-An escalated issue also carries the escalate label (`ready-for-human` unless the
-team's file names another) in place of its flow label, and the comment of the
-escalation says why and ends with the same line. Run every command below in a
-checkout of the repo the issue is of.
+An escalated issue carries the escalate label (`ready-for-human` unless renamed)
+in place of its flow label. Its comment says why and ends with the line to answer.
+Run every command below in a checkout of the repo.
 ````
 
 ### AN ESCALATION
 
 ````text
-Something failed — a worker went silent and its nudge changed nothing, a stage
-ended with no valid verdict, a gate stayed red, a stage that may not write left a
-commit, a `blocked` will never clear — or a stage declared `escalate`. A consult was
-asked first, as you would be, and let it through: the stage's own, or afkconvoy's
-stock consult where it names none and in an unbound repo — unless the stage says
-`escalate: { to: human }` or the config `escalate_to: human`. The comment says which,
-and for an `escalate` gives the question, often with the options.
+A stage failed or declared `escalate`. Its consult — the stock consult where none
+is named, and in an unbound repo — was asked first and let it through, unless the
+stage says `escalate: { to: human }` or the config `escalate_to: human`. The comment
+says what failed or gives the question that needs your answer.
 
 For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and
 what failed it once fails it again. In an unbound repo there is no stage to run again:
@@ -1134,13 +1129,11 @@ Every command a human runs to answer one, `<n>` the issue's number. A consult ma
 each, and any read-only command, the gate too; never commit, push or change the host.
 
     afkconvoy rule --issue <n> --text-file <file>
-        Rule on it, where it stopped: that stage runs again with your ruling in its
-        brief, and both rework counts start over — a consult's starts none over.
-        `afkconvoy rule --help`.
+        The stage runs again under your ruling; both rework counts start over
+        (a consult's starts none over). `afkconvoy rule --help`.
     afkconvoy send --issue <n> --stage <stage> --text-file <file>
-        Put it at another stage of its workflow instead, whatever its stage records
-        say: when the approach changed, or the workflow changed under the issue and
-        a record names a stage that is gone. `afkconvoy send --help`.
+        Put it at another stage, when the approach or workflow changed, or bring it
+        back from a park. `afkconvoy send --help`.
     gh issue close <n> --comment <why>
         Nothing is left to do on it: the fleet leaves a closed issue alone.
     gh issue create --title <title> --body-file <file> --label <ready label>
@@ -1152,6 +1145,17 @@ each, and any read-only command, the gate too; never commit, push or change the 
         Record it as blocked by the issue whose database id is `<id>`.
     gh api -X DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>
         Remove that edge: one whose waiting would never end, say.
+````
+
+### PARKED FOR EVIDENCE
+
+````text
+A consult's close or park carries a reason and adds no rework. `plan` and `doctor`
+list parks under `waiting_on_human`. To bring one back in a bound repo, explicitly
+send it with new evidence or your reason (a plain comment does not bring it back):
+    afkconvoy send --issue <n> --stage <stage> --text-file <evidence-file>
+In an unbound repo, comment with the evidence, then restore its ready label:
+    gh issue edit <n> --add-label <ready label> --remove-label convoy:parked
 ````
 
 ### A TRIPPED BREAKER
@@ -1197,11 +1201,9 @@ raises one when the fault is one every issue shares; a human may too:
 
     afkconvoy lock --issue <n>
 
-A lock asks nothing of you while its issue is being worked: it lands as any issue
-does, and closing it ends the lock. It asks for you when nothing can work it — it
-has no flow label, or an open blocker — because the fleet then works nothing at
-all. `afkconvoy doctor` says so as a critical finding whose `fix` is the line to
-run. To end a lock raised by mistake, close its issue. `afkconvoy lock --help`.
+Closing a lock's issue ends it. A lock needs you when nothing can work its issue:
+it has no flow label or an open blocker. `afkconvoy doctor` gives a critical finding
+with a `fix` to run. Close a lock raised by mistake. `afkconvoy lock --help`.
 ````
 
 ### A PRECEDENT TO ACCEPT

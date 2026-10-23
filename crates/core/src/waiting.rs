@@ -56,6 +56,10 @@ pub enum Waits {
     Verdict { stage: String, verdicts: Vec<&'static str> },
     /// Its workflow has ended and it is still open: nothing closes it.
     Ended,
+    /// The consult waits for evidence and an explicit send.
+    Parked { stage: String },
+    /// An unbound issue returns when the ready label is restored.
+    ParkedUnbound { ready: String },
     /// It reports a failed run of this patrol, which is not run again while
     /// it is open.
     PatrolFailed { patrol: String },
@@ -92,6 +96,8 @@ impl Waits {
             Waits::Escalated(Back::Rule { stage }) => format!("escalated at {stage}"),
             Waits::Escalated(_) => "escalated".to_string(),
             Waits::Verdict { stage, .. } => format!("stage {stage} is by a human"),
+            Waits::ParkedUnbound { .. } => "parked for evidence".to_string(),
+            Waits::Parked { stage } => format!("parked for evidence at {stage}"),
             Waits::Ended => "its workflow has ended, and it is still open".to_string(),
             Waits::PatrolFailed { patrol } => {
                 format!("reports a failed run of the patrol `{patrol}`")
@@ -113,6 +119,7 @@ impl Waits {
                     "reports a failed run of the patrol `{patrol}`: waits to be closed"
                 ));
             }
+            Waits::Parked { .. } | Waits::ParkedUnbound { .. } => return Some(self.why()),
             Waits::Verdict { .. } | Waits::Ended => return None,
         };
         Some(format!("escalated: waits for {waits}"))
@@ -152,6 +159,14 @@ impl Waits {
                     line: line.fixed(" --text-file <file>").own(),
                 }];
             }
+            Waits::ParkedUnbound { ready } => WayOut {
+                what: "bring it back after recording new evidence".to_string(),
+                line: swap(issue, ready, crate::stock::PARKED_LABEL),
+            },
+            Waits::Parked { stage } => WayOut {
+                what: format!("bring it back with new evidence at {stage}"),
+                line: own("send", issue, " --stage <stage> --text-file <evidence-file>"),
+            },
             Waits::Ended => return vec![close(issue, "close it: nothing is left to do on it")],
             Waits::PatrolFailed { .. } => {
                 return vec![close(issue, "close it once you have looked: the patrol runs again")];
@@ -217,6 +232,9 @@ pub fn waits(
                 }
             }
             let position = read.place.position;
+            if let Position::ParkedForEvidence(stage) = position {
+                return Some(Waits::Parked { stage: stage.name.clone() });
+            }
             match position.stage() {
                 None => matches!(position, Position::Ended).then_some(Waits::Ended),
                 Some(stage) => Some(Waits::Verdict { stage: stage.name.clone(), verdicts }),

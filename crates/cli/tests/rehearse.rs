@@ -251,7 +251,7 @@ fn a_word_that_is_no_verdict_an_unknown_workflow_and_a_faulty_team_are_errors() 
     let args = ["rehearse", "--team", "acme/team"];
     let error = world.afk(&[&args[..], &["feature", "pass", "fail"]].concat()).error();
     assert!(
-        error.contains("pass, reject, blocked, already-satisfied, escalate, ruling"),
+        error.contains("pass, reject, blocked, already-satisfied, escalate, close, park, ruling"),
         "{error}"
     );
     let error = world.afk(&[&args[..], &["hotfix", "pass"]].concat()).error();

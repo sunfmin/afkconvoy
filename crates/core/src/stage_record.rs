@@ -549,6 +549,8 @@ pub enum Advance {
     /// Its stage declared `already-satisfied`: close the issue, if its
     /// branch holds no work.
     Close,
+    /// The consult closes with a reason, preserving any branch work.
+    ConsultClose,
     /// Its stage declared `blocked` by these issues: where they stand
     /// decides (`blocked::blocked_route`).
     Blocked(Vec<u64>),
@@ -571,6 +573,10 @@ pub fn advance(history: &History, records: &[StageRecord], claim: &str) -> Advan
         return if asked { Advance::AskAfter } else { Advance::HandOn };
     };
     match position {
+        Position::ParkedForEvidence(_) => Advance::HandOn,
+        Position::Ended if verdict.stated == Stated::Declared(Declared::Close) => {
+            Advance::ConsultClose
+        }
         Position::Parked(_) => Advance::Blocked(verdict.blocked_by.clone()),
         Position::Ended if verdict.stated == Stated::Declared(Declared::AlreadySatisfied) => {
             Advance::Close
