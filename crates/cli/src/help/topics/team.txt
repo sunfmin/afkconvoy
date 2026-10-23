@@ -90,7 +90,7 @@ THE TEAM RULES
                         under pi and codex its AGENTS.md, or CLAUDE.md where it has none
 
   Claude Code and pi load the three; the fleet names the other two to Codex.
-  The brief says where each is. What each is for: `afkconvoy help roles`.
+  What each is for, and where a sentence belongs: `afkconvoy help roles`.
 
 HOW A REPO IS BOUND TO IT
 

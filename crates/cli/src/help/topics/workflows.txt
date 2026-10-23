@@ -61,11 +61,9 @@ VERDICTS, AND WHERE EACH LEADS
   alone from any stage must come to `land` or `done`, and every stage must be reached
   from the first: a loop back is made with `reject` only.
 
-  A stage that finds its issue too large splits it: it opens issues, takes each in
-  (`afkconvoy intake --help`) and declares `blocked` on all of them. When they have all
-  closed, the stage runs again and judges the whole. The team file may say
-  `split: false` to leave splitting out of every stage brief (`afkconvoy help team`);
-  true or left unsaid keeps the procedure. Parking on blockers still works.
+  A stage may split its issue: open issues, take each in, then declare `blocked` on
+  them. When they close, it judges the whole. The team file's `split` key may be false
+  to omit this procedure from briefs (`afkconvoy help team`); true is the default.
 
   A stage that may commit and finds its gate red for a defect outside its issue — what
   the gate merged in is red the same way gated alone — opens that defect's issue
