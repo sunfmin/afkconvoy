@@ -184,6 +184,7 @@ fn real_pi_started_in_a_role_sees_the_role_and_the_project_and_nothing_of_the_us
         guard: &format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy")),
         kept: &text(&kept),
         host_user: false,
+        dsh_profile: afkconvoy_core::team::DshProfile::Fleet,
         shadowed: &[],
         told: Told::default(),
         facts: Facts {

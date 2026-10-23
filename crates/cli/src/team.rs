@@ -774,7 +774,7 @@ fn answer(loaded: &Loaded) -> Value {
         .iter()
         .map(|role| {
             json!({"name": role.name, "repo": role.dir.repo, "path": role.dir.path(),
-                "commit": role.commit, "host_user": role.host_user, "skills": role.skills,
+                "commit": role.commit, "host_user": role.host_user, "dsh_profile": role.dsh_profile.key(), "skills": role.skills,
                 "above": role.above, "limits": role.limits})
         })
         .collect();
@@ -785,7 +785,7 @@ fn answer(loaded: &Loaded) -> Value {
         "files": loaded.files,
         "escalate_label": team.escalate_label,
         "rules": team.rules,
-        "host_user": team.host_user,
+        "host_user": team.host_user, "dsh_profile": team.dsh_profile.key(),
         "split": team.split,
         "harness": loaded.harness,
         "roles": roles,

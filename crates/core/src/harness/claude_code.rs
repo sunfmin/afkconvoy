@@ -336,6 +336,7 @@ mod tests {
             guard: "/bin/afkconvoy guard",
             kept: "/cache/harness/claude-code",
             host_user: false,
+            dsh_profile: crate::team::DshProfile::Fleet,
             shadowed: &[],
             told: Told::default(),
             facts: Facts {

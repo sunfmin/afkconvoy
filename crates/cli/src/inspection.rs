@@ -255,6 +255,7 @@ enum As {
         team_copy: Copy,
         team_rules: Option<String>,
         host_user: bool,
+        dsh_profile: afkconvoy_core::team::DshProfile,
         escalate_label: String,
     },
 }
@@ -281,6 +282,7 @@ fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
         team_copy: kept.copy.clone(),
         team_rules: kept.rules(),
         host_user: kept.team.host_user,
+        dsh_profile: kept.team.dsh_profile,
         escalate_label: kept.team.escalate_label.clone(),
     })
 }
@@ -300,13 +302,20 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         .and_then(|(labels, records)| Some((workflow_of(&kept.team, labels).ok()?, records)));
     let place = workflow.map(|(workflow, records)| history(workflow, records).place);
     let stage = place.as_ref().and_then(|place| place.position.stage());
-    let (harness, role, skill, role_copy, host_user) = match inspector(stage) {
+    let (harness, role, skill, role_copy, host_user, dsh_profile) = match inspector(stage) {
         None => return Ok(None),
         // A consult a stage names runs on the repo's default harness.
         Some(Who::Role(work)) => {
             let role = kept.team.role_of(work);
             let copy = kept.role(role, bound.harness)?;
-            (bound.harness, role.name.clone(), work.skill.clone(), copy, role.host_user)
+            (
+                bound.harness,
+                role.name.clone(),
+                work.skill.clone(),
+                copy,
+                role.host_user,
+                role.dsh_profile,
+            )
         }
         // The stock consult runs on the stage's.
         Some(Who::Stock) => (
@@ -317,6 +326,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
             stock::SKILL.to_string(),
             copies.stock()?,
             kept.team.host_user,
+            kept.team.dsh_profile,
         ),
     };
     Ok(Some(As::Bound {
@@ -327,6 +337,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         team_copy: kept.copy.clone(),
         team_rules: kept.rules(),
         host_user,
+        dsh_profile,
         escalate_label: kept.team.escalate_label.clone(),
     }))
 }
@@ -667,6 +678,7 @@ fn command(
         team_copy,
         team_rules,
         host_user,
+        dsh_profile,
         escalate_label,
     } = who
     else {
@@ -682,6 +694,7 @@ fn command(
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &kept,
         host_user: *host_user,
+        dsh_profile: *dsh_profile,
         shadowed: &shadowed,
         told: told.told(),
         facts: Facts {

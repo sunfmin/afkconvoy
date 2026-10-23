@@ -13,14 +13,7 @@
   config:
     providerName: afkconvoy-role
     includeDefaultRoots: false
-    customSkillDirs: !!js "[process.cwd() + '/.claude/skills', process.env.DSH_HOME + '/host-skills', process.env.DSH_HOME + '/host-agents-skills']"
-- id: approval
-  config:
-    policy: never
-- id: sandbox-policy
-  config:
-    mode: danger-full-access
-    workspaceRoot: !!js process.env.AFKCONVOY_WORKTREE
+    customSkillDirs: !!js "[process.cwd() + '/.claude/skills', (process.env.AFKCONVOY_DSH_KEPT || process.env.DSH_HOME) + '/host-skills', (process.env.AFKCONVOY_DSH_KEPT || process.env.DSH_HOME) + '/host-agents-skills']"
 - insert:
     - id: afkconvoy
       name: '@AFKCONVOY_DSH_PLUGIN@'
