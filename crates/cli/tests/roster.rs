@@ -199,3 +199,106 @@ fn a_role_whose_range_is_empty_or_holds_a_harness_it_has_no_limits_for_refuses_t
     );
     assert!(error.contains("the roster allows it the host kit whole"), "{error}");
 }
+
+/// What the model a roster's draft is asked of answers: a strength for each
+/// model of the host kit but pi's a/slow, and guidance for `dev`.
+const DRAFTED: &str = concat!(
+    "Here is the draft:\n",
+    "{\"harness\": \"claude-code\", \"model\": \"opus\", \"good_at\": \"hard, wide work\"}\n",
+    "{\"harness\": \"claude-code\", \"model\": \"haiku\", \"good_at\": \"reviews\"}\n",
+    "{\"harness\": \"pi\", \"model\": \"a/fast\", \"good_at\": \"small fixes\"}\n",
+    "{\"harness\": \"codex\", \"model\": null, \"good_at\": \"refactors\"}\n",
+    "{\"harness\": \"dsh\", \"good_at\": \"cheap work\"}\n",
+    "{\"role\": \"dev\", \"cast\": \"Small fixes on pi; the rest on opus.\"}\n",
+    "{\"role\": \"reviewer\", \"cast\": \"Haiku unless the change is wide.\"}\n",
+);
+
+#[test]
+fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_committed_by_nobody() {
+    let world = bound("```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n");
+    // `reviewer` holds limits for Claude Code alone.
+    let hooked = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}}"#;
+    commit(&world.root.join("github/acme/reviewer"), ".claude/settings.json", hooked);
+    world.drafter_answers(DRAFTED);
+    let team = world.root.join("github/acme/team");
+    let dir = team.to_str().unwrap();
+    let head = git(&team, &["rev-parse", "HEAD"]);
+    let draft = ["draft", "--dir", dir, "--team", "acme/team"];
+    let answer = world.afk(&draft);
+    let drafted = answer.json.clone();
+    assert_eq!(answer.code, 0, "{drafted}");
+    assert_eq!(drafted["written"], true);
+    assert_eq!(drafted["replaces"], false);
+    assert_eq!(drafted["drafted_by"], json!({"harness": "claude-code", "model": "opus"}));
+    assert_eq!(drafted["unsaid"], json!(["what pi a/slow is good at"]));
+    assert!(answer.stderr.contains("the draft says nothing of what pi a/slow is good at"));
+
+    // The host kit's first was asked, of every role and every model in order.
+    let asked = world.drafter_asked();
+    for given in [
+        "- claude-code opus\n- claude-code haiku\n- pi a/fast\n- pi a/slow\n- codex\n- dsh\n",
+        "- reviewer: the stage `look` of the workflow `audit`, performing the skill `review`; \
+         the stage `review` of the workflow `feature`, performing the skill `review`. It may \
+         run: claude-code opus, claude-code haiku.\n",
+    ] {
+        assert!(asked.contains(given), "{given:?}\n{asked}");
+    }
+    let sent = world.shell_asked();
+    assert!(sent.iter().any(|line| line.contains("--model 'opus' --print 'You are")), "{sent:?}");
+
+    // Written into the working tree, and nothing committed.
+    let written = std::fs::read_to_string(team.join("team.md")).unwrap();
+    let roster = concat!(
+        "roster:\n",
+        "  dev:\n",
+        "    cast: \"Small fixes on pi; the rest on opus.\"\n",
+        "    run:\n",
+        "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
+        "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
+        "      - { harness: pi, model: \"a/fast\", good_at: \"small fixes\" }\n",
+        "      - { harness: pi, model: \"a/slow\" }\n",
+        "      - { harness: codex, good_at: \"refactors\" }\n",
+        "      - { harness: dsh, good_at: \"cheap work\" }\n",
+        "  reviewer:\n",
+        "    cast: \"Haiku unless the change is wide.\"\n",
+        "    run:\n",
+        "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
+        "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
+        "    # left out: pi, codex, dsh, which the role holds no limits for\n",
+    );
+    assert_eq!(
+        written,
+        format!("```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n{roster}```\n")
+    );
+    assert_eq!(drafted["roster"], roster);
+    assert_eq!(git(&team, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git(&team, &["status", "--porcelain"]).trim(), "M team.md");
+
+    // The draft passes `check` as written.
+    let checked = world.afk(&["check", "--dir", dir, "--team", "acme/team"]).ok();
+    assert_eq!(checked["roles"][0]["roster"]["run"].as_array().unwrap().len(), 6, "{checked}");
+    assert_eq!(checked["roles"][1]["roster"]["run"].as_array().unwrap().len(), 2, "{checked}");
+
+    // Where a roster is, it says what it would change and writes nothing
+    // unconfirmed; `--yes` confirms.
+    world.drafter_answers(&DRAFTED.replace("small fixes", "one-line fixes"));
+    let asked_again = world.afk(&draft);
+    let unconfirmed = asked_again.json.clone();
+    assert_eq!(asked_again.code, 0, "{unconfirmed}");
+    assert_eq!((&unconfirmed["replaces"], &unconfirmed["written"]), (&json!(true), &json!(false)));
+    let line = "      - { harness: pi, model: \"a/fast\", good_at: \"small fixes\" }";
+    assert_eq!(unconfirmed["removed"], json!([line]));
+    assert_eq!(unconfirmed["added"], json!([line.replace("small fixes", "one-line fixes")]));
+    assert!(asked_again.stderr.contains(&format!("- {line}\n")), "{}", asked_again.stderr);
+    assert!(asked_again.stderr.contains("nothing written"), "{}", asked_again.stderr);
+    assert_eq!(std::fs::read_to_string(team.join("team.md")).unwrap(), written);
+    let confirmed = world.afk(&[&draft[..], &["--yes"]].concat()).ok();
+    assert_eq!(confirmed["written"], true);
+    assert!(std::fs::read_to_string(team.join("team.md")).unwrap().contains("one-line fixes"));
+    // The same draft again changes nothing, and writes nothing.
+    let same = world.afk(&draft).ok();
+    assert_eq!(
+        (&same["written"], &same["removed"], &same["added"]),
+        (&json!(false), &json!([]), &json!([]))
+    );
+}
