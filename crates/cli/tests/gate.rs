@@ -169,9 +169,7 @@ fn a_record_stands_for_the_same_tree_and_command_for_one_day() {
 fn a_gate_run_in_a_worktree_reads_the_config_committed_there() {
     let (world, _) = gated();
     world.issue(7, &["ready-for-agent"]);
-    let started = world
-        .afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--worker-command", "agent"])
-        .ok();
+    let started = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha"]).ok();
     let worktree = std::path::Path::new(started["worktree"].as_str().unwrap());
     let answer = world.afk_in(worktree, &["gate"]).ok();
     assert_eq!(answer["recorded"], true, "{answer}");

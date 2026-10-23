@@ -12,7 +12,7 @@ const LEASE: u64 = 4500;
 const DAY: u64 = 86_400;
 
 /// A `run` with nothing fixed: who it runs as, and when, is each test's.
-const RUN: [&str; 5] = ["run", "--host", "h1", "--worker-command", "agent"];
+const RUN: [&str; 3] = ["run", "--host", "h1"];
 
 /// Starts `run`, waits for its first tick to end — it sleeps, as a fleet that
 /// is running does — and sends it `signal` → the lines it printed but for

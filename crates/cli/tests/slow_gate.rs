@@ -49,7 +49,7 @@ fn land_all(world: &World, host: &str, seconds: &[u64], from: u64) -> Vec<String
 
 fn tick_as(world: &World, instance: &str, host: &str, now: &str) -> Value {
     let args = ["tick", "--instance", instance, "--host", host, "--now", now];
-    world.afk(&[&args[..], &["--worker-command", "agent"]].concat()).ok()
+    world.afk(&[&args[..], &[]].concat()).ok()
 }
 
 /// What the tick's `slow_gate` step came to; `None`: it made none.

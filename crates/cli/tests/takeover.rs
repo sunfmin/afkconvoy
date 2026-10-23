@@ -11,17 +11,7 @@ const LATER: u64 = 1000 + LEASE + 1;
 
 fn tick_as(world: &World, instance: &str, host: &str, now: u64) -> Value {
     let now = now.to_string();
-    let args = [
-        "tick",
-        "--instance",
-        instance,
-        "--host",
-        host,
-        "--now",
-        &now,
-        "--worker-command",
-        "agent",
-    ];
+    let args = ["tick", "--instance", instance, "--host", host, "--now", &now];
     world.afk(&args).ok()
 }
 
@@ -128,7 +118,7 @@ fn a_live_peers_claim_on_another_host_is_never_touched_unattended() {
         assert_eq!(world.claims(), [(3, "peer".to_string()), (8, "peer".to_string())]);
     }
     // nor at a start on another host
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let args = ["run", "--instance", "alpha", "--host", "h1"];
     let (lines, _) = world
         .afk_lines(&[&args[..], &["--second-ms", "0", "--ticks", "1", "--now", "1090"]].concat());
     assert!(!lines.iter().any(|line| line.starts_with("start:")), "{lines:?}");
@@ -171,7 +161,7 @@ fn a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat() {
     }
     claimed(&world, 5, "peer", "h2", 1000);
 
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let args = ["run", "--instance", "alpha", "--host", "h1"];
     let (lines, _) = world
         .afk_lines(&[&args[..], &["--second-ms", "0", "--ticks", "2", "--now", "1060"]].concat());
     assert_eq!(

@@ -49,6 +49,7 @@ pub mod inspection;
 pub mod intake;
 pub mod judge;
 pub mod kept;
+mod kit;
 pub mod landing;
 pub mod launch;
 pub mod lock;
@@ -132,6 +133,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect and edit this host's worker launch commands
+    #[command(after_long_help = include_str!("help/kit.txt"))]
+    Kit,
     /// Print the repo's config as JSON, defaults filled
     #[command(after_long_help = include_str!("help/config.txt"))]
     Config {
@@ -674,13 +678,6 @@ impl TextArgs {
 /// How a command that starts a worker starts it.
 #[derive(clap::Args)]
 struct AgentArgs {
-    /// The worker launch command of the default harness, handed to orca as it is — in a
-    /// bound repo, with what starts a worker in its role added — or, as
-    /// `<harness>=<command>`, that of one harness; once for each [default: each harness's
-    /// stock one — with no ANTHROPIC_BASE_URL, `claude --dangerously-skip-permissions`
-    /// with the warning of that mode answered; with one, asked for]
-    #[arg(long, value_name = "[HARNESS=]COMMAND")]
-    worker_command: Vec<String>,
     /// Seconds an agent is given to be ready for its prompt
     #[arg(long, default_value_t = 120, hide = true)]
     ready_timeout: u64,
@@ -848,11 +845,11 @@ pub(crate) fn this_host() -> String {
 }
 
 impl AgentArgs {
-    /// Reads what `--worker-command` said (`Launches::new`), with no probe:
+    /// Reads this host's host kit (`Launches::new`), with no probe:
     /// the one worker a command started this way starts is refused where its
     /// harness's command resolves to nothing (`Agent::command`).
     fn agent(self) -> anyhow::Result<Agent> {
-        let launches = Launches::new(&self.worker_command, true)?;
+        let launches = Launches::new(true)?;
         Ok(Agent { launches, ready_timeout: self.ready_timeout })
     }
 
@@ -883,6 +880,15 @@ impl AgentArgs {
 /// harness that asks it, in that harness's way: for Claude Code, a hook's,
 /// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
+    let args: Vec<OsString> = args.into_iter().collect();
+    if args.iter().any(|arg| {
+        arg == "--worker-command" || arg.to_string_lossy().starts_with("--worker-command=")
+    }) {
+        return fail(
+            2,
+            "--worker-command is gone: run `afkconvoy kit` to set this host's worker launch commands",
+        );
+    }
     let parsed =
         cli().try_get_matches_from(args).and_then(|matches| Cli::from_arg_matches(&matches));
     let cli = match parsed {
@@ -1008,7 +1014,8 @@ impl Command {
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
             Command::Wake => Acting::new("wake").on_own_issue(),
             Command::Tick { who, .. } => as_who("tick", who),
-            Command::Config { .. }
+            Command::Kit
+            | Command::Config { .. }
             | Command::Check { .. }
             | Command::Scaffold { .. }
             | Command::Flows
@@ -1031,6 +1038,7 @@ impl Command {
 fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
+        Command::Kit => kit::configure(),
         Command::Config { file } => {
             let file = match file {
                 Some(file) => file,
@@ -1079,6 +1087,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
             }
             plan["admission"] = admission.json();
+            plan["host_kit"] = kit::show();
             Ok(plan)
         }
         Command::Run {
@@ -1111,6 +1120,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 written: hot_written.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
             });
             let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after, hot };
+            kit::ensure()?;
             let agent = agent.start(now, false)?;
             tick::run(&mut me, &agent, &pacing, panel, move || fixed_now.unwrap_or_else(clock))
         }

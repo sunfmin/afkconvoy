@@ -91,6 +91,10 @@ impl World {
             "comments": {}, "labels": ["ready-for-agent"], "calls": []}));
         world.write_orca(&json!({"repos": [{"id": "repo-1", "path": world.clone}],
             "root": world.root.join("wt"), "worktrees": [], "terminals": [], "calls": []}));
+        world.kit_command("claude-code", "agent");
+        world.kit_command("pi", afkconvoy_core::harness::Harness::Pi.stock());
+        world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+        world.kit_command("dsh", afkconvoy_core::harness::Harness::Dsh.stock());
         world
     }
 
@@ -109,6 +113,7 @@ impl World {
             .env("CONVOY_FAKE_ORCA", &self.orca_file)
             .env("SHELL", self.bin.join("shell"))
             .env("XDG_CACHE_HOME", self.cache())
+            .env_remove("XDG_CONFIG_HOME")
             .env("HOME", self.home())
             .envs(GIT_ENV)
             // No checkout above the world is one of its: a test's directory
@@ -131,6 +136,22 @@ impl World {
     /// runs the tests is read. It holds nothing but what a test puts there.
     pub fn home(&self) -> PathBuf {
         self.root.join("home")
+    }
+
+    pub fn kit_path(&self) -> PathBuf {
+        self.home().join(".config/afkconvoy/kit.json")
+    }
+
+    /// Set a host command directly, as the terminal editor would save it.
+    pub fn kit_command(&self, harness: &str, command: &str) {
+        let file = self.kit_path();
+        let mut kit = std::fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or_else(|| json!({"commands": {}}));
+        kit["commands"][harness] = json!(command);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, serde_json::to_vec(&kit).unwrap()).unwrap();
     }
 
     /// Runs the real CLI in the fleet's checkout.
@@ -760,7 +781,6 @@ impl World {
             .command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone)
             .arg("run")
             .args(args)
-            .args(["--worker-command", "agent"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()

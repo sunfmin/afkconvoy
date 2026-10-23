@@ -399,8 +399,10 @@ fn a_start_refuses_a_launch_command_that_does_not_take_the_flags() {
     }
     // A command that does not answer at all is refused too, in its own words.
     world.shell_help(None);
-    let refused =
-        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--worker-command", "agent -x"]);
+    let refused = {
+        world.kit_command("claude-code", "agent -x");
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1"])
+    };
     let refused = refused.error();
     assert!(refused.contains("\"agent -x\""), "{refused}");
     assert!(refused.contains("`agent -x --help` failed in a login shell"), "{refused}");
@@ -463,8 +465,10 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     // One that resolves to nothing, given for the harness by its key.
     world.shell_help(Some("--add-dir --setting-sources --settings --model"));
     world.shell_knows("ckim", None);
-    let refused =
-        world.afk(&[&tick[..], &["--worker-command", "claude-code=ckim --yolo"]].concat());
+    let refused = {
+        world.kit_command("claude-code", "ckim --yolo");
+        world.afk(&tick)
+    };
     let refused = refused.error();
     assert!(refused.contains("\"ckim\" resolves to nothing in a login shell"), "{refused}");
     assert!(
@@ -476,7 +480,11 @@ fn a_start_checks_every_harness_it_could_be_asked_for_and_names_what_calls_for_e
     assert_eq!(world.claims(), []);
     assert_eq!(world.orca()["terminals"], json!([]));
     // …and with one that can, the worker of the stage is started with it.
-    world.afk(&[&tick[..], &["--worker-command", "claude-code=agent --fast"]].concat()).ok();
+    {
+        world.kit_command("claude-code", "agent --fast");
+        world.afk(&tick)
+    }
+    .ok();
     let command = open_terminals(&world, &worktree(&world, 7))[0]["command"].clone();
     assert!(command.as_str().unwrap().contains(" && agent --fast --add-dir "), "{command}");
 }
@@ -488,7 +496,8 @@ fn an_unbound_repo_s_launch_command_is_still_passed_to_orca_exactly_as_given() {
     // It need take no flag at all: it is never asked.
     world.shell_help(None);
     let passed = "agent  --fast ; true ";
-    let now = ["--now", "1000", "--worker-command", passed];
+    world.kit_command("claude-code", passed);
+    let now = ["--now", "1000"];
     world.afk(&[&["tick", "--instance", "alpha", "--host", "h1"][..], &now].concat()).ok();
     assert_eq!(open_terminals(&world, &worktree(&world, 7))[0]["command"], passed);
     let asked = world.shell_asked();

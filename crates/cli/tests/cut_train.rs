@@ -12,8 +12,7 @@ use common::{BASE, World, commit, git};
 use serde_json::{Value, json};
 
 fn tick(world: &World, now: &str) -> Value {
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", now];
     world.afk(&args).ok()
 }
 
@@ -134,8 +133,6 @@ fn an_idle_train_whose_worktree_outgrew_its_build_has_it_cut_again_and_the_log_s
         "1270",
         "--second-ms",
         "0",
-        "--worker-command",
-        "agent",
     ]);
     let line = lines.iter().find(|line| line.contains("cut the train's worktree again"));
     let line = line.unwrap_or_else(|| panic!("{lines:#?} {ticked}"));
@@ -233,8 +230,6 @@ fn a_worktree_with_no_fresh_build_past_the_floor_is_cut_once_and_then_follows_th
         "1270",
         "--second-ms",
         "0",
-        "--worker-command",
-        "agent",
     ]);
     let line = lines.iter().find(|line| line.contains("cut the train's worktree again"));
     let line = line.unwrap_or_else(|| panic!("{lines:#?}"));

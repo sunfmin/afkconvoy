@@ -99,27 +99,11 @@ WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start no
   the remote rejects the fleet's refs under both
       The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be
       kept. A push rule of the remote's is what refuses: lift it for one of the two.
-  --worker-command was given twice for the harness
-      The bare form is the default harness's. Give each harness one command.
+  the host kit has no worker launch command
+      Run `afkconvoy kit` at a terminal to add the harness and confirm its command.
+  cannot read the host kit
+      Run `afkconvoy kit` at a terminal on this host before starting the fleet.
+  --worker-command is gone
+      Run `afkconvoy kit` to edit this host's worker launch commands.
   is no harness
-      `--worker-command <name>=<command>` named a harness there is none of.
-  this fleet runs on a custom provider
-      A worker's shell inherits nothing of yours, and no terminal is here to ask on
-      what starts one. Say it: `--worker-command <harness>=<command>`.
-
-WHAT NEITHER SAYS
-
-  An issue is not worked
-      `afkconvoy plan` has it under `excluded`, with why. Remove what the reason names.
-  A changed role or team did not reach a worker
-      It is not pushed to its default branch, or the stage had already started.
-  The labels were moved back, and the issue escalated again
-      A label is not where an issue is: `afkconvoy help humans`.
-  A stage's verdict counted for nothing
-      Its record names another stage than its claim was for. `afkconvoy show --issue <n>`
-      says how each record was read; `afkconvoy send` puts the issue where it belongs.
-  Another host's fleet died
-      Its claims go stale by themselves and are taken. Or: `afkconvoy takeover --help`.
-  Everything must stop now
-      Kill `run`, then close the workers' terminals in orca. Every issue keeps its
-      labels and stage records: a later `run` goes on from where each one was.
+      The harness name is unknown: use claude-code, pi, codex or dsh.

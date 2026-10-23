@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 const COMMAND: &str = "ckimi --flag 'quoted arg'";
 
 fn dispatch(world: &World, issue: &str) -> common::Answer {
+    world.kit_command("claude-code", COMMAND);
     world.afk(&[
         "dispatch",
         "--issue",
@@ -18,8 +19,6 @@ fn dispatch(world: &World, issue: &str) -> common::Answer {
         "h1",
         "--now",
         "1000",
-        "--worker-command",
-        COMMAND,
     ])
 }
 
@@ -299,7 +298,11 @@ fn a_blocker_added_after_the_rebuild_gives_the_slot_to_the_next_frontier_issue()
     assert_eq!(dependencies.count(), 0, "plan reads nothing more: {read:?}");
 
     let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
-    let ticked = world.afk(&[&args[..], &["--worker-command", COMMAND]].concat()).ok();
+    let ticked = {
+        world.kit_command("claude-code", COMMAND);
+        world.afk(&args)
+    }
+    .ok();
     let did = ticked["did"].as_array().unwrap();
     let dispatches: Vec<&Value> = did.iter().filter(|step| step["do"] == "dispatch").collect();
     assert_eq!(
@@ -331,18 +334,6 @@ fn a_stale_dependency_summary_does_not_hold_a_closed_blockers_issue_out_of_the_f
     });
     let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
     assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
-    let ticked = world
-        .afk(&[
-            "tick",
-            "--instance",
-            "alpha",
-            "--host",
-            "h1",
-            "--now",
-            "1000",
-            "--worker-command",
-            COMMAND,
-        ])
-        .ok();
+    let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"]).ok();
     assert_eq!(world.claims(), [(7, "alpha".to_string())], "{ticked}");
 }

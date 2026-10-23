@@ -976,10 +976,9 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
 /// `run` here was given as its worker launch commands, as its log has them
 /// (`read_log`); with none to say, each is the one a `run` started now would
 /// use. No human is asked.
-fn read_host(config: Option<&Config>, started_with: Option<&[String]>) -> Host {
-    let said = started_with.and_then(|given| Launches::new(given, false).ok());
-    let of_run = said.is_some();
-    let launches = said.unwrap_or_else(Launches::foreseen);
+fn read_host(config: Option<&Config>, _started_with: Option<&[String]>) -> Host {
+    let of_run = false;
+    let launches = Launches::foreseen();
     let default = launches.default();
     let looked = tools::look(launches.of(default).ok().flatten());
     // An unbound repo knows of no harness: nothing calls for its one command's.
@@ -1264,12 +1263,13 @@ fn host_json(host: &Host) -> Value {
     };
     json!({
         "tools": host.looked_for().map(|(looked, _)| tool(looked)).collect::<Vec<_>>(),
+        "host_kit": crate::kit::show(),
         "worker_commands": host.launches.iter().map(|Launch { checked, of_run }| json!({
             // An unbound repo knows of no harness: nothing calls for one.
             "harness": (!checked.callers.is_empty()).then_some(checked.harness),
             "called_for_by": checked.callers,
             "command": checked.command,
-            "from": if *of_run { "run" } else { "default" },
+            "from": if *of_run { "run" } else { "host_kit" },
             "starts_a_worker": checked.fault.is_none(),
             "takes_role_flags": checked.flags_fault.is_none(),
         })).collect::<Vec<_>>(),

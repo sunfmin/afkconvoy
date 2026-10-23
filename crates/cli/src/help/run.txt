@@ -222,8 +222,7 @@ WHAT IT ANSWERS
   not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the
   fleet needs is missing or logged out, or orca is not running or does not know this
   checkout (the error names each, with the line to run);
-  the repo fails the startup probe; the config cannot be read; `--worker-command`
-  names no harness, or one harness twice; the worker launch command of a harness the
+  the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the
   fleet could be asked for resolves to nothing, or — in a bound repo — does not take
   the flags that start a worker in its role.
 
@@ -246,21 +245,14 @@ WHAT TRIPS YOU UP
   - A second `run` on this host for this repo takes the first one's claims at its start.
   - The panel is served to this host only, and shows a tick, not this second: between
     two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
-  - With ANTHROPIC_BASE_URL set and no terminal it needs `--worker-command`.
-  - `--worker-command` has two forms, and is given once for each harness.
-    `--worker-command <command>` is the worker launch command of the default harness:
-    the one the repo's config names, Claude Code where it names none. A change of the
-    config's `harness` moves only workers started after it; to move running work onto
-    another harness — and every worker this host starts for the repo from then on —
-    run `afkconvoy switch --instance <id> --harness <key> --all` (`afkconvoy switch
-    --help`).
-    `--worker-command <harness>=<command>` is that of one harness, by its key
-    (`claude-code`, `pi`, `codex`, `dsh`). A value is the second form when its first word holds an
-    `=`. A harness given none is started with its stock command: Claude Code with
-    `claude --dangerously-skip-permissions --settings
-    '{"skipDangerousModePermissionPrompt":true}'`, pi with `pi`, Codex with
-    `codex --dangerously-bypass-approvals-and-sandbox`. The setting answers the
-    warning Claude Code opens with in that mode: nobody is at a worker's terminal to.
+  - Every worker launch command comes from the host kit: run `afkconvoy kit` to
+    inspect or edit it. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or
+    $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed.
+    `--worker-command` is gone. With no kit, `run` offers the same terminal setup
+    as `kit`, and writes only on confirmation. Without a terminal it refuses,
+    saying to run `afkconvoy kit`. A harness absent from the kit has no implicit
+    stock command. Harness selection still follows a switch, a stage or patrol,
+    then the repo's config.
   - Every worker is started under `nice` — as fast as before on a host with nothing else
     to do, and giving way to you and to the gate when it is busy — with its own
     `TMPDIR`: `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it.
@@ -380,7 +372,7 @@ WHAT TRIPS YOU UP
 
   A DeepSeek Harness worker (`harness: dsh`) runs interactive `dsh-tui`, with
   `dsh` on PATH too. The stock command is `dsh-tui`; a host may name
-  `--worker-command dsh=<command>`, which must accept leading `--patch`.
+  the `dsh` command in `afkconvoy kit`, which must accept leading `--patch`.
   It starts in its role's copy, with the stage facts and AFKCONVOY_HARNESS=dsh,
   DSH_HOME set to harness/dsh-host-user under the fleet's cache (harness/dsh
   with host_user: false), and the issue's worktree as the TUI's path argument.

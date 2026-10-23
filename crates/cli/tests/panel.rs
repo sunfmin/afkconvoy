@@ -33,7 +33,7 @@ fn afk(world: &World, command: &[&str], now: u64) {
 }
 
 fn tick(world: &World, now: u64) {
-    let who = ["tick", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let who = ["tick", "--instance", "alpha", "--host", "h1"];
     afk(world, &who, now);
 }
 
@@ -305,7 +305,7 @@ fn get(port: u16, path: &str) -> String {
 fn a_running_fleet_serves_its_panel_and_brings_it_up_to_date_after_each_tick() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"];
+    let args = ["run", "--instance", "alpha", "--host", "h1"];
     let mut run = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args)
@@ -358,7 +358,7 @@ struct Running {
 fn run(world: &World, more: &[&str]) -> Running {
     let mut child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["run", "--instance", "alpha", "--host", "h1", "--worker-command", "agent"])
+        .args(["run", "--instance", "alpha", "--host", "h1"])
         .args(more)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

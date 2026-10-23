@@ -9,14 +9,13 @@ const CODEX: &str = "codex --dangerously-bypass-approvals-and-sandbox";
 
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
-    let args =
-        ["tick", "--instance", "alpha", "--host", "h1", "--now", &now, "--worker-command", "agent"];
+    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];
     world.afk(&args).ok()
 }
 
 fn switch(world: &World, now: &str, rest: &[&str]) -> common::Answer {
     let args = ["switch", "--instance", "alpha", "--host", "h1", "--now", now];
-    world.afk(&[&args[..], rest, &["--worker-command", "agent"]].concat())
+    world.afk(&[&args[..], rest, &[]].concat())
 }
 
 fn worktree(world: &World, issue: u64) -> PathBuf {

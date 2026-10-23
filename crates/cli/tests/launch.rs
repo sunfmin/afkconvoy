@@ -19,7 +19,22 @@ fn answer(world: &World, args: &[&str], wrapped: bool) -> Answer {
     if wrapped {
         command.env("ANTHROPIC_BASE_URL", PROVIDER).env("ANTHROPIC_AUTH_TOKEN", SECRET);
     }
-    let out = command.args(args).output().unwrap();
+    let mut actual = vec![];
+    let mut values = args.iter();
+    while let Some(arg) = values.next() {
+        if *arg == "--worker-command" {
+            let value = values.next().unwrap();
+            let (harness, command) = value
+                .split_once('=')
+                .filter(|(name, _)| !name.contains(char::is_whitespace))
+                .unwrap_or(("claude-code", value));
+            world.kit_command(harness, command);
+        } else {
+            actual.push(*arg);
+        }
+    }
+    let out = command.args(actual).output().unwrap();
+
     let stdout = String::from_utf8_lossy(&out.stdout);
     let last = stdout.lines().last().unwrap_or_default();
     Answer {
@@ -88,6 +103,7 @@ fn written_anywhere(dir: &Path, needle: &str, skip: &[&str]) -> Vec<String> {
 #[test]
 fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
     let world = backlog();
+    world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     let ran = answer(&world, &RUN, false);
     assert_eq!(warnings(&ran), [] as [&str; 0], "{}", ran.stderr);
     assert_eq!(ran.ok()["stopped"], true);
@@ -114,29 +130,6 @@ fn a_command_given_for_a_harness_by_its_key_is_that_harness_s() {
     let passed = "claude-code=agent  --model=fast ";
     answer(&world, &with(&TICK, &["--worker-command", passed]), false).ok();
     assert_eq!(started(&world), ["agent  --model=fast "], "what follows the `=`, as given");
-}
-
-#[test]
-fn a_command_given_twice_for_one_harness_or_for_no_harness_is_an_error() {
-    let world = backlog();
-    let dispatch =
-        ["dispatch", "--issue", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"];
-    let flag = "--worker-command";
-    for start in [&RUN[..], &TICK[..], &dispatch[..]] {
-        for twice in [["agent", "agent --fast"], ["agent", "claude-code=agent"]] {
-            let error = answer(&world, &with(start, &[flag, twice[0], flag, twice[1]]), false);
-            let error = error.error();
-            assert!(error.contains("given twice for the harness `claude-code`"), "{error}");
-        }
-        let error = answer(&world, &with(start, &[flag, "aider=agent"]), false).error();
-        assert!(
-            error.contains("`aider` is no harness; the harnesses are: claude-code, pi, codex"),
-            "{error}"
-        );
-    }
-    assert_eq!(world.shell_asked(), [] as [String; 0], "refused before anything was asked");
-    assert_eq!(started(&world), [] as [String; 0]);
-    assert_eq!(world.claims(), []);
 }
 
 #[test]
@@ -178,7 +171,10 @@ fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
 
     // …and the command is in no file: not the brief, not a note, not the repo
     // (orca.json is the stand-in orca's own memory of what it was handed)
-    assert_eq!(written_anywhere(&world.root, "big one", &["orca.json"]), [] as [String; 0]);
+    assert_eq!(
+        written_anywhere(&world.root, "big one", &["orca.json", "kit.json"]),
+        [] as [String; 0]
+    );
     assert_eq!(written_anywhere(&world.root, SECRET, &[]), [] as [String; 0]);
 }
 
@@ -229,15 +225,47 @@ fn a_script_that_could_carry_the_flag_inside_is_not_warned_about() {
 }
 
 #[test]
-fn a_custom_provider_with_no_command_and_no_terminal_is_an_error() {
+fn a_custom_provider_still_uses_the_host_kit_without_a_terminal() {
     let world = backlog();
-    world.shell_aliases("kim='ANTHROPIC_BASE_URL=x claude --yolo'\n");
+    wrapped(&world, &TICK).ok();
+    assert_eq!(started(&world), ["agent"]);
+}
+
+#[test]
+fn removed_worker_command_names_the_kit() {
+    let world = backlog();
+    let error = world.afk(&["tick", "--instance", "alpha", "--worker-command", "agent"]).error();
+    assert!(error.contains("afkconvoy kit"), "{error}");
+    assert!(started(&world).is_empty());
+}
+
+#[test]
+fn no_host_kit_refuses_noninteractive_starts_before_claiming() {
+    let world = backlog();
+    std::fs::remove_file(world.kit_path()).unwrap();
     for start in [&RUN[..], &TICK[..]] {
-        let error = wrapped(&world, start).error();
-        assert!(error.contains("--worker-command"), "{error}");
-        assert!(error.contains(PROVIDER), "{error}");
-        assert!(error.contains("no terminal to ask on"), "{error}");
+        let error = world.afk(start).error();
+        assert!(error.contains("afkconvoy kit"), "{error}");
     }
-    assert_eq!(started(&world), [] as [String; 0], "never stock Claude, silently");
-    assert_eq!(world.claims(), []);
+    assert!(started(&world).is_empty());
+    assert!(world.claims().is_empty());
+}
+
+#[test]
+fn kit_without_terminal_writes_nothing() {
+    let world = backlog();
+    let before = std::fs::read(world.kit_path()).unwrap();
+    assert!(world.afk(&["kit"]).error().contains("terminal"));
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+}
+
+#[test]
+fn plan_and_doctor_show_the_host_kit() {
+    let world = backlog();
+    for args in [&["plan", "--now", "1000"][..], &["doctor", "--host", "h1", "--now", "1000"][..]] {
+        let answer = world.afk(args).json;
+        let kit = if args[0] == "plan" { &answer["host_kit"] } else { &answer["host"]["host_kit"] };
+        assert_eq!(kit["path"], world.kit_path().display().to_string());
+        assert_eq!(kit["commands"]["claude-code"], "agent");
+    }
 }

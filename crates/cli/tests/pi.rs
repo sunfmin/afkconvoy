@@ -194,7 +194,11 @@ fn a_stage_and_a_patrol_name_pi_and_pi_has_a_stock_worker_launch_command() {
     let world = bound();
     world.issue(7, &["flow:audit"]);
     let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
-    let why = world.afk(&[&args[..], &["--worker-command", "pi=agent"]].concat()).error();
+    let why = {
+        world.kit_command("pi", "agent");
+        world.afk(&args)
+    }
+    .error();
     assert!(why.contains("`agent --help` names no --approve, no --no-skills,"), "{why}");
     assert!(why.contains("the worker launch command of the harness `pi`"), "{why}");
     assert!(why.contains("the stage `look` of the workflow `audit`"), "{why}");
@@ -315,7 +319,11 @@ fn a_command_that_wraps_pi_is_asked_nothing_of_pi_s_credentials() {
         "--approve --no-skills --skill --extension --model\n--add-dir --setting-sources --settings",
     ));
     let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
-    world.afk(&[&args[..], &["--worker-command", "pi=mypi"]].concat()).ok();
+    {
+        world.kit_command("pi", "mypi");
+        world.afk(&args)
+    }
+    .ok();
     assert!(!world.shell_asked().contains(&"pi --list-models".to_string()));
 }
 

@@ -4,17 +4,7 @@ use common::{Answer, World, commit, git};
 use serde_json::{Value, json};
 
 fn tick_at(world: &World, now: &str) -> Answer {
-    world.afk(&[
-        "tick",
-        "--instance",
-        "alpha",
-        "--host",
-        "h1",
-        "--now",
-        now,
-        "--worker-command",
-        "agent",
-    ])
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", now])
 }
 
 /// One tick of `run` → its last line, the answer.
@@ -27,7 +17,7 @@ fn run_once_at(world: &World, now: &str) -> Answer {
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args.split(' '))
-        .args(["--now", now, "--worker-command", "agent"])
+        .args(["--now", now])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -182,7 +172,10 @@ fn a_tick_trusts_only_a_probe_that_checked_its_worker_launch_command() {
     assert!(stands(&plan_at(&world, "1003")));
 
     let other = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1004"];
-    let other = world.afk(&[&other[..], &["--worker-command", "other"]].concat());
+    let other = {
+        world.kit_command("claude-code", "other");
+        world.afk(&other)
+    };
     assert!(!stands(&other), "{}", other.stderr);
     assert_eq!(world.probes().len(), 12);
 

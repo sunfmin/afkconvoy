@@ -151,17 +151,7 @@ fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
 fn a_wake_after_the_run_ended_is_lost_and_costs_nothing() {
     let world = World::new();
     // one tick, and the run is over
-    let ran = world.afk_lines(&[
-        "run",
-        "--instance",
-        "alpha",
-        "--host",
-        "h1",
-        "--ticks",
-        "1",
-        "--worker-command",
-        "agent",
-    ]);
+    let ran = world.afk_lines(&["run", "--instance", "alpha", "--host", "h1", "--ticks", "1"]);
     assert_eq!(ran.1["ticks"], 1);
     assert_eq!(wake(&world, &world.clone)["woke"], false);
 
@@ -176,7 +166,7 @@ fn a_wake_after_the_run_ended_is_lost_and_costs_nothing() {
 fn the_worker_brief_and_the_join_brief_carry_the_wake_line() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
-    let who = ["--instance", "alpha", "--host", "h1", "--now", "1000", "--worker-command", "agent"];
+    let who = ["--instance", "alpha", "--host", "h1", "--now", "1000"];
     let dispatch = |issue: &str| {
         let mut args = vec!["dispatch", "--issue", issue];
         args.extend(who);

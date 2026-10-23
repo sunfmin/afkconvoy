@@ -1350,32 +1350,14 @@ that push would be refused
 the remote rejects the fleet's refs under both
     The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be
     kept. A push rule of the remote's is what refuses: lift it for one of the two.
---worker-command was given twice for the harness
-    The bare form is the default harness's. Give each harness one command.
+the host kit has no worker launch command
+    Run `afkconvoy kit` at a terminal to add the harness and confirm its command.
+cannot read the host kit
+    Run `afkconvoy kit` at a terminal on this host before starting the fleet.
+--worker-command is gone
+    Run `afkconvoy kit` to edit this host's worker launch commands.
 is no harness
-    `--worker-command <name>=<command>` named a harness there is none of.
-this fleet runs on a custom provider
-    A worker's shell inherits nothing of yours, and no terminal is here to ask on
-    what starts one. Say it: `--worker-command <harness>=<command>`.
-````
-
-### WHAT NEITHER SAYS
-
-````text
-An issue is not worked
-    `afkconvoy plan` has it under `excluded`, with why. Remove what the reason names.
-A changed role or team did not reach a worker
-    It is not pushed to its default branch, or the stage had already started.
-The labels were moved back, and the issue escalated again
-    A label is not where an issue is: `afkconvoy help humans`.
-A stage's verdict counted for nothing
-    Its record names another stage than its claim was for. `afkconvoy show --issue <n>`
-    says how each record was read; `afkconvoy send` puts the issue where it belongs.
-Another host's fleet died
-    Its claims go stale by themselves and are taken. Or: `afkconvoy takeover --help`.
-Everything must stop now
-    Kill `run`, then close the workers' terminals in orca. Every issue keeps its
-    labels and stage records: a later `run` goes on from where each one was.
+    The harness name is unknown: use claude-code, pi, codex or dsh.
 ````
 
 
@@ -1530,19 +1512,35 @@ _Avoid_: freeze, pause, kill switch
 #### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third, and DeepSeek Harness (DSH) the fourth. A stage names the one its worker runs, or takes the fleet's default. A host where a switch chose one starts every worker of the repo on that one.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third, and DeepSeek Harness (DSH) the fourth. An issue's casting names the one its workers run, within their role's range; the host kit names the stock consult's. A host where a switch chose one starts every worker of the repo on that one.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
+
+**Roster**:
+A team's list, for each of its roles, of the harnesses and models that role's workers may run, in order of preference, with what each model is good at and how an issue is to be cast among them. It is committed with the team; a role's range on a host is the part of it the host kit holds, and an unbound repo, having no team, ranges over the host kit whole.
+_Avoid_: harness config, model table, routing rules
+
+**Host kit**:
+The harnesses and models one host can start now — each harness's worker launch command, each model it was seen to answer with, in order of preference, and the harness and model of its stock consult. Kept on that host and never pushed; a harness paused on the host is left out of it until it works again.
+_Avoid_: roster (the team's), host config, inventory
+
+**Casting**:
+The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, and one whose range does not runs its range's first; an issue none of whose stages has a choice to make is not cast. A label a human put on is never recast.
+_Avoid_: assignment (a GitHub assignee), routing, dispatch (starting a worker)
+
+**Caster**:
+A worker in no role that casts, in one session, every open issue of the repo's that carries a flow label, has a choice to make and no casting, by the roster and the host kit.
+_Avoid_: assigner, router, dispatcher
 
 **Worker**:
 A session of one harness, started in one role to perform one stage of one issue — or, after its last stage, to join its PR to the landing train — in that issue's worktree, and to report through GitHub. In an unbound repo it has no role and owns its issue from start to landing. It is ended — its terminal closed — by the step that ends what it was started for: its stage, its claim, or its run.
 _Avoid_: agent (whoever reads the help; and a worker, to whoever has not met the term), subagent, child (an issue a split opened)
 
 **Switch**:
-Moving running work onto another harness in one command: the host's choice of harness for a repo, kept on that host and never pushed — whoever else works the repo runs the harness they have — and each worker named ended and one of that harness started in its place, in the same worktree, on the same branch, at the same stage, briefed to continue what is there. Every worker the host starts for the repo afterwards is of the chosen harness, whatever the config, a stage or a patrol names, until a switch chooses again. The claim, the branch and the PR are untouched, the switch is recorded on the PR, and it is no restart, rework or nudge.
-_Avoid_: harness change (what the config's `harness` key makes)
+Moving running work onto another harness in one command: the host's choice of harness for a repo, kept on that host and never pushed — whoever else works the repo runs the harness they have — and each worker named ended and one of that harness started in its place, in the same worktree, on the same branch, at the same stage, briefed to continue what is there. Every worker the host starts for the repo afterwards is of the chosen harness, whatever an issue's casting names, until a switch chooses again or the choice is cleared, and the casting stands again. The claim, the branch and the PR are untouched, the switch is recorded on the PR, and it is no restart, rework or nudge.
+_Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host says it, per harness, and a harness it says none for has a stock one; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and edited with `afkconvoy kit`; a harness absent from it is refused; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:

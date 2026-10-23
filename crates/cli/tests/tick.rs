@@ -4,19 +4,7 @@ use common::{World, git};
 use serde_json::{Value, json};
 
 fn tick(world: &World, now: &str) -> Value {
-    world
-        .afk(&[
-            "tick",
-            "--instance",
-            "alpha",
-            "--host",
-            "h1",
-            "--now",
-            now,
-            "--worker-command",
-            "agent",
-        ])
-        .ok()
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", now]).ok()
 }
 
 fn did(ticked: &Value) -> Vec<String> {
@@ -96,19 +84,7 @@ fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
 #[test]
 fn a_settling_that_failed_keeps_the_claim_and_the_pass_goes_on() {
     let world = backlog(&[3, 5]);
-    world
-        .afk(&[
-            "dispatch",
-            "--issue",
-            "3",
-            "--instance",
-            "alpha",
-            "--now",
-            "1000",
-            "--worker-command",
-            "agent",
-        ])
-        .ok();
+    world.afk(&["dispatch", "--issue", "3", "--instance", "alpha", "--now", "1000"]).ok();
     world.close_issue(3);
     world.with_orca(|orca| orca["rm_fails"] = json!(true));
 
@@ -166,7 +142,7 @@ fn a_tick_leaves_nothing_behind_on_the_host() {
 }
 
 fn run(world: &World, extra: &[&str]) -> (Vec<String>, Value) {
-    let mut args = vec!["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let mut args = vec!["run", "--host", "h1", "--second-ms", "0"];
     args.extend(extra);
     world.afk_lines(&args)
 }
@@ -237,7 +213,7 @@ fn every_tick_says_as_it_starts_why_it_started() {
     let world = backlog(&[3]);
     tick(&world, "1000");
     world.close_issue(3);
-    let args = ["run", "--host", "h1", "--worker-command", "agent", "--second-ms", "0"];
+    let args = ["run", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "3", "--now", "1090", "--no-host-sleep"];
     let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
     assert_eq!(
