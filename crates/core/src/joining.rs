@@ -278,7 +278,13 @@ mod tests {
     const STOPPED: WorkerState = WorkerState::Idle { quiet: Some(GRACE) };
 
     fn work() -> Progress {
-        Progress { commits_ahead: Some(2), dirty: false, last_commit: Some(1), touched: Some(1) }
+        Progress {
+            commits_ahead: Some(2),
+            trees_equal: Some(false),
+            dirty: false,
+            last_commit: Some(1),
+            touched: Some(1),
+        }
     }
 
     fn at(nudged: Nudged, restarted: Option<u64>) -> JoinRoute {

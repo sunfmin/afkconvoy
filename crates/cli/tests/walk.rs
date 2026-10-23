@@ -398,6 +398,21 @@ fn already_satisfied_closes_the_issue() {
 }
 
 #[test]
+fn already_satisfied_closes_an_equal_tree_with_commits_ahead() {
+    let world = bound(2);
+    world.issue(7, &["flow:feature"]);
+    tick(&world, 1000);
+    let dir = worktree(&world, 7);
+    commit(&dir, "work.txt", "temporary work\n");
+    git(&dir, &["revert", "--no-edit", "HEAD"]);
+    declare(&world, 7, "build", "already-satisfied", &["--text", "main already does this."]);
+    assert_eq!(did(&tick(&world, 1090)), ["advance 7 done"]);
+    assert_eq!(world.state(7), "closed");
+    assert_eq!(world.claims(), []);
+    assert!(!dir.exists());
+}
+
+#[test]
 fn a_worker_that_stops_with_no_verdict_is_nudged_and_then_escalated() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
