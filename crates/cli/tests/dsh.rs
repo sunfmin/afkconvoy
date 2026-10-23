@@ -179,7 +179,11 @@ assert.equal(continued, 1)
 await call({ name: 'edit', arguments: { path: 'a', content: 'git commit' } }, next)
 assert.equal(continued, 2)
 const status = listeners.get('agent/status')
+await listeners.get('agent/created')({ agent: { id: 'parent' } })
+assert.deepEqual(events, ['SessionStart', 'Stop'])
+events.length = 0
 await status({ agent: { id: 'parent' }, status: 'running' })
+await listeners.get('agent/created')({ agent: { id: 'child' } })
 await status({ agent: { id: 'child' }, status: 'running' })
 await status({ agent: { id: 'child' }, status: 'idle' })
 assert.deepEqual(events, ['UserPromptSubmit'])
@@ -305,4 +309,66 @@ fn doctor_names_both_programs_a_dsh_worker_needs() {
         let text = diagnosis.to_string();
         assert!(text.contains(program) && text.contains("not installed"), "{diagnosis}");
     }
+}
+
+/// Real DSH loader semantics; offline, no model or credentials. The two
+/// worker entries stand for the TUI and loop so this tests their startup
+/// dependency without depending on the installed community TUI's packages.
+#[test]
+#[ignore = "requires dsh installed; runs offline with an isolated profile"]
+fn native_dsh_loader_refuses_a_worker_without_its_guard_service() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let kept = keep_under(&root.join("cache"), Some(root), Harness::Dsh, false).unwrap();
+    write(
+        &kept,
+        "system.mjs",
+        "export function apply(ctx) { ctx.provide('systemPrompt', { section() {} }) }\n",
+    );
+    write(
+        &kept,
+        "worker.mjs",
+        "import { writeFileSync } from 'node:fs'; export function apply() { writeFileSync(process.env.DSH_HOME + '/started', 'started') }\n",
+    );
+    write(
+        &kept,
+        "control.mjs",
+        "import { existsSync } from 'node:fs'; export function apply() { setTimeout(() => { console.log(JSON.stringify({ started: existsSync(process.env.DSH_HOME + '/started') })); process.exit(0) }, 100) }\n",
+    );
+    write(&kept, "profiles/smoke/package.json", "{\"name\":\"convoy-smoke\",\"private\":true}\n");
+    write(
+        &kept,
+        "profiles/smoke/cordis.patch.yml",
+        "- insert:\n    - id: system-prompt\n      name: ../../system.mjs\n    - id: agent-loop\n      name: ../../worker.mjs\n    - id: dsh-tui\n      name: ../../worker.mjs\n    - id: control\n      name: ../../control.mjs\n",
+    );
+    let run = |guard: bool| {
+        let mut command = Command::new("dsh");
+        command
+            .args(["--profile", "smoke", "--patch"])
+            .arg(kept.join("afkconvoy.patch.yml"))
+            .current_dir(root)
+            .env("HOME", root)
+            .env("DSH_HOME", &kept)
+            .env("DSH_AGENTS_HOME", root.join("agents"))
+            .env("AFKCONVOY_WORKTREE", root)
+            .env("AFKCONVOY_TEAM_DIR", root);
+        if guard {
+            command.env("AFKCONVOY_GUARD", "true");
+        } else {
+            command.env_remove("AFKCONVOY_GUARD");
+        }
+        command.output().expect("dsh must be installed to run this ignored smoke test")
+    };
+    let output = run(true);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(kept.join("started").is_file(), "{}", String::from_utf8_lossy(&output.stderr));
+    std::fs::remove_file(kept.join("started")).unwrap();
+    let output = run(false);
+    assert!(!output.status.success());
+    assert!(!kept.join("started").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("afkconvoyGuard"));
+    std::fs::remove_file(kept.join("afkconvoy.mjs")).unwrap();
+    let output = run(true);
+    assert!(!output.status.success());
+    assert!(!kept.join("started").exists());
 }

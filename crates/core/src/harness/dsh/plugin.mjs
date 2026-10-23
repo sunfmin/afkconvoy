@@ -17,7 +17,9 @@ function fact(name) {
 function endpoint() {
   const env = { ...process.env }
   if (env.ORCA_AGENT_HOOK_ENDPOINT) {
-    const text = readFileSync(env.ORCA_AGENT_HOOK_ENDPOINT, 'utf8')
+    let text
+    try { text = readFileSync(env.ORCA_AGENT_HOOK_ENDPOINT, 'utf8') }
+    catch { return env }
     for (const line of text.split(/\r?\n/)) {
       const match = /^(?:export )?(ORCA_AGENT_HOOK_(?:PORT|TOKEN|ENV|VERSION))=(.*)$/.exec(line.trim())
       if (!match) continue
@@ -92,14 +94,32 @@ export function apply(ctx) {
   // worker whose parent or another subagent is still running.
   const running = new Set()
   let reports = Promise.resolve()
+  const tell = (event, agent) => {
+    reports = reports.catch(() => {}).then(() => report(event, agent))
+    return reports
+  }
+  // The fleet waits for tui-idle before sending the first brief. Creation
+  // starts idle and emits no status transition, so announce that initial
+  // state explicitly. A child created during a turn cannot mark it idle.
+  ctx.on('agent/created', ({ agent }) => {
+    if (running.size === 0) {
+      tell('SessionStart', agent)
+      return tell('Stop', agent)
+    }
+    return reports
+  })
   ctx.on('agent/status', ({ agent, status }) => {
     const wasRunning = running.size > 0
     if (status === 'running') running.add(agent.id)
     else if (status === 'idle') running.delete(agent.id)
     const isRunning = running.size > 0
     if (wasRunning !== isRunning) {
-      reports = reports.catch(() => {}).then(() => report(isRunning ? 'UserPromptSubmit' : 'Stop', agent))
+      tell(isRunning ? 'UserPromptSubmit' : 'Stop', agent)
     }
+    return reports
+  })
+  ctx.on('agent/disposed', ({ agent }) => {
+    if (running.delete(agent.id) && running.size === 0) return tell('Stop', agent)
     return reports
   })
   const text = rules(home, ['AGENTS.md']) +

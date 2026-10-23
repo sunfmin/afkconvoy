@@ -221,13 +221,10 @@ another role's nor is inside one. It holds:
     .dsh/cordis.patch.yml              its limits for dsh: a DSH overlay
 
 Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
-an entry of `.claude/skills/` in the directory of the role beside it. The rules and the
-skills are written once, and every harness works under them: pi reads `CLAUDE.md` from
-the directory it starts in, Codex does once the fleet tells it to, the fleet names
-`.claude/skills/` to pi and links them where Codex looks. DSH runs dsh-tui with
-a fleet-owned profile and --patch guard (`afkconvoy run --help`). The
-limits — what the role may never do — are written once for each harness the role runs
-on, in that harness's own form: pi and Codex run no hook of `.claude/settings.json`.
+an entry of `.claude/skills/` in the role's directory. Rules and skills are written once.
+DSH runs dsh-tui with a fleet-owned profile and --patch guard. How every harness
+loads the role is in `afkconvoy run --help`. Limits are written once for each harness,
+in its own form: pi and Codex run no hook of `.claude/settings.json`.
 
 A worker is given its role's directory alone, and nothing else of its repo: a
 `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
