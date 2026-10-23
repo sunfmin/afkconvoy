@@ -129,8 +129,8 @@ impl Limits {
     }
 
     /// Why the simple command `words` is refused, when it is.
-    fn refuses(&self, words: &[String]) -> Option<String> {
-        let mut rest = words.iter().map(String::as_str);
+    fn refuses(&self, command: &Command) -> Option<String> {
+        let mut rest = command.iter().map(String::as_str);
         let mut wrapped = false;
         let program = loop {
             let word = rest.next()?;
@@ -151,7 +151,7 @@ impl Limits {
             Some("sh" | "bash" | "zsh" | "dash" | "ksh") => {
                 let mut rest = args.iter();
                 while let Some(arg) = rest.next() {
-                    if arg.starts_with('-') && arg.contains('c') {
+                    if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c') {
                         return rest.next().and_then(|line| {
                             commands(line).iter().find_map(|words| self.refuses(words))
                         });
@@ -160,7 +160,7 @@ impl Limits {
                 None
             }
             Some("git") => self.refuses_git(&args),
-            Some("gh") => self.refuses_gh(&args),
+            Some("gh") => self.refuses_gh(&args, &command.input),
             Some("orca") if self.consult => {
                 let words = positionals(&args, &[]);
                 let removes = words.first() == Some(&"worktree")
@@ -235,7 +235,7 @@ impl Limits {
         to.strip_prefix("refs/heads/").unwrap_or(to) == self.base_branch
     }
 
-    fn refuses_gh(&self, args: &[&str]) -> Option<String> {
+    fn refuses_gh(&self, args: &[&str], input: &str) -> Option<String> {
         let words = positionals(args, &GH_VALUES);
         let (group, verb) = (words.first().copied()?, words.get(1).copied());
         let writes = if group == "api" {
@@ -243,14 +243,16 @@ impl Limits {
         } else {
             matches!(verb, Some("comment" | "create" | "edit"))
         };
-        if writes && args.iter().any(|arg| arg.contains(STAGE_RECORD)) {
+        let contains =
+            |marker: &str| input.contains(marker) || args.iter().any(|arg| arg.contains(marker));
+        if writes && contains(STAGE_RECORD) {
             return Some(
                 "a stage record is written by the fleet's own command and nothing else: declare \
                  the verdict with `afkconvoy verdict`, as your brief says"
                     .to_string(),
             );
         }
-        if writes && args.iter().any(|arg| arg.contains(INTAKE_RECORD)) {
+        if writes && contains(INTAKE_RECORD) {
             return Some(
                 "an intake record is written by the fleet's own command and nothing else: take \
                  the issue in with `afkconvoy intake`"
@@ -395,11 +397,26 @@ fn api_writes(args: &[&str]) -> bool {
 /// being read.
 #[derive(Default)]
 struct Reading {
-    commands: Vec<Vec<String>>,
+    commands: Vec<Command>,
     words: Vec<String>,
     word: String,
     /// Whether a word has begun: a quoted one may be empty.
     begun: bool,
+}
+
+/// A simple command's argument words, with redirected input kept separately:
+/// stdin data must never become an option's value or a program name.
+struct Command {
+    words: Vec<String>,
+    input: String,
+}
+
+impl std::ops::Deref for Command {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        &self.words
+    }
 }
 
 impl Reading {
@@ -424,7 +441,8 @@ impl Reading {
     fn end_command(&mut self) {
         self.end_word();
         if !self.words.is_empty() {
-            self.commands.push(std::mem::take(&mut self.words));
+            self.commands
+                .push(Command { words: std::mem::take(&mut self.words), input: String::new() });
         }
     }
 }
@@ -432,7 +450,7 @@ impl Reading {
 /// The simple commands of the shell line `line`, each as its words with the
 /// quoting taken off. Nothing is expanded: a variable is the text that names
 /// it.
-fn commands(line: &str) -> Vec<Vec<String>> {
+fn commands(line: &str) -> Vec<Command> {
     let mut reading = Reading::default();
     let mut within = Within::Plain;
     let mut escaped = false;
@@ -452,10 +470,10 @@ fn commands(line: &str) -> Vec<Vec<String>> {
             reading.end_command();
             for (command, delimiter, tabs) in heredocs.drain(..) {
                 let body = heredoc_body(&mut chars, &delimiter, tabs);
-                // The body belongs to the receiving command as data. In
-                // particular, a handwritten record sent to gh still counts.
-                if let Some(words) = reading.commands.get_mut(command) {
-                    words.push(body);
+                // The body belongs to the receiving command as data. A
+                // handwritten record sent to gh still counts as a write.
+                if let Some(command) = reading.commands.get_mut(command) {
+                    command.input = body;
                 }
             }
             continue;
@@ -824,6 +842,9 @@ mod tests {
             "cat <<'EOF' | cat\ngh pr merge 7\nEOF\n",
             "cat <<< 'gh pr merge 7'",
             "jq -f - <<'QUERY'\nselect(.body | contains(\"convoy:intake\"))\nQUERY\n",
+            "gh issue edit 7 --add-label <<'EOF'\nflow:feature\nEOF\n",
+            "sh -c <<'EOF'\ngh pr merge 7\nEOF\n",
+            "bash --norc 'echo gh pr merge 7'",
         ]);
         refused_for(
             &[
