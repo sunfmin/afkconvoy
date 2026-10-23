@@ -469,7 +469,13 @@ End with one answer, and not before; each command's `--help` says what it takes.
   ```bash
   {rule_command} --text-file <file>
   ```
-- **Send** it to another stage of its workflow, or **close** it, with the lines above.
+- **Close or park**, with your reason. Neither is rework. A park waits for new evidence and an
+  explicit `afkconvoy send`; it never runs the stage again by itself:
+  ```bash
+  {verdict_command} close --text-file <file>
+  {verdict_command} park --text-file <file>
+  ```
+- **Send** it to another stage of its workflow with the lines above.
 - **Let it through.** It is not yours to answer either: the issue goes to a human, and your text
   says what has to be decided:
   ```bash
@@ -525,6 +531,12 @@ End with one answer, and not before. Then wake the fleet and stop.
   gh issue edit {n} --add-label {ready_label} --remove-label {escalate_label}
   ```
 - **Close** it, nothing being left to do: `gh issue close {n} --comment <why>`
+- **Park** it for new evidence, with a reason. Run in the worktree:
+  ```bash
+  afkconvoy verdict park --consult --issue {n} --stage consult --text-file <file>
+  ```
+  It carries `convoy:parked` and leaves the frontier. To bring it back, record the new evidence
+  on the issue and restore `{ready_label}`, removing `convoy:parked`.
 - **Open the issue you found outside this one**, for the fleet to work, with
   `gh issue create --title <title> --body-file <file> --label {ready_label}` — record this issue as
   blocked by it (`gh api repos/{owner}/{repo}/issues/{n}/dependencies/blocked_by -F issue_id=<id>`)

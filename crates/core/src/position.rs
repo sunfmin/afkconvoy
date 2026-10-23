@@ -8,7 +8,7 @@ use flux_rs::attrs::*;
 use crate::team::{Consult, Pass, Performer, Stage, Work, Workflow};
 use crate::verdict::Phase;
 
-/// What ends a stage or answers an escalation: one of the five verdicts, or
+/// What ends a stage or answers an escalation: a stage or consult verdict, or
 /// a ruling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Declared {
@@ -768,6 +768,31 @@ mod tests {
             }
         }
         assert!(!position(workflow, &[AlreadySatisfied]).takes(Ruling));
+    }
+
+    #[test]
+    fn consult_outcomes_preserve_total_and_consecutive_rework_even_at_a_breaker() {
+        let team = one(FEATURE);
+        let workflow = team.workflow("feature").unwrap();
+        for declared in [
+            vec![Pass, Escalate],
+            vec![Pass, Pass, Reject, Pass, Escalate],
+            vec![Pass, Pass, Reject, Pass, Reject],
+        ] {
+            let place = position(workflow, &declared);
+            assert!(matches!(place.position, Position::Consult(..)));
+            for verdict in [Close, Park] {
+                let next = place.clone().after(verdict);
+                assert_eq!(next.rework(), place.rework());
+                assert_eq!(next.rework_left(), place.rework_left());
+                for stage in workflow.stages() {
+                    assert_eq!(next.consecutive_rework(stage), place.consecutive_rework(stage));
+                }
+                assert!(next.position.start().is_none());
+                assert!(next.position.breaker().is_none());
+                assert!(matches!(next.position, Position::Ended | Position::Suspended(_)));
+            }
+        }
     }
 
     #[test]

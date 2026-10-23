@@ -220,3 +220,36 @@ fn a_stock_consult_that_leaves_a_commit_has_failed_and_goes_to_a_human() {
     );
     assert_eq!(did(&tick(&world, 1590)), [] as [&str; 0]);
 }
+
+#[test]
+fn an_unbound_stock_consult_parks_with_a_reason_until_the_ready_label_is_restored() {
+    let world = asked();
+    world
+        .afk(&[
+            "verdict",
+            "park",
+            "--consult",
+            "--issue",
+            "7",
+            "--stage",
+            "consult",
+            "--text",
+            "Wait for raw failure output.",
+        ])
+        .ok();
+    assert!(world.comments(7).last().unwrap().contains("Wait for raw failure output."));
+    assert_eq!(world.labels(7), ["bug", "convoy:parked"]);
+    report(&world, "done", 1200);
+    assert_eq!(did(&tick(&world, 1500)), ["judge 7 done"]);
+    assert_eq!(world.claims(), []);
+    for command in ["plan", "doctor"] {
+        let view = world.afk(&[command, "--now", "1550"]).ok();
+        assert_eq!(view["waiting_on_human"][0]["issue"], 7, "{view}");
+        assert_eq!(view["waiting_on_human"][0]["why"], "parked for evidence");
+    }
+    world.comment(7, "Routine status comment.");
+    assert_eq!(did(&tick(&world, 1590)), [] as [&str; 0]);
+    world.comment(7, "New raw failure output.");
+    relabel(&world, 7, &["bug", "ready-for-agent"]);
+    assert_eq!(did(&tick(&world, 1680)), ["dispatch 7 done"]);
+}

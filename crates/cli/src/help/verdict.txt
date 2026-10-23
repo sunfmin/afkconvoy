@@ -23,9 +23,12 @@ WHEN TO RUN IT
   Opening a PR declares nothing: a stage that wrote one still declares `pass` — after
   `afkconvoy gate --train` says green on what it pushed, as its brief tells it.
 
-  A consult runs it with `escalate`, and with nothing else, to let through to a human
-  the `escalate` it was asked to rule on; its brief gives the line. Its ruling is not
-  declared here: see `afkconvoy rule --help`.
+A consult also declares `close` or `park`, with its reason in the text. Close ends
+  the issue; park leaves it open for new evidence, off the frontier until explicitly
+  brought back (see `afkconvoy help humans`). Neither adds rework or resets its counts.
+  `escalate` lets through to a human what the consult was asked to rule on. Its ruling
+  uses `afkconvoy rule --help`. In an unbound repo the stock consult uses `--consult`
+  and `--stage consult` with `close` or `park`, with no role or team commits.
 
   A human runs it too, for a stage a workflow gives them (`by: human`): the issue waits
   there, unclaimed, until they declare. `afkconvoy show --issue 7` names the stage:
@@ -101,7 +104,7 @@ WHAT TRIPS YOU UP
     always goes to a human: the chain is one role long.
   - Whether a record is a consult's is read from AFKCONVOY_CONSULT, which the fleet
     put in the worker's environment (or `--consult`). Anything a consult declares but
-    `escalate` is no valid verdict, and the issue escalates.
+    `escalate`, `close` or `park` is no valid verdict, and the issue escalates.
   - With no commit named a record is a human's. A worker whose environment lost its
     commits is refused, as its issue is claimed.
   - A human's `already-satisfied` ends the workflow and closes nothing, and a human's
