@@ -107,3 +107,20 @@ WHAT A START REFUSES WITH — `plan`, `tick` and `run` check first, and start no
       Run `afkconvoy kit` to edit this host's worker launch commands.
   is no harness
       The harness name is unknown: use claude-code, pi, codex or dsh.
+
+WHAT NEITHER SAYS
+
+  An issue is not worked
+      `afkconvoy plan` has it under `excluded`, with why. Remove what the reason names.
+  A changed role or team did not reach a worker
+      It is not pushed to its default branch, or the stage had already started.
+  The labels were moved back, and the issue escalated again
+      A label is not where an issue is: `afkconvoy help humans`.
+  A stage's verdict counted for nothing
+      Its record names another stage than its claim was for. `afkconvoy show --issue <n>`
+      says how each record was read; `afkconvoy send` puts the issue where it belongs.
+  Another host's fleet died
+      Its claims go stale by themselves and are taken. Or: `afkconvoy takeover --help`.
+  Everything must stop now
+      Kill `run`, then close the workers' terminals in orca. Every issue keeps its
+      labels and stage records: a later `run` goes on from where each one was.

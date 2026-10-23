@@ -1350,6 +1350,7 @@ mod tests {
 
     /// A command line of each command, as little as it parses with.
     const LINES: &[&[&str]] = &[
+        &["kit"],
         &["config"],
         &["check"],
         &["scaffold", "team", "x"],

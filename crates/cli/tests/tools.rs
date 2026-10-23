@@ -39,6 +39,7 @@ fn worker_starts(world: &World, extra: &[&str]) -> Vec<Answer> {
 /// A repo with a backlog, whose remote logs every push.
 fn backlog() -> World {
     let world = World::new();
+    world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     world.issue(7, &["ready-for-agent"]);
     world.watch_pushes(None);
     world
@@ -230,8 +231,9 @@ fn claude_is_checked_only_as_the_first_word_of_the_worker_launch_command() {
 }
 
 #[test]
-fn on_a_custom_provider_plan_foresees_no_command_and_checks_claude_for_nothing() {
+fn on_a_custom_provider_plan_reads_the_host_kit_and_checks_its_command() {
     let world = backlog();
+    world.kit_command("claude-code", "agent");
     world.shell_knows("claude", None);
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
@@ -240,7 +242,7 @@ fn on_a_custom_provider_plan_foresees_no_command_and_checks_claude_for_nothing()
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
-    assert_eq!(world.shell_asked(), ["gh auth status"]);
+    assert_eq!(world.shell_asked(), ["type -- 'agent'", "gh auth status"]);
 }
 
 #[test]

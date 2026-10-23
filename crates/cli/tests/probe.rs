@@ -158,8 +158,9 @@ fn a_probe_is_made_again_when_the_base_branch_or_the_remote_changed() {
 fn a_tick_trusts_only_a_probe_that_checked_its_worker_launch_command() {
     let world = World::new();
     world.watch_pushes(None);
-    // `plan` starts no worker: its probe checked no command of a tick's
+    // Changing the host kit invalidates the probe, even when plan made it.
     plan_at(&world, "1000").ok();
+    world.kit_command("pi", "new-pi");
     let ticked = tick_at(&world, "1001");
     assert!(!stands(&ticked), "{}", ticked.stderr);
     assert_eq!(world.probes().len(), 8);

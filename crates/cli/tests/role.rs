@@ -47,6 +47,7 @@ const IMPLEMENT: &str = "---\nname: implement\ndescription: build\n---\n";
 
 fn bound() -> World {
     let world = World::new();
+    world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     world.repo(
         "acme/dev",
         &[

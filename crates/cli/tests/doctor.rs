@@ -95,7 +95,7 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     assert_eq!(tools, [("git", "ready"), ("gh", "ready"), ("orca", "ready")]);
     // the command the `run` here said it started with
     assert_eq!(host["worker_commands"][0]["command"], "agent");
-    assert_eq!(host["worker_commands"][0]["from"], "run");
+    assert_eq!(host["worker_commands"][0]["from"], "host_kit");
 
     // the instance is found with no `--instance`: its log names it
     let fleet = &answer["fleet"];
@@ -137,7 +137,7 @@ fn a_repo_no_fleet_ever_ran_in_has_no_finding_no_log_and_exits_zero() {
     assert_eq!(answer["claims"], json!([]));
     assert_eq!(answer["issues"]["frontier"][0]["number"], 3);
     // with no `run` to say, the command is the one a `run` would use now
-    assert_eq!(answer["host"]["worker_commands"][0]["from"], "default");
+    assert_eq!(answer["host"]["worker_commands"][0]["from"], "host_kit");
     assert_eq!(answer["host"]["exclusive"], json!({"running": null, "waiting": []}));
 }
 

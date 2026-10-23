@@ -5,7 +5,6 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::launch::first_word;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,8 +33,8 @@ pub fn load() -> Result<Kit> {
     let kit: Kit = serde_json::from_str(&text).with_context(|| {
         format!("cannot read the host kit at {}: run `afkconvoy kit`", file.display())
     })?;
-    for (name, command) in &kit.commands {
-        if Harness::read(name).is_none() || first_word(command).is_none() {
+    for name in kit.commands.keys() {
+        if Harness::read(name).is_none() {
             bail!("invalid host kit entry {name:?}: run `afkconvoy kit`");
         }
     }

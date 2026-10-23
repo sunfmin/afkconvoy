@@ -3,6 +3,10 @@ WHEN TO RUN IT
   Run `afkconvoy kit` at a terminal before starting workers on a new host, or to
   change how this host starts a harness. It needs no repo and changes no remote.
 
+WHO RUNS IT
+
+  The operator, at a terminal on the host that starts the workers.
+
 WHAT IT READS AND WRITES
 
   The host kit is $XDG_CONFIG_HOME/afkconvoy/kit.json, or
@@ -12,7 +16,7 @@ WHAT IT READS AND WRITES
   With no kit it finds every known harness program installed on PATH and proposes
   its stock worker launch command. With a kit it shows the saved commands.
   For each harness, Enter keeps it, a typed command edits or adds it, and - drops
-  it. It shows the result and writes only after you answer y or yes. Declining or
+  it. It shows the proposed kit and writes only after you answer y or yes. Declining or
   end of input writes nothing. A kit needs a terminal; there is no automatic yes.
 
 WHAT IT ANSWERS
