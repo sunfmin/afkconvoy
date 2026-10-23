@@ -27,7 +27,7 @@ struct Evidence {
     reason: String,
     failures: usize,
     terminals: Vec<String>,
-    worktree: std::path::PathBuf,
+    worktrees: Vec<std::path::PathBuf>,
     probe_at: u64,
 }
 impl Evidence {
@@ -37,9 +37,10 @@ impl Evidence {
 
     fn failed(&mut self, terminal: &str, reason: &str, now: u64) -> bool {
         let was_down = self.down();
-        if self.reason != reason {
+        if self.reason != reason && !was_down {
             *self = Self { reason: reason.to_string(), ..Self::default() };
         }
+        self.reason = reason.to_string();
         self.failures = self.failures.saturating_add(1);
         if !self.terminals.iter().any(|seen| seen == terminal) {
             self.terminals.push(terminal.to_string());
@@ -83,12 +84,13 @@ pub fn any_down(repo: &Repo) -> Result<bool> {
     Ok(false)
 }
 
-/// Only the worker whose refused prompt tripped the hold may probe it. The
-/// others, including ones already nudged, cannot escalate during the outage.
+/// Only workers with refused prompts may probe. The others, including ones
+/// already nudged, cannot escalate during the outage. Keeping all refused
+/// workers lets another probe if one of them disappears.
 pub fn holds(worktree: &Worktree, now: u64) -> Result<bool> {
     let harness = worktree.harness()?.unwrap_or(Harness::UNNAMED);
     let evidence = read(&file(&Repo::new(worktree.path.clone()), harness)?)?;
-    Ok(evidence.down() && (now < evidence.probe_at || evidence.worktree != worktree.path))
+    Ok(evidence.down() && (now < evidence.probe_at || !evidence.worktrees.contains(&worktree.path)))
 }
 
 /// The one send path, including the probe: after five minutes a normal pending
@@ -119,7 +121,9 @@ pub fn tell(
             // about the harness. A missing terminal or broken Orca does not.
             if let Some(blocked) = error.downcast_ref::<crate::orca::PromptBlocked>() {
                 let report = evidence.failed(terminal, &blocked.0, now);
-                evidence.worktree = worktree.path.clone();
+                if !evidence.worktrees.contains(&worktree.path) {
+                    evidence.worktrees.push(worktree.path.clone());
+                }
                 keep(&path, &evidence)?;
                 if report {
                     let why = description(harness, &evidence.reason);
@@ -142,6 +146,15 @@ pub fn tell(
                 if evidence.down() {
                     return Err(Held.into());
                 }
+            } else if evidence.down() {
+                // A broken transport is no successful probe. Keep the hold
+                // and its cadence even when the probe fails another way.
+                evidence.probe_at = now.saturating_add(PROBE_SECONDS);
+                keep(&path, &evidence)?;
+                return Err(Held.into());
+            } else if evidence.failures > 0 {
+                // The threshold counts consecutive identical refusals.
+                keep(&path, &Evidence::default())?;
             }
             Err(error)
         }
@@ -247,6 +260,8 @@ mod tests {
         assert!(!evidence.failed("two", "disabled", 4));
         assert!(evidence.failed("three", "disabled", 5));
         assert!(!evidence.failed("one", "disabled", 305));
+        assert!(!evidence.failed("two", "another refusal", 605));
+        assert!(evidence.down(), "a changed refusal is no successful probe");
         let (_dir, worker) = worker();
         for _ in 0..10 {
             assert!(
@@ -254,5 +269,26 @@ mod tests {
             );
         }
         assert!(findings(&Repo::new(worker.path.clone())).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_transport_failure_resets_suspicion_but_keeps_an_outage_probe_bounded() {
+        let (_dir, worker) = worker();
+        let blocked = || Err(crate::orca::PromptBlocked("disabled".into()).into());
+        let transport = || Err(anyhow::anyhow!("orca unavailable"));
+        for now in [1, 2] {
+            assert!(tell(&worker, "one", now, blocked).is_err());
+        }
+        assert!(tell(&worker, "one", 3, transport).is_err());
+        for now in [4, 5] {
+            assert!(tell(&worker, "one", now, blocked).is_err());
+            assert!(!holds(&worker, now).unwrap());
+        }
+        assert!(tell(&worker, "one", 6, blocked).unwrap_err().is::<Held>());
+        assert!(tell(&worker, "one", 306, transport).unwrap_err().is::<Held>());
+        assert!(holds(&worker, 605).unwrap());
+        assert!(tell(&worker, "one", 605, || panic!("no second probe")).is_err());
+        tell(&worker, "one", 606, || Ok(())).unwrap();
+        assert!(!holds(&worker, 606).unwrap());
     }
 }
