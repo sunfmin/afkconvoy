@@ -224,7 +224,8 @@ Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` 
 an entry of `.claude/skills/` in the directory of the role beside it. The rules and the
 skills are written once, and every harness works under them: pi reads `CLAUDE.md` from
 the directory it starts in, Codex does once the fleet tells it to, the fleet names
-`.claude/skills/` to pi and links them where Codex looks (`afkconvoy run --help`). The
+`.claude/skills/` to pi and links them where Codex looks. DSH runs dsh-tui with
+a fleet-owned profile and --patch guard (`afkconvoy run --help`). The
 limits — what the role may never do — are written once for each harness the role runs
 on, in that harness's own form: pi and Codex run no hook of `.claude/settings.json`.
 
@@ -292,10 +293,6 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 `afkconvoy help workflows`  the stages an issue passes through, and every key of them
 `afkconvoy help patrols`    a role run on a schedule, intake and the fleet lock
 `afkconvoy help glossary`   each term used here, with its one definition
-
-A DSH worker runs dsh-tui with a fleet-owned profile and --patch overlay;
-its guard, rules, skills and stage model are supplied at start. See
-`afkconvoy run --help` for the complete worker launch command.
 ````
 
 

@@ -5,7 +5,8 @@ harness it is a session of: the rules are written once, here, and each skill onc
 .claude/skills/. Name no stage and no workflow here: one role serves many. What the role may never
 do is a limit, and its limits are written once for each harness its stages run on, in that
 harness's own form: for Claude Code a hook in .claude/settings.json, for pi an extension in
-.pi/extensions/, for Codex a hook in .codex/hooks.json, for DeepSeek Harness\nan overlay in .dsh/cordis.patch.yml. -->
+.pi/extensions/, for Codex a hook in .codex/hooks.json, for DeepSeek Harness
+an overlay in .dsh/cordis.patch.yml. -->
 
 - Change only what the issue asks for.
 - Match the conventions of the code around what you change.

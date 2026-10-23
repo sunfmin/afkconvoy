@@ -78,7 +78,8 @@ WHAT IT READS AND WRITES
   The role's limits are written once for each harness, in that harness's own form:
   for claude-code, hooks and denied permissions in `.claude/settings.json`; for codex,
   hooks in `.codex/hooks.json`; and for pi, extensions in `.pi/extensions/`, a
-  directory this command does not write. For dsh, a role writes its own overlay\n  in `.dsh/cordis.patch.yml`; this command writes none. A file that names no hook holds no limit:
+  directory this command does not write. For dsh, a role writes its own overlay
+  in `.dsh/cordis.patch.yml`; this command writes none. A file that names no hook holds no limit:
   the skeleton is right for every harness. `check` refuses a stage on a harness its
   role holds no limits for while it holds some for another.
 
