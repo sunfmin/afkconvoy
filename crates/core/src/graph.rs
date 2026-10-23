@@ -5,7 +5,6 @@
 
 use flux_rs::attrs::*;
 
-use crate::harness::Harness;
 use crate::position::Breaker;
 use crate::team::{Consult, DONE, HUMAN, LAND, Pass, Performer, Stage, Team, Work, Workflow};
 
@@ -15,11 +14,10 @@ struct Back {
     to: usize,
 }
 
-/// The drawing of `workflow`, one of `team`, in a repo whose default harness
-/// is `default`: lines, each ended by a newline. A stage a worker performs
-/// says its harness, named by it or not.
-#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}, Harness) -> String)]
-pub fn draw(team: &Team, workflow: &Workflow, default: Harness) -> String {
+/// The drawing of `workflow`, one of `team`: lines, each ended by a
+/// newline. What a stage's worker runs is its role's range's to say.
+#[spec(fn(&Team[@roles], &Workflow{v: v.roles == roles}) -> String)]
+pub fn draw(team: &Team, workflow: &Workflow) -> String {
     let stages = workflow.stages();
     // The reject of a later stage is drawn further out, so one that spans
     // another goes round it.
@@ -52,7 +50,7 @@ pub fn draw(team: &Team, workflow: &Workflow, default: Harness) -> String {
         workflow.max_consecutive_rework,
     );
     for stage in stages {
-        out.push_str(&rows(team, workflow, stage, &backs, width, default));
+        out.push_str(&rows(team, workflow, stage, &backs, width));
     }
     let blank = "  ".repeat(backs.len());
     if let Some(land) = &workflow.land {
@@ -66,7 +64,7 @@ pub fn draw(team: &Team, workflow: &Workflow, default: Harness) -> String {
 
 /// The two rows of one stage of `workflow`, one of `team`: the stage with
 /// what is said of it, and its `pass` under it.
-#[spec(fn(&Team[@roles], &Workflow[@w], &Stage{v: v.n == w.n && v.roles == roles}, &[Back], usize, Harness)
+#[spec(fn(&Team[@roles], &Workflow[@w], &Stage{v: v.n == w.n && v.roles == roles}, &[Back], usize)
     -> String requires w.roles == roles)]
 fn rows(
     team: &Team,
@@ -74,18 +72,11 @@ fn rows(
     stage: &Stage,
     backs: &[Back],
     width: usize,
-    default: Harness,
 ) -> String {
     let mut said = vec![match &stage.by {
         Performer::Human => HUMAN.to_string(),
         Performer::Role(work) => work_said(team, work),
     }];
-    if let Some(harness) = stage.harness(default) {
-        said.push(format!("harness {}", harness.key()));
-    }
-    if let Some(model) = &stage.model {
-        said.push(format!("model {model}"));
-    }
     if !stage.writes {
         said.push("writes nothing".to_string());
     }
@@ -167,15 +158,15 @@ mod tests {
     #[test]
     fn every_stage_its_role_and_skill_and_every_edge_is_drawn() {
         let team = one(FEATURE);
-        let drawn = draw(&team, team.workflow("feature").unwrap(), Harness::DEFAULT);
+        let drawn = draw(&team, team.workflow("feature").unwrap());
         let expected = "\
 feature — flow:feature — max_rework 3, max_consecutive_rework 2
 
-┌───▶ plan      dev: plan · harness claude-code · escalate → human
+┌───▶ plan      dev: plan · escalate → human
 │       ↓ pass → build
-│ ┌─▶ build     dev: implement · harness claude-code · model opus · escalate → reviewer: rule
+│ ┌─▶ build     dev: implement · escalate → reviewer: rule
 │ │     ↓ pass → review
-│ └── review    reviewer: review · harness claude-code · writes nothing · escalate → human · reject → build
+│ └── review    reviewer: review · writes nothing · escalate → human · reject → build
 │       ↓ pass → sign-off
 └──── sign-off  human · reject → plan
         ↓ pass → land
@@ -194,17 +185,17 @@ stages:
   - { name: c, by: dev, do: plan, on: { pass: d, reject: a } }
   - { name: d, by: dev, do: plan, on: { pass: done, reject: c } }
 ");
-        let drawn = draw(&team, team.workflow("feature").unwrap(), Harness::DEFAULT);
+        let drawn = draw(&team, team.workflow("feature").unwrap());
         let expected = "\
 feature — flow:feature — max_rework 5, max_consecutive_rework 2
 
-  ┌─┬─▶ a     dev: plan · harness claude-code
+  ┌─┬─▶ a     dev: plan
   │ │     ↓ pass → b
-  │ └── b     dev: plan · harness claude-code · reject → a
+  │ └── b     dev: plan · reject → a
   │       ↓ pass → c
-┌─┴───▶ c     dev: plan · harness claude-code · reject → a
+┌─┴───▶ c     dev: plan · reject → a
 │         ↓ pass → d
-└────── d     dev: plan · harness claude-code · reject → c
+└────── d     dev: plan · reject → c
           ↓ pass → done
         done
 ";

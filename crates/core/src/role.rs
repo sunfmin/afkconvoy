@@ -310,7 +310,6 @@ stages:
   - name: build
     by: dev
     do: implement
-    model: opus
     on: { pass: done }
 ";
     const SIGNED: &str = "\
@@ -435,7 +434,6 @@ land: { by: boss, do: implement }
             (entry.role.dir.repo.as_str(), entry.role.commit.as_str()),
             ("acme/dev", "acme/dev@1")
         );
-        assert_eq!(entry.stage.model.as_deref(), Some("opus"));
     }
 
     /// What is due, in a few words.
