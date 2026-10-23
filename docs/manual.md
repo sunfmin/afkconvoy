@@ -1139,7 +1139,7 @@ each, and any read-only command, the gate too; never commit, push or change the 
 ````text
 A consult's close or park carries a reason and adds no rework. `plan` and `doctor`
 list parks under `waiting_on_human`. To bring one back in a bound repo, explicitly
-send it with new evidence or your reason (a plain comment does not resume it):
+send it with new evidence or your reason (a plain comment does not bring it back):
     afkconvoy send --issue <n> --stage <stage> --text-file <evidence-file>
 In an unbound repo, comment with the evidence, then restore its ready label:
     gh issue edit <n> --add-label <ready label> --remove-label convoy:parked
