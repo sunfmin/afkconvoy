@@ -1287,7 +1287,7 @@ the fleet's state cannot be read
     GitHub, the remote or the config failed to answer; `evidence` says which.
 harness is down
     Identical prompt refusals hold claims; one pending prompt probes every 5m.
-    Run `afkconvoy switch --instance <id> --harness codex --all` (another if Codex is down).
+    Run `afkconvoy switch --instance <id> --harness codex --all` (pi if Codex is down).
 ````
 
 ### WHAT `doctor` FINDS — warning: one issue or one patrol is held up. A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
