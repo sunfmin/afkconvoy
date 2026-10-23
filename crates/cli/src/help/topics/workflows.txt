@@ -95,9 +95,9 @@ A CONSULT
   where a stage names none, the stock consult, afkconvoy's own, is asked on the stage's
   harness — its one instruction is to decide as the human would. `{ to: human }` names
   none: a human, straight. A consult rules (`afkconvoy rule`: the stage runs again; on an
-  `escalate` that is one more rework in total), sends the issue on, or lets it through.
-  The same hand-off again goes to a human. The chain is one role long, and a consult
-  writes no code: one that left a commit has failed.
+  `escalate` that is one more rework in total), sends, closes, parks or lets it through.
+  Close and park add no rework (`afkconvoy help humans` says how to bring a park back).
+  The same hand-off again goes to a human. A consult writes no code.
 
 A STAGE BY: HUMAN
 

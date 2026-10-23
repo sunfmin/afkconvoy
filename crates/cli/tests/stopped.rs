@@ -2,7 +2,7 @@ use crate::common;
 
 use std::path::PathBuf;
 
-use common::{World, commit};
+use common::{World, commit, git};
 use serde_json::{Value, json};
 
 fn tick(world: &World, now: u64) -> Value {
@@ -139,6 +139,29 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
 }
 
 #[test]
+fn already_satisfied_with_commits_ahead_and_an_equal_tree_closes_the_issue() {
+    for reverted in [false, true] {
+        let world = fleet(1000);
+        let dir = worktree(&world);
+        if reverted {
+            commit(&dir, "work.txt", "x\n");
+            git(&dir, &["revert", "--no-edit", "HEAD"]);
+        } else {
+            git(&dir, &["commit", "--allow-empty", "-m", "no content change"]);
+        }
+        assert_ne!(git(&dir, &["rev-list", "--count", "origin/main..HEAD"]), "0");
+        assert_eq!(git(&dir, &["diff", "origin/main", "HEAD", "--"]), "");
+        declare(&world, "already-satisfied");
+
+        assert_eq!(did(&tick(&world, 1090)), ["judge 7 done"]);
+        assert_eq!(world.state(7), "closed");
+        assert_eq!(world.claims(), []);
+        assert!(!dir.exists());
+        assert_eq!(escalations(&world), 0);
+    }
+}
+
+#[test]
 fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() {
     for dirty in [false, true] {
         let world = fleet(1000);
@@ -162,6 +185,8 @@ fn already_satisfied_over_work_on_the_branch_escalates_and_keeps_the_worktree() 
         assert!(comments[2].starts_with("<!--convoy:escalation claim="), "{}", comments[2]);
         assert!(comments[2].contains("escalated to a human"));
         assert!(comments[2].contains("its branch holds work") && comments[2].contains(&said));
+        let file = if dirty { "scratch.txt" } else { "work.txt" };
+        assert!(comments[2].contains(file), "{}", comments[2]);
     }
 }
 

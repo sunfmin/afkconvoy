@@ -223,7 +223,13 @@ mod tests {
     use super::*;
 
     fn worktree(ahead: Option<u64>, dirty: bool) -> Progress {
-        Progress { commits_ahead: ahead, dirty, last_commit: None, touched: None }
+        Progress {
+            commits_ahead: ahead,
+            trees_equal: ahead.map(|n| n == 0),
+            dirty,
+            last_commit: None,
+            touched: None,
+        }
     }
 
     fn pushed(name: &str, ahead: Option<u64>) -> Pushed {

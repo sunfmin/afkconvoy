@@ -22,7 +22,7 @@ use crate::dispatch::{Agent, StartFrom, dispatch};
 use crate::fleet::Fleet;
 use crate::judge::{
     BLOCKED_BRIEF, Handed, close_claim, escalate_claim, mine, nudge_worker, own_background,
-    progress, where_it_stopped, worktree_and_work, worktree_of,
+    progress, refuted_work, where_it_stopped, worktree_and_work, worktree_of,
 };
 use crate::lock::explaining_lock;
 use crate::orca::{Source, Worktree};
@@ -297,13 +297,22 @@ pub fn advance(
             hand_on(fleet, &claim, None, true)?;
             return Ok(Outcome::Done);
         }
+        Advance::ConsultClose => {
+            fleet.gh.close_issue(issue)?;
+            hand_on(fleet, &claim, None, false)?;
+            return Ok(Outcome::Done);
+        }
         Advance::Close => {
             let (worktree, workless) = worktree_and_work(fleet, issue)?;
             if let Some(workless) = workless {
                 close_claim(fleet, &claim, worktree.as_ref(), &workless)?;
                 return Ok(Outcome::Done);
             }
-            let reason = Why::Refuted.reason(said.unwrap_or("(its stage record)"));
+            let reason = format!(
+                "{}\n\n{}",
+                Why::Refuted.reason(said.unwrap_or("(its stage record)")),
+                refuted_work(fleet, worktree.as_ref())?
+            );
             let why = Handed::at(stage, Why::Refuted.brief(), reason);
             return hand_off(fleet, flows, &claim, Failure::Refuted, &why, worktree.as_ref());
         }

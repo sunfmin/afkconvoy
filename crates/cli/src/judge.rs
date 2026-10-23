@@ -14,7 +14,7 @@ use afkconvoy_core::role::followed;
 use afkconvoy_core::stage_record::stage_records;
 use afkconvoy_core::stock;
 use afkconvoy_core::stopped::{
-    Background, FOOTER_LINES, NudgeStep, Progress, Route, Silent, Tail, Unnudged, Workless,
+    Background, FOOTER_LINES, NudgeStep, Progress, Route, Silent, Tail, Unnudged, Why, Workless,
     past_grace, route, screen_request, settled_by_state, stalled_reason, standing_verdict,
 };
 use afkconvoy_core::tick::Outcome;
@@ -46,6 +46,8 @@ use crate::team::keep;
 pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
     let repo = Repo::new(worktree.path.clone());
     let ahead = repo.try_git(&["rev-list", "--count", &format!("{base_tip}..HEAD")])?;
+    let base_tree = repo.try_git(&["rev-parse", "--verify", &format!("{base_tip}^{{tree}}")])?;
+    let head_tree = repo.try_git(&["rev-parse", "--verify", "HEAD^{tree}"])?;
     let committed = repo.try_git(&["log", "-1", "--format=%ct"])?;
     let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
     // What git would stage, as the worker left it: an ignored build directory says nothing.
@@ -58,10 +60,40 @@ pub fn progress(worktree: &Worktree, base_tip: &str) -> Result<Progress> {
         .max();
     Ok(Progress {
         commits_ahead: ahead.stdout.parse().ok().filter(|_| ahead.ok),
+        trees_equal: (base_tree.ok && head_tree.ok).then_some(base_tree.stdout == head_tree.stdout),
         dirty,
         last_commit: committed.stdout.parse().ok().filter(|_| committed.ok),
         touched,
     })
+}
+
+/// What refutes an `already-satisfied` verdict, including the committed and
+/// uncommitted paths a worker must account for. Read failures stay refusals.
+pub(crate) fn refuted_work(fleet: &Fleet, worktree: Option<&Worktree>) -> Result<String> {
+    let Some(worktree) = worktree else {
+        return Ok("it has no worktree on this host to show its branch holds no work".to_string());
+    };
+    let repo = Repo::new(worktree.path.clone());
+    let changed = repo.try_git(&[
+        "diff",
+        "--no-ext-diff",
+        "--name-only",
+        "--no-renames",
+        &fleet.base_tip()?,
+        "HEAD",
+        "--",
+    ])?;
+    let dirty = repo.git_raw(&["status", "--porcelain"])?;
+    let mut reason = "its branch holds work, or its tree could not be read".to_string();
+    if !changed.ok {
+        reason.push_str(&format!("\n\nTree comparison failed: {}", changed.stderr));
+    } else if !changed.stdout.is_empty() {
+        reason.push_str(&format!("\n\nFiles differing from the base branch:\n{}", changed.stdout));
+    }
+    if !dirty.trim().is_empty() {
+        reason.push_str(&format!("\n\nUncommitted files:\n{dirty}"));
+    }
+    Ok(reason)
 }
 
 /// My claim on `issue`: `None` when the issue has none — already gone counts
@@ -290,7 +322,7 @@ fn only_here(claim: &Claim, worktree: &Worktree, leaving: &Leaving) -> Option<St
 
 /// `afkconvoy close`: close one of my claims whose issue needed no change —
 /// close the issue → release → remove the worktree. Refused unless the
-/// worktree here shows a branch with no commit past the base and nothing
+/// worktree here shows a tree equal to the base's and nothing
 /// uncommitted.
 pub fn close(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let Some(claim) = mine(fleet, me, issue)? else { return Ok(nothing_held(issue)) };
@@ -298,10 +330,7 @@ pub fn close(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<Value> {
     let Some(workless) = workless else {
         bail!(
             "issue #{issue} is not closed as needing no change: {}; nothing was changed",
-            match worktree {
-                Some(_) => "its branch holds work (commits past the base, or uncommitted files)",
-                None => "it has no worktree on this host to show its branch holds no work",
-            }
+            refuted_work(fleet, worktree.as_ref())?
         );
     };
     close_claim(fleet, &claim, worktree.as_ref(), &workless)?;
@@ -430,7 +459,10 @@ fn answered(
         escalate_claim(fleet, claim, &reason, pr, Some(worktree))?;
         return Ok(Some(Outcome::Done));
     }
-    if !fleet.gh.issue(issue)?.labels.contains(&fleet.config.ready_label) {
+    let labels = fleet.gh.issue(issue)?.labels;
+    if !labels.contains(&fleet.config.ready_label)
+        && !stock::parked(&labels, &fleet.config.ready_label, &fleet.config.escalate_label)
+    {
         return Ok(None);
     }
     transition::hand_on(issue, false, |step| {
@@ -610,7 +642,11 @@ pub fn judge(
             }
         }
         Route::Escalate(why) => {
-            Handed::new(why.brief(), why.reason(said.unwrap_or("(its comment)")))
+            let mut reason = why.reason(said.unwrap_or("(its comment)"));
+            if why == Why::Refuted {
+                reason.push_str(&format!("\n\n{}", refuted_work(fleet, Some(&worktree))?));
+            }
+            Handed::new(why.brief(), reason)
         }
         Route::Stalled(silent) => Handed::new(
             "its worker went silent",

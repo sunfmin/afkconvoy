@@ -800,7 +800,7 @@ fn declared(text: &str) -> Result<Declared, String> {
     })
 }
 
-/// One of the five verdicts. A ruling is not one: it answers an escalation.
+/// A stage or consult verdict. A ruling answers an escalation separately.
 fn verdict(text: &str) -> Result<Declared, String> {
     let verdicts = || Declared::ALL.into_iter().filter(|declared| *declared != Declared::Ruling);
     verdicts().find(|declared| declared.word() == text).ok_or_else(|| {
