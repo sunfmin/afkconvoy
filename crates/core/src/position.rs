@@ -779,7 +779,7 @@ mod tests {
         for declared in [
             vec![Pass, Escalate],
             vec![Pass, Pass, Reject, Pass, Escalate],
-            vec![Pass, Pass, Reject, Pass, Reject],
+            vec![Pass, Pass, Reject, Pass, Reject, Pass, Reject],
         ] {
             let place = position(workflow, &declared);
             assert!(matches!(place.position, Position::Consult(..)));
