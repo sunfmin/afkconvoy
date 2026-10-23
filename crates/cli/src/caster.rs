@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use afkconvoy_core::casting::{
     CASTER_WORKTREE, Caster, Casting, Offered, Paused, ToCast, caster_comment, caster_prompt,
-    choice, paused_of, to_cast as is_to_cast, to_recast, uncast, without_casting,
+    choice, is_casting, paused_of, to_cast as is_to_cast, to_recast, uncast, without_casting,
 };
 use afkconvoy_core::config::Config;
 use afkconvoy_core::tick::Outcome;
@@ -184,7 +184,7 @@ pub fn cast(now: u64) -> Result<Value> {
             left.push(json!({"issue": number, "why": "it was cast meanwhile"}));
             continue;
         }
-        for label in now_labels.iter().filter(|label| !uncast(std::slice::from_ref(*label))) {
+        for label in now_labels.iter().filter(|label| is_casting(label)) {
             fleet.gh.remove_label(number, label)?;
         }
         for label in &labels {
@@ -192,7 +192,7 @@ pub fn cast(now: u64) -> Result<Value> {
         }
         let mut said = caster_comment(&labels, &casting.why);
         if let Some(pause) = again {
-            let was = now_labels.iter().filter(|label| !uncast(std::slice::from_ref(*label)));
+            let was = now_labels.iter().filter(|label| is_casting(label));
             let was: Vec<String> = was.map(|label| format!("`{label}`")).collect();
             said.push_str(&format!(
                 "\n\nCast again, in place of {}: {}",

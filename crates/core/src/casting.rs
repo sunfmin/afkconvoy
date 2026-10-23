@@ -79,7 +79,12 @@ pub fn choice(range: &[Held]) -> bool {
 /// Whether `labels` name no casting: no `harness:` label and no `model:`
 /// one. An issue with either is a human's to change, never a caster's.
 pub fn uncast(labels: &[String]) -> bool {
-    !labels.iter().any(|label| label.starts_with(HARNESS_LABEL) || label.starts_with(MODEL_LABEL))
+    !labels.iter().any(|label| is_casting(label))
+}
+
+/// Whether `label` is one of a casting: a `harness:` or a `model:` label.
+pub fn is_casting(label: &str) -> bool {
+    label.starts_with(HARNESS_LABEL) || label.starts_with(MODEL_LABEL)
 }
 
 /// The last caster started for a repo on this host.
@@ -210,7 +215,13 @@ pub fn paused_of<'a>(labels: &[String], paused: &'a [Paused]) -> Option<&'a Paus
 
 /// `labels` without the casting: what an issue cast again carries.
 pub fn without_casting(labels: &[String]) -> Vec<String> {
-    labels.iter().filter(|label| uncast(std::slice::from_ref(*label))).cloned().collect()
+    let mut kept = vec![];
+    for label in labels {
+        if !is_casting(label) {
+            kept.push(label.clone());
+        }
+    }
+    kept
 }
 
 /// What a caster says on an issue it cast to `labels`, with why.
@@ -227,8 +238,12 @@ fn said_labels(labels: &[String]) -> String {
 /// is the one a caster leaves as it puts that casting on. A human's casting
 /// is never cast again.
 pub fn by_caster<'a>(labels: &[String], bodies: impl IntoIterator<Item = &'a str>) -> bool {
-    let casting: Vec<String> =
-        labels.iter().filter(|label| !uncast(std::slice::from_ref(*label))).cloned().collect();
+    let mut casting = vec![];
+    for label in labels {
+        if is_casting(label) {
+            casting.push(label.clone());
+        }
+    }
     if casting.is_empty() {
         return false;
     }
