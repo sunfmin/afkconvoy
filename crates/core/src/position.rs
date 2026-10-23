@@ -778,11 +778,11 @@ mod tests {
         let workflow = team.workflow("feature").unwrap();
         for declared in [
             vec![Pass, Escalate],
-            vec![Pass, Pass, Reject, Pass, Escalate],
+            vec![Pass, Pass, Reject, Escalate],
             vec![Pass, Pass, Reject, Pass, Reject, Pass, Reject],
         ] {
             let place = position(workflow, &declared);
-            assert!(matches!(place.position, Position::Consult(..)));
+            assert!(matches!(place.position, Position::Consult(..)), "{declared:?}");
             for verdict in [Close, Park] {
                 let next = place.clone().after(verdict);
                 assert_eq!(next.rework(), place.rework());
