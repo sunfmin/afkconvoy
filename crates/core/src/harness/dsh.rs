@@ -34,7 +34,7 @@ pub(super) const KEPT: Kept = Kept {
         ("profiles/dsh-tui/cordis.yml", "[]\n"),
         ("afkconvoy.patch.yml", include_str!("dsh/overlay.yml")),
         ("afkconvoy.mjs", include_str!("dsh/plugin.mjs")),
-        ("start.mjs", include_str!("dsh/start.mjs")),
+        ("start.sh", include_str!("dsh/start.sh")),
     ],
 };
 
@@ -57,14 +57,12 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 
 #[spec(fn(Line[true], &Start) -> Line[true])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
-    // The supervisor withholds terminal input until the plugin has activated.
-    // Its shell command is one quoted argument, preserving host wrappers.
-    let command = line.done();
+    let launch = line.done();
     Line::new()
-        .launch("node ")
-        .word(&format!("{}/start.mjs", start.kept))
+        .launch("sh ")
+        .word(&format!("{}/start.sh", start.kept))
         .fixed(" ")
-        .word(&command)
+        .word(&launch)
         .fixed(" ")
         .word(start.kept)
         .fixed(" ")

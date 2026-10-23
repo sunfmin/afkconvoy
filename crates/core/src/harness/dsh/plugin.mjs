@@ -1,6 +1,6 @@
 // No DSH imports: a plugin loaded by absolute filename cannot resolve them.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import http from 'node:http'
 export const name = 'afkconvoy'
@@ -76,7 +76,6 @@ export function apply(ctx) {
   const worktree = fact('AFKCONVOY_WORKTREE')
   const team = fact('AFKCONVOY_TEAM_DIR')
   const home = fact('DSH_HOME')
-  const ready = fact('AFKCONVOY_DSH_READY')
   const role = process.cwd()
   ctx.on('tools/pre-execute', (exec, next) => {
     const asked = spawnSync('sh', ['-c', guard], {
@@ -115,14 +114,8 @@ export function apply(ctx) {
   })
   // Retain the middleware's continuation: ignoring it prevents every turn.
   ctx.on('agent/pre-step', (_event, next) => next())
-// The supervisor owns the physical terminal's raw mode and forwards bytes
-  // only after this point. Expose that terminal input to Ink through its
-  // stream API, without letting Ink change the supervisor's terminal mode.
-  if (process.env.AFKCONVOY_DSH_TTY === 'true' && !process.stdin.isTTY) {
-    Object.defineProperty(process.stdin, 'isTTY', { value: true })
-    process.stdin.setRawMode = () => process.stdin
-    process.stdin.ref = () => process.stdin
-    process.stdin.unref = () => process.stdin
-  }
-  writeFileSync(ready, 'ready\n')
+  // Loader dependencies on this service keep the TUI and agent loop from
+  // mounting if import, injection or apply failed. Disposal also withdraws
+  // the service, so a plugin unload cannot leave an unguarded worker running.
+  ctx.provide('afkconvoyGuard', true)
 }

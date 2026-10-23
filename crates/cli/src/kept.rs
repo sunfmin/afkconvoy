@@ -26,15 +26,14 @@ pub fn keep(harness: Harness, host_user: bool) -> Result<PathBuf> {
     if harness == Harness::Dsh {
         // Prefer the installed program's package to an editable profile copy.
         let (_, path) = crate::launch::ask_login_shell("command -v dsh-tui").unwrap_or_default();
-        if let Ok(program) = std::fs::canonicalize(path.trim()) {
-            if let Some(package) = program.parent().and_then(Path::parent) {
-                if package.join("package.json").is_file() {
-                    point(
-                        &dir.join("profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui"),
-                        Some(package),
-                    )?;
-                }
-            }
+        if let Ok(program) = std::fs::canonicalize(path.trim())
+            && let Some(package) = program.parent().and_then(Path::parent)
+            && package.join("package.json").is_file()
+        {
+            point(
+                &dir.join("profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui"),
+                Some(package),
+            )?;
         }
     }
     Ok(dir)

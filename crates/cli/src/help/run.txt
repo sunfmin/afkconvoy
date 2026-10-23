@@ -393,6 +393,6 @@ WHAT TRIPS YOU UP
   The fleet's plugin supplies role, repo and team rules, role skills before
   yours, and the stage's model as written. It asks `afkconvoy guard` before
   every tool call and reports running/idle, including interruption, to orca.
-  A Node supervisor withholds input until the plugin activates, refusing a
-  missing or broken plugin. It forwards terminal input in raw mode; Ctrl+C
-  interrupts the running turn and leaves the session open.
+  The TUI and agent loop require the guard plugin's loader service, so a
+  missing or broken plugin starts neither. Ctrl+C interrupts the running turn
+  and leaves the interactive session open.

@@ -1,3 +1,9 @@
+# Required loader services are additive to each plugin's own dependencies.
+# No TUI or agent loop can mount before the guard has installed its listeners.
+- id: agent-loop
+  inject: [afkconvoyGuard]
+- id: dsh-tui
+  inject: [afkconvoyGuard]
 - id: approval
   config:
     policy: never

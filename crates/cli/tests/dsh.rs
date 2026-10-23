@@ -37,7 +37,22 @@ fn dsh_is_read_on_stages_patrols_and_the_repo_and_is_probed_before_start() {
     let config = world.afk(&["config"]).ok();
     assert_eq!(config["harness"], "dsh");
     // All entry points refuse a wrapper that cannot take the overlay.
-    for args in [vec!["tick", "--instance", "a", "--host", "h1", "--now", "1000"]] {
+    for args in [
+        vec!["tick", "--instance", "a", "--host", "h1", "--now", "1000"],
+        vec![
+            "run",
+            "--instance",
+            "a",
+            "--host",
+            "h1",
+            "--now",
+            "1000",
+            "--ticks",
+            "1",
+            "--second-ms",
+            "0",
+        ],
+    ] {
         let why =
             world.afk(&[args.as_slice(), &["--worker-command", "dsh=agent"]].concat()).error();
         assert!(why.contains("names no --patch"), "{why}");
@@ -103,7 +118,6 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
         .env("AFKCONVOY_WORKTREE", root.join("project"))
         .env("AFKCONVOY_TEAM_DIR", root.join("team"))
         .env("DSH_HOME", root.join("host"))
-        .env("AFKCONVOY_DSH_READY", root.join("ready"))
         .env("AFKCONVOY_HARNESS", "dsh")
         .env("AFKCONVOY_STAGE", "review")
         .env("AFKCONVOY_WRITES", "false")
@@ -147,8 +161,10 @@ process.env.ORCA_AGENT_PANE = 'test-pane'
 process.env.ORCA_AGENT_LAUNCH = 'test-launch'
 const listeners = new Map()
 let rules
-apply({ on: (event, fn) => listeners.set(event, fn), systemPrompt: { section: s => rules = s.text } })
-assert(existsSync('ready'))
+let activated = false
+apply({ on: (event, fn) => listeners.set(event, fn), systemPrompt: { section: s => rules = s.text },
+  provide: (name, value) => { assert.equal(name, 'afkconvoyGuard'); assert.equal(value, true); activated = true } })
+assert(activated)
 for (const rule of ['role-rules', 'team-rules', 'project-rules', 'host-rules', 'role-skill']) assert(rules.includes(rule))
 assert(!rules.includes('shadowed-skill'))
 const call = listeners.get('tools/pre-execute')
@@ -176,8 +192,117 @@ assert.equal(await listeners.get('agent/pre-step')({}, () => 'continued'), 'cont
 assert.deepEqual(await listeners.get('agent/request')({}, async () => ({ model: 'default', provider: 'deepseek' })), { model: 'stage-model', provider: 'deepseek' })
 process.env.AFKCONVOY_GUARD = 'exit 3'
 // Guard command captured at activation; a second worker captures the broken one.
-process.env.AFKCONVOY_DSH_READY = 'ready-again'
-apply({ on: (event, fn) => listeners.set(event, fn), systemPrompt: { section() {} } })
+apply({ on: (event, fn) => listeners.set(event, fn), systemPrompt: { section() {} }, provide() {} })
 assert.equal((await listeners.get('tools/pre-execute')({ name: 'read', arguments: {} }, next)).kind, 'deny')
 server.close()
 "#;
+
+#[test]
+fn the_generated_line_uses_native_guard_dependencies_and_quotes_every_path() {
+    use afkconvoy_core::role::{Facts, On, Start, Told};
+    use std::io::Write;
+    use std::process::Stdio;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("a role's paths");
+    std::fs::create_dir_all(&root).unwrap();
+    let kept = keep_under(&root.join("cache"), Some(&root), Harness::Dsh, false).unwrap();
+    let overlay = std::fs::read_to_string(kept.join("afkconvoy.patch.yml")).unwrap();
+    assert_eq!(overlay.matches("inject: [afkconvoyGuard]").count(), 2);
+    let role = root.join("role");
+    let project = root.join("project");
+    let team = root.join("team");
+    std::fs::create_dir_all(&project).unwrap();
+    write(&role, "CLAUDE.md", "role-rules");
+    write(&role, ".dsh/cordis.patch.yml", "[]\n");
+    write(&team, "CLAUDE.md", "team-rules");
+    write(
+        &root,
+        "worker.mjs",
+        r#"
+import { pathToFileURL } from 'node:url'
+const { apply } = await import(pathToFileURL(process.env.DSH_HOME + '/afkconvoy.mjs'))
+apply({ on() {}, systemPrompt: { section() {} }, provide() {} })
+process.stdin.once('data', input => {
+  console.log(JSON.stringify({ input: input.toString(), cwd: process.cwd(),
+    harness: process.env.AFKCONVOY_HARNESS, stage: process.env.AFKCONVOY_STAGE,
+    model: process.env.AFKCONVOY_DSH_MODEL, args: process.argv.slice(2) }))
+  process.exit(0)
+})
+"#,
+    );
+    let start = Start {
+        role_dir: role.to_str().unwrap(),
+        worktree: project.to_str().unwrap(),
+        team_dir: team.to_str().unwrap(),
+        model: Some("deepseek-stage"),
+        guard: "true",
+        kept: kept.to_str().unwrap(),
+        host_user: false,
+        shadowed: &[],
+        told: Told::default(),
+        facts: Facts {
+            on: On::Stage { issue: 7, flow: "feature", stage: "build" },
+            role: "dev",
+            skill: "build",
+            writes: true,
+            consult: false,
+            base_branch: "main",
+            escalate_label: "stuck",
+            lock_label: "halt",
+            role_commit: "abc",
+            team_commit: "def",
+        },
+    };
+    let launch = afkconvoy_core::line::Line::new()
+        .fixed("node ")
+        .word(root.join("worker.mjs").to_str().unwrap())
+        .own();
+    let line = Harness::Dsh.in_role(&launch, &start);
+    let run = |line: &str| {
+        let mut child = Command::new("sh")
+            .args(["-c", line])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"the worker's brief").unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let output = run(&line);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(read["input"], "the worker's brief");
+    assert_eq!(read["cwd"], role.to_str().unwrap());
+    assert_eq!(read["harness"], "dsh");
+    assert_eq!(read["stage"], "build");
+    assert_eq!(read["model"], "deepseek-stage");
+    assert_eq!(
+        read["args"],
+        serde_json::json!([
+            "--patch",
+            role.join(".dsh/cordis.patch.yml"),
+            "--patch",
+            kept.join("afkconvoy.patch.yml"),
+            project,
+        ])
+    );
+    std::fs::remove_file(kept.join("afkconvoy.mjs")).unwrap();
+    let output = run(&line);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("guard file afkconvoy.mjs is missing")
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn doctor_names_both_programs_a_dsh_worker_needs() {
+    for program in ["dsh-tui", "dsh"] {
+        let world = bound();
+        world.shell_knows(program, None);
+        let diagnosis = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
+        let text = diagnosis.to_string();
+        assert!(text.contains(program) && text.contains("not installed"), "{diagnosis}");
+    }
+}

@@ -218,6 +218,7 @@ another role's nor is inside one. It holds:
                                        permissions it denies
     .pi/extensions/                    its limits for pi: extensions
     .codex/hooks.json                  its limits for codex: hooks
+    .dsh/cordis.patch.yml              its limits for dsh: a DSH overlay
 
 Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
 an entry of `.claude/skills/` in the directory of the role beside it. The rules and the
@@ -291,8 +292,6 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 `afkconvoy help workflows`  the stages an issue passes through, and every key of them
 `afkconvoy help patrols`    a role run on a schedule, intake and the fleet lock
 `afkconvoy help glossary`   each term used here, with its one definition
-
-    .dsh/cordis.patch.yml  the role's DeepSeek Harness limits, in DSH patch form
 
 A DSH worker runs dsh-tui with a fleet-owned profile and --patch overlay;
 its guard, rules, skills and stage model are supplied at start. See
