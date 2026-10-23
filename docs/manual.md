@@ -1287,8 +1287,7 @@ stands and cannot be worked
 the fleet's state cannot be read
     GitHub, the remote or the config failed to answer; `evidence` says which.
 harness is down
-    Identical prompt refusals hold claims; one pending prompt probes every 5m.
-    Run `afkconvoy switch --instance <id> --harness codex --all` (pi if Codex is down).
+    Identical refusals hold claims and pause it; a prompt probes every 5m. Run `fix`.
 ````
 
 ### WHAT `doctor` FINDS — warning: one issue or one patrol is held up. A warning may be the fleet mid-step: run `doctor` again after a tick before you act on one.
@@ -1308,7 +1307,7 @@ longer than any stage before it took
 is one rework from a breaker
     The next `reject` escalates the issue. Nothing to do yet: `afkconvoy help humans`.
 is paused on this host
-    A harness refused every prompt: no worker starts on it till an hourly probe answers.
+    It refused every prompt: no worker starts on it till an hourly probe answers.
 does not run: its last run failed
     The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
 have reached its `max_open`
