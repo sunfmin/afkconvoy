@@ -85,7 +85,8 @@ A RUN NOW
   passes `every` and `max_runs_a_day`, and nothing else: a fleet lock, `max_open`
   or `max_landed_a_day` reached, a failed run still reported, or a run still going refuse
   the ask. It is claimed as a due run is, so of several hosts one runs it. It is recorded
-  as the patrol's run, asked for: `every` counts from its start, and `max_runs_a_day` counts
+  as the patrol's run, asked for: `every` counts from its start, and `max_runs_a_day`
+  counts
   it among the day's. What trips you up: `afkconvoy patrol-now --help`.
 
 INTAKE
