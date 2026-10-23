@@ -126,12 +126,22 @@ pub fn tell(
                 }
                 keep(&path, &evidence)?;
                 if report {
-                    let why = description(harness, &evidence.reason);
+                    let instance = crate::log::Log::of(&repo)
+                        .ok()
+                        .and_then(|log| log.read())
+                        .and_then(|entries| {
+                            entries
+                                .into_iter()
+                                .rev()
+                                .find(|entry| entry.of_run() && !entry.instance.is_empty())
+                                .map(|entry| entry.instance)
+                        });
+                    let why = description(harness, &evidence.reason, instance.as_deref());
                     eprintln!("{why}");
                     let _ = crate::log::Log::of(&repo).and_then(|log| {
                         log.append(&crate::log::Entry {
                             at: now,
-                            instance: String::new(),
+                            instance: instance.unwrap_or_default(),
                             host: gethostname::gethostname().to_string_lossy().into_owned(),
                             what: crate::log::What::Command {
                                 command: "harness_down".into(),
@@ -161,29 +171,33 @@ pub fn tell(
     }
 }
 
-fn description(harness: Harness, reason: &str) -> String {
+fn switch_command(harness: Harness, instance: Option<&str>) -> String {
     format!(
-        "{} harness is down: {reason}; claims are held, prompts stop, and one pending prompt probes every {PROBE_SECONDS}s; switch with `afkconvoy switch --harness {} --all`",
-        harness.key(),
+        "afkconvoy switch --instance {} --harness {} --all",
+        instance.unwrap_or("<id>"),
         if harness == Harness::Codex { "claude-code" } else { "codex" }
     )
 }
 
-pub fn findings(repo: &Repo) -> Result<Vec<crate::doctor::Finding>> {
+fn description(harness: Harness, reason: &str, instance: Option<&str>) -> String {
+    format!(
+        "{} harness is down: {reason}; claims are held, prompts stop, and one pending prompt probes every {PROBE_SECONDS}s; switch with `{}`",
+        harness.key(),
+        switch_command(harness, instance)
+    )
+}
+
+pub fn findings(repo: &Repo, instance: Option<&str>) -> Result<Vec<crate::doctor::Finding>> {
     let mut found = vec![];
     for harness in Harness::ALL {
         let evidence = read(&file(repo, harness)?)?;
         if evidence.down() {
-            found.push(crate::doctor::Finding {
-                severity: crate::doctor::Severity::Critical,
-                what: format!("{} harness is down", harness.key()),
-                evidence: description(harness, &evidence.reason),
-                fix: format!(
-                    "afkconvoy switch --harness {} --all",
-                    if harness == Harness::Codex { "claude-code" } else { "codex" }
-                ),
-                see: crate::topic::See::Troubleshooting,
-            });
+            found.push(crate::doctor::finding(
+                crate::doctor::Kind::HarnessDown,
+                format!("{} harness is down", harness.key()),
+                description(harness, &evidence.reason, instance),
+                switch_command(harness, instance),
+            ));
         }
     }
     Ok(found)
@@ -225,11 +239,12 @@ mod tests {
         assert_eq!(sends.get(), 3);
         assert!(holds(&worker, 101).unwrap());
         assert!(!down(&repo, Harness::Codex, 101).unwrap());
-        let found = findings(&repo).unwrap();
+        let found = findings(&repo, Some("alpha")).unwrap();
         assert_eq!(found.len(), 1);
         assert!(found[0].evidence.contains("organization disabled subscription access"));
         assert!(found[0].evidence.contains("claims are held"));
         assert!(found[0].fix.contains("afkconvoy switch"));
+        assert_eq!(found[0].fix, "afkconvoy switch --instance alpha --harness codex --all");
         for now in 101..400 {
             assert!(tell(&worker, "one", now, refuse).unwrap_err().is::<Held>());
         }
@@ -241,7 +256,7 @@ mod tests {
         }
         assert_eq!(sends.get(), 4);
         tell(&worker, "three", 700, || Ok(())).unwrap();
-        assert!(findings(&repo).unwrap().is_empty());
+        assert!(findings(&repo, None).unwrap().is_empty());
         assert!(!holds(&worker, 700).unwrap());
         tell(&worker, "one", 701, || {
             sends.set(sends.get() + 1);
@@ -268,7 +283,7 @@ mod tests {
                 tell(&worker, "one", 1, || Err(anyhow::anyhow!("terminal disappeared"))).is_err()
             );
         }
-        assert!(findings(&Repo::new(worker.path.clone())).unwrap().is_empty());
+        assert!(findings(&Repo::new(worker.path.clone()), None).unwrap().is_empty());
     }
 
     #[test]
