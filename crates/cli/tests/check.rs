@@ -1207,3 +1207,17 @@ fn a_role_named_with_its_dir_says_its_own_host_user_and_check_answers_each_role_
         ["team.md: roles.reviewer.at", "team.md: roles.reviewer.host_user"]
     );
 }
+
+#[test]
+fn check_reports_whether_the_team_offers_splitting() {
+    for (key, expected) in [("", true), ("split: true\n", true), ("split: false\n", false)] {
+        let team = TEAM.replace("```\n", &format!("{key}```\n"));
+        let world = bound(&[("team.md", &team), ("workflows/feature.md", FEATURE)]);
+        assert_eq!(world.afk(&["check"]).ok()["split"], expected);
+    }
+    let team = TEAM.replace("```\n", "split: 0\n```\n");
+    let world = bound(&[("team.md", &team), ("workflows/feature.md", FEATURE)]);
+    let answer = world.afk(&["check"]);
+    assert_eq!(answer.code, 1);
+    assert_eq!(faults(&answer.json), ["team.md: split"]);
+}
