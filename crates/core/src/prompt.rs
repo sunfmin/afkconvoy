@@ -299,7 +299,21 @@ reads this terminal: never wait for an answer.
 ## Stage records
 
 {records}
-<rework><gate>
+<rework><gate><split>
+## Before an `escalate`
+
+<precedents_first>
+## Declare a verdict
+
+The stage ends when you declare its verdict with this command, and not before; its `--help` says
+what it takes. Then stop.
+```bash
+{verdict_command}
+```
+";
+
+/// The procedure offered only by teams that allow splitting.
+const SPLIT: &str = "
 ## Splitting the issue
 
 A stage that finds its issue too large for one piece of work may split it, with these commands and
@@ -316,17 +330,6 @@ in this order:
 
 The issue is then parked on them, and when they have all closed this stage runs again, to judge the
 whole.
-
-## Before an `escalate`
-
-<precedents_first>
-## Declare a verdict
-
-The stage ends when you declare its verdict with this command, and not before; its `--help` says
-what it takes. Then stop.
-```bash
-{verdict_command}
-```
 ";
 
 /// What a stage running again is told of the rejection that sent the issue
@@ -345,8 +348,7 @@ This stage runs again: the stage `{rejecter}` rejected the work it was handed. I
 const PARKED: &str = "
 ## After a park
 
-This stage runs again: it declared `blocked`, and {waited}. If those are the issues this stage
-split its issue into, judge the whole now: declare `already-satisfied` when they left nothing more
+This stage runs again: it declared `blocked`, and {waited}. <after_park> declare `already-satisfied` when they left nothing more
 to do, or go on with what is left. What the stage said as it parked:
 
 {reason}
@@ -663,6 +665,8 @@ pub struct StageFields<'a> {
     /// history. When the last is a `reject`, a ruling or a human's sending,
     /// the stage runs for it; a consult rules on the last, an `escalate`.
     pub records: &'a [Said<'a>],
+    /// Whether the team offers splitting in its stage briefs.
+    pub split: bool,
     /// The line the worker declares its verdict with.
     pub verdict_command: &'a str,
     /// The line the worker takes an issue in with, before what names the
@@ -750,6 +754,15 @@ pub fn stage_prompt(fields: &StageFields) -> Result<String, String> {
     let template = with_rules(STAGE, "worktree", fields.team_rules)
         .replace("<rework>", why)
         .replace("<gate>", &gate)
+        .replace("<split>", if fields.split { SPLIT } else { "" })
+        .replace(
+            "<after_park>",
+            if fields.split {
+                "If those are the issues this stage\nsplit its issue into, judge the whole now:"
+            } else {
+                "Judge what is left now:"
+            },
+        )
         .replace("<precedents_first>", PRECEDENTS_FIRST);
     fill(
         &template,
@@ -1554,6 +1567,7 @@ mod tests {
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
             intake_command: "/opt/bin/afkconvoy intake",
+            split: true,
             workflows: &["feature".to_string(), "small fix".to_string()],
             gate: None,
         };
@@ -1743,6 +1757,7 @@ mod tests {
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage plan",
             intake_command: "cd '/wt/issue-7' && /opt/bin/afkconvoy intake",
+            split: true,
             workflows: &["feature".to_string(), "fix".to_string()],
             gate: None,
         };
@@ -1762,6 +1777,12 @@ mod tests {
         let split = prompt.find("## Splitting the issue").unwrap();
         assert!(split < prompt.find("## Declare a verdict").unwrap(), "before the verdict");
         assert!(!prompt.contains("## After a park"), "{prompt}");
+
+        let off = StageFields { split: false, ..fields.clone() };
+        let without = stage_prompt(&off).unwrap();
+        assert!(!without.to_lowercase().contains("split"), "{without}");
+        assert!(!without.contains("gh issue create"), "{without}");
+        assert!(without.contains("## Declare a verdict"));
 
         // The stage that parked runs again once what it waited on closed.
         let parked = StageRecord {
@@ -1790,6 +1811,10 @@ mod tests {
         assert!(again.contains("declare `already-satisfied` when they left nothing more\nto do"));
         assert!(again.contains("> Split in two:\n> #11 the parser, #12 the printer.\n"), "{again}");
         assert!(!again.contains("## Rework") && !again.contains("<rework>"), "{again}");
+        let without = stage_prompt(&StageFields { records: &records, ..off }).unwrap();
+        assert!(!without.contains("split its issue"), "{without}");
+        assert!(!without.contains("## Splitting"), "{without}");
+        assert!(without.contains("Judge what is left now:"), "{without}");
         // A human's `blocked` names no issue, and parks nothing.
         let unnamed = StageRecord { blocked_by: vec![], by: Author::Human, ..parked.clone() };
         let records = [Said { record: &unnamed, url: "https://gh/c/2" }];
@@ -1828,6 +1853,7 @@ mod tests {
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
             intake_command: "/opt/bin/afkconvoy intake",
+            split: true,
             workflows: &["feature".to_string()],
             gate: Some(Gate {
                 train: "cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train",
@@ -1914,6 +1940,7 @@ mod tests {
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
             intake_command: "cd '/wt/issue-7' && /opt/bin/afkconvoy intake",
+            split: true,
             workflows: &["feature".to_string(), "fix".to_string()],
             gate: Some(Gate {
                 train: "cd '/wt/issue-7' && /opt/bin/afkconvoy gate --train",
@@ -2147,6 +2174,7 @@ mod tests {
             records: &[],
             verdict_command: "/opt/bin/afkconvoy verdict --issue 7 --stage build",
             intake_command: "/opt/bin/afkconvoy intake",
+            split: true,
             workflows: &workflows,
             gate: None,
         };
