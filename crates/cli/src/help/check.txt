@@ -67,7 +67,7 @@ WHAT IT ANSWERS
   claude-code where it names none — and with `--team` and `--dir`, which read no
   config.
   `dsh_profile` is `fleet` (default) or `host-user`: which profile DSH workers
-  load, independently of host_user. A role may override the team's choice; check
+  load, independently of host_user. A role may say its own choice; check
   answers its effective dsh_profile and refuses every other value.
 
   Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above",

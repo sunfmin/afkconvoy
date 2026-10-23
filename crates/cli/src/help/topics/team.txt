@@ -35,7 +35,7 @@ THE TEAM FILE
   beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
 
   `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`.
-  A role's `{ dir, dsh_profile }` overrides it. Details: `afkconvoy run --help`.
+  A role's `{ dir, dsh_profile }` says its own. Details: `afkconvoy run --help`.
   `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
 
 HOW IT NAMES A ROLE
