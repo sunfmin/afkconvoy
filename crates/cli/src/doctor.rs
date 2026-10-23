@@ -1390,7 +1390,9 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         run: &run,
         state: state.as_ref().map_err(String::as_str),
     };
-    let found = findings(&seen);
+    let mut found = findings(&seen);
+    found.extend(crate::harness_down::findings(&repo)?);
+    found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
             state.held.iter().map(held_json).collect(),

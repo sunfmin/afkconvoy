@@ -148,6 +148,9 @@ fn start(
         None => fleet.harness(),
     };
     let launch = agent.command(harness)?;
+    if crate::harness_down::down(&fleet.repo, harness, fleet.now)? {
+        return Err(crate::harness_down::Held.into());
+    }
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
     // In an unbound repo, an escalated issue is the stock consult's.
     let consult = match staged {
