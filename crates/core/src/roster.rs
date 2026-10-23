@@ -31,7 +31,13 @@ pub struct Guidance {
 /// each harness the role holds no limits for while it holds limits for
 /// another (`team::unlimited`) — which `check` would refuse.
 pub fn allowed(role: &Role, range: &[Held]) -> Vec<Held> {
-    range.iter().filter(|held| unlimited(role, held.harness).is_none()).cloned().collect()
+    let mut allowed = vec![];
+    for held in range {
+        if unlimited(role, held.harness).is_none() {
+            allowed.push(held.clone());
+        }
+    }
+    allowed
 }
 
 /// Each harness and model `range` holds, as a drafter and a reader are told
@@ -69,11 +75,12 @@ pub fn draft_prompt(team: &Team, range: &[Held]) -> String {
     prompt.push_str("\nRoles, each with the work the team asks of it and what it may run:\n");
     let duties = team.duties();
     for role in &team.roles {
-        let asked: Vec<String> = duties
-            .iter()
-            .filter(|(name, _, _)| name == &role.name)
-            .map(|(_, by, skill)| format!("{by}, performing the skill `{skill}`"))
-            .collect();
+        let mut asked: Vec<String> = vec![];
+        for (name, by, skill) in &duties {
+            if name == &role.name {
+                asked.push(format!("{by}, performing the skill `{skill}`"));
+            }
+        }
         let asked = if asked.is_empty() { "no work yet".to_string() } else { asked.join("; ") };
         let may = each(&allowed(role, range));
         let may = if may.is_empty() { "nothing".to_string() } else { may.join(", ") };
@@ -137,11 +144,12 @@ pub fn draft(team: &Team, range: &[Held], strengths: &[Strength], guidance: &[Gu
     let mut draft = String::new();
     for role in &team.roles {
         let allowed = allowed(role, range);
-        let left: Vec<&str> = range
-            .iter()
-            .filter(|held| !allowed.iter().any(|kept| kept.harness == held.harness))
-            .map(|held| held.harness.key())
-            .collect();
+        let mut left: Vec<&str> = vec![];
+        for held in range {
+            if !allowed.iter().any(|kept| kept.harness == held.harness) {
+                left.push(held.harness.key());
+            }
+        }
         if allowed.is_empty() {
             draft.push_str(&format!(
                 "  # {}: drafted nothing; it holds limits for none of the host kit's harnesses \
