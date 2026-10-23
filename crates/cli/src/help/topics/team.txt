@@ -61,8 +61,8 @@ HOW IT NAMES A ROLE
       .dsh/cordis.patch.yml              its limits for dsh: a DSH overlay
 
   Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
-  an entry of `.claude/skills/` in the role's directory. Rules and skills are written once.
-  DSH runs dsh-tui with a fleet-owned profile and --patch guard. How every harness
+  an entry of `.claude/skills/` in the role. Rules and skills are written once.
+  DSH runs dsh-tui with a fleet-owned DSH_HOME and --patch guard. How every harness
   loads the role is in `afkconvoy run --help`. Limits are written once for each harness,
   in its own form: pi and Codex run no hook of `.claude/settings.json`.
 

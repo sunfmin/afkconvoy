@@ -26,8 +26,10 @@ pub(super) const KEPT: Kept = Kept {
         },
     ],
     host_user: &[
-        Link { home: ".dsh/skills", kept: "skills" },
+        Link { home: ".dsh/skills", kept: "host-skills" },
         Link { home: ".dsh/AGENTS.md", kept: "AGENTS.md" },
+        Link { home: ".agents/skills", kept: "host-agents-skills" },
+        Link { home: ".agents/AGENTS.md", kept: "agents/AGENTS.md" },
     ],
     files: &[
         ("profiles/dsh-tui/package.json", include_str!("dsh/profile.json")),

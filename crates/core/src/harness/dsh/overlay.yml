@@ -4,6 +4,16 @@
   inject: [afkconvoyGuard]
 - id: dsh-tui
   inject: [afkconvoyGuard]
+# The TUI disables this base row in favor of preset discovery. Restore it
+# with explicit roots, role first, under a distinct provider name. User
+# skills live outside default discovery so preset providers cannot shadow
+# a role's skill in their own scope. Equal-rank roots keep list order.
+- id: skill-filesystem
+  disabled: false
+  config:
+    providerName: afkconvoy-role
+    includeDefaultRoots: false
+    customSkillDirs: !!js "[process.cwd() + '/.claude/skills', process.env.DSH_HOME + '/host-skills', process.env.DSH_HOME + '/host-agents-skills']"
 - id: approval
   config:
     policy: never

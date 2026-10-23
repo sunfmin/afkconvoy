@@ -62,7 +62,8 @@ WHAT IT ANSWERS
   the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in
   by workers may be open (default 50), and the default harness: the one every worker
   runs that its stage or its patrol names none for (default claude-code, Claude Code;
-  the others are pi, codex (Codex), and dsh (DeepSeek Harness)). A host where `afkconvoy switch` chose a harness
+  the others are pi, codex (Codex), and dsh (DeepSeek Harness)). A host where
+  `afkconvoy switch` chose a harness
   starts every worker of the repo on that one instead, whatever this key says. A repo that names no team is unbound and answers
   the eight above and one more: {"escalate_to"} — where a hand-off to a human goes first.
   `consult` (the default): the stock consult, afkconvoy's own, is asked first and stands
@@ -85,6 +86,6 @@ WHAT TRIPS YOU UP
     once it is on the base branch.
 
   DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH,
-  on a fleet-owned DSH_HOME and profile. The --patch overlay loads the guard
+  on a fleet-owned DSH_HOME. The --patch overlay loads the guard
   and orca state plugin; the role's directory, skills, rules, stage model
   and issue's worktree are supplied as described in `afkconvoy run --help`.

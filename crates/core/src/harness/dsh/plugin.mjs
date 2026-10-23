@@ -122,10 +122,10 @@ export function apply(ctx) {
     if (running.delete(agent.id) && running.size === 0) return tell('Stop', agent)
     return reports
   })
-  const text = rules(home, ['AGENTS.md']) +
+  const text = rules(join(home, 'agents'), ['AGENTS.md']) + rules(home, ['AGENTS.md']) +
     '\nThe brief, role, team and repo rules take precedence over host user rules.\n' +
     rules(role, ['CLAUDE.md']) + rules(team, ['CLAUDE.md']) + rules(worktree, ['AGENTS.md', 'CLAUDE.md']) +
-    skills([join(role, '.claude/skills'), join(home, 'skills')])
+    skills([join(role, '.claude/skills'), join(home, 'host-skills'), join(home, 'host-agents-skills')])
   ctx.systemPrompt.section({ name: 'afkconvoy-rules', order: 0, text })
   ctx.on('agent/request', async (_event, next) => {
     const config = await next()

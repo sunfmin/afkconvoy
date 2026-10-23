@@ -81,11 +81,16 @@ fn a_dsh_profile_links_only_credentials_and_opted_in_skills_and_rules() {
         write(&home, &format!(".dsh/{name}"), text);
     }
     let cache = temp.path().join("cache");
+    write(&home, ".agents/skills/common/SKILL.md", "common-skill");
+    write(&home, ".agents/AGENTS.md", "common-rules");
     for host_user in [true, false] {
         let kept = keep_under(&cache, Some(&home), Harness::Dsh, host_user).unwrap();
         assert!(kept.join(".credentials.yaml").is_symlink());
         assert_eq!(kept.join("AGENTS.md").exists(), host_user);
-        assert_eq!(kept.join("skills").exists(), host_user);
+        assert_eq!(kept.join("host-skills").exists(), host_user);
+        assert!(!kept.join("skills").exists());
+        assert_eq!(kept.join("host-agents-skills").exists(), host_user);
+        assert_eq!(kept.join("agents/AGENTS.md").exists(), host_user);
         assert!(!kept.join("settings.yaml").exists());
         assert!(!kept.join("cordis.patch.yml").exists());
         assert!(!kept.join("profiles/dsh-tui/cordis.patch.yml").exists());
@@ -109,7 +114,11 @@ fn the_plugin_refuses_through_the_real_guard_and_reports_running_and_interrupted
     write(root, "project/AGENTS.md", "project-rules");
     write(root, "host/AGENTS.md", "host-rules");
     write(root, ".claude/skills/build/SKILL.md", "---\nname: build\ndescription: role-skill\n---");
-    write(root, "host/skills/build/SKILL.md", "---\nname: build\ndescription: shadowed-skill\n---");
+    write(
+        root,
+        "host/host-skills/build/SKILL.md",
+        "---\nname: build\ndescription: shadowed-skill\n---",
+    );
     write(root, "driver.mjs", DRIVER);
     let output = Command::new("node")
         .arg(root.join("driver.mjs"))
@@ -371,4 +380,41 @@ fn native_dsh_loader_refuses_a_worker_without_its_guard_service() {
     let output = run(true);
     assert!(!output.status.success());
     assert!(!kept.join("started").exists());
+    // Exercise native filesystem discovery too: all three roots have the
+    // same name, and the canonical role skill must be the selected one.
+    write(&kept, "afkconvoy.mjs", include_str!("../../core/src/harness/dsh/plugin.mjs"));
+    for (dir, description) in [
+        (root.join(".claude/skills/shared"), "role-skill"),
+        (kept.join("host-skills/shared"), "host-skill"),
+        (kept.join("host-agents-skills/shared"), "agents-skill"),
+    ] {
+        write(&dir, "SKILL.md", &format!("---\nname: shared\ndescription: {description}\n---\n"));
+    }
+    write(
+        &kept,
+        "profiles/smoke/package.json",
+        "{\"name\":\"convoy-smoke\",\"private\":true,\"dsh\":{\"profile\":{\"bundles\":[\"@deepseek-ai/dsh-base\"]}}}\n",
+    );
+    write(
+        &kept,
+        "profiles/smoke/cordis.patch.yml",
+        "- insert:\n    - id: dsh-tui\n      name: ../../worker.mjs\n    - id: control\n      name: ../../skills-control.mjs\n",
+    );
+    write(
+        &kept,
+        "skills-control.mjs",
+        r#"
+export const inject = ['skills', 'agentLoop']
+export function apply(ctx) {
+  setTimeout(async () => {
+    try {
+      const skills = await ctx.skills.list({ cwd: process.cwd() })
+      process.exit(skills.some(skill => skill.name === 'shared' && skill.description === 'role-skill') ? 0 : 1)
+    } catch(error) { console.error(error); process.exit(1) }
+  }, 100)
+}
+"#,
+    );
+    let output = run(true);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }

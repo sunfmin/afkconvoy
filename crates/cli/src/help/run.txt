@@ -384,11 +384,13 @@ WHAT TRIPS YOU UP
   It starts in its role's copy, with the stage facts and AFKCONVOY_HARNESS=dsh,
   DSH_HOME set to harness/dsh-host-user under the fleet's cache (harness/dsh
   with host_user: false), and the issue's worktree as the TUI's path argument.
-  A fleet-owned profile loads the stock base and TUI bundles, the role's own
+  The fleet's DSH_HOME loads the stock base and TUI bundles, the role's own
   .dsh/cordis.patch.yml where present, and the fleet's --patch overlay last.
   Only credentials (.credentials.yaml), skills and rules (skills, AGENTS.md)
-  are linked from your DSH_HOME (default ~/.dsh). Dependency resolution uses
-  your installed dsh-tui profile's node_modules; its manifest and patches,
+  are linked from your DSH_HOME (default ~/.dsh), beside the skills and AGENTS.md
+  of DSH_AGENTS_HOME (default ~/.agents). The role's native skill provider ranks
+  its canonical skills ahead of these user roots. Dependency resolution uses
+  your installed dsh-tui dependencies; its manifest and patches,
   and your home patches, MCP servers and plugins, are never loaded or edited.
   The fleet's plugin supplies role, repo and team rules, role skills before
   yours, and the stage's model as written. It asks `afkconvoy guard` before

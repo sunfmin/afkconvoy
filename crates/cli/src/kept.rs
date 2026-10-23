@@ -74,10 +74,16 @@ pub fn keep_under(
     }
     for link in kept.links.iter().chain(theirs) {
         let theirs = if harness == Harness::Dsh {
-            std::env::var_os("DSH_HOME")
-                .filter(|dir| !dir.is_empty())
-                .map(PathBuf::from)
-                .map(|dir| dir.join(link.home.strip_prefix(".dsh/").unwrap_or(link.home)))
+            let custom =
+                link.home.strip_prefix(".dsh/").map(|path| ("DSH_HOME", path)).or_else(|| {
+                    link.home.strip_prefix(".agents/").map(|path| ("DSH_AGENTS_HOME", path))
+                });
+            custom
+                .and_then(|(variable, path)| {
+                    std::env::var_os(variable)
+                        .filter(|dir| !dir.is_empty())
+                        .map(|dir| PathBuf::from(dir).join(path))
+                })
                 .or_else(|| home.map(|home| home.join(link.home)))
         } else {
             home.map(|home| home.join(link.home))
