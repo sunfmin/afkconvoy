@@ -1542,7 +1542,7 @@ fn role_entry<'n>(
             return None;
         }
     };
-    let host_user = match get(entries, key) {
+    let host_user = match get(entries, HOST_USER_KEY) {
         None => Some(team),
         Some(Node::Bool(host_user)) => Some(*host_user),
         Some(other) => {
@@ -1589,7 +1589,7 @@ fn precedents_key(
 fn team_bool_key(faults: &mut Vec<Fault>, sources: &Sources, key: &str) -> bool {
     let mut report = Report { file: &sources.team.path, faults };
     let Ok(Node::Map(entries)) = &sources.team.yaml else { return true };
-    match get(entries, HOST_USER_KEY) {
+    match get(entries, key) {
         None => true,
         Some(Node::Bool(host_user)) => *host_user,
         Some(other) => {

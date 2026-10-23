@@ -2046,6 +2046,7 @@ mod tests {
             gate_alone_command: "/opt/bin/afkconvoy gate",
             enters: Enters::Intake {
                 command: "/opt/bin/afkconvoy intake --train",
+                split: true,
                 workflows: &workflows,
             },
         };
@@ -2173,7 +2174,6 @@ mod tests {
             base_branch: "develop",
             precedents: "/copies/acme/team/def/precedents.md",
             team_rules,
-            split: true,
             workflows: &["feature"],
             room: 2,
             intake_command: "/opt/bin/afkconvoy intake",
