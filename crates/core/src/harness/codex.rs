@@ -372,6 +372,26 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
         .done()
 }
 
+/// The line that sends `model` of Codex's the one-line `prompt` through
+/// `command`, under the user directory `kept` a worker of it is given, and
+/// prints its answer: one session, outside any repo, kept nowhere.
+pub(super) fn prompt_question(command: &str, kept: &str, model: &str, prompt: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command)
+        .fixed(" exec --skip-git-repo-check --ephemeral ")
+        .fixed(MODEL)
+        .fixed(" ")
+        .word(model)
+        .fixed(" ")
+        .word(prompt)
+        .done()
+}
+
 /// The models Codex lists in `answer`, what it printed for `models_question`,
 /// each by the name its `MODEL` flag takes: the `slug` of each model in the
 /// JSON there, whatever a shell printed around it, the ones Codex shows in no

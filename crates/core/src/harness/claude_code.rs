@@ -53,6 +53,21 @@ pub(super) const FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
 /// What Claude Code is asked for the flags it takes.
 const HELP: &str = " --help";
 
+/// The line that sends `model` the one-line `prompt` through `command`, a
+/// worker launch command of Claude Code's, and prints its answer. Claude
+/// Code keeps its logins with the host's user, as a worker finds them.
+pub(super) fn prompt_question(command: &str, model: &str, prompt: &str) -> String {
+    Line::new()
+        .launch(command)
+        .fixed(" ")
+        .fixed(MODEL)
+        .fixed(" ")
+        .word(model)
+        .fixed(" --print ")
+        .word(prompt)
+        .done()
+}
+
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's: no hook, no MCP server, no
 /// permission of theirs.

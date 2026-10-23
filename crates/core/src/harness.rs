@@ -251,6 +251,25 @@ impl Harness {
         }
     }
 
+    /// The shell line that sends `model` the one-line `prompt` through the
+    /// worker launch command `command`, with what the host keeps for it in
+    /// `kept`, and prints the model's answer. `None`: the fleet has no way
+    /// to send it one but a worker's terminal.
+    pub fn prompt_question(
+        self,
+        command: &str,
+        kept: &str,
+        model: &str,
+        prompt: &str,
+    ) -> Option<String> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::prompt_question(command, model, prompt)),
+            Harness::Pi => Some(pi::prompt_question(command, kept, model, prompt)),
+            Harness::Codex => Some(codex::prompt_question(command, kept, model, prompt)),
+            Harness::Dsh => None,
+        }
+    }
+
     /// The models it knows, given what the worker's shell printed for
     /// `models_question`. `None`: it said none, and a model named for it is
     /// passed as written.
