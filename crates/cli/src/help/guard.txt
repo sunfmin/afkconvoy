@@ -33,7 +33,9 @@ WHAT IT READS AND WRITES
   describes it to an extension — `toolName` and `input` — and only a `bash` call is
   judged, the same way. Codex describes its own as Claude Code does, and a `Bash` call
   is judged; its `apply_patch` hands the text of a patch as `tool_input.command`, which
-  is no shell line and is not judged as one. What is refused is decided once, for all.
+  is no shell line and is not judged as one. DSH describes a call with `name` and
+  `arguments`: `bash` and `bash_persistent` are judged by `arguments.command`.
+  What is refused is decided once, for all.
 
   The environment: the facts of the worker's stage, which the fleet put there when it
   started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT,
@@ -83,3 +85,8 @@ WHAT TRIPS YOU UP
     commit or a PR a patrol left is a failed run, reported to a human — see
     `afkconvoy tick --help`.
   - An unbound repo's workers have no guard: their worker launch command is opaque.
+
+  DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH,
+  on a fleet-owned DSH_HOME. The --patch overlay loads the guard
+  and orca state plugin; the role's directory, skills, rules, stage model
+  and issue's worktree are supplied as described in `afkconvoy run --help`.

@@ -603,6 +603,11 @@ case "$2" in
     echo "  -c, --config <key=value>"; echo "  -m, --model <MODEL>"
     echo "      --dangerously-bypass-approvals-and-sandbox"
     echo "      --dangerously-bypass-hook-trust"; echo "      --add-dir <DIR>"; exit 0 ;;
+  "dsh-tui --help")
+    if [ -f "$root/shell-help" ]; then cat "$root/shell-help"; exit 0; fi
+    echo 'Leading DSH options: --patch <path>'; exit 0 ;;
+  "command -v dsh")
+    exec "$0" -lic "type -- 'dsh'" ;;
   "pi --help")
     echo "Usage:"; echo "  pi [options] [--] [@files...] [messages...]"
     echo "  --model <pattern>              Model pattern or ID"

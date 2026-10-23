@@ -1,0 +1,1 @@
+{"name":"afkconvoy-dsh","private":true,"dependencies":{"@deepseek-harness-tui/dsh-tui":"*"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-harness-tui/dsh-tui"]}}}

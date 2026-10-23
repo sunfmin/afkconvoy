@@ -149,7 +149,7 @@ _Avoid_: freeze, pause, kill switch
 ### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third. An issue's casting names the one its workers run, within their role's range; the host kit names the stock consult's. A host where a switch chose one starts every worker of the repo on that one.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third, and DeepSeek Harness (DSH) the fourth. An issue's casting names the one its workers run, within their role's range; the host kit names the stock consult's. A host where a switch chose one starts every worker of the repo on that one.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Roster**:
