@@ -39,7 +39,7 @@ const SKILL: &str = "--skill";
 /// pi's flag for an extension to load.
 const EXTENSION: &str = "--extension";
 /// pi's flag for the model of the session.
-const MODEL: &str = "--model";
+pub(super) const MODEL: &str = "--model";
 /// Every flag the fleet adds: what a worker launch command that starts pi
 /// must take.
 pub(super) const FLAGS: [&str; 5] = [APPROVE, NO_SKILLS, SKILL, EXTENSION, MODEL];

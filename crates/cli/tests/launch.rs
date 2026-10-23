@@ -250,12 +250,41 @@ fn kit_without_terminal_writes_nothing() {
 #[test]
 fn plan_and_doctor_show_the_host_kit() {
     let world = backlog();
+    world.kit_command("pi", "pi");
+    let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    kit["harnesses"][1]["models"] = json!([
+        {"model": "a/fast", "probed": {"at": 900, "seconds": 1.5}},
+        {"model": "a/slow", "probed": {"at": 901, "seconds": 9.0}},
+    ]);
+    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
     for args in [&["plan", "--now", "1000"][..], &["doctor", "--host", "h1", "--now", "1000"][..]] {
         let answer = world.afk(args).json;
         let kit = if args[0] == "plan" { &answer["host_kit"] } else { &answer["host"]["host_kit"] };
         assert_eq!(kit["path"], world.kit_path().display().to_string());
-        assert_eq!(kit["commands"]["claude-code"], "agent");
+        assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
+        assert_eq!(kit["harnesses"][0]["command"], "agent");
+        assert_eq!(
+            kit["stock_consult"],
+            json!({"harness": "claude-code", "model": null, "named": false})
+        );
+        assert_eq!(kit["harnesses"][1]["harness"], "pi");
+        assert_eq!(kit["harnesses"][1]["models"][0]["model"], "a/fast");
+        assert_eq!(kit["harnesses"][1]["models"][1]["probed"]["at"], 901);
     }
+    // The stock consult the human named, on a model the host kit holds.
+    kit["stock_consult"] = json!({"harness": "pi", "model": "a/slow"});
+    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+    let shown = world.afk(&["plan", "--now", "1000"]).json;
+    assert_eq!(
+        shown["host_kit"]["stock_consult"],
+        json!({"harness": "pi", "model": "a/slow", "named": true})
+    );
+    // …and one it does not hold is no host kit.
+    kit["stock_consult"] = json!({"harness": "pi", "model": "a/none"});
+    std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+    let shown = world.afk(&["plan", "--now", "1000"]).json;
+    let error = shown["host_kit"]["error"].as_str().unwrap();
+    assert!(error.contains("invalid host kit") && error.contains("a/none"), "{error}");
 }
 
 #[test]
@@ -264,7 +293,7 @@ fn a_missing_required_harness_refuses_the_entire_start() {
 
     // The feature uses Claude Code; the audit workflow also calls for it.
     let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
-    kit["commands"].as_object_mut().unwrap().remove("claude-code");
+    kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "claude-code");
     std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
     let error = world.afk(&TICK).error();
     assert!(error.contains("claude-code") && error.contains("afkconvoy kit"), "{error}");

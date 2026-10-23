@@ -49,7 +49,7 @@ const CONFIG: &str = "--config";
 /// the review would take the worker's brief for its answer.
 const HOOKS_REVIEWED: &str = "--dangerously-bypass-hook-trust";
 /// Codex's flag for the model of the session.
-const MODEL: &str = "--model";
+pub(super) const MODEL: &str = "--model";
 /// Every flag the fleet adds: what a worker launch command that starts
 /// Codex must take.
 pub(super) const FLAGS: [&str; 4] = [ADD_DIR, HOOKS_REVIEWED, CONFIG, MODEL];

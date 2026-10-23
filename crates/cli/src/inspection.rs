@@ -242,13 +242,17 @@ enum Started {
 
 /// Who an inspection is started as, and how.
 enum As {
-    /// The stock consult of an unbound repo, started with the repo's one
-    /// command: its instruction is in its brief, and nothing guards it.
-    Unbound,
+    /// The stock consult of an unbound repo, started with the worker launch
+    /// command of the harness the host kit names for it, on its model: its
+    /// instruction is in its brief, and nothing guards it.
+    Unbound { harness: Harness, model: Option<String> },
     /// A role's consult, or the stock consult, of a bound repo: started in
     /// its role, guarded as a consult.
     Bound {
         harness: Harness,
+        /// The stock consult's model, as the host kit names it: none of a
+        /// role's consult.
+        model: Option<String>,
         role: String,
         skill: String,
         role_copy: Copy,
@@ -263,19 +267,33 @@ enum As {
 impl As {
     fn role(&self) -> &str {
         match self {
-            As::Unbound => stock::ROLE,
+            As::Unbound { .. } => stock::ROLE,
             As::Bound { role, .. } => role,
+        }
+    }
+
+    fn harness(&self) -> Harness {
+        match self {
+            As::Unbound { harness, .. } | As::Bound { harness, .. } => *harness,
         }
     }
 }
 
+/// The stock consult of an unbound repo, on what the host kit names for it.
+fn unbound_as(fleet: &Fleet) -> Result<As> {
+    let stock = fleet.stock_consult()?;
+    Ok(As::Unbound { harness: stock.harness, model: stock.model })
+}
+
 /// The stock consult of the repo `bound` to a team, which inspects the host:
-/// on the repo's default harness.
+/// on what the host kit names for it.
 fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
     let copies = Copies::here()?;
     let kept = keep(&fleet.gh, &copies, &bound.team, &fleet.config.labels())?;
+    let stock = fleet.stock_consult()?;
     Ok(As::Bound {
-        harness: bound.harness,
+        harness: stock.harness,
+        model: stock.model,
         role: stock::ROLE.to_string(),
         skill: stock::SKILL.to_string(),
         role_copy: copies.stock()?,
@@ -302,7 +320,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
         .and_then(|(labels, records)| Some((workflow_of(&kept.team, labels).ok()?, records)));
     let place = workflow.map(|(workflow, records)| history(workflow, records).place);
     let stage = place.as_ref().and_then(|place| place.position.stage());
-    let (harness, role, skill, role_copy, host_user, dsh_profile) = match inspector(stage) {
+    let (harness, model, role, skill, role_copy, host_user, dsh_profile) = match inspector(stage) {
         None => return Ok(None),
         // A consult a stage names runs on the repo's default harness.
         Some(Who::Role(work)) => {
@@ -310,6 +328,7 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
             let copy = kept.role(role, bound.harness)?;
             (
                 bound.harness,
+                None,
                 role.name.clone(),
                 work.skill.clone(),
                 copy,
@@ -317,20 +336,23 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
                 role.dsh_profile,
             )
         }
-        // The stock consult runs on the stage's.
-        Some(Who::Stock) => (
-            fleet.harness_of(
-                stage.and_then(|stage| stage.harness(bound.harness)).unwrap_or(bound.harness),
-            ),
-            stock::ROLE.to_string(),
-            stock::SKILL.to_string(),
-            copies.stock()?,
-            kept.team.host_user,
-            kept.team.dsh_profile,
-        ),
+        // The stock consult runs what the host kit names for it.
+        Some(Who::Stock) => {
+            let stock = fleet.stock_consult()?;
+            (
+                stock.harness,
+                stock.model,
+                stock::ROLE.to_string(),
+                stock::SKILL.to_string(),
+                copies.stock()?,
+                kept.team.host_user,
+                kept.team.dsh_profile,
+            )
+        }
     };
     Ok(Some(As::Bound {
         harness,
+        model,
         role,
         skill,
         role_copy,
@@ -503,16 +525,13 @@ impl Inspector {
                 let who = stock_as(&fleet, bound)?;
                 let label = match &who {
                     As::Bound { escalate_label, .. } => escalate_label.clone(),
-                    As::Unbound => fleet.config.escalate_label.clone(),
+                    As::Unbound { .. } => fleet.config.escalate_label.clone(),
                 };
                 (who, label)
             }
-            None => (As::Unbound, fleet.config.escalate_label.clone()),
+            None => (unbound_as(&fleet)?, fleet.config.escalate_label.clone()),
         };
-        let harness = match &who {
-            As::Unbound => fleet.harness(),
-            As::Bound { harness, .. } => *harness,
-        };
+        let harness = who.harness();
         let launch = agent.command(harness)?;
         let running = Running {
             repo: fleet.repo.main_checkout()?.display().to_string(),
@@ -550,10 +569,10 @@ impl Inspector {
                 checkout: &path,
                 role: who.role(),
                 skill: match &who {
-                    As::Unbound => stock::SKILL,
+                    As::Unbound { .. } => stock::SKILL,
                     As::Bound { skill, .. } => skill,
                 },
-                instruction: matches!(who, As::Unbound).then_some(stock::INSTRUCTION),
+                instruction: matches!(who, As::Unbound { .. }).then_some(stock::INSTRUCTION),
                 inspected_command: &crate::own_command_in(&path).fixed(" inspected").own(),
             };
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
@@ -589,7 +608,7 @@ impl Inspector {
             .ok_or_else(|| anyhow!("what shows {} hot is not taken down", hot.worker))?;
         let who = match &fleet.config.bound {
             Some(bound) => bound_as(&fleet, bound, hot.issue)?,
-            None => fleet.config.stock_consult().then_some(As::Unbound),
+            None => fleet.config.stock_consult().then(|| unbound_as(&fleet)).transpose()?,
         };
         let Some(who) = who else {
             let why = match fleet.config.bound {
@@ -598,10 +617,7 @@ impl Inspector {
             };
             return Ok(Started::Nobody(why.to_string()));
         };
-        let harness = match &who {
-            As::Unbound => fleet.harness(),
-            As::Bound { harness, .. } => *harness,
-        };
+        let harness = who.harness();
         let launch = agent.command(harness)?;
         let running = Running {
             repo: fleet.repo.main_checkout()?.display().to_string(),
@@ -632,10 +648,10 @@ impl Inspector {
                 checkout: &path,
                 role: who.role(),
                 skill: match &who {
-                    As::Unbound => stock::SKILL,
+                    As::Unbound { .. } => stock::SKILL,
                     As::Bound { skill, .. } => skill,
                 },
-                instruction: matches!(who, As::Unbound).then_some(stock::INSTRUCTION),
+                instruction: matches!(who, As::Unbound { .. }).then_some(stock::INSTRUCTION),
                 inspected_command: &crate::own_command_in(&path).fixed(" inspected").own(),
             };
             let brief =
@@ -670,8 +686,12 @@ fn command(
     fleet: &Fleet,
     worker: &str,
 ) -> Result<String> {
+    if let As::Unbound { harness, model: Some(model) } = who {
+        return Ok(harness.with_model(launch, model));
+    }
     let As::Bound {
         harness,
+        model,
         role,
         skill,
         role_copy,
@@ -690,7 +710,7 @@ fn command(
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &checkout.path.display().to_string(),
         team_dir: &team_copy.dir.display().to_string(),
-        model: None,
+        model: model.as_deref(),
         guard: &crate::own_command().fixed(" guard").own(),
         kept: &kept,
         host_user: *host_user,

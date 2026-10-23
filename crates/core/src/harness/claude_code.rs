@@ -44,7 +44,7 @@ const ADD_DIR: &str = "--add-dir";
 /// Claude Code's flag for which settings it loads.
 const SETTING_SOURCES: &str = "--setting-sources";
 /// Claude Code's flag for the model of the session.
-const MODEL: &str = "--model";
+pub(super) const MODEL: &str = "--model";
 /// Claude Code's flag for settings added to those it loads.
 const SETTINGS: &str = "--settings";
 /// Every flag the fleet adds: what a worker launch command that starts

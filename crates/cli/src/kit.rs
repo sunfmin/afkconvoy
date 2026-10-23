@@ -140,7 +140,8 @@ pub fn path() -> Result<PathBuf> {
 
 pub fn load() -> Result<Kit> {
     let file = path()?;
-    let unreadable = || format!("cannot read the host kit at {}: run `afkconvoy kit`", file.display());
+    let unreadable =
+        || format!("cannot read the host kit at {}: run `afkconvoy kit`", file.display());
     let text = std::fs::read_to_string(&file).with_context(unreadable)?;
     let kit: Kit = serde_json::from_str(&text).with_context(unreadable)?;
     if let Some(fault) = kit.fault() {
@@ -326,9 +327,10 @@ fn edit(
     push_new(&mut order, Harness::ALL);
     let mut commands: Vec<(Harness, String)> = vec![];
     for harness in order {
-        let had = current.command(harness).map(str::to_string).or_else(|| {
-            discovered.contains(&harness).then(|| harness.stock().to_string())
-        });
+        let had = current
+            .command(harness)
+            .map(str::to_string)
+            .or_else(|| discovered.contains(&harness).then(|| harness.stock().to_string()));
         let shown = had.as_deref().unwrap_or("absent");
         let Some(answer) = reply(input, out, &format!("{}: {shown}\n> ", harness.key()))? else {
             return Ok(None);
@@ -413,8 +415,11 @@ fn edit(
             continue;
         }
         let names: Vec<String> = held.models.iter().map(|seen| seen.model.clone()).collect();
-        let prompt =
-            format!("Order of {}'s models, first first: {}\n> ", held.harness.key(), names.join(" "));
+        let prompt = format!(
+            "Order of {}'s models, first first: {}\n> ",
+            held.harness.key(),
+            names.join(" ")
+        );
         let Some(names) = ask(input, out, &prompt, |typed| ordered(&names, typed))? else {
             return Ok(None);
         };
@@ -486,7 +491,9 @@ mod tests {
 
     /// Lists `gpt-a gpt-b` for Codex, nothing for the rest; every model
     /// answers but `bad`, in two seconds, and DSH's cannot be sent one.
-    fn host(probed: &std::cell::RefCell<Vec<Asked>>) -> impl Fn(&[u8]) -> (Result<Option<Kit>>, String) {
+    fn host(
+        probed: &std::cell::RefCell<Vec<Asked>>,
+    ) -> impl Fn(&[u8]) -> (Result<Option<Kit>>, String) {
         move |replies: &[u8]| {
             let listed = |harness: Harness, _: &str| match harness {
                 Harness::Codex => Some(Some(vec!["gpt-a".into(), "gpt-b".into()])),
@@ -539,7 +546,9 @@ mod tests {
         let summary: Vec<(Harness, &str, Vec<&str>)> = kit
             .harnesses
             .iter()
-            .map(|h| (h.harness, h.command.as_str(), h.models.iter().map(|m| m.model.as_str()).collect()))
+            .map(|h| {
+                (h.harness, h.command.as_str(), h.models.iter().map(|m| m.model.as_str()).collect())
+            })
             .collect();
         assert_eq!(
             summary,
@@ -559,7 +568,9 @@ mod tests {
         let asked: Vec<(Harness, String)> =
             probed.borrow().iter().map(|(h, _, m)| (*h, m.clone())).collect();
         assert_eq!(asked.len(), 6, "{asked:?}");
-        assert!(probed.borrow().iter().any(|(h, c, _)| *h == Harness::Codex && c == "mycodex --yolo"));
+        assert!(
+            probed.borrow().iter().any(|(h, c, _)| *h == Harness::Codex && c == "mycodex --yolo")
+        );
         for said in [
             "dsh: the fleet has no way to ask it for its models",
             "claude-code bad: did not answer",
@@ -585,7 +596,10 @@ mod tests {
     #[test]
     fn the_stock_consult_runs_what_is_named_or_the_host_kit_s_first() {
         let mut kit = Kit {
-            harnesses: vec![held(Harness::Pi, "pi", &["a/b", "c/d"]), held(Harness::Codex, "codex", &[])],
+            harnesses: vec![
+                held(Harness::Pi, "pi", &["a/b", "c/d"]),
+                held(Harness::Codex, "codex", &[]),
+            ],
             stock_consult: None,
         };
         let first = Named { harness: Harness::Pi, model: Some("a/b".into()) };
@@ -607,9 +621,11 @@ mod tests {
         };
         let text = serde_json::to_string(&kit).unwrap();
         assert_eq!(serde_json::from_str::<Kit>(&text).unwrap(), kit);
-        assert!(serde_json::from_str::<Kit>(r#"{"harnesses":[{"harness":"x","command":"x"}]}"#)
-            .unwrap_err()
-            .to_string()
-            .contains("is no harness"));
+        assert!(
+            serde_json::from_str::<Kit>(r#"{"harnesses":[{"harness":"x","command":"x"}]}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("is no harness")
+        );
     }
 }
