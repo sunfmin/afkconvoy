@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import http from 'node:http'
 export const name = 'afkconvoy'
+export const inject = ['systemPrompt']
 
 function fact(name) {
   const value = process.env[name]
@@ -114,5 +115,14 @@ export function apply(ctx) {
   })
   // Retain the middleware's continuation: ignoring it prevents every turn.
   ctx.on('agent/pre-step', (_event, next) => next())
-  writeFileSync(ready, 'ready\n', { flag: 'wx' })
+// The supervisor owns the physical terminal's raw mode and forwards bytes
+  // only after this point. Expose that terminal input to Ink through its
+  // stream API, without letting Ink change the supervisor's terminal mode.
+  if (process.env.AFKCONVOY_DSH_TTY === 'true' && !process.stdin.isTTY) {
+    Object.defineProperty(process.stdin, 'isTTY', { value: true })
+    process.stdin.setRawMode = () => process.stdin
+    process.stdin.ref = () => process.stdin
+    process.stdin.unref = () => process.stdin
+  }
+  writeFileSync(ready, 'ready\n')
 }

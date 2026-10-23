@@ -20,7 +20,10 @@ pub(super) const KEPT: Kept = Kept {
         Link { home: ".dsh/.credentials.yaml", kept: ".credentials.yaml" },
         // Only dependency resolution is shared; neither the user's profile
         // manifest nor any patch is loaded by the fleet's profile.
-        Link { home: ".dsh/profiles/dsh-tui/node_modules", kept: "profiles/dsh-tui/node_modules" },
+        Link {
+            home: ".dsh/profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui",
+            kept: "profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui",
+        },
     ],
     host_user: &[
         Link { home: ".dsh/skills", kept: "skills" },
@@ -39,6 +42,8 @@ pub(super) const KEPT: Kept = Kept {
 pub(super) fn environment(line: Line, start: &Start) -> Line {
     line.fixed(" DSH_HOME=")
         .word(start.kept)
+        .fixed(" DSH_AGENTS_HOME=")
+        .word(&format!("{}/agents", start.kept))
         .fixed(" DSH_TUI_PROFILE=dsh-tui DSH_PERMISSION_MODE=danger-full-access")
         .fixed(" AFKCONVOY_GUARD=")
         .word(start.guard)

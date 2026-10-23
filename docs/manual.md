@@ -291,6 +291,12 @@ key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 `afkconvoy help workflows`  the stages an issue passes through, and every key of them
 `afkconvoy help patrols`    a role run on a schedule, intake and the fleet lock
 `afkconvoy help glossary`   each term used here, with its one definition
+
+    .dsh/cordis.patch.yml  the role's DeepSeek Harness limits, in DSH patch form
+
+A DSH worker runs dsh-tui with a fleet-owned profile and --patch overlay;
+its guard, rules, skills and stage model are supplied at start. See
+`afkconvoy run --help` for the complete worker launch command.
 ````
 
 
@@ -1531,7 +1537,7 @@ _Avoid_: freeze, pause, kill switch
 #### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third. A stage names the one its worker runs, or takes the fleet's default. A host where a switch chose one starts every worker of the repo on that one.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third, and DeepSeek Harness (DSH) the fourth. A stage names the one its worker runs, or takes the fleet's default. A host where a switch chose one starts every worker of the repo on that one.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Worker**:

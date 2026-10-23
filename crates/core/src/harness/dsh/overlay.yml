@@ -7,4 +7,4 @@
     workspaceRoot: !!js process.env.AFKCONVOY_WORKTREE
 - insert:
     - id: afkconvoy
-      name: !!js process.env.DSH_HOME + '/afkconvoy.mjs'
+      name: '@AFKCONVOY_DSH_PLUGIN@'

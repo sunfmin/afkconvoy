@@ -22,7 +22,22 @@ use crate::copies::cache;
 /// `host_user` it is the directory that links to the host user's skills and
 /// rules too (`Kept::host_user`); without, the one that holds none of them.
 pub fn keep(harness: Harness, host_user: bool) -> Result<PathBuf> {
-    keep_under(&cache()?, home().as_deref(), harness, host_user)
+    let dir = keep_under(&cache()?, home().as_deref(), harness, host_user)?;
+    if harness == Harness::Dsh {
+        // Prefer the installed program's package to an editable profile copy.
+        let (_, path) = crate::launch::ask_login_shell("command -v dsh-tui").unwrap_or_default();
+        if let Ok(program) = std::fs::canonicalize(path.trim()) {
+            if let Some(package) = program.parent().and_then(Path::parent) {
+                if package.join("package.json").is_file() {
+                    point(
+                        &dir.join("profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui"),
+                        Some(package),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(dir)
 }
 
 /// The home of the host's user, where it has one.
@@ -52,7 +67,11 @@ pub fn keep_under(
         std::fs::create_dir_all(&dir).with_context(|| put("anything"))?;
     }
     for (name, text) in kept.files {
-        carry(&dir.join(name), text).with_context(|| put(name))?;
+        let text = text.replace(
+            "@AFKCONVOY_DSH_PLUGIN@",
+            &dir.join("afkconvoy.mjs").display().to_string().replace('\'', "''"),
+        );
+        carry(&dir.join(name), &text).with_context(|| put(name))?;
     }
     for link in kept.links.iter().chain(theirs) {
         let theirs = if harness == Harness::Dsh {

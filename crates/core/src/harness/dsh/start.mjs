@@ -9,16 +9,18 @@ const dir = mkdtempSync(join(tmpdir(), 'afkconvoy-dsh-'))
 const ready = join(dir, 'ready')
 const quote = text => "'" + text.replaceAll("'", "'\\''") + "'"
 const [, , launch, kept, role, worktree] = process.argv
+for (const file of ['afkconvoy.mjs', 'afkconvoy.patch.yml']) {
+  if (!existsSync(join(kept, file))) {
+    console.error(`afkconvoy: DSH guard file ${file} is missing; refusing worker`)
+    rmSync(dir, { recursive: true, force: true })
+    process.exit(1)
+  }
+}
 const limits = join(role, '.dsh/cordis.patch.yml')
 const command = launch + (existsSync(limits) ? ' --patch ' + quote(limits) : '') +
   ' --patch ' + quote(join(kept, 'afkconvoy.patch.yml')) + ' ' + quote(worktree)
-// script supplies a real PTY to the interactive TUI while the supervisor
-// withholds input until activation. It is part of the supported Unix hosts.
-const scriptArgs = process.platform === 'darwin'
-  ? ['-q', '/dev/null', 'sh', '-c', command]
-  : ['-q', '-e', '-c', command, '/dev/null']
-const child = spawn('script', scriptArgs, {
-  env: { ...process.env, AFKCONVOY_DSH_READY: ready },
+const child = spawn('sh', ['-c', command], {
+  env: { ...process.env, AFKCONVOY_DSH_READY: ready, AFKCONVOY_DSH_TTY: String(process.stdin.isTTY === true) },
   stdio: ['pipe', 'inherit', 'inherit'],
   detached: true,
 })
@@ -32,7 +34,8 @@ const timer = setInterval(() => {
     process.stdin.pipe(child.stdin)
   } else if (Date.now() - started > 30000) {
     console.error('afkconvoy: DSH guard plugin did not activate; refusing worker')
-    process.kill(-child.pid, 'SIGTERM')
+    try { process.kill(-child.pid, 'SIGTERM') } catch {}
+    setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL') } catch {} }, 1000).unref()
     clearInterval(timer)
   }
 }, 25)
@@ -40,7 +43,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => { try { process.kill(-child.pid, signal) } catch {} })
 }
 child.stdin.on('error', () => {})
-child.on('error', (error) => { console.error(error.message); process.exitCode = 1 })
+child.on('error', (error) => { console.error(error.message); clearInterval(timer); process.exitCode = 1 })
 child.on('close', (code) => {
   clearInterval(timer)
   process.stdin.unpipe(child.stdin)
