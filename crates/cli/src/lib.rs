@@ -34,6 +34,7 @@ pub mod config;
 pub mod copies;
 pub mod dispatch;
 pub mod doctor;
+pub mod draft;
 pub mod evidence;
 pub mod exclusive;
 pub mod fleet;
@@ -203,6 +204,20 @@ enum Command {
         issue: Option<u64>,
         #[command(flatten)]
         team: TeamArgs,
+    },
+    /// Draft a team's roster from this host's host kit, into the team file of its working tree
+    #[command(after_long_help = include_str!("help/draft.txt"))]
+    Draft {
+        /// The team's working tree [default: this directory]
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        /// The team's directory on GitHub the working tree is of, as owner/repo or
+        /// owner/repo/path: a role it names as ./path is read from that repo
+        #[arg(long, value_parser = team_dir)]
+        team: Option<RepoDir>,
+        /// Replace a roster the team file holds without asking
+        #[arg(long)]
+        yes: bool,
     },
     /// Say where an issue would be after each of a list of verdicts, starting no worker
     #[command(after_long_help = include_str!("help/rehearse.txt"))]
@@ -1059,6 +1074,7 @@ impl Command {
             | Command::Flows
             | Command::Skill
             | Command::Show { .. }
+            | Command::Draft { .. }
             | Command::Rehearse { .. }
             | Command::Doctor { .. }
             | Command::Plan { .. }
@@ -1094,6 +1110,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         }
         Command::Flows => flows::flows(&Repo::here()?),
         Command::Skill => Ok(Value::String(SKILL.to_string())),
+        Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),
         Command::Show { workflow, issue, team } => {
             let loaded = team::load(team.from())?;
             // A workflow is not named by a number: one given is an issue's.
@@ -1400,6 +1417,7 @@ mod tests {
         &["flows"],
         &["skill"],
         &["show"],
+        &["draft"],
         &["rehearse", "build"],
         &["doctor"],
         &["plan"],

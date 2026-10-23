@@ -130,6 +130,16 @@ impl World {
         std::fs::write(self.root.join("caster-answer"), answer).unwrap();
     }
 
+    /// Has the model a roster's draft is asked of answer `answer`.
+    pub fn drafter_answers(&self, answer: &str) {
+        std::fs::write(self.root.join("drafter-answer"), answer).unwrap();
+    }
+
+    /// The prompt the model a roster's draft is asked of was sent last.
+    pub fn drafter_asked(&self) -> String {
+        std::fs::read_to_string(self.root.join("drafter-asked")).unwrap_or_default()
+    }
+
     /// Has every model's probe answered from here on.
     pub fn probes_answer(&self) {
         std::fs::write(self.root.join("probes-answer"), "").unwrap();
@@ -675,6 +685,11 @@ case "$2" in
     # A caster's prompt: answered with what `caster-answer` holds.
     printf '%s' "$2" > "$root/caster-asked"
     if [ -f "$root/caster-answer" ]; then cat "$root/caster-answer"; exit 0; fi
+    exit 1 ;;
+  *"You are drafting the roster of a team"*)
+    # A drafter's prompt: answered with what `drafter-answer` holds.
+    printf '%s' "$2" > "$root/drafter-asked"
+    if [ -f "$root/drafter-answer" ]; then cat "$root/drafter-answer"; exit 0; fi
     exit 1 ;;
   *"AFKCONVOY_PROBE_ANSWER"*)
     # A model's probe: answered once `probes-answer` is there.

@@ -48,9 +48,9 @@ THE COMMANDS, by who runs them
       doctor  kit  cast  config  check  plan  run  panel  tick  takeover  patrol-now  switch
 
   Whoever designs a team — `scaffold` to start one or a role of it from a skeleton,
-  then, once `check` accepts it, the others: to review a workflow, to try one out with
-  no worker started, or to ask where an issue is in its workflow:
-      scaffold  show  rehearse
+  `draft` to draft its roster from the host kit, then, once `check` accepts it, the
+  others: to review a workflow, to try one out, or to ask where an issue is in it:
+      scaffold  draft  show  rehearse
 
   Whoever hands the fleet work — a human, or the agent a human is talking to, with work
   decided on and issues to open for it. Read it before opening the first: it says which
@@ -123,6 +123,7 @@ DESIGNING A TEAM, for a bound repo
        One more role's skeleton, in that checkout: it answers the line to add to
        team.md. A role several teams share is a repo of its own instead: `--repo`.
   3. afkconvoy check --dir <dir> --team <owner/repo>
+       `afkconvoy draft` with the same flags first drafts the roster into team.md.
        Edit a file, run it, and read the faults: each names its file and key. Repeat
        until it exits 0. `check` reads a role from GitHub only: a role's edit counts
        once it is pushed to its default branch.

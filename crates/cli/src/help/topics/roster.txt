@@ -26,6 +26,12 @@ THE ROSTER
   says, in the team's words, how an issue is to be cast among them: the caster is told
   it too. A role the roster names no entry for may run whatever the host kit holds.
 
+  A roster is drafted rather than written from nothing: `afkconvoy draft`, in a
+  checkout of the team, writes one into team.md from this host's host kit — every
+  role, every harness and model in the host kit's order, what the host kit's first
+  model says each is good at and how to cast — and commits nothing. A human reads
+  it, edits it and commits it; the fleet never changes a team's roster.
+
 A ROLE'S RANGE
 
   On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`),
@@ -61,6 +67,7 @@ WHAT IS REFUSED
 WHERE TO READ ON
 
   `afkconvoy help team`       the team file the roster is a key of
+  `afkconvoy draft --help`    a roster drafted from the host kit
   `afkconvoy kit --help`      what this host can start, and on which models
   `afkconvoy cast --help`     the caster, and the labels it puts on
   `afkconvoy help glossary`   each term used here, with its one definition
