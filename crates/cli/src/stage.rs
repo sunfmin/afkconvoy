@@ -78,6 +78,29 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     if !blocked_by.is_empty() && declared != Declared::Blocked {
         bail!("--blocked-by goes with `blocked` only, not with `{}`", declared.word());
     }
+    let config = crate::config::load(&repo.dir.join(crate::config::FILE))?;
+    if config.bound.is_none() && matches!(declared, Declared::Close | Declared::Park) {
+        let scan = Scan::read(repo)?;
+        let claim = scan.claim_of(issue).ok_or_else(|| anyhow!("issue #{issue} is not claimed"))?;
+        let gh = GitHub { dir: repo.dir.clone() };
+        let comments = gh.comments(issue)?;
+        if !consult || !stock::asked_under(comments.iter().map(|c| c.body.as_str()), &claim.id) {
+            bail!("only the stock consult holding this issue may close or park it");
+        }
+        gh.comment(issue, &format!("**Stock consult — {}**\n\n{text}", declared.word()))?;
+        if declared == Declared::Close {
+            gh.close_issue(issue)?;
+        } else {
+            gh.add_label(issue, stock::PARKED_LABEL)?;
+            let labels = gh.issue(issue)?.labels;
+            for label in [&config.ready_label, &config.escalate_label] {
+                if labels.contains(label) {
+                    gh.remove_label(issue, label)?;
+                }
+            }
+        }
+        return Ok(json!({"issue": issue, "verdict": declared.word(), "declared": true}));
+    }
     let Some(Ran { role_commit, team_commit, harness }) = ran else {
         if !blocked_by.is_empty() {
             bail!("--blocked-by is a worker's: nobody parks an issue no fleet instance holds");
@@ -712,6 +735,17 @@ impl Flows {
         for issue in &open.issues.rows {
             let comments = open.issues.comments(issue.number);
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
+            if config.bound.is_none()
+                && stock::parked(&issue.labels, &config.ready_label, &config.escalate_label)
+            {
+                let since = comments.last().and_then(|comment| comment.at);
+                found.push((
+                    issue.number,
+                    Waits::ParkedUnbound { ready: config.ready_label.clone() },
+                    since,
+                ));
+                continue;
+            }
             let handed = escalate.is_some_and(|label| issue.labels.iter().any(|l| l == label))
                 && label_bar(&issue.labels, config, &self.flow_labels()).is_some();
             let Some(at) = escalated_at(bodies()).filter(|_| handed) else { continue };
