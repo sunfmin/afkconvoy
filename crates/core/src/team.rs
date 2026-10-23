@@ -479,6 +479,13 @@ impl Team {
         held
     }
 
+    /// Every worker the team would have started, whatever the issue, as
+    /// (its role's name, what calls for it in words, the skill it performs):
+    /// what a drafter of the roster is told of each role.
+    pub fn duties(&self) -> Vec<(String, String, String)> {
+        self.runs().into_iter().map(|run| (run.role.name, run.by, run.skill)).collect()
+    }
+
     /// Every worker the team would have started, whatever the issue.
     fn runs(&self) -> Vec<Run> {
         let mut runs = vec![];

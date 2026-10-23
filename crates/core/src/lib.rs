@@ -44,6 +44,7 @@ pub mod recovery;
 #[cfg(flux)]
 mod rejected;
 pub mod role;
+pub mod roster;
 pub mod settle;
 pub mod slow_gate;
 pub mod stage_record;
