@@ -180,7 +180,7 @@ Only each definition file's first ```yaml block is read; the rest explains it.
       <short name>: { dir: <its directory>, host_user: false }   # its own host_user
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
     host_user: true                    # default
-    split: true                        # default; false omits splitting from stage briefs
+    split: true                        # default; false omits splitting
 
 `escalate_label` is the label an issue handed to a human carries in place of its flow
 label. `roles` gives each role the short name a `by` or a `to` says. `precedents`
