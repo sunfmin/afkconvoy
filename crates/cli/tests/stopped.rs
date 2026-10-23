@@ -660,3 +660,30 @@ fn a_refusing_harness_holds_claims_reports_once_and_recovers_without_restart() {
             .any(|finding| finding["what"].as_str().unwrap().contains("harness is down"))
     );
 }
+
+#[test]
+fn a_down_harness_refusing_a_new_dispatch_takes_no_slot() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| orca["prompt_blocked"] = json!("subscription disabled"));
+    for now in [1300, 1390, 1480] {
+        world.afk(&[
+            "tick",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            &now.to_string(),
+            "--worker-command",
+            "agent",
+        ]);
+    }
+    world.close_issue(7);
+    world.issue(9, &["ready-for-agent"]);
+    let held = tick(&world, 1600);
+    assert_eq!(held["errors"], json!([]));
+    assert_eq!(held["held"], 0, "a refused dispatch holds no claim: {held}");
+    assert!(world.claims().is_empty());
+    assert!(did(&held).contains(&"dispatch 9 blocked".to_string()), "{held}");
+}

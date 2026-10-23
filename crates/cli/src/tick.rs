@@ -174,6 +174,16 @@ pub fn tick(
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
             if error.is::<crate::harness_down::Held>() {
+                if let TickStep::Dispatch { issue } = step
+                    && !fleet
+                        .scan
+                        .claim_of(issue)
+                        .is_some_and(|claim| claim.is_held_by(&me.instance))
+                {
+                    // The harness refused admission before a claim was won:
+                    // this must leave the slot free for another harness.
+                    return Outcome::Blocked;
+                }
                 return Outcome::Nothing;
             }
             failures.push(Failure::of(Failed::Step(step), &error));
