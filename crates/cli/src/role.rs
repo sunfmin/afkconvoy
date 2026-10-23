@@ -66,6 +66,8 @@ pub struct Staged {
     /// Whether the worker is given the host user's skills and rules: its
     /// role's say (`Role::host_user`), or the team's for the stock consult.
     host_user: bool,
+    /// Whether the team offers splitting in stage briefs.
+    split: bool,
     /// The team's workflows, by name: what a stage that splits its issue
     /// may take a child in to.
     workflows: Vec<String>,
@@ -193,6 +195,7 @@ impl Staged {
             team_copy: kept.copy.clone(),
             team_rules: kept.rules(),
             host_user,
+            split: kept.team.split,
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
     }
@@ -335,6 +338,7 @@ impl Staged {
             records: &records,
             verdict_command: &declare(" verdict"),
             intake_command: &own().fixed(" intake").own(),
+            split: self.split,
             workflows: &self.workflows,
             gate: self.writes.then_some(Gate { train: &gate, alone: &gate_alone }),
         };

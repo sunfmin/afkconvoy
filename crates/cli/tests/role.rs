@@ -915,3 +915,27 @@ fn a_role_may_keep_from_the_host_user_s_skills_and_rules_while_the_team_s_others
     dispatch(&world, 10).ok();
     assert!(command(10).contains(&kept), "{}", command(10));
 }
+
+#[test]
+fn a_team_can_leave_splitting_out_of_its_dispatched_stage_briefs() {
+    for setting in ["", "split: true\n", "split: false\n"] {
+        let world = bound();
+        let team = world.root.join("github/acme/team");
+        if !setting.is_empty() {
+            commit(&team, "team.md", &TEAM.replace("```\n", &format!("{setting}```\n")));
+        }
+        world.issue(7, &["flow:feature"]);
+        world.issue(8, &["flow:audit"]);
+        tick(&world, 1000).ok();
+        for issue in [7, 8] {
+            let told = brief(&worktree(&world, issue));
+            if setting == "split: false\n" {
+                assert!(!told.contains("## Splitting the issue"), "{told}");
+                assert!(!told.contains("may split it"), "{told}");
+            } else {
+                assert!(told.contains("## Splitting the issue"), "{told}");
+                assert!(told.contains("afkconvoy intake"), "{told}");
+            }
+        }
+    }
+}
