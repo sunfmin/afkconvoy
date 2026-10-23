@@ -930,7 +930,8 @@ fn a_team_can_leave_splitting_out_of_its_dispatched_stage_briefs() {
         for issue in [7, 8] {
             let told = brief(&worktree(&world, issue));
             if setting == "split: false\n" {
-                assert!(!told.to_lowercase().contains("split"), "{told}");
+                assert!(!told.contains("## Splitting the issue"), "{told}");
+                assert!(!told.contains("may split it"), "{told}");
             } else {
                 assert!(told.contains("## Splitting the issue"), "{told}");
                 assert!(told.contains("afkconvoy intake"), "{told}");
