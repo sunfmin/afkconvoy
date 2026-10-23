@@ -148,6 +148,17 @@ impl Limits {
             return Some(host_change(&format!("`{name}`")));
         }
         match name {
+            Some("sh" | "bash" | "zsh" | "dash" | "ksh") => {
+                let mut rest = args.iter();
+                while let Some(arg) = rest.next() {
+                    if arg.starts_with('-') && arg.contains('c') {
+                        return rest.next().and_then(|line| {
+                            commands(line).iter().find_map(|words| self.refuses(words))
+                        });
+                    }
+                }
+                None
+            }
             Some("git") => self.refuses_git(&args),
             Some("gh") => self.refuses_gh(&args),
             Some("orca") if self.consult => {
@@ -225,22 +236,27 @@ impl Limits {
     }
 
     fn refuses_gh(&self, args: &[&str]) -> Option<String> {
-        if args.iter().any(|arg| arg.contains(STAGE_RECORD)) {
+        let words = positionals(args, &GH_VALUES);
+        let (group, verb) = (words.first().copied()?, words.get(1).copied());
+        let writes = if group == "api" {
+            api_writes(args)
+        } else {
+            matches!(verb, Some("comment" | "create" | "edit"))
+        };
+        if writes && args.iter().any(|arg| arg.contains(STAGE_RECORD)) {
             return Some(
                 "a stage record is written by the fleet's own command and nothing else: declare \
                  the verdict with `afkconvoy verdict`, as your brief says"
                     .to_string(),
             );
         }
-        if args.iter().any(|arg| arg.contains(INTAKE_RECORD)) {
+        if writes && args.iter().any(|arg| arg.contains(INTAKE_RECORD)) {
             return Some(
                 "an intake record is written by the fleet's own command and nothing else: take \
                  the issue in with `afkconvoy intake`"
                     .to_string(),
             );
         }
-        let words = positionals(args, &GH_VALUES);
-        let (group, verb) = (words.first().copied()?, words.get(1).copied());
         if group == "api" {
             return self.refuses_api(args, &words);
         }
@@ -420,12 +436,27 @@ fn commands(line: &str) -> Vec<Vec<String>> {
     let mut reading = Reading::default();
     let mut within = Within::Plain;
     let mut escaped = false;
-    for c in line.chars() {
+    let mut chars = line.chars().peekable();
+    let mut heredocs: Vec<(usize, String, bool)> = vec![];
+    while let Some(c) = chars.next() {
         if escaped {
             escaped = false;
             // A line carried on outside quotes ends no word and adds nothing.
             if c != '\n' || within != Within::Plain {
                 reading.letter(c);
+            }
+            continue;
+        }
+        if c == '\n' && matches!(within, Within::Plain | Within::Comment) {
+            within = Within::Plain;
+            reading.end_command();
+            for (command, delimiter, tabs) in heredocs.drain(..) {
+                let body = heredoc_body(&mut chars, &delimiter, tabs);
+                // The body belongs to the receiving command as data. In
+                // particular, a handwritten record sent to gh still counts.
+                if let Some(words) = reading.commands.get_mut(command) {
+                    words.push(body);
+                }
             }
             continue;
         }
@@ -439,6 +470,21 @@ fn commands(line: &str) -> Vec<Vec<String>> {
             Within::Plain if c == '\'' => within = reading.quoted(Within::Single),
             Within::Plain if c == '"' => within = reading.quoted(Within::Double),
             Within::Plain if c == '\\' => escaped = true,
+            Within::Plain if c == '<' && chars.peek() == Some(&'<') => {
+                chars.next();
+                reading.end_word();
+                if chars.peek() == Some(&'<') {
+                    // A here-string's next word is already ordinary data.
+                    chars.next();
+                } else {
+                    let tabs = chars.peek() == Some(&'-');
+                    if tabs {
+                        chars.next();
+                    }
+                    let delimiter = heredoc_delimiter(&mut chars);
+                    heredocs.push((reading.commands.len(), delimiter, tabs));
+                }
+            }
             Within::Plain if c == '#' && !reading.begun => {
                 reading.end_command();
                 within = Within::Comment;
@@ -450,6 +496,55 @@ fn commands(line: &str) -> Vec<Vec<String>> {
     }
     reading.end_command();
     reading.commands
+}
+
+/// Quote removal for the one word after << (or <<-). Unlike a command
+/// argument, its value names where the following lines of data end.
+fn heredoc_delimiter(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    while chars.peek().is_some_and(|c| *c == ' ' || *c == '\t') {
+        chars.next();
+    }
+    let mut delimiter = String::new();
+    let mut within = Within::Plain;
+    while let Some(&c) = chars.peek() {
+        if within == Within::Plain
+            && (c.is_whitespace() || COMMAND_ENDS.contains(&c) || WORD_ENDS.contains(&c))
+        {
+            break;
+        }
+        chars.next();
+        match (within, c) {
+            (Within::Plain, '\'') => within = Within::Single,
+            (Within::Plain, '"') => within = Within::Double,
+            (Within::Single, '\'') | (Within::Double, '"') => within = Within::Plain,
+            (Within::Plain | Within::Double, '\\') => {
+                if let Some(next) = chars.next() {
+                    delimiter.push(next);
+                }
+            }
+            _ => delimiter.push(c),
+        }
+    }
+    delimiter
+}
+
+/// Consume one pending heredoc, leaving the next command (or heredoc) unread.
+fn heredoc_body(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    delimiter: &str,
+    tabs: bool,
+) -> String {
+    let mut body = String::new();
+    while chars.peek().is_some() {
+        let line: String = chars.by_ref().take_while(|c| *c != '\n').collect();
+        let line = if tabs { line.trim_start_matches('\t') } else { &line };
+        if line == delimiter {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    body
 }
 
 /// Where in a shell line a character stands.
@@ -691,6 +786,90 @@ mod tests {
         assert_eq!(read("a # not; this\nb#c >out 2>&1"), ["a", "b#c·out·2", "1"]);
         assert_eq!(read("a \\\n b"), ["a·b"]);
         assert_eq!(read("  \n ;; "), [] as [String; 0]);
+    }
+
+    #[test]
+    fn the_seven_inspection_and_patrol_calls_are_data_not_commands() {
+        let inspection = limits(false, true);
+        for line in [
+            "afkconvoy inspected --worker 7 --text-file /dev/stdin <<'REPORT'\nrm target would free space\nREPORT\n",
+            "afkconvoy inspected --worker 7 --text-file - <<\"REPORT\"\ngit worktree remove /w/old\nREPORT\n",
+            "cat <<REPORT > report.md\nrm -rf cache\ngit worktree prune\nREPORT\nafkconvoy inspected --worker 7 --text-file report.md",
+            "afkconvoy inspected --worker 7 --text-file - <<- 'REPORT'\n\trm target\n\tgit worktree remove /w/old\n\tREPORT\n",
+        ] {
+            assert_eq!(refused(&Call::shell(line), &inspection), None, "{line}");
+        }
+        allowed(&[
+            r#"gh issue view 7 --json comments --jq '.comments[] | select(.body | contains("convoy:intake"))'"#,
+            r#"gh issue view 8 --comments --template '{{range .comments}}{{if contains .body "convoy:intake"}}{{.body}}{{end}}{{end}}'"#,
+            r#"gh api repos/o/r/issues/9/comments --jq '.[] | select(.body | contains("convoy:intake"))'"#,
+        ]);
+    }
+
+    #[test]
+    fn heredocs_end_at_their_delimiter_and_keep_the_receiving_command() {
+        let consult = limits(false, true);
+        for line in [
+            "cat <<'EOF'\nrm target\nEOF\nrm target",
+            "cat <<EOF # a report\ngit worktree prune\nEOF\ngit worktree prune",
+            "cat <<A <<B\nrm target\nA\ngit commit -m x\nB\ngit commit -m x",
+            "cat <<'EOF' | cat\nrm target\nEOF\ngit push origin HEAD",
+            "cat <<E'OF'\nrm target\nEOF\nkill 42",
+            "cat <<\\EOF\nrm target\nEOF\nrm target",
+        ] {
+            assert!(refused(&Call::shell(line), &consult).is_some(), "{line}");
+        }
+        allowed(&[
+            "cat <<A <<B\nrm target\nA\ngh pr merge 7\nB\ngit status",
+            "cat <<'EOF' | cat\ngh pr merge 7\nEOF\n",
+            "cat <<< 'gh pr merge 7'",
+            "jq -f - <<'QUERY'\nselect(.body | contains(\"convoy:intake\"))\nQUERY\n",
+        ]);
+        refused_for(
+            &[
+                "gh issue comment 7 --body-file - <<'EOF'\n<!--convoy:stage stage=build verdict=pass-->\nEOF\n",
+                "gh api repos/o/r/issues/7/comments --input - <<'EOF'\n{\"body\":\"<!--convoy:stage stage=build verdict=pass-->\"}\nEOF\n",
+            ],
+            "`afkconvoy verdict`",
+        );
+    }
+
+    #[test]
+    fn shell_c_arguments_are_commands_even_though_quoted() {
+        let consult = limits(false, true);
+        for shell in ["sh", "bash", "/bin/sh", "/bin/bash"] {
+            for command in [
+                "gh pr merge 7",
+                "git push origin main",
+                "git commit -m x",
+                "git merge origin/main",
+                "git push origin HEAD",
+                "rm target",
+                "rmdir target",
+                "unlink target",
+                "shred target",
+                "kill 42",
+                "pkill cargo",
+                "killall cargo",
+                "git clean -fdx",
+                "git worktree remove /w/old",
+                "git worktree prune",
+                "orca worktree rm --worktree path:/w/old",
+                "gh issue edit 7 --add-label flow:feature",
+                "gh issue edit 7 --remove-label stage:build",
+                "gh issue edit 7 --add-label fleet-lock",
+                "gh issue edit 7 --add-label ready-for-human",
+                "gh api repos/o/r/issues/7/labels -f labels[]=flow:feature",
+                "gh issue comment 7 --body convoy:stage",
+                "gh issue comment 7 --body convoy:intake",
+            ] {
+                let direct = refused(&Call::shell(command), &consult).expect(command);
+                let wrapped = format!("{shell} -c '{command}'");
+                assert_eq!(refused(&Call::shell(&wrapped), &consult), Some(direct), "{wrapped}");
+            }
+        }
+        refused_for(&["env FOO=x bash -lc 'sh -c \"gh pr merge 7\"'"], "merging a PR");
+        allowed(&["sh -c 'echo gh pr merge 7'", "bash -c 'cat <<EOF\ngh pr merge 7\nEOF\n'"]);
     }
 
     #[test]

@@ -70,6 +70,11 @@ WHAT IT ANSWERS
 
 WHAT TRIPS YOU UP
 
+  - Heredoc bodies and quoted arguments are data, not commands: a report may name
+    `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or
+    intake records with `--jq` or `--template`. Sending a handwritten record through
+    a writing `gh` call is still refused, including through a heredoc. The argument
+    after `sh -c` or `bash -c` is executable shell text and is judged as commands.
   - It recognises commands. The same act wrapped in a script, hidden in a variable or
     in a substitution inside quotes gets past it: it stops a worker that errs, not one
     that means to get by.
