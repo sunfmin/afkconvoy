@@ -111,3 +111,27 @@ fn a_switch_wins_over_the_casting() {
     world.afk(&TICK).ok();
     assert_eq!(started(&world), [Harness::Codex.stock()]);
 }
+
+#[test]
+fn a_switch_cleared_lets_the_casting_stand_again_and_moves_the_worker_it_names_onto_it() {
+    let world = cast(&["harness:pi", "model:a/slow"]);
+    let switch = ["switch", "--instance", "alpha", "--host", "h1", "--now", "900"];
+    world.afk(&[&switch[..], &["--harness", "codex"]].concat()).ok();
+    world.afk(&TICK).ok();
+    assert_eq!(started(&world), [Harness::Codex.stock()]);
+
+    let cleared = world.afk(&[&switch[..], &["7", "--clear"]].concat()).ok();
+    assert_eq!(cleared["chosen"], json!({"was": "codex", "now": null}));
+    assert_eq!((&cleared["from"], &cleared["to"]), (&json!("codex"), &json!("pi")), "{cleared}");
+    let pi = Harness::Pi.with_model(Harness::Pi.stock(), "a/slow");
+    assert_eq!(started(&world).last(), Some(&pi));
+
+    // the next worker of the repo runs its casting
+    world.issue(8, &["ready-for-agent", "harness:pi", "model:a/fast"]);
+    let planned = world.afk(&PLAN).ok();
+    let eight = planned["frontier"].as_array().unwrap().iter().find(|issue| issue["number"] == 8);
+    assert_eq!(
+        eight.expect("issue 8 on the frontier")["cast"],
+        json!({"harness": "pi", "model": "a/fast", "why": "casting"})
+    );
+}

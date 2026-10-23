@@ -100,11 +100,23 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     tick(&world, 900);
     assert_eq!(open_commands(&world, &worktree(&world, 8)), [CODEX]);
 
-    // `config` forgets the choice: the config's harness is started again
-    let back = switch(&world, "1000", &["8", "--harness", "config"]).ok();
+    // `--clear` forgets the choice: the worker it names runs what its casting
+    // says again — the host kit's first, for none — recorded as a switch is
+    let eight = worktree(&world, 8);
+    commit(&eight, "eight.txt", "8\n");
+    git(&eight, &["push", "-q", "origin", "HEAD"]);
+    world.pr(80, 8, &git(&eight, &["symbolic-ref", "--short", "HEAD"]));
+    let back = switch(&world, "1000", &["8", "--clear"]).ok();
     assert_eq!(back["chosen"], json!({"was": "codex", "now": null}));
     assert_eq!((&back["from"], &back["to"]), (&json!("codex"), &json!("claude-code")));
-    assert_eq!(open_commands(&world, &worktree(&world, 8)), ["agent"]);
+    assert_eq!(back["pr"], 80);
+    assert_eq!(open_commands(&world, &eight), ["agent"]);
+    let records: Vec<String> =
+        world.comments(80).into_iter().filter(|body| body.contains("convoy:join")).collect();
+    assert_eq!(records.len(), 1);
+    assert!(records[0].contains("switched from `codex` to `claude-code` by `alpha`"));
+    let said = switch(&world, "1000", &["--harness", "config"]).error();
+    assert!(said.contains("`--harness config` is gone: `--clear`"), "{said}");
     assert_eq!(open_commands(&world, &dir), [CODEX], "a worker it names not is left alone");
 }
 

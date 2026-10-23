@@ -9,7 +9,9 @@
 //! The choice is this host's, never the repo's: whoever else works the repo
 //! runs the harness they have, under their own accounts. Every worker this
 //! host starts for the repo afterwards is of the chosen harness, whatever the
-//! config, a stage or a patrol names, until a switch chooses again.
+//! config, a stage, a patrol or an issue's casting names, until a switch
+//! chooses again or `switch --clear` forgets the choice, and each worker runs
+//! what its range and casting say again (docs/adr/0020).
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::harness::Harness;
@@ -52,7 +54,7 @@ pub fn chosen(repo: &Repo) -> Result<Option<Harness>> {
 }
 
 /// Keeps `harness` as this host's choice for the repo of `repo`; `None`
-/// forgets it, and the config's say stands again.
+/// forgets it, and the range's answer to the casting stands again.
 fn choose(repo: &Repo, harness: Option<Harness>) -> Result<()> {
     let file = repo.note(CHOSEN_FILE)?;
     match harness {
@@ -77,10 +79,12 @@ pub enum Which {
     All,
 }
 
-/// `afkconvoy switch`: chooses `to` — `None`, the harness the config names —
-/// as this host's harness for the repo, then moves the workers `which` names
-/// onto it. A harness that cannot be started here is refused before anything
-/// is chosen or any worker ended; so is a claim or a run I do not hold.
+/// `afkconvoy switch`: chooses `to` as this host's harness for the repo —
+/// `None` forgets the choice (`--clear`) — then moves the workers `which`
+/// names onto what each now runs: `to`, or, cleared, what its range and
+/// casting say. A harness chosen that cannot be started here is refused
+/// before anything is chosen or any worker ended; so is a claim or a run I do
+/// not hold.
 pub fn switch(
     fleet: &mut Fleet,
     me: &Me,
@@ -91,8 +95,9 @@ pub fn switch(
     let was = fleet.chosen;
     // What a worker started before any switch kept its harness ran on.
     let before = fleet.harness();
-    let target = to.unwrap_or(fleet.config.harness());
-    startable(&agent.launches, target, CHOSEN_BY)?;
+    if let Some(to) = to {
+        startable(&agent.launches, to, CHOSEN_BY)?;
+    }
     match &which {
         Which::Issue(issue) => {
             if mine(fleet, me, *issue)?.is_none() {
@@ -115,11 +120,11 @@ pub fn switch(
         moved
     };
     Ok(match which {
-        Which::Nothing => json!({"harness": target, "chosen": chosen, "switched": []}),
+        Which::Nothing => json!({"harness": to, "chosen": chosen, "switched": []}),
         Which::Issue(issue) => one(switch_issue(fleet, me, agent, issue, before)?),
         Which::Patrol(name) => {
             let said = |checkout: &Worktree| continuing(Some(checkout), before);
-            one(crate::patrol::switch(fleet, me, agent, &name, target, said)?)
+            one(crate::patrol::switch(fleet, me, agent, &name, said)?)
         }
         Which::All => {
             let (mut switched, mut failed) = (vec![], vec![]);
@@ -132,12 +137,12 @@ pub fn switch(
             }
             for name in my_patrols(fleet, me) {
                 let said = |checkout: &Worktree| continuing(Some(checkout), before);
-                match crate::patrol::switch(fleet, me, agent, &name, target, said) {
+                match crate::patrol::switch(fleet, me, agent, &name, said) {
                     Ok(moved) => switched.push(moved),
                     Err(e) => failed.push(json!({"patrol": name, "error": format!("{e:#}")})),
                 }
             }
-            json!({"harness": target, "chosen": chosen, "switched": switched, "failed": failed})
+            json!({"harness": to, "chosen": chosen, "switched": switched, "failed": failed})
         }
     })
 }
@@ -178,7 +183,8 @@ fn continuing(worktree: Option<&Worktree>, before: Harness) -> Continuing {
     Continuing { from, said: said.split_off(blank) }
 }
 
-/// Moves the worker of my claim on `issue` onto this host's harness: a worker
+/// Moves the worker of my claim on `issue` onto what it runs now — this host's
+/// chosen harness, else what its range and casting say: a worker
 /// started on it as a continuation of what survives (`dispatch`), which closes
 /// whatever terminal the worktree had, whatever its worker was doing. The
 /// switch is recorded on the issue's open PR, beside its join's record.
