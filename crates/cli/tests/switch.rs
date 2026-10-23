@@ -119,8 +119,9 @@ fn a_harness_that_cannot_be_started_is_refused_before_any_worker_is_ended() {
     assert!(said.contains("the harness `codex` cannot be started here"), "{said}");
     assert_eq!(open_commands(&world, &dir), ["agent"]);
     assert!(!brief(&dir).contains("You continue earlier work"));
-    // nothing was chosen: the next start is on the config's harness still
-    world.issue(8, &["ready-for-agent", "bug"]);
+    // nothing was chosen: the next start is on its casting still, which a
+    // switch would have overruled
+    world.issue(8, &["ready-for-agent", "bug", "harness:claude-code"]);
     tick(&world, 900);
     assert_eq!(open_commands(&world, &worktree(&world, 8)), ["agent"]);
 }

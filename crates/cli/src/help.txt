@@ -45,7 +45,7 @@ THE COMMANDS, by who runs them
   what to run when something looks wrong, or you are asked whether the fleet is working:
   it says what the fleet on this host is doing and what is wrong, each finding with the
   line that fixes it:
-      doctor  kit  config  check  plan  run  panel  tick  takeover  patrol-now  switch
+      doctor  kit  cast  config  check  plan  run  panel  tick  takeover  patrol-now  switch
 
   Whoever designs a team — `scaffold` to start one or a role of it from a skeleton,
   then, once `check` accepts it, the others: to review a workflow, to try one out with

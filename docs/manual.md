@@ -1553,7 +1553,7 @@ The harness and model an issue's workers run, named by the issue's `harness:` an
 _Avoid_: assignment (a GitHub assignee), routing, dispatch (starting a worker)
 
 **Caster**:
-A worker in no role that casts, in one session, every open issue of the repo's that carries a flow label, has a choice to make and no casting, by the roster and the host kit.
+A worker in no role that casts, in one session, every open issue of the repo's that carries a flow label, has a choice to make and no casting, by the roster and the host kit. A tick that finds such an issue on the frontier and no caster running starts one, which runs `afkconvoy cast` on the host kit's first; the tick holds those issues back while it runs, for ten minutes at most from its start, and dispatches what it did not cast uncast, on the host kit's first. A human runs the same casting with `afkconvoy cast`.
 _Avoid_: assigner, router, dispatcher
 
 **Worker**:

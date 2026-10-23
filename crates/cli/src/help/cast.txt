@@ -6,8 +6,8 @@ WHEN TO RUN IT
 
 WHO RUNS IT
 
-  A human, in the repo's checkout. A tick runs it too: the caster it starts is
-  this command, in an orca terminal of the repo's `convoy-caster` worktree.
+  The operator, in the repo's checkout. A tick runs it too: the caster it starts
+  is this command, in an orca terminal of the repo's `convoy-caster` worktree.
 
 WHAT IT READS AND WRITES
 

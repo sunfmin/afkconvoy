@@ -122,9 +122,12 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
 /// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
 /// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
-/// `help` is this crate's own, not clap's: it prints a topic too.
+/// `help` is this crate's own, not clap's: it prints a topic too. The
+/// listing goes straight from the usage line to the commands: one line less,
+/// so that `-h` stays one screen.
 #[derive(Parser)]
-#[command(name = "afkconvoy", version = VERSION, about, long_about = guide(), disable_help_subcommand = true)]
+#[command(name = "afkconvoy", version = VERSION, about, long_about = guide(), disable_help_subcommand = true,
+    help_template = "{before-help}{about-with-newline}\n{usage-heading} {usage}\n{all-args}{after-help}")]
 struct Cli {
     /// The time to act at, in epoch seconds [default: the clock's]
     #[arg(long, global = true, hide = true)]
@@ -1425,6 +1428,7 @@ mod tests {
         &["abandon", "--instance", "a-h1-1"],
         &["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"],
         &["wake"],
+        &["cast"],
         &["scan"],
         &["claim", "7", "--instance", "a-h1-1"],
         &["release", "7", "--instance", "a-h1-1"],

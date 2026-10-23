@@ -36,6 +36,10 @@ WHAT IT READS AND WRITES
   5. Stock consult. Type a harness and, optionally, one of its models to name
      what the stock consult runs; - or nothing named runs the host kit's first.
 
+  6. What each model is good at. Write `"good_at": "<a few words>"` beside a
+     model in the file by hand: a caster is told it (`afkconvoy cast --help`).
+     Editing the kit again keeps it.
+
   It shows the proposed kit and writes only after you answer y or yes. Declining or
   end of input writes nothing. A kit needs a terminal; there is no automatic yes.
 
