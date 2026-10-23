@@ -83,8 +83,8 @@ A RUN NOW
   `afkconvoy patrol-now <name>` in a checkout of the repo: the next tick runs it, and the
   command wakes this host's `run` so that tick starts at once. No file changes. The run
   passes `every` and `max_runs_a_day`, and nothing else: a fleet lock, `max_open`
-  or `max_landed_a_day` reached, a failed run still reported, or a run still going refuse the ask. It is
-  claimed as a due run is, so of several hosts one runs it, and it is recorded as the
+  or `max_landed_a_day` reached, a failed run still reported, or a run still going refuse
+  the ask. It is claimed as a due run is, so of several hosts one runs it, and it is recorded as the
   patrol's run, asked for: `every` counts from its start, and `max_runs_a_day` counts
   it among the day's. What trips you up: `afkconvoy patrol-now --help`.
 
