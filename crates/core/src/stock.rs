@@ -25,8 +25,6 @@ pub const ROLE: &str = "stock-consult";
 /// The skill it performs: answering what it was handed.
 pub const SKILL: &str = "consult";
 
-/// The word of the marker the fleet leaves on an unbound repo's issue as it
-/// asks the stock consult of the issue's escalation.
 /// An unbound consult's park, shown on GitHub until the ready label is restored.
 pub const PARKED_LABEL: &str = "convoy:parked";
 
@@ -38,6 +36,8 @@ pub fn parked(labels: &[String], ready: &str, escalate: &str) -> bool {
         && !labels.iter().any(|label| label == ready || label == escalate)
 }
 
+/// The word of the marker the fleet leaves on an unbound repo's issue as it
+/// asks the stock consult of the issue's escalation.
 const ASKED: &str = "convoy:consult";
 /// The word of an escalation's marker (`transition::escalation_comment`).
 const ESCALATION: &str = "convoy:escalation";
