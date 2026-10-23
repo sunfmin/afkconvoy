@@ -810,6 +810,7 @@ fn patrol(loaded: &Loaded, patrol: &Patrol) -> Value {
         "model": patrol.model,
         "max_open": patrol.max_open,
         "max_runs_a_day": patrol.max_runs_a_day,
+        "max_landed_a_day": patrol.max_landed_a_day,
         "runs_here": loaded.runs.contains(&patrol.name),
     })
 }

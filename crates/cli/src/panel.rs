@@ -587,6 +587,16 @@ fn patrol_says(row: &patrol::Row, now: u64) -> String {
                 lasted(until.saturating_sub(now)),
             )
         }
+        Standing::Landed => {
+            let until = row.until.unwrap_or(now);
+            format!(
+                "held by max_landed_a_day: {} completed issues in the last 24h, of {} — until {} UTC, in {}",
+                row.landed_in_day.unwrap_or_default(),
+                row.max_landed_a_day.unwrap_or_default(),
+                clock(until),
+                lasted(until.saturating_sub(now)),
+            )
+        }
         Standing::Locked => "held: a fleet lock stands".to_string(),
         Standing::Full => {
             format!("held by max_open: {} open issues it opened, of {}", row.open, row.max_open)

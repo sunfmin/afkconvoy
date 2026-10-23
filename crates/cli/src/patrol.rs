@@ -52,10 +52,17 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
             opened.extend(opened_by(comments.iter().map(|comment| comment.body.as_str())));
         }
     }
+    let landed = if named.iter().any(|patrol| patrol.max_landed_a_day.is_some()) {
+        fleet.gh.patrol_landings(fleet.now)?
+    } else {
+        vec![]
+    };
     let seen = |patrol: &&afkconvoy_core::team::Patrol| Seen {
         name: patrol.name.clone(),
         every: patrol.every,
         max_runs_a_day: patrol.max_runs_a_day,
+        max_landed_a_day: patrol.max_landed_a_day,
+        landed: landed.iter().filter(|(name, _)| *name == patrol.name).map(|(_, at)| *at).collect(),
         max_open: patrol.max_open,
         last_run: fleet.scan.last_runs.get(&patrol.name).cloned(),
         claim: fleet.scan.runs.iter().find(|run| run.key == claim_key(&patrol.name)).cloned(),
@@ -71,7 +78,7 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
 /// whichever host claims the run, past `every` and `max_runs_a_day`; the
 /// fleet is woken as the command ends (`crate::acting`). Refused, with
 /// nothing recorded, when what holds an asked run holds it: a fleet lock, the
-/// patrol's `max_open`, a failed run nobody answered, a run still going.
+/// patrol's `max_open` or `max_landed_a_day`, a failed run nobody answered, a run still going.
 ///
 ///   {"patrol", "asked", "ref"}
 pub fn ask(name: &str, host: &str, now: u64) -> Result<Value> {
@@ -112,6 +119,12 @@ fn refused(patrol: &Seen, held: Standing, locks: &[u64]) -> String {
             "the open issues the patrol `{name}` opened have reached its `max_open` ({} of {}): \
              it runs once one of them closes, or once `max_open` in patrols/{name}.md is raised",
             patrol.open, patrol.max_open
+        ),
+        Standing::Landed => format!(
+            "the issues the patrol `{name}` opened reached its `max_landed_a_day` ({}): \
+             ask again once enough completions are 24 hours old; `afkconvoy plan` says until when, \
+             or raise `max_landed_a_day` in patrols/{name}.md",
+            patrol.max_landed_a_day.unwrap_or_default()
         ),
         Standing::Failed => match patrol.failure {
             Some(failure) => format!(

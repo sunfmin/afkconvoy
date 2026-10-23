@@ -686,6 +686,7 @@ Of the file only the first ```yaml block is read:
     model: <model>                     # optional; its harness's own name for it
     max_open: 5                        # required
     max_runs_a_day: 4                  # optional: a whole number from 1
+    max_landed_a_day: 5                # optional: a whole number from 1
 
 `by` is a short name of the team file and `do` a skill of that role. `every` is how
 long after its last run a patrol is due: it is due or it is not, and one that missed
@@ -697,10 +698,22 @@ not run while that many issues it opened are open.
 started in the last 24 hours — rolling, the same on every host — have reached it is
 not due, whatever `every` says, until the oldest of them is 24 hours old. Each run's
 record on the remote carries the starts of the day before it; nothing is kept beside
-it. Left out, nothing bounds the patrol but `every` and `max_open`. `afkconvoy check`
+it. Left out, it adds no bound. `afkconvoy check`
 refuses one that bounds nothing: `every: 1h` lets a patrol run at most 24 times a
 day, so `max_runs_a_day` is at most 23 there, and a patrol run every day or less
 often has no use for it.
+
+`max_landed_a_day` bounds the issues it opened that GitHub closed as completed in
+the last 24 hours, rolling and the same on every host. At the bound the patrol
+waits until enough completions are 24 hours old to leave fewer than the bound.
+Issues closed as not planned, reopened issues, and issues opened by humans or
+other patrols do not count. Ownership comes from the latest intake record,
+regardless of the issue's labels now. Left out, nothing changes. `check` refuses
+zero, negative, fractional and nonnumeric values. Unlike runs, completions have
+no daily ceiling from `every` or `max_open`: any positive whole number can bound
+them. This limits starting runs; a run already going may open more issues.
+`plan` reports `standing: landed`, `max_landed_a_day`, `landed_in_day` and `until`
+while it is this bound that holds the patrol back.
 ````
 
 ### WHICH PATROLS A REPO RUNS
@@ -732,9 +745,10 @@ A human who wants a patrol's run now — not when its interval has passed — ru
 `afkconvoy patrol-now <name>` in a checkout of the repo: the next tick runs it, and the
 command wakes this host's `run` so that tick starts at once. No file changes. The run
 passes `every` and `max_runs_a_day`, and nothing else: a fleet lock, `max_open`
-reached, a failed run still reported, or a run still going refuse the ask. It is
-claimed as a due run is, so of several hosts one runs it, and it is recorded as the
-patrol's run, asked for: `every` counts from its start, and `max_runs_a_day` counts
+or `max_landed_a_day` reached, a failed run still reported, or a run still going refuse
+the ask. It is claimed as a due run is, so of several hosts one runs it. It is recorded
+as the patrol's run, asked for: `every` counts from its start, and `max_runs_a_day`
+counts
 it among the day's. What trips you up: `afkconvoy patrol-now --help`.
 ````
 
@@ -1504,7 +1518,7 @@ Parking an issue on issues its own stage opened. When they have all closed, that
 _Avoid_: decompose, epic (an issue under an epic label), fan out
 
 **Patrol**:
-A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. It is due once its interval has passed since its last run, and — where its file says `max_runs_a_day` — while fewer than that many of its runs started in the last 24 hours, rolling. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period. Each run has a checkout of its own, removed as the run ends unless it failed.
+A role run on a schedule rather than for an issue. It opens issues and takes them in; it writes no code. It is due once its interval has passed since its last run, and — where its file says `max_runs_a_day` — while fewer than that many of its runs started in the last 24 hours, rolling. Where it says `max_landed_a_day`, it is also held while that many issues it opened were closed as completed in the last rolling 24 hours, until enough completions are 24 hours old to fall below the bound. Its run takes one slot until its worker declares it over, which the next tick acts on; a worker that never does is ended once it is gone or has stopped for a grace period. Each run has a checkout of its own, removed as the run ends unless it failed.
 _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:

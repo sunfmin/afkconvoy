@@ -141,7 +141,15 @@ pub fn runs_a_day(every: u64) -> u64 {
 /// `None` when it is not held: it has no bound, or ran fewer times.
 pub fn held_until(max: Option<u64>, last: Option<&Ran>, now: u64) -> Option<u64> {
     let (max, last) = (max?, last?);
-    let day = last.day(now);
+    daily_held_until(Some(max), &last.day(now), now)
+}
+
+/// Until enough events leave the rolling day to fall below the bound.
+/// Event times need not arrive sorted.
+pub fn daily_held_until(max: Option<u64>, landed: &[u64], now: u64) -> Option<u64> {
+    let max = max?;
+    let mut day: Vec<u64> = landed.iter().copied().filter(|at| in_day(*at, now)).collect();
+    day.sort_unstable();
     let over = (day.len() as u64).checked_sub(max)?;
     let oldest = day.get(usize::try_from(over).ok()?)?;
     Some(oldest.saturating_add(DAY))
@@ -174,6 +182,9 @@ pub struct Seen {
     pub every: u64,
     /// How many runs the day before may hold, when it says.
     pub max_runs_a_day: Option<u64>,
+    pub max_landed_a_day: Option<u64>,
+    /// Closure times of issues this patrol opened and GitHub closed as completed.
+    pub landed: Vec<u64>,
     pub max_open: u64,
     /// Its last recorded run.
     pub last_run: Option<Ran>,
@@ -198,6 +209,8 @@ pub enum Standing {
     NotDue,
     /// The runs of the last `DAY` have reached its `max_runs_a_day`.
     Spent,
+    /// Completed issues in the last day have reached `max_landed_a_day`.
+    Landed,
     /// A fleet lock stands: no patrol runs.
     Locked,
     /// The open issues it opened have reached its `max_open`.
@@ -227,7 +240,11 @@ pub struct Row {
     /// `max_runs_a_day` to hold them against.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runs_in_day: Option<u64>,
-    /// Until when `max_runs_a_day` holds it: `Spent` in this case only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_landed_a_day: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub landed_in_day: Option<u64>,
+    /// Until when the daily bound holds it: `Spent` or `Landed` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -246,8 +263,8 @@ pub struct Row {
 /// stands. A run still going comes first — whoever holds it, the patrol is
 /// skipped, however long it has been due; then the failure nobody answered,
 /// the interval, the runs of the day, the lock, and the limit on what it
-/// opened. A human's ask passes the interval and the runs of the day, and
-/// nothing else.
+/// opened and completed. A human's ask passes the interval and the runs of
+/// the day, and nothing else.
 pub fn row(
     seen: &Seen,
     me: Option<&InstanceId>,
@@ -257,6 +274,7 @@ pub fn row(
 ) -> Row {
     let last = seen.last_run.as_ref();
     let until = held_until(seen.max_runs_a_day, last, now);
+    let landed_until = daily_held_until(seen.max_landed_a_day, &seen.landed, now);
     let asked = seen.asked;
     let standing = match &seen.claim {
         Some(claim) => match claim.holder(me, heartbeats, now) {
@@ -271,6 +289,7 @@ pub fn row(
         None if asked.is_none() && until.is_some() => Standing::Spent,
         None if locked => Standing::Locked,
         None if seen.open >= seen.max_open => Standing::Full,
+        None if landed_until.is_some() => Standing::Landed,
         None => Standing::Due,
     };
     Row {
@@ -282,7 +301,15 @@ pub fn row(
         max_open: seen.max_open,
         max_runs_a_day: seen.max_runs_a_day,
         runs_in_day: seen.max_runs_a_day.map(|_| last.map_or(0, |ran| ran.day(now).len() as u64)),
-        until: until.filter(|_| standing == Standing::Spent),
+        max_landed_a_day: seen.max_landed_a_day,
+        landed_in_day: seen
+            .max_landed_a_day
+            .map(|_| seen.landed.iter().filter(|at| in_day(**at, now)).count() as u64),
+        until: if standing == Standing::Landed {
+            landed_until
+        } else {
+            until.filter(|_| standing == Standing::Spent)
+        },
         failure: seen.failure,
         asked: seen.asked,
         claim: seen.claim.clone(),
@@ -407,6 +434,8 @@ mod tests {
             name: "triage".to_string(),
             every: 3600,
             max_runs_a_day: None,
+            max_landed_a_day: None,
+            landed: vec![],
             max_open: 2,
             last_run: Some(ran(10_000, &[])),
             claim: None,
@@ -455,6 +484,27 @@ mod tests {
         assert_eq!(standing(&Seen { open: 1, ..seen() }, 13_600, false), Standing::Due);
         let failed = Seen { failure: Some(9), ..seen() };
         assert_eq!(standing(&failed, 13_600, false), Standing::Failed);
+    }
+
+    #[test]
+    fn a_landing_bound_holds_even_an_asked_run_until_enough_completions_age_out() {
+        let seen =
+            Seen { max_landed_a_day: Some(2), landed: vec![30_000, 10_000, 20_000], ..seen() };
+        let held = row(&seen, None, &[], 40_000, false);
+        assert_eq!(held.standing, Standing::Landed);
+        assert_eq!(held.landed_in_day, Some(3));
+        assert_eq!(held.until, Some(20_000 + DAY));
+        assert_eq!(ask(&seen, &[], 40_000, false), Err(Standing::Landed));
+        assert_eq!(ask(&seen, &[], 20_000 + DAY - 1, false), Err(Standing::Landed));
+        assert_eq!(ask(&seen, &[], 20_000 + DAY, false), Ok(()));
+        assert_eq!(
+            standing(&Seen { asked: Some(40_000), ..seen.clone() }, 40_000, false),
+            Standing::Landed
+        );
+        assert_eq!(
+            standing(&Seen { max_landed_a_day: None, ..seen }, 40_000, false),
+            Standing::Due
+        );
     }
 
     #[test]
