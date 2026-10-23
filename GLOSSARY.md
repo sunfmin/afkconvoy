@@ -107,7 +107,7 @@ One step of a workflow: one skill of one role, performed by one new worker — o
 _Avoid_: step (one thing a tick does), phase, state (fleet state and worker state are terms)
 
 **Stage record**:
-The comment a stage leaves on its issue: what it produced, its verdict, the versions of the role and team it ran under, and the harness its worker ran on. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
+The comment a stage leaves on its issue: what it produced, its verdict, the versions of the role and team it ran under, and the harness its worker ran on, with the model where it was started on one. A human who declares for a stage, rules on it or sends the issue to it leaves one too, which says a human did; so does the fleet, for a stage that runs again because a fleet lock closed. The stage an issue is at is derived from these and stored nowhere.
 _Avoid_: handoff note, log (the tick log; what a gate prints), stage label
 
 **Position**:
@@ -165,7 +165,7 @@ The harnesses and models one host can start now — each harness's worker launch
 _Avoid_: roster (the team's), host config, inventory
 
 **Casting**:
-The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, and one whose range does not runs its range's first; an issue none of whose stages has a choice to make is not cast. A label a human put on is never recast.
+The harness and model an issue's workers run, named by the issue's `harness:` and `model:` labels — and the act of choosing them, by a human or by a caster. A stage whose range holds the casting runs it, and one whose range does not runs its range's first; an issue none of whose stages has a choice to make is not cast. In an unbound repo the host kit is the range: its worker runs the casting where the host kit holds it, and the host kit's first where the issue has none; one it does not hold is not dispatched, and `plan` says which label and what the host kit holds. A harness named with no model starts its command as written. A label a human put on is never recast.
 _Avoid_: assignment (a GitHub assignee), routing, dispatch (starting a worker)
 
 **Caster**:
@@ -181,7 +181,7 @@ Moving running work onto another harness in one command: the host's choice of ha
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and edited with `afkconvoy kit`; a harness absent from it is refused; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it, appends to it nothing but its harness's model flag where the stock consult runs a model, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and edited with `afkconvoy kit`; a harness absent from it is refused; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it, appends to it nothing but its harness's model flag where the worker runs a model — its issue's casting, the host kit's first, or the stock consult's — and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:
