@@ -944,6 +944,9 @@ fn consult_close_and_park_are_outcomes_and_a_park_waits_for_an_explicit_send() {
             };
             let world = bound(&feature, 2);
             asked(&world);
+            if verdict == "close" {
+                commit(&worktree(&world), "investigation.txt", "builder evidence\n");
+            }
             tick(&world, 1180);
             let text = "No reproduction after four investigations; reopen with raw output.";
             let args = [
@@ -967,6 +970,7 @@ fn consult_close_and_park_are_outcomes_and_a_park_waits_for_an_explicit_send() {
             assert_eq!(started(&world).len(), 2);
             assert_eq!(did(&tick(&world, 1360)), [] as [&str; 0]);
             if verdict == "close" {
+                assert!(worktree(&world).join("investigation.txt").exists());
                 let plan = world.afk(&["plan", "--now", "1400"]).ok();
                 assert_eq!(plan["frontier"], json!([]));
                 assert_eq!(plan["waiting_on_human"], json!([]));

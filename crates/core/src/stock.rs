@@ -27,7 +27,16 @@ pub const SKILL: &str = "consult";
 
 /// The word of the marker the fleet leaves on an unbound repo's issue as it
 /// asks the stock consult of the issue's escalation.
+/// An unbound consult's park, shown on GitHub until the ready label is restored.
 pub const PARKED_LABEL: &str = "convoy:parked";
+
+/// Whether an unbound issue is parked for evidence. Restoring the ready label
+/// brings it back; an escalation after that is a new hand-off, even if the
+/// human left the old park label on the issue.
+pub fn parked(labels: &[String], ready: &str, escalate: &str) -> bool {
+    labels.iter().any(|label| label == PARKED_LABEL)
+        && !labels.iter().any(|label| label == ready || label == escalate)
+}
 
 const ASKED: &str = "convoy:consult";
 /// The word of an escalation's marker (`transition::escalation_comment`).

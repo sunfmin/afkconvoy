@@ -432,7 +432,7 @@ fn answered(
     }
     let labels = fleet.gh.issue(issue)?.labels;
     if !labels.contains(&fleet.config.ready_label)
-        && !labels.iter().any(|label| label == stock::PARKED_LABEL)
+        && !stock::parked(&labels, &fleet.config.ready_label, &fleet.config.escalate_label)
     {
         return Ok(None);
     }

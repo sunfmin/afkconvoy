@@ -736,8 +736,7 @@ impl Flows {
             let comments = open.issues.comments(issue.number);
             let bodies = || comments.iter().map(|comment| comment.body.as_str());
             if config.bound.is_none()
-                && issue.labels.iter().any(|label| label == stock::PARKED_LABEL)
-                && !issue.labels.contains(&config.ready_label)
+                && stock::parked(&issue.labels, &config.ready_label, &config.escalate_label)
             {
                 let since = comments.last().and_then(|comment| comment.at);
                 found.push((

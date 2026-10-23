@@ -23,7 +23,7 @@ WHEN TO RUN IT
   Opening a PR declares nothing: a stage that wrote one still declares `pass` — after
   `afkconvoy gate --train` says green on what it pushed, as its brief tells it.
 
-A consult also declares `close` or `park`, with its reason in the text. Close ends
+  A consult also declares `close` or `park`, with its reason in the text. Close ends
   the issue; park leaves it open for new evidence, off the frontier until explicitly
   brought back (see `afkconvoy help humans`). Neither adds rework or resets its counts.
   `escalate` lets through to a human what the consult was asked to rule on. Its ruling

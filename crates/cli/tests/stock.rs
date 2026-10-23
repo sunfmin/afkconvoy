@@ -253,3 +253,27 @@ fn an_unbound_stock_consult_parks_with_a_reason_until_the_ready_label_is_restore
     relabel(&world, 7, &["bug", "ready-for-agent"]);
     assert_eq!(did(&tick(&world, 1680)), ["dispatch 7 done"]);
 }
+
+#[test]
+fn only_the_claimed_stock_consult_can_declare_an_unbound_close() {
+    let world = asked();
+    let args = [
+        "verdict",
+        "close",
+        "--issue",
+        "7",
+        "--stage",
+        "consult",
+        "--text",
+        "Nothing remains to investigate.",
+    ];
+    let before = world.comments(7).len();
+    assert!(world.afk(&args).error().contains("only the stock consult"));
+    assert_eq!(world.comments(7).len(), before);
+    world.afk(&[&args[..], &["--consult"]].concat()).ok();
+    assert!(world.comments(7).last().unwrap().contains("Nothing remains to investigate."));
+    report(&world, "done", 1200);
+    assert_eq!(did(&tick(&world, 1500)), ["settle 7 done"]);
+    assert_eq!(world.claims(), []);
+    assert_eq!(did(&tick(&world, 1590)), [] as [&str; 0]);
+}
