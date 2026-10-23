@@ -49,7 +49,7 @@ const CONFIG: &str = "--config";
 /// the review would take the worker's brief for its answer.
 const HOOKS_REVIEWED: &str = "--dangerously-bypass-hook-trust";
 /// Codex's flag for the model of the session.
-const MODEL: &str = "--model";
+pub(super) const MODEL: &str = "--model";
 /// Every flag the fleet adds: what a worker launch command that starts
 /// Codex must take.
 pub(super) const FLAGS: [&str; 4] = [ADD_DIR, HOOKS_REVIEWED, CONFIG, MODEL];
@@ -369,6 +369,26 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
         .fixed(" && ")
         .launch(command)
         .fixed(LIST_MODELS)
+        .done()
+}
+
+/// The line that sends `model` of Codex's the one-line `prompt` through
+/// `command`, under the user directory `kept` a worker of it is given, and
+/// prints its answer: one session, outside any repo, kept nowhere.
+pub(super) fn prompt_question(command: &str, kept: &str, model: &str, prompt: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command)
+        .fixed(" exec --skip-git-repo-check --ephemeral ")
+        .fixed(MODEL)
+        .fixed(" ")
+        .word(model)
+        .fixed(" ")
+        .word(prompt)
         .done()
 }
 

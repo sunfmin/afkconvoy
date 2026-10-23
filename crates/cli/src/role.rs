@@ -146,13 +146,17 @@ impl Staged {
         let handed = handed_said(&history, &records, &urls);
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
         // The stage's harness and its model are its own worker's: a workflow
-        // names none for a consult it names. The stock consult runs on the
-        // stage's harness.
+        // names none for a consult it names. The stock consult runs what the
+        // host kit names for it.
         // This host's chosen harness, where a switch chose one, wins over both.
-        let named = at
-            .filter(|_| !consult || by.is_none())
-            .and_then(|stage| stage.harness(bound.harness))
-            .unwrap_or(bound.harness);
+        let stock = if by.is_none() { Some(fleet.stock_consult()?) } else { None };
+        let named = match &stock {
+            Some(stock) => stock.harness,
+            None => at
+                .filter(|_| !consult)
+                .and_then(|stage| stage.harness(bound.harness))
+                .unwrap_or(bound.harness),
+        };
         let harness = fleet.harness_of(named);
         let (role, skill, role_copy, host_user, dsh_profile) = match by {
             Some((work, role)) => (
@@ -190,9 +194,12 @@ impl Staged {
             consult,
             harness,
             // A model is its stage's harness's: another harness knows it not.
-            model: at
-                .filter(|_| !consult && harness == named)
-                .and_then(|stage| stage.model.clone()),
+            model: match stock {
+                Some(stock) => stock.model,
+                None => at
+                    .filter(|_| !consult && harness == named)
+                    .and_then(|stage| stage.model.clone()),
+            },
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
@@ -438,7 +445,8 @@ pub struct Checked {
 /// Every harness the fleet of a repo `bound` to a team could be asked for,
 /// each with what calls for it (`Team::harnesses`): the repo's default, and
 /// whatever the team's workflows and the patrols the repo runs name, as the
-/// team stands now, read against the repo's `labels`. A team that cannot be
+/// team stands now, read against the repo's `labels`, and the stock
+/// consult's, as the host kit names it. A team that cannot be
 /// read or does not load calls for the default alone: no worker is started
 /// under it, and each tick says why.
 pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<String>)> {
@@ -448,11 +456,23 @@ pub fn called_for(bound: &Bound, labels: &RepoLabels) -> Vec<(Harness, Vec<Strin
         return vec![(chosen, vec![crate::switch::CHOSEN_BY.to_string()])];
     }
     let gh = GitHub { dir: PathBuf::from(".") };
-    match Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels)) {
+    let mut called = match Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels))
+    {
         Ok(kept) => kept.team.harnesses(bound.harness, &bound.patrols),
         Err(_) => vec![(bound.harness, vec![BY_DEFAULT.to_string()])],
+    };
+    // The stock consult runs what the host kit names for it.
+    if let Ok(stock) = crate::kit::stock_consult() {
+        match called.iter_mut().find(|(harness, _)| *harness == stock.harness) {
+            Some((_, callers)) => callers.push(BY_STOCK_CONSULT.to_string()),
+            None => called.push((stock.harness, vec![BY_STOCK_CONSULT.to_string()])),
+        }
     }
+    called
 }
+
+/// What calls for the harness the host kit names for the stock consult.
+const BY_STOCK_CONSULT: &str = "the host kit's stock consult";
 
 /// Checks the worker launch command of each harness `called` for, as
 /// `launches` has it, asking the login shell a worker gets: that its first

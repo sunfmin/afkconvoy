@@ -251,6 +251,38 @@ impl Harness {
         }
     }
 
+    /// The shell line that sends `model` the one-line `prompt` through the
+    /// worker launch command `command`, with what the host keeps for it in
+    /// `kept`, and prints the model's answer. `None`: the fleet has no way
+    /// to send it one but a worker's terminal.
+    pub fn prompt_question(
+        self,
+        command: &str,
+        kept: &str,
+        model: &str,
+        prompt: &str,
+    ) -> Option<String> {
+        match self {
+            Harness::ClaudeCode => Some(claude_code::prompt_question(command, model, prompt)),
+            Harness::Pi => Some(pi::prompt_question(command, kept, model, prompt)),
+            Harness::Codex => Some(codex::prompt_question(command, kept, model, prompt)),
+            Harness::Dsh => None,
+        }
+    }
+
+    /// The worker launch command `command` of an unbound repo, started on
+    /// `model`: its model flag added after it. A harness that takes a model
+    /// on no flag of its command (DSH) is started as written.
+    pub fn with_model(self, command: &str, model: &str) -> String {
+        let flag = match self {
+            Harness::ClaudeCode => claude_code::MODEL,
+            Harness::Pi => pi::MODEL,
+            Harness::Codex => codex::MODEL,
+            Harness::Dsh => return command.to_string(),
+        };
+        Line::new().launch(command).fixed(" ").fixed(flag).fixed(" ").word(model).done()
+    }
+
     /// The models it knows, given what the worker's shell printed for
     /// `models_question`. `None`: it said none, and a model named for it is
     /// passed as written.
@@ -404,5 +436,35 @@ impl Harness {
             Harness::Codex => codex::REFUSED,
             Harness::Dsh => dsh::REFUSED,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_is_probed_through_the_command_with_one_line_and_nothing_else() {
+        let asked = |harness: Harness| harness.prompt_question("agent -x", "/k", "m 1", "Say OK.");
+        assert_eq!(asked(Harness::ClaudeCode).unwrap(), "agent -x --model 'm 1' --print 'Say OK.'");
+        assert_eq!(
+            asked(Harness::Pi).unwrap(),
+            "export PI_CODING_AGENT_DIR='/k' && agent -x --model 'm 1' --print 'Say OK.'"
+        );
+        assert_eq!(
+            asked(Harness::Codex).unwrap(),
+            "export CODEX_HOME='/k' && agent -x exec --skip-git-repo-check --ephemeral --model \
+             'm 1' 'Say OK.'"
+        );
+        assert_eq!(asked(Harness::Dsh), None);
+    }
+
+    #[test]
+    fn an_unbound_command_is_given_its_model_on_its_harness_s_flag() {
+        assert_eq!(
+            Harness::Codex.with_model("codex --yolo", "gpt-x"),
+            "codex --yolo --model 'gpt-x'"
+        );
+        assert_eq!(Harness::Dsh.with_model("dsh-tui", "ds"), "dsh-tui");
     }
 }

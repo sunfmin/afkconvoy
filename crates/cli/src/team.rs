@@ -286,7 +286,7 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
     models_on.extend(patrols.map(|patrol| patrol.harness(default)));
     let mut listed = vec![];
     for harness in Harness::ALL.into_iter().filter(|_| !models_on.is_empty()) {
-        match launch::models(harness) {
+        match launch::models(harness, harness.stock()) {
             Some(Ok(models)) => listed.push((harness, models)),
             Some(Err(question)) if models_on.contains(&harness) => eprintln!(
                 "note: {} could not be asked which models it knows on this host — `{question}` \

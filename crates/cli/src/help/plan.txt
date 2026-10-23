@@ -40,9 +40,14 @@ WHAT IT ANSWERS
    "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate"
    while the gate is slow
 
-    host_kit       {path, commands}: this host's kit file and each harness's worker
-                   launch command. With an unreadable kit, {path, error}.
-                   Run `afkconvoy kit` at a terminal to edit it.
+    host_kit       {path, harnesses, stock_consult}: this host's kit file; each
+                   harness in order of preference, first first, as {harness,
+                   command, models}, each model {model, probed: {at, seconds}}
+                   in order — `at` when it last answered a probe, in epoch
+                   seconds, and `probed` null for one held unprobed; and
+                   {harness, model, named} that the stock consult runs, named
+                   false when it is the host kit's first. With an unreadable
+                   kit, {path, error}. Run `afkconvoy kit` at a terminal to edit it.
     frontier       the issues a tick would dispatch, lowest number first: {number, title}
                    — in a bound repo with the stage each is at: {number, title, stage},
                    those a stage has already declared on ahead of those never started;

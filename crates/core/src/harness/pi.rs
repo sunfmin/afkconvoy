@@ -39,7 +39,7 @@ const SKILL: &str = "--skill";
 /// pi's flag for an extension to load.
 const EXTENSION: &str = "--extension";
 /// pi's flag for the model of the session.
-const MODEL: &str = "--model";
+pub(super) const MODEL: &str = "--model";
 /// Every flag the fleet adds: what a worker launch command that starts pi
 /// must take.
 pub(super) const FLAGS: [&str; 5] = [APPROVE, NO_SKILLS, SKILL, EXTENSION, MODEL];
@@ -196,6 +196,26 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
         .fixed(" && ")
         .launch(command)
         .fixed(LIST_MODELS)
+        .done()
+}
+
+/// The line that sends `model` of pi's the one-line `prompt` through
+/// `command`, under the user directory `kept` a worker of it is given, and
+/// prints its answer.
+pub(super) fn prompt_question(command: &str, kept: &str, model: &str, prompt: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command)
+        .fixed(" ")
+        .fixed(MODEL)
+        .fixed(" ")
+        .word(model)
+        .fixed(" --print ")
+        .word(prompt)
         .done()
 }
 

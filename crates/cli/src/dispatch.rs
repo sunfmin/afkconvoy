@@ -152,16 +152,6 @@ fn start(
         Some(bound) => Some(Staged::enter(fleet, bound, number, &issue.labels)?),
         None => None,
     };
-    // Before the claim too: an issue whose harness cannot be started here is
-    // never locked.
-    let harness = match &staged {
-        Some(staged) => staged.harness(),
-        None => fleet.harness(),
-    };
-    let launch = agent.command(harness)?;
-    if crate::harness_down::down(&fleet.repo, harness, fleet.now)? {
-        return Err(crate::harness_down::Held.into());
-    }
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
     // In an unbound repo, an escalated issue is the stock consult's.
     let consult = match staged {
@@ -170,6 +160,21 @@ fn start(
         }
         _ => None,
     };
+    // Before the claim too: an issue whose harness cannot be started here is
+    // never locked. An unbound repo's stock consult runs what the host kit
+    // names for it.
+    let (harness, model) = match (&staged, &consult) {
+        (Some(staged), _) => (staged.harness(), None),
+        (None, Some(_)) => {
+            let stock = fleet.stock_consult()?;
+            (stock.harness, stock.model)
+        }
+        (None, None) => (fleet.harness(), None),
+    };
+    let launch = agent.command(harness)?;
+    if crate::harness_down::down(&fleet.repo, harness, fleet.now)? {
+        return Err(crate::harness_down::Held.into());
+    }
     if let Some(staged) = staged.as_ref().filter(|_| held) {
         staged.refuse_spent(fleet.scan.claim_of(number))?;
     }
@@ -269,7 +274,13 @@ fn start(
                     Some(staged) => {
                         agent.start(cut, harness, &staged.command(launch, cut)?, fleet.now)?
                     }
-                    None => agent.start(cut, harness, launch, fleet.now)?,
+                    None => {
+                        let launch = match &model {
+                            Some(model) => harness.with_model(launch, model),
+                            None => launch.to_string(),
+                        };
+                        agent.start(cut, harness, &launch, fleet.now)?
+                    }
                 });
             }
             DispatchStep::AwaitReady => {

@@ -161,7 +161,7 @@ A team's list, for each of its roles, of the harnesses and models that role's wo
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
-The harnesses and models one host can start now — each harness's worker launch command, each model it was seen to answer with, in order of preference, and the harness and model of its stock consult. Kept on that host and never pushed; a harness paused on the host is left out of it until it works again.
+The harnesses and models one host can start now — each harness's worker launch command, each model it was seen to answer with, in order of preference, and the harness and model of its stock consult. `afkconvoy kit` asks each harness for its models, or the human names them, sends each a one-line prompt, and keeps those that answered, with how long they took and when; the human sets the order. Its **first** is its first harness on that harness's first model, which the stock consult runs where the host kit names none for it. Kept on that host and never pushed; a harness paused on the host is left out of it until it works again.
 _Avoid_: roster (the team's), host config, inventory
 
 **Casting**:
@@ -181,7 +181,7 @@ Moving running work onto another harness in one command: the host's choice of ha
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and edited with `afkconvoy kit`; a harness absent from it is refused; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it or appends to it, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and edited with `afkconvoy kit`; a harness absent from it is refused; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it, appends to it nothing but its harness's model flag where the stock consult runs a model, and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:

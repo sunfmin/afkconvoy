@@ -82,7 +82,7 @@ pub fn rehearse(loaded: &Loaded, name: &str, declared: &[Declared]) -> Result<Va
 /// A position as a command answers it: what it is, at which stage, who acts
 /// on it, and — where a worker does — on which harness, in a repo whose
 /// default is `default`: a stage's own worker on the stage's, a consult and a
-/// landing worker on the default.
+/// landing worker on the default, the stock consult on the host kit's.
 pub(crate) fn position(
     team: &Team,
     workflow: &Workflow,
@@ -109,10 +109,12 @@ pub(crate) fn position(
         _ if stock => Some(stock::ROLE),
         _ => worker.map(|work| team.role_of(work).name.as_str()),
     };
-    // The stock consult runs on the stage's harness.
+    // The stock consult runs what this host's host kit says: none, on a
+    // host without one.
     let harness = match position {
-        Position::Perform(stage, ..) | Position::Consult(stage, Consult::Stock, _) => {
-            stage.harness(default)
+        Position::Perform(stage, ..) => stage.harness(default),
+        Position::Consult(_, Consult::Stock, _) => {
+            crate::kit::stock_consult().ok().map(|named| named.harness)
         }
         _ => worker.map(|_| default),
     };

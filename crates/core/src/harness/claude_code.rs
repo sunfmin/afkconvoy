@@ -44,7 +44,7 @@ const ADD_DIR: &str = "--add-dir";
 /// Claude Code's flag for which settings it loads.
 const SETTING_SOURCES: &str = "--setting-sources";
 /// Claude Code's flag for the model of the session.
-const MODEL: &str = "--model";
+pub(super) const MODEL: &str = "--model";
 /// Claude Code's flag for settings added to those it loads.
 const SETTINGS: &str = "--settings";
 /// Every flag the fleet adds: what a worker launch command that starts
@@ -52,6 +52,21 @@ const SETTINGS: &str = "--settings";
 pub(super) const FLAGS: [&str; 4] = [ADD_DIR, SETTING_SOURCES, SETTINGS, MODEL];
 /// What Claude Code is asked for the flags it takes.
 const HELP: &str = " --help";
+
+/// The line that sends `model` the one-line `prompt` through `command`, a
+/// worker launch command of Claude Code's, and prints its answer. Claude
+/// Code keeps its logins with the host's user, as a worker finds them.
+pub(super) fn prompt_question(command: &str, model: &str, prompt: &str) -> String {
+    Line::new()
+        .launch(command)
+        .fixed(" ")
+        .fixed(MODEL)
+        .fixed(" ")
+        .word(model)
+        .fixed(" --print ")
+        .word(prompt)
+        .done()
+}
 
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's: no hook, no MCP server, no

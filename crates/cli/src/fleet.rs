@@ -117,6 +117,19 @@ impl Fleet {
         self.chosen.unwrap_or(named)
     }
 
+    /// The harness and model the stock consult runs: the host kit's
+    /// (`Kit::stock_consult`) — but this host's chosen harness, where a
+    /// switch chose one, without the model of another.
+    pub fn stock_consult(&self) -> Result<crate::kit::Named> {
+        let named = crate::kit::stock_consult()?;
+        Ok(match self.chosen {
+            Some(chosen) if chosen != named.harness => {
+                crate::kit::Named { harness: chosen, model: None }
+            }
+            _ => named,
+        })
+    }
+
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;

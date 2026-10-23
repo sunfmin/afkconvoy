@@ -148,8 +148,12 @@ impl World {
         let mut kit = std::fs::read(&file)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .unwrap_or_else(|| json!({"commands": {}}));
-        kit["commands"][harness] = json!(command);
+            .unwrap_or_else(|| json!({"harnesses": []}));
+        let held = kit["harnesses"].as_array_mut().unwrap();
+        match held.iter_mut().find(|held| held["harness"] == harness) {
+            Some(held) => held["command"] = json!(command),
+            None => held.push(json!({"harness": harness, "command": command})),
+        }
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, serde_json::to_vec(&kit).unwrap()).unwrap();
     }

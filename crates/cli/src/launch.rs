@@ -163,7 +163,7 @@ impl Launches {
 
     fn propose(&self, harness: Harness) -> Result<Option<Proposed>> {
         let kit = self.kit.as_ref().map_err(|why| anyhow!("{why}"))?;
-        let command = kit.commands.get(harness.key()).cloned().ok_or_else(|| anyhow!(
+        let command = kit.command(harness).map(str::to_string).ok_or_else(|| anyhow!(
             "the host kit has no worker launch command for the harness `{}`: run `afkconvoy kit`",
             harness.key()
         ))?;
@@ -203,11 +203,7 @@ impl Launches {
     pub fn key(&self) -> Result<Option<u64>> {
         let Some(default) = self.of(self.default)? else { return Ok(None) };
         let mut text = default.as_str().to_string();
-        for (harness, command) in
-            self.kit.as_ref().into_iter().flat_map(|kit| kit.commands.iter()).filter_map(
-                |(name, command)| Harness::read(name).map(|harness| (harness, command.as_str())),
-            )
-        {
+        for (harness, command) in self.kit.as_ref().into_iter().flat_map(|kit| kit.commands()) {
             text.push_str(&format!("\n{}={command}", harness.key()));
         }
         Ok(Some(key(&text)))
@@ -221,10 +217,7 @@ impl Launches {
             .kit
             .as_ref()
             .into_iter()
-            .flat_map(|kit| kit.commands.iter())
-            .filter_map(|(name, command)| {
-                Harness::read(name).map(|harness| (harness, command.as_str()))
-            })
+            .flat_map(|kit| kit.commands())
             .filter(|(harness, _)| *harness != self.default);
         let others = others.map(|(harness, command)| (harness.key().to_string(), word(command)));
         (default.unwrap_or_default(), others.collect())
@@ -243,16 +236,52 @@ pub fn on_path(program: &str) -> bool {
 }
 
 /// The models `harness` knows on this host, as it says them to a login shell
-/// — the one a worker gets — when its stock worker launch command is asked
-/// (`Harness::models_question`), with what this host keeps for it. `None`: it
-/// has no way to say. An error is the question that failed, or listed none.
-pub fn models(harness: Harness) -> Option<Result<Vec<String>, String>> {
+/// — the one a worker gets — when its worker launch command `command` is
+/// asked (`Harness::models_question`), with what this host keeps for it.
+/// `None`: it has no way to say. An error is the question that failed, or
+/// listed none.
+pub fn models(harness: Harness, command: &str) -> Option<Result<Vec<String>, String>> {
     // The logins are in the directory kept with the host user's skills and
     // rules as they are in the one kept without.
     let kept = crate::kept::keep(harness, false).ok()?;
-    let question = harness.models_question(harness.stock(), &kept.display().to_string())?;
+    let question = harness.models_question(command, &kept.display().to_string())?;
     let listed = login_shell(&question).and_then(|answer| harness.models(&answer));
     Some(listed.ok_or(question))
+}
+
+/// The one-line prompt a model is probed with.
+const PROBE_PROMPT: &str = "Reply with the single word OK.";
+
+/// How long a model is given to answer its probe.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// What comes before a probe's answer in what the login shell prints: what
+/// its rc files print comes before it.
+const PROBE_MARK: &str = "AFKCONVOY_PROBE_ANSWER";
+
+/// Sends `model` of `harness` the one-line probe through the worker launch
+/// command `command`, in the login shell a worker gets, with what this host
+/// keeps for it → whether it answered within the time limit, and how fast.
+pub fn probe(harness: Harness, command: &str, model: &str) -> crate::kit::Answer {
+    use crate::kit::Answer;
+    let Ok(kept) = crate::kept::keep(harness, false) else { return Answer::Silent };
+    let kept = kept.display().to_string();
+    let Some(question) = harness.prompt_question(command, &kept, model, PROBE_PROMPT) else {
+        return Answer::Unsendable;
+    };
+    let started = Instant::now();
+    let script = format!("printf '%s\\n' {PROBE_MARK} && {question}");
+    match ask_login_shell_within(&script, PROBE_TIMEOUT) {
+        Some((true, printed)) if answered(&printed) => {
+            Answer::Answered(started.elapsed().as_secs_f64())
+        }
+        _ => Answer::Silent,
+    }
+}
+
+/// Whether what a probe printed holds an answer after its mark.
+fn answered(printed: &str) -> bool {
+    printed.split_once(PROBE_MARK).is_some_and(|(_, answer)| !answer.trim().is_empty())
 }
 
 /// Runs `script` in the user's interactive login shell → what it printed.
@@ -268,6 +297,11 @@ fn login_shell(script: &str) -> Option<String> {
 /// nothing from the shell the fleet was started in → whether it exited zero,
 /// and what it printed. `None` when it could not run or timed out.
 pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
+    ask_login_shell_within(script, SHELL_TIMEOUT)
+}
+
+/// `ask_login_shell`, given `timeout` to answer.
+fn ask_login_shell_within(script: &str, timeout: Duration) -> Option<(bool, String)> {
     let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty());
     let mut child = Command::new(shell.as_deref().unwrap_or("/bin/zsh"))
         .args(["-lic", script])
@@ -286,7 +320,7 @@ pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
     let status = loop {
         match child.try_wait().ok()? {
             Some(status) => break status,
-            None if started.elapsed() >= SHELL_TIMEOUT => {
+            None if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -295,4 +329,16 @@ pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
         }
     };
     Some((status.success(), reader.join().ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_probe_answered_only_with_words_after_its_mark() {
+        assert!(answered("rc noise\nAFKCONVOY_PROBE_ANSWER\nOK\n"));
+        assert!(!answered("rc noise\nAFKCONVOY_PROBE_ANSWER\n  \n"));
+        assert!(!answered("OK"));
+    }
 }

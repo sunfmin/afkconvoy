@@ -386,6 +386,26 @@ fn a_stage_that_names_no_consult_hands_off_to_the_stock_consult() {
 }
 
 #[test]
+fn the_stock_consult_runs_what_the_host_kit_names_for_it_or_its_first() {
+    for (named, model) in
+        [(None, "opus"), (Some(json!({"harness": "claude-code", "model": "haiku"})), "haiku")]
+    {
+        let world = bound(FEATURE, 2);
+        let mut kit: Value =
+            serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+        let probed = json!({"at": 900, "seconds": 2.5});
+        kit["harnesses"][0]["models"] =
+            json!([{"model": "opus", "probed": probed}, {"model": "haiku", "probed": probed}]);
+        if let Some(named) = named {
+            kit["stock_consult"] = named;
+        }
+        std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+        let consult = review_asked(&world);
+        assert!(consult.contains(&format!("--model '{model}'")), "{model} in {consult}");
+    }
+}
+
+#[test]
 fn the_stock_consult_s_own_failure_goes_to_a_human() {
     let world = bound(FEATURE, 2);
     review_asked(&world);

@@ -37,9 +37,14 @@ WHAT IT ANSWERS
                                  the repo's default, and each stage and each patrol the
                                  repo runs that names the harness; from is `host_kit`.
                                  Commands come from this host's kit, never a run log.
-                host_kit         {path, commands}: where the kit is kept, each harness
-                                 and its full worker launch command; {path, error}
-                                 when unreadable. Edit it with `afkconvoy kit`.
+                host_kit         {path, harnesses, stock_consult}: where the kit is
+                                 kept; each harness in order, first first, with its
+                                 full worker launch command and its models in
+                                 order, each with when it last answered a probe
+                                 (`probed.at`, epoch seconds; null: held unprobed);
+                                 and the harness and model the stock consult runs
+                                 (`named` false: the host kit's first). {path,
+                                 error} when unreadable. Edit it with `afkconvoy kit`.
                 admission        whether a tick would start a new worker on this host
                                  now, the thresholds in force and what the host reads:
                                  as `plan` answers it (`afkconvoy plan --help`), or
