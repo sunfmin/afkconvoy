@@ -548,7 +548,7 @@ impl Inspector {
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
             let brief = checkout.write_brief(&brief)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
-            let handle = checkout.start(&command, now)?;
+            let handle = agent.start(&checkout, harness, &command, now)?;
             checkout.await_ready(&handle, agent.ready_timeout)?;
             checkout.deliver(&handle, &brief)
         })();
@@ -630,7 +630,7 @@ impl Inspector {
             let brief =
                 checkout.write_brief(&inspection::brief(&fields).map_err(|e| anyhow!(e))?)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, &hot.worker)?;
-            let handle = checkout.start(&command, now)?;
+            let handle = agent.start(&checkout, harness, &command, now)?;
             checkout.await_ready(&handle, agent.ready_timeout)?;
             checkout.deliver(&handle, &brief)
         })();

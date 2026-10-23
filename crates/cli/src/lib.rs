@@ -206,6 +206,8 @@ enum Command {
     /// Say what the fleet on this host is doing and what is wrong with it, each finding with its fix
     #[command(after_long_help = include_str!("help/doctor.txt"))]
     Doctor {
+        #[command(flatten)]
+        proxy: ProxyArgs,
         /// The host whose fleet is asked after [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
@@ -213,6 +215,8 @@ enum Command {
     /// Show what a tick would act on, and change nothing
     #[command(after_long_help = include_str!("help/plan.txt"))]
     Plan {
+        #[command(flatten)]
+        proxy: ProxyArgs,
         /// The fleet instance whose claims are its own [default: nobody's]
         #[arg(long, value_parser = InstanceId::parse)]
         instance: Option<InstanceId>,
@@ -671,9 +675,21 @@ impl TextArgs {
     }
 }
 
+/// The host's network settings, never the repo's config.
+#[derive(clap::Args, Default)]
+struct ProxyArgs {
+    /// Hosts reached directly, comma-separated, for the default harness or
+    /// HARNESS; repeat for each harness. DSH defaults to api.deepseek.com.
+    /// An empty list disables the stock addition. Extends no_proxy and NO_PROXY.
+    #[arg(long, value_name = "[HARNESS=]HOSTS")]
+    worker_no_proxy: Vec<String>,
+}
+
 /// How a command that starts a worker starts it.
 #[derive(clap::Args)]
 struct AgentArgs {
+    #[command(flatten)]
+    proxy: ProxyArgs,
     /// The worker launch command of the default harness, handed to orca as it is — in a
     /// bound repo, with what starts a worker in its role added — or, as
     /// `<harness>=<command>`, that of one harness; once for each [default: each harness's
@@ -852,7 +868,8 @@ impl AgentArgs {
     /// the one worker a command started this way starts is refused where its
     /// harness's command resolves to nothing (`Agent::command`).
     fn agent(self) -> anyhow::Result<Agent> {
-        let launches = Launches::new(&self.worker_command, true)?;
+        let launches = Launches::new(&self.worker_command, true)?
+            .with_no_proxy(&self.proxy.worker_no_proxy)?;
         Ok(Agent { launches, ready_timeout: self.ready_timeout })
     }
 
@@ -1062,9 +1079,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Rehearse { workflow, declared, team } => {
             workflow::rehearse(&team::load(team.from())?, &workflow, &declared)
         }
-        Command::Doctor { host } => doctor::doctor(now, &host.unwrap_or_else(this_host)),
-        Command::Plan { instance } => {
-            let launches = Launches::foreseen();
+        Command::Doctor { host, proxy } => {
+            doctor::doctor_with_proxy(now, &host.unwrap_or_else(this_host), &proxy.worker_no_proxy)
+        }
+        Command::Plan { instance, proxy } => {
+            let launches = Launches::foreseen().with_no_proxy(&proxy.worker_no_proxy)?;
             let warnings = match probe::standing(now, &launches) {
                 Some(warnings) => warnings,
                 None => probe::startup(now, &launches)?,
@@ -1079,6 +1098,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 plan["intake"] = json!({"open": flows.taken_in(), "limit": bound.intake_limit});
             }
             plan["admission"] = admission.json();
+            plan["worker_no_proxy"] = launches.proxy_json();
             Ok(plan)
         }
         Command::Run {

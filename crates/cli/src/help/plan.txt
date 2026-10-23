@@ -184,3 +184,12 @@ WHAT TRIPS YOU UP
   - A probe that stands is trusted, not checked: a command uninstalled or logged out
     since, or a rule the remote gained, shows as the error of whatever runs into it —
     or, for the ref layout, not until the next probe. `run` probes at every start.
+
+WORKER PROXY BYPASS
+
+  --worker-no-proxy [HARNESS=]HOSTS is as in afkconvoy run --help.
+  worker_no_proxy lists every harness: {harness, addition, no_proxy, NO_PROXY}.
+  Values describe a start now with this command's flags and the host user's
+  login shell exports. A null addition leaves both inherited values alone;
+  DSH's stock addition is api.deepseek.com. No proxy setting is read from
+  the repo's config or written to GitHub.
