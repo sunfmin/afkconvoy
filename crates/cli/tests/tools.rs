@@ -239,7 +239,10 @@ fn on_a_custom_provider_plan_foresees_no_command_and_checks_claude_for_nothing()
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
-    assert_eq!(world.shell_asked(), ["gh auth status"]);
+    let asked = world.shell_asked();
+    assert_eq!(asked.len(), 2, "only GitHub login and the current proxy exports are read");
+    assert_eq!(asked[0], "gh auth status");
+    assert!(asked[1].starts_with("printf 'AFKCONVOY_PROXY"));
 }
 
 #[test]
