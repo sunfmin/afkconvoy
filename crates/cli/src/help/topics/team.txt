@@ -34,9 +34,9 @@ THE TEAM FILE
   true or false, says whether a worker is given the host user's own skills and rules
   beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
 
-  `dsh_profile`: `fleet` (default) or `host-user` (the user's complete dsh-tui profile).
-  A role's `{ dir, dsh_profile }` overrides it independently of host_user: `afkconvoy run --help`.
-  `split: false` omits splitting from stage briefs; true or unsaid offers it, without a guard.
+  `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`.
+  A role's `{ dir, dsh_profile }` overrides it. Details: `afkconvoy run --help`.
+  `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
 
 HOW IT NAMES A ROLE
 
