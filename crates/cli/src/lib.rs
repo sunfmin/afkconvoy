@@ -554,10 +554,12 @@ enum Command {
     /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
     #[command(after_long_help = include_str!("help/switch.txt"))]
     Switch {
-        /// The harness to move onto: claude-code, pi, codex or dsh — or `config`, the one the
-        /// repo's config names, which forgets this host's choice
-        #[arg(long, value_parser = chosen_harness)]
-        harness: Chosen,
+        /// The harness to move onto: claude-code, pi, codex or dsh
+        #[arg(long, value_parser = chosen_harness, required_unless_present = "clear")]
+        harness: Option<Harness>,
+        /// Forget this host's choice: each worker runs what its range and casting say again
+        #[arg(long, conflicts_with = "harness")]
+        clear: bool,
         /// The issue whose worker to move
         #[arg(value_name = "ISSUE", conflicts_with_all = ["all", "patrol"])]
         issue: Option<u64>,
@@ -851,14 +853,12 @@ fn found(text: &str) -> Result<Found, String> {
     })
 }
 
-/// A harness `switch` moves onto: one by its key, or the config's.
-#[derive(Debug, Clone, Copy)]
-struct Chosen(Option<Harness>);
-
-fn chosen_harness(text: &str) -> Result<Chosen, String> {
+/// A harness `switch` moves onto, by its key. `config`, which once forgot
+/// this host's choice, is refused for `--clear`, which does that now.
+fn chosen_harness(text: &str) -> Result<Harness, String> {
     match text {
-        "config" => Ok(Chosen(None)),
-        _ => harness(text).map(|harness| Chosen(Some(harness))),
+        "config" => Err("`--harness config` is gone: `--clear` forgets this host's choice".into()),
+        _ => harness(text),
     }
 }
 
@@ -1344,7 +1344,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Restart { issue, who, agent } => {
             watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue.number())
         }
-        Command::Switch { harness, issue, patrol, all, who, agent } => {
+        Command::Switch { harness, clear: _, issue, patrol, all, who, agent } => {
             let which = match (issue, patrol, all) {
                 (Some(issue), _, _) => switch::Which::Issue(issue),
                 (None, Some(patrol), _) => switch::Which::Patrol(patrol.trim().to_string()),
@@ -1352,7 +1352,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 (None, None, false) => switch::Which::Nothing,
             };
             let mut fleet = Fleet::open(now)?;
-            switch::switch(&mut fleet, &who.me(now), &agent.agent()?, harness.0, which)
+            switch::switch(&mut fleet, &who.me(now), &agent.agent()?, harness, which)
         }
         Command::Abandon { who } => abandon::abandon_by_hand(&mut Fleet::open(now)?, &who.me(now)),
         Command::Takeover { list, from, yes, instance, host } => {
