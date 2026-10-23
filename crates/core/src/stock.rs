@@ -27,6 +27,8 @@ pub const SKILL: &str = "consult";
 
 /// The word of the marker the fleet leaves on an unbound repo's issue as it
 /// asks the stock consult of the issue's escalation.
+pub const PARKED_LABEL: &str = "convoy:parked";
+
 const ASKED: &str = "convoy:consult";
 /// The word of an escalation's marker (`transition::escalation_comment`).
 const ESCALATION: &str = "convoy:escalation";

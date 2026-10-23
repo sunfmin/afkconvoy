@@ -297,6 +297,11 @@ pub fn advance(
             hand_on(fleet, &claim, None, true)?;
             return Ok(Outcome::Done);
         }
+        Advance::ConsultClose => {
+            fleet.gh.close_issue(issue)?;
+            hand_on(fleet, &claim, None, false)?;
+            return Ok(Outcome::Done);
+        }
         Advance::Close => {
             let (worktree, workless) = worktree_and_work(fleet, issue)?;
             if let Some(workless) = workless {

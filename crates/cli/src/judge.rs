@@ -430,7 +430,10 @@ fn answered(
         escalate_claim(fleet, claim, &reason, pr, Some(worktree))?;
         return Ok(Some(Outcome::Done));
     }
-    if !fleet.gh.issue(issue)?.labels.contains(&fleet.config.ready_label) {
+    let labels = fleet.gh.issue(issue)?.labels;
+    if !labels.contains(&fleet.config.ready_label)
+        && !labels.iter().any(|label| label == stock::PARKED_LABEL)
+    {
         return Ok(None);
     }
     transition::hand_on(issue, false, |step| {

@@ -17,17 +17,23 @@ pub enum Declared {
     Blocked,
     AlreadySatisfied,
     Escalate,
+    /// The consult ends the issue with its reason.
+    Close,
+    /// The consult waits for evidence or a human to send it back.
+    Park,
     /// What a consult or a human decides on an escalated issue.
     Ruling,
 }
 
 impl Declared {
-    pub const ALL: [Declared; 6] = [
+    pub const ALL: [Declared; 8] = [
         Declared::Pass,
         Declared::Reject,
         Declared::Blocked,
         Declared::AlreadySatisfied,
         Declared::Escalate,
+        Declared::Close,
+        Declared::Park,
         Declared::Ruling,
     ];
 
@@ -38,6 +44,8 @@ impl Declared {
             Declared::Blocked => Phase::Blocked.word(),
             Declared::AlreadySatisfied => Phase::AlreadySatisfied.word(),
             Declared::Escalate => Phase::Escalate.word(),
+            Declared::Close => "close",
+            Declared::Park => "park",
             Declared::Ruling => "ruling",
         }
     }
@@ -216,6 +224,9 @@ pub enum Position<'w> {
     /// when those close, which counts as no rework.
     #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
     Parked(&'w Stage),
+    /// A consult parked it for evidence; only an explicit send brings it back.
+    #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
+    Suspended(&'w Stage),
     /// Its last stage passed to the landing train.
     #[variant(Position[false, 0, 0])]
     Landing,
@@ -236,6 +247,7 @@ impl<'w> Position<'w> {
             | Position::Waiting(stage)
             | Position::Consult(stage, ..)
             | Position::Parked(stage)
+            | Position::Suspended(stage)
             | Position::Escalating(stage, _) => Some(stage),
             Position::Landing | Position::Ended => None,
         }
@@ -400,6 +412,7 @@ impl<'w> Place<'w> {
             | Position::Perform(..)
             | Position::Waiting(_)
             | Position::Parked(_)
+            | Position::Suspended(_)
             | Position::Escalating(..)
             | Position::Landing
             | Position::Ended => self.position,
@@ -471,7 +484,10 @@ impl<'w> Place<'w> {
                 self.handed(stage, reason)
             }
             Position::Consult(stage, ..) => Position::Escalating(stage, reason),
-            Position::Escalating(..) | Position::Landing | Position::Ended => self.position,
+            Position::Suspended(_)
+            | Position::Escalating(..)
+            | Position::Landing
+            | Position::Ended => self.position,
         };
         Place { position, ..self }
     }
@@ -487,7 +503,10 @@ impl<'w> Place<'w> {
                 self.handed(stage, reason)
             }
             Position::Consult(stage, ..) => Position::Escalating(stage, reason),
-            Position::Escalating(..) | Position::Landing | Position::Ended => self.position,
+            Position::Suspended(_)
+            | Position::Escalating(..)
+            | Position::Landing
+            | Position::Ended => self.position,
         };
         Place { position, ..self }
     }
@@ -547,7 +566,10 @@ impl<'w> Place<'w> {
             }
             // A consult's own failure is a human's.
             Position::Consult(stage, ..) => Position::Escalating(stage, reason),
-            Position::Escalating(..) | Position::Landing | Position::Ended => self.position,
+            Position::Suspended(_)
+            | Position::Escalating(..)
+            | Position::Landing
+            | Position::Ended => self.position,
         };
         Place { position, ..self }
     }
@@ -557,7 +579,7 @@ impl<'w> Place<'w> {
     fn valid(&self, declared: Declared) -> Option<Place<'w>> {
         let mut next = self.clone();
         next.position = match (self.position, declared) {
-            (Position::Landing | Position::Ended, _) => return None,
+            (Position::Suspended(_) | Position::Landing | Position::Ended, _) => return None,
             // A ruling on an escalated issue is a human's.
             (Position::Escalating(stage, _), Declared::Ruling) => {
                 return Some(next.put(stage));
@@ -583,6 +605,8 @@ impl<'w> Place<'w> {
             (Position::Consult(stage, ..), Declared::Escalate) => {
                 Position::Escalating(stage, Reason::Consult)
             }
+            (Position::Consult(..), Declared::Close) => Position::Ended,
+            (Position::Consult(stage, ..), Declared::Park) => Position::Suspended(stage),
             (Position::Consult(..), _) => return None,
             (
                 Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage),
@@ -616,7 +640,7 @@ impl<'w> Place<'w> {
                     Some(consult) => Position::Consult(stage, consult, ConsultOn::Escalate),
                     None => Position::Escalating(stage, Reason::Verdict),
                 },
-                Declared::Ruling => return None,
+                Declared::Close | Declared::Park | Declared::Ruling => return None,
             },
         };
         Some(next)
@@ -674,6 +698,7 @@ mod tests {
             Position::Consult(stage, Consult::Stock, _) => {
                 format!("consult on {} by the stock consult", stage.name)
             }
+            Position::Suspended(stage) => format!("parked for evidence at {}", stage.name),
             Position::Parked(stage) => format!("parked at {}", stage.name),
             Position::Landing => "landing".to_string(),
             Position::Ended => "ended".to_string(),

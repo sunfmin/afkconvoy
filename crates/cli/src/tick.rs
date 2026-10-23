@@ -456,6 +456,9 @@ impl Ticked {
                     Position::Perform(stage, _) => at(&stage.name),
                     Position::Waiting(stage) => format!("{}, waiting on a human", at(&stage.name)),
                     Position::Consult(stage, ..) => format!("{}, with a consult", at(&stage.name)),
+                    Position::Suspended(stage) => {
+                        format!("parked for evidence {}", at(&stage.name))
+                    }
                     Position::Parked(stage) => format!("parked {}", at(&stage.name)),
                     Position::Escalating(stage, _) => format!("escalating {}", at(&stage.name)),
                     Position::Landing => "landing".to_string(),
