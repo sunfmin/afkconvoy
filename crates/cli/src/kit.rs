@@ -253,11 +253,14 @@ pub enum Answer {
     Unsendable,
 }
 
+/// The models a harness offers through a command.
+type Listing = dyn Fn(Harness, &str) -> Option<Option<Vec<String>>>;
+
 /// What the editor asks of the host, apart from the human.
 struct Host<'a> {
     /// The models a harness offers through a command (`None`: it has no way
     /// to say; `Some(None)`: asking it failed).
-    listed: &'a dyn Fn(Harness, &str) -> Option<Option<Vec<String>>>,
+    listed: &'a Listing,
     probe: &'a dyn Fn(&[Asked]) -> Vec<Answer>,
     now: u64,
 }
