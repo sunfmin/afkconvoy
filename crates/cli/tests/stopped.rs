@@ -587,3 +587,103 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
     let said = world.comments(7).last().unwrap().clone();
     assert!(said.contains("waited 600s on its own background work, past the limit"), "{said}");
 }
+
+#[test]
+fn a_refusing_harness_holds_claims_reports_once_and_recovers_without_restart() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| {
+        orca["prompt_blocked"] = json!("organization disabled subscription access")
+    });
+    for now in [1300, 1390, 1480] {
+        world.afk(&[
+            "tick",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            &now.to_string(),
+            "--worker-command",
+            "agent",
+        ]);
+    }
+    assert_eq!(world.claims().len(), 1);
+    world.orca_calls();
+    for now in [1500, 1600, 1700] {
+        let ticked = tick(&world, now);
+        assert_eq!(ticked["errors"], json!([]));
+        assert_eq!(world.claims().len(), 1);
+        assert_eq!(escalations(&world), 0);
+    }
+    let calls = world.orca_calls();
+    assert!(!calls.iter().any(|call| common::asked(call) == "terminal send"));
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1700"]).json;
+    let found: Vec<_> = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["what"].as_str().unwrap().contains("harness is down"))
+        .collect();
+    assert_eq!(found.len(), 1, "{doctor}");
+    assert!(found[0]["evidence"].as_str().unwrap().contains("organization disabled"));
+    assert!(found[0]["fix"].as_str().unwrap().contains("afkconvoy switch"));
+    let files = std::fs::read_dir(world.cache().join("afkconvoy/runs")).unwrap();
+    let entries = files
+        .filter_map(Result::ok)
+        .filter(|file| file.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .flat_map(|file| {
+            std::fs::read_to_string(file.path())
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .map(|line| serde_json::from_str::<Value>(&line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entries.iter().filter(|entry| entry["command"]["command"] == "harness_down").count(),
+        1,
+        "{entries:?}"
+    );
+    world.with_orca(|orca| orca["prompt_blocked"] = Value::Null);
+    let recovered = tick(&world, 1780);
+    assert!(did(&recovered).contains(&"judge 7 nudged".to_string()), "{recovered}");
+    assert_eq!(world.claims().len(), 1);
+    assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1780");
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1780"]).json;
+    assert!(
+        !doctor["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["what"].as_str().unwrap().contains("harness is down"))
+    );
+}
+
+#[test]
+fn a_down_harness_refusing_a_new_dispatch_takes_no_slot() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| orca["prompt_blocked"] = json!("subscription disabled"));
+    for now in [1300, 1390, 1480] {
+        world.afk(&[
+            "tick",
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            &now.to_string(),
+            "--worker-command",
+            "agent",
+        ]);
+    }
+    world.close_issue(7);
+    world.issue(9, &["ready-for-agent"]);
+    let held = tick(&world, 1600);
+    assert_eq!(held["errors"], json!([]));
+    assert_eq!(held["held"], 0, "a refused dispatch holds no claim: {held}");
+    assert!(world.claims().is_empty());
+    assert!(did(&held).contains(&"dispatch 9 blocked".to_string()), "{held}");
+}

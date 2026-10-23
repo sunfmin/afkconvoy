@@ -41,6 +41,7 @@ pub mod gate;
 pub mod gh;
 pub mod git;
 pub mod guard;
+pub mod harness_down;
 pub mod host_evidence;
 pub mod host_sleep;
 pub mod hot;

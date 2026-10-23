@@ -82,6 +82,17 @@ struct Asked {
     stderr: String,
 }
 
+/// Orca refused a prompt because the harness cannot accept it. Keep this
+/// distinct from a terminal or transport failure, including its full reason.
+#[derive(Debug)]
+pub struct PromptBlocked(pub String);
+impl std::fmt::Display for PromptBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "orca terminal send failed: agent_prompt_blocked: {}", self.0)
+    }
+}
+impl std::error::Error for PromptBlocked {}
+
 impl Asked {
     fn of(args: &[&str]) -> Result<Asked> {
         let what = args.iter().take(2).copied().collect::<Vec<_>>().join(" ");
@@ -100,6 +111,14 @@ impl Asked {
     }
 
     fn failure(&self) -> anyhow::Error {
+        if self.what == "terminal send" && self.answer["error"]["code"] == "agent_prompt_blocked" {
+            let error = &self.answer["error"];
+            let reason = error["details"]["reason"]
+                .as_str()
+                .or_else(|| error["message"].as_str())
+                .unwrap_or("agent_prompt_blocked");
+            return PromptBlocked(reason.to_string()).into();
+        }
         let said = match self.answer["error"]["code"].as_str() {
             Some(code) => code,
             None if self.stderr.is_empty() => &self.stdout,
@@ -796,9 +815,23 @@ impl Worktree {
     /// Types one line at the worker and submits it. Typed but unsubmitted, a
     /// worker sits idle forever, indistinguishable from one that finished.
     pub fn tell(&self, terminal: &str, line: &str) -> Result<()> {
+        self.tell_at(terminal, line, crate::clock())
+    }
+
+    pub fn tell_at(&self, terminal: &str, line: &str, now: u64) -> Result<()> {
+        crate::harness_down::tell(self, terminal, now, || self.tell_unchecked(terminal, line))
+    }
+
+    fn tell_unchecked(&self, terminal: &str, line: &str) -> Result<()> {
         let sent = orca(&["terminal", "send", "--terminal", terminal, "--text", line, "--enter"])?;
         if sent["send"]["accepted"] != true {
-            bail!("terminal {terminal} did not accept the line");
+            return Err(PromptBlocked(
+                sent["send"]["blockedReason"]
+                    .as_str()
+                    .unwrap_or("terminal did not accept the line")
+                    .to_string(),
+            )
+            .into());
         }
         Ok(())
     }

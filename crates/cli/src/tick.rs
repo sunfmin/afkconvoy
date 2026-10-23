@@ -173,6 +173,19 @@ pub fn tick(
         };
         // Whatever a step raised, the rest of the tick is still owed.
         made.unwrap_or_else(|error| {
+            if error.is::<crate::harness_down::Held>() {
+                if let TickStep::Dispatch { issue } = step
+                    && !fleet
+                        .scan
+                        .claim_of(issue)
+                        .is_some_and(|claim| claim.is_held_by(&me.instance))
+                {
+                    // The harness refused admission before a claim was won:
+                    // this must leave the slot free for another harness.
+                    return Outcome::Blocked;
+                }
+                return Outcome::Nothing;
+            }
             failures.push(Failure::of(Failed::Step(step), &error));
             Outcome::Failed
         })
@@ -243,6 +256,24 @@ fn carry_out(
     step: TickStep,
     blocked: &mut Vec<(u64, Vec<u64>)>,
 ) -> Result<Outcome> {
+    // A shared harness outage is no worker's silence. Keep the claim and
+    // progress, including its one nudge, until its pending prompt can probe.
+    let issue = match step {
+        TickStep::Judge { issue, .. } | TickStep::Watch { issue } | TickStep::Advance { issue } => {
+            Some(issue)
+        }
+        _ => None,
+    };
+    if let Some(issue) = issue
+        && crate::harness_down::any_down(&fleet.repo)?
+    {
+        let source = crate::orca::Source::of(&fleet.repo)?;
+        if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)?
+            && crate::harness_down::holds(&worktree, fleet.now)?
+        {
+            return Ok(Outcome::Nothing);
+        }
+    }
     match step {
         TickStep::Settle { issue } => {
             settle(fleet, me, issue)?;

@@ -137,6 +137,7 @@ kinds! {
     LaunchTakesNoRole: Critical, "cannot start a worker in its role";
     NoRun: Critical, "no `afkconvoy run` is alive";
     StepFailed: Critical, "failed in each of the last";
+    HarnessDown: Critical, "harness is down";
     TeamUnread: Critical, "the team this repo names cannot be read";
     TeamFaulty: Critical, "has a fault at its head";
     LockUnworked: Critical, "stands and cannot be worked";
@@ -158,7 +159,7 @@ kinds! {
     NoGateLimit: Info, "declares no gate limit";
 }
 
-fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
+pub(crate) fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
     Finding { severity: kind.severity(), what, evidence, fix, see: kind.see() }
 }
@@ -1390,7 +1391,9 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         run: &run,
         state: state.as_ref().map_err(String::as_str),
     };
-    let found = findings(&seen);
+    let mut found = findings(&seen);
+    found.extend(crate::harness_down::findings(&repo, run.instance.as_deref())?);
+    found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
         Ok(state) => (
             state.held.iter().map(held_json).collect(),
