@@ -282,8 +282,9 @@ fn in_role(
     Ok(harness.in_role(launch, &start))
 }
 
-/// Ends the worker of my run of the patrol `name` and starts one of `harness`
-/// in its checkout, briefed as it was, and told what of the run is there
+/// Ends the worker of my run of the patrol `name` and starts one in its
+/// checkout of the harness it runs now — this host's chosen one, else the
+/// patrol's — briefed as it was, and told what of the run is there
 /// (`continuing`). The run, its claim and its record are untouched: no new
 /// run starts, and it ends as any does.
 pub(crate) fn switch(
@@ -291,7 +292,6 @@ pub(crate) fn switch(
     me: &Me,
     agent: &Agent,
     name: &str,
-    harness: Harness,
     said: impl FnOnce(&Worktree) -> Continuing,
 ) -> Result<Value> {
     let key = claim_key(name);
@@ -308,6 +308,8 @@ pub(crate) fn switch(
     };
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
     let kept = keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?;
+    let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
+    let harness = fleet.harness_of(kept.team.patrol(name).ok_or_else(none)?.harness(bound.harness));
     let launch = agent.command(harness)?;
     let line = in_role(fleet, &kept, name, harness, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
