@@ -58,7 +58,7 @@ WHAT IT ANSWERS
 
   `valid` is false for what may not be declared where the issue is: a `reject` from a
   stage with no `on.reject`, a `ruling` nobody asked for, anything but `ruling` or
-  `escalate` from a consult. It is no valid verdict, and the issue escalates with that
+  `escalate`, `close` or `park` from a consult. It is no valid verdict, and the issue escalates with that
   as its reason. Anything declared on an issue that is landing or ended, and anything
   but a `ruling` on one that is escalating, is not valid either and changes nothing.
 

@@ -93,7 +93,7 @@ pub(crate) fn position(
         Position::Perform(..) => "perform",
         Position::Waiting(_) => "waiting",
         Position::Consult(..) => "consult",
-        Position::Suspended(_) => "parked-for-evidence",
+        Position::ParkedForEvidence(_) => "parked-for-evidence",
         Position::Parked(_) => "parked",
         Position::Landing => "landing",
         Position::Ended => "ended",

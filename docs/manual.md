@@ -613,7 +613,9 @@ humans`). `escalate: { to, do }` names a more senior role, on the default harnes
 where a stage names none, the stock consult, afkconvoy's own, is asked on the stage's
 harness — its one instruction is to decide as the human would. `{ to: human }` names
 none: a human, straight. A consult rules (`afkconvoy rule`: the stage runs again; on an
-`escalate` that is one more rework in total), sends the issue on, or lets it through.
+`escalate` that is one more rework in total), sends the issue on, closes or parks it
+with a reason (`afkconvoy verdict close|park`), or lets it through. Close and park
+add no rework; a park waits for an explicit send with new evidence.
 The same hand-off again goes to a human. The chain is one role long, and a consult
 writes no code: one that left a commit has failed.
 ````
@@ -1139,6 +1141,26 @@ each, and any read-only command, the gate too; never commit, push or change the 
         Record it as blocked by the issue whose database id is `<id>`.
     gh api -X DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>
         Remove that edge: one whose waiting would never end, say.
+````
+
+### PARKED FOR EVIDENCE
+
+````text
+A consult may close an issue with a reason, or park it for new evidence. Neither
+is rework. `plan` and `doctor` list parked issues under `waiting_on_human`.
+
+In a bound repo the stage records hold the park. To bring it back, write the new
+evidence or your reason in a file and explicitly send it to a stage:
+
+    afkconvoy send --issue <n> --stage <stage> --text-file <evidence-file>
+
+In an unbound repo it carries `convoy:parked`. Comment with the new evidence, then:
+
+    gh issue edit <n> --add-label <ready label> --remove-label convoy:parked
+
+A plain comment alone does not bring it back: the explicit send or label change
+keeps routine comments from restarting an investigation. A closed issue can be
+reopened on GitHub and then brought back the same way.
 ````
 
 ### A TRIPPED BREAKER

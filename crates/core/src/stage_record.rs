@@ -573,7 +573,7 @@ pub fn advance(history: &History, records: &[StageRecord], claim: &str) -> Advan
         return if asked { Advance::AskAfter } else { Advance::HandOn };
     };
     match position {
-        Position::Suspended(_) => Advance::HandOn,
+        Position::ParkedForEvidence(_) => Advance::HandOn,
         Position::Ended if verdict.stated == Stated::Declared(Declared::Close) => {
             Advance::ConsultClose
         }

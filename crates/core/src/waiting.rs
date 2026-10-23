@@ -232,7 +232,7 @@ pub fn waits(
                 }
             }
             let position = read.place.position;
-            if let Position::Suspended(stage) = position {
+            if let Position::ParkedForEvidence(stage) = position {
                 return Some(Waits::Parked { stage: stage.name.clone() });
             }
             match position.stage() {

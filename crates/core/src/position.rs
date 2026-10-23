@@ -226,7 +226,7 @@ pub enum Position<'w> {
     Parked(&'w Stage),
     /// A consult parked it for evidence; only an explicit send brings it back.
     #[variant((&Stage[@s]) -> Position[true, s.n, s.roles])]
-    Suspended(&'w Stage),
+    ParkedForEvidence(&'w Stage),
     /// Its last stage passed to the landing train.
     #[variant(Position[false, 0, 0])]
     Landing,
@@ -247,7 +247,7 @@ impl<'w> Position<'w> {
             | Position::Waiting(stage)
             | Position::Consult(stage, ..)
             | Position::Parked(stage)
-            | Position::Suspended(stage)
+            | Position::ParkedForEvidence(stage)
             | Position::Escalating(stage, _) => Some(stage),
             Position::Landing | Position::Ended => None,
         }
@@ -412,7 +412,7 @@ impl<'w> Place<'w> {
             | Position::Perform(..)
             | Position::Waiting(_)
             | Position::Parked(_)
-            | Position::Suspended(_)
+            | Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
             | Position::Ended => self.position,
@@ -484,7 +484,7 @@ impl<'w> Place<'w> {
                 self.handed(stage, reason)
             }
             Position::Consult(stage, ..) => Position::Escalating(stage, reason),
-            Position::Suspended(_)
+            Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
             | Position::Ended => self.position,
@@ -503,7 +503,7 @@ impl<'w> Place<'w> {
                 self.handed(stage, reason)
             }
             Position::Consult(stage, ..) => Position::Escalating(stage, reason),
-            Position::Suspended(_)
+            Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
             | Position::Ended => self.position,
@@ -566,7 +566,7 @@ impl<'w> Place<'w> {
             }
             // A consult's own failure is a human's.
             Position::Consult(stage, ..) => Position::Escalating(stage, reason),
-            Position::Suspended(_)
+            Position::ParkedForEvidence(_)
             | Position::Escalating(..)
             | Position::Landing
             | Position::Ended => self.position,
@@ -579,7 +579,9 @@ impl<'w> Place<'w> {
     fn valid(&self, declared: Declared) -> Option<Place<'w>> {
         let mut next = self.clone();
         next.position = match (self.position, declared) {
-            (Position::Suspended(_) | Position::Landing | Position::Ended, _) => return None,
+            (Position::ParkedForEvidence(_) | Position::Landing | Position::Ended, _) => {
+                return None;
+            }
             // A ruling on an escalated issue is a human's.
             (Position::Escalating(stage, _), Declared::Ruling) => {
                 return Some(next.put(stage));
@@ -606,7 +608,7 @@ impl<'w> Place<'w> {
                 Position::Escalating(stage, Reason::Consult)
             }
             (Position::Consult(..), Declared::Close) => Position::Ended,
-            (Position::Consult(stage, ..), Declared::Park) => Position::Suspended(stage),
+            (Position::Consult(stage, ..), Declared::Park) => Position::ParkedForEvidence(stage),
             (Position::Consult(..), _) => return None,
             (
                 Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage),
@@ -698,7 +700,7 @@ mod tests {
             Position::Consult(stage, Consult::Stock, _) => {
                 format!("consult on {} by the stock consult", stage.name)
             }
-            Position::Suspended(stage) => format!("parked for evidence at {}", stage.name),
+            Position::ParkedForEvidence(stage) => format!("parked for evidence at {}", stage.name),
             Position::Parked(stage) => format!("parked at {}", stage.name),
             Position::Landing => "landing".to_string(),
             Position::Ended => "ended".to_string(),
@@ -790,7 +792,7 @@ mod tests {
                 }
                 assert!(next.position.start().is_none());
                 assert!(next.position.breaker().is_none());
-                assert!(matches!(next.position, Position::Ended | Position::Suspended(_)));
+                assert!(matches!(next.position, Position::Ended | Position::ParkedForEvidence(_)));
             }
         }
     }

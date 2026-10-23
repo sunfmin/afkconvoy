@@ -154,7 +154,7 @@ pub fn due<'t>(
         Position::Perform(stage, _) | Position::Waiting(stage) | Position::Parked(stage) => {
             waits(stage, "a human: no worker performs it")
         }
-        Position::Suspended(stage) => waits(stage, "new evidence and an explicit send"),
+        Position::ParkedForEvidence(stage) => waits(stage, "new evidence and an explicit send"),
         Position::Landing => match (&workflow.land, pr) {
             (Some(work), Some(pr)) => {
                 Due::Lander(Lander { workflow, work, role: team.role_of(work), pr })
