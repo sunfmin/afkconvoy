@@ -33,6 +33,21 @@ pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, tit
     blockers_more: .blockedBy.pageInfo.hasNextPage, \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// Completed issues with closure times and intake comments, paged together so
+/// reading a patrol's landings never makes one request per ordinary issue.
+pub const LANDED_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $endCursor: String) { \
+    repository(owner: $owner, name: $repo) { \
+    issues(states: CLOSED, first: 100, after: $endCursor, \
+    orderBy: {field: UPDATED_AT, direction: DESC}) { \
+    pageInfo { hasNextPage endCursor } \
+    nodes { number stateReason closedAt \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } } }";
+pub const LANDED_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
+    select(.stateReason == \"COMPLETED\") | \
+    {number, at: (.closedAt | fromdateiso8601? // null), \
+    more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
+    {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
 /// How many comments of an issue come with it (`OPEN_ISSUES_QUERY`).
 pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
@@ -418,6 +433,49 @@ impl GitHub {
             });
         }
         Ok(open)
+    }
+
+    /// Patrol ownership and completion times in the rolling day. Read only
+    /// when a configured patrol has a landing bound. Ownership follows the
+    /// latest intake record, regardless of the issue's labels now.
+    pub fn patrol_landings(&self, now: u64) -> Result<Vec<(String, u64)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            at: Option<u64>,
+            more: bool,
+            comments: Vec<Comment>,
+        }
+        let query = format!("query={LANDED_ISSUES_QUERY}");
+        let out = self.read(&[
+            "api",
+            "graphql",
+            "--paginate",
+            "-F",
+            "owner={owner}",
+            "-F",
+            "repo={repo}",
+            "-f",
+            &query,
+            "--jq",
+            LANDED_ISSUES_JQ,
+        ])?;
+        let mut landed = vec![];
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let row: Row =
+                serde_json::from_str(line).context("gh api graphql: unexpected answer")?;
+            let Some(at) = row.at else { continue };
+            if now.saturating_sub(at) >= afkconvoy_core::patrol::DAY {
+                continue;
+            }
+            let comments = if row.more { self.comments(row.number)? } else { row.comments };
+            if let Some(patrol) =
+                afkconvoy_core::intake::opened_by(comments.iter().map(|c| c.body.as_str()))
+            {
+                landed.push((patrol, at));
+            }
+        }
+        Ok(landed)
     }
 
     /// What is open: the issues and the PRs, asked for side by side.

@@ -96,8 +96,8 @@ pub const STAGE_KEYS: [&str; 8] =
 pub const ON_KEYS: [&str; 2] = ["pass", "reject"];
 pub const ESCALATE_KEYS: [&str; 2] = ["to", "do"];
 pub const LAND_KEYS: [&str; 2] = ["by", "do"];
-pub const PATROL_KEYS: [&str; 7] =
-    ["by", "do", "every", HARNESS_KEY, "model", "max_open", "max_runs_a_day"];
+pub const PATROL_KEYS: [&str; 8] =
+    ["by", "do", "every", HARNESS_KEY, "model", "max_open", "max_runs_a_day", "max_landed_a_day"];
 
 /// One value of a definition file's yaml, as it was parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -767,6 +767,8 @@ pub struct Patrol {
     /// How many of its runs the last day may hold before it is skipped, when
     /// it says; fewer than its `every` lets it.
     pub max_runs_a_day: Option<u64>,
+    /// How many issues it opened may have completed in the last rolling day.
+    pub max_landed_a_day: Option<u64>,
 }
 
 impl Patrol {
@@ -2012,6 +2014,7 @@ fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol
     let model = text(report, "", entries, "model").map(str::to_string);
     let max_open = limit(report, "", entries);
     let max_runs_a_day = runs_a_day(report, entries, every);
+    let max_landed_a_day = daily_limit(report, entries, "max_landed_a_day");
     Some(Patrol {
         name: name.to_string(),
         work: work?,
@@ -2020,6 +2023,7 @@ fn patrol_file(report: &mut Report, file: &File, roles: &Roles) -> Option<Patrol
         model,
         max_open: max_open?,
         max_runs_a_day: max_runs_a_day?,
+        max_landed_a_day: max_landed_a_day?,
     })
 }
 
@@ -2032,26 +2036,12 @@ fn runs_a_day(
     entries: &[(String, Node)],
     every: Option<u64>,
 ) -> Option<Option<u64>> {
-    const KEY: &str = "max_runs_a_day";
-    let Some(node) = get(entries, KEY) else { return Some(None) };
-    let read = match node {
-        Node::Int(n) => u64::try_from(*n).ok().filter(|n| *n > 0),
-        _ => None,
-    };
-    let Some(read) = read else {
-        let was = match node {
-            Node::Int(_) => "a number below 1",
-            Node::Fraction => "a number with a fraction",
-            other => kind(other),
-        };
-        report.fault(KEY, format!("must be a whole number from 1 up, not {was}"));
-        return None;
-    };
+    let Some(read) = daily_limit(report, entries, "max_runs_a_day")? else { return Some(None) };
     if let Some(every) = every {
         let most = crate::patrol::runs_a_day(every);
         if read >= most {
             report.fault(
-                KEY,
+                "max_runs_a_day",
                 format!(
                     "{read} bounds nothing: `every` already lets the patrol run at most {most} \
                      time(s) a day. Say fewer, or leave the key out"
@@ -2061,6 +2051,27 @@ fn runs_a_day(
         }
     }
     Some(Some(read))
+}
+
+/// An optional daily bound: omitted, or a whole number from one up.
+fn daily_limit(report: &mut Report, entries: &[(String, Node)], key: &str) -> Option<Option<u64>> {
+    let Some(node) = get(entries, key) else { return Some(None) };
+    let read = match node {
+        Node::Int(n) => u64::try_from(*n).ok().filter(|n| *n > 0),
+        _ => None,
+    };
+    match read {
+        Some(read) => Some(Some(read)),
+        None => {
+            let was = match node {
+                Node::Int(_) => "a number below 1",
+                Node::Fraction => "a number with a fraction",
+                other => kind(other),
+            };
+            report.fault(key, format!("must be a whole number from 1 up, not {was}"));
+            None
+        }
+    }
 }
 
 /// The stage a draft with nothing wrong in it is, at the place `at` of a
@@ -2315,6 +2326,7 @@ land: { by: dev, do: land }
                 model: Some("opus".to_string()),
                 max_open: 3,
                 max_runs_a_day: Some(2),
+                max_landed_a_day: None,
             })
         );
         assert_eq!(team.patrol("nightly-x2").map(|patrol| patrol.every), Some(86400));

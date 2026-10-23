@@ -20,7 +20,7 @@ mod fake;
 
 use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
-    OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
+    LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
 };
 use fake::State;
 use serde_json::{Value, json};
@@ -490,7 +490,21 @@ fn comments(st: &State, number: &str) -> Vec<Value> {
 /// `gh api graphql`: the one query the fleet makes — every open issue, each
 /// with the first `COMMENTS_WITH` of its comments.
 fn open_issues(st: &State) -> ! {
+    if st.argv.contains(&format!("query={LANDED_ISSUES_QUERY}")) {
+        assert_eq!(st.opt("--jq"), Some(LANDED_ISSUES_JQ));
+        assert!(st.has("--paginate"));
+        let rows: Vec<String> = st.doc["issues"].as_array().unwrap().iter()
+            .filter(|issue| !is_open(issue) && issue["state_reason"] == "completed")
+            .map(|issue| {
+                let mut with = comments(st, &issue["number"].to_string());
+                let more = with.len() > COMMENTS_WITH;
+                with.truncate(COMMENTS_WITH);
+                json!({"number": issue["number"], "at": issue["closed_at"], "more": more, "comments": with}).to_string()
+            }).collect();
+        st.finish(&rows.join("\n"), 0, "")
+    }
     let query = format!("query={OPEN_ISSUES_QUERY}");
+
     assert!(st.argv.contains(&query), "fake gh: unsupported query {:?}", st.argv);
     assert_eq!(st.opt("--jq"), Some(OPEN_ISSUES_JQ), "fake gh: unsupported jq");
     assert!(st.has("--paginate"), "{:?}", st.argv);

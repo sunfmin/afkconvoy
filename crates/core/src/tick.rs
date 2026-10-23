@@ -846,6 +846,8 @@ mod tests {
             open: 0,
             max_open: 1,
             max_runs_a_day: None,
+            max_landed_a_day: None,
+            landed_in_day: None,
             runs_in_day: None,
             until: None,
             failure: None,

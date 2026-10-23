@@ -166,10 +166,10 @@ fn check_reads_patrol_files_and_holds_the_repos_patrols_against_them() {
         read["patrols"],
         json!([
             {"name": "audit", "by": "dev", "do": "sweep", "every": 172_800,
-                "harness": "claude-code", "model": "opus", "max_open": 1, "max_runs_a_day": null,
+                "harness": "claude-code", "model": "opus", "max_open": 1, "max_runs_a_day": null, "max_landed_a_day": null,
                 "runs_here": false},
             {"name": "sweep", "by": "dev", "do": "sweep", "every": 3600,
-                "harness": "claude-code", "model": null, "max_open": 2, "max_runs_a_day": null,
+                "harness": "claude-code", "model": null, "max_open": 2, "max_runs_a_day": null, "max_landed_a_day": null,
                 "runs_here": true},
         ])
     );
@@ -1023,4 +1023,94 @@ fn of_two_hosts_asked_at_once_one_runs_the_patrol() {
     workers_leave(&world);
     assert_eq!(patrolled(&tick_as(&world, "alpha", 10_300)), ["end_patrol sweep done"]);
     assert_eq!(standing(&world, 10_301), ["sweep not_due"], "the ask was answered");
+}
+
+#[test]
+fn a_patrol_waits_for_its_completed_issues_to_leave_the_rolling_day() {
+    let world = bound("[sweep]");
+    commit(
+        &world.root.join("github/acme/team"),
+        "patrols/sweep.md",
+        "```yaml\nby: dev\ndo: sweep\nevery: 1h\nmax_open: 2\nmax_landed_a_day: 2\n```\n",
+    );
+    assert_eq!(world.afk(&["check"]).ok()["patrols"][1]["max_landed_a_day"], 2);
+    for (number, at, reason) in [
+        (12, 10_000, "completed"),
+        (13, 20_000, "completed"),
+        (14, 30_000, "not_planned"),
+        (15, 1, "completed"),
+    ] {
+        world.issue(number, &[]);
+        take_in(&world, number);
+        world.close_issue(number);
+        world.with_gh(|gh| {
+            let issue = gh["issues"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|issue| issue["number"] == number)
+                .unwrap();
+            issue["closed_at"] = json!(at);
+            issue["state_reason"] = json!(reason);
+            issue["labels"] = json!([]); // Ownership survives removing the flow label.
+        });
+    }
+    // A human's completed issue and another patrol's do not count.
+    for number in [16, 17] {
+        world.issue(number, &[]);
+        world.close_issue(number);
+        world.with_gh(|gh| {
+            let issue = gh["issues"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|issue| issue["number"] == number)
+                .unwrap();
+            issue["closed_at"] = json!(30_000);
+            issue["state_reason"] = json!("completed");
+        });
+    }
+    world.comment(17, "<!--convoy:intake workflow=feature role=dev patrol=audit-->");
+    let held = planned(&world, "alpha", 90_000);
+    let patrol = &held["patrols"][0];
+    assert_eq!(patrol["standing"], "landed", "{held}");
+    assert_eq!(patrol["landed_in_day"], 2);
+    assert_eq!(patrol["until"], 96_400);
+    assert_eq!(planned(&world, "beta", 90_000)["patrols"], held["patrols"]);
+    assert!(ask(&world, 90_000).error().contains("max_landed_a_day"));
+    assert_eq!(patrolled(&tick(&world, 96_399)), Vec::<String>::new());
+    let released = planned(&world, "alpha", 96_400);
+    assert_eq!(released["patrols"][0]["standing"], "due");
+    assert_eq!(released["patrols"][0]["landed_in_day"], 1);
+    assert_eq!(ask(&world, 96_400).ok()["asked"], 96_400);
+    assert_eq!(patrolled(&tick(&world, 96_400)), ["patrol sweep done"]);
+}
+
+#[test]
+fn check_requires_a_positive_whole_landing_bound() {
+    let world = bound("[sweep]");
+
+    let mut files = vec![("team.md".to_string(), TEAM.to_string())];
+    for (name, value) in [
+        ("zero", "0"),
+        ("negative", "-1"),
+        ("fraction", "1.5"),
+        ("word", "many"),
+        ("boolean", "true"),
+        ("null", "null"),
+        ("fine", "1000"),
+    ] {
+        files.push((format!("patrols/{name}.md"),
+            format!("```yaml\nby: dev\ndo: sweep\nevery: 1d\nmax_open: 1\nmax_landed_a_day: {value}\n```\n")));
+    }
+    let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let dir = world.repo("acme/landing-bounds", &refs);
+    let refused = world.afk(&["check", "--dir", dir.to_str().unwrap()]);
+    assert_ne!(refused.code, 0);
+    let faults = refused.json["faults"].as_array().unwrap();
+    assert_eq!(faults.len(), 6, "{faults:?}");
+    for fault in faults {
+        assert_eq!(fault["key"], "max_landed_a_day");
+        assert!(fault["problem"].as_str().unwrap().contains("whole number from 1 up"));
+    }
 }
