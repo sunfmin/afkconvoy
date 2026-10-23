@@ -182,6 +182,7 @@ Of each definition file — the team file, a workflow's, a patrol's — only the
       <short name>: { dir: <its directory>, host_user: false }   # its own host_user
     precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
     host_user: true                    # default
+    split: true                        # default; false leaves splitting out of stage briefs
 
 `escalate_label` is the label an issue handed to a human carries in place of its flow
 label. `roles` gives each role the short name a `by` or a `to` says. `precedents`
@@ -191,6 +192,11 @@ opens a PR on the team's repo that appends one entry to `precedents.md`, unless
 `max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`,
 true or false, says whether a worker is given the host user's own skills and rules
 beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
+
+`split`, true or false, says whether stage briefs offer splitting an issue. Set
+`split: false` to leave the procedure out of every stage brief of this team, including
+when a stage runs again after a park. Left unsaid or true, the brief is unchanged.
+This controls the brief; it does not guard issue creation or parking on blockers.
 ````
 
 ### HOW IT NAMES A ROLE
@@ -577,7 +583,9 @@ from the first: a loop back is made with `reject` only.
 
 A stage that finds its issue too large splits it: it opens issues, takes each in
 (`afkconvoy intake --help`) and declares `blocked` on all of them. When they have all
-closed, the stage runs again and judges the whole.
+closed, the stage runs again and judges the whole. The team file may say
+`split: false` to leave splitting out of every stage brief (`afkconvoy help team`);
+true or left unsaid keeps the procedure. Parking on blockers still works.
 
 A stage that may commit and finds its gate red for a defect outside its issue — what
 the gate merged in is red the same way gated alone — opens that defect's issue
