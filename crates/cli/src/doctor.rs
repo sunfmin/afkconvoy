@@ -990,7 +990,7 @@ fn read_host(config: Option<&Config>) -> Host {
 }
 
 /// The worker launch commands a `run` said it started with: the first word
-/// of each, as `--worker-command` would be given them.
+/// of each, retained only as log evidence, never used to select commands.
 type StartedWith = Vec<String>;
 
 /// What the log says of the `run` of `host`: its fleet instance, the worker
@@ -1647,7 +1647,7 @@ mod tests {
         let mut flagless = host();
         flagless.launches[0].checked.flags_fault = Some("it takes no --settings".into());
         let found = self::found(&flagless, &run(vec![]), &state());
-        assert_eq!(fixes(&found, "cannot start a worker in its role"), ["afkconvoy run --help"]);
+        assert_eq!(fixes(&found, "cannot start a worker in its role"), ["afkconvoy kit"]);
     }
 
     #[test]
@@ -2250,7 +2250,7 @@ mod tests {
         ];
         let (instance, command, ticks) = read_log(&entries, "h1");
         assert_eq!(instance.as_deref(), Some("alpha"));
-        // as `--worker-command` would be given them: the default harness's bare
+        // as the legacy start record represents them: the default harness's bare
         assert_eq!(command.unwrap(), ["claude --yolo", "pi=pi"]);
         let counts: Vec<(u64, u64)> = ticks.iter().map(|(at, tick)| (*at, tick.count)).collect();
         assert_eq!(counts, [(40, 1), (50, 2)], "its own ticks only");

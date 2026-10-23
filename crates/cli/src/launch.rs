@@ -103,7 +103,7 @@ impl Launches {
         }
     }
 
-    /// The host's proxy bypass additions, given like its worker commands.
+    /// The host's proxy bypass additions, keyed by harness or bare for the default.
     pub fn with_no_proxy(mut self, given: &[String]) -> Result<Self> {
         self.bypass = afkconvoy_core::proxy::lists(given, self.default)
             .map_err(|why| See::Troubleshooting.refusal(why))?;

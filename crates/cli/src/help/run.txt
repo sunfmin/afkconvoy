@@ -402,7 +402,7 @@ WHAT TRIPS YOU UP
 WORKER PROXY BYPASS (HOST ONLY)
 
   --worker-no-proxy [HARNESS=]HOSTS says a comma-separated list of hosts
-  workers reach directly. Like --worker-command, the bare form is for the
+  workers reach directly. The bare form is for the
   default harness; repeat it for other harnesses, never twice for one. It is
   a setting of this start on this host, never a key of the repo's config.
   Example: --worker-no-proxy dsh=api.deepseek.com,internal.example
