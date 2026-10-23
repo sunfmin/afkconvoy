@@ -1353,6 +1353,13 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
 /// and a non-zero exit. It reads only — but for the fleet's own cache, where
 /// reading a team keeps its copies.
 pub fn doctor(now: u64, host: &str) -> Result<Value> {
+    doctor_with_proxy(now, host, &[])
+}
+
+/// Adds the network settings of a start the host is considering.
+pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value> {
+    let launches = Launches::foreseen().with_no_proxy(proxy)?;
+
     let repo = Repo::here()?;
     let log = Log::of(&repo).ok();
     let entries = log.as_ref().and_then(Log::read);
@@ -1392,6 +1399,7 @@ pub fn doctor(now: u64, host: &str) -> Result<Value> {
         Err(_) => (vec![], Value::Null, Value::Null),
     };
     let mut host = host_json(&seen_host);
+    host["worker_no_proxy"] = launches.proxy_json();
     host["admission"] = match Admission::read(&repo.dir) {
         Ok(admission) => admission.json(),
         Err(error) => json!({"error": format!("{error:#}")}),

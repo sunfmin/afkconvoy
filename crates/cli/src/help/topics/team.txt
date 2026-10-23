@@ -22,6 +22,7 @@ THE TEAM FILE
         <short name>: { dir: <its directory>, host_user: false }   # its own host_user
       precedents: { by: <role>, do: <skill>, max_open: 10 }   # optional
       host_user: true                    # default
+      dsh_profile: fleet                # fleet (default) or host-user; DSH only
       split: true                        # default; false omits splitting
 
   `escalate_label` is the label an issue handed to a human carries in place of its flow
@@ -33,8 +34,9 @@ THE TEAM FILE
   true or false, says whether a worker is given the host user's own skills and rules
   beside its role's (`afkconvoy help roles`); a role named by `dir` may set its own.
 
-  `split: false` leaves splitting out of all stage briefs, including after a park.
-  True or unsaid keeps the brief unchanged; this setting adds no guard.
+  `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`.
+  A role's `{ dir, dsh_profile }` says its own. Details: `afkconvoy run --help`.
+  `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
 
 HOW IT NAMES A ROLE
 
@@ -62,8 +64,7 @@ HOW IT NAMES A ROLE
 
   Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
   an entry of `.claude/skills/` in the role. Rules and skills are written once.
-  DSH runs dsh-tui with a fleet-owned DSH_HOME and --patch guard. How every harness
-  loads the role is in `afkconvoy run --help`. Limits are written once for each harness,
+  How each harness loads a role: `afkconvoy run --help`. Limits are written per harness,
   in its own form: pi and Codex run no hook of `.claude/settings.json`.
 
   A worker is given its role's directory alone, and nothing else of its repo: a

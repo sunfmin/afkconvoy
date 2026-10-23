@@ -67,6 +67,7 @@ impl Proposed {
 /// One start's snapshot of the host kit, with shell resolutions checked once.
 pub struct Launches {
     kit: Result<crate::kit::Kit, String>,
+    bypass: afkconvoy_core::proxy::Lists,
     /// The default harness of the repo here: the one the bare form names.
     default: Harness,
     /// Whether the repo here is bound: an unbound repo knows of no harness,
@@ -94,11 +95,41 @@ impl Launches {
         let config = config::default_file().and_then(|file| config::load(&file)).ok();
         Launches {
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
+            bypass: afkconvoy_core::proxy::Lists::default(),
             default: config.as_ref().map_or(Harness::DEFAULT, |config| config.harness()),
             bound: config.is_some_and(|config| config.bound.is_some()),
             starts: false,
             proposed: Harness::ALL.map(|harness| (harness, OnceCell::new())).into(),
         }
+    }
+
+    /// The host's proxy bypass additions, given like its worker commands.
+    pub fn with_no_proxy(mut self, given: &[String]) -> Result<Self> {
+        self.bypass = afkconvoy_core::proxy::lists(given, self.default)
+            .map_err(|why| See::Troubleshooting.refusal(why))?;
+        Ok(self)
+    }
+
+    /// Wraps the entire start, including role setup, in the worker shell's
+    /// proxy environment. The opaque worker launch command stays intact.
+    pub fn worker_line(&self, harness: Harness, command: &str) -> String {
+        afkconvoy_core::proxy::line(command, afkconvoy_core::proxy::addition(&self.bypass, harness))
+    }
+
+    /// Per harness, what a worker's login shell would export now.
+    pub fn proxy_json(&self) -> serde_json::Value {
+        // A login rc file may print anything before the answer. Frame the
+        // two values so those lines cannot become proxy bypass hosts.
+        let inherited =
+            login_shell("printf 'AFKCONVOY_PROXY\\000%s\\000%s' \"${no_proxy-}\" \"${NO_PROXY-}\"")
+                .unwrap_or_default();
+        let values = inherited.split_once("AFKCONVOY_PROXY\0").map_or("", |(_, values)| values);
+        let (lower, upper) = values.split_once('\0').unwrap_or(("", ""));
+        serde_json::Value::Array(Harness::ALL.into_iter().map(|harness| {
+            let addition = afkconvoy_core::proxy::addition(&self.bypass, harness);
+            let (lower, upper) = afkconvoy_core::proxy::effective(lower, upper, addition);
+            serde_json::json!({"harness": harness, "addition": addition, "no_proxy": lower, "NO_PROXY": upper})
+        }).collect())
     }
 
     pub fn default(&self) -> Harness {

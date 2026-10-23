@@ -183,3 +183,12 @@ WHAT TRIPS YOU UP
     looks under refs/convoy/.
   - `fix` is the first thing to try, not a promise: read `afkconvoy <command> --help`
     of the command it names before you run it.
+
+WORKER PROXY BYPASS
+
+  --worker-no-proxy [HARNESS=]HOSTS is as in afkconvoy run --help.
+  host.worker_no_proxy lists every harness: {harness, addition, no_proxy, NO_PROXY}.
+  Values describe a start now with this command's flags and the host user's
+  login shell exports. A null addition leaves both inherited values alone;
+  DSH's stock addition is api.deepseek.com. No proxy setting is read from
+  the repo's config or written to GitHub.

@@ -84,7 +84,8 @@ THE HOST USER'S SKILLS AND RULES
   A worker is also given the skills and the rules of the host's own user, as a session
   that user opens by hand has them — Claude Code's ~/.claude/skills and CLAUDE.md, pi's
   and Codex's in ~/.pi/agent and ~/.codex — so a role need not copy in the skills its
-  author relies on everywhere. Never their settings, hooks, MCP servers or extensions:
+  author relies on everywhere. Except for DSH's explicit `dsh_profile: host-user`
+  choice (`afkconvoy help team`), never their settings, hooks, MCP servers or extensions:
   the guard and orca's report stay the only hooks the fleet adds. A role's skill wins
   over one of theirs of the same name, and the brief, the role's rules, the team rules
   and the repo's own rules win over theirs; the brief says so. The cost: a role may

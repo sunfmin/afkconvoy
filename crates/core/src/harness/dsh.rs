@@ -1,4 +1,4 @@
-//! DeepSeek Harness: an interactive TUI on a fleet-owned profile. The only
+//! DeepSeek Harness: an interactive TUI on the profile its role chooses. The only
 //! added plugin asks the guard and reports running/idle to the worker backend.
 use flux_rs::attrs::*;
 use serde::{Deserialize, Deserializer};
@@ -35,6 +35,7 @@ pub(super) const KEPT: Kept = Kept {
         ("profiles/dsh-tui/package.json", include_str!("dsh/profile.json")),
         ("profiles/dsh-tui/cordis.yml", "[]\n"),
         ("afkconvoy.patch.yml", include_str!("dsh/overlay.yml")),
+        ("fleet.patch.yml", include_str!("dsh/fleet.yml")),
         ("afkconvoy.mjs", include_str!("dsh/plugin.mjs")),
         ("start.sh", include_str!("dsh/start.sh")),
     ],
@@ -42,11 +43,20 @@ pub(super) const KEPT: Kept = Kept {
 
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn environment(line: Line, start: &Start) -> Line {
-    line.fixed(" DSH_HOME=")
+    let line = match start.dsh_profile {
+        crate::team::DshProfile::HostUser => line
+            .fixed(" DSH_HOME=\"${DSH_HOME:-$HOME/.dsh}\"")
+            .fixed(" DSH_AGENTS_HOME=\"${DSH_AGENTS_HOME:-$HOME/.agents}\""),
+        crate::team::DshProfile::Fleet => line
+            .fixed(" DSH_HOME=")
+            .word(start.kept)
+            .fixed(" DSH_AGENTS_HOME=")
+            .word(&format!("{}/agents", start.kept))
+            .fixed(" DSH_PERMISSION_MODE=danger-full-access"),
+    };
+    line.fixed(" AFKCONVOY_DSH_KEPT=")
         .word(start.kept)
-        .fixed(" DSH_AGENTS_HOME=")
-        .word(&format!("{}/agents", start.kept))
-        .fixed(" DSH_TUI_PROFILE=dsh-tui DSH_PERMISSION_MODE=danger-full-access")
+        .fixed(" DSH_TUI_PROFILE=dsh-tui")
         .fixed(" AFKCONVOY_GUARD=")
         .word(start.guard)
         .fixed(" AFKCONVOY_WORKTREE=")
@@ -71,6 +81,8 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         .word(start.role_dir)
         .fixed(" ")
         .word(start.worktree)
+        .fixed(" ")
+        .word(start.dsh_profile.key())
 }
 
 #[spec(fn(Line[@l]) -> Line[l])]

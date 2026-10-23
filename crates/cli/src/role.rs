@@ -66,6 +66,7 @@ pub struct Staged {
     /// Whether the worker is given the host user's skills and rules: its
     /// role's say (`Role::host_user`), or the team's for the stock consult.
     host_user: bool,
+    dsh_profile: afkconvoy_core::team::DshProfile,
     /// Whether the team offers splitting in stage briefs.
     split: bool,
     /// The team's workflows, by name: what a stage that splits its issue
@@ -153,15 +154,20 @@ impl Staged {
             .and_then(|stage| stage.harness(bound.harness))
             .unwrap_or(bound.harness);
         let harness = fleet.harness_of(named);
-        let (role, skill, role_copy, host_user) = match by {
-            Some((work, role)) => {
-                (role.name.clone(), work.skill.clone(), kept.role(role, harness)?, role.host_user)
-            }
+        let (role, skill, role_copy, host_user, dsh_profile) = match by {
+            Some((work, role)) => (
+                role.name.clone(),
+                work.skill.clone(),
+                kept.role(role, harness)?,
+                role.host_user,
+                role.dsh_profile,
+            ),
             None => (
                 stock::ROLE.to_string(),
                 stock::SKILL.to_string(),
                 Copies::here()?.stock()?,
                 kept.team.host_user,
+                kept.team.dsh_profile,
             ),
         };
         Ok(Staged {
@@ -195,6 +201,7 @@ impl Staged {
             team_copy: kept.copy.clone(),
             team_rules: kept.rules(),
             host_user,
+            dsh_profile,
             split: kept.team.split,
             workflows: kept.team.workflows.iter().map(|workflow| workflow.name.clone()).collect(),
         })
@@ -220,6 +227,7 @@ impl Staged {
             guard: &crate::own_command().fixed(" guard").own(),
             kept: &kept,
             host_user: self.host_user,
+            dsh_profile: self.dsh_profile,
             shadowed: &shadowed,
             told: told.told(),
             facts: Facts {

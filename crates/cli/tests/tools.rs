@@ -242,7 +242,11 @@ fn on_a_custom_provider_plan_reads_the_host_kit_and_checks_its_command() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
-    assert_eq!(world.shell_asked(), ["type -- 'agent'", "gh auth status"]);
+    let asked = world.shell_asked();
+    assert_eq!(asked.len(), 3, "the host kit's command, GitHub login and proxy exports are read");
+    assert_eq!(asked[0], "type -- 'agent'");
+    assert_eq!(asked[1], "gh auth status");
+    assert!(asked[2].starts_with("printf 'AFKCONVOY_PROXY"));
 }
 
 #[test]

@@ -50,7 +50,7 @@ WHAT IT READS AND WRITES
 
 WHAT IT ANSWERS
 
-  {"team", "path", "commit", "files", "escalate_label", "rules", "host_user", "split", "harness",
+  {"team", "path", "commit", "files", "escalate_label", "rules", "host_user", "dsh_profile", "split", "harness",
   "roles", "workflows", "patrols", "precedents"} — what it read.
   `team` is the team's repo and `path` its directory there, "" for a whole repo — with
   `--dir`, the directory read and null. `commit` is the team's commit read, null with
@@ -65,12 +65,16 @@ WHAT IT ANSWERS
   `split: false`. Anything but true or false is a fault (`afkconvoy help team`).
   `harness` is the default harness: the one the config of this checkout names, and
   claude-code where it names none — and with `--team` and `--dir`, which read no
-  config. Each of
-  `roles` is {"name", "repo", "path", "commit", "host_user", "skills", "above",
+  config.
+  `dsh_profile` is `fleet` (default) or `host-user`: which profile DSH workers
+  load, independently of host_user. A role may say its own choice; check
+  answers its effective dsh_profile and refuses every other value.
+
+  Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above",
   "limits"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the
   one the role's repo was read at; `host_user` whether its workers are given the host
-  user's skills and rules — its own say, `{ dir, host_user }`, or the team's; a key of
-  that map but those two, or a `host_user` that is not true or false, is a fault;
+  user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of
+  that map but those three, or a `host_user` that is not true or false, is a fault;
   `above` each `CLAUDE.md` and `.claude/` a directory above the role holds in its repo, as a path from the repo's root — but for the team's own `CLAUDE.md`,
   where the team's directory is above the role: those are the team rules, which a
   worker is given; `limits` the harnesses the role holds
