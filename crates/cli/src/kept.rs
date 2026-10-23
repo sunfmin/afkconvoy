@@ -55,7 +55,16 @@ pub fn keep_under(
         carry(&dir.join(name), text).with_context(|| put(name))?;
     }
     for link in kept.links.iter().chain(theirs) {
-        let theirs = home.map(|home| home.join(link.home)).filter(|file| file.exists());
+        let theirs = if harness == Harness::Dsh {
+            std::env::var_os("DSH_HOME")
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from)
+                .map(|dir| dir.join(link.home.strip_prefix(".dsh/").unwrap_or(link.home)))
+                .or_else(|| home.map(|home| home.join(link.home)))
+        } else {
+            home.map(|home| home.join(link.home))
+        }
+        .filter(|file| file.exists());
         point(&dir.join(link.kept), theirs.as_deref()).with_context(|| put(link.kept))?;
     }
     Ok(dir)

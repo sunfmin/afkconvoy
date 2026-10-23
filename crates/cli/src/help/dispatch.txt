@@ -113,3 +113,8 @@ WHAT TRIPS YOU UP
     worker is given. `afkconvoy check` notes each role that has another above it.
   - It does not ask after a worker already there. On a claim whose worker is at work it
     starts another in the same worktree.
+
+  DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH,
+  on a fleet-owned DSH_HOME and profile. The --patch overlay loads the guard
+  and orca state plugin; the role's directory, skills, rules, stage model
+  and issue's worktree are supplied as described in `afkconvoy run --help`.

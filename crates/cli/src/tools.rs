@@ -63,6 +63,12 @@ pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
         None => Found::Ready,
         Some(question) => asked(tool, &question),
     };
+    if tool == Tool::DshTui && state == Found::Ready {
+        let (ok, _) = ask_login_shell("command -v dsh").unwrap_or_default();
+        if !ok {
+            return Some((Tool::Dsh, Found::Missing));
+        }
+    }
     Some((tool, state))
 }
 

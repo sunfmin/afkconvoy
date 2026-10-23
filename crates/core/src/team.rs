@@ -2658,7 +2658,7 @@ land: { by: dev, do: land }
 
     #[test]
     fn a_worker_on_a_harness_its_role_holds_no_limits_for_while_it_holds_some_is_a_fault() {
-        use Harness::{ClaudeCode, Codex, Pi};
+        use Harness::{ClaudeCode, Pi};
         let rest = "    harness: pi\n    escalate: { to: reviewer, do: rule }\n";
         let workflow = landed(rest, "{ by: reviewer, do: rule }");
         let patrol = "by: dev\ndo: plan\nevery: 6h\nharness: pi\nmax_open: 3\n";
@@ -2670,7 +2670,7 @@ land: { by: dev, do: land }
         // A role with no limits at all is right for every harness.
         for default in Harness::ALL {
             assert_eq!(held(&[], &[], default), []);
-            assert_eq!(held(&[ClaudeCode, Pi, Codex], &[Codex, Pi, ClaudeCode], default), []);
+            assert_eq!(held(&Harness::ALL, &Harness::ALL, default), []);
         }
         // One with limits for one harness is right for that one alone: the
         // stage and the patrol that name another are refused.

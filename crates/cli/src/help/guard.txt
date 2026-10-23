@@ -83,3 +83,8 @@ WHAT TRIPS YOU UP
     commit or a PR a patrol left is a failed run, reported to a human — see
     `afkconvoy tick --help`.
   - An unbound repo's workers have no guard: their worker launch command is opaque.
+
+  DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH,
+  on a fleet-owned DSH_HOME and profile. The --patch overlay loads the guard
+  and orca state plugin; the role's directory, skills, rules, stage model
+  and issue's worktree are supplied as described in `afkconvoy run --help`.
