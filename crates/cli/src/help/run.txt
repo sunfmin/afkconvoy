@@ -255,7 +255,7 @@ WHAT TRIPS YOU UP
     run `afkconvoy switch --instance <id> --harness <key> --all` (`afkconvoy switch
     --help`).
     `--worker-command <harness>=<command>` is that of one harness, by its key
-    (`claude-code`, `pi`, `codex`). A value is the second form when its first word holds an
+    (`claude-code`, `pi`, `codex`, `dsh`). A value is the second form when its first word holds an
     `=`. A harness given none is started with its stock command: Claude Code with
     `claude --dangerously-skip-permissions --settings
     '{"skipDangerousModePermissionPrompt":true}'`, pi with `pi`, Codex with
@@ -377,3 +377,24 @@ WHAT TRIPS YOU UP
     stage on pi that names none gets whichever model pi picks for itself. A provider
     whose key is in your login shell's environment is reached too, and a rules file
     in a directory above the fleet's copies (~/AGENTS.md) is one pi loads.
+
+  A DeepSeek Harness worker (`harness: dsh`) runs interactive `dsh-tui`, with
+  `dsh` on PATH too. The stock command is `dsh-tui`; a host may name
+  `--worker-command dsh=<command>`, which must accept leading `--patch`.
+  It starts in its role's copy, with the stage facts and AFKCONVOY_HARNESS=dsh,
+  DSH_HOME set to harness/dsh-host-user under the fleet's cache (harness/dsh
+  with host_user: false), and the issue's worktree as the TUI's path argument.
+  The fleet's DSH_HOME loads the stock base and TUI bundles, the role's own
+  .dsh/cordis.patch.yml where present, and the fleet's --patch overlay last.
+  Only credentials (.credentials.yaml), skills and rules (skills, AGENTS.md)
+  are linked from your DSH_HOME (default ~/.dsh), beside the skills and AGENTS.md
+  of DSH_AGENTS_HOME (default ~/.agents). The role's native skill provider ranks
+  its canonical skills ahead of these user roots. Dependency resolution uses
+  your installed dsh-tui dependencies; its manifest and patches,
+  and your home patches, MCP servers and plugins, are never loaded or edited.
+  The fleet's plugin supplies role, repo and team rules, role skills before
+  yours, and the stage's model as written. It asks `afkconvoy guard` before
+  every tool call and reports running/idle, including interruption, to orca.
+  The TUI and agent loop require the guard plugin's loader service, so a
+  missing or broken plugin starts neither. Ctrl+C interrupts the running turn
+  and leaves the interactive session open.

@@ -529,7 +529,7 @@ enum Command {
     /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
     #[command(after_long_help = include_str!("help/switch.txt"))]
     Switch {
-        /// The harness to move onto: claude-code, pi or codex — or `config`, the one the
+        /// The harness to move onto: claude-code, pi, codex or dsh — or `config`, the one the
         /// repo's config names, which forgets this host's choice
         #[arg(long, value_parser = chosen_harness)]
         harness: Chosen,

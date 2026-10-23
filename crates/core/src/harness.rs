@@ -14,6 +14,7 @@ use crate::role::{HARNESS_ENV, Start};
 
 mod claude_code;
 mod codex;
+mod dsh;
 mod pi;
 
 /// A file or a directory of the host user's that a directory the host keeps
@@ -60,6 +61,7 @@ pub enum Harness {
     ClaudeCode,
     Pi,
     Codex,
+    Dsh,
 }
 
 /// A harness is written, wherever the fleet answers with one, as its key.
@@ -78,7 +80,7 @@ impl Harness {
     pub const UNNAMED: Harness = Harness::ClaudeCode;
 
     /// Every harness there is.
-    pub const ALL: [Harness; 3] = [Harness::ClaudeCode, Harness::Pi, Harness::Codex];
+    pub const ALL: [Harness; 4] = [Harness::ClaudeCode, Harness::Pi, Harness::Codex, Harness::Dsh];
 
     /// What a team, a config and a stage record write it as.
     pub const fn key(self) -> &'static str {
@@ -86,6 +88,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::KEY,
             Harness::Pi => pi::KEY,
             Harness::Codex => codex::KEY,
+            Harness::Dsh => dsh::KEY,
         }
     }
 
@@ -106,6 +109,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::NAME,
             Harness::Pi => pi::NAME,
             Harness::Codex => codex::NAME,
+            Harness::Dsh => dsh::NAME,
         }
     }
 
@@ -115,6 +119,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::PROGRAM,
             Harness::Pi => pi::PROGRAM,
             Harness::Codex => codex::PROGRAM,
+            Harness::Dsh => dsh::PROGRAM,
         }
     }
 
@@ -125,6 +130,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::STOCK,
             Harness::Pi => pi::STOCK,
             Harness::Codex => codex::STOCK,
+            Harness::Dsh => dsh::STOCK,
         }
     }
 
@@ -137,7 +143,7 @@ impl Harness {
     pub const fn provider_variable(self) -> Option<&'static str> {
         match self {
             Harness::ClaudeCode => Some(claude_code::PROVIDER),
-            Harness::Pi | Harness::Codex => None,
+            Harness::Pi | Harness::Codex | Harness::Dsh => None,
         }
     }
 
@@ -148,6 +154,7 @@ impl Harness {
             Harness::ClaudeCode => &claude_code::FLAGS,
             Harness::Pi => &pi::FLAGS,
             Harness::Codex => &codex::FLAGS,
+            Harness::Dsh => &dsh::FLAGS,
         }
     }
 
@@ -159,6 +166,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::KEPT,
             Harness::Pi => pi::KEPT,
             Harness::Codex => codex::KEPT,
+            Harness::Dsh => dsh::KEPT,
         }
     }
 
@@ -169,6 +177,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::LIMITS,
             Harness::Pi => pi::LIMITS,
             Harness::Codex => codex::LIMITS,
+            Harness::Dsh => dsh::LIMITS,
         }
     }
 
@@ -181,6 +190,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::limited(held),
             Harness::Pi => Ok(pi::limited(held)),
             Harness::Codex => codex::limited(held),
+            Harness::Dsh => Ok(matches!(held, Held::File(_))),
         }
     }
 
@@ -191,6 +201,7 @@ impl Harness {
             Harness::ClaudeCode => &[],
             Harness::Pi => &pi::BEFORE_THE_RULES,
             Harness::Codex => &codex::BEFORE_THE_RULES,
+            Harness::Dsh => &[],
         }
     }
 
@@ -200,7 +211,7 @@ impl Harness {
     /// one it starts in. Empty: it loads both itself, and is told nothing.
     pub const fn told(self) -> &'static [&'static str] {
         match self {
-            Harness::ClaudeCode | Harness::Pi => &[],
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => &[],
             Harness::Codex => &codex::REPO_RULES,
         }
     }
@@ -213,7 +224,7 @@ impl Harness {
     /// named them.
     pub const fn skills(self) -> &'static [&'static str] {
         match self {
-            Harness::ClaudeCode | Harness::Pi => &[],
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => &[],
             Harness::Codex => &codex::SKILLS,
         }
     }
@@ -224,7 +235,7 @@ impl Harness {
     /// (`Start::shadowed`). Empty: a role's skill wins by itself.
     pub const fn shadowed_in(self) -> &'static [&'static str] {
         match self {
-            Harness::ClaudeCode | Harness::Pi => &[],
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => &[],
             Harness::Codex => &codex::SHADOWED_IN,
         }
     }
@@ -234,7 +245,7 @@ impl Harness {
     /// for it in `kept` (`models` reads it). `None`: it has no way to say.
     pub fn models_question(self, command: &str, kept: &str) -> Option<String> {
         match self {
-            Harness::ClaudeCode => None,
+            Harness::ClaudeCode | Harness::Dsh => None,
             Harness::Pi => Some(pi::models_question(command, kept)),
             Harness::Codex => Some(codex::models_question(command, kept)),
         }
@@ -245,7 +256,7 @@ impl Harness {
     /// passed as written.
     pub fn models(self, answer: &str) -> Option<Vec<String>> {
         match self {
-            Harness::ClaudeCode => None,
+            Harness::ClaudeCode | Harness::Dsh => None,
             Harness::Pi => pi::models(answer),
             Harness::Codex => codex::models(answer),
         }
@@ -256,7 +267,7 @@ impl Harness {
     /// way to say knows whatever it is given.
     pub fn knows(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode => true,
+            Harness::ClaudeCode | Harness::Dsh => true,
             Harness::Pi => pi::knows(listed, model),
             Harness::Codex => codex::knows(listed, model),
         }
@@ -266,7 +277,7 @@ impl Harness {
     /// harness's name for a model would be taken for.
     pub fn names(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode => false,
+            Harness::ClaudeCode | Harness::Dsh => false,
             Harness::Pi => pi::names(listed, model),
             // Codex knows a model by its whole name and no other way.
             Harness::Codex => codex::knows(listed, model),
@@ -290,6 +301,7 @@ impl Harness {
             Harness::ClaudeCode => line,
             Harness::Pi => pi::environment(line, start),
             Harness::Codex => codex::environment(line, start),
+            Harness::Dsh => dsh::environment(line, start),
         };
         for (name, value) in start.facts.env() {
             line = line.fixed(" ").fixed(name).fixed("=").word(&value);
@@ -300,6 +312,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::added(line, start),
             Harness::Pi => pi::added(line, start),
             Harness::Codex => codex::added(line, start),
+            Harness::Dsh => dsh::added(line, start),
         }
         .done()
     }
@@ -310,7 +323,7 @@ impl Harness {
     const fn environment(self) -> &'static [&'static str] {
         match self {
             Harness::ClaudeCode => &claude_code::ENVIRONMENT,
-            Harness::Pi | Harness::Codex => &[],
+            Harness::Pi | Harness::Codex | Harness::Dsh => &[],
         }
     }
 
@@ -322,6 +335,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::asked_its_flags(line),
             Harness::Pi => pi::asked_its_flags(line),
             Harness::Codex => codex::asked_its_flags(line),
+            Harness::Dsh => dsh::asked_its_flags(line),
         }
         .done()
     }
@@ -359,7 +373,7 @@ impl Harness {
     pub fn shows_background(self, screen: &[String]) -> bool {
         match self {
             Harness::ClaudeCode => claude_code::shows_background(screen),
-            Harness::Pi | Harness::Codex => false,
+            Harness::Pi | Harness::Codex | Harness::Dsh => false,
         }
     }
 
@@ -376,6 +390,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::call(described),
             Harness::Pi => pi::call(described),
             Harness::Codex => codex::call(described),
+            Harness::Dsh => dsh::call(described),
         }
     }
 
@@ -387,6 +402,7 @@ impl Harness {
             Harness::ClaudeCode => claude_code::REFUSED,
             Harness::Pi => pi::REFUSED,
             Harness::Codex => codex::REFUSED,
+            Harness::Dsh => dsh::REFUSED,
         }
     }
 }

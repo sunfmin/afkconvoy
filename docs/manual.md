@@ -218,14 +218,13 @@ another role's nor is inside one. It holds:
                                        permissions it denies
     .pi/extensions/                    its limits for pi: extensions
     .codex/hooks.json                  its limits for codex: hooks
+    .dsh/cordis.patch.yml              its limits for dsh: a DSH overlay
 
 Only a skill's file has keys `check` reads: `afkconvoy help skill-file`. A `do` names
-an entry of `.claude/skills/` in the directory of the role beside it. The rules and the
-skills are written once, and every harness works under them: pi reads `CLAUDE.md` from
-the directory it starts in, Codex does once the fleet tells it to, the fleet names
-`.claude/skills/` to pi and links them where Codex looks (`afkconvoy run --help`). The
-limits — what the role may never do — are written once for each harness the role runs
-on, in that harness's own form: pi and Codex run no hook of `.claude/settings.json`.
+an entry of `.claude/skills/` in the role. Rules and skills are written once.
+DSH runs dsh-tui with a fleet-owned DSH_HOME and --patch guard. How every harness
+loads the role is in `afkconvoy run --help`. Limits are written once for each harness,
+in its own form: pi and Codex run no hook of `.claude/settings.json`.
 
 A worker is given its role's directory alone, and nothing else of its repo: a
 `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session
@@ -1531,7 +1530,7 @@ _Avoid_: freeze, pause, kill switch
 #### Workers
 
 **Harness**:
-The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third. A stage names the one its worker runs, or takes the fleet's default. A host where a switch chose one starts every worker of the repo on that one.
+The program a worker is a session of: it runs a model, with tools, on the work it is handed. Claude Code is one, pi another, Codex the third, and DeepSeek Harness (DSH) the fourth. A stage names the one its worker runs, or takes the fleet's default. A host where a switch chose one starts every worker of the repo on that one.
 _Avoid_: agent (as under Worker), coding agent (as under Worker), CLI, provider (whose models a harness runs)
 
 **Worker**:

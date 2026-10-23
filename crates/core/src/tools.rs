@@ -19,6 +19,8 @@ pub enum Tool {
     Pi,
     /// Codex: needed only when it is what starts a worker.
     Codex,
+    DshTui,
+    Dsh,
 }
 
 /// What pi lists in place of its models when it holds credentials for no
@@ -62,6 +64,8 @@ impl Tool {
             Tool::Claude => Harness::ClaudeCode.program(),
             Tool::Pi => Harness::Pi.program(),
             Tool::Codex => Harness::Codex.program(),
+            Tool::DshTui => Harness::Dsh.program(),
+            Tool::Dsh => "dsh",
         }
     }
 
@@ -74,13 +78,14 @@ impl Tool {
             Harness::ClaudeCode => Tool::Claude,
             Harness::Pi => Tool::Pi,
             Harness::Codex => Tool::Codex,
+            Harness::Dsh => Tool::DshTui,
         };
         (first_word(launch) == Some(tool.name())).then_some(tool)
     }
 
     /// Whether it is a harness: what a worker launch command starts.
     fn starts_workers(self) -> bool {
-        matches!(self, Tool::Claude | Tool::Pi | Tool::Codex)
+        matches!(self, Tool::Claude | Tool::Pi | Tool::Codex | Tool::DshTui | Tool::Dsh)
     }
 
     /// The line that installs it. Homebrew's own `orca` cask is another
@@ -94,6 +99,8 @@ impl Tool {
             Tool::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
             Tool::Pi => "curl -fsSL https://pi.dev/install.sh | sh",
             Tool::Codex => "brew install --cask codex",
+            Tool::DshTui => "npm install -g @deepseek-harness-tui/dsh-tui",
+            Tool::Dsh => "install DeepSeek Harness (dsh) and add it to PATH",
         }
     }
 
@@ -102,7 +109,7 @@ impl Tool {
     /// logs in to nothing.
     pub fn login_question(self, host: Option<&str>) -> Option<String> {
         match self {
-            Tool::Git | Tool::Orca => None,
+            Tool::Git | Tool::Orca | Tool::DshTui | Tool::Dsh => None,
             Tool::Gh => Some(format!("gh auth status{}", hostname(host))),
             Tool::Claude => Some("claude auth status".to_string()),
             // pi logs in to providers, and lists the models of those it
@@ -124,7 +131,7 @@ impl Tool {
                 dense.contains("\"loggedIn\":true")
             }
             Tool::Pi => succeeded && !printed.trim().is_empty() && !printed.contains(PI_NO_MODELS),
-            Tool::Git | Tool::Gh | Tool::Orca | Tool::Codex => succeeded,
+            Tool::Git | Tool::Gh | Tool::Orca | Tool::Codex | Tool::DshTui | Tool::Dsh => succeeded,
         }
     }
 
@@ -139,7 +146,9 @@ impl Tool {
                 "is not logged in where a worker reads its login, `~/.codex/auth.json` (a login \
                  kept in a keyring is in no file)"
             }
-            Tool::Git | Tool::Gh | Tool::Orca | Tool::Claude => "is not logged in",
+            Tool::Git | Tool::Gh | Tool::Orca | Tool::Claude | Tool::DshTui | Tool::Dsh => {
+                "is not logged in"
+            }
         }
     }
 
