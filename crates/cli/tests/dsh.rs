@@ -515,10 +515,20 @@ export function apply(ctx, config) {
         "export function apply() { setTimeout(() => process.exit(0), 100) }\n",
     );
     let profile_patch = "- insert:\n    - id: user-mcp\n      name: host-plugin\n      config: { theme: profile, mcp: user-server }\n    - id: agent-loop\n      name: ../../../worker.mjs\n    - id: dsh-tui\n      name: ../../../worker.mjs\n    - id: control\n      name: ../../../control.mjs\n";
-    let home_patch = "- id: user-mcp\n  config: { theme: home }\n";
+    let home_patch = "- id: user-mcp\n  config: { theme: home, mcp: user-server }\n";
     write(&host, "profiles/dsh-tui/cordis.patch.yml", profile_patch);
     write(&host, "cordis.patch.yml", home_patch);
-    write(root, ".dsh/cordis.patch.yml", "- id: user-mcp\n  config: { role: enforced }\n");
+    write(
+        root,
+        "role-limit.mjs",
+        "import { writeFileSync } from 'node:fs'; export function apply() { writeFileSync(process.env.AFKCONVOY_WORKTREE + '/role-limit', 'enforced') }\n",
+    );
+    let limits = format!(
+        "- insert:\n    - id: role-limit\n      name: '{}'\n",
+        root.join("role-limit.mjs").display()
+    );
+    write(root, ".dsh/cordis.patch.yml", &limits);
+
     let start = Start {
         role_dir: root.to_str().unwrap(),
         worktree: root.to_str().unwrap(),
@@ -557,10 +567,8 @@ export function apply(ctx, config) {
     assert!(root.join("started").is_file());
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("user-config")).unwrap()).unwrap();
-    assert_eq!(
-        config,
-        serde_json::json!({ "theme": "home", "mcp": "user-server", "role": "enforced" })
-    );
+    assert_eq!(config, serde_json::json!({ "theme": "home", "mcp": "user-server" }));
+    assert_eq!(std::fs::read_to_string(root.join("role-limit")).unwrap(), "enforced");
     for (file, text) in [
         ("profiles/dsh-tui/package.json", manifest),
         ("profiles/dsh-tui/cordis.patch.yml", profile_patch),

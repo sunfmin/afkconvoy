@@ -65,12 +65,12 @@ WHAT IT ANSWERS
   `split: false`. Anything but true or false is a fault (`afkconvoy help team`).
   `harness` is the default harness: the one the config of this checkout names, and
   claude-code where it names none — and with `--team` and `--dir`, which read no
-  config. Each of
+  config.
   `dsh_profile` is `fleet` (default) or `host-user`: which profile DSH workers
   load, independently of host_user. A role may override the team's choice; check
   answers its effective dsh_profile and refuses every other value.
 
-  `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above",
+  Each of `roles` is {"name", "repo", "path", "commit", "host_user", "dsh_profile", "skills", "above",
   "limits"}: `path` is the role's directory in `repo`, "" for a whole repo; `commit` the
   one the role's repo was read at; `host_user` whether its workers are given the host
   user's skills and rules — its own say, `{ dir, host_user, dsh_profile }`, or the team's; a key of

@@ -1577,7 +1577,7 @@ fn role_entry<'n>(
         other => {
             let problem = format!(
                 "must be a role's directory, as {ROLE_FORMS}, or a map of its `{DIR_KEY}` and \
-`{HOST_USER_KEY}`, not {}",
+`{HOST_USER_KEY}` and optional `{DSH_PROFILE_KEY}`, not {}",
                 kind(other)
             );
             report.fault(key, problem);
