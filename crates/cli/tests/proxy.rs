@@ -81,7 +81,7 @@ fn dispatch_applies_the_host_list_without_putting_it_in_repo_config() {
             "direct.example",
         ])
         .ok();
-    let orca = world.read_orca();
+    let orca = world.orca();
     let terminals = orca["terminals"].as_array().unwrap();
     assert!(
         terminals.iter().any(|t| t["command"].as_str().is_some_and(|line| line
