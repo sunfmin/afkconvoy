@@ -474,3 +474,104 @@ export function apply(ctx) {
     let output = run(true);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
+
+/// The installed loader reads the user's manifest, installed plugins and
+/// both user patch layers before adding the role and guard overlays.
+#[test]
+#[ignore = "requires dsh installed; runs offline with a fixture host profile"]
+fn native_host_profile_keeps_user_plugins_and_patches_and_requires_the_guard() {
+    use afkconvoy_core::role::{Facts, On, Start, Told};
+    use afkconvoy_core::team::DshProfile;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let host = root.join("host profile");
+    let kept = keep_under(&root.join("cache"), Some(root), Harness::Dsh, false).unwrap();
+    let manifest = "{\"name\":\"host-profile\",\"private\":true,\"dependencies\":{\"host-plugin\":\"1.0.0\"}}\n";
+    write(&host, "profiles/dsh-tui/package.json", manifest);
+    write(
+        &host,
+        "profiles/dsh-tui/node_modules/host-plugin/package.json",
+        "{\"name\":\"host-plugin\",\"version\":\"1.0.0\",\"type\":\"module\",\"exports\":\"./index.mjs\"}",
+    );
+    write(
+        &host,
+        "profiles/dsh-tui/node_modules/host-plugin/index.mjs",
+        r#"
+import { writeFileSync } from 'node:fs'
+export function apply(ctx, config) {
+  ctx.provide('systemPrompt', { section() {} })
+  writeFileSync(process.env.AFKCONVOY_WORKTREE + '/user-config', JSON.stringify(config))
+}
+"#,
+    );
+    write(
+        root,
+        "worker.mjs",
+        "import { writeFileSync } from 'node:fs'; export function apply() { writeFileSync(process.env.AFKCONVOY_WORKTREE + '/started', 'yes') }\n",
+    );
+    write(
+        root,
+        "control.mjs",
+        "export function apply() { setTimeout(() => process.exit(0), 100) }\n",
+    );
+    let profile_patch = "- insert:\n    - id: user-mcp\n      name: host-plugin\n      config: { theme: profile, mcp: user-server }\n    - id: agent-loop\n      name: ../../../worker.mjs\n    - id: dsh-tui\n      name: ../../../worker.mjs\n    - id: control\n      name: ../../../control.mjs\n";
+    let home_patch = "- id: user-mcp\n  config: { theme: home }\n";
+    write(&host, "profiles/dsh-tui/cordis.patch.yml", profile_patch);
+    write(&host, "cordis.patch.yml", home_patch);
+    write(root, ".dsh/cordis.patch.yml", "- id: user-mcp\n  config: { role: enforced }\n");
+    let start = Start {
+        role_dir: root.to_str().unwrap(),
+        worktree: root.to_str().unwrap(),
+        team_dir: root.to_str().unwrap(),
+        model: None,
+        guard: "true",
+        kept: kept.to_str().unwrap(),
+        host_user: false,
+        dsh_profile: DshProfile::HostUser,
+        shadowed: &[],
+        told: Told::default(),
+        facts: Facts {
+            on: On::Stage { issue: 7, flow: "feature", stage: "build" },
+            role: "dev",
+            skill: "build",
+            writes: true,
+            consult: false,
+            base_branch: "main",
+            escalate_label: "stuck",
+            lock_label: "halt",
+            role_commit: "abc",
+            team_commit: "def",
+        },
+    };
+    let line = Harness::Dsh.in_role("dsh --profile dsh-tui", &start);
+    let run = || {
+        Command::new("sh")
+            .args(["-c", &line])
+            .env("DSH_HOME", &host)
+            .env("DSH_AGENTS_HOME", root.join("agents"))
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(root.join("started").is_file());
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("user-config")).unwrap()).unwrap();
+    assert_eq!(
+        config,
+        serde_json::json!({ "theme": "home", "mcp": "user-server", "role": "enforced" })
+    );
+    for (file, text) in [
+        ("profiles/dsh-tui/package.json", manifest),
+        ("profiles/dsh-tui/cordis.patch.yml", profile_patch),
+        ("cordis.patch.yml", home_patch),
+    ] {
+        assert_eq!(std::fs::read_to_string(host.join(file)).unwrap(), text);
+    }
+    std::fs::remove_file(root.join("started")).unwrap();
+    write(&kept, "afkconvoy.mjs", "export function apply() { throw new Error('broken guard') }\n");
+    let output = run();
+    assert!(!output.status.success());
+    assert!(!root.join("started").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("afkconvoyGuard"));
+}

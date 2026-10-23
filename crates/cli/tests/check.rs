@@ -93,9 +93,9 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
         read["roles"],
         json!([
             {"name": "dev", "repo": "acme/dev", "path": "", "commit": head(&world, "acme/dev"),
-             "host_user": true, "skills": ["implement", "land"], "above": [], "limits": []},
+             "host_user": true, "dsh_profile": "fleet", "skills": ["implement", "land"], "above": [], "limits": []},
             {"name": "reviewer", "repo": "acme/reviewer", "path": "",
-             "commit": head(&world, "acme/reviewer"), "host_user": true, "skills": ["review", "rule"], "above": [],
+             "commit": head(&world, "acme/reviewer"), "host_user": true, "dsh_profile": "fleet", "skills": ["review", "rule"], "above": [],
              "limits": []},
         ])
     );
@@ -480,7 +480,7 @@ fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
     assert_eq!(
         read["roles"],
         json!([{"name": "fellow", "repo": "acme/hospital", "path": "roles/fellow",
-            "commit": commit, "host_user": true, "skills": ["treat"], "above": [],
+            "commit": commit, "host_user": true, "dsh_profile": "fleet", "skills": ["treat"], "above": [],
             "limits": []}])
     );
     // The team's commit is its roles': the repo was read once.
@@ -512,7 +512,7 @@ fn a_role_is_named_by_repo_by_repo_and_path_and_twice_over() {
     let read = world.afk(&["check"]).ok();
     let role = |name: &str, repo: &str, path: &str, skill: &str| {
         json!({"name": name, "repo": repo, "path": path, "commit": head(&world, repo),
-            "host_user": true, "skills": [skill], "above": [], "limits": []})
+            "host_user": true, "dsh_profile": "fleet", "skills": [skill], "above": [], "limits": []})
     };
     assert_eq!(
         read["roles"],
