@@ -268,7 +268,9 @@ pub fn configure() -> Result<Value> {
     std::fs::rename(&temporary, &file)?;
     // A harness paused on the host that answered its probe here is back.
     let pauses = crate::paused::Pauses::here()?;
-    for held in kit.harnesses.iter().filter(|held| held.models.iter().any(|seen| seen.probed.is_some())) {
+    for held in
+        kit.harnesses.iter().filter(|held| held.models.iter().any(|seen| seen.probed.is_some()))
+    {
         pauses.resume(held.harness)?;
     }
     Ok(json!({"path": file, "written": true, "kit": kit}))

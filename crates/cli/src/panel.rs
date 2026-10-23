@@ -937,7 +937,12 @@ mod tests {
             probed: None,
         }];
         let page = render(&panel);
-        assert!(page.contains("data-paused=\"pi\"><b>The harness pi is paused on this host</b>, for 2h"), "{page}");
+        assert!(
+            page.contains(
+                "data-paused=\"pi\"><b>The harness pi is paused on this host</b>, for 2h"
+            ),
+            "{page}"
+        );
         assert!(page.contains("subscription &lt;disabled&gt;"), "{page}");
     }
 

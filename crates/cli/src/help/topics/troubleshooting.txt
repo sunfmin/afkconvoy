@@ -58,6 +58,8 @@ fleet mid-step: run `doctor` again after a tick before you act on one.
       Nothing is wrong yet: an issue has been at one stage for long. `fix` shows it.
   is one rework from a breaker
       The next `reject` escalates the issue. Nothing to do yet: `afkconvoy help humans`.
+  is paused on this host
+      A harness refused every prompt: no worker starts on it till an hourly probe answers.
   does not run: its last run failed
       The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
   have reached its `max_open`

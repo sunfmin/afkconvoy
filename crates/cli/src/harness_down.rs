@@ -254,7 +254,10 @@ mod tests {
         }
         assert_eq!(sends.get(), 3);
         let paused = pauses(&repo).unwrap().of(Harness::ClaudeCode).unwrap().unwrap();
-        assert_eq!((paused.since, paused.why.as_str()), (100, "organization disabled subscription access"));
+        assert_eq!(
+            (paused.since, paused.why.as_str()),
+            (100, "organization disabled subscription access")
+        );
         assert!(holds(&worker, 101).unwrap());
         assert!(!down(&repo, Harness::Codex, 101).unwrap());
         let found = findings(&repo, Some("alpha")).unwrap();

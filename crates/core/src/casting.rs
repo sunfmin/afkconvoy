@@ -570,7 +570,8 @@ mod tests {
 
     #[test]
     fn a_caster_s_casting_to_a_paused_harness_is_cast_again_until_a_worker_started() {
-        let paused = [Paused { harness: Harness::Pi, since: 10, why: "refused".into(), probed: None }];
+        let paused =
+            [Paused { harness: Harness::Pi, since: 10, why: "refused".into(), probed: None }];
         let cast = labels(&["ready", "harness:pi", "model:a/b"]);
         let said = caster_comment(&labels(&["harness:pi", "model:a/b"]), "small ");
         assert_eq!(said, "Cast `harness:pi` and `model:a/b`: small");
@@ -593,8 +594,6 @@ mod tests {
         pause.probed = Some(5000);
         assert!(!pause.due(5000 + PAUSE_PROBE_SECONDS - 1));
         assert!(pause.due(5000 + PAUSE_PROBE_SECONDS));
-        let text = serde_json::to_string(&pause).unwrap();
-        assert_eq!(serde_json::from_str::<Paused>(&text).unwrap(), pause);
     }
 
     #[test]

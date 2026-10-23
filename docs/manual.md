@@ -1307,6 +1307,8 @@ longer than any stage before it took
     Nothing is wrong yet: an issue has been at one stage for long. `fix` shows it.
 is one rework from a breaker
     The next `reject` escalates the issue. Nothing to do yet: `afkconvoy help humans`.
+is paused on this host
+    A harness refused every prompt: no worker starts on it till an hourly probe answers.
 does not run: its last run failed
     The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
 have reached its `max_open`
@@ -1532,7 +1534,7 @@ _Avoid_: cron, job, scheduled worker
 
 **Fleet lock**:
 An open issue carrying the lock label, in a bound repo or an unbound one. While one stands the fleet works lock issues only — nothing else is dispatched, no PR of another issue joins the landing train, and workers already running are left alone, what they declare being acted on afterwards — and closing the last one ends it. A stage's `escalate` or failure the lock explains — declared before it closed, and not acted on since — is then not carried out: the stage runs again, which is no rework.
-_Avoid_: freeze, pause, kill switch
+_Avoid_: freeze, pause (a harness paused on a host, as under Host kit), kill switch
 
 #### Workers
 

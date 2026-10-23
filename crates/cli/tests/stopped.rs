@@ -635,9 +635,15 @@ fn a_refusing_harness_holds_claims_reports_once_and_recovers_without_restart() {
         1,
         "{entries:?}"
     );
+    // It is paused on the host, since it was found down, and why.
+    assert_eq!(world.paused()[0]["harness"], "claude-code");
+    assert_eq!(world.paused()[0]["why"], "organization disabled subscription access");
+    let planned = world.afk(&["plan", "--now", "1700"]).ok();
+    assert_eq!(planned["host_kit"]["paused"][0]["since"], 1480, "{planned}");
     world.with_orca(|orca| orca["prompt_blocked"] = Value::Null);
     let recovered = tick(&world, 1780);
     assert!(did(&recovered).contains(&"judge 7 nudged".to_string()), "{recovered}");
+    assert_eq!(world.paused(), json!([]), "a prompt it took is a probe it answered");
     assert_eq!(world.claims().len(), 1);
     assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1780");
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1780"]).json;
@@ -651,18 +657,28 @@ fn a_refusing_harness_holds_claims_reports_once_and_recovers_without_restart() {
 }
 
 #[test]
-fn a_down_harness_refusing_a_new_dispatch_takes_no_slot() {
+fn a_down_harness_is_paused_and_a_new_issue_waits_for_it_taking_no_slot() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
+    let kit = std::fs::read(world.kit_path()).unwrap();
     world.with_orca(|orca| orca["prompt_blocked"] = json!("subscription disabled"));
     for now in [1300, 1390, 1480] {
         world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now.to_string()]);
     }
     world.close_issue(7);
     world.issue(9, &["ready-for-agent"]);
+    let planned = world.afk(&["plan", "--now", "1600"]).ok();
+    let nine = planned["excluded"].as_array().unwrap().iter().find(|e| e["number"] == 9);
+    let reason = nine.unwrap_or_else(|| panic!("{planned}"))["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("held while every harness of the host kit is paused: `claude-code`")
+            && reason.contains("subscription disabled"),
+        "{reason}"
+    );
     let held = tick(&world, 1600);
     assert_eq!(held["errors"], json!([]));
-    assert_eq!(held["held"], 0, "a refused dispatch holds no claim: {held}");
+    assert_eq!(held["held"], 0, "a paused harness holds no claim: {held}");
     assert!(world.claims().is_empty());
-    assert!(did(&held).contains(&"dispatch 9 blocked".to_string()), "{held}");
+    assert!(!did(&held).iter().any(|did| did.starts_with("dispatch 9")), "{held}");
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit, "the host kit's file is unchanged");
 }

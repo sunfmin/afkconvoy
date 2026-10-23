@@ -119,6 +119,34 @@ impl World {
         std::fs::write(self.root.join("caster-answer"), answer).unwrap();
     }
 
+    /// Has every model's probe answered from here on.
+    pub fn probes_answer(&self) {
+        std::fs::write(self.root.join("probes-answer"), "").unwrap();
+    }
+
+    /// Where this host keeps the harnesses paused on it.
+    pub fn paused_path(&self) -> PathBuf {
+        self.cache().join("afkconvoy/paused.json")
+    }
+
+    /// The harnesses paused on this host, as it keeps them.
+    pub fn paused(&self) -> Value {
+        std::fs::read(self.paused_path())
+            .map_or(json!([]), |bytes| serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// Pauses `harness` on this host since `since`, for `why`, as a fleet
+    /// that found it refusing every prompt does.
+    pub fn pause(&self, harness: &str, since: u64, why: &str) {
+        let mut paused = self.paused();
+        paused
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"harness": harness, "since": since, "why": why}));
+        std::fs::create_dir_all(self.paused_path().parent().unwrap()).unwrap();
+        std::fs::write(self.paused_path(), serde_json::to_vec(&paused).unwrap()).unwrap();
+    }
+
     /// The last prompt a caster sent; empty when none was.
     pub fn caster_asked(&self) -> String {
         std::fs::read_to_string(self.root.join("caster-asked")).unwrap_or_default()
@@ -621,6 +649,7 @@ impl Drop for World {
 /// The login shell a worker would get, as far as the fleet asks it anything:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does, `codex` as Codex and every other command as Claude Code —
+/// a model's probe, which fails unless a `probes-answer` beside `bin/` is there,
 /// `shell -lic '… <command> --list-models'`, which fails unless a `shell-models` beside
 /// `bin/` holds what it prints, `shell -lic '… <command> debug models --bundled'`, which
 /// fails unless a `shell-built-with` there does, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
@@ -635,6 +664,10 @@ case "$2" in
     # A caster's prompt: answered with what `caster-answer` holds.
     printf '%s' "$2" > "$root/caster-asked"
     if [ -f "$root/caster-answer" ]; then cat "$root/caster-answer"; exit 0; fi
+    exit 1 ;;
+  *"AFKCONVOY_PROBE_ANSWER"*)
+    # A model's probe: answered once `probes-answer` is there.
+    if [ -f "$root/probes-answer" ]; then echo AFKCONVOY_PROBE_ANSWER; echo OK; exit 0; fi
     exit 1 ;;
   "gh auth status"*)
     if [ -e "$root/logged-out-gh" ]; then echo "not logged in" >&2; exit 1; fi

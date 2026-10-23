@@ -11,9 +11,9 @@ use afkconvoy_core::casting::{
     choice, paused_of, to_cast as is_to_cast, to_recast, uncast, without_casting,
 };
 use afkconvoy_core::config::Config;
-use afkconvoy_core::worker::recorded_branches;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::worker::WorkerState;
+use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
@@ -114,7 +114,6 @@ fn read_castings(answer: &str) -> Vec<Casting> {
     }
     read
 }
-
 
 /// `afkconvoy cast`: sends the host kit's first, in one prompt, every issue
 /// of this unbound repo that is to be cast, the host kit's harnesses and
