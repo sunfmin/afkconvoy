@@ -23,8 +23,10 @@ fn did(ticked: &Value) -> Vec<String> {
         .collect()
 }
 
+/// A world whose fleet holds two claims at once, with `numbers` ready.
 fn backlog(numbers: &[u64]) -> World {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     for &n in numbers {
         world.issue(n, &["ready-for-agent"]);
     }
@@ -185,6 +187,7 @@ fn a_tick_says_which_issue_it_skipped_for_a_blocker_read_after_its_rebuild() {
 #[test]
 fn run_goes_idle_after_three_empty_ticks() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     let (lines, _) = run(&world, &["--ticks", "4"]);
     let sleeps: Vec<&str> =
         lines.iter().map(|line| line.rsplit("next in ").next().unwrap()).collect();

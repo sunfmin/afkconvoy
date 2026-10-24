@@ -49,11 +49,12 @@ fn bound(concurrency: u64, limit: u64) -> World {
     world.repo("acme/team", &[&[("team.md", TEAM)][..], &workflows].concat());
     let config = format!(
         "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
-         concurrency: {concurrency}\nintake_limit: {limit}\n```\n"
+         intake_limit: {limit}\n```\n"
     );
     write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.say_concurrency(&world.clone, concurrency);
     world
 }
 

@@ -52,13 +52,11 @@ fn bound_to(feature: &str, concurrency: u64) -> World {
         &[(".claude/skills/review/SKILL.md", "---\nname: review\ndescription: review\n---\n")],
     );
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", feature)]);
-    let config = format!(
-        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
-         concurrency: {concurrency}\n```\n"
-    );
-    write(&world.clone, "docs/agents/afkconvoy.md", &config);
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
+    write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.say_concurrency(&world.clone, concurrency);
     world
 }
 

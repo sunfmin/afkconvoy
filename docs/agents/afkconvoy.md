@@ -8,13 +8,16 @@ base_branch: main                 # workers cut from it, open their PR against i
 gate_command: ./gate.sh           # what must pass before a PR lands
 ready_label: ready-for-agent      # an issue is dispatchable while it carries this
 epic_labels: [epic, prd]          # never dispatched
-concurrency: 6                    # claims at work at once, a worker each
 escalate_label: ready-for-human   # swapped in for ready_label when the fleet gives an issue up
 ```
 
 `base_branch` and `gate_command` have no default. The rest default to the values
-shown, but `concurrency`, whose default is 3, and so do the two left out here:
-`lock_label`, `fleet-lock`, and `gate_seconds`, the gate limit, 3600.
+shown, and so do the two left out here: `lock_label`, `fleet-lock`, and
+`gate_seconds`, the gate limit, 3600.
+
+How many claims are at work at once is no key here: each host that works this
+repo says its own, `afkconvoy run <checkout> --concurrency N`, and 3 until it
+does (`docs/adr/0025`).
 
 This repo names no `team`, so it is unbound. A bound repo's three keys more —
 `team`, `patrols`, `intake_limit` — are in `afkconvoy config --help`.

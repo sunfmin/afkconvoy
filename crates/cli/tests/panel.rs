@@ -16,10 +16,10 @@ use serde_json::{Value, json};
 const NOW: u64 = 10_000;
 const DESK: (u32, u32) = (1440, 1000);
 
-/// The world's config, with room for three claims and a gate that passes.
+/// The world's config, with a gate that passes: its fleet holds three
+/// claims at once, the default.
 fn configured(world: &World, more: &str) {
-    let config =
-        format!("```yaml\nbase_branch: main\ngate_command: \"true\"\nconcurrency: 3\n{more}```\n");
+    let config = format!("```yaml\nbase_branch: main\ngate_command: \"true\"\n{more}```\n");
     write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "configure"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
@@ -150,6 +150,7 @@ fn a_busy_fleet_reads_on_a_phone_too() {
 #[test]
 fn a_fleet_with_nothing_to_do_says_so_at_every_stage() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     let page = shown(&world, "empty", (1440, 520));
     assert_eq!(page.html.matches("data-issue=").count(), 0);
     for stage in ["work", "land"] {
@@ -354,6 +355,7 @@ fn checkouts(page: &Rendered) -> Vec<String> {
 #[test]
 fn the_host_runner_serves_one_page_of_every_checkout_from_its_start_and_after_every_tick() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     world.issue(3, &["ready-for-agent"]);
     let port = free_port();
     world.say_host_settings(json!({"panel": port}));

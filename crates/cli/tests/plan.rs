@@ -82,6 +82,7 @@ fn plan_assembles_the_working_set() {
 #[test]
 fn an_unclaimed_ready_issue_is_on_the_frontier_in_number_order() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     for n in [12, 3, 7] {
         world.issue(n, &["ready-for-agent"]);
     }

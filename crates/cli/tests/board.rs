@@ -263,6 +263,7 @@ fn an_issue_claimed_again_keeps_its_one_board() {
 #[test]
 fn a_live_peers_board_is_left_alone() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     for n in [7, 8, 9] {
         world.issue(n, &["ready-for-agent"]);
     }

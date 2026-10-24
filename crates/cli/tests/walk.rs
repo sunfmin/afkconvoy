@@ -49,13 +49,11 @@ fn bound_to(feature: &str, concurrency: u64) -> World {
     ];
     world.repo("acme/reviewer", &reviewer);
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", feature)]);
-    let config = format!(
-        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
-         concurrency: {concurrency}\n```\n"
-    );
-    write(&world.clone, "docs/agents/afkconvoy.md", &config);
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
+    write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.say_concurrency(&world.clone, concurrency);
     world
 }
 
@@ -493,11 +491,7 @@ fn an_issue_advanced_with_no_slot_free_waits_ahead_of_the_issues_never_started()
     assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done", "dispatch 8 done"]);
 
     // The fleet is over its bound: one slot now, and two claims held.
-    let config = std::fs::read_to_string(world.clone.join("docs/agents/afkconvoy.md")).unwrap();
-    let narrowed = config.replace("concurrency: 2", "concurrency: 1");
-    write(&world.clone, "docs/agents/afkconvoy.md", &narrowed);
-    git(&world.clone, &["commit", "-q", "-am", "one worker at once"]);
-    git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.say_concurrency(&world.clone, 1);
     world.issue(5, &["flow:feature"]);
 
     // #8's verdict frees a slot the bound does not leave free: its next

@@ -68,11 +68,11 @@ fn bound() -> World {
         &[(".claude/skills/join/SKILL.md", "---\nname: join\ndescription: join\n---\n")],
     );
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
-    let config = "```yaml\nbase_branch: main\ngate_command: \"true\"\nteam: acme/team\n\
-                  concurrency: 2\n```\n";
+    let config = "```yaml\nbase_branch: main\ngate_command: \"true\"\nteam: acme/team\n```\n";
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.say_concurrency(&world.clone, 2);
     world
 }
 

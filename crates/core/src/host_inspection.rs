@@ -12,7 +12,7 @@
 //!
 //! It is held to an inspection's bounds (`crate::inspection`): one a host at a
 //! time, of either kind, in a checkout of its own, no slot of the
-//! `concurrency`, and `TIME_LIMIT` to say what it found.
+//! concurrency, and `TIME_LIMIT` to say what it found.
 
 use serde::{Deserialize, Serialize};
 
@@ -315,9 +315,9 @@ pub fn report(reason: Reason, reading: &str, said: &str, minutes: u64) -> String
     format!(
         "Admission held back new workers for {} for {minutes} minutes in a row: {reading}. \
          A host inspection found that the fleet's own shape outgrows this host:\n\n{}\n\n\
-         Until the shape fits — fewer workers at once (`concurrency`), less that each holds, \
-         or a host with more — admission keeps holding new workers back. The fleet opens no \
-         other issue like this while this one is open.\n",
+         Until the shape fits — fewer workers at once (`afkconvoy run --concurrency`), less \
+         that each holds, or a host with more — admission keeps holding new workers back. The \
+         fleet opens no other issue like this while this one is open.\n",
         reason.word(),
         quoted(said)
     )
@@ -363,7 +363,7 @@ What holds the {reason} admission read, and why. Look at the evidence and at the
 - `reclaimable`: something on the disk can be rebuilt — anywhere under the home folder, not only
   the fleet's worktrees: the build output of a checkout no process uses, a worktree whose issue is
   closed, a tool's cache. You free it below.
-- `fleet`: the fleet's own shape outgrows the host — its `concurrency` times one worktree's fresh
+- `fleet`: the fleet's own shape outgrows the host — its concurrency times one worktree's fresh
   build past the free disk, say. Say the arithmetic.
 - `not-its`: what holds it is outside this fleet and cannot be rebuilt — another fleet's work, a
   daemon, a user's files. Name it.

@@ -19,7 +19,7 @@
 //! fleets: the `run` whose inspection runs holds the host's turn — a file of
 //! the cache it keeps locked, saying what runs — and another waits for it. A
 //! `run` that dies lets the turn go with it. An inspection takes no slot of
-//! the `concurrency`.
+//! the concurrency.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Read;
