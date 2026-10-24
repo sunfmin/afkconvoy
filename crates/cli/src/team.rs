@@ -725,7 +725,8 @@ fn roster_entry(entry: &team::Entry) -> Value {
 /// Each harness `role`'s range on a host whose host kit holds `kit` leaves
 /// out (`casting::left_out`), as `check` and `plan` answer it: with why.
 pub fn left_out_json(role: &team::Role, kit: &[casting::Held]) -> Value {
-    let each = |harness: Harness| json!({"harness": harness, "why": casting::left_out_why(harness)});
+    let each =
+        |harness: Harness| json!({"harness": harness, "why": casting::left_out_why(harness)});
     Value::Array(casting::left_out(role, kit).into_iter().map(each).collect())
 }
 

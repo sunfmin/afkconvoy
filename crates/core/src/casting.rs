@@ -901,6 +901,36 @@ mod tests {
     }
 
     #[test]
+    fn a_range_leaves_out_a_harness_its_role_holds_no_limits_for_and_only_an_empty_one_refuses() {
+        let mut team = crate::team::tests::rostered("  dev: { run: [{ harness: pi }] }\n").unwrap();
+        let kit = range();
+        // No limits at all: right for every harness.
+        assert_eq!(super::range(&team.roles[1], &kit), kit);
+        assert_eq!(left_out(&team.roles[1], &kit), []);
+        // Limits for Codex and Claude Code: pi is left out of the host kit
+        // whole, in the host kit's order.
+        team.roles[1].limits = vec![Harness::ClaudeCode, Harness::Codex];
+        assert_eq!(super::range(&team.roles[1], &kit), kit[1..].to_vec());
+        assert_eq!(left_out(&team.roles[1], &kit), [Harness::Pi]);
+        assert_eq!(left_out_why(Harness::Pi), "no limits for pi");
+        assert_eq!(range_faults(&team, &kit), Vec::<String>::new());
+        // A range left empty by that refuses the start, saying so.
+        team.roles[0].limits = vec![Harness::Codex];
+        assert_eq!(super::range(&team.roles[0], &kit), []);
+        let faults = range_faults(&team, &kit);
+        assert_eq!(faults.len(), 1, "{faults:?}");
+        assert!(
+            faults[0].starts_with(
+                "the role `dev` has an empty range on this host: the roster allows it pi (any \
+                 model), and the host kit holds pi (a/b, c/d); codex (gpt-x); claude-code (no \
+                 model); its range leaves out pi (no limits for pi). "
+            ),
+            "{}",
+            faults[0]
+        );
+    }
+
+    #[test]
     fn a_stage_runs_its_casting_where_its_range_holds_it_and_its_range_s_first_where_not() {
         let range = range();
         let cast = |names: &[&str]| cast_within(&labels(names), &range, None);

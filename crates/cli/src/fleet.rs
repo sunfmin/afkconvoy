@@ -116,9 +116,7 @@ impl Fleet {
         if self.chosen.is_none() {
             let allowed = |pause: &&casting::Paused| {
                 let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
-                casting::range(role, &whole)
-                    .iter()
-                    .any(|held| held.harness == pause.harness)
+                casting::range(role, &whole).iter().any(|held| held.harness == pause.harness)
             };
             if let Some(pause) = casting::paused_of(labels, &paused).filter(allowed) {
                 return Err(crate::paused::Held::of(pause, self.now).into());
