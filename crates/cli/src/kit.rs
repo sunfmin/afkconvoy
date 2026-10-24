@@ -1,10 +1,9 @@
 //! The host kit (docs/adr/0020): the harnesses this host can start, in order
 //! of preference — each one's worker launch command and the models it was
 //! seen to answer with — and the stock consult's harness and model. This file
-//! belongs to the host user, outside every checkout; only an explicit
-//! terminal confirmation writes it.
+//! belongs to the host user, outside every checkout, and is written with no
+//! human: `afkconvoy kit`, or `run` on a host without one.
 use std::collections::BTreeSet;
-use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use afkconvoy_core::harness::Harness;
@@ -225,49 +224,40 @@ pub fn show(now: u64) -> Value {
     }
 }
 
-/// Ask for the kit only for `run`, and only when none has been written.
+/// Writes the host kit for `run` where this host has none (`write`), saying
+/// so on stderr; then reads it.
 pub fn ensure() -> Result<()> {
     if !path()?.exists() {
-        configure()?;
+        write()?;
     }
     load().map(|_| ())
 }
 
-pub fn configure() -> Result<Value> {
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        bail!(
-            "the host kit needs a terminal: run `afkconvoy kit` at a terminal before starting the fleet"
-        );
-    }
-    // Every harness is asked in an orca terminal, the shell a worker gets.
+/// Writes the host kit with no human (docs/adr/0020): everything this host
+/// can start now (`compose`), whoever runs it and wherever. Says on stderr
+/// where it is, what it holds and what was left out, and answers
+/// `{path, written, kit, left_out}`.
+pub fn write() -> Result<Value> {
+    // Every harness is looked for, asked and probed in an orca terminal, the
+    // shell a worker gets.
     if !crate::orca::running() {
         bail!(
-            "the host kit asks each harness for its models, and probes them, in an orca \
-             terminal, and orca is not running: {}",
+            "the host kit looks for each harness, asks it for its models and probes them in an \
+             orca terminal, and orca is not running: {}",
             afkconvoy_core::tools::START_ORCA
         );
     }
     let file = path()?;
     let current = if file.exists() { load()? } else { Kit::default() };
-    // Discover only on the first run. An omitted harness in an existing kit
-    // was deliberately dropped, and must not silently be added again.
-    let discovered: Vec<Harness> = if file.exists() {
-        vec![]
-    } else {
-        Harness::ALL.into_iter().filter(|h| crate::launch::on_path(h.program())).collect()
-    };
     let host = Host {
+        found: &crate::launch::found,
         listed: &crate::launch::models,
         probe: &probe_all,
         now: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs()),
     };
-    let mut input = std::io::stdin().lock();
-    let mut out = std::io::stderr();
-    let Some(kit) = edit(current, &discovered, &host, &mut input, &mut out)? else {
-        return Ok(json!({"path": file, "written": false}));
-    };
+    let (kit, left_out) = compose(&current, &host);
     let parent = file.parent().context("the host kit needs a parent directory")?;
     std::fs::create_dir_all(parent)?;
     let temporary = file.with_extension(format!("{}.tmp", std::process::id()));
@@ -275,12 +265,11 @@ pub fn configure() -> Result<Value> {
     std::fs::rename(&temporary, &file)?;
     // A harness paused on the host that answered its probe here is back.
     let pauses = crate::paused::Pauses::here()?;
-    for held in
-        kit.harnesses.iter().filter(|held| held.models.iter().any(|seen| seen.probed.is_some()))
-    {
+    for held in &kit.harnesses {
         pauses.resume(held.harness)?;
     }
-    Ok(json!({"path": file, "written": true, "kit": kit}))
+    eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
+    Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
 }
 
 /// How many probes run at once.
@@ -321,41 +310,136 @@ pub enum Answer {
     Unasked(String),
 }
 
-/// The models a harness offers through a command; why it offers none.
-type Listing = dyn Fn(Harness, &str) -> Result<Vec<String>, String>;
-
-/// What the editor asks of the host, apart from the human.
+/// What the host kit is written from: this host, as an orca terminal finds it.
 struct Host<'a> {
-    /// The models a harness offers through a command, or why it offers none.
-    listed: &'a Listing,
+    /// Whether a harness's program is found; why it is taken as not.
+    found: &'a (dyn Fn(Harness) -> Result<(), String> + Sync),
+    /// The models a harness offers through a command, in its order; why it
+    /// offers none.
+    listed: &'a (dyn Fn(Harness, &str) -> Result<Vec<String>, String> + Sync),
     probe: &'a dyn Fn(&[Asked]) -> Vec<Answer>,
     now: u64,
 }
 
-fn reply(input: &mut impl BufRead, out: &mut impl Write, prompt: &str) -> Result<Option<String>> {
-    write!(out, "{prompt}")?;
-    out.flush()?;
-    let mut line = String::new();
-    if input.read_line(&mut line)? == 0 {
-        return Ok(None);
-    }
-    Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
+/// A harness, or one model of it, the host kit does not hold, and why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LeftOut {
+    pub harness: Harness,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub why: String,
 }
 
-/// Asks `prompt` until `read` takes the reply; `None` at end of input.
-fn ask<T>(
-    input: &mut impl BufRead,
-    out: &mut impl Write,
-    prompt: &str,
-    read: impl Fn(&str) -> Result<T, String>,
-) -> Result<Option<T>> {
-    loop {
-        let Some(answer) = reply(input, out, prompt)? else { return Ok(None) };
-        match read(answer.trim()) {
-            Ok(taken) => return Ok(Some(taken)),
-            Err(why) => writeln!(out, "{why}")?,
+impl LeftOut {
+    fn of(harness: Harness, model: Option<&str>, why: impl Into<String>) -> LeftOut {
+        LeftOut { harness, model: model.map(str::to_string), why: why.into() }
+    }
+}
+
+/// The host kit this host can start now, from `current`, with no one asked
+/// (docs/adr/0020) — and what was left out of it, and why:
+///
+/// - each known harness whose program `host` finds, on the command `current`
+///   holds for it or its stock one;
+/// - each with the models it lists, each probed, of which only those that
+///   answered are kept, with when and how fast; a harness none answered for
+///   is left out;
+/// - the harnesses `current` holds in its order, then new ones in the order
+///   afkconvoy knows them; each one's models in the order it lists them;
+/// - the stock consult `current` names while it still holds it, else none:
+///   the host kit's first; and the `good_at` written beside a model kept.
+fn compose(current: &Kit, host: &Host) -> (Kit, Vec<LeftOut>) {
+    let mut order: Vec<Harness> = current.harnesses.iter().map(|held| held.harness).collect();
+    push_new(&mut order, Harness::ALL);
+    let command = |harness: Harness| {
+        current.command(harness).map_or_else(|| harness.stock().to_string(), str::to_string)
+    };
+    // Each harness is looked for and asked for its models side by side.
+    let (found, listing) = (host.found, host.listed);
+    let listed: Vec<(Harness, String, Result<Vec<String>, String>)> = std::thread::scope(|scope| {
+        let asking: Vec<_> = order
+            .iter()
+            .map(|&harness| {
+                let command = command(harness);
+                scope.spawn(move || {
+                    let listed = found(harness)
+                        .map_err(|why| format!("not installed: {why}"))
+                        .and_then(|()| {
+                            listing(harness, &command)
+                                .map_err(|why| format!("listing failed: {why}"))
+                        });
+                    (harness, command, listed)
+                })
+            })
+            .collect();
+        asking
+            .into_iter()
+            .zip(&order)
+            .map(|(asked, &harness)| {
+                asked.join().unwrap_or_else(|_| {
+                    (harness, command(harness), Err("listing failed: it panicked".to_string()))
+                })
+            })
+            .collect()
+    });
+
+    let mut left_out = vec![];
+    let mut harnesses: Vec<Held> = vec![];
+    let mut asked: Vec<Asked> = vec![];
+    for (harness, command, listed) in listed {
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(why) => {
+                left_out.push(LeftOut::of(harness, None, why));
+                continue;
+            }
+        };
+        let mut models: Vec<String> = vec![];
+        push_new(&mut models, listed);
+        let gone = current.held(harness).into_iter().flat_map(|held| &held.models);
+        for seen in gone.filter(|seen| !models.contains(&seen.model)) {
+            left_out.push(LeftOut::of(harness, Some(&seen.model), "no longer listed"));
+        }
+        asked.extend(models.into_iter().map(|model| (harness, command.clone(), model)));
+        harnesses.push(Held { harness, command, models: vec![] });
+    }
+
+    let answers = (host.probe)(&asked);
+    for ((harness, _, model), answer) in asked.into_iter().zip(answers) {
+        let seconds = match answer {
+            Answer::Answered(seconds) => seconds,
+            Answer::Silent => {
+                left_out.push(LeftOut::of(harness, Some(&model), "silent to its probe"));
+                continue;
+            }
+            Answer::Unasked(why) => {
+                let why = format!("silent to its probe: it could not be asked: {why}");
+                left_out.push(LeftOut::of(harness, Some(&model), why));
+                continue;
+            }
+        };
+        let good_at = current
+            .held(harness)
+            .and_then(|held| held.models.iter().find(|seen| seen.model == model))
+            .and_then(|seen| seen.good_at.clone());
+        let probed = Some(Probed { at: host.now, seconds });
+        if let Some(held) = harnesses.iter_mut().find(|held| held.harness == harness) {
+            held.models.push(Seen { model, probed, good_at });
         }
     }
+    harnesses.retain(|held| {
+        let kept = !held.models.is_empty();
+        if !kept {
+            left_out.push(LeftOut::of(held.harness, None, "no model answered its probe"));
+        }
+        kept
+    });
+
+    let mut kit = Kit { harnesses, stock_consult: None };
+    kit.stock_consult = current.stock_consult.clone().filter(|named| {
+        Kit { stock_consult: Some(named.clone()), ..kit.clone() }.fault().is_none()
+    });
+    (kit, left_out)
 }
 
 /// Adds to `into` each of `items` it does not hold yet.
@@ -367,174 +451,32 @@ fn push_new<T: PartialEq>(into: &mut Vec<T>, items: impl IntoIterator<Item = T>)
     }
 }
 
-/// `current` put in the order a human typed, as words of `typed`: the ones
-/// named first, in that order, then the rest as they were. Empty keeps it.
-fn ordered(current: &[String], typed: &str) -> Result<Vec<String>, String> {
-    let mut order: Vec<String> = vec![];
-    for word in typed.split_whitespace() {
-        if !current.iter().any(|name| name == word) {
-            return Err(format!("`{word}` is none of: {}", current.join(" ")));
-        }
-        push_new(&mut order, [word.to_string()]);
-    }
-    push_new(&mut order, current.iter().cloned());
-    Ok(order)
-}
-
-/// Walks the human through the host kit: each harness's command, the models
-/// to probe, the probes' answers, the order of harnesses and of models, and
-/// the stock consult's — then writes nothing unless they confirm. Shows
-/// every known harness, so a previously dropped one can be added, too.
-fn edit(
-    current: Kit,
-    discovered: &[Harness],
-    host: &Host,
-    input: &mut impl BufRead,
-    out: &mut impl Write,
-) -> Result<Option<Kit>> {
-    writeln!(out, "Host kit: keep with Enter, type a command to edit/add, or - to drop.")?;
-    let mut order: Vec<Harness> = current.harnesses.iter().map(|held| held.harness).collect();
-    push_new(&mut order, Harness::ALL);
-    let mut commands: Vec<(Harness, String)> = vec![];
-    for harness in order {
-        let had = current
-            .command(harness)
-            .map(str::to_string)
-            .or_else(|| discovered.contains(&harness).then(|| harness.stock().to_string()));
-        let shown = had.as_deref().unwrap_or("absent");
-        let Some(answer) = reply(input, out, &format!("{}: {shown}\n> ", harness.key()))? else {
-            return Ok(None);
-        };
-        let command = match answer.trim() {
-            "-" => None,
-            "" => had,
-            _ => Some(answer),
-        };
-        commands.extend(command.map(|command| (harness, command)));
-    }
-
-    // The models to probe, per harness: those it held, then those it offers.
-    writeln!(out, "Models: Enter probes those shown, type names to probe instead, - for none.")?;
-    let mut asked: Vec<Asked> = vec![];
-    for (harness, command) in &commands {
-        let mut candidates: Vec<String> = current
-            .held(*harness)
-            .into_iter()
-            .flat_map(|held| held.models.iter().map(|seen| seen.model.clone()))
-            .collect();
-        match (host.listed)(*harness, command) {
-            Ok(listed) => push_new(&mut candidates, listed),
-            Err(why) => writeln!(out, "{}: asking it for its models: {why}", harness.key())?,
-        }
-        let shown = if candidates.is_empty() { "none".to_string() } else { candidates.join(" ") };
-        let Some(answer) = reply(input, out, &format!("{} models: {shown}\n> ", harness.key()))?
-        else {
-            return Ok(None);
-        };
-        let models: Vec<String> = match answer.trim() {
-            "-" => vec![],
-            "" => candidates,
-            typed => typed.split_whitespace().map(str::to_string).collect(),
-        };
-        let mut unique: Vec<String> = vec![];
-        push_new(&mut unique, models);
-        asked.extend(unique.into_iter().map(|model| (*harness, command.clone(), model)));
-    }
-
-    if !asked.is_empty() {
-        writeln!(out, "Probing {} models with a one-line prompt…", asked.len())?;
-    }
-    let answers = (host.probe)(&asked);
-    let mut harnesses: Vec<Held> = commands
-        .into_iter()
-        .map(|(harness, command)| Held { harness, command, models: vec![] })
-        .collect();
-    for ((harness, _, model), answer) in asked.into_iter().zip(answers) {
-        let said = match &answer {
-            Answer::Answered(seconds) => format!("answered in {seconds:.1}s"),
-            Answer::Silent => "did not answer: left out".to_string(),
-            Answer::Unasked(why) => format!("could not be asked ({why}): left out"),
-        };
-        writeln!(out, "  {} {model}: {said}", harness.key())?;
-        let Answer::Answered(seconds) = answer else { continue };
-        let probed = Some(Probed { at: host.now, seconds });
-        if let Some(held) = harnesses.iter_mut().find(|held| held.harness == harness) {
-            // What the human wrote of it stays.
-            let good_at = current
-                .held(harness)
-                .and_then(|held| held.models.iter().find(|seen| seen.model == model))
-                .and_then(|seen| seen.good_at.clone());
-            held.models.push(Seen { model, probed, good_at });
-        }
-    }
-
-    // The order: of harnesses, then of each one's models.
-    if harnesses.len() > 1 {
-        let keys: Vec<String> = harnesses.iter().map(|h| h.harness.key().to_string()).collect();
-        let prompt = format!("Order of harnesses, first first: {}\n> ", keys.join(" "));
-        let Some(keys) = ask(input, out, &prompt, |typed| ordered(&keys, typed))? else {
-            return Ok(None);
-        };
-        harnesses.sort_by_key(|held| keys.iter().position(|key| key == held.harness.key()));
-    }
-    for held in &mut harnesses {
-        if held.models.len() < 2 {
-            continue;
-        }
-        let names: Vec<String> = held.models.iter().map(|seen| seen.model.clone()).collect();
-        let prompt = format!(
-            "Order of {}'s models, first first: {}\n> ",
+/// What writing the host kit at `path` says on stderr: where it is, what it
+/// holds in order, what the stock consult runs, and what was left out.
+fn report(path: &str, kit: &Kit, left_out: &[LeftOut]) -> String {
+    let mut said = format!("afkconvoy: wrote the host kit at {path}\n");
+    for held in &kit.harnesses {
+        let models: Vec<&str> = held.models.iter().map(|seen| seen.model.as_str()).collect();
+        said.push_str(&format!(
+            "  {} `{}`: {}\n",
             held.harness.key(),
-            names.join(" ")
-        );
-        let Some(names) = ask(input, out, &prompt, |typed| ordered(&names, typed))? else {
-            return Ok(None);
-        };
-        held.models.sort_by_key(|seen| names.iter().position(|name| name == &seen.model));
+            held.command,
+            models.join(" ")
+        ));
     }
-
-    let mut kit = Kit { harnesses, stock_consult: None };
-    let kept = current.stock_consult.filter(|named| {
-        let probe = Kit { stock_consult: Some(named.clone()), ..kit.clone() };
-        probe.fault().is_none()
-    });
-    if !kit.harnesses.is_empty() {
-        let first = kit.first().map(|first| said(&first)).unwrap_or_default();
-        let shown = kept.as_ref().map_or(format!("the host kit's first ({first})"), said);
-        let prompt = format!(
-            "Stock consult: {shown}\n  Enter keeps it, type a harness and a model to name one, \
-             - for the host kit's first\n> "
-        );
-        let Some(named) = ask(input, out, &prompt, |typed| match typed {
-            "" => Ok(kept.clone()),
-            "-" => Ok(None),
-            typed => {
-                let mut words = typed.split_whitespace();
-                let key = words.next().unwrap_or_default();
-                let harness = Harness::read(key).ok_or_else(|| Harness::unknown(key))?;
-                let named = Named { harness, model: words.next().map(str::to_string) };
-                let probe = Kit { stock_consult: Some(named.clone()), ..kit.clone() };
-                match probe.fault() {
-                    Some(fault) => Err(format!("the host kit would be wrong: {fault}")),
-                    None => Ok(Some(named)),
-                }
-            }
-        })?
-        else {
-            return Ok(None);
-        };
-        kit.stock_consult = named;
+    match kit.stock_consult() {
+        Some(named) => said.push_str(&format!("  the stock consult runs {}\n", named_said(&named))),
+        None => said.push_str("  it holds no harness: no worker can be started\n"),
     }
-
-    writeln!(out, "{}", serde_json::to_string_pretty(&kit)?)?;
-    let confirmed = reply(input, out, "Write this host kit? [y/N] ")?;
-    Ok(confirmed
-        .filter(|answer| answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
-        .map(|_| kit))
+    for out in left_out {
+        let named = Named { harness: out.harness, model: out.model.clone() };
+        said.push_str(&format!("  left out: {}: {}\n", named_said(&named), out.why));
+    }
+    said
 }
 
-/// A harness and model as the editor shows them.
-fn said(named: &Named) -> String {
+/// A harness and model as the report says them.
+fn named_said(named: &Named) -> String {
     match &named.model {
         Some(model) => format!("{} {model}", named.harness.key()),
         None => named.harness.key().to_string(),
@@ -557,109 +499,152 @@ mod tests {
         Held { harness, command: command.into(), models }
     }
 
-    /// Lists `gpt-a gpt-b` for Codex, none for the rest; every model
-    /// answers but `bad`, in two seconds, and `ds-2`, which no terminal could
-    /// be made for.
-    fn host(
-        probed: &std::cell::RefCell<Vec<Asked>>,
-    ) -> impl Fn(&[u8]) -> (Result<Option<Kit>>, String) {
-        move |replies: &[u8]| {
-            let listed = |harness: Harness, command: &str| match harness {
-                Harness::Codex => Ok(vec!["gpt-a".into(), "gpt-b".into()]),
-                _ => Err(format!("it listed none: {command} --list")),
-            };
-            let probe = |asked: &[Asked]| {
-                probed.borrow_mut().extend(asked.iter().cloned());
-                asked
-                    .iter()
-                    .map(|(harness, _, model)| match (harness, model.as_str()) {
-                        (Harness::Dsh, "ds-2") => Answer::Unasked("orca is not running".into()),
-                        (_, "bad") => Answer::Silent,
-                        _ => Answer::Answered(2.0),
-                    })
-                    .collect()
-            };
-            let host = Host { listed: &listed, probe: &probe, now: 77 };
-            let current = Kit {
-                harnesses: vec![
-                    held(Harness::ClaudeCode, "old", &["opus"]),
-                    held(Harness::Pi, "pi", &[]),
-                ],
-                stock_consult: None,
-            };
-            let mut shown = vec![];
-            let kit = edit(current, &[], &host, &mut &replies[..], &mut shown);
-            (kit, String::from_utf8(shown).unwrap())
-        }
+    /// A host with Claude Code, Codex and pi installed, DSH not; Claude Code
+    /// lists `default opus sonnet`, Codex `gpt-a gpt-b`, pi fails to list;
+    /// every model answers its probe in two seconds but `bad`, which is
+    /// silent, and `gpt-b`, which no terminal could be made for.
+    fn composed(current: &Kit) -> (Kit, Vec<LeftOut>, Vec<Asked>) {
+        let probed = std::sync::Mutex::new(vec![]);
+        let found = |harness: Harness| match harness {
+            Harness::Dsh => Err("`type -- 'dsh-tui'` found nothing".to_string()),
+            _ => Ok(()),
+        };
+        let listed = |harness: Harness, command: &str| match harness {
+            Harness::ClaudeCode => Ok(vec!["default".into(), "opus".into(), "sonnet".into()]),
+            Harness::Codex => {
+                Ok(vec!["gpt-a".into(), "bad".into(), "gpt-b".into(), "gpt-a".into()])
+            }
+            _ => Err(format!("it listed none: {command} --list-models")),
+        };
+        let probe = |asked: &[Asked]| {
+            probed.lock().unwrap().extend(asked.iter().cloned());
+            asked
+                .iter()
+                .map(|(_, _, model)| match model.as_str() {
+                    "bad" => Answer::Silent,
+                    "gpt-b" => Answer::Unasked("orca made no terminal".into()),
+                    _ => Answer::Answered(2.0),
+                })
+                .collect()
+        };
+        let host = Host { found: &found, listed: &listed, probe: &probe, now: 77 };
+        let (kit, left_out) = compose(current, &host);
+        (kit, left_out, probed.into_inner().unwrap())
     }
 
-    #[test]
-    fn editing_probes_each_model_and_writes_only_those_that_answered_in_the_order_given() {
-        let probed = std::cell::RefCell::new(vec![]);
-        let replies = concat!(
-            // commands: claude-code kept, pi dropped, codex added, dsh added
-            "\n-\nmycodex --yolo\ndsh-tui\n",
-            // models: claude-code's held plus one typed, codex's listed,
-            // dsh's typed
-            "opus bad sonnet\n\nds-1 ds-2\n",
-            // order of harnesses: a typo asked again, then codex first
-            "nope\ncodex\n",
-            // order of models: codex's kept, claude-code's reversed
-            "\nsonnet\n",
-            // the stock consult: a model not held refused, then one named
-            "claude-code bad\nclaude-code sonnet\ny\n",
-        );
-        let (kit, shown) = host(&probed)(replies.as_bytes());
-        let kit = kit.unwrap().unwrap();
-        let summary: Vec<(Harness, &str, Vec<&str>)> = kit
-            .harnesses
+    fn summary(kit: &Kit) -> Vec<(Harness, &str, Vec<&str>)> {
+        kit.harnesses
             .iter()
             .map(|h| {
                 (h.harness, h.command.as_str(), h.models.iter().map(|m| m.model.as_str()).collect())
             })
-            .collect();
-        assert_eq!(
-            summary,
-            [
-                (Harness::Codex, "mycodex --yolo", vec!["gpt-a", "gpt-b"]),
-                (Harness::ClaudeCode, "old", vec!["sonnet", "opus"]),
-                (Harness::Dsh, "dsh-tui", vec!["ds-1"]),
-            ]
-        );
-        assert_eq!(kit.harnesses[0].models[0].probed, Some(Probed { at: 77, seconds: 2.0 }));
-        assert_eq!(kit.harnesses[2].models[0].probed, Some(Probed { at: 77, seconds: 2.0 }));
-        assert_eq!(
-            kit.stock_consult,
-            Some(Named { harness: Harness::ClaudeCode, model: Some("sonnet".into()) })
-        );
-        // every model named was probed through its harness's command, once
-        let asked: Vec<(Harness, String)> =
-            probed.borrow().iter().map(|(h, _, m)| (*h, m.clone())).collect();
-        assert_eq!(asked.len(), 7, "{asked:?}");
-        assert!(
-            probed.borrow().iter().any(|(h, c, _)| *h == Harness::Codex && c == "mycodex --yolo")
-        );
-        for said in [
-            "dsh: asking it for its models: it listed none: dsh-tui --list",
-            "claude-code bad: did not answer",
-            "codex gpt-a: answered in 2.0s",
-            "dsh ds-1: answered in 2.0s",
-            "dsh ds-2: could not be asked (orca is not running): left out",
-            "`nope` is none of",
-            "which it holds for no `claude-code`",
-        ] {
-            assert!(shown.contains(said), "{said}\n{shown}");
-        }
+            .collect()
     }
 
     #[test]
-    fn eof_or_declining_writes_nothing() {
-        let probed = std::cell::RefCell::new(vec![]);
-        let run = host(&probed);
-        // EOF at the first harness; at the models; declining at the end
-        for replies in ["", "\n\n\n\n", "\n-\n-\n-\n-\n\nn\n"] {
-            assert!(run(replies.as_bytes()).0.unwrap().is_none(), "{replies:?}");
+    fn with_no_host_kit_each_harness_found_is_held_on_its_stock_command_with_the_models_that_answered()
+     {
+        let (kit, left_out, probed) = composed(&Kit::default());
+        assert_eq!(
+            summary(&kit),
+            [
+                (
+                    Harness::ClaudeCode,
+                    Harness::ClaudeCode.stock(),
+                    vec!["default", "opus", "sonnet"]
+                ),
+                (Harness::Codex, Harness::Codex.stock(), vec!["gpt-a"]),
+            ]
+        );
+        // Every model kept was probed and answered, and is held with when.
+        assert_eq!(probed.len(), 6, "{probed:?}");
+        for seen in kit.harnesses.iter().flat_map(|held| &held.models) {
+            assert_eq!(seen.probed, Some(Probed { at: 77, seconds: 2.0 }));
         }
+        assert_eq!(kit.stock_consult, None);
+        let said: Vec<(Harness, Option<&str>, &str)> = left_out
+            .iter()
+            .map(|out| (out.harness, out.model.as_deref(), out.why.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (Harness::Pi, None, "listing failed: it listed none: pi --list-models"),
+                (Harness::Dsh, None, "not installed: `type -- 'dsh-tui'` found nothing"),
+                (Harness::Codex, Some("bad"), "silent to its probe"),
+                (
+                    Harness::Codex,
+                    Some("gpt-b"),
+                    "silent to its probe: it could not be asked: orca made no terminal"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_host_kit_written_again_keeps_its_order_commands_good_at_and_stock_consult() {
+        let mut opus = held(Harness::ClaudeCode, "old", &["bad", "opus", "gone"]);
+        opus.models[1].good_at = Some("hard work".into());
+        let current = Kit {
+            harnesses: vec![held(Harness::Codex, "mycodex --yolo", &["gpt-a"]), opus],
+            stock_consult: Some(Named { harness: Harness::ClaudeCode, model: Some("opus".into()) }),
+        };
+        let (kit, left_out, probed) = composed(&current);
+        // Held harnesses keep their order and command; each one's models are
+        // in the order it lists them.
+        assert_eq!(
+            summary(&kit),
+            [
+                (Harness::Codex, "mycodex --yolo", vec!["gpt-a"]),
+                (Harness::ClaudeCode, "old", vec!["default", "opus", "sonnet"]),
+            ]
+        );
+        assert!(probed.iter().all(|(h, c, _)| *h != Harness::Codex || c == "mycodex --yolo"));
+        assert_eq!(kit.harnesses[1].models[1].good_at.as_deref(), Some("hard work"));
+        assert_eq!(kit.stock_consult, current.stock_consult);
+        // A model gone from its harness's list is left out, and said so.
+        assert!(
+            left_out
+                .iter()
+                .any(|out| out.model.as_deref() == Some("gone") && out.why == "no longer listed")
+        );
+        assert!(
+            left_out
+                .iter()
+                .any(|out| out.model.as_deref() == Some("bad") && out.why == "no longer listed")
+        );
+        // Written twice with nothing changed, it is the same.
+        let (again, _, _) = composed(&kit);
+        assert_eq!(again, kit);
+    }
+
+    #[test]
+    fn a_stock_consult_no_longer_held_runs_the_host_kit_s_first_and_a_silent_harness_is_left_out() {
+        let current = Kit {
+            harnesses: vec![held(Harness::Pi, "pi", &["a/b"])],
+            stock_consult: Some(Named { harness: Harness::Pi, model: None }),
+        };
+        let probe = |asked: &[Asked]| asked.iter().map(|_| Answer::Silent).collect();
+        let host = Host {
+            found: &|_| Ok(()),
+            listed: &|harness, _| match harness {
+                Harness::Codex => Ok(vec!["bad".into()]),
+                _ => Err("it failed".into()),
+            },
+            probe: &probe,
+            now: 5,
+        };
+        let (kit, left_out) = compose(&current, &host);
+        assert_eq!(kit, Kit::default());
+        assert!(
+            left_out.iter().any(|out| out.harness == Harness::Codex
+                && out.model.is_none()
+                && out.why == "no model answered its probe"),
+            "{left_out:?}"
+        );
+        let said = report("/kit.json", &kit, &left_out);
+        assert!(said.contains("no worker can be started"), "{said}");
+        assert!(said.contains("left out: codex bad: silent to its probe"), "{said}");
     }
 
     #[test]

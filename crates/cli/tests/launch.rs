@@ -227,24 +227,89 @@ fn removed_worker_command_names_the_kit() {
     assert!(started(&world).is_empty());
 }
 
-#[test]
-fn no_host_kit_refuses_noninteractive_starts_before_claiming() {
-    let world = backlog();
-    std::fs::remove_file(world.kit_path()).unwrap();
-    for start in [&RUN[..], &TICK[..]] {
-        let error = world.afk(start).error();
-        assert!(error.contains("afkconvoy kit"), "{error}");
+/// A host with Claude Code (`default opus`), pi (`openai/gpt-5.5`) and Codex
+/// installed, Codex listing no model, and DSH not installed; every model
+/// answers its probe.
+fn host_to_kit(world: &World) {
+    world.shell_claude_models(&["default", "opus"]);
+    world.shell_models(&["openai/gpt-5.5"]);
+    world.shell_knows("dsh-tui", None);
+    world.probes_answer();
+}
+
+/// The host kit as written, without when each model was probed.
+fn kit_unprobed(world: &World) -> Value {
+    let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    for held in kit["harnesses"].as_array_mut().unwrap() {
+        for seen in held["models"].as_array_mut().unwrap() {
+            assert!(seen["probed"]["at"].is_u64(), "every model held was probed: {seen}");
+            seen.as_object_mut().unwrap().remove("probed");
+        }
     }
-    assert!(started(&world).is_empty());
-    assert!(world.claims().is_empty());
+    kit
 }
 
 #[test]
-fn kit_without_terminal_writes_nothing() {
+fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() {
     let world = backlog();
-    let before = std::fs::read(world.kit_path()).unwrap();
-    assert!(world.afk(&["kit"]).error().contains("terminal"));
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+    std::fs::remove_file(world.kit_path()).unwrap();
+    host_to_kit(&world);
+    let error = world.afk(&TICK).error();
+    assert!(error.contains("afkconvoy kit"), "{error}");
+    assert!(world.claims().is_empty());
+    // `run` with no terminal asks nothing: it writes the host kit, says so,
+    // and ticks.
+    let ran = answer(&world, &RUN, false);
+    assert_eq!(ran.code, 0, "{}", ran.stderr);
+    assert!(ran.stderr.contains("wrote the host kit at"), "{}", ran.stderr);
+    assert!(ran.stderr.contains("left out: dsh: not installed"), "{}", ran.stderr);
+    let kit = kit_unprobed(&world);
+    assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
+    assert_eq!(kit["harnesses"][0]["models"], json!([{"model": "default"}, {"model": "opus"}]));
+    assert_eq!(started(&world).len(), 1, "its first tick started a worker");
+}
+
+#[test]
+fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_out() {
+    let world = backlog();
+    world.kit_command("dsh", "dsh");
+    world.with_kit(|kit| {
+        kit["harnesses"][0]["models"] = json!([{"model": "opus", "good_at": "hard work"}]);
+        kit["stock_consult"] = json!({"harness": "claude-code", "model": "opus"});
+    });
+    host_to_kit(&world);
+    let written = world.afk(&["kit"]);
+    assert_eq!(written.json["written"], true);
+    assert_eq!(written.json["path"], world.kit_path().display().to_string());
+    let kit = kit_unprobed(&world);
+    assert_eq!(written.json["kit"]["harnesses"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        kit,
+        json!({
+            "harnesses": [
+                {"harness": "claude-code", "command": "agent",
+                    "models": [{"model": "default"}, {"model": "opus", "good_at": "hard work"}]},
+                {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5"}]},
+            ],
+            "stock_consult": {"harness": "claude-code", "model": "opus"},
+        })
+    );
+    let left_out: Vec<(&str, &str)> = written.json["left_out"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|out| (out["harness"].as_str().unwrap(), out["why"].as_str().unwrap()))
+        .collect();
+    assert_eq!(left_out.len(), 2, "{left_out:?}");
+    assert!(left_out[0].0 == "dsh" && left_out[0].1.starts_with("not installed"), "{left_out:?}");
+    assert!(
+        left_out[1].0 == "codex" && left_out[1].1.starts_with("listing failed"),
+        "{left_out:?}"
+    );
+    assert!(written.stderr.contains("left out: codex: listing failed"), "{}", written.stderr);
+    // Written again with nothing changed, it is the same but for when.
+    assert_eq!(world.afk(&["kit"]).json["written"], true);
+    assert_eq!(kit_unprobed(&world), kit);
 }
 
 #[test]
