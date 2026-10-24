@@ -72,7 +72,8 @@ pub fn keep_under(
     for (name, text) in kept.files {
         let text = text
             .replace("@AFKCONVOY_DSH_PLUGIN@", &plugin("afkconvoy.mjs"))
-            .replace("@AFKCONVOY_DSH_PROBE@", &plugin("probe.mjs"));
+            .replace("@AFKCONVOY_DSH_PROBE@", &plugin("probe.mjs"))
+            .replace("@AFKCONVOY_DSH_MODELS@", &plugin("models.mjs"));
         carry(&dir.join(name), &text).with_context(|| put(name))?;
     }
     for link in kept.links.iter().chain(theirs) {

@@ -633,14 +633,14 @@ impl World {
     }
 
     /// What the stand-in login shell prints when a command is asked which
-    /// models it was built with, in place of failing: Codex's JSON of them.
-    pub fn shell_built_with(&self, slugs: &[&str]) {
+    /// models its server lists, in place of failing: Codex's JSON of them.
+    pub fn shell_server_models(&self, slugs: &[&str]) {
         let models: Vec<Value> = slugs
             .iter()
             .map(|slug| serde_json::json!({"slug": slug, "display_name": slug, "visibility": "list"}))
             .collect();
         let listed = serde_json::json!({ "models": models }).to_string();
-        std::fs::write(self.root.join("shell-built-with"), listed).unwrap();
+        std::fs::write(self.root.join("shell-server-models"), listed).unwrap();
     }
 
     /// What the stand-in login shell prints for `alias`.
@@ -693,8 +693,8 @@ impl Drop for World {
 /// a model's probe, which prints nothing and fails unless a `probes-answer` beside
 /// `bin/` is there,
 /// `shell -lic '… <command> --list-models'`, which fails unless a `shell-models` beside
-/// `bin/` holds what it prints, `shell -lic '… <command> debug models --bundled'`, which
-/// fails unless a `shell-built-with` there does, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
+/// `bin/` holds what it prints, `shell -lic '… <command> debug models'`, which
+/// fails unless a `shell-server-models` there does, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
 /// word is a program unless `shell-types`
 /// beside `bin/` says otherwise, and each is logged in unless a
 /// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
@@ -757,8 +757,8 @@ case "$2" in
   *" --list-models")
     if [ -f "$root/shell-models" ]; then cat "$root/shell-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
-  *" debug models --bundled")
-    if [ -f "$root/shell-built-with" ]; then cat "$root/shell-built-with"; exit 0; fi
+  *" debug models")
+    if [ -f "$root/shell-server-models" ]; then cat "$root/shell-server-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
   *" --help")
     if [ -f "$root/shell-help" ]; then

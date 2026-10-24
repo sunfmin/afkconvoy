@@ -414,10 +414,7 @@ mod tests {
     fn pi_is_asked_its_models_under_the_directory_a_worker_is_given() {
         assert_eq!(
             Harness::Pi.models_question("kim  --thinking high", "/it's kept"),
-            Some(
-                "export PI_CODING_AGENT_DIR='/it'\\''s kept' && kim  --thinking high --list-models"
-                    .to_string()
-            )
+            "export PI_CODING_AGENT_DIR='/it'\\''s kept' && kim  --thinking high --list-models"
         );
         assert_eq!(
             Harness::Pi.models(LISTED).unwrap(),
@@ -426,10 +423,6 @@ mod tests {
         for nothing in ["", "No models available. Use /login to sign in.\n", "provider model\n"] {
             assert_eq!(Harness::Pi.models(nothing), None, "{nothing}");
         }
-        // Claude Code has no such question, and knows whatever it is given.
-        assert_eq!(Harness::ClaudeCode.models_question("claude", "/kept"), None);
-        assert_eq!(Harness::ClaudeCode.models(LISTED), None);
-        assert!(Harness::ClaudeCode.knows(&[], "anything"));
     }
 
     #[test]

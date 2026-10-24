@@ -241,18 +241,24 @@ pub fn on_path(program: &str) -> bool {
 /// The models `harness` knows on this host, as it says them in an orca
 /// terminal — the shell a worker gets (`orca::ask`) — when its worker launch
 /// command `command` is asked (`Harness::models_question`), with what this
-/// host keeps for it. `None`: it has no way to say. An error is the question
-/// that failed, or listed none.
-pub fn models(harness: Harness, command: &str) -> Option<Result<Vec<String>, String>> {
+/// host keeps for it: those its own login runs. An error says why it listed
+/// none — the question failed, timed out, or answered with no model — and
+/// the question.
+pub fn models(harness: Harness, command: &str) -> Result<Vec<String>, String> {
     // The logins are in the directory kept with the host user's skills and
     // rules as they are in the one kept without.
-    let kept = crate::kept::keep(harness, false).ok()?;
-    let question = harness.models_question(command, &kept.display().to_string())?;
-    let answer = crate::orca::ask(&question, SHELL_TIMEOUT).ok().flatten();
-    let listed = answer
-        .filter(|(succeeded, _)| *succeeded)
-        .and_then(|(_, printed)| harness.models(&printed));
-    Some(listed.ok_or(question))
+    let kept = crate::kept::keep(harness, false).map_err(|error| format!("{error:#}"))?;
+    let question = harness.models_question(command, &kept.display().to_string());
+    let why = match crate::orca::ask(&question, SHELL_TIMEOUT) {
+        Ok(Some((true, printed))) => match harness.models(&printed) {
+            Some(listed) => return Ok(listed),
+            None => "it listed none",
+        },
+        Ok(Some((false, _))) => "it failed",
+        Ok(None) => "it did not answer in time",
+        Err(error) => return Err(format!("{error:#}: {question}")),
+    };
+    Err(format!("{why}: {question}"))
 }
 
 /// The one-line prompt a model is probed with.
