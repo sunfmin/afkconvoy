@@ -15,7 +15,7 @@ A fleet instance is still one repo's fleet — its own id, claims, heartbeat, ti
 - The checkout list and the **host settings** — host sleep, the hot-worker limits, admission's shares, the panel's port — are one file on the host. The host runner converges on it: started again — after an upgrade, a crash, a reboot — it starts every checkout on it. A `run` that names a host setting changes it for the host.
 - The host runner starts with the environment of a fresh login shell, never with that of the session that started it.
 - A newer afkconvoy that finds an older host runner has it exit and starts itself on the same list.
-- A fleet instance whose tick fails, panics, or whose probe no longer passes harms no other: it stays on the list, shown as broken with why, and is tried again after a backoff.
+- A fleet instance whose tick panics, whose loop ends in an error, or whose probe no longer passes as the host runner starts it again harms no other: it stays on the list, shown as broken with why, and is tried again after a backoff. A tick that fails is a line of its tick log, as before, and the loop goes on.
 - The host runner keeps a log of its own — checkouts added and removed, fleet instances broken and back, upgrades — beside each repo's tick log, which is unchanged.
 
 ## What becomes one

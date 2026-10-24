@@ -78,6 +78,9 @@ pub struct Knobs {
     pub ready_timeout: u64,
     /// The epoch seconds its clock reads, fixed: the global `--now`.
     pub now: Option<u64>,
+    /// Panic as this tick ends, at every start: it breaks.
+    #[serde(default)]
+    pub panic_at: Option<u64>,
 }
 
 /// Holds the fleet instance of `checkout` as `start` asks, until it is told
@@ -111,6 +114,7 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
         ticks: knobs.ticks,
         second: Duration::from_millis(knobs.second_ms),
         host_sleep_after: knobs.host_sleep_after,
+        panic_at: knobs.panic_at,
     };
     kit::ensure(now)?;
     let worker_no_proxy = &named.worker_no_proxy;
