@@ -31,8 +31,10 @@ use crate::hot;
 pub const TMP_DIR: &str = ".afkconvoy-tmp";
 
 /// The worker's `TMPDIR` for the worktree at `worktree`: its link, made or
-/// not. This is the one place it is said.
+/// not. This is the one place it is said. The worktree's path is keyed as its
+/// parts: `/w/a/` is `/w/a`.
 pub fn of(worktree: &Path) -> PathBuf {
+    let worktree: PathBuf = worktree.components().collect();
     let key = afkconvoy_core::gate::key(&worktree.to_string_lossy());
     links().join(format!("{key:016x}"))
 }
@@ -95,7 +97,7 @@ pub fn reclaim() -> Result<()> {
     if unheld.is_empty() {
         return Ok(());
     }
-    let procs = hot::processes();
+    let procs = hot::listed();
     for (link, to) in unheld {
         let tmp = link.display().to_string();
         if procs.iter().any(|proc| hot::started_with(proc, &tmp)) {
@@ -210,6 +212,7 @@ mod tests {
     fn a_workers_tmpdir_is_one_place_for_its_worktree_alone() {
         let a = of(Path::new("/w/issue-7-a"));
         assert_eq!(a, of(Path::new("/w/issue-7-a")), "the same after a restart");
+        assert_eq!(a, of(Path::new("/w/issue-7-a/")));
         assert_ne!(a, of(Path::new("/w/issue-7-b")));
         assert_ne!(a, of(Path::new("/v/issue-7-a")), "another fleet's");
         assert_eq!(a.parent(), Some(links().as_path()));

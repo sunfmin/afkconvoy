@@ -207,10 +207,7 @@ pub(crate) struct Proc {
 
 /// Every process of this host, as `ps` says them, with what each wrote.
 pub(crate) fn processes() -> Vec<Proc> {
-    let out = Command::new("ps").args(["axeww", "-o", "pid=,ppid=,rss=,time=,command="]).output();
-    let mut procs: Vec<Proc> = out
-        .map(|out| String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect())
-        .unwrap_or_default();
+    let mut procs = listed();
     for proc in &mut procs {
         proc.written = written_by(proc.pid);
         if proc.ppid == 1 {
@@ -218,6 +215,13 @@ pub(crate) fn processes() -> Vec<Proc> {
         }
     }
     procs
+}
+
+/// Every process of this host, as `ps` says them, and nothing more.
+pub(crate) fn listed() -> Vec<Proc> {
+    let out = Command::new("ps").args(["axeww", "-o", "pid=,ppid=,rss=,time=,command="]).output();
+    out.map(|out| String::from_utf8_lossy(&out.stdout).lines().filter_map(parse).collect())
+        .unwrap_or_default()
 }
 
 /// One row of `ps`: pid, ppid, resident KiB, CPU time, then the rest.
