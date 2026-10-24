@@ -4,17 +4,26 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { apply, inject } from './models.mjs'
+import { apply as probe } from './probe.mjs'
 assert.deepEqual(inject, ['credentials'])
 const mode = process.argv[2]
 const token = 'account-secret-sentinel-396'
 const key = 'api-key-secret-sentinel-396'
+let probeRequest
+probe({
+  deepseekAccount: { async getState() { return { status: mode === 'key' ? 'signed-out' : 'credential-stored' } } },
+  on(_event, handler) { probeRequest = handler },
+})
+// Check routing without sending a prompt or exposing the account token.
+const probeConfig = await probeRequest({}, async () => ({ provider: 'deepseek-official' }))
+assert.equal(probeConfig.provider, mode === 'key' ? 'deepseek-official' : 'deepseek-account')
 const server = http.createServer((req, res) => {
   assert.equal(req.url, '/models')
   assert.equal(req.headers['x-dsh-auth-token'], mode === 'key' ? undefined : token)
   assert.equal(req.headers.authorization, mode === 'key' ? `Bearer ${key}` : undefined)
-  if (mode === 'refused') {
+  if (['refused', 'truncated'].includes(mode)) {
     res.writeHead(401)
-    res.end(`Authentication Fails ${token}`)
+    res.end(`Authentication Fails ${mode === 'truncated' ? 'x'.repeat(1970) : ''}${token}`)
   } else if (mode === 'malformed') {
     res.end('{"data":[{"name":"missing id"}]}')
   } else if (mode === 'redirect') {
@@ -41,8 +50,8 @@ globalThis.fetch = (url, options) => {
 // output here too, including a refusal that echoes the account token.
 const originalWrite = process.stdout.write
 process.stdout.write = (printed, flushed) => {
-  assert(!printed.includes(token))
-  assert(!printed.includes(key))
+  assert(!printed.includes('account-secret'))
+  assert(!printed.includes('api-key-secret'))
   assert.equal(requests, mode === 'none' ? 0 : 1)
   process.stdout.write = originalWrite
   originalWrite.call(process.stdout, printed, flushed)

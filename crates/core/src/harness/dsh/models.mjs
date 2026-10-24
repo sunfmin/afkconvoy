@@ -6,6 +6,17 @@ export const inject = ['credentials']
 export function apply(ctx) {
   ctx.on('agent/request', async () => {
     let token, key
+    // Redact before shortening a server refusal, so truncation cannot leave
+    // a credential prefix in the output.
+    const redact = text => {
+      for (const secret of [token, key]) {
+        if (secret) {
+          text = text.replaceAll(secret, '[redacted]')
+          text = text.replaceAll(JSON.stringify(secret).slice(1, -1), '[redacted]')
+        }
+      }
+      return text
+    }
     let result
     try {
       const record = await ctx.credentials.readRecord('deepseek-account-platform/default')
@@ -30,19 +41,14 @@ export function apply(ctx) {
             id, ...(typeof name === 'string' && name.trim() ? { name } : {}),
           })) }
         } else {
-          result = { error: `server answered HTTP ${response.status}: ${body.slice(0, 2000) || 'no model list'}` }
+          result = { error: `server answered HTTP ${response.status}: ${redact(body).slice(0, 2000) || 'no model list'}` }
         }
       }
     } catch {
       // An exception may quote a credential or request headers.
       result = { error: 'could not read DSH credentials or ask the model server' }
     }
-    let printed = JSON.stringify(result)
-    for (const secret of [token, key]) {
-      if (secret) {
-        printed = printed.replaceAll(JSON.stringify(secret).slice(1, -1), '[redacted]')
-      }
-    }
+    const printed = redact(JSON.stringify(result))
     process.stdout.write(`AFKCONVOY_DSH_LISTED ${printed}\n`, () => process.exit(0))
     return new Promise(() => {})
   })

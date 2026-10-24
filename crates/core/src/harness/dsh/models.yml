@@ -1,7 +1,7 @@
-# Headless DSH does not mount its credential service by default. Load its
-# read service so the listing uses the same store and precedence as DSH.
+# Headless DSH disables its credential service. Enable its read service so
+# the listing uses the same store and precedence as an interactive worker.
+- id: credentials
+  disabled: false
 - insert:
-    - id: afkconvoy-model-credentials
-      name: '@deepseek-ai/dsh-credentials-local'
     - id: afkconvoy-models
       name: '@AFKCONVOY_DSH_MODELS@'

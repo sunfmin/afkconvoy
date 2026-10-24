@@ -87,14 +87,13 @@ pub(super) fn answered_as(answer: &str) -> Option<String> {
 /// kept: it loads the plugin that prints them (`dsh/models.mjs`).
 const MODELS_PATCH: &str = "models.patch.yml";
 
-/// What that plugin prints before each model's name, on a line of its own.
+/// What that plugin prints before its JSON list or refusal, on one line.
 const LISTED: &str = "AFKCONVOY_DSH_LISTED";
 
 /// The line that asks DSH which models it runs: through `dsh`, the launcher
 /// its TUI comes with, in its headless profile, with the overlay kept in
-/// `kept` whose plugin prints the models of each provider route DSH holds,
-/// as the server lists them with DSH's own credentials, and stops before the task is
-/// sent. The worker launch command starts the TUI, which says nothing but
+/// `kept` whose plugin asks DeepSeek's server with DSH's own credentials
+/// and stops before the task is sent. The worker launch command starts the TUI, which says nothing but
 /// at a terminal.
 pub(super) fn models_question(kept: &str) -> String {
     Line::new()

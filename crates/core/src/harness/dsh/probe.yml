@@ -1,5 +1,11 @@
-# The overlay a probe of a DSH model boots its headless profile with: the
-# probe's plugin, which sets the model it names.
+# Headless DSH disables its sign-in services. A probe needs the same
+# credentials and account provider as an interactive worker.
+- id: credentials
+  disabled: false
+- id: authorization
+  disabled: false
+- id: deepseek-account
+  disabled: false
 - insert:
     - id: afkconvoy-probe
       name: '@AFKCONVOY_DSH_PROBE@'

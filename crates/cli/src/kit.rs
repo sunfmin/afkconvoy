@@ -846,7 +846,12 @@ mod tests {
             include_str!("../../core/src/harness/dsh/models-test.mjs"),
         )
         .unwrap();
-        for mode in ["list", "key", "refused", "none", "malformed", "redirect"] {
+        std::fs::write(
+            root.path().join("probe.mjs"),
+            include_str!("../../core/src/harness/dsh/probe.mjs"),
+        )
+        .unwrap();
+        for mode in ["list", "key", "refused", "truncated", "none", "malformed", "redirect"] {
             let run = std::process::Command::new("node")
                 .arg(root.path().join("test.mjs"))
                 .arg(mode)
@@ -897,7 +902,7 @@ mod tests {
                 assert!(kit.harnesses.is_empty());
                 let why = &left_out.iter().find(|left| left.harness == Harness::Dsh).unwrap().why;
                 let expected = match mode {
-                    "refused" => "Authentication Fails",
+                    "refused" | "truncated" => "Authentication Fails",
                     "none" => "not signed in",
                     "malformed" => "server answered",
                     _ => "could not read DSH credentials or ask the model server",
