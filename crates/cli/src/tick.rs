@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use afkconvoy_core::before::{Before, Lost};
-use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
+use afkconvoy_core::host_sleep::{self, IDLE_WAIT, SLEEP_HOURS, Standing};
 use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
@@ -863,18 +863,22 @@ pub struct Pacing {
 }
 
 /// What a `run` says at its start of host sleep, when the host settings have
-/// it put its host to sleep as it starts: after how long, and how not to.
+/// it put its host to sleep as it starts: in which hours, after how long, how
+/// to say other hours or change them back, and how not to.
 fn host_sleep_line(pacing: &Pacing) -> Option<String> {
     let after = match pacing.host_sleep_after {
         IDLE_WAIT => "ten minutes".to_string(),
         seconds => format!("{seconds}s"),
     };
-    (!host_settings::kept_awake()).then(|| {
-        format!(
-            "start: puts this host to sleep once every fleet on it has been idle {after} \
-             (`--no-host-sleep` keeps it awake)"
-        )
-    })
+    let hours = host_settings::host_sleep()?;
+    let change = match hours {
+        SLEEP_HOURS => "`--host-sleep-hours` says others".to_string(),
+        _ => format!("`--host-sleep-hours default` changes them back to {SLEEP_HOURS}"),
+    };
+    Some(format!(
+        "start: puts this host to sleep within its sleep hours, {hours}, once every fleet on it \
+         has been idle {after} ({change}, `--no-host-sleep` keeps it awake)"
+    ))
 }
 
 /// What a start says it took, when it took or lost anything.
@@ -1093,8 +1097,8 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// inspection that is over and starts the next a hot worker waits for, and
 /// it looks again within `INSPECTING_EVERY` while either is so
 /// (`Inspector`). Unless the host settings keep the host awake, it puts the
-/// host to sleep once every fleet on it has been idle long enough
-/// (`HostSleep`, docs/adr/0016). It obeys `holder`'s stop — whoever holds the
+/// host to sleep once every fleet on it has been idle long enough, within
+/// the host's sleep hours (`HostSleep`, docs/adr/0016). It obeys `holder`'s stop — whoever holds the
 /// process listens for the signals — and says each line to its echo.
 pub fn run(
     repo: &Repo,
