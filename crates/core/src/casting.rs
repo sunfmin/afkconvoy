@@ -86,19 +86,29 @@ impl Held {
     /// matches neither.
     pub fn model(&self, name: &str) -> Result<&Model, Unmatched> {
         let name = name.trim();
-        let whole = |model: &&Model| model.every_name().any(|n| n.eq_ignore_ascii_case(name));
-        let unprefixed = |model: &&Model| {
-            !name.contains('/')
-                && model.every_name().any(|n| {
-                    n.split_once('/').is_some_and(|(_, rest)| rest.eq_ignore_ascii_case(name))
-                })
-        };
-        for matches in [&whole as &dyn Fn(&&Model) -> bool, &unprefixed] {
-            let found: Vec<&Model> = self.models.iter().filter(matches).collect();
-            match found.as_slice() {
-                [] => continue,
-                [one] => return Ok(one),
-                [one, two, ..] => return Err(Unmatched::Two(one.id.clone(), two.id.clone())),
+        // Whole names take precedence over names without a provider prefix.
+        for unprefixed in [false, true] {
+            let mut first: Option<&Model> = None;
+            for model in &self.models {
+                let matches = model.every_name().any(|held| {
+                    if unprefixed {
+                        !name.contains('/')
+                            && held
+                                .split_once('/')
+                                .is_some_and(|(_, rest)| rest.eq_ignore_ascii_case(name))
+                    } else {
+                        held.eq_ignore_ascii_case(name)
+                    }
+                });
+                if matches {
+                    if let Some(one) = first {
+                        return Err(Unmatched::Two(one.id.clone(), model.id.clone()));
+                    }
+                    first = Some(model);
+                }
+            }
+            if let Some(model) = first {
+                return Ok(model);
             }
         }
         Err(Unmatched::None(self.nearest(name)))
@@ -144,7 +154,7 @@ fn distance(one: &str, two: &str) -> usize {
             diagonal = above;
         }
     }
-    row[two.len()]
+    row.last().copied().unwrap_or(0)
 }
 
 /// What a worker runs, and why.
@@ -808,7 +818,7 @@ pub fn by_caster<'a>(labels: &[String], bodies: impl IntoIterator<Item = &'a str
 /// Whether the casting `labels` carry names what `kit` does not hold: a
 /// harness it holds none of, or a model it holds by no such name.
 pub fn names_nothing(labels: &[String], kit: &[Held]) -> bool {
-    !uncast(labels) && cast(labels, kit, None).is_err()
+    !uncast(labels) && held_casting(labels, kit).is_err()
 }
 
 /// Whether an issue labelled `labels` is to be cast again: a caster cast it

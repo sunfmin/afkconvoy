@@ -292,7 +292,7 @@ pub fn cast(now: u64) -> Result<Value> {
         let now_labels = fleet.gh.issue(number)?.labels;
         let again = match paused_of(&now_labels, &paused) {
             Some(pause) => Some(crate::paused::said(pause, now)),
-            None => casting::cast(&now_labels, &range, None).err(),
+            None => casting::unheld(&now_labels, &range).map(|unheld| unheld.why),
         };
         if !uncast(&now_labels) && again.is_none() {
             left.push(json!({"issue": number, "why": "it was cast meanwhile"}));
