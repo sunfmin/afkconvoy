@@ -43,9 +43,8 @@ pub struct Held {
 pub struct Seen {
     /// Its harness's own name for it.
     pub model: String,
-    /// Its last probe, which it answered. `None`: its harness can be sent no
-    /// prompt but in a worker's terminal (`Harness::prompt_question`), and it
-    /// is held as the human named it.
+    /// Its last probe, which it answered. `None` of a model a host kit
+    /// written before every harness was probed holds as the human named it.
     #[serde(default)]
     pub probed: Option<Probed>,
     /// What it is good at, as the human wrote it in the host kit: what a
@@ -240,6 +239,14 @@ pub fn configure() -> Result<Value> {
             "the host kit needs a terminal: run `afkconvoy kit` at a terminal before starting the fleet"
         );
     }
+    // Every harness is asked in an orca terminal, the shell a worker gets.
+    if !crate::orca::running() {
+        bail!(
+            "the host kit asks each harness for its models, and probes them, in an orca \
+             terminal, and orca is not running: {}",
+            afkconvoy_core::tools::START_ORCA
+        );
+    }
     let file = path()?;
     let current = if file.exists() { load()? } else { Kit::default() };
     // Discover only on the first run. An omitted harness in an existing kit
@@ -290,7 +297,9 @@ fn probe_all(asked: &[Asked]) -> Vec<Answer> {
                     scope.spawn(move || crate::launch::probe(*harness, command, Some(model)))
                 })
                 .collect();
-            answers.extend(running.into_iter().map(|run| run.join().unwrap_or(Answer::Silent)));
+            answers.extend(running.into_iter().map(|run| {
+                run.join().unwrap_or_else(|_| Answer::Unasked("its probe panicked".to_string()))
+            }));
         });
     }
     answers
@@ -301,14 +310,15 @@ fn probe_all(asked: &[Asked]) -> Vec<Answer> {
 type Asked = (Harness, String, String);
 
 /// What a model said to its probe.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Answer {
     /// It answered, in this many seconds.
     Answered(f64),
     /// It said nothing within the time limit, or failed.
     Silent,
-    /// Its harness can be sent no prompt but in a worker's terminal.
-    Unsendable,
+    /// It was never asked, for this reason: no terminal could be made for its
+    /// probe. It counts as silent.
+    Unasked(String),
 }
 
 /// The models a harness offers through a command.
@@ -446,17 +456,14 @@ fn edit(
         .map(|(harness, command)| Held { harness, command, models: vec![] })
         .collect();
     for ((harness, _, model), answer) in asked.into_iter().zip(answers) {
-        let said = match answer {
+        let said = match &answer {
             Answer::Answered(seconds) => format!("answered in {seconds:.1}s"),
             Answer::Silent => "did not answer: left out".to_string(),
-            Answer::Unsendable => "cannot be sent a prompt here: held unprobed".to_string(),
+            Answer::Unasked(why) => format!("could not be asked ({why}): left out"),
         };
         writeln!(out, "  {} {model}: {said}", harness.key())?;
-        let probed = match answer {
-            Answer::Answered(seconds) => Some(Probed { at: host.now, seconds }),
-            Answer::Unsendable => None,
-            Answer::Silent => continue,
-        };
+        let Answer::Answered(seconds) = answer else { continue };
+        let probed = Some(Probed { at: host.now, seconds });
         if let Some(held) = harnesses.iter_mut().find(|held| held.harness == harness) {
             // What the human wrote of it stays.
             let good_at = current
@@ -557,7 +564,8 @@ mod tests {
     }
 
     /// Lists `gpt-a gpt-b` for Codex, nothing for the rest; every model
-    /// answers but `bad`, in two seconds, and DSH's cannot be sent one.
+    /// answers but `bad`, in two seconds, and `ds-2`, which no terminal could
+    /// be made for.
     fn host(
         probed: &std::cell::RefCell<Vec<Asked>>,
     ) -> impl Fn(&[u8]) -> (Result<Option<Kit>>, String) {
@@ -572,7 +580,7 @@ mod tests {
                 asked
                     .iter()
                     .map(|(harness, _, model)| match (harness, model.as_str()) {
-                        (Harness::Dsh, _) => Answer::Unsendable,
+                        (Harness::Dsh, "ds-2") => Answer::Unasked("orca is not running".into()),
                         (_, "bad") => Answer::Silent,
                         _ => Answer::Answered(2.0),
                     })
@@ -600,7 +608,7 @@ mod tests {
             "\n-\nmycodex --yolo\ndsh-tui\n",
             // models: claude-code's held plus one named by hand, codex's
             // listed, dsh's named by hand
-            "opus bad sonnet\n\nds-1\n",
+            "opus bad sonnet\n\nds-1 ds-2\n",
             // order of harnesses: a typo asked again, then codex first
             "nope\ncodex\n",
             // order of models: codex's kept, claude-code's reversed
@@ -626,7 +634,7 @@ mod tests {
             ]
         );
         assert_eq!(kit.harnesses[0].models[0].probed, Some(Probed { at: 77, seconds: 2.0 }));
-        assert_eq!(kit.harnesses[2].models[0].probed, None, "held unprobed");
+        assert_eq!(kit.harnesses[2].models[0].probed, Some(Probed { at: 77, seconds: 2.0 }));
         assert_eq!(
             kit.stock_consult,
             Some(Named { harness: Harness::ClaudeCode, model: Some("sonnet".into()) })
@@ -634,7 +642,7 @@ mod tests {
         // every model named was probed through its harness's command, once
         let asked: Vec<(Harness, String)> =
             probed.borrow().iter().map(|(h, _, m)| (*h, m.clone())).collect();
-        assert_eq!(asked.len(), 6, "{asked:?}");
+        assert_eq!(asked.len(), 7, "{asked:?}");
         assert!(
             probed.borrow().iter().any(|(h, c, _)| *h == Harness::Codex && c == "mycodex --yolo")
         );
@@ -642,7 +650,8 @@ mod tests {
             "dsh: the fleet has no way to ask it for its models",
             "claude-code bad: did not answer",
             "codex gpt-a: answered in 2.0s",
-            "dsh ds-1: cannot be sent a prompt here",
+            "dsh ds-1: answered in 2.0s",
+            "dsh ds-2: could not be asked (orca is not running): left out",
             "`nope` is none of",
             "which it holds for no `claude-code`",
         ] {

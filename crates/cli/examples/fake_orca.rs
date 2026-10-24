@@ -5,7 +5,12 @@
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
 //! worktreePath, command, sent, open, agent?, lastOutputAt?, screen?}], `calls`.
 //! A terminal's `command` is the worker's line behind what starts every one
-//! under `nice` with the worktree's own `TMPDIR`: one without it is refused.
+//! under `nice` with the worktree's own `TMPDIR`: one without it is refused,
+//! but for a question (`question::typed`), which is put to `$SHELL -lic` —
+//! the stand-in login shell — at once. Its terminal is kept apart, in
+//! `questions` [{handle, worktreePath, script, stream, open}]: it shows what
+//! that printed between the question's marks (`stream`). A question's
+//! terminal is opened in the main checkout or wherever orca chooses.
 //! Knobs: `stopped` (it is not running: it says so, and every other call
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
@@ -16,6 +21,7 @@ mod fake;
 use std::path::Path;
 
 use afkconvoy_core::line::niced;
+use afkconvoy_core::question;
 use fake::State;
 use serde_json::{Value, json};
 
@@ -196,17 +202,43 @@ fn worktree_rm(st: &mut State) -> ! {
 }
 
 fn terminal_create(st: &mut State) -> ! {
+    let given = st.opt("--command").expect("--command").to_string();
+    if let Some(script) = question::script(&given) {
+        asked(st, script.to_string());
+    }
     let path = selected(st);
     if !knows_worktree(st, &path) {
         fail(st, "selector_not_found");
     }
-    let given = st.opt("--command").expect("--command");
     let niced = niced(&format!("{path}/.afkconvoy-tmp"), "");
     let command = given.strip_prefix(&niced).unwrap_or_else(|| panic!("not niced: {given}"));
     let command = command.to_string();
     let handle = format!("term-{}", st.list("terminals").len() + 1);
     st.list("terminals").push(json!({"handle": handle, "worktreePath": path, "command": command,
         "sent": [], "open": true}));
+    done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
+}
+
+/// A question's terminal, which has answered already.
+fn asked(st: &mut State, script: String) -> ! {
+    let path = st.opt("--worktree").map(|_| selected(st)).unwrap_or_default();
+    let in_repo = st.doc["repos"].as_array().unwrap().iter().any(|repo| repo["path"] == path);
+    if !path.is_empty() && !in_repo && !knows_worktree(st, &path) {
+        fail(st, "selector_not_found");
+    }
+    let shell = std::env::var("SHELL").expect("SHELL");
+    let ran = std::process::Command::new(shell)
+        .args(["-lic", &script])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let mut stream = vec!["rc noise".to_string(), "AFKCONVOY_ASKED".to_string()];
+    stream.extend(String::from_utf8_lossy(&ran.stdout).lines().map(str::to_string));
+    stream.push(String::new());
+    stream.push(format!("AFKCONVOY_ANSWERED {}", ran.status.code().unwrap_or(1)));
+    let handle = format!("question-{}", st.list("questions").len() + 1);
+    st.list("questions").push(json!({"handle": handle, "worktreePath": path, "script": script,
+        "stream": stream, "open": true}));
     done(st, json!({"terminal": {"handle": handle, "worktreePath": path}}))
 }
 
@@ -287,18 +319,36 @@ fn terminal_list(st: &State) -> ! {
     done(st, json!({"terminals": rows}))
 }
 
+/// The question whose terminal `--terminal` names, while it is open.
+fn question_at(st: &State) -> Option<usize> {
+    let handle = st.opt("--terminal").expect("--terminal");
+    let rows = st.doc["questions"].as_array()?;
+    rows.iter().position(|t| t["handle"] == handle && t["open"] == true)
+}
+
 fn terminal_read(st: &State) -> ! {
+    if let Some(at) = question_at(st) {
+        // As real orca, without `--screen`: what was printed, line by line.
+        assert!(!st.has("--screen") && st.opt("--limit").is_some(), "{:?}", st.argv);
+        let tail = st.doc["questions"][at]["stream"].clone();
+        done(st, json!({"terminal": {"tail": tail, "source": "stream"}}))
+    }
     let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
+    let terminal = &st.doc["terminals"][at];
     assert!(st.has("--screen") && st.opt("--limit").is_some(), "{:?}", st.argv);
     if st.doc["read_fails"] == true {
         fail(st, "terminal_not_readable");
     }
-    let terminal = &st.doc["terminals"][at];
     let tail = if terminal["screen"].is_array() { terminal["screen"].clone() } else { json!([]) };
     done(st, json!({"terminal": {"handle": terminal["handle"], "tail": tail, "source": "screen"}}))
 }
 
 fn terminal_close(st: &mut State) -> ! {
+    if st.opt("--terminal").is_some() {
+        let Some(at) = question_at(st) else { fail(st, "terminal_handle_stale") };
+        st.doc["questions"][at]["open"] = json!(false);
+        done(st, json!({"close": {"ptyKilled": true}}))
+    }
     let path = selected(st);
     assert!(st.has("--all"), "{:?}", st.argv);
     // a closed agent stays on record, closed; the bare shell leaves nothing behind
