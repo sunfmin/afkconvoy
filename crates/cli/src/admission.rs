@@ -1,33 +1,24 @@
 //! Admission's effect half: reading the host — its cores, its load, its
 //! memory free and the disk free under the checkout — and the shares the host
-//! says, from its environment. Whether admission holds is the core's to decide
+//! says, in its host settings. Whether admission holds is the core's to decide
 //! (`afkconvoy_core::admission::holds`).
 
 use std::path::Path;
 
 use afkconvoy_core::admission::{Disk, Hold, Reading, SHARES, Shares, holds, thresholds};
 use afkconvoy_core::host_inspection::{Reason, SPAN};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use crate::host_settings;
 use crate::host_sleep::output;
 use crate::measure;
-
-/// The environment variables a host says its own shares in, each a whole
-/// percent: of its cores the load may reach, of its memory and of the
-/// checkout's disk that must stay free.
-pub const LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
-pub const MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
-pub const DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
-/// The environment variable a host says in, in whole seconds, how long
-/// admission holds back for one reason before the host is inspected.
-pub const INSPECT_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
 
 /// The shares this host is held to, and what was read of it.
 pub struct Admission {
     pub shares: Shares,
-    /// Which of `shares` the host said, by the environment variable it said
-    /// it in; the rest are the defaults.
+    /// Which of `shares`, and of `span`, the host said, by the host setting it
+    /// said it in; the rest are the defaults.
     pub said: Vec<&'static str>,
     pub reading: Reading,
     /// How long, in seconds, admission holds back for one reason before the
@@ -36,27 +27,30 @@ pub struct Admission {
 }
 
 impl Admission {
-    /// The shares the host says and what is read of it now, for a checkout at
-    /// `dir`. A share said wrong is an error, not a default.
+    /// The shares the host settings say and what is read of the host now,
+    /// for a checkout at `dir`. Settings that cannot be read are an error,
+    /// not the defaults.
     pub fn read(dir: &Path) -> Result<Admission> {
+        Ok(Admission::of(&host_settings::of_host()?, read_host(dir)))
+    }
+
+    /// The shares `settings` say, with `reading`.
+    fn of(settings: &host_settings::Settings, reading: Reading) -> Admission {
         let mut shares = SHARES;
+        let mut span = SPAN;
         let mut said = vec![];
-        for (name, share) in [
-            (LOAD_ENV, &mut shares.load),
-            (MEMORY_ENV, &mut shares.memory),
-            (DISK_ENV, &mut shares.disk),
+        for (name, setting, share) in [
+            ("admit_load", settings.admit_load, &mut shares.load),
+            ("admit_memory", settings.admit_memory, &mut shares.memory),
+            ("admit_disk", settings.admit_disk, &mut shares.disk),
+            ("admit_inspect_after", settings.admit_inspect_after, &mut span),
         ] {
-            if let Some(value) = std::env::var_os(name) {
-                *share = percent(name, &value.to_string_lossy())?;
+            if let Some(setting) = setting {
+                *share = setting;
                 said.push(name);
             }
         }
-        let mut span = SPAN;
-        if let Some(value) = std::env::var_os(INSPECT_ENV) {
-            span = seconds(INSPECT_ENV, &value.to_string_lossy())?;
-            said.push(INSPECT_ENV);
-        }
-        Ok(Admission { shares, said, reading: read_host(dir), span })
+        Admission { shares, said, reading, span }
     }
 
     /// The thresholds the host is past: none, and new workers start.
@@ -120,22 +114,6 @@ impl Admission {
                 "disk_size_bytes": reading.disk.map(|disk| disk.size),
             },
         })
-    }
-}
-
-/// A share as the host says it: a whole percent.
-fn percent(name: &str, value: &str) -> Result<u64> {
-    match value.trim().parse::<u64>() {
-        Ok(share) => Ok(share),
-        Err(_) => bail!("{name}={value:?} is no share: say a whole percent, as {name}=150"),
-    }
-}
-
-/// A span as the host says it: whole seconds.
-fn seconds(name: &str, value: &str) -> Result<u64> {
-    match value.trim().parse::<u64>() {
-        Ok(seconds) => Ok(seconds),
-        Err(_) => bail!("{name}={value:?} is no span: say whole seconds, as {name}=900"),
     }
 }
 
@@ -240,11 +218,21 @@ mod tests {
     }
 
     #[test]
-    fn a_share_said_wrong_is_an_error() {
-        assert_eq!(percent(LOAD_ENV, " 150\n").unwrap(), 150);
-        let error = percent(DISK_ENV, "5%").unwrap_err().to_string();
-        assert!(error.contains("AFKCONVOY_ADMIT_DISK=\"5%\" is no share"), "{error}");
-        assert_eq!(seconds(INSPECT_ENV, "900").unwrap(), 900);
-        assert!(seconds(INSPECT_ENV, "10m").is_err());
+    fn the_shares_are_those_the_host_settings_say_and_the_defaults_else() {
+        let reading = Reading { cores: 14, load: Some(5000), memory_free: Some(4), disk: None };
+        let unsaid = Admission::of(&host_settings::Settings::default(), reading);
+        assert_eq!((unsaid.shares, unsaid.span), (SHARES, SPAN));
+        assert!(unsaid.said.is_empty());
+        let settings = host_settings::Settings {
+            admit_load: Some(400),
+            admit_memory: Some(0),
+            admit_inspect_after: Some(900),
+            ..host_settings::Settings::default()
+        };
+        let said = Admission::of(&settings, reading);
+        assert_eq!(said.shares, Shares { load: 400, memory: 0, disk: SHARES.disk });
+        assert_eq!(said.span, 900);
+        assert_eq!(said.said, ["admit_load", "admit_memory", "admit_inspect_after"]);
+        assert!(said.holds().is_empty(), "400% of 14 cores is 56, and 0% free never holds");
     }
 }

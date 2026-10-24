@@ -29,7 +29,6 @@ use std::path::PathBuf;
 use afkconvoy_core::config::Bound;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::host_inspection::{self, Act, Due, Holding, Item, Reason, act, covered};
-use afkconvoy_core::hot::Limits;
 use afkconvoy_core::inspection::{
     self, CHECKOUT, Fields, Finding, Found, Hot, Inspected, Inspector as Who, Kind, inspector, over,
 };
@@ -369,7 +368,6 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
 pub struct Inspector {
     /// The checkout of the fleet whose `run` it is.
     checkout: Repo,
-    limits: Limits,
     inspected: Inspected,
     running: Option<Box<Inspection>>,
     /// Admission, tick after tick: the host is inspected once it held back
@@ -384,12 +382,10 @@ pub struct Inspector {
 }
 
 impl Inspector {
-    /// The inspector of the `run` of the checkout `checkout`, whose hot
-    /// workers are found under `limits`.
-    pub fn new(checkout: &Repo, limits: Limits) -> Inspector {
+    /// The inspector of the `run` of the checkout `checkout`.
+    pub fn new(checkout: &Repo) -> Inspector {
         Inspector {
             checkout: checkout.clone(),
-            limits,
             inspected: Inspected::default(),
             running: None,
             holding: Holding::default(),
@@ -638,7 +634,7 @@ impl Inspector {
             left.remove()?;
         }
         let checkout = Worktree::cut(&source, CHECKOUT, &fleet.base_tip()?, None)?;
-        let why = hot.why(&self.limits);
+        let why = hot.why.clone();
         let terminal = worktree.terminal()?;
         let started = (|| {
             let path = checkout.path.display().to_string();

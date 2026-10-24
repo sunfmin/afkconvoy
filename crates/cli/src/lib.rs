@@ -51,6 +51,7 @@ pub mod guard;
 pub mod harness_down;
 pub mod host_evidence;
 pub mod host_runner;
+pub mod host_settings;
 pub mod host_sleep;
 pub mod hot;
 pub mod inspection;
@@ -102,24 +103,12 @@ use claims::{Me, Scan, Take};
 use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
+use host_settings::{
+    ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV, HOT_CORES_ENV,
+    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To, port_or_default,
+    thousandths_or_default, whole_or_default,
+};
 use launch::Launches;
-
-/// The environment variables that tell `run` `--hot-cores`, `--hot-memory` and
-/// `--hot-written`.
-const HOT_CORES_ENV: &str = "AFKCONVOY_HOT_CORES";
-const HOT_MEMORY_ENV: &str = "AFKCONVOY_HOT_MEMORY";
-const HOT_WRITTEN_ENV: &str = "AFKCONVOY_HOT_WRITTEN";
-
-/// A number of cores or GiB, whole or not, as thousandths of it.
-fn thousandths(said: &str) -> Result<u64, String> {
-    match said.parse::<f64>() {
-        Ok(number) if number.is_finite() && number > 0.0 => Ok((number * 1000.0).round() as u64),
-        _ => Err(format!("`{said}` is not a number above zero")),
-    }
-}
-
-/// The environment variable that tells `run` `--no-host-sleep`.
-pub const NO_HOST_SLEEP_ENV: &str = "AFKCONVOY_NO_HOST_SLEEP";
 
 /// What this binary was built from, as `--version` says it: stamped by
 /// `build.rs`.
@@ -1233,29 +1222,57 @@ enum Command {
         host: Option<String>,
         #[command(flatten)]
         agent: AgentArgs,
-        /// Serve the panel — the fleet as a web page, live — on this port of this host
-        #[arg(long, value_name = "PORT")]
-        panel: Option<u16>,
-        /// Keep this host awake: put it to sleep never, and keep every other fleet on it
-        /// from doing so [default: put it to sleep once every fleet on it has been idle
-        /// ten minutes]
-        #[arg(long, env = NO_HOST_SLEEP_ENV)]
+        /// The panel's port, a host setting, and serve the panel — the fleet as a web page,
+        /// live — on it from this start; `default` changes it back [default: any free port]
+        #[arg(long, value_name = "PORT", value_parser = port_or_default)]
+        panel: Option<To<u16>>,
+        /// Keep this host awake: no fleet on it puts it to sleep. A host setting, for every
+        /// fleet on it until a `run` says `--host-sleep`, which changes it back
+        #[arg(long, env = NO_HOST_SLEEP_ENV, overrides_with = "host_sleep")]
         no_host_sleep: bool,
+        /// Let the fleets on this host put it to sleep once every one has been idle ten
+        /// minutes, as they do by default: a host setting, for every fleet on it
+        #[arg(long, overrides_with = "no_host_sleep")]
+        host_sleep: bool,
         /// Seconds every fleet on this host must have been idle before it is put to sleep
         #[arg(long, hide = true, default_value_t = IDLE_WAIT)]
         host_sleep_after: u64,
-        /// The cores a worker's processes may take before it turns hot, held two minutes
-        /// [default: half this host's cores, one at the least]
-        #[arg(long, env = HOT_CORES_ENV, value_name = "CORES", value_parser = thousandths)]
-        hot_cores: Option<u64>,
-        /// The GiB of memory a worker's processes may hold resident before it turns hot
-        /// [default: a quarter of this host's memory]
-        #[arg(long, env = HOT_MEMORY_ENV, value_name = "GIB", value_parser = thousandths)]
-        hot_memory: Option<u64>,
-        /// The GiB a worker's processes may write to disk in ten minutes before it turns hot
-        /// [default: a tenth of the disk free here, one GiB at the least]
-        #[arg(long, env = HOT_WRITTEN_ENV, value_name = "GIB", value_parser = thousandths)]
-        hot_written: Option<u64>,
+        /// The cores a worker's processes may take before it turns hot, held two minutes: a
+        /// host setting; `default` changes it back [default: half this host's cores, one at
+        /// the least]
+        #[arg(long, env = HOT_CORES_ENV, value_name = "CORES", value_parser = thousandths_or_default)]
+        hot_cores: Option<To<u64>>,
+        /// The GiB of memory a worker's processes may hold resident before it turns hot: a
+        /// host setting; `default` changes it back [default: a quarter of this host's memory]
+        #[arg(long, env = HOT_MEMORY_ENV, value_name = "GIB", value_parser = thousandths_or_default)]
+        hot_memory: Option<To<u64>>,
+        /// The GiB a worker's processes may write to disk in ten minutes before it turns hot:
+        /// a host setting; `default` changes it back [default: a tenth of the disk free here,
+        /// one GiB at the least]
+        #[arg(long, env = HOT_WRITTEN_ENV, value_name = "GIB", value_parser = thousandths_or_default)]
+        hot_written: Option<To<u64>>,
+        /// The load, a whole percent of this host's cores, past which no tick starts a new
+        /// worker: a host setting; `default` changes it back [default: 200]
+        #[arg(long, env = ADMIT_LOAD_ENV, value_name = "PERCENT", value_parser = whole_or_default)]
+        admit_load: Option<To<u64>>,
+        /// The memory free, a whole percent of this host's, under which no tick starts a new
+        /// worker: a host setting; `default` changes it back [default: 10]
+        #[arg(long, env = ADMIT_MEMORY_ENV, value_name = "PERCENT", value_parser = whole_or_default)]
+        admit_memory: Option<To<u64>>,
+        /// The disk free, a whole percent of the checkout's, under which no tick starts a new
+        /// worker — 0 never holds for disk: a host setting; `default` changes it back
+        /// [default: 1]
+        #[arg(long, env = ADMIT_DISK_ENV, value_name = "PERCENT", value_parser = whole_or_default)]
+        admit_disk: Option<To<u64>>,
+        /// The seconds admission holds back for one reason before the host is inspected: a
+        /// host setting; `default` changes it back [default: 600]
+        #[arg(
+            long,
+            env = ADMIT_INSPECT_AFTER_ENV,
+            value_name = "SECONDS",
+            value_parser = whole_or_default
+        )]
+        admit_inspect_after: Option<To<u64>>,
         /// Stop after this many ticks
         #[arg(long, hide = true)]
         ticks: Option<u64>,
@@ -3360,20 +3377,29 @@ pub(crate) fn start_agent(
     Ok((agent, warnings))
 }
 
-/// The start `run` asks for, from its flags and the global `--now` → whether
-/// it was `--foreground`, and the start; `None` for any other command. One
-/// mapping for `run` and for a host runner that starts a checkout again.
-fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start)> {
+/// What `run` asks for, from its flags and the global `--now` → whether it
+/// was `--foreground`, its start, and what it named of the host settings;
+/// `None` for any other command. One mapping for `run` and for a host runner
+/// that starts a checkout again.
+fn start_of(
+    command: Command,
+    now: Option<u64>,
+) -> Option<(bool, instance::Start, host_settings::Named)> {
     let Command::Run {
         instance,
         host,
         agent,
         panel,
         no_host_sleep,
+        host_sleep,
         host_sleep_after,
         hot_cores,
         hot_memory,
         hot_written,
+        admit_load,
+        admit_memory,
+        admit_disk,
+        admit_inspect_after,
         ticks,
         second_ms,
         foreground,
@@ -3382,25 +3408,41 @@ fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start
     else {
         return None;
     };
-    let bytes = |thousandths: u64| thousandths.saturating_mul(1 << 30) / 1000;
     let named = instance::Named {
         instance: instance.map(|instance| instance.as_str().to_string()),
         host,
         worker_no_proxy: agent.proxy.worker_no_proxy,
     };
-    let hot = hot::Said {
-        millicores: hot_cores,
-        resident: hot_memory.map(bytes),
-        written: hot_written.map(bytes),
+    let settings = host_settings::Named {
+        // Of the two flags the last said holds. Both are set only where the
+        // variable said one and the line the other: the line's holds.
+        no_host_sleep: match (no_host_sleep, host_sleep) {
+            (_, true) => Some(false),
+            (true, false) => Some(true),
+            (false, false) => None,
+        },
+        hot_cores,
+        hot_memory,
+        hot_written,
+        admit_load,
+        admit_memory,
+        admit_disk,
+        admit_inspect_after,
+        panel,
+    };
+    let panel = match panel {
+        Some(To::Value(port)) => Some(port),
+        Some(To::Default) | None => None,
     };
     let ready_timeout = agent.ready_timeout;
     let knobs = instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now };
-    Some((foreground, instance::Start { named, panel, no_host_sleep, hot, knobs }))
+    Some((foreground, instance::Start { named, panel, knobs }, settings))
 }
 
 /// The start of a `run` that named nothing, in this process's environment:
 /// how a host runner starts a checkout on its list, with what that checkout's
-/// `run` named laid over it.
+/// `run` named laid over it. What its environment names of the host settings
+/// is no start's: a `run` names those.
 pub(crate) fn unflagged_start() -> anyhow::Result<instance::Start> {
     // Only a variable can refuse it: clap's first line says which flag, and why.
     let unflagged = Cli::try_parse_from(["afkconvoy", "run"]).map_err(|error| {
@@ -3412,7 +3454,7 @@ pub(crate) fn unflagged_start() -> anyhow::Result<instance::Start> {
             said.trim_start_matches("error: ")
         )
     })?;
-    let start = start_of(unflagged.command, None).map(|(_, start)| start);
+    let start = start_of(unflagged.command, None).map(|(_, start, _)| start);
     start.context("a `run` asks for a start")
 }
 
@@ -3762,10 +3804,12 @@ fn run(
             Ok(plan)
         }
         Command::Run { .. } => {
-            let Some((foreground, start)) = start_of(command, fixed_now) else { unreachable!() };
+            let Some((foreground, start, settings)) = start_of(command, fixed_now) else {
+                unreachable!()
+            };
             match foreground {
-                true => instance::foreground(&checkout?, &start),
-                false => host_runner::run(&checkout?, start, now),
+                true => instance::foreground(&checkout?, &start, settings),
+                false => host_runner::run(&checkout?, start, &settings, now),
             }
         }
         Command::HostRunner => host_runner::serve(),
@@ -4175,5 +4219,31 @@ mod tests {
         assert_eq!(distinct.len(), 800, "{made:?}");
         let pid = format!("{}-", std::process::id());
         assert!(made.iter().all(|name| name.starts_with(&pid)), "{made:?}");
+    }
+
+    #[test]
+    fn a_run_names_of_the_host_settings_each_flag_it_was_given() {
+        let asked = |args: &[&str]| {
+            let line = [&["afkconvoy", "run"][..], args].concat();
+            let (_, start, named) =
+                start_of(Cli::try_parse_from(line).unwrap().command, None).unwrap();
+            (start, named)
+        };
+        // of `--host-sleep` and `--no-host-sleep`, the last said holds
+        assert_eq!(asked(&["--no-host-sleep", "--host-sleep"]).1.no_host_sleep, Some(false));
+        assert_eq!(asked(&["--host-sleep", "--no-host-sleep"]).1.no_host_sleep, Some(true));
+        let line = ["--hot-cores", "2.5", "--admit-disk", "0", "--admit-load", "default"];
+        let (start, named) = asked(&[&line[..], &["--panel", "7070"]].concat());
+        assert_eq!(named.hot_cores, Some(To::Value(2500)));
+        assert_eq!(named.admit_disk, Some(To::Value(0)), "0 never holds for disk");
+        assert_eq!(named.admit_load, Some(To::Default));
+        assert_eq!(named.panel, Some(To::Value(7070)));
+        // the panel is served from this start on the port named, and on none
+        // where it is set back to its default
+        assert_eq!(start.panel, Some(7070));
+        let (start, named) = asked(&["--panel", "default"]);
+        assert_eq!((start.panel, named.panel), (None, Some(To::Default)));
+        assert!(Cli::try_parse_from(["afkconvoy", "run", "--hot-cores", "0"]).is_err());
+        assert!(Cli::try_parse_from(["afkconvoy", "run", "--admit-load", "5%"]).is_err());
     }
 }
