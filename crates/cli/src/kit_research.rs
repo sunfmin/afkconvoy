@@ -84,8 +84,20 @@ pub fn research(
     let mut targets = vec![];
     for held in &mut kit.harnesses {
         for model in &mut held.models {
-            if model.good_at.as_deref().is_none_or(|s| s.trim().is_empty()) {
+            if model.good_at.as_deref().is_none_or(|s| s.trim().is_empty())
+                || model.sources.is_empty()
+                || model.researched_at.is_none()
+            {
+                if model.good_at.as_deref().is_some_and(|good| good != UNKNOWN) {
+                    eprintln!(
+                        "afkconvoy: {} {} not researched: held good_at has no dated research",
+                        held.harness.key(),
+                        model.model
+                    );
+                }
                 model.good_at = Some(UNKNOWN.into());
+                model.sources.clear();
+                model.researched_at = None;
             }
             let id = identity(&model.model);
             if !old.contains(&id) {
@@ -314,7 +326,8 @@ mod tests {
     }
     #[test]
     fn no_new_identity_starts_no_session_however_old_its_research() {
-        let before = kit();
+        let mut before = kit();
+        research(&Kit::default(), &mut before, 100, |_, _| Ok(answer().to_string()));
         let mut after = before.clone();
         research(&before, &mut after, 9999999, |_, _| panic!("must not research again"));
         assert_eq!(after, before);

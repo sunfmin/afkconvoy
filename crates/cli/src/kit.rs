@@ -54,12 +54,14 @@ pub struct Seen {
     /// written before every harness was probed holds as the human named it.
     #[serde(default)]
     pub probed: Option<Probed>,
-    /// What it is good at, as the human wrote it in the host kit: what a
-    /// caster is told of it.
+    /// What the sourced research says it is good at, or `not researched`:
+    /// what a caster is told of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub good_at: Option<String>,
+    /// The dated URLs supporting good_at, absent before sourced research.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<crate::kit_research::Source>,
+    /// When the research succeeded, in epoch seconds; never refreshed by age.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub researched_at: Option<u64>,
 }
@@ -606,9 +608,8 @@ impl LeftOut {
 /// - the harnesses `current` holds in its order, then new ones in the order
 ///   afkconvoy knows them; each one's models in the order it lists them;
 /// - the stock consult `current` names while it still holds it, else none:
-///   the host kit's first; and the `good_at` written beside a model kept —
-///   of the same model on another harness where none is written beside it
-///   on its own, the provider prefix left off.
+///   the host kit's first; and research held for the same answered identity,
+///   including on another harness with the provider prefix left off.
 ///
 /// A refresh keeps listed ids and probes new names and aliases again, so
 /// an alias that moves is held under the model it now answers as.
@@ -815,7 +816,8 @@ fn previous<'a>(current: &'a Kit, id: &str) -> Option<&'a Seen> {
         .harnesses
         .iter()
         .flat_map(|held| &held.models)
-        .find(|before| bare(&before.model) == bare(id))
+        .filter(|before| bare(&before.model) == bare(id))
+        .max_by_key(|before| (before.researched_at.is_some(), !before.sources.is_empty()))
 }
 
 /// Adds to `into` each of `items` it does not hold yet.
@@ -1182,6 +1184,22 @@ mod tests {
         store(&file, &current, 1000).unwrap();
         assert_eq!(written(&file), Some(1000));
         let probes = std::sync::atomic::AtomicUsize::new(0);
+        let sessions = std::sync::atomic::AtomicUsize::new(0);
+        let research = |_: &Kit, prompt: &str| {
+            sessions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let targets = prompt
+                .split("one entry per identity): ")
+                .nth(1)
+                .unwrap()
+                .split(".\nContext")
+                .next()
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(targets).unwrap(),
+                json!([{"harness":"pi", "model":"c/d"}])
+            );
+            bail!("fake session gave no answer")
+        };
         let listed = |_: Harness, _: &str| Ok(vec![listed("a/b", None), listed("c/d", None)]);
         let probe = |asked: &[Asked]| {
             probes.fetch_add(asked.len(), std::sync::atomic::Ordering::SeqCst);
@@ -1191,13 +1209,8 @@ mod tests {
             Harness::Pi => Ok(()),
             _ => Err("not here".to_string()),
         };
-        let host = |now| Host {
-            research: &|_, _| bail!("fake research unavailable"),
-            found: &found,
-            listed: &listed,
-            probe: &probe,
-            now,
-        };
+        let host =
+            |now| Host { research: &research, found: &found, listed: &listed, probe: &probe, now };
         assert!(refresh_at(&file, 1000 + REFRESHED_EVERY - 1, || Ok(host(0))).unwrap().is_none());
         let now = 1000 + REFRESHED_EVERY;
         // While one process writes it again, another finds it locked and
@@ -1222,6 +1235,7 @@ mod tests {
         // Once written, it is not due again for a day, in any process.
         assert_eq!(written(&file), Some(now));
         assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(sessions.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(refresh_at(&file, now + 60, || panic!("refreshed already")).unwrap().is_none());
         // A refresh that fails is tried again an hour later, not every tick.
         let later = now + REFRESHED_EVERY;
@@ -1229,6 +1243,11 @@ mod tests {
         assert!(refresh_at(&file, later + 60, || panic!("tried a minute ago")).unwrap().is_none());
         let again = refresh_at(&file, later + 3600, || Ok(host(later + 3600))).unwrap();
         assert!(again.is_some());
+        assert_eq!(
+            sessions.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no new identity: no session on the next refresh"
+        );
     }
 
     #[test]

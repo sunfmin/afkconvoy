@@ -321,7 +321,7 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     commit(&world.root.join("github/acme/reviewer"), ".claude/settings.json", hooked);
     world.with_kit(|kit| {
         for h in kit["harnesses"].as_array_mut().unwrap() {
-            let Some(models) = h["models"].as_array_mut() else { continue };
+            let Some(models) = h.get_mut("models").and_then(Value::as_array_mut) else { continue };
             for m in models {
                 m["good_at"] = match m["model"].as_str().unwrap() {
                     "opus" => json!("hard, wide work"),

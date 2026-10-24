@@ -358,7 +358,7 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
         json!({
             "harnesses": [
                 {"harness": "claude-code", "command": "agent",
-                    "models": [{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "hard work"}]},
+                    "models": [{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}]},
                 {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5", "good_at": "not researched"}]},
             ],
             "stock_consult": {"harness": "claude-code", "model": "opus"},
@@ -482,12 +482,15 @@ fn kit_holds_the_names_that_answered_as_one_model_once_by_its_id() {
     };
     assert_eq!(
         models("claude-code"),
-        json!([{"model": "claude-opus-5-5",
+        json!([{"model": "claude-opus-5-5", "good_at": "not researched",
             "names": ["default", "opus", "Default (recommended)", "Opus 5.5"]}])
     );
     // One model on two harnesses is held once on each, with one `good_at`.
-    assert_eq!(models("codex"), json!([{"model": "gpt-6-sol", "good_at": "hard work"}]));
-    assert_eq!(models("pi"), json!([{"model": "openai-codex/gpt-6-sol", "good_at": "hard work"}]));
+    assert_eq!(models("codex"), json!([{"model": "gpt-6-sol", "good_at": "not researched"}]));
+    assert_eq!(
+        models("pi"),
+        json!([{"model": "openai-codex/gpt-6-sol", "good_at": "not researched"}])
+    );
     // The session file the probe kept is gone.
     let sessions = written_anywhere(&world.cache(), "turn_context", &[]);
     assert_eq!(sessions, [] as [String; 0]);
