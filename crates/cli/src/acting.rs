@@ -18,7 +18,7 @@ use crate::wake;
 
 /// What the manual adds to the text of each command that acts: what it logs
 /// and whom it wakes, said whole once, in the topic it links to.
-pub const HELP: &str = "##### What it logs\n\nAs it acts it appends one line to the tick log \
+pub const HELP: &str = "## What it logs\n\nAs it acts it appends one line to the tick log \
      of this host for this repo, then wakes this host's fleet instance of this repo, through the \
      host runner; its answer says whether it woke one, as \"woke\": [`afkconvoy help \
      tick-log`](help:tick-log).";

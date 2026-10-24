@@ -219,7 +219,7 @@ fn on_a_host_with_no_git_a_start_names_every_command_it_lacks_and_any_other_git_
 
 #[test]
 fn each_command_about_one_repo_says_how_it_takes_its_checkout() {
-    let heading = "##### Which checkout it is about";
+    let heading = "## Which checkout it is about";
     for (command, form, worker) in [
         ("plan", "`[CHECKOUT]`", true),
         ("scan", "`[CHECKOUT]`", true),
@@ -233,7 +233,7 @@ fn each_command_about_one_repo_says_how_it_takes_its_checkout() {
         let said = text.split_once(heading).map(|(_, said)| said).unwrap_or_else(|| {
             panic!("`{command} --help` says nothing of its checkout: {text}");
         });
-        let said = said.split("\n##### ").next().unwrap();
+        let said = said.split("\n## ").next().unwrap();
         assert!(said.contains(form), "{command}: {said}");
         assert!(said.contains("directory in one"), "{command}: {said}");
         let refused = said.contains("A worker's worktree is refused");

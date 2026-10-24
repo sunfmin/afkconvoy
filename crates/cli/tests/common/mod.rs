@@ -1231,8 +1231,8 @@ pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
         let help = help.unwrap();
         // A word that is no command answers no help.
         let text = String::from_utf8_lossy(&help.stdout);
-        let said = text.split_once("##### Which checkout it is about").map(|(_, said)| said);
-        let said = said.map(|said| said.split("\n##### ").next().unwrap_or_default());
+        let said = text.split_once("## Which checkout it is about").map(|(_, said)| said);
+        let said = said.map(|said| said.split("\n## ").next().unwrap_or_default());
         help.status.success()
             && said.is_some_and(|said| said.contains("A worker's worktree is refused"))
     });

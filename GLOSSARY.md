@@ -1,6 +1,4 @@
-# afkconvoy
-
-A command-line tool that works a repo's ready GitHub-issue backlog unattended: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).
+Every term afkconvoy's help uses, each with its one definition and the words to avoid in its place. afkconvoy works a repo's ready GitHub-issue backlog unattended, from the command line: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).
 
 ## Language
 

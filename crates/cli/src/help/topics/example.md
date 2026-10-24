@@ -1,11 +1,11 @@
-The binary holds one team whole, and writes it where you say:
+One whole team, which the binary holds: the team this project demonstrates itself with, to read before you design your own, or to start from. It writes it where you say:
 
 ```sh
 afkconvoy scaffold team hospital --example hospital --repo <owner/repo>
 afkconvoy check --team <owner/repo>
 ```
 
-It is the team this project demonstrates itself with, as one repo holds a team: the team at the root, each role under `roles/`. Read it before you design your own, or start from it. Every file written is named below — each as an item of a list, a role's under its directory — with the decision it holds and the rule of afkconvoy's it shows.
+It is written as one repo holds a team: the team at the root, each role under `roles/`. Every file written is named below — each as an item of a list, a role's under its directory — with the decision it holds and the rule of afkconvoy's it shows.
 
 ## What the team is for
 

@@ -1,7 +1,8 @@
-//! The help: the top-level `--help` is the manual an agent learns the tool
-//! from — the guide, every command under who runs it, every topic — `-h` the
-//! one-screen listing, and the skill file only points at the former. Each
-//! subcommand's `--help` is the next rung: what its one line leaves out.
+//! The help: the top-level `--help` is the index an agent learns the tool
+//! from — the guide, every command's line under who runs it, every topic's
+//! line — `help all` the whole manual, `-h` the one-screen listing, and the
+//! skill file only points at the index. Each subcommand's `--help` is the next
+//! rung: what its one line leaves out.
 
 use crate::common;
 
@@ -23,10 +24,18 @@ fn asked(args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// The top-level help `flag` asks for.
+/// The top-level help `flag` asks for: `-h` the listing, `--help` the index.
 fn help(flag: &str) -> String {
     asked(&[flag])
 }
+
+/// The whole manual: what `help all` answers.
+fn manual() -> String {
+    asked(&["help", "all"])
+}
+
+/// The most the index may be: what an agent's harness shows whole, with room.
+const INDEX_MOST: usize = 20 * 1024;
 
 /// The lines of `text` from the one starting with `from` up to the one
 /// starting with `to`, both left out.
@@ -41,9 +50,10 @@ fn listed(short: &str) -> BTreeSet<&str> {
     names.filter_map(|line| line.split_whitespace().next()).filter(|name| *name != "help").collect()
 }
 
-/// The guide the manual opens with: everything above its commands.
+/// The guide the index and the manual open with: everything above the tool's
+/// usage, which comes before its commands.
 fn guide(long: &str) -> &str {
-    long.split("\n## Commands\n").next().unwrap()
+    long.split("\n## Usage\n").next().unwrap()
 }
 
 /// The manual's groups of commands, in order, each with its commands: a
@@ -99,7 +109,7 @@ fn topic_file(name: &str) -> String {
 /// Every help text the binary prints, each under where it is written: the
 /// guide, each command's, each topic.
 fn help_texts() -> Vec<(String, String)> {
-    let long = help("--help");
+    let long = manual();
     let mut texts = vec![("crates/cli/src/lib.rs".to_string(), guide(&long).to_string())];
     for command in listed(&help("-h")) {
         let doc = format!("the doc comment of `{command}`, crates/cli/src/lib.rs");
@@ -128,9 +138,81 @@ fn help_prints_a_topic_as_the_file_it_is_and_a_commands_help_as_before() {
     assert_eq!(asked(&["help"]), help("--help"));
 }
 
+/// `text`, a page whose sections start at `##`, as the manual holds it under a
+/// heading of level `under`: each heading outside a fenced block moved down,
+/// so that `##` sits one level below `under`.
+fn nested(text: &str, under: usize) -> String {
+    let mut fenced = false;
+    let mut nested = String::new();
+    for line in text.lines() {
+        let fence = line.trim_start().starts_with("```");
+        if !fenced && !fence && line.starts_with('#') {
+            nested.push_str(&"#".repeat(under - 1));
+        }
+        fenced ^= fence;
+        nested.push_str(line);
+        nested.push('\n');
+    }
+    nested
+}
+
+/// `--help` answers the index, as `help` does: the guide, every command by its
+/// one line under its group, in the manual's order, every topic by the sentence
+/// it opens with, and last `help all`, which answers the whole manual. It holds
+/// no command's text and no topic's, and stays short enough that an agent's
+/// harness shows it whole.
+#[test]
+fn help_answers_the_index_and_help_all_the_whole_manual() {
+    let (index, long, short) = (help("--help"), manual(), help("-h"));
+    assert_eq!(asked(&["help"]), index);
+    assert!(index.len() <= INDEX_MOST, "the index is {} bytes: {INDEX_MOST} at most", index.len());
+    assert!(long.len() > 10 * index.len(), "the whole manual is not behind `help all`");
+    assert!(index.starts_with("# `afkconvoy`\n") && guide(&index) == guide(&long));
+    // Each command by the line `-h` gives it, under its group, as the manual
+    // has them.
+    let mut groups_listed: Vec<(&str, Vec<&str>)> = vec![];
+    for line in between(&index, "## Commands", "## Topics").into_iter().filter(|l| !l.is_empty()) {
+        if let Some(group) = line.strip_prefix("### ") {
+            groups_listed.push((group, vec![]));
+            continue;
+        }
+        let item = line.strip_prefix("- `afkconvoy ").unwrap_or_else(|| panic!("{line}"));
+        let (command, said) = item.split_once("`: ").unwrap_or_else(|| panic!("{line}"));
+        let row = short.lines().find(|row| row.trim_start().starts_with(&format!("{command} ")));
+        assert!(row.is_some_and(|row| row.ends_with(said)), "{command}: {said}");
+        groups_listed.last_mut().expect("a command under a group").1.push(command);
+    }
+    assert_eq!(groups_listed, groups(&long));
+    // Each topic by its first sentence, which its text opens with, then the
+    // whole manual.
+    let (_, listed) = index.split_once("\n## Topics\n").unwrap();
+    let mut names = vec![];
+    for line in listed.lines().filter(|line| !line.is_empty()) {
+        let item = line.strip_prefix("- `afkconvoy help ").unwrap_or_else(|| panic!("{line}"));
+        let (name, said) = item.split_once("`: ").unwrap_or_else(|| panic!("{line}"));
+        names.push(name);
+        if name == "all" {
+            assert!(said.starts_with("The whole manual"), "{said}");
+            continue;
+        }
+        assert!(said.len() > 30 && said.ends_with('.'), "{name} opens with no sentence: {said}");
+        let opening = format!("# `afkconvoy help {name}`\n\n{said}");
+        assert!(asked(&["help", name]).starts_with(&opening), "{name}: {said}");
+    }
+    assert_eq!(names, [topics(&long), vec!["all"]].concat());
+    // What each command and each topic says past its line is not in it.
+    for heading in ["\n#### `afkconvoy ", "\n### `afkconvoy help ", "\n##### When to run it\n"] {
+        assert!(!index.contains(heading) && long.contains(heading), "{heading:?}");
+    }
+    // The guide says what each answers.
+    let said = guide(&index);
+    assert!(said.contains("`afkconvoy --help` answers the index"), "{said}");
+    assert!(said.contains("`afkconvoy help all` answers the whole manual"), "{said}");
+}
+
 #[test]
 fn the_manual_holds_the_topics_there_are_and_no_other() {
-    let long = help("--help");
+    let long = manual();
     let held: BTreeSet<_> = topics(&long).into_iter().collect();
     let mut there = BTreeSet::from(["glossary".to_string()]);
     if let Ok(files) = fs::read_dir(repository().join("crates/cli/src/help/topics")) {
@@ -151,10 +233,12 @@ fn the_manual_holds_the_topics_there_are_and_no_other() {
             assert_eq!(said, printed(name, &file), "{name}");
         }
         let (_, body) = said.split_once("\n\n").unwrap();
+        let body = nested(body, 3);
         assert!(long.contains(&format!("\n### `afkconvoy help {name}`\n\n{body}")), "{name}");
     }
     let said = guide(&long).split("\n## The topics\n").nth(1).unwrap();
-    assert!(said.contains("`afkconvoy help <topic>` prints one: Markdown, as"), "{said}");
+    assert!(said.contains("`afkconvoy help <topic>` when this guide or a command's"), "{said}");
+    assert!(said.contains("it prints that topic, Markdown, as"), "{said}");
 }
 
 #[test]
@@ -166,7 +250,7 @@ fn help_refuses_a_name_that_is_neither_a_command_nor_a_topic() {
     let error = answer["error"].as_str().unwrap();
     assert!(error.contains("`nosuch` is neither a command nor a help topic"), "{error}");
     let named = error.split("The topics: ").nth(1).unwrap().split('.').next().unwrap();
-    let long = help("--help");
+    let long = manual();
     assert_eq!(named.split(", ").collect::<Vec<_>>(), topics(&long));
     assert!(error.contains("The commands: `afkconvoy -h` lists them."), "{error}");
 }
@@ -187,10 +271,11 @@ fn missing(text: &str, commands: &BTreeSet<&str>, topics: &BTreeSet<&str>) -> Ve
 
 #[test]
 fn no_help_text_names_a_command_or_a_topic_that_does_not_exist() {
-    let (short, long) = (help("-h"), help("--help"));
+    let (short, long) = (help("-h"), manual());
     let mut commands = listed(&short);
     commands.insert("help");
-    let topics: BTreeSet<_> = topics(&long).into_iter().collect();
+    // `help all` is no topic, but `help` answers it: the whole manual.
+    let topics: BTreeSet<_> = topics(&long).into_iter().chain(["all"]).collect();
     // What it catches: a command and a topic there is none of, and nothing else.
     let made_up = "Run `afkconvoy plan`, then afkconvoy frobnicate <dir> <dir>; `afkconvoy help \
                    glossary`, afkconvoy <command> --help and afkconvoy --help say more.";
@@ -228,7 +313,7 @@ fn edits(a: &str, b: &str) -> usize {
 fn no_topic_is_named_as_a_command_is_or_within_one_edit_of_one() {
     assert_eq!([edits("rule", "rule"), edits("rules", "rule"), edits("role", "rule")], [0, 1, 1]);
     assert_eq!([edits("ruel", "rule"), edits("roles", "rule"), edits("", "help")], [2, 2, 4]);
-    let (short, long) = (help("-h"), help("--help"));
+    let (short, long) = (help("-h"), manual());
     let mut commands = listed(&short);
     commands.insert("help");
     for topic in topics(&long) {
@@ -318,7 +403,7 @@ fn no_help_text_holds_a_word_the_glossary_says_to_avoid() {
 /// The topics that are files of `help/topics/`, each with its text: every
 /// topic but the glossary, which is the repository's own.
 fn topic_files() -> Vec<(String, String)> {
-    let long = help("--help");
+    let long = manual();
     let names = topics(&long).into_iter().filter(|name| *name != "glossary");
     names.map(|name| (name.to_string(), asked(&["help", name]))).collect()
 }
@@ -477,7 +562,7 @@ fn no_paragraph_of_the_guide_a_command_or_a_topic_is_wrapped() {
 
 #[test]
 fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
-    let long = help("--help");
+    let long = manual();
     let guide = guide(&long);
     for needed in [
         // What it needs.
@@ -594,7 +679,7 @@ fn the_guide_and_check_name_the_topics_and_describe_no_file_of_a_team() {
     let long = help("--help");
     let guide = guide(&long);
     let check = asked(&["check", "--help"]);
-    let check = section(&check, "##### What it reads and writes");
+    let check = section(&check, "## What it reads and writes");
     for (text, from) in [(guide, "--help"), (check.as_str(), "check --help")] {
         for topic in ["team", "workflows", "patrols"] {
             let named = format!("`afkconvoy help {topic}`");
@@ -749,27 +834,27 @@ fn skill_prints_the_skill_file_which_names_no_command_but_the_help() {
 
 #[test]
 fn the_help_says_skill_prints_text_and_its_own_where_to_put_the_file() {
-    let long = help("--help");
+    let long = manual();
     let answers = between(guide(&long), "## What a command answers", "## The commands").join(" ");
     assert!(answers.contains("`skill` the text of a file"), "{answers}");
     assert_eq!(group(&long, "Run by whoever sets an agent up"), ["skill"]);
     let own = asked(&["skill", "--help"]);
     assert!(own.lines().nth(2).unwrap().ends_with("text, not JSON"));
-    let when = section(&own, "##### When to run it");
+    let when = section(&own, "## When to run it");
     let (user, project) = when.split_once("for a project").expect("both places");
     assert!(user.contains("for a user") && user.contains(" > ~/.claude/skills/afkconvoy/SKILL.md"));
     assert!(project.contains(" > .claude/skills/afkconvoy/SKILL.md"), "{project}");
-    assert!(section(&own, "##### What it answers").contains("no JSON object"));
+    assert!(section(&own, "## What it answers").contains("no JSON object"));
 }
 
 /// What a subcommand's `--help` says under each of these headings, in this
 /// order.
 const SECTIONS: [&str; 5] = [
-    "##### When to run it",
-    "##### Who runs it",
-    "##### What it reads and writes",
-    "##### What it answers",
-    "##### What trips you up",
+    "## When to run it",
+    "## Who runs it",
+    "## What it reads and writes",
+    "## What it answers",
+    "## What trips you up",
 ];
 
 /// The body of one section of a subcommand's `--help`.
@@ -802,8 +887,8 @@ fn every_visible_subcommand_has_its_text_and_keeps_its_one_line() {
 
 #[test]
 fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
-    let long = help("--help");
-    let who = |command: &str| section(&asked(&[command, "--help"]), "##### Who runs it");
+    let long = manual();
+    let who = |command: &str| section(&asked(&[command, "--help"]), "## Who runs it");
     let workers = group(&long, "Run by a worker");
     assert_eq!(
         workers.iter().copied().collect::<BTreeSet<_>>(),
@@ -845,14 +930,14 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     // and when to make it by hand; `recovery` only shows one.
     let by_hand = group(&long, "One transition by hand");
     for command in by_hand.iter().filter(|command| **command != "recovery") {
-        let when = section(&asked(&[command, "--help"]), "##### When to run it");
+        let when = section(&asked(&[command, "--help"]), "## When to run it");
         let when = when.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(when.contains("by hand") && when.contains("A tick does this on its own"), "{when}");
         assert!(when.contains("Do it yourself when"), "{command}: {when}");
     }
     // …and the plumbing, that it is seldom the command to reach for.
     for command in ["claim", "release", "heartbeat"] {
-        let when = section(&asked(&[command, "--help"]), "##### When to run it");
+        let when = section(&asked(&[command, "--help"]), "## When to run it");
         assert!(when.trim_start().starts_with("Hardly ever:"), "{command}: {when}");
     }
 }
@@ -874,9 +959,11 @@ fn a_help_names_every_key_its_command_answers_with() {
             assert!(answer.contains_key(*mark), "{args:?} is not the case meant: {answer:?}");
         }
         let help = asked(&[command, "--help"]);
-        // A command that acts says under "What it logs" what its wake adds.
-        let logs = help.split_once("\n##### What it logs\n").map_or("", |(_, logs)| logs);
-        let said = section(&help, "##### What it answers") + logs;
+        // A command that acts says under "What it logs" what its wake adds,
+        // before its usage.
+        let logs = help.split_once("\n## What it logs\n").map_or("", |(_, logs)| logs);
+        let logs = logs.split("\n## Usage\n").next().unwrap();
+        let said = section(&help, "## What it answers") + logs;
         let words: BTreeSet<&str> =
             said.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').collect();
         for key in answer.keys() {

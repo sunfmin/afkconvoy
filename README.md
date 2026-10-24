@@ -36,9 +36,9 @@ npx skills add sunfmin/afkconvoy
 afkconvoy --help
 ```
 
-It is the tool's own manual, in Markdown, written for a human and for an agent alike, and the only place afkconvoy is explained: what it needs, what to run first, every command — `afkconvoy <command> --help` says the rest of one — and the topics, each printed by `afkconvoy help <topic>`. Nothing here repeats it.
+It answers the index of the tool's own manual, in Markdown, written for a human and for an agent alike: the guide — what it needs, what to run first — then every command and every topic by its line. `afkconvoy <command> --help` says the rest of a command, `afkconvoy help <topic>` prints a topic, and `afkconvoy help all` the whole manual, the only place afkconvoy is explained. Nothing here repeats it.
 
-The manual is also a page, for reading in a browser: [`docs/manual.md`](docs/manual.md), generated from it.
+The whole manual is also a page, for reading in a browser: [`docs/manual.md`](docs/manual.md), generated from it.
 
 ## Develop
 
