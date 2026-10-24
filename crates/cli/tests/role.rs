@@ -646,7 +646,8 @@ fn a_worker_that_is_gone_is_started_again_in_its_role() {
 #[test]
 fn the_help_of_run_names_what_a_bound_repo_requires_of_the_launch_command() {
     use afkconvoy_core::role::{FLAGS, Facts, On};
-    let help = include_str!("../src/help/run.txt");
+    let mut run = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let help = String::from_utf8(run.args(["run", "--help"]).output().unwrap().stdout).unwrap();
     let facts = Facts {
         on: On::Stage { issue: 7, flow: "f", stage: "s" },
         role: "r",

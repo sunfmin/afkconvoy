@@ -1024,25 +1024,43 @@ enum Command {
     ///
     /// It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, that says what it found with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets; it takes no slot of the `concurrency`, and is ended after {const:INSPECTION_MINUTES} minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, `run` sleeps 30 seconds at most.
     ///
-    /// It also keeps a log on this host, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under WHAT IT LOGS); `run` does not print those. It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}. A line is written whole as it happens, so killing `run` loses none, and none a command appends while `run` cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
+    /// It also keeps a log on this host, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under "What it logs", and [`afkconvoy help tick-log`](help:tick-log) says what the line holds); `run` does not print those. It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}. A line is written whole as it happens, so killing `run` loses none, and none a command appends while `run` cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
     ///
     /// ##### What it answers
     ///
     /// On stdout, every line it writes to its log, as it is written and in the same order, until it is stopped; then, told to stop with SIGTERM or Ctrl-C, one `stop:` line and {"stopped": true, "ticks", "instance"}, with exit 0.
     ///
-    /// start: run as tester-h1-1a2b3c4d on h1, its workers started with `claude` start: puts this host to sleep once every fleet on it has been idle {const:HOST_IDLE_MINUTES} minutes (`--no-host-sleep` keeps it awake)
-    ///
-    /// - start: took #4, #7 stamped with this host: only when a start took or lost claims
-    ///
-    /// start: took #4, the run of the patrol sweep stamped with this host start: took #4 stamped with this host · swept 1 dead heartbeat(s) that held nothing stop: holding no claim, it took its heartbeat with it stop: it left its heartbeat with the claims it holds: the next start on this host takes them tick 1: started (start) tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s tick 2: started (timer) woken by park #46 during tick 2: tick 3 follows tick 2: nothing to do · holding 2/3 · frontier 4 · next in 60s tick 3: advanced #12 → review · dispatched #12 · holding 2/3 · frontier 0 · next in 90s tick 4: advanced #12 → land · holding 1/3 · frontier 0 · next now tick 5: dispatched #12 · holding 2/3 · frontier 0 · next in 90s tick 6: escalated #15 (workup: consult let it through) · holding 1/3 · frontier 0 · next now tick 7: dispatched #71 · skipped #68 (blocked by #71) · holding 2/3 · frontier 0 · next in 90s
+    /// ```
+    /// start: run as tester-h1-1a2b3c4d on h1, its workers started with `claude`
+    /// start: puts this host to sleep once every fleet on it has been idle {const:HOST_IDLE_MINUTES} minutes (`--no-host-sleep` keeps it awake)
+    /// start: took #4, #7 stamped with this host        only when a start took or lost claims
+    /// start: took #4, the run of the patrol sweep stamped with this host
+    /// start: took #4 stamped with this host · swept 1 dead heartbeat(s) that held nothing
+    /// stop: holding no claim, it took its heartbeat with it
+    /// stop: it left its heartbeat with the claims it holds: the next start on this host takes them
+    /// tick 1: started (start)
+    /// tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s
+    /// tick 2: started (timer)
+    /// woken by park #46 during tick 2: tick 3 follows
+    /// tick 2: nothing to do · holding 2/3 · frontier 4 · next in 60s
+    /// tick 3: advanced #12 → review · dispatched #12 · holding 2/3 · frontier 0 · next in 90s
+    /// tick 4: advanced #12 → land · holding 1/3 · frontier 0 · next now
+    /// tick 5: dispatched #12 · holding 2/3 · frontier 0 · next in 90s
+    /// tick 6: escalated #15 (workup: consult let it through) · holding 1/3 · frontier 0 · next now
+    /// tick 7: dispatched #71 · skipped #68 (blocked by #71) · holding 2/3 · frontier 0 · next in 90s
+    /// ```
     ///
     /// The second `start:` line is there unless it was told `--no-host-sleep`. Every tick has a line as it starts, before it does anything, naming why: `timer` (its sleep ran out), `woken` (a wake ended the sleep, or was heard during the tick before: `woken by` the command that sent it, and what that acted on, where it named them), `start` (the run's first) or `follow-up` (the tick before left a worker to start, or could not reach GitHub, so it runs with no sleep). A wake heard during a tick is a line as it is heard — the first of each tick — and the next tick starts as that one ends: ticks never overlap. A check for host sleep is a line, and so is the host waking from a sleep, as `run` notices it — a rest that took a minute past its length — and being told to stop:
     ///
+    /// ```
     /// tick 4: started (woken by verdict #121)
-    ///
-    /// - tick 4: started (woken): a wake that named nothing
-    ///
-    /// tick 5: started (follow-up) host sleep: every fleet on this host has been idle long enough, and ticked once more: put the host to sleep host sleep: kept awake: the keyboard or mouse was used 40s ago host sleep: kept awake: the host could not be put to sleep: <why> host woke: after 3600s asleep
+    /// tick 4: started (woken)                          a wake that named nothing
+    /// tick 5: started (follow-up)
+    /// host sleep: every fleet on this host has been idle long enough, and ticked once more: put the host to sleep
+    /// host sleep: kept awake: the keyboard or mouse was used 40s ago
+    /// host sleep: kept awake: the host could not be put to sleep: <why>
+    /// host woke: after 3600s asleep
+    /// ```
     ///
     /// A tick's line names what it did — lost, escalated, released, left, settled, ended, advanced, unlocked, reclaimed, dispatched, skipped (a frontier issue found blocked just before its claim, with what blocks it), nudged, waiting on its own background work (with since when: `#7 (since 2026-10-20 23:03 UTC, 12m ago)`), continued, restarted, tended the train, abandoned the train — then, when admission held back a worker it would have started, which threshold did (`admission holds back new workers: the load 31.20 is past 28.00, 200% of its 14 cores`), then the claims held out of the concurrency, and the frontier left. The claims a fleet lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left alone`), and so are those whose worker declared a verdict not acted on yet (`holding 3/3 · 1 declared`), as are those a start took past the bound (`holding 3/3 · 1 past the bound`). A step that failed is in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as `tick N: FAILED: <why>`; the loop goes on either way. One cause that stopped several steps is said once: `FAILED 7 steps: <why>`.
     ///
@@ -1052,7 +1070,13 @@ enum Command {
     ///
     /// A change made on GitHub, or by another host's fleet, shows on this host at the next tick, and in no other way: that tick reads GitHub and the remote, as every tick does. Nothing reaches a `run` sooner — no webhook, no port — and `afkconvoy wake` makes that next tick start now. Where the tick acts on such a change, its line says what changed since the tick before, and who changed it where that is known:
     ///
-    /// tick 8: lost #46 to instance beta-1a2b3c4d on host h2 (takeover) · holding 1/3 · frontier 0 · next in 90s tick 9: dispatched #45 (labelled ready-for-agent since tick 8) · holding 2/3 · frontier 0 · next in 90s tick 9: released #231 (the issue was deleted) · holding 1/3 · frontier 0 · next in 90s tick 9: left #97 (closed by @alice) · holding 1/3 · frontier 0 · next now tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
+    /// ```
+    /// tick 8: lost #46 to instance beta-1a2b3c4d on host h2 (takeover) · holding 1/3 · frontier 0 · next in 90s
+    /// tick 9: dispatched #45 (labelled ready-for-agent since tick 8) · holding 2/3 · frontier 0 · next in 90s
+    /// tick 9: released #231 (the issue was deleted) · holding 1/3 · frontier 0 · next in 90s
+    /// tick 9: left #97 (closed by @alice) · holding 1/3 · frontier 0 · next now
+    /// tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
+    /// ```
     ///
     /// `lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, or `(the issue is gone from this repo)`, transferred. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the `run`'s first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
     ///
@@ -1062,7 +1086,9 @@ enum Command {
     ///
     /// With `--panel <port>` its first line is the panel's address, and it serves the panel there until it is killed: the fleet as a web page — every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train — brought up to date in the browser after every tick, by itself. `afkconvoy panel --help` says what the page shows.
     ///
+    /// ```
     /// panel: http://127.0.0.1:7070/
+    /// ```
     ///
     /// Started without it, it serves the same page once `afkconvoy panel --open` asks it to, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then prints that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
     ///
@@ -1976,7 +2002,9 @@ enum Command {
     ///
     /// For work you know to be heavy: a build, a test suite or a benchmark that takes most of the host's cores, memory or disk for minutes. You know it from an inspection that typed at you that the work really is that heavy, or from your role's rules that name the command. Put `afkconvoy exclusive --` in front of that command, every time you run it from then on:
     ///
+    /// ```
     /// afkconvoy exclusive -- cargo test --workspace
+    /// ```
     ///
     /// Not for everyday commands — `git`, a single test, a quick build: the queue makes each one wait for every heavy one before it, of every fleet on this host.
     ///
@@ -2339,7 +2367,9 @@ enum Command {
     ///
     /// To move work onto another harness: a harness's login expired, its provider turned access off, or another agent should take the work over. One line does it all:
     ///
+    /// ```
     /// afkconvoy switch --instance <id> --harness codex --all
+    /// ```
     ///
     /// It works on a worker that is busy, idle at its prompt, blocked from receiving input, or already gone. It needs no nudge first, no grace period and no PR.
     ///
@@ -3582,22 +3612,28 @@ mod tests {
         &["help"],
     ];
 
+    /// The manual is whole: every command has its text and its group, and
+    /// every placeholder and every link to a topic names one there is.
+    #[test]
+    fn the_manual_is_whole() {
+        agent_help::check(&manual()).unwrap();
+    }
+
     /// The commands that act are those whose `--help` says what they log, and
-    /// none else: a test of the list `--help` gives, not of `ACTS` alone.
+    /// none else: a test of the text `--help` gives, not of `ACTS` alone.
     #[test]
     fn a_command_logs_and_wakes_where_its_help_says_so_and_only_there() {
-        let mut cli = cli();
-        cli.build();
+        let manual = manual();
         let mut listed = vec![];
-        for command in cli.get_subcommands_mut() {
+        for command in cli().get_subcommands() {
             let name = command.get_name().to_string();
-            let help = command.render_long_help().to_string();
+            let help = manual.command_help(&[&name]).unwrap();
             let line = LINES.iter().find(|line| line[0] == name);
             let line = line.unwrap_or_else(|| panic!("no command line of `{name}` here"));
             let parsed =
                 Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
             let acts = parsed.unwrap_or_else(|e| panic!("{name}: {e}")).command.acting().is_some();
-            assert_eq!(acts, help.contains("\nWHAT IT LOGS\n"), "{name}");
+            assert_eq!(acts, help.contains("\n##### What it logs\n"), "{name}");
             assert_eq!(acts, ACTS.contains(&name.as_str()), "{name}");
             listed.push(name);
         }

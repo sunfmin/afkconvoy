@@ -101,14 +101,14 @@ fn topic_file(name: &str) -> String {
     }
 }
 
-/// Every help text the binary prints, each under the file it is written in:
-/// the guide, each command's, each topic.
+/// Every help text the binary prints, each under where it is written: the
+/// guide, each command's, each topic.
 fn help_texts() -> Vec<(String, String)> {
     let long = help("--help");
     let mut texts = vec![("crates/cli/src/lib.rs".to_string(), guide(&long).to_string())];
     for command in listed(&help("-h")) {
-        let file = format!("crates/cli/src/help/{command}.txt");
-        texts.push((file, asked(&[command, "--help"])));
+        let doc = format!("the doc comment of `{command}`, crates/cli/src/lib.rs");
+        texts.push((doc, asked(&[command, "--help"])));
     }
     for topic in topics(&long) {
         texts.push((topic_file(topic), asked(&["help", topic])));
@@ -462,10 +462,10 @@ fn a_topic_is_short_and_refers_to_nothing_outside_the_binary() {
     }
 }
 
-/// Markdown as written: the guide and every topic write each paragraph on
-/// one line, and nothing wraps or fills one.
+/// Markdown as written: the guide, every command's text and every topic
+/// write each paragraph on one line, and nothing wraps or fills one.
 #[test]
-fn no_paragraph_of_the_guide_or_a_topic_is_wrapped() {
+fn no_paragraph_of_the_guide_a_command_or_a_topic_is_wrapped() {
     // What it catches: a paragraph on two lines, and nothing else.
     let made_up = "A paragraph\nwrapped.\n\n- an item\n  under it\n1. a step\n\n```\na\nb\n```\n";
     assert_eq!(wrapped(made_up), ["wrapped."]);
@@ -473,6 +473,10 @@ fn no_paragraph_of_the_guide_or_a_topic_is_wrapped() {
     assert!(wrapped(guide(&long)).is_empty(), "{:?}", wrapped(guide(&long)));
     for (topic, text) in topic_files() {
         assert!(wrapped(&text).is_empty(), "{topic} is wrapped at: {:?}", wrapped(&text));
+    }
+    for command in listed(&help("-h")) {
+        let text = asked(&[command, "--help"]);
+        assert!(wrapped(&text).is_empty(), "{command} is wrapped at: {:?}", wrapped(&text));
     }
 }
 
@@ -610,7 +614,7 @@ fn the_guide_and_check_name_the_topics_and_describe_no_file_of_a_team() {
     let long = help("--help");
     let guide = guide(&long);
     let check = asked(&["check", "--help"]);
-    let check = section(&check, "WHAT IT READS AND WRITES");
+    let check = section(&check, "##### What it reads and writes");
     for (text, from) in [(guide, "--help"), (check.as_str(), "check --help")] {
         for topic in ["team", "workflows", "patrols"] {
             let named = format!("`afkconvoy help {topic}`");
@@ -770,31 +774,32 @@ fn the_help_says_skill_prints_text_and_its_own_where_to_put_the_file() {
     assert!(answers.contains("`skill` the text of a file"), "{answers}");
     assert_eq!(group(&long, "Run by whoever sets an agent up"), ["skill"]);
     let own = asked(&["skill", "--help"]);
-    assert!(own.lines().next().unwrap().ends_with("text, not JSON"));
-    let when = section(&own, "WHEN TO RUN IT");
+    assert!(own.lines().nth(2).unwrap().ends_with("text, not JSON"));
+    let when = section(&own, "##### When to run it");
     let (user, project) = when.split_once("for a project").expect("both places");
     assert!(user.contains("for a user") && user.contains(" > ~/.claude/skills/afkconvoy/SKILL.md"));
     assert!(project.contains(" > .claude/skills/afkconvoy/SKILL.md"), "{project}");
-    assert!(section(&own, "WHAT IT ANSWERS").contains("no JSON object"));
+    assert!(section(&own, "##### What it answers").contains("no JSON object"));
 }
 
-/// What a subcommand's `--help` says under each of these, in this order.
+/// What a subcommand's `--help` says under each of these headings, in this
+/// order.
 const SECTIONS: [&str; 5] = [
-    "WHEN TO RUN IT",
-    "WHO RUNS IT",
-    "WHAT IT READS AND WRITES",
-    "WHAT IT ANSWERS",
-    "WHAT TRIPS YOU UP",
+    "##### When to run it",
+    "##### Who runs it",
+    "##### What it reads and writes",
+    "##### What it answers",
+    "##### What trips you up",
 ];
 
-/// The body of one section of a subcommand's long help.
+/// The body of one section of a subcommand's `--help`.
 fn section(long: &str, title: &str) -> String {
     let next = SECTIONS.iter().position(|section| *section == title).unwrap() + 1;
     between(long, title, SECTIONS.get(next).copied().unwrap_or("\0")).join("\n")
 }
 
 #[test]
-fn every_visible_subcommand_has_a_long_help_and_keeps_its_one_line() {
+fn every_visible_subcommand_has_its_text_and_keeps_its_one_line() {
     let top = help("-h");
     for command in listed(&top) {
         let (short, long) = (asked(&[command, "-h"]), asked(&[command, "--help"]));
@@ -805,9 +810,11 @@ fn every_visible_subcommand_has_a_long_help_and_keeps_its_one_line() {
             assert!(section(&long, title).trim().len() > 20, "{command}: {title} says nothing");
             assert!(!short.contains(title), "`{command} -h` carries the long help");
         }
-        // The one line is the same on both, and the one the listing gives.
+        // The one line is the same on both, under the command's heading on
+        // `--help`, and the one the listing gives.
         let line = short.lines().next().unwrap();
-        assert_eq!(long.lines().next(), Some(line));
+        let heading = format!("# `afkconvoy {command}`");
+        assert_eq!(long.lines().take(3).collect::<Vec<_>>(), [heading.as_str(), "", line]);
         let row = top.lines().find(|row| row.trim_start().starts_with(&format!("{command} ")));
         assert!(row.unwrap().ends_with(line), "{command}: {line}");
     }
@@ -816,7 +823,7 @@ fn every_visible_subcommand_has_a_long_help_and_keeps_its_one_line() {
 #[test]
 fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let long = help("--help");
-    let who = |command: &str| section(&asked(&[command, "--help"]), "WHO RUNS IT");
+    let who = |command: &str| section(&asked(&[command, "--help"]), "##### Who runs it");
     let workers = group(&long, "Run by a worker");
     assert_eq!(
         workers.iter().copied().collect::<BTreeSet<_>>(),
@@ -858,14 +865,14 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     // and when to make it by hand; `recovery` only shows one.
     let by_hand = group(&long, "One transition by hand");
     for command in by_hand.iter().filter(|command| **command != "recovery") {
-        let when = section(&asked(&[command, "--help"]), "WHEN TO RUN IT");
+        let when = section(&asked(&[command, "--help"]), "##### When to run it");
         let when = when.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(when.contains("by hand") && when.contains("A tick does this on its own"), "{when}");
         assert!(when.contains("Do it yourself when"), "{command}: {when}");
     }
     // …and the plumbing, that it is seldom the command to reach for.
     for command in ["claim", "release", "heartbeat"] {
-        let when = section(&asked(&[command, "--help"]), "WHEN TO RUN IT");
+        let when = section(&asked(&[command, "--help"]), "##### When to run it");
         assert!(when.trim_start().starts_with("Hardly ever:"), "{command}: {when}");
     }
 }
@@ -887,9 +894,9 @@ fn a_help_names_every_key_its_command_answers_with() {
             assert!(answer.contains_key(*mark), "{args:?} is not the case meant: {answer:?}");
         }
         let help = asked(&[command, "--help"]);
-        // A command that acts says under WHAT IT LOGS what its wake adds.
-        let logs = help.split_once("\nWHAT IT LOGS\n").map_or("", |(_, logs)| logs);
-        let said = section(&help, "WHAT IT ANSWERS") + logs;
+        // A command that acts says under "What it logs" what its wake adds.
+        let logs = help.split_once("\n##### What it logs\n").map_or("", |(_, logs)| logs);
+        let said = section(&help, "##### What it answers") + logs;
         let words: BTreeSet<&str> =
             said.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').collect();
         for key in answer.keys() {
@@ -941,17 +948,17 @@ fn a_help_names_every_key_its_command_answers_with() {
 #[test]
 fn the_help_of_tick_says_for_each_kind_of_end_what_becomes_of_the_terminal_and_the_worktree() {
     let tick = asked(&["tick", "--help"]);
-    let ends = between(&tick, "  - The step that ends a piece of work", "  - An `escalate`");
-    let said = ends.join("\n");
+    let from = tick.find("\n- The step that ends a piece of work").unwrap();
+    let said = &tick[from..from + tick[from..].find("\n- An `escalate`").unwrap()];
     for (end, terminal, worktree) in [
-        ("end_patrol  ", "terminal is closed", "checkout removed"),
-        ("end_proposal  ", "terminal is closed", "checkout removed"),
-        ("advance, to a  ", "terminal is closed", "worktree kept"),
-        ("advance, to `done`  ", "terminal is closed", "worktree removed"),
-        ("an escalation  ", "terminal is closed", "worktree"),
+        ("- `end_patrol`: ", "terminal is closed", "checkout removed"),
+        ("- `end_proposal`: ", "terminal is closed", "checkout removed"),
+        ("- advance, to a stage or a consult: ", "terminal is closed", "worktree kept"),
+        ("- advance, to `done`: ", "terminal is closed", "worktree removed"),
+        ("- an escalation: ", "terminal is closed", "worktree"),
     ] {
         let from = said.find(end).unwrap_or_else(|| panic!("{end:?} in {said}"));
-        let row: String = said[from..].lines().take(2).collect();
+        let row = said[from..].lines().next().unwrap();
         assert!(row.contains(terminal) && row.contains(worktree), "{end:?}: {row}");
     }
     assert!(said.contains("A run that failed keeps its checkout"), "{said}");
@@ -988,7 +995,7 @@ fn the_help_of_doctor_says_what_moved_means() {
     let moved = said.split("\n\n").find(|part| part.trim_start().starts_with("Moved: ")).unwrap();
     for part in [
         "the role's directory holds something else at the head of its repo than at the",
-        "A new commit is\n  not it",
+        "A new commit is not it",
         "without what a worker is not given of it: the directories of its roles",
         "a different commit is all there is to go by",
     ] {
@@ -1009,7 +1016,7 @@ fn the_help_of_check_and_of_doctor_describe_the_key_that_names_a_topic() {
     let doctor = asked(&["doctor", "--help"]);
     for part in [
         "evidence, fix, see}",
-        "see        the command that prints the help topic explaining it",
+        "- `see`: the command that prints the help topic explaining it",
         "`afkconvoy help humans` where what it reports waits for",
     ] {
         assert!(doctor.contains(part), "{part:?} is not in `doctor --help`");
@@ -1052,7 +1059,7 @@ fn the_help_of_land_says_what_the_trains_worktree_holds_in_each_of_its_three_num
         ("fresh", "after the first gate run since it was cut"),
         ("source", "the files git tracks, for reference only"),
     ] {
-        let row = land.lines().find(|line| line.trim_start().starts_with(&format!("{key} ")));
+        let row = land.lines().find(|line| line.starts_with(&format!("- `{key}`: ")));
         let row = row.unwrap_or_else(|| panic!("{key} in {land}"));
         assert!(row.contains(says), "{key}: {row}");
     }
