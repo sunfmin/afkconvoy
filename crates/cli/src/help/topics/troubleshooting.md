@@ -9,7 +9,7 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 - `cannot be asked about this checkout`: orca runs but did not say which repos it knows; `evidence` says why. Run `fix`.
 - `does not know this checkout`: orca was never given the checkout worktrees are cut from. Run `fix`, once.
 - `cannot start a worker`: The first word of a worker launch command resolves to nothing in a login shell, as an alias of your own shell's may. Name one that does: `afkconvoy run --help`.
-- `cannot start a worker in its role`: In a bound repo the worker launch command must end in its harness, taking flags: the fleet adds what puts the worker in its role. `afkconvoy run --help`.
+- `cannot start a worker in its role`: In a bound repo the worker launch command must end in its harness, taking flags: the fleet adds what puts the worker in its role. `afkconvoy help worker-launch`.
 - ``no `afkconvoy run` is alive``: The `run` of this host died holding claims. Start it here: it takes them back.
 - `is broken`: This checkout's fleet instance panicked, its loop ended in an error, or its startup probe no longer passes; every other goes on, and the host runner starts it again after a backoff, when `evidence` says. Put right what `what` says, then run `fix`: a `run` starts it at once.
 - `failed in each of the last`: One step fails tick after tick; `evidence` is its error, naming what refused. `fix`.
