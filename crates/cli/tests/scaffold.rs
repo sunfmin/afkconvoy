@@ -434,18 +434,22 @@ fn an_example_is_a_team_whole_and_its_name_is_one_there_is() {
     assert!(world.gh_calls().is_empty());
 }
 
-/// The files the topic names: the words of its lines four spaces in, each
-/// under the directory named alone on a line two spaces in above it, if one
-/// is since the last title.
+/// The files the topic names: the head of each item of a list, in
+/// backticks before its `:` — or, where that head is a directory alone, each
+/// file in backticks after it, under that directory.
 fn named_in(topic: &str) -> Vec<String> {
-    let (mut named, mut under) = (Vec::new(), "");
-    for line in topic.lines() {
-        let words = line.trim_start();
-        match line.len() - words.len() {
-            0 => under = "",
-            2 if words.ends_with('/') && !words.contains(' ') => under = words,
-            4 => named.extend(words.split_whitespace().map(|file| format!("{under}{file}"))),
-            _ => {}
+    let spans = |text: &str| -> Vec<String> {
+        text.split('`').skip(1).step_by(2).map(str::to_string).collect()
+    };
+    let mut named = Vec::new();
+    for item in topic.lines().filter_map(|line| line.strip_prefix("- `")) {
+        let Some((head, rest)) = item.split_once("`: ") else { continue };
+        let head = spans(&format!("`{head}`"));
+        match head.as_slice() {
+            [dir] if dir.ends_with('/') => {
+                named.extend(spans(rest).into_iter().map(|file| format!("{dir}{file}")));
+            }
+            files => named.extend(files.iter().cloned()),
         }
     }
     named
