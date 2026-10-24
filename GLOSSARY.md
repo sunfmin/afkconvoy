@@ -23,7 +23,7 @@ A fleet instance whose loop panicked or ended in an error, or that the host runn
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep, the limits past which a worker is hot, the shares admission holds back at, the panel's port — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the panel's port — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -63,8 +63,12 @@ A fleet instance with nothing to do now: it holds no claim — on an issue, a pa
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
-A fleet instance putting its host to sleep: every fleet instance on the host has been idle for ten minutes, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and the host settings do not keep it awake. A host woken stays awake until some instance on it has worked again.
+A fleet instance putting its host to sleep: the host's local time is within its sleep hours, every fleet instance on the host has been idle for ten minutes, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and the host settings do not keep it awake. A host woken stays awake until some instance on it has worked again. The fleet never wakes a host: one put to sleep within its sleep hours sleeps on past their end.
 _Avoid_: sleep (the wait between ticks), hibernate, suspend, shutdown
+
+**Sleep hours**:
+The hours of a host's local time its fleets may put it to sleep in: from 00:00 to 06:00 unless its host settings say others (`--host-sleep-hours 22:00-06:00`), the start included and the end not, past midnight where the end comes first, and any hour with `00:00-24:00`. A check for host sleep outside them keeps the host awake, says so, and is followed by the next as they start.
+_Avoid_: quiet hours, night mode, schedule
 
 **Base branch**:
 The one branch a repo's fleet work is cut from and lands on.

@@ -12,7 +12,7 @@ A fleet instance is still one repo's fleet — its own id, claims, heartbeat, ti
 
 - `run [CHECKOUT]` — the current directory where none is named — adds the checkout's root to the checkout list, starts the host runner in the background where none runs, waits for that checkout's startup probe and first tick, answers one JSON object, and exits. A checkout the probe refuses is refused there, to whoever ran it. `stop [CHECKOUT]` takes it off the list, and its fleet instance stops as ADR-0003 says; `stop --all`, or SIGTERM, stops the host runner and keeps the list.
 - Every command about one repo takes its checkout the same way: positional where the command has no positional argument of its own, `-C <dir>` where it has. A subdirectory names its checkout; a worker's worktree is refused; a second checkout of a repo already on the list is refused, naming the first.
-- The checkout list and the **host settings** — host sleep, the hot-worker limits, admission's shares, the panel's port — are one file on the host. The host runner converges on it: started again — after an upgrade, a crash, a reboot — it starts every checkout on it. A `run` that names a host setting changes it for the host.
+- The checkout list and the **host settings** — host sleep and its sleep hours, the hot-worker limits, admission's shares, the panel's port — are one file on the host. The host runner converges on it: started again — after an upgrade, a crash, a reboot — it starts every checkout on it. A `run` that names a host setting changes it for the host.
 - The host runner starts with the environment of a fresh login shell, never with that of the session that started it.
 - A newer afkconvoy that finds an older host runner has it exit and starts itself on the same list.
 - A fleet instance whose tick panics, whose loop ends in an error, or whose probe no longer passes as the host runner starts it again harms no other: it stays on the list, shown as broken with why, and is tried again after a backoff. A tick that fails is a line of its tick log, as before, and the loop goes on.
@@ -34,6 +34,6 @@ A fleet instance is still one repo's fleet — its own id, claims, heartbeat, ti
 ## Consequences
 
 - Supersedes, of ADR-0002, that `run` is itself the long-running process: `run` adds a checkout and returns, and the host runner is the process that ticks. A wake is still a signal, sent through the host runner's socket.
-- Supersedes, of ADR-0016, the socket per instance and the two-second and two-minute answers: whether every fleet instance is idle is known inside the process. The conditions for a host sleep stand.
+- Supersedes, of ADR-0016, the socket per instance and the two-second and two-minute answers: whether every fleet instance is idle is known inside the process. The conditions for a host sleep stand, the sleep hours among them: a host is put to sleep only within the hours of its local time its host settings say, 00:00 to 06:00 unless they say others.
 - The release step of restarting every `run` becomes running `afkconvoy run` once, in any checkout.
 - A personal control session that reads every repo needs nothing of afkconvoy but this: the checkout list, and `doctor` for every checkout, as JSON.
