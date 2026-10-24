@@ -18,15 +18,12 @@ use crate::{host_settings, kit, probe};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
-/// again starts it the same way; the port its panel is served on from this
-/// start; and the knobs that exist for the tests. What it named of the host
-/// is the host settings' (`host_settings`), which the instance reads as it
-/// goes.
+/// again starts it the same way; and the knobs that exist for the tests.
+/// What it named of the host is the host settings' (`host_settings`), which
+/// the instance reads as it goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Start {
     pub named: Named,
-    /// `--panel`: served from this start; `panel --open` opens it later.
-    pub panel: Option<u16>,
     pub knobs: Knobs,
 }
 
@@ -87,7 +84,7 @@ pub struct Knobs {
 /// to stop or has made `start.knobs.ticks` → what its loop answers.
 /// Everything before its first tick may refuse it: host settings that
 /// cannot be read, or that have a host put to sleep that cannot be, the host
-/// kit, the startup probe, the panel's port. Its startup probe's warnings are
+/// kit, the startup probe. Its startup probe's warnings are
 /// said as `Line::Warning`.
 pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     if !host_settings::of_host()?.no_host_sleep && !cfg!(target_os = "macos") {
@@ -123,13 +120,14 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     for warning in &warnings {
         (holder.echo)(Line::Warning(warning));
     }
-    tick::run(checkout, &mut me, &agent, &pacing, start.panel, clock, holder)
+    tick::run(checkout, &mut me, &agent, &pacing, clock, holder)
 }
 
 /// `run --foreground`: holds it in this process, printing every line as `run`
 /// printed it, until SIGTERM or SIGINT. The checkout list's file and any host
-/// runner are left alone: what it names of the host settings, `settings`,
-/// holds in this process alone, laid over the host's.
+/// runner are left alone, and no panel is served: the host runner serves it.
+/// What it names of the host settings, `settings`, holds in this process
+/// alone, laid over the host's.
 pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
     host_settings::lay_for_this_process(settings);
     let stop = Stop::listen();
@@ -138,7 +136,7 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
         Line::Said(text) => println!("{text}"),
         Line::Warning(warning) => probe::announce(&[warning.to_string()]),
     });
-    hold(checkout, start, Holder { stop: stop.instance(), echo })
+    hold(checkout, start, Holder { stop: stop.instance(), echo, show: None })
 }
 
 #[cfg(test)]

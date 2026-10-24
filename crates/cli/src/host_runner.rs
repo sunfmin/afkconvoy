@@ -11,9 +11,11 @@
 //! is its log, `host-runner.log`: one line for each thing that happened to
 //! it — its start and its stop, the older host runner it replaced, a
 //! checkout added, refused or removed, a fleet instance started, broken, back
-//! or ended, a panic — and the lines a fleet instance says that no tick log
-//! holds. A fleet instance that breaks harms no other: its thread holds it
-//! again after a backoff, and it stays on the list.
+//! or ended, a panic, where it serves the panel — and the lines a fleet
+//! instance says that no tick log holds. A fleet instance that breaks harms
+//! no other: its thread holds it again after a backoff, and it stays on the
+//! list. It serves the panel from its start (`host_panel`), on the panel's
+//! port of the host settings, or on any free port where that is taken.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -36,11 +38,13 @@ use serde_json::{Value, json};
 use crate::checkout_list::{self, Entry, List};
 use crate::copies::cache;
 use crate::git::Repo;
+use crate::host_panel::HostPanel;
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
+use crate::panel::Broken;
 use crate::runner_socket::{self, Reached, Request};
 use crate::stop::Stop;
-use crate::tick::{Echo, Holder, Line};
+use crate::tick::{Echo, Holder, Line, Show};
 use crate::{VERSION, host_settings, kit, launch};
 
 /// The lock whose holder is the host runner, in the cache directory. It
@@ -84,6 +88,8 @@ struct Runner {
     stop: Stop,
     /// Every fleet instance this host runner holds, by checkout root.
     held: Mutex<BTreeMap<PathBuf, Held>>,
+    /// The page it serves.
+    panel: HostPanel,
 }
 
 /// One checkout's fleet instance, from its start until its thread ends.
@@ -204,10 +210,12 @@ pub fn log_path() -> Result<PathBuf> {
 }
 
 /// The hidden `afkconvoy host-runner`, as `run` starts it: takes the host,
-/// starts every checkout on its list, and answers on its socket, until
+/// serves the panel, starts every checkout on its list, and answers on its
+/// socket, until
 /// SIGTERM or SIGINT, `stop --all`, or until its lock file is gone. Then it
 /// lets every fleet instance finish the step it is in and keep its `stop`
-/// line, answers whoever asked it, and ends, leaving the list as it is →
+/// line, answers whoever asked it, lets the panel's port go, and ends,
+/// leaving the list as it is →
 /// {"stopped", "pid", "checkouts"}; or, where another host runner held the
 /// host all the while, {"started": false}.
 pub fn serve() -> Result<Value> {
@@ -248,9 +256,24 @@ pub fn serve() -> Result<Value> {
             before["pid"]
         ));
     }
-    let runner = Arc::new(Runner { list, log, stop: stop.clone(), held: Mutex::default() });
+    let panel = HostPanel::default();
+    // Read once: a port the host settings change to holds from the next start.
+    let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
+    let address = match panel.open(port) {
+        Ok((address, taken)) => {
+            let taken = if taken { format!(", port {port} being taken") } else { String::new() };
+            log.say(&format!("panel: {address}{taken}"));
+            Some(address)
+        }
+        Err(error) => {
+            log.say(&format!("panel: not served: {error:#}"));
+            None
+        }
+    };
+    let held = Mutex::default();
+    let runner = Arc::new(Runner { list, log, stop: stop.clone(), held, panel });
     runner.start_listed(listed.checkouts);
-    let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG)});
+    let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG), "panel": address});
     let answerer = Arc::clone(&runner);
     let answering = runner_socket::serve(listener, about, move |request| answerer.answer(request));
 
@@ -276,6 +299,8 @@ pub fn serve() -> Result<Value> {
     // `stop --all` among them, which is answered once they all stopped.
     answering.settled(ANSWERED_WITHIN);
     let kept = runner.list.read().map_or(0, |listed| listed.checkouts.len());
+    // Before the host is let go: the host runner that takes it next serves on the port.
+    runner.panel.close();
     runner.log.say(&format!("host runner stopped: {kept} checkouts kept on the list"));
     drop(lock);
     Ok(json!({"stopped": true, "pid": pid, "checkouts": kept}))
@@ -481,6 +506,7 @@ impl Runner {
         let stop = self.stop.instance();
         let holding = Held { repo: key.clone(), seen: Arc::clone(&seen), stop: stop.clone() };
         held.insert(root.clone(), holding);
+        self.panel.starting(&root);
         let (runner, holding) = (Arc::clone(self), Arc::clone(&seen));
         std::thread::spawn(move || runner.hold(&root, &key, start, &holding, stop));
         seen
@@ -514,8 +540,12 @@ impl Runner {
                 stop: stop.clone(),
             });
             let echo: Echo = Arc::new(move |line| heard.line(line));
+            let show: Show = {
+                let (runner, root) = (Arc::clone(&self), root.to_path_buf());
+                Arc::new(move |part| runner.panel.shown(&root, part))
+            };
             let held = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let holder = Holder { stop: stop.clone(), echo };
+                let holder = Holder { stop: stop.clone(), echo, show: Some(show) };
                 Repo::at(root).and_then(|repo| instance::hold(&repo, &start, holder))
             }));
             let held = held.unwrap_or_else(|panic| {
@@ -541,6 +571,7 @@ impl Runner {
             let said = log::broken(&why, since, next, now);
             let said = format!("fleet instance broken: {}: {said}", root.display());
             let host = start.named.host.clone().unwrap_or_else(crate::this_host);
+            self.panel.broke(root, Broken { why: why.clone(), since, next: Some(next) });
             let what = What::Broken { why, since, next };
             let entry = log::Entry { at: now, instance: broke_as.clone(), host, what };
             self.said_of(root, &entry, &said);
@@ -600,6 +631,7 @@ impl Runner {
     fn let_go(&self, root: &Path, seen: &Seen, start: &Start, broke_as: String) {
         let mut holding = self.holding();
         holding.remove(root);
+        self.panel.ended(root);
         let mut stage = seen.stage();
         let why = if stage.removed {
             "it was broken, and `afkconvoy stop` took its checkout off the list"
@@ -658,6 +690,7 @@ impl Runner {
             return Some(why);
         }
         let gone = holding.remove(root)?;
+        self.panel.ended(root);
         let mut stage = gone.seen.stage();
         stage.ended = true;
         let at = root.display();
@@ -1011,6 +1044,37 @@ pub fn run(
         eprintln!("warning: {warning}");
     }
     Ok(answer)
+}
+
+/// `afkconvoy panel --open`: asks this host's runner where it serves the
+/// panel → {panel, host_runner}. Nothing is started, and nothing changes.
+pub fn panel() -> Result<Value> {
+    let log = log_path()?;
+    let about = match runner_socket::ask(&Request::Version, SAID_WITHIN)? {
+        Reached::Answer(said) => said["host_runner"].clone(),
+        Reached::Nobody | Reached::Closed => bail!(
+            "no host runner runs on this host, so no panel is served: `afkconvoy run` starts one, \
+             which serves it, and `afkconvoy panel` prints it once"
+        ),
+        Reached::Unanswered => bail!(
+            "the host runner{} did not answer within {}s: its log, {}, says why",
+            holder_of(&cache()?.join(LOCK)).map(|pid| format!(" (pid {pid})")).unwrap_or_default(),
+            SAID_WITHIN.as_secs(),
+            log.display()
+        ),
+    };
+    let (theirs, pid) = (about["version"].as_str().unwrap_or_default(), &about["pid"]);
+    match about["panel"].as_str() {
+        Some(address) => Ok(json!({"panel": address, "host_runner": about})),
+        None if found(VERSION, theirs) == Found::Older => bail!(
+            "the host runner (pid {pid}) is afkconvoy {theirs}, which serves no panel of the host: \
+             `afkconvoy run` in any checkout moves it onto this afkconvoy, {VERSION}"
+        ),
+        None => bail!(
+            "the host runner (pid {pid}) serves no panel: its log, {}, says why",
+            log.display()
+        ),
+    }
 }
 
 /// `afkconvoy stop CHECKOUT`: has this host's runner take the checkout

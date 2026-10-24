@@ -50,6 +50,7 @@ pub mod git;
 pub mod guard;
 pub mod harness_down;
 pub mod host_evidence;
+pub mod host_panel;
 pub mod host_runner;
 pub mod host_settings;
 pub mod host_sleep;
@@ -66,7 +67,6 @@ pub mod launch;
 pub mod lock;
 pub mod log;
 pub mod measure;
-pub mod opening;
 pub mod orca;
 pub mod panel;
 pub mod park;
@@ -873,7 +873,7 @@ enum Command {
     ///   - `tools`: each command needed — a harness only where a worker launch command the fleet could be asked for runs it by name: {name, state} — state is ready, missing or logged_out; of orca also not_running, knows_no_checkout (the checkout worktrees are cut from was never added to it) or unasked
     ///   - `worker_commands`: one for each harness the fleet could be asked for: {harness, called_for_by, command, from, starts_a_worker, takes_role_flags} — called_for_by is the host kit's first, each role whose range holds the harness, and the stock consult; from is `host_kit`. Commands come from this host's kit, never a run log.
     ///   - `host_kit`: {path, refreshed, harnesses, stock_consult}: where the kit is kept; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh (`afkconvoy kit --help`); each harness in order, first first, with its full worker launch command and its models in order, each with when it last answered a probe (`probed.at`, epoch seconds; null: a model a kit written before DSH was probed holds as named); and the harness and model the stock consult runs (`named` false: the host kit's first; `unmatched`: what is named for it matches nothing held, and it runs the host kit's first). {path, error} when unreadable. `afkconvoy kit` writes it again.
-    ///   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port null where any free port will do. {file, error} where the file cannot be read
+    ///   - `settings`: the host settings (`afkconvoy run --help`): {file, said, in_force} — each by its key, the name of the flag of `run` that names it (`hot_cores` for `--hot-cores`), in that flag's units: said is what the host says, null where it says none and the default holds; in_force what holds for this repo's fleet on this host, each default worked out for it — the panel's port {const:PANEL_PORT} where the host says none. {file, error} where the file cannot be read
     ///   - `admission`: whether a tick would start a new worker on this host now, the thresholds in force and what the host reads: as `plan` answers it (`afkconvoy plan --help`), or {error} where a share the host says is wrong. A tick that admission held back is no "started no worker" finding. Its inspected is what the last host inspection on this host found, whichever fleet started it: {repo, reason, reading, by, started, ended, found, said, issue, reclaimed, named} — what admission held back for and read, the role, reclaimable, fleet, not-its or nothing, its words, the issue a fleet finding opened, and each [{path, bytes}] it freed and named for a human; null with none
     ///   - `exclusive`: the host's queue of `afkconvoy exclusive`, whatever its repo: {running, waiting} — running is the command that runs alone now, null with none; waiting, those that wait their turn, next first. Each is {command, dir, issue, pid, asked, ran}: the worktree it was run in, the issue of its worker, and when it asked and began to run, in epoch seconds. {error} when the queue cannot be read
     ///   - `inspection`: the inspection running on this host, whatever its repo: {kind, repo, worker, issue, by, since, held_back_by} — worker or host, the repo whose fleet started it, the hot worker and its issue ("the host" and null of a host's), the role it runs in, when it started, in epoch seconds, and of a host's what admission held back for; null with none (`afkconvoy inspected --help`)
@@ -1042,13 +1042,13 @@ enum Command {
     ///
     /// The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not left there. A `run` of a checkout on the list whose fleet instance does not run starts it with those, but for each that `run` names itself.
     ///
-    /// The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
+    /// The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
     ///
     /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on a socket in the cache directory (host-runner.sock), and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
     ///
     /// Before anything else, `run` asks the host runner for its version. One of an older release than this `run`'s — after `brew upgrade afkconvoy` — is stopped as SIGTERM stops it: each fleet instance finishes the step it is in, and the checkout list is kept. Once it has let the host go, `run` starts a host runner of its own version, which starts every checkout on the same list, and then adds its own. One of a newer release refuses this `run`, which changes nothing. A build past a release (`afkconvoy --version` says `0.6.0+11.g9f58035`) is of that release, and one of the same release as the host runner's is handed the checkout as ever.
     ///
-    /// The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as it replaces a host runner of an older release (`host runner upgraded: from afkconvoy 0.5.13 (pid 4100) to afkconvoy 0.6.0 (pid 4242)`), as each fleet instance starts and ends, as one breaks and is back, as a checkout is added, refused or removed, as anything in it panics (`panicked at <file>:<line>: <what it said>`), and each line a fleet instance says outside its tick log, after its checkout: its warnings, the `start:` lines after its first, and the `panel:` line:
+    /// The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as it replaces a host runner of an older release (`host runner upgraded: from afkconvoy 0.5.13 (pid 4100) to afkconvoy 0.6.0 (pid 4242)`), as each fleet instance starts and ends, as one breaks and is back, as a checkout is added, refused or removed, as anything in it panics (`panicked at <file>:<line>: <what it said>`), where it serves the panel, as it starts (`panel: http://127.0.0.1:7070/`), and each line a fleet instance says outside its tick log, after its checkout: its warnings and the `start:` lines after its first:
     ///
     /// ```
     /// fleet instance broken: /Users/me/Developments/hkj: it panicked: <what it said> · since 2026-10-24 09:12:00 UTC · started again at 2026-10-24 09:13:00 UTC, in 60s
@@ -1087,8 +1087,8 @@ enum Command {
     /// ```json
     /// {"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj", "added": true,
     ///  "instance": "me-h1-1a2b3c4d",
-    ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log", "started": true,
-    ///                  "replaced": null},
+    ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log",
+    ///                  "panel": "http://127.0.0.1:7070/", "started": true, "replaced": null},
     ///  "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl",
     ///  "first_tick": "tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s",
     ///  "settings": {"hot_cores": {"from": null, "to": 4.0}},
@@ -1097,7 +1097,7 @@ enum Command {
     ///
     /// - `repo`: the repo the checkout is of, as its remote `origin` names it.
     /// - `added`: false when the checkout was on the list already. Where its fleet instance runs, the flags of this `run` that are its fleet instance's own change nothing, and the answer is that instance, with its own first tick.
-    /// - `host_runner`: the one that answered — its pid, its version and its log — and whether this `run` started it. `replaced`: the host runner of an older release this `run` stopped to start it, as {"pid": 4100, "version": "0.5.13"}; null where it stopped none.
+    /// - `host_runner`: the one that answered — its pid, its version, its log and where it serves the panel, null where it serves none — and whether this `run` started it. `replaced`: the host runner of an older release this `run` stopped to start it, as {"pid": 4100, "version": "0.5.13"}; null where it stopped none.
     /// - `tick_log` and `first_tick`: the fleet instance's tick log, and the line that ended its first tick. `<cache>` stands for the cache directory, whole in the answer.
     /// - `settings`: what this `run` changed of the host settings, each by its key — its flag's name, as `hot_cores` for `--hot-cores` — as {from, to}, in its flag's units; null is the default. {} where it named none, or named each as it was.
     /// - `warnings`: what its fleet instance warned of until its first tick ended — the startup probe's warnings among them — also on stderr; empty where this `run` waited on no start.
@@ -1165,15 +1165,15 @@ enum Command {
     ///
     /// So does the tick after one that failed on a read GitHub could not be reached for (`GitHub could not be reached: …`): nothing says the next read fails too. At most {const:BACK_TO_BACK} ticks run back to back; then it sleeps, whatever the last one left.
     ///
-    /// With `--panel <port>` — the panel's port, a host setting — its checkout's fleet instance serves the panel on that port from this start until it ends: the fleet as a web page — every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train — brought up to date in the browser after every tick, by itself. `afkconvoy panel --help` says what the page shows. Its address is a line of the host runner's log, after the checkout:
+    /// The host runner serves the panel from its start until it ends, on the panel's port of the host settings — {const:PANEL_PORT} where they say none, or any free port where that one is taken: every fleet of the host as one web page — the host first, then what waits for a human across every repo, then each repo with its workflows as lines of their stages and its landing train — brought up to date in the browser after every tick of any fleet instance, by itself. `afkconvoy panel --help` says what the page shows, and `afkconvoy panel --open` where it is served. Its address is a line of the host runner's log:
     ///
     /// ```
-    /// /Users/me/Developments/hkj: panel: http://127.0.0.1:7070/
+    /// panel: http://127.0.0.1:7070/
     /// ```
     ///
-    /// Started without it — and started again by the host runner, which serves no panel by itself — a fleet instance serves the same page once `afkconvoy panel --open` asks it to, on the panel's port of the host settings where they say one, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then logs that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
+    /// `--panel <port>` sets that port, a host setting, which the host runner reads as it starts: one that runs already serves the panel where it does, and the next one — after `afkconvoy stop --all`, or an upgrade — on the port set.
     ///
-    /// Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and its host settings do not keep it awake (`--no-host-sleep`), or this `run` says `--host-sleep` there; the host settings cannot be read or written; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; the host runner is of a newer release than this `run` (the error names both versions, and nothing was changed); the host runner did not say its version within 10 seconds; the host runner of an older release, told to stop, still held the host after 30 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; the checkout's fleet instance is stopping, told by `afkconvoy stop`; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
+    /// Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and its host settings do not keep it awake (`--no-host-sleep`), or this `run` says `--host-sleep` there; the host settings cannot be read or written; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; the host runner is of a newer release than this `run` (the error names both versions, and nothing was changed); the host runner did not say its version within 10 seconds; the host runner of an older release, told to stop, still held the host after 30 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; the checkout's fleet instance is stopping, told by `afkconvoy stop`; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
     ///
     /// ##### What trips you up
     ///
@@ -1245,8 +1245,8 @@ enum Command {
         host: Option<String>,
         #[command(flatten)]
         agent: AgentArgs,
-        /// The panel's port, a host setting, and serve the panel — the fleet as a web page,
-        /// live — on it from this start; `default` changes it back [default: any free port]
+        /// The port the host runner serves the panel on, from its next start: a host setting;
+        /// `default` changes it back [default: 7070, or any free port where it is taken]
         #[arg(long, value_name = "PORT", value_parser = port_or_default)]
         panel: Option<To<u16>>,
         /// Keep this host awake: no fleet on it puts it to sleep. A host setting, for every
@@ -1347,12 +1347,13 @@ enum Command {
     /// ```json
     /// {"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj", "removed": true,
     ///  "instance": "me-h1-1a2b3c4d", "stop": "stop: holding no claim, it took its heartbeat with it",
-    ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log"}}
+    ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log",
+    ///                  "panel": "http://127.0.0.1:7070/"}}
     /// ```
     ///
     /// - `removed`: false where the checkout was not on the list. Where no fleet instance of it ran either, nothing changed, and that is all it answers: a checkout not on the list exits 0.
     /// - `instance` and `stop`: the fleet instance that stopped, and the `stop:` line its tick log keeps; null where none ran — the host runner could not start it, or no host runner runs.
-    /// - `host_runner`: the one that answered — its pid, its version and its log — or null where none runs. `<cache>` stands for the cache directory, whole in the answer.
+    /// - `host_runner`: the one that answered — its pid, its version, its log and where it serves the panel — or null where none runs. `<cache>` stands for the cache directory, whole in the answer.
     ///
     /// With `--all`, once the host runner has ended:
     ///
@@ -1360,7 +1361,8 @@ enum Command {
     /// {"stopped": [{"checkout": "/Users/me/Developments/hkj", "instance": "me-h1-1a2b3c4d",
     ///   "stop": "stop: it left its heartbeat with the claims it holds: the next start on this host takes them"}],
     ///  "checkouts": 2,
-    ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log"}}
+    ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log",
+    ///                  "panel": "http://127.0.0.1:7070/"}}
     /// ```
     ///
     /// - `stopped`: each fleet instance it stopped, with its checkout, its id and its `stop:` line; [] where no host runner runs.
@@ -1384,85 +1386,82 @@ enum Command {
     /// Hold every checkout on this host's checkout list, as `run` starts it in the background
     #[command(hide = true)]
     HostRunner,
-    /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
+    /// Print the panel — every fleet of this host as one web page — as one rebuild of each checkout shows it now, or say where the host runner serves it live
     ///
     /// ##### When to run it
     ///
-    /// To see the whole fleet at a glance, without a `run` to ask: every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train, and what waits for a human. Save it and open it in a browser:
+    /// To see every fleet of this host at a glance where no host runner serves it: the host, what waits for a human across every repo, then each repo — its workflows as lines of stages, the issues at work, queued and held back at each, its landing train. Save it and open it in a browser:
     ///
     /// ```
-    /// afkconvoy panel --instance <id> > panel.html
+    /// afkconvoy panel > panel.html                       every checkout on the checkout list
+    /// afkconvoy panel ~/Developments/hkj > hkj.html      that checkout alone
     /// ```
     ///
-    /// To watch a running fleet, do not run this in a loop: have the fleet serve its own panel, live — a page brought up to date after every tick, by itself. Start it with `afkconvoy run --panel <port>`, or ask one that is already running, which is not restarted for it:
+    /// To watch the fleets, do not run this in a loop: the host runner serves the same page from its start, live — brought up to date after every tick of any fleet instance, by itself. Ask where:
     ///
     /// ```
-    /// afkconvoy panel --open                the panel's port of the host settings, or any free port
-    /// afkconvoy panel --open --port 7070
+    /// afkconvoy panel --open
     /// ```
     ///
     /// and open the address it answers. Run it again whenever you want that address back.
     ///
     /// ##### Who runs it
     ///
-    /// The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any checkout of it but a worker's worktree, and no other repo's.
+    /// The operator, anywhere on the host. `--open` asks the host runner, whatever directory it is run in.
     ///
     /// ##### What it reads and writes
     ///
-    /// It writes nothing, on GitHub or on the remote, and makes no startup probe. It makes the rebuild `plan` makes — the open issues and PRs, the claims and heartbeats, the landing train, and in a bound repo the team and every stage record — then asks orca after the worker of each claim of `--instance` on this host.
+    /// It writes nothing, on GitHub or on the remote, and makes no startup probe. For each checkout it makes the rebuild `plan` makes — the open issues and PRs, the claims and heartbeats, the landing train, and in a bound repo the team and every stage record — then asks orca after the worker of each claim of its fleet instance on this host, and reads its tick log on this host for the workers that are hot and whether its fleet instance is broken. Of the host it reads admission's reading, the inspection running and what the last host inspection found, the exclusive queue, the host settings and the host kit.
     ///
-    /// With `--open` it reads nothing itself and takes no `--instance`: it asks the `run` of this host for this repo, over a socket in the repo's git dir, to serve the panel that `run` holds. That `run` goes on as the fleet instance it is — its claims, its workers and the tick it is in are untouched, and it answers whether it sleeps or ticks. A panel newly opened ends its sleep, as a `wake` does: the page is filled by the tick that follows, then by every tick after it. It is served to this host only.
+    /// With `--open` it reads nothing itself, and starts nothing: it asks this host's runner, on its socket, where it serves the panel. The host runner serves it from its start, to this host only, on the panel's port of the host settings — {const:PANEL_PORT} where they say none, or any free port where that one is taken (`afkconvoy run --help`).
     ///
     /// ##### What it answers
     ///
-    /// Not a JSON object: one HTML document on stdout, complete in itself, with no address in it that a browser would fetch. The same fleet state gives the same document.
+    /// Not a JSON object: one HTML document on stdout, complete in itself, with no address in it that a browser would fetch. The same fleet state gives the same document. It has three parts, each made by one rendering, whether the host runner serves the page or this prints it:
     ///
-    /// - Claims held: the claims of `--instance` that take a slot, of the concurrency
-    /// - `Declared`: shown while there are any: the claims whose worker declared a verdict not acted on yet, which take no slot
-    /// - a lane: one per workflow; an unbound repo has one, `backlog`, with the two stages `work` and `land`
-    /// - a stage: the number in its stop is the workers at it; under it the issues at work — each with its worker's state: busy, stopped and for how long, or no worker — then the queued, which are the frontier, and in a bound repo those held back there, with why
-    /// - Landing train: the issues whose PR is on it
-    /// - `Patrols`: in a bound repo that names patrols: each, with what it is doing or what holds it back — one held by its `max_runs_a_day` says until when, as a time of day in UTC and how long from now
-    /// - With a human: every open issue that waits for a human, with why and the line that answers it: what `doctor` answers as `waiting_on_human`
-    /// - left alone: every other open issue, with the reason `plan` gives under `excluded`
+    /// - The host, once: admission — whether it holds back new workers, why, and what it read of the host; the workers that are hot, in every repo, with why and what each held at the most; the inspection running, and what the last host inspection found; the commands run alone on the host and those waiting their turn (`exclusive`); host sleep — whether the host settings keep the host awake, and which fleet instances are not idle; the host kit — each harness in order with its models, each one paused, and what the stock consult runs
+    /// - With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with why and the line that answers it: what `doctor` answers as `waiting_on_human`
+    /// - Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held of its bound and its frontier, and links to its part. Each part then shows:
+    ///   - Claims held: the claims of its fleet instance that take a slot, of the concurrency
+    ///   - `Declared`: shown while there are any: the claims whose worker declared a verdict not acted on yet, which take no slot
+    ///   - a lane: one per workflow; an unbound repo has one, `backlog`, with the two stages `work` and `land`
+    ///   - a stage: the number in its stop is the workers at it; under it the issues at work — each with its worker's state: busy, stopped and for how long, or no worker — then the queued, which are the frontier, and in a bound repo those held back there, with why
+    ///   - Landing train: the issues whose PR is on it
+    ///   - `Patrols`: in a bound repo that names patrols: each, with what it is doing or what holds it back — one held by its `max_runs_a_day` says until when, as a time of day in UTC and how long from now
+    ///   - left alone: every other open issue, with the reason `plan` gives under `excluded`
     ///
-    /// Errors, as {"error": …} with a non-zero exit: the config cannot be read; GitHub or the remote cannot be read.
+    /// Errors, as {"error": …} with a non-zero exit: the checkout list cannot be read; of a checkout named — or of the one it is run in, where the list holds none — the config, GitHub or the remote cannot be read. A checkout on the list that cannot be rebuilt is said so in its part, with why, and every other is shown.
     ///
     /// With `--open`, one JSON object:
     ///
     /// - `panel`: the address to open in a browser of this host: http://127.0.0.1:<port>/
-    /// - `port`: the port in it
-    /// - `opened`: true: this call had the `run` begin serving it. false: it was served already — since its start, or an earlier `--open` — and this is where
-    /// - `instance`: the fleet instance that serves it
+    /// - `host_runner`: the host runner that serves it: its pid, its version, its log, and that address as `panel`
     ///
-    /// Its errors, as {"error": …} with a non-zero exit, none of which changes anything of a `run`, which works on as it was:
+    /// Its errors, as {"error": …} with a non-zero exit, none of which changes anything:
     ///
-    /// - no afkconvoy run is running for this repo on this host: start one with `afkconvoy run`, or print the page once, without `--open`
-    /// - the panel was not opened …: the panel cannot be served on port <port>: …: the port is taken, or not yours to take: name another, or none
-    /// - the run of this repo on this host did not answer …: ask again: one that opened it says so, with `opened` false
+    /// - no host runner runs on this host: `afkconvoy run` starts one, which serves the panel; or print the page once, without `--open`
+    /// - the host runner did not answer within 10 seconds: its log says why
+    /// - the host runner serves no panel: it is of an older afkconvoy, which `afkconvoy run` moves onto this one; or it could not serve it, as its log says
     ///
     /// ##### What trips you up
     ///
-    /// - Without `--instance` nobody's claims are its own: a running fleet's claims show as "held by <instance>", with no worker's state. `takeover --list` shows the ids.
+    /// - Without `--instance` each checkout is seen as the fleet instance its tick log on this host names last — the one the host runner holds, or held — as the live page sees it; one whose fleet never ran on this host is seen as nobody's: its claims show as "held by <instance>", with no worker's state. `--instance` names the fleet instance of every checkout printed: name the checkout with it. `takeover --list` shows the ids.
     /// - A worker's state is this host's orca's to say. A claim whose worker runs on another host shows "no worker" here.
-    /// - A panel is served at one address for as long as its `run` runs. `--open --port` on one already served answers the address it has, not the port asked: `opened` is false. To move it, stop that `run` and start it again.
-    /// - A page just opened shows nothing of the fleet until the tick it asked for ends: a moment, or as long as the tick the `run` was in takes, and then one more.
-    /// - `--port` is `--open`'s, and `--open` takes neither `--instance` nor `--host`: the page is the running fleet instance's own.
-    /// - The page a `run` serves is not this one made again and again: it is made from what each tick already read, and adds what that tick did. It costs GitHub nothing.
+    /// - The panel is served at one address for as long as its host runner runs. `afkconvoy run --panel <port>` changes the port the next host runner serves it on, not the running one's: `afkconvoy stop --all` and then `afkconvoy run` moves it.
+    /// - A checkout a `run` adds is on the live page at once, as starting, and filled in by its first tick. One whose fleet instance broke shows what its last tick showed, said broken, until it is back.
+    /// - `--open` takes no checkout, no `--instance` and no `--host`: the page is the host runner's own.
+    /// - The page the host runner serves is not this one made again and again: each repo's part is made from what its fleet instance's tick already read, and adds what that tick did. It costs GitHub nothing.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Panel {
-        /// The fleet instance whose claims are its own [default: nobody's]
+        /// The fleet instance whose claims are its own, of every checkout printed [default:
+        /// the one its tick log on this host names last]
         #[arg(long, value_parser = InstanceId::parse)]
         instance: Option<InstanceId>,
         #[arg(long)]
         host: Option<String>,
-        /// Have this host's `run` for this repo serve its panel, live, and say where:
-        /// it is not restarted, and one already serving it says the address it has
-        #[arg(long, conflicts_with_all = ["instance", "host"])]
+        /// Say where this host's runner serves the panel, live: nothing is started
+        #[arg(long, conflicts_with_all = ["instance", "host", CHECKOUT_ARG])]
         open: bool,
-        /// With --open: the port of this host to serve it on [default: any free one]
-        #[arg(long, value_name = "PORT", requires = "open")]
-        port: Option<u16>,
         #[command(flatten)]
         at: At,
     },
@@ -3156,7 +3155,7 @@ const ONLY_READ: [(&str, Option<&str>); 7] = [
     ("rehearse", None),
     ("recovery", None),
     ("scan", None),
-    ("panel", Some("open")),
+    ("panel", None),
     ("takeover", Some("from")),
 ];
 
@@ -3224,10 +3223,16 @@ fn checkout_help(name: &str, positional: bool) -> String {
         ),
         (false, None) => refused.to_string(),
     };
+    let none = match name {
+        "panel" => {
+            "Naming none, it is about every checkout on this host's checkout list — or, where the \
+             list holds none, the checkout it is run in."
+        }
+        _ => "Naming none, it is about the checkout it is run in.",
+    };
     format!(
         "##### Which checkout it is about\n\n{named}: a checkout of the repo, or any directory in \
-         one, which names that checkout.{own} Naming none, it is about the checkout it is run in. \
-         {worker}"
+         one, which names that checkout.{own} {none} {worker}"
     )
 }
 
@@ -3255,6 +3260,7 @@ pub fn manual() -> agent_help::Help {
         .table::<doctor::Severity>("severity")
         .table::<claim_status::ClaimStatus>("claim_status")
         .constant("CONFIG_FILE", config::FILE)
+        .constant("PANEL_PORT", host_settings::PANEL_PORT)
         .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
         .constant("GATE_SECONDS", afkconvoy_core::config::GATE_SECONDS)
@@ -3529,15 +3535,11 @@ fn start_of(
         admit_inspect_after,
         panel,
     };
-    let panel = match panel {
-        Some(To::Value(port)) => Some(port),
-        Some(To::Default) | None => None,
-    };
     let ready_timeout = agent.ready_timeout;
     let panic_at = panic_at_tick;
     let knobs =
         instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now, panic_at };
-    Some((foreground, instance::Start { named, panel, knobs }, settings))
+    Some((foreground, instance::Start { named, knobs }, settings))
 }
 
 /// The start of a `run` that named nothing, in this process's environment:
@@ -3917,14 +3919,12 @@ fn run(
         Command::Stop { all: true, .. } => host_runner::stop_all(),
         Command::Stop { .. } => host_runner::stop(&checkout?),
         Command::HostRunner => host_runner::serve(),
-        Command::Panel { open: true, port, .. } => opening::open(&checkout?, port),
-        Command::Panel { instance, host, .. } => {
-            let (mut fleet, open) = Fleet::read(&checkout?, now)?;
+        Command::Panel { open: true, .. } => host_runner::panel(),
+        Command::Panel { instance, host, at, .. } => {
             let host = host.unwrap_or_else(this_host);
-            let me = instance.map(|instance| Me { instance, host, now });
-            let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
-            let shown = panel::read(&fleet, me.as_ref(), &set, &flows, &[]);
-            Ok(Value::String(panel::render(&shown)))
+            let named = at.checkout.is_some();
+            let page = panel::printed(checkout, named, instance.as_ref(), &host, now)?;
+            Ok(Value::String(panel::render(&page)))
         }
         Command::Tick { who, agent, .. } => {
             let repo = checkout?;
@@ -4309,7 +4309,7 @@ mod tests {
         assert!(reads(&["takeover", "--list"]));
         assert!(!reads(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]));
         assert!(reads(&["panel"]));
-        assert!(!reads(&["panel", "--open"]));
+        assert!(reads(&["panel", "--open"]), "it asks the host runner, changing nothing");
         assert!(reads(&["scan"]));
         assert!(!reads(&["claim", "7", "--instance", "a-h1-1"]));
     }
@@ -4343,11 +4343,9 @@ mod tests {
         assert_eq!(named.admit_disk, Some(To::Value(0)), "0 never holds for disk");
         assert_eq!(named.admit_load, Some(To::Default));
         assert_eq!(named.panel, Some(To::Value(7070)));
-        // the panel is served from this start on the port named, and on none
-        // where it is set back to its default
-        assert_eq!(start.panel, Some(7070));
-        let (start, named) = asked(&["--panel", "default"]);
-        assert_eq!((start.panel, named.panel), (None, Some(To::Default)));
+        // a host setting alone: nothing of the checkout's own start
+        assert_eq!(start, asked(&line).0);
+        assert_eq!(asked(&["--panel", "default"]).1.panel, Some(To::Default));
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--hot-cores", "0"]).is_err());
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--admit-load", "5%"]).is_err());
     }

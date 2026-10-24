@@ -1092,7 +1092,7 @@ type StartedWith = Vec<String>;
 
 /// What the log says of the `run` of `host`: its fleet instance, the worker
 /// launch commands it started with, and that instance's ticks.
-fn read_log(
+pub(crate) fn read_log(
     entries: &[Entry],
     host: &str,
 ) -> (Option<String>, Option<StartedWith>, Vec<(u64, Tick)>) {
@@ -1131,7 +1131,7 @@ fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
 
 /// The workers the newest `run` of `host` found hot and has not found
 /// stopped being hot since, as the log has them, longest hot first.
-fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
+pub(crate) fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
     let Some(newest) = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())
     else {
         return vec![];
@@ -1154,7 +1154,7 @@ fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
 /// The fleet instance of `host` broken, as the log has it: its newest line
 /// of a start, a break, a coming back or a stop is a break. `runs` says whether a
 /// host runner runs on this host, which starts it again.
-fn read_broken(entries: &[Entry], host: &str, runs: bool) -> Option<BrokenRead> {
+pub(crate) fn read_broken(entries: &[Entry], host: &str, runs: bool) -> Option<BrokenRead> {
     let of_host = entries.iter().rev().filter(|entry| entry.host == host);
     // A `stop:` line after it broke: `stop` took its checkout off the list.
     let mut starts = of_host.filter(|entry| {
