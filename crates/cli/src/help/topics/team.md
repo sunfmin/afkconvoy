@@ -26,7 +26,7 @@ dsh_profile: fleet                # fleet (default) or host-user; DSH only
 split: true                        # default; false omits splitting
 ```
 
-`escalate_label` is the label an issue handed to a human carries in place of its flow label. `roles` gives each role the short name a `by` or a `to` says. `precedents` names who proposes a human's ruling as a precedent: for each ruling a human gives an escalated issue (`afkconvoy rule`) a worker in the role `by`, with the skill `do`, opens a PR on the team's repo that appends one entry to `precedents.md`, unless `max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`, true or false, says whether a worker is given the host user's own skills and rules beside its role's ([`afkconvoy help roles`](help:roles)); a role named by `dir` may set its own. `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`. A role's `{ dir, dsh_profile }` says its own. Details: `afkconvoy run --help`. `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
+`escalate_label` is the label an issue handed to a human carries in place of its flow label. `roles` gives each role the short name a `by` or a `to` says. `precedents` names who proposes a human's ruling as a precedent: for each ruling a human gives an escalated issue (`afkconvoy rule`) a worker in the role `by`, with the skill `do`, opens a PR on the team's repo that appends one entry to `precedents.md`, unless `max_open` are open; none without the key (`afkconvoy tick --help`). `host_user`, true or false, says whether a worker is given the host user's own skills and rules beside its role's ([`afkconvoy help roles`](help:roles)); a role named by `dir` may set its own. `dsh_profile`: `fleet` (default) or `host-user`; independent of `host_user`. A role's `{ dir, dsh_profile }` says its own. Details: [`afkconvoy help worker-launch`](help:worker-launch). `split: false` omits splitting from briefs; true or unsaid offers it, with no guard.
 
 ## How it names a role
 
@@ -45,7 +45,7 @@ A `./path` is read from the root of the team's repo, not from the team's directo
 - `.codex/hooks.json`: its limits for codex: hooks
 - `.dsh/cordis.patch.yml`: its limits for dsh: a DSH overlay
 
-Only a skill's file has keys `check` reads: [`afkconvoy help skill-file`](help:skill-file). A `do` names an entry of `.claude/skills/` in the role. Rules and skills are written once; limits per harness, in its own form (`afkconvoy run --help` says how each loads a role).
+Only a skill's file has keys `check` reads: [`afkconvoy help skill-file`](help:skill-file). A `do` names an entry of `.claude/skills/` in the role. Rules and skills are written once; limits per harness, in its own form ([`afkconvoy help worker-launch`](help:worker-launch) says how each loads a role).
 
 A worker is given its role's directory alone, and nothing else of its repo: a `CLAUDE.md` or a `.claude/` in a directory above the role is loaded for a session opened there by hand, and a worker never sees it — and a symlink that leaves the role's directory would point at nothing. The team's directory is given to every worker beside its role's, without the directories of its roles and without a `.claude/` at its top: a worker's skills and hooks are its role's.
 
