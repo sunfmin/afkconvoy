@@ -105,9 +105,9 @@ use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
 use host_settings::{
-    ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV, HOT_CORES_ENV,
-    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To, port_or_default,
-    thousandths_or_default, whole_or_default,
+    ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
+    HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To,
+    hours_or_default, port_or_default, thousandths_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -188,6 +188,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 /// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A missing harness refuses the start.
+/// - A host whose fleets are all idle is put to sleep, but only within its sleep hours: {const:SLEEP_HOURS} of its local time, unless it says others. `afkconvoy run --host-sleep-hours 22:00-06:00` says others for every fleet on the host, `--host-sleep-hours default` changes them back, and `--no-host-sleep` keeps the host awake at any hour.
 /// - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard (`afkconvoy run --help` says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 ///
 /// ## Designing a team, for a bound repo
@@ -891,7 +892,7 @@ enum Command {
     ///   - `log`: the file its ticks are logged in, or "no log": no `run` of this version ran here
     ///   - `last_tick`: {count, ended, next_due, line, did, error}: when its last tick ended and the next is due, in epoch seconds, the line `run` printed, and what `tick` answers as `did`; error, when the tick failed whole. null with no log
     ///   - `failed_steps`: the last {const:DOCTOR_FAILED_SHOWN} failures, newest first: {tick, ended, do, issue, patrol, error, count}. One cause that stopped several steps of a tick is one failure: count is how many, and do, issue and patrol the first's
-    ///   - `host_sleep`: {checked, slept, kept_awake_by}: its last check for host sleep — when it ended, whether it put the host to sleep, and else what kept the host awake, each in words. null: it made none, the host settings keeping the host awake, or never idle {const:HOST_IDLE_MINUTES} minutes
+    ///   - `host_sleep`: {checked, slept, kept_awake_by}: its last check for host sleep — when it ended, whether it put the host to sleep, and else what kept the host awake, each in words: "the host's local time is outside its sleep hours, 00:00-06:00" among them. null: it made none, the host settings keeping the host awake, or never idle {const:HOST_IDLE_MINUTES} minutes
     ///   - `events`: the last {const:DOCTOR_EVENTS_SHOWN} events that reached a `run` of this host, newest first, whichever instance: {at, event, cause, instance} — event being wake (between ticks, or during one), start, stop (told to, by SIGTERM or SIGINT), broken, back (`afkconvoy run --help`), host_sleep or host_wake; cause says what caused it, in words. [] with no log
     ///   - `broken`: {why, since, next, instance}: its fleet instance is broken (`afkconvoy run --help`) — why, as it last broke; since when, and when the host runner starts it again, in epoch seconds, null where no host runner runs on this host; and the fleet instance that broke, "" where none had started. null: it is not broken
     /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
@@ -1060,7 +1061,7 @@ enum Command {
     ///
     /// The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not left there. A `run` of a checkout on the list whose fleet instance does not run starts it with those, but for each that `run` names itself.
     ///
-    /// The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
+    /// The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`) and in which hours of its local time (`--host-sleep-hours`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOST_SLEEP_HOURS, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`, `--host-sleep-hours default`). `afkconvoy doctor` says those in force, as `host.settings`.
     ///
     /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
     ///
@@ -1079,14 +1080,15 @@ enum Command {
     ///
     /// Then everything a fleet instance does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run, on the proposal of a precedent — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep.
     ///
-    /// Once every fleet on this host has been idle {const:HOST_IDLE_MINUTES} minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless the host settings keep it awake: `--no-host-sleep`, for every fleet on it, until a `run` says `--host-sleep`. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet on this host is a fleet instance of its one host runner, so a fleet instance asks the others there: each says its instance, repo and version, whether it keeps the host awake, since when it has been idle or not, and when it last worked; asked to tick first, it is woken, ticks, then says so.
+    /// Once every fleet on this host has been idle {const:HOST_IDLE_MINUTES} minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — within the host's sleep hours, unless the host settings keep it awake: `--no-host-sleep`, for every fleet on it, until a `run` says `--host-sleep`. The sleep hours are {const:SLEEP_HOURS} of the host's local time, unless its host settings say others: `--host-sleep-hours 22:00-06:00`, until a `run` says `--host-sleep-hours default`, which changes them back. The fleet never wakes the host: one put to sleep within its sleep hours sleeps on past their end, until something else wakes it. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet on this host is a fleet instance of its one host runner, so a fleet instance asks the others there: each says its instance, repo and version, whether it keeps the host awake, since when it has been idle or not, and when it last worked; asked to tick first, it is woken, ticks, then says so.
     ///
     /// ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so are the landing train and the worker a declared verdict starts. The host says its own shares, each a whole percent, in its host settings: `--admit-load` (of its cores), `--admit-memory` and `--admit-disk` (free) — `--admit-load 400` lets the load reach four times the cores, and `--admit-disk 0` never holds for disk. A value that is no whole percent is refused, and `default` changes a share back. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
     ///
     /// When admission has held back for one reason — load, memory or disk — at every tick for ten minutes in a row (`--admit-inspect-after`, in whole seconds, a host setting, says the host's own span), the fleet instance starts an inspection of the host: the stock consult, in a checkout of its own, given what was taken down as it started — admission's reading and shares; for disk, what each of this host's worktrees of every fleet holds, with its issue, its stage and whether a worker holds it, the landing train's among them, the fleet's caches and the largest directories of the whole volume under the home folder outside them (`du -x`, at most five minutes); for load or memory, the process trees of each worker and of the train, and the hottest processes outside them. Holding back for reasons that change starts none. It runs once an episode, which ends once admission has admitted for five minutes, and not where another fleet of the host inspected it in the same episode. It says what it found with `afkconvoy inspected`: reclaimable, fleet or not-its. For reclaimable it frees what can be rebuilt under the home folder — what git ignores in a checkout no process uses, a closed issue's worktree, a tool's cache — and names what cannot, never deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the repo, with the escalate label and the label fleet-outgrows-host, and no other while that one is open. What it found is a line of the log, and shown by the panel and `doctor` beside admission's reading.
     ///
-    /// A fleet instance idle {const:HOST_IDLE_MINUTES} minutes checks then, tick due or not, and again {const:HOST_IDLE_MINUTES} minutes after a check that kept the host awake. It puts the host to sleep only when all hold:
+    /// A fleet instance idle {const:HOST_IDLE_MINUTES} minutes checks then, tick due or not, whatever the hour, and again {const:HOST_IDLE_MINUTES} minutes after a check that kept the host awake — or, where that is outside the sleep hours, as they start. It puts the host to sleep only when all hold:
     ///
+    /// - the host's local time (`localtime_r`: TZ, else /etc/localtime) is within its sleep hours, the start included and the end not: with {const:SLEEP_HOURS}, 05:59 is and 06:00 is not;
     /// - it worked — held a claim, or had something on the landing train — since the host last woke (`sysctl kern.waketime`): a host woken, by hand or otherwise, stays awake until a fleet on it works again;
     /// - every fleet instance on the host answers within two seconds, none keeps the host awake, and each has been idle {const:HOST_IDLE_MINUTES} minutes;
     /// - nobody touched the keyboard or mouse for ten minutes (HIDIdleTime, from `ioreg`);
@@ -1124,7 +1126,7 @@ enum Command {
     ///
     /// ```
     /// start: run as tester-h1-1a2b3c4d on h1, its workers started with `claude`
-    /// start: puts this host to sleep once every fleet on it has been idle {const:HOST_IDLE_MINUTES} minutes (`--no-host-sleep` keeps it awake)
+    /// start: puts this host to sleep within its sleep hours, {const:SLEEP_HOURS}, once every fleet on it has been idle {const:HOST_IDLE_MINUTES} minutes (`--host-sleep-hours` says others, `--no-host-sleep` keeps it awake)
     /// start: took #4, #7 stamped with this host        only when a start took or lost claims
     /// start: took #4, the run of the patrol sweep stamped with this host
     /// start: took #4 stamped with this host · swept 1 dead heartbeat(s) that held nothing
@@ -1272,10 +1274,21 @@ enum Command {
         #[arg(long, env = NO_HOST_SLEEP_ENV)]
         no_host_sleep: bool,
         /// Let the fleets on this host put it to sleep once every one has been idle ten
-        /// minutes, as they do by default: a host setting, for every fleet on it. Said, it
-        /// holds over `--no-host-sleep` and its variable
+        /// minutes, within its sleep hours, as they do by default: a host setting, for every
+        /// fleet on it. Said, it holds over `--no-host-sleep` and its variable
         #[arg(long)]
         host_sleep: bool,
+        /// The hours of this host's local time a fleet may put it to sleep in, from the first,
+        /// included, to the second, not — past midnight where the second comes first
+        /// (22:00-06:00); 00:00-24:00 is any hour: a host setting, for every fleet on it;
+        /// `default` changes them back [default: 00:00-06:00]
+        #[arg(
+            long,
+            env = HOST_SLEEP_HOURS_ENV,
+            value_name = "HH:MM-HH:MM",
+            value_parser = hours_or_default
+        )]
+        host_sleep_hours: Option<To<afkconvoy_core::host_sleep::Hours>>,
         /// Seconds every fleet on this host must have been idle before it is put to sleep
         #[arg(long, hide = true, default_value_t = IDLE_WAIT)]
         host_sleep_after: u64,
@@ -3339,6 +3352,7 @@ pub fn manual() -> agent_help::Help {
         .constant("BACK_TO_BACK", afkconvoy_core::tick::BACK_TO_BACK)
         .constant("INSPECTION_MINUTES", afkconvoy_core::inspection::TIME_LIMIT / 60)
         .constant("HOST_IDLE_MINUTES", afkconvoy_core::host_sleep::IDLE_WAIT / 60)
+        .constant("SLEEP_HOURS", afkconvoy_core::host_sleep::SLEEP_HOURS.to_string())
         .constant("BACKOFF_FIRST_MINUTES", afkconvoy_core::host_runner::BACKOFF_FIRST / 60)
         .constant("BACKOFF_MOST_MINUTES", afkconvoy_core::host_runner::BACKOFF_MOST / 60)
         .constant("OUTGROWN_TIMES", afkconvoy_core::train::OUTGROWN_TIMES)
@@ -3557,6 +3571,7 @@ fn start_of(
         panel,
         no_host_sleep,
         host_sleep,
+        host_sleep_hours,
         host_sleep_after,
         hot_cores,
         hot_memory,
@@ -3587,6 +3602,7 @@ fn start_of(
             (true, false) => Some(true),
             (false, false) => None,
         },
+        host_sleep_hours,
         hot_cores,
         hot_memory,
         hot_written,
@@ -4423,5 +4439,16 @@ mod tests {
         assert_eq!((start.panel, named.panel), (None, Some(To::Default)));
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--hot-cores", "0"]).is_err());
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--admit-load", "5%"]).is_err());
+        let night = afkconvoy_core::host_sleep::Hours::parse("22:00-06:00").unwrap();
+        let named = asked(&["--host-sleep-hours", "22:00-06:00"]).1;
+        assert_eq!(named.host_sleep_hours, Some(To::Value(night)));
+        let named = asked(&["--host-sleep-hours", "default"]).1;
+        assert_eq!(named.host_sleep_hours, Some(To::Default));
+        assert_eq!(asked(&[]).1.host_sleep_hours, None, "named none, it changes none");
+        // hours that cover nothing are refused, naming what they take
+        let line = ["afkconvoy", "run", "--host-sleep-hours", "06:00-06:00"];
+        let refused = Cli::try_parse_from(line).err().unwrap().to_string();
+        assert!(refused.contains("covers no time of the day"), "{refused}");
+        assert!(refused.contains("HH:MM-HH:MM"), "{refused}");
     }
 }
