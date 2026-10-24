@@ -9,8 +9,10 @@
 //! its own time, and keeps its own tick log as before. What it keeps itself
 //! is its log, `host-runner.log`: one line for each thing that happened to
 //! it — its start and its stop, the older host runner it replaced, a
-//! checkout added, refused or removed, a fleet instance started or ended —
-//! and the lines a fleet instance says that no tick log holds.
+//! checkout added, refused or removed, a fleet instance started, broken, back
+//! or ended, a panic — and the lines a fleet instance says that no tick log
+//! holds. A fleet instance that breaks harms no other: its thread holds it
+//! again after a backoff, and it stays on the list.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -490,7 +492,6 @@ impl Runner {
             let next = now.saturating_add(wait);
             let since = {
                 let mut stage = seen.stage();
-                stage.came = Came::Broken;
                 stage.warnings.clear();
                 broke_as = stage.instance.take().unwrap_or(broke_as);
                 *stage.broken_since.get_or_insert(now)
@@ -545,26 +546,32 @@ impl Runner {
     }
 
     /// The loop of the fleet instance of `root` ended, as `held` says → why
-    /// it broke, where it did: it is still held, and its thread holds it
-    /// again. It broke where its loop ended in an error or a panic while the
-    /// host runner goes on — after its first tick, or before it where nobody
-    /// asked for it. Otherwise it ended, and is held no more: one that ended
-    /// before its first tick was refused, and a `run` that asked for it is
-    /// told why and its checkout taken off the list.
+    /// it broke, where it did: it is still held, now `Came::Broken`, and its
+    /// thread holds it again. It broke where its loop ended in an error or a
+    /// panic while the host runner goes on — after its first tick, or before
+    /// it where nobody asked for it. Otherwise it ended, and is held no more:
+    /// one that ended before its first tick was refused, and a `run` that
+    /// asked for it is told why and its checkout taken off the list.
     fn ended(&self, root: &Path, held: Result<Value>) -> Option<String> {
         let mut holding = self.holding();
         let why = match &held {
             Ok(answer) => answer.to_string(),
             Err(error) => format!("{error:#}"),
         };
+        // Decided and marked under one lock: a `run` that asks meanwhile
+        // finds it broken, or asked for the start that ended.
         let broke = holding.get(root).is_some_and(|holds| {
-            let stage = holds.seen.stage();
+            let mut stage = holds.seen.stage();
             let at_work = match stage.came {
                 Came::Starting => !stage.asked,
                 Came::Ticked { .. } => true,
                 Came::Refused(_) | Came::Ended(_) | Came::Broken => false,
             };
-            at_work && held.is_err() && !self.stop.told()
+            let broke = at_work && held.is_err() && !self.stop.told();
+            if broke {
+                stage.came = Came::Broken;
+            }
+            broke
         });
         if broke {
             return Some(why);
