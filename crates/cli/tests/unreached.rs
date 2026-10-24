@@ -66,7 +66,7 @@ fn left_to_cut(world: &World) -> u64 {
 }
 
 fn run(world: &World, ticks: &str) -> Vec<String> {
-    let run = ["run", "--instance", "alpha", "--host", "h1"];
+    let run = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
     world
         .afk_lines(&[&run[..], &["--second-ms", "0", "--now", "1000", "--ticks", ticks]].concat())
         .0

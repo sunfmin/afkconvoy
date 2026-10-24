@@ -1,5 +1,6 @@
 //! Being told to stop: the SIGTERM or SIGINT a `run` hears, and finishes the
-//! step it is in before it obeys.
+//! step it is in before it obeys; or one fleet instance of the process told
+//! alone.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,17 +8,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
-/// Whether this process was told to stop.
+/// Whether a fleet instance was told to stop: by its own flag, or with every
+/// other fleet instance of this process by the process's, which SIGTERM and
+/// SIGINT set.
 #[derive(Clone)]
 pub struct Stop {
-    told: Arc<AtomicBool>,
+    own: Arc<AtomicBool>,
+    process: Arc<AtomicBool>,
 }
 
 impl Stop {
     /// Hears SIGTERM and SIGINT from now on: the first is kept for whoever
     /// asks `told`, and a second ends the process at once, as either did
     /// before anything listened. Where the signals cannot be heard they end
-    /// the process as they always did, which costs only the goodbye.
+    /// the process as they always did, which costs only the goodbye. This is
+    /// the process's: its `tell` tells every instance made from it.
     pub fn listen() -> Stop {
         let told = Arc::new(AtomicBool::new(false));
         for signal in [SIGTERM, SIGINT] {
@@ -28,15 +33,47 @@ impl Stop {
                 eprintln!("warning: this run cannot hear signal {signal}, and ends on it: {error}");
             }
         }
-        Stop { told }
+        Stop { own: Arc::clone(&told), process: told }
     }
 
     /// Nobody tells a command that makes one tick to stop: it ends by itself.
     pub fn never() -> Stop {
-        Stop { told: Arc::new(AtomicBool::new(false)) }
+        let told = Arc::new(AtomicBool::new(false));
+        Stop { own: Arc::clone(&told), process: told }
+    }
+
+    /// The stop of one fleet instance of this process: told by its own
+    /// `tell`, or by the process's.
+    pub fn instance(&self) -> Stop {
+        Stop { own: Arc::new(AtomicBool::new(false)), process: Arc::clone(&self.process) }
+    }
+
+    /// Tells it: one instance's tells that instance alone; the process's
+    /// tells every one.
+    pub fn tell(&self) {
+        self.own.store(true, Ordering::Relaxed);
     }
 
     pub fn told(&self) -> bool {
-        self.told.load(Ordering::Relaxed)
+        self.own.load(Ordering::Relaxed) || self.process.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_instance_is_told_by_its_own_tell_or_the_processs_and_tells_no_other() {
+        let process = Stop::never();
+        let (alpha, beta) = (process.instance(), process.instance());
+        assert!(!alpha.told() && !beta.told() && !process.told());
+        alpha.tell();
+        assert!(alpha.told(), "by its own");
+        assert!(!beta.told() && !process.told(), "its own tells no other");
+        assert!(alpha.clone().told(), "a clone is the same stop");
+        process.tell();
+        assert!(beta.told() && process.told(), "the process's tells every one");
+        assert!(process.instance().told(), "one made after it too");
     }
 }

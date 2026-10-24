@@ -28,9 +28,10 @@ const ANSWERS_WITHIN: Duration = Duration::from_secs(10);
 
 /// Has this `run`, which is `instance`, open `live` for whoever asks from now
 /// on, in a thread of its own: a tick is neither waited for nor interrupted.
-/// Called before the first tick, and after the wake's listener is open. A
-/// `run` that cannot listen is one whose panel only `--panel` opens.
-pub fn listen(repo: &Repo, live: Live, instance: &str) {
+/// The address it opens is told to `say`. Called before the first tick, and
+/// after the wake's listener is open. A `run` that cannot listen is one whose
+/// panel only `--panel` opens.
+pub fn listen(repo: &Repo, live: Live, instance: &str, say: Box<dyn Fn(&str) + Send>) {
     let waker = Waker::of(repo);
     let listener = home(repo).and_then(|dir| {
         reached(&dir, SOCKET, |path| {
@@ -53,7 +54,7 @@ pub fn listen(repo: &Repo, live: Live, instance: &str) {
     std::thread::spawn(move || {
         // One at a time: whoever asks second is told what the first opened.
         for stream in listener.incoming().flatten() {
-            let _ = answer(stream, &live, &instance, waker.as_ref());
+            let _ = answer(stream, &live, &instance, waker.as_ref(), &say);
         }
     });
 }
@@ -64,6 +65,7 @@ fn answer(
     live: &Live,
     instance: &str,
     waker: Option<&Waker>,
+    say: &dyn Fn(&str),
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(ANSWERS_WITHIN))?;
     stream.set_write_timeout(Some(ANSWERS_WITHIN))?;
@@ -74,7 +76,7 @@ fn answer(
             if began {
                 // The address, as a `run` started with `--panel` says it; and
                 // a tick now, to fill a page no tick was read for yet.
-                println!("panel: {}", answer["panel"].as_str().unwrap_or_default());
+                say(&format!("panel: {}", answer["panel"].as_str().unwrap_or_default()));
                 if let Some(waker) = waker {
                     waker.wake();
                 }

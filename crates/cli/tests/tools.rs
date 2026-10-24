@@ -16,7 +16,7 @@ fn starts(world: &World) -> Vec<Answer> {
 /// The two starts that start workers, each with `extra` after it → the
 /// answer of each: its last line.
 fn worker_starts(world: &World, extra: &[&str]) -> Vec<Answer> {
-    let run = "run --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
+    let run = "run --foreground --instance alpha --host h1 --now 1000 --ticks 1 --second-ms 0";
     let tick = "tick --instance alpha --host h1 --now 1000";
     let answer = |start: &str| {
         let out = world

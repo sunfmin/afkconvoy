@@ -53,7 +53,18 @@ fn a_busy_host_dispatches_nothing_new_and_the_frontier_waits_for_the_next_tick()
 fn the_tick_log_line_says_which_threshold_held_it_back() {
     let world = backlog(&[3]);
     world.busy(PAST_ANY);
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--ticks", "1", "--now", "1000"];
+    let args = [
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--ticks",
+        "1",
+        "--now",
+        "1000",
+    ];
     let more = ["--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &more[..]].concat());
     let line = lines.iter().find(|line| line.contains("admission holds back new workers"));

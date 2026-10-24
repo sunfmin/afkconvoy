@@ -141,7 +141,7 @@ fn the_loop_says_which_worker_it_restarted_and_which_claim_it_escalated() {
     let world = joining();
     tick(&world, 1090);
     let run = |now: &str| {
-        let args = ["run", "--host", "h1", "--second-ms", "0"];
+        let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
         let more = ["--instance", "alpha", "--ticks", "1", "--now", now];
         world.afk_lines(&[&args[..], &more[..]].concat()).0
     };

@@ -25,7 +25,7 @@ use afkconvoy_core::hot::{
     CPU_HELD, Episode, Limits, SAMPLE_EVERY, Sample, Turned, WRITTEN_WITHIN, Watch, Why, millicores,
 };
 use afkconvoy_core::train::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::evidence::{self, Taken};
 use crate::git::Repo;
@@ -44,7 +44,7 @@ const RESIDENT_KEPT: usize = 30;
 
 /// What the host says of the limits, where it says any: `--hot-cores`,
 /// `--hot-memory` and `--hot-written`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Said {
     pub millicores: Option<u64>,
     pub resident: Option<u64>,

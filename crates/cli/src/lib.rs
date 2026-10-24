@@ -52,6 +52,7 @@ pub mod host_evidence;
 pub mod host_sleep;
 pub mod hot;
 pub mod inspection;
+pub mod instance;
 pub mod intake;
 pub mod judge;
 pub mod kept;
@@ -99,7 +100,6 @@ use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
 use launch::Launches;
-use tick::Pacing;
 
 /// The environment variables that tell `run` `--hot-cores`, `--hot-memory` and
 /// `--hot-written`.
@@ -1233,6 +1233,9 @@ enum Command {
         /// Milliseconds one second of sleep takes
         #[arg(long, hide = true, default_value_t = 1000)]
         second_ms: u64,
+        /// Hold the fleet instance in this process, printing its lines, until it is told to stop
+        #[arg(long, hide = true)]
+        foreground: bool,
         #[command(flatten)]
         at: At,
     },
@@ -3286,23 +3289,77 @@ impl AgentArgs {
     }
 
     /// Makes the startup probe of a start that starts workers → what it
-    /// starts them with. What each command needs of this host is the probe's
-    /// to check: for every harness the fleet could be asked for, before any
-    /// worker is started. A start that is `trusting` makes none while one
-    /// that checked these commands stands (`probe::standing`).
+    /// starts them with (`start_agent`), its warnings said on stderr.
     fn start(self, repo: &Repo, now: u64, trusting: bool) -> anyhow::Result<Agent> {
-        let agent = self.agent(repo)?;
-        // The default harness's is settled whatever stands: a human is
-        // asked, where one must be, before anything else is.
-        agent.launches.key()?;
-        let stands = if trusting { probe::standing(repo, now, &agent.launches) } else { None };
-        let warnings = match stands {
-            Some(warnings) => warnings,
-            None => probe::startup(repo, now, &agent.launches)?,
-        };
+        let no_proxy = &self.proxy.worker_no_proxy;
+        let (agent, warnings) = start_agent(repo, no_proxy, self.ready_timeout, now, trusting)?;
         probe::announce(&warnings);
         Ok(agent)
     }
+}
+
+/// Builds the agent of a start that starts workers, in the checkout `repo`
+/// with this host's host kit, and makes its startup probe → the agent, and
+/// what the probe warned of. What each command needs of this host is the
+/// probe's to check: for every harness the fleet could be asked for, before
+/// any worker is started. A start that is `trusting` makes none while one that
+/// checked these commands stands (`probe::standing`).
+pub(crate) fn start_agent(
+    repo: &Repo,
+    worker_no_proxy: &[String],
+    ready_timeout: u64,
+    now: u64,
+    trusting: bool,
+) -> anyhow::Result<(Agent, Vec<String>)> {
+    let launches = Launches::new(repo, true)?.with_no_proxy(worker_no_proxy)?;
+    let agent = Agent { launches, ready_timeout };
+    // The default harness's is settled whatever stands: a human is
+    // asked, where one must be, before anything else is.
+    agent.launches.key()?;
+    let stands = if trusting { probe::standing(repo, now, &agent.launches) } else { None };
+    let warnings = match stands {
+        Some(warnings) => warnings,
+        None => probe::startup(repo, now, &agent.launches)?,
+    };
+    Ok((agent, warnings))
+}
+
+/// The start `run` asks for, from its flags and the global `--now` → whether
+/// it was `--foreground`, and the start; `None` for any other command. One
+/// mapping for `run` and for a host runner that starts a checkout again.
+fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start)> {
+    let Command::Run {
+        instance,
+        host,
+        agent,
+        panel,
+        no_host_sleep,
+        host_sleep_after,
+        hot_cores,
+        hot_memory,
+        hot_written,
+        ticks,
+        second_ms,
+        foreground,
+        ..
+    } = command
+    else {
+        return None;
+    };
+    let bytes = |thousandths: u64| thousandths.saturating_mul(1 << 30) / 1000;
+    let named = instance::Named {
+        instance: instance.map(|instance| instance.as_str().to_string()),
+        host,
+        worker_no_proxy: agent.proxy.worker_no_proxy,
+    };
+    let hot = hot::Said {
+        millicores: hot_cores,
+        resident: hot_memory.map(bytes),
+        written: hot_written.map(bytes),
+    };
+    let ready_timeout = agent.ready_timeout;
+    let knobs = instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now };
+    Some((foreground, instance::Start { named, panel, no_host_sleep, hot, knobs }))
 }
 
 /// Runs one command line. Prints exactly one JSON object on stdout: the
@@ -3412,18 +3469,26 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            if let Some(refused) = e.downcast_ref::<team::Refused>() {
-                println!("{}", json!({ "error": refused.to_string(), "faults": refused.json() }));
-            } else if let Some(doctor::Unwell(answer)) = e.downcast_ref() {
+            if let Some(doctor::Unwell(answer)) = e.downcast_ref() {
                 // Not an error to report: the answer itself, which says what is wrong.
                 println!("{answer}");
-            } else if let Some(see) = topic::explains(&e) {
-                println!("{}", json!({ "error": format!("{e:#}"), "see": see }));
             } else {
-                return fail(1, &format!("{e:#}"));
+                println!("{}", error_json(&e));
             }
             ExitCode::from(1)
         }
+    }
+}
+
+/// What a command prints for an error: {"error", "faults"} of a team's
+/// refusal, {"error", "see"} where a topic explains it, else {"error"}.
+pub(crate) fn error_json(e: &anyhow::Error) -> Value {
+    if let Some(refused) = e.downcast_ref::<team::Refused>() {
+        json!({ "error": refused.to_string(), "faults": refused.json() })
+    } else if let Some(see) = topic::explains(e) {
+        json!({ "error": format!("{e:#}"), "see": see })
+    } else {
+        json!({ "error": format!("{e:#}") })
     }
 }
 
@@ -3638,45 +3703,12 @@ fn run(
             plan["worker_no_proxy"] = launches.proxy_json();
             Ok(plan)
         }
-        Command::Run {
-            instance,
-            host,
-            agent,
-            panel,
-            no_host_sleep,
-            host_sleep_after,
-            hot_cores,
-            hot_memory,
-            hot_written,
-            ticks,
-            second_ms,
-            ..
-        } => {
-            if !no_host_sleep && !cfg!(target_os = "macos") {
-                anyhow::bail!(
-                    "this host is not macOS, the one a fleet can put to sleep once every fleet \
-                     on it is idle: start it with `--no-host-sleep`, which keeps it awake"
-                );
-            }
-            let host = host.unwrap_or_else(this_host);
-            let repo = checkout?;
-            // Two checkouts started in one second by one process mint two ids.
-            let checkout_key = afkconvoy_core::gate::key(&repo.dir.to_string_lossy()) as u32;
-            let salt = clock() as u32 ^ std::process::id() ^ checkout_key;
-            let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
-            let mut me = Me { instance, host, now };
-            let second = Duration::from_millis(second_ms);
-            let said = hot::Said {
-                millicores: hot_cores,
-                resident: hot_memory.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
-                written: hot_written.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
-            };
-            let hot = hot::limits(said, &repo.dir);
-            let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after, hot };
-            kit::ensure(now)?;
-            let agent = agent.start(&repo, now, false)?;
-            let clock = move || fixed_now.unwrap_or_else(clock);
-            tick::run(&repo, &mut me, &agent, &pacing, panel, clock)
+        Command::Run { .. } => {
+            let Some((_foreground, start)) = start_of(command, fixed_now) else { unreachable!() };
+            // Every `run` holds its fleet instance in this process until the
+            // host runner holds them (docs/adr/0023); `--foreground` is what
+            // holds one here from then on.
+            instance::foreground(&checkout?, &start)
         }
         Command::Panel { open: true, port, .. } => opening::open(&checkout?, port),
         Command::Panel { instance, host, .. } => {

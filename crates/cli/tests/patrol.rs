@@ -694,7 +694,18 @@ fn a_patrol_that_opens_a_pr_has_failed() {
 fn the_line_of_a_tick_names_the_patrols_it_ran_and_ended() {
     let world = bound("[sweep]");
     let run = |now: &str, ticks: &str| {
-        let args = ["run", "--host", "h1", "--second-ms", "0", "--ticks", ticks, "--now", now];
+        let args = [
+            "run",
+            "--foreground",
+            "--host",
+            "h1",
+            "--second-ms",
+            "0",
+            "--ticks",
+            ticks,
+            "--now",
+            now,
+        ];
         world.afk_lines(&args).0
     };
     let lines = run("10000", "1");
@@ -711,7 +722,7 @@ fn the_slot_a_patrol_s_end_frees_is_filled_by_the_tick_that_ended_it() {
     }
     // The frontier was not empty as the slot came free: the same tick started
     // a worker in it, and left `run` nothing to skip its sleep for.
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--second-ms", "0"];
+    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1", "--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &["--ticks", "1", "--now", "10400"]].concat());
     assert_eq!(
         lines,
@@ -735,7 +746,8 @@ fn runner(world: &World) -> String {
 fn a_start_takes_the_run_of_a_patrol_stamped_with_its_host_and_the_next_tick_ends_it() {
     let world = bound("[sweep]");
     let run = |instance: &str, host: &str, now: &str| {
-        let args = ["run", "--instance", instance, "--host", host, "--second-ms", "0"];
+        let args =
+            ["run", "--foreground", "--instance", instance, "--host", host, "--second-ms", "0"];
         world.afk_lines(&[&args[..], &["--ticks", "1", "--now", now]].concat()).0
     };
     // The fleet that ran here claimed a run, and was killed.

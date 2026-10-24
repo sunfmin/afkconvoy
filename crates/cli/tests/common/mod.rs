@@ -956,7 +956,7 @@ impl World {
     pub fn running(&self, args: &[&str]) -> Running {
         let mut child = self
             .command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone)
-            .arg("run")
+            .args(["run", "--foreground"])
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

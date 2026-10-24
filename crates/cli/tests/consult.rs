@@ -524,8 +524,19 @@ fn a_verdict_declared_before_run_is_started_again_is_read_by_its_first_tick() {
     declared_unread(&world);
     // `run` was killed before a tick read the verdict, and is started again:
     // the start takes the claim, and it is still the claim `build` declared under.
-    let run =
-        ["run", "--instance", "beta", "--host", "h1", "--second-ms", "0", "--ticks", "1", "--now"];
+    let run = [
+        "run",
+        "--foreground",
+        "--instance",
+        "beta",
+        "--host",
+        "h1",
+        "--second-ms",
+        "0",
+        "--ticks",
+        "1",
+        "--now",
+    ];
     let (lines, _) = world.afk_lines(&[&run[..], &["2000"]].concat());
     assert!(lines.iter().any(|line| line.contains("took #7 stamped with this host")), "{lines:?}");
     let tick = lines.iter().find(|line| line.starts_with("tick 1:")).expect("a tick's line");
@@ -617,7 +628,18 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     tick(&world, 1180);
     let_through(&world, "Not mine to rule: the schema is a product decision.");
     world.with_gh(|gh| gh["now"] = json!(1270));
-    let run = ["run", "--instance", "alpha", "--host", "h1", "--ticks", "1", "--now", "1270"];
+    let run = [
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--ticks",
+        "1",
+        "--now",
+        "1270",
+    ];
     let (lines, _) = world.afk_lines(&[&run[..], &["--second-ms", "0"]].concat());
     assert_eq!(lines.len(), 1, "{lines:?}");
     let said = "tick 1: escalated #7 (build: consult let it through) · holding 0/2 · frontier 0";

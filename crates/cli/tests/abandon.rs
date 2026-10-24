@@ -301,7 +301,7 @@ fn an_abandon_by_hand_is_refused_unless_the_tick_would_abandon() {
 fn the_loop_says_when_it_nudged_the_train_worker_and_abandoned_the_train() {
     let world = train(&[7]);
     let run = |now: &str| {
-        let args = ["run", "--host", "h1", "--second-ms", "0"];
+        let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
         let more = ["--instance", "alpha", "--ticks", "1", "--now", now];
         world.afk_lines(&[&args[..], &more[..]].concat()).0
     };

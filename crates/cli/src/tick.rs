@@ -974,27 +974,52 @@ fn stop_line(repo: &Repo, me: &Me) -> String {
 /// hears its wakes.
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
-/// The log a `run` keeps of itself (`log::Log`), and its stdout: each line is
-/// printed as it is written, one at a time, whichever thread says it, so the
-/// two hold the same lines in the same order. A log that cannot be written is
-/// said once and costs only what `doctor` could have read of it: no tick
-/// waits for its log.
+/// One line a fleet instance says: one it keeps in its tick log as it says it,
+/// or one that no tick log holds.
+pub enum Line<'l> {
+    /// Kept in its tick log (`Said::keep`).
+    Kept(&'l log::Entry),
+    /// Said and kept nowhere, as `run` printed and never logged it: what its
+    /// start took, host sleep's terms, its panel's address.
+    Said(&'l str),
+    /// What its startup probe warned of.
+    Warning(&'l str),
+}
+
+/// Where a fleet instance's lines go besides its tick log: printed, by
+/// `run --foreground`; in the host runner, to whoever waits for its first
+/// tick and to the host runner's log.
+pub type Echo = Arc<dyn Fn(Line<'_>) + Send + Sync>;
+
+/// What holds a fleet instance's loop: the stop it obeys, and where its lines
+/// go.
+pub struct Holder {
+    pub stop: Stop,
+    pub echo: Echo,
+}
+
+/// The log a `run` keeps of itself (`log::Log`), and its echo: each line is
+/// kept and then echoed, one at a time, whichever thread says it, so the two
+/// hold the same lines in the same order, and whoever hears a line finds it
+/// in the log. A log that cannot be written is said once and costs only what
+/// `doctor` could have read of it: no tick waits for its log.
 struct Said {
     log: Option<Log>,
     instance: String,
     host: String,
-    /// Held while a line is printed and written.
+    echo: Echo,
+    /// Held while a line is written and echoed.
     one: Mutex<()>,
 }
 
 impl Said {
     /// Opens the log of the checkout `repo` and says in it that `me`
-    /// started, with `agent`.
-    fn open(repo: &Repo, me: &Me, agent: &Agent) -> Said {
+    /// started, with `agent`; every line goes to `echo` too.
+    fn open(repo: &Repo, me: &Me, agent: &Agent, echo: Echo) -> Said {
         let log = Log::of(repo);
         let instance = me.instance.as_str().to_string();
-        let mut said =
-            Said { log: log.ok(), instance, host: me.host.clone(), one: Mutex::default() };
+        let host = me.host.clone();
+        let mut said = Said { log: log.ok(), instance, host, echo, one: Mutex::default() };
         // First words alone (`Launches::logged`): full commands stay in the host kit.
         let (worker_command, harness_commands) = agent.launches.logged();
         said.keep(me.now, log::What::Start { worker_command, harness_commands });
@@ -1011,11 +1036,17 @@ impl Said {
         let (instance, host) = (self.instance.clone(), self.host.clone());
         let entry = log::Entry { at, instance, host, what };
         let _one = self.one.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        println!("{}", entry.said());
         if let Some(log) = &self.log {
-            // Soft: the line is on stdout too, and the next one is tried again.
+            // Soft: the line is echoed too, and the next one is tried again.
             let _ = log.keep(&entry);
         }
+        (self.echo)(Line::Kept(&entry));
+    }
+
+    /// Says `line`, which no log keeps, in turn with the lines kept.
+    fn say(&self, line: &str) {
+        let _one = self.one.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        (self.echo)(Line::Said(line));
     }
 }
 
@@ -1056,7 +1087,8 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// it looks again within `INSPECTING_EVERY` while either is so
 /// (`Inspector`). Unless told `--no-host-sleep`, it puts the
 /// host to sleep once every fleet on it has been idle long enough
-/// (`HostSleep`, docs/adr/0016).
+/// (`HostSleep`, docs/adr/0016). It obeys `holder`'s stop — whoever holds the
+/// process listens for the signals — and says each line to its echo.
 pub fn run(
     repo: &Repo,
     me: &mut Me,
@@ -1064,12 +1096,15 @@ pub fn run(
     pacing: &Pacing,
     panel_port: Option<u16>,
     clock: impl Fn() -> u64 + Send + Sync + 'static,
+    holder: Holder,
 ) -> Result<Value> {
+    let Holder { stop, echo } = holder;
     let clock: Clock = Arc::new(clock);
     let mut shown = Panel::empty(&Fleet::open(repo, me.now)?, Some(me));
     let live = Live::new(panel::render(&shown));
     if let Some(port) = panel_port {
-        println!("panel: {}", serve::address(live.open(port)?.0));
+        // The first line of all, before the log is open: `panel` reads it first.
+        echo(Line::Said(&format!("panel: {}", serve::address(live.open(port)?.0))));
     }
     let mut streak = 0;
     let mut skipped = 0;
@@ -1078,7 +1113,7 @@ pub fn run(
     // What the last tick that rebuilt saw: the next one's line names what
     // changed outside this host since.
     let mut before: Option<Before> = None;
-    let said = Arc::new(Said::open(repo, me, agent));
+    let said = Arc::new(Said::open(repo, me, agent, echo));
     let during: During = {
         let (said, clock) = (Arc::clone(&said), Arc::clone(&clock));
         Box::new(move |during, by| said.keep(clock(), log::What::WokenDuring { during, by }))
@@ -1086,18 +1121,21 @@ pub fn run(
     let wakes = Listener::open(repo, during);
     let hot = Hot::default();
     let mut inspector = Inspector::new(repo, pacing.hot);
-    let stop = Stop::listen();
     {
         let said = Arc::clone(&said);
         let keep = move |at, what| said.keep(at, what);
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
         hot::watch(repo, pacing.hot, second, clock, keep, hot, stop.clone());
     }
-    opening::listen(repo, live.clone(), me.instance.as_str());
+    {
+        let said = Arc::clone(&said);
+        let say = Box::new(move |line: &str| said.say(line));
+        opening::listen(repo, live.clone(), me.instance.as_str(), say);
+    }
     let mut cause = Cause::Start;
     let mut by = None;
     if let Some(line) = host_sleep_line(pacing) {
-        println!("{line}");
+        said.say(&line);
     }
     let standing = Standing {
         instance: me.instance.as_str().to_string(),
@@ -1119,10 +1157,12 @@ pub fn run(
                 Ok(took) => {
                     started = true;
                     if let Some(line) = start_line(&took) {
-                        println!("start: {line}");
+                        said.say(&format!("start: {line}"));
                     }
                 }
-                Err(error) => println!("start: FAILED to take this host's claims: {error:#}"),
+                Err(error) => {
+                    said.say(&format!("start: FAILED to take this host's claims: {error:#}"))
+                }
             }
         }
         // Asked once a turn: a panel opened while the tick runs is the next

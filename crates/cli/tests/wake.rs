@@ -151,7 +151,16 @@ fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
 fn a_wake_after_the_run_ended_is_lost_and_costs_nothing() {
     let world = World::new();
     // one tick, and the run is over
-    let ran = world.afk_lines(&["run", "--instance", "alpha", "--host", "h1", "--ticks", "1"]);
+    let ran = world.afk_lines(&[
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--ticks",
+        "1",
+    ]);
     assert_eq!(ran.1["ticks"], 1);
     assert_eq!(wake(&world, &world.clone)["woke"], false);
 

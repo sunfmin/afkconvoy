@@ -94,7 +94,7 @@ fn the_run_logs_the_command_that_woke_it() {
     let world = World::new();
     let mut child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["run", "--instance", "alpha", "--host", "h1", "--ticks", "2"])
+        .args(["run", "--foreground", "--instance", "alpha", "--host", "h1", "--ticks", "2"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()

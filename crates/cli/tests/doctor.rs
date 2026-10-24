@@ -16,7 +16,7 @@ fn doctor(world: &World, now: &str) -> Answer {
 }
 
 fn run(world: &World, extra: &[&str]) -> Vec<String> {
-    let mut args = vec!["run", "--host", "h1", "--second-ms", "0"];
+    let mut args = vec!["run", "--foreground", "--host", "h1", "--second-ms", "0"];
     args.extend(extra);
     world.afk_lines(&args).0
 }
@@ -209,7 +209,7 @@ fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
-    let args = ["run", "--host", "h1", "--second-ms", "0"];
+    let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "2", "--now", "1000"];
     let (lines, _) = world.afk_every_line(&[&args[..], &more[..]].concat());
     let log = log(&world);
@@ -341,7 +341,7 @@ impl Drop for Running {
 }
 
 fn start(world: &World) -> Running {
-    let args = ["run", "--instance", "alpha", "--host", "h1"];
+    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
     let child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args)
