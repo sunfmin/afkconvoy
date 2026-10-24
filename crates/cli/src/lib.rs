@@ -4251,6 +4251,7 @@ mod tests {
         &["plan"],
         &["run"],
         &["stop"],
+        &["checkouts"],
         &["host-runner"],
         &["panel"],
         &["tick", "--instance", "a-h1-1"],
