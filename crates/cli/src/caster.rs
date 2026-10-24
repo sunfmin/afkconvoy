@@ -262,7 +262,7 @@ pub fn cast(now: u64) -> Result<Value> {
         let labels = match (casting.labels(&offers), ranges) {
             (Ok(labels), Some(ranges)) if team.is_some() => {
                 match held_by_none(&labels, ranges, None) {
-                    Some(why) => Err(why),
+                    Some(unheld) => Err(unheld.why),
                     None => Ok(labels),
                 }
             }

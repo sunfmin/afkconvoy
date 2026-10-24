@@ -52,6 +52,9 @@ pub struct Staged {
     /// of the issue's casting (`Fleet::cast_in`), or the stock consult's.
     harness: Harness,
     model: Option<String>,
+    /// The name the issue was given that matches nothing held, with what
+    /// the worker runs instead.
+    unmatched: Option<(String, casting::Cast)>,
     /// What the guard holds every worker to: the repo's base branch, the
     /// team's escalate label and the repo's lock label.
     base_branch: String,
@@ -145,8 +148,6 @@ impl Staged {
         let history = history(workflow, &records);
         let handed = handed_said(&history, &records, &urls);
         let verdicts = records.into_iter().zip(urls).zip(history.readings);
-        // A casting none of the workflow's stages' ranges holds is not
-        // dispatched (docs/adr/0020).
         // A caster's casting to a paused harness is cast again: until it is,
         // the issue runs as one with no casting.
         let labels = match fleet.recast(issue, labels)? {
@@ -155,22 +156,18 @@ impl Staged {
         };
         let kit = crate::kit::running()?.0.range();
         let ranges = casting::stage_ranges(&kept.team, workflow, &kit);
-        if let Some(why) = casting::held_by_none(&labels, &ranges, fleet.chosen) {
-            return Err(See::Workflows.refusal(format!("issue #{issue} is not dispatched: {why}")));
-        }
         // A worker in a role runs the issue's casting within its role's
-        // range; the stock consult runs what the host kit names for it. This
-        // host's chosen harness, where a switch chose one, wins over both.
-        let (harness, model) = match &by {
+        // range — its range's first where it matches nothing held
+        // (docs/adr/0020); the stock consult runs what the host kit names for
+        // it. This host's chosen harness, where a switch chose one, wins over
+        // both.
+        let cast = match &by {
             Some((_, role)) => {
-                let cast = fleet.cast_in(role, &labels)?;
-                (cast.harness, cast.model)
+                casting::unmatched_in(fleet.cast_in(role, &labels)?, &labels, &ranges)
             }
-            None => {
-                let stock = fleet.stock_consult()?;
-                (stock.harness, stock.model)
-            }
+            None => fleet.stock_consult()?,
         };
+        let (harness, model) = (cast.harness, cast.model.clone());
         let (role, skill, role_copy, host_user, dsh_profile) = match by {
             Some((work, role)) => (
                 role.name.clone(),
@@ -207,6 +204,7 @@ impl Staged {
             consult,
             harness,
             model,
+            unmatched: cast.unmatched.clone().map(|name| (name, cast)),
             base_branch: fleet.config.base_branch.clone(),
             escalate_label: kept.team.escalate_label.clone(),
             lock_label: fleet.config.lock_label.clone(),
@@ -224,6 +222,12 @@ impl Staged {
     /// The harness the worker is a session of.
     pub fn harness(&self) -> Harness {
         self.harness
+    }
+
+    /// The name the issue was given that matches nothing held, with what
+    /// the worker runs instead: what the issue is told once.
+    pub fn unmatched(&self) -> Option<&(String, casting::Cast)> {
+        self.unmatched.as_ref()
     }
 
     /// The line the terminal on `worktree` runs to start the worker with
@@ -560,22 +564,9 @@ pub fn probe(launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<
     if let Some(why) = refusal(check(launches, &called_for(team.as_ref()))?) {
         bail!(why);
     }
-    match team {
-        Some(team) => ranged(&team),
-        None => Ok(()),
-    }
-}
-
-/// Refuses a team one of whose roles' ranges on this host
-/// (`casting::range_faults`) holds a harness the role has no limits for,
-/// or nothing at all (docs/adr/0013, docs/adr/0020): every such role is
-/// named, with what the roster allows it and what the host kit holds.
-fn ranged(team: &Team) -> Result<()> {
-    let faults = casting::range_faults(team, &crate::kit::load()?.range());
-    if faults.is_empty() {
-        return Ok(());
-    }
-    Err(See::Team.refusal(faults.join("\n")))
+    // A role whose range holds nothing refuses no start: its stages wait
+    // (`casting::nothing_safe`), and nothing else does.
+    Ok(())
 }
 
 /// Checks that a worker of `harness` can be started on this host, for what

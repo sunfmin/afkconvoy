@@ -391,7 +391,7 @@ fn plan_and_doctor_show_the_host_kit() {
         assert_eq!(kit["harnesses"][0]["command"], "agent");
         assert_eq!(
             kit["stock_consult"],
-            json!({"harness": "claude-code", "model": null, "named": false})
+            json!({"harness": "claude-code", "model": null, "named": false, "unmatched": null})
         );
         assert_eq!(kit["harnesses"][1]["harness"], "pi");
         assert_eq!(kit["harnesses"][1]["models"][0]["model"], "a/fast");
@@ -403,14 +403,16 @@ fn plan_and_doctor_show_the_host_kit() {
     let shown = world.afk(&["plan", "--now", "1000"]).json;
     assert_eq!(
         shown["host_kit"]["stock_consult"],
-        json!({"harness": "pi", "model": "a/slow", "named": true})
+        json!({"harness": "pi", "model": "a/slow", "named": true, "unmatched": null})
     );
-    // …and one it does not hold is no host kit.
+    // …and one it does not hold is not followed: the host kit's first, and
+    // said.
     kit["stock_consult"] = json!({"harness": "pi", "model": "a/none"});
     std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
     let shown = world.afk(&["plan", "--now", "1000"]).json;
-    let error = shown["host_kit"]["error"].as_str().unwrap();
-    assert!(error.contains("cannot read the host kit") && error.contains("a/none"), "{error}");
+    let stock = &shown["host_kit"]["stock_consult"];
+    assert_eq!(stock["harness"], "claude-code", "{shown}");
+    assert!(stock["unmatched"].as_str().unwrap().contains("`a/none`"), "{stock}");
 }
 
 #[test]
