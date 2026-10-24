@@ -329,11 +329,20 @@ impl Harness {
 
     /// The display name of each model it lists in `answer`, what it printed
     /// for `models_question`, by the name its `models` gives it: a name a
-    /// human knows it by too. Only Claude Code says them.
+    /// human knows it by too.
     pub fn shown(self, answer: &str) -> Vec<(String, String)> {
         match self {
             Harness::ClaudeCode => claude_code::shown(answer),
-            Harness::Pi | Harness::Codex | Harness::Dsh => vec![],
+            Harness::Dsh => dsh::shown(answer),
+            Harness::Pi | Harness::Codex => vec![],
+        }
+    }
+
+    /// A refusal the model listing reports, where the harness says why.
+    pub fn listing_failure(self, answer: &str) -> Option<String> {
+        match self {
+            Harness::Dsh => dsh::listing_failure(answer),
+            Harness::ClaudeCode | Harness::Pi | Harness::Codex => None,
         }
     }
 
