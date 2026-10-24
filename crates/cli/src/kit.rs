@@ -600,6 +600,7 @@ impl LeftOut {
 ///   the host kit's first; and the `good_at` written beside a model kept —
 ///   of the same model on another harness where none is written beside it
 ///   on its own, the provider prefix left off.
+///
 /// A refresh keeps listed ids and probes new names and aliases again, so
 /// an alias that moves is held under the model it now answers as.
 fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) {
