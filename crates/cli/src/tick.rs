@@ -68,24 +68,14 @@ struct Failure {
 /// Since when a worker has waited on its own background work, as a tick's line
 /// says it: `since 2026-10-20 23:03 UTC, 12m ago`.
 pub(crate) fn waiting_since(since: u64, now: u64) -> String {
-    let days = since / 86_400;
-    let (hour, minute) = (since % 86_400 / 3600, since % 3600 / 60);
-    // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`).
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let of_era = shifted % 146_097;
-    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
-    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * of_year + 2) / 153;
-    let day = of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
     let ago = match stamp_age(since, now) {
         Some(ago) if ago >= 60 => format!("{}m ago", ago / 60),
         Some(ago) => format!("{ago}s ago"),
         None => "just now".to_string(),
     };
-    format!("since {year}-{month:02}-{day:02} {hour:02}:{minute:02} UTC, {ago}")
+    // To the minute: the seconds are left off.
+    let stamped = log::utc(since);
+    format!("since {} UTC, {ago}", &stamped[..stamped.len() - 3])
 }
 
 /// What one tick came to.

@@ -4,6 +4,7 @@
 
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -394,20 +395,38 @@ pub(crate) fn ask_login_shell_within(
     script: &str,
     timeout: Duration,
 ) -> Option<(bool, String)> {
+    let (succeeded, printed) = ask_shell(dir, script, timeout, None)?;
+    Some((succeeded, String::from_utf8_lossy(&printed).into_owned()))
+}
+
+/// The user's login shell: `$SHELL`, or zsh, macOS's, where it is unset.
+fn login_shell_program() -> String {
     let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty());
-    let mut child = Command::new(shell.as_deref().unwrap_or("/bin/zsh"))
-        .args(["-lic", script])
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    shell.unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
+/// Runs `script` in the user's interactive login shell, started in `dir`
+/// with `env` alone where it is given, else with this process's
+/// environment → whether it exited zero, and the bytes it printed. `None`
+/// when it could not run or did not end within `timeout`.
+fn ask_shell(
+    dir: &Path,
+    script: &str,
+    timeout: Duration,
+    env: Option<&[(OsString, OsString)]>,
+) -> Option<(bool, Vec<u8>)> {
+    let mut shell = Command::new(login_shell_program());
+    shell.args(["-lic", script]).current_dir(dir);
+    if let Some(env) = env {
+        shell.env_clear().envs(env.iter().map(|(name, value)| (name, value)));
+    }
+    let mut child =
+        shell.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let mut printed = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = printed.read_to_string(&mut text);
-        text
+        let mut bytes = Vec::new();
+        let _ = printed.read_to_end(&mut bytes);
+        bytes
     });
     let started = Instant::now();
     let status = loop {
@@ -422,4 +441,83 @@ pub(crate) fn ask_login_shell_within(
         }
     };
     Some((status.success(), reader.join().ok()?))
+}
+
+/// What login gives every shell of this user, whatever session started it:
+/// the part of a session's environment a fresh login shell starts from.
+const LOGIN_GIVES: [&str; 7] =
+    ["HOME", "USER", "LOGNAME", "SHELL", "SSH_AUTH_SOCK", "LANG", "__CF_USER_TEXT_ENCODING"];
+
+/// The PATH a fresh login shell starts from, before its rc files add to it.
+const LOGIN_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// What a shell keeps of itself in its environment: no process it starts
+/// is given them as the shell holds them.
+const SHELL_KEEPS: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
+
+/// The word the login shell prints before its environment: rc files may
+/// print anything first.
+const ENV_FRAME: &str = "AFKCONVOY_ENV";
+
+/// The environment of a fresh login shell of this user: `$SHELL -lic`
+/// (/bin/zsh where SHELL is unset), started in the home directory from
+/// `LOGIN_GIVES` and `LOGIN_PATH`, less what the shell keeps for itself
+/// (`SHELL_KEEPS`). Nothing a session set for itself reaches it: no
+/// CLAUDE_CODE_*, ORCA_*, AFKCONVOY_* or TMPDIR. An error where the shell did
+/// not answer within `SHELL_TIMEOUT`.
+pub fn login_environment() -> Result<Vec<(OsString, OsString)>> {
+    let given = LOGIN_GIVES
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)));
+    let given: Vec<_> = given.chain([("PATH".into(), LOGIN_PATH.into())]).collect();
+    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|home| home.is_dir());
+    let home = home.unwrap_or_else(|| PathBuf::from("/"));
+    let question = format!("printf '{ENV_FRAME}\\000'; /usr/bin/env -0");
+    let shell = login_shell_program();
+    let fix = "fix what your shell's rc files do without a terminal, then run again";
+    let Some((_, printed)) = ask_shell(&home, &question, SHELL_TIMEOUT, Some(&given)) else {
+        bail!("`{shell} -lic` did not answer within {}s: {fix}", SHELL_TIMEOUT.as_secs());
+    };
+    login_answered(&printed)
+        .ok_or_else(|| anyhow!("`{shell} -lic` printed no environment, as `env -0` does: {fix}"))
+}
+
+/// The environment a login shell printed after `ENV_FRAME`, one `NAME=value`
+/// a NUL, less what the shell keeps for itself; `None` where it printed no
+/// frame.
+fn login_answered(printed: &[u8]) -> Option<Vec<(OsString, OsString)>> {
+    use std::os::unix::ffi::OsStrExt;
+    let frame = [ENV_FRAME.as_bytes(), b"\0"].concat();
+    let at = printed.windows(frame.len()).position(|window| window == frame)?;
+    let pairs = printed[at + frame.len()..].split(|byte| *byte == 0);
+    let pairs = pairs.filter_map(|pair| {
+        let equals = pair.iter().position(|byte| *byte == b'=').filter(|at| *at > 0)?;
+        let (name, value) = (&pair[..equals], &pair[equals + 1..]);
+        let name = std::ffi::OsStr::from_bytes(name);
+        let kept = SHELL_KEEPS.iter().any(|kept| name == *kept);
+        (!kept).then(|| (name.to_os_string(), std::ffi::OsStr::from_bytes(value).to_os_string()))
+    });
+    Some(pairs.collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_login_shells_environment_is_read_after_its_frame_less_what_the_shell_keeps() {
+        let printed = b"a line an rc file printed\nAFKCONVOY_ENV=no\0\
+            AFKCONVOY_ENV\0PWD=/Users/me\0PATH=/opt/bin:/usr/bin\0SHLVL=1\0_=/usr/bin/env\0\
+            NOTE=two\nlines=and an equals\0OLDPWD=/\0EMPTY=\0";
+        let read = login_answered(printed).unwrap();
+        let read: Vec<(&str, &str)> = read
+            .iter()
+            .map(|(name, value)| (name.to_str().unwrap(), value.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            read,
+            [("PATH", "/opt/bin:/usr/bin"), ("NOTE", "two\nlines=and an equals"), ("EMPTY", "")]
+        );
+        assert_eq!(login_answered(b"PATH=/usr/bin\0"), None, "no frame, no environment");
+    }
 }

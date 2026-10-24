@@ -15,6 +15,11 @@
 //! `deleted` and `transferred` {number: how many more calls about it are
 //! answered}: past those, each call about the issue answers 410 — or 404 —
 //! as GitHub does for an issue deleted, or transferred to another repo.
+//! `envs`: beside each of `calls`, the names of the session's environment it
+//! ran in (`fake::State`).
+//!
+//! A checkout whose `.git/convoy-fake-gh` names another file is of a repo of
+//! its own: every call run in it reads and writes that file instead.
 
 mod fake;
 
@@ -28,7 +33,7 @@ use serde_json::{Value, json};
 const REPO: &str = "repos/{owner}/{repo}/";
 
 fn main() {
-    let mut st = State::open("CONVOY_FAKE_GH");
+    let mut st = State::open_routed("CONVOY_FAKE_GH", "convoy-fake-gh");
     let line = st.argv.join(" ");
     let injected = st.doc["fail"]
         .as_array()

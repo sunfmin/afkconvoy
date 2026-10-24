@@ -18,7 +18,22 @@ pub struct State {
 impl State {
     /// Opens the state file the environment variable `var` names and logs this call.
     pub fn open(var: &str) -> State {
-        let path = PathBuf::from(std::env::var(var).unwrap_or_else(|_| panic!("{var} is not set")));
+        State::at(named_by(var))
+    }
+
+    /// Opens the state of the repo this call is run in, and logs this call:
+    /// the file named in the first `.git/<marker>` found from its working
+    /// directory up, else the one `var` names. One host runner holds the
+    /// fleets of several repos, each with a stand-in of its own.
+    pub fn open_routed(var: &str, marker: &str) -> State {
+        let here = std::env::current_dir().unwrap_or_default();
+        let routed = here
+            .ancestors()
+            .find_map(|dir| std::fs::read_to_string(dir.join(".git").join(marker)).ok());
+        State::at(routed.map_or_else(|| named_by(var), |file| PathBuf::from(file.trim())))
+    }
+
+    fn at(path: PathBuf) -> State {
         let lock = File::create(path.with_extension("lock")).expect("lock file");
         lock.lock().expect("lock");
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("state file"))
@@ -31,6 +46,7 @@ impl State {
         let mut state = State { path, _lock: lock, doc, argv };
         let call = Value::from(state.argv.clone());
         state.list("calls").push(call);
+        state.list("envs").push(Value::from(session_names()));
         state
     }
 
@@ -78,6 +94,26 @@ impl State {
         eprint!("{err}");
         exit(code)
     }
+}
+
+/// The file the environment variable `var` names.
+fn named_by(var: &str) -> PathBuf {
+    PathBuf::from(std::env::var(var).unwrap_or_else(|_| panic!("{var} is not set")))
+}
+
+/// The names in this call's environment that a session sets for itself —
+/// Claude Code's and orca's — and the one a world's login profile alone sets
+/// (`AFKCONVOY_TEST_LOGIN`), sorted: whose environment the call ran in. Kept
+/// in `envs`, one a call, beside `calls`.
+fn session_names() -> Vec<String> {
+    let names = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
+    let session = |name: &String| {
+        ["CLAUDE_CODE_", "CLAUDECODE", "ORCA_"].iter().any(|set| name.starts_with(set))
+            || name == "AFKCONVOY_TEST_LOGIN"
+    };
+    let mut names: Vec<String> = names.filter(session).collect();
+    names.sort();
+    names
 }
 
 /// git's stdout, trimmed; empty when the command failed.

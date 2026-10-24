@@ -50,6 +50,7 @@ pub mod git;
 pub mod guard;
 pub mod harness_down;
 pub mod host_evidence;
+pub mod host_runner;
 pub mod host_sleep;
 pub mod hot;
 pub mod inspection;
@@ -76,6 +77,7 @@ pub mod reclaim;
 pub mod recovery;
 pub mod role;
 pub mod roster_issue;
+pub mod runner_socket;
 pub mod scaffold;
 pub mod serve;
 pub mod settle;
@@ -1240,6 +1242,9 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
+    /// Hold every checkout on this host's checkout list, as `run` starts it in the background
+    #[command(hide = true)]
+    HostRunner,
     /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
     ///
     /// ##### When to run it
@@ -3363,6 +3368,15 @@ fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start
     Some((foreground, instance::Start { named, panel, no_host_sleep, hot, knobs }))
 }
 
+/// The start of a `run` that named nothing, in this process's environment:
+/// how a host runner starts a checkout on its list, with what that checkout's
+/// `run` named laid over it.
+pub(crate) fn unflagged_start() -> anyhow::Result<instance::Start> {
+    let unflagged = Cli::try_parse_from(["afkconvoy", "run"])?;
+    let start = start_of(unflagged.command, None).map(|(_, start)| start);
+    start.context("a `run` asks for a start")
+}
+
 /// Runs one command line. Prints exactly one JSON object on stdout: the
 /// command's answer, or `{"error": …}` with a non-zero exit — `doctor` exits
 /// non-zero with its answer, when that holds a critical finding. An answer that
@@ -3472,6 +3486,9 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(e) => {
             if let Some(doctor::Unwell(answer)) = e.downcast_ref() {
                 // Not an error to report: the answer itself, which says what is wrong.
+                println!("{answer}");
+            } else if let Some(host_runner::Answered(answer)) = e.downcast_ref() {
+                // The host runner's own words, with which host runner said them.
                 println!("{answer}");
             } else {
                 println!("{}", error_json(&e));
@@ -3585,6 +3602,7 @@ impl Command {
             | Command::Doctor { .. }
             | Command::Plan { .. }
             | Command::Run { .. }
+            | Command::HostRunner
             | Command::Panel { .. }
             | Command::Guard
             | Command::Exclusive { .. }
@@ -3705,12 +3723,13 @@ fn run(
             Ok(plan)
         }
         Command::Run { .. } => {
-            let Some((_foreground, start)) = start_of(command, fixed_now) else { unreachable!() };
-            // Every `run` holds its fleet instance in this process until the
-            // host runner holds them (docs/adr/0023); `--foreground` is what
-            // holds one here from then on.
-            instance::foreground(&checkout?, &start)
+            let Some((foreground, start)) = start_of(command, fixed_now) else { unreachable!() };
+            match foreground {
+                true => instance::foreground(&checkout?, &start),
+                false => host_runner::run(&checkout?, start, now),
+            }
         }
+        Command::HostRunner => host_runner::serve(),
         Command::Panel { open: true, port, .. } => opening::open(&checkout?, port),
         Command::Panel { instance, host, .. } => {
             let (mut fleet, open) = Fleet::read(&checkout?, now)?;
@@ -3969,6 +3988,7 @@ mod tests {
         &["doctor"],
         &["plan"],
         &["run"],
+        &["host-runner"],
         &["panel"],
         &["tick", "--instance", "a-h1-1"],
         &["gate"],

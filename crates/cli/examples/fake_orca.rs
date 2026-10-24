@@ -4,8 +4,9 @@
 //! State: `repos` [{id, path}], `root` (where worktrees are made), `worktrees`
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
 //! worktreePath, command, sent, open, agent?, lastOutputAt?, screen?}], `calls`,
-//! and `from`: the directory each call was run from, which real orca takes the
-//! current worktree from where a call names none.
+//! `envs`: beside each of `calls`, the names of the session's environment it
+//! ran in (`fake::State`), and `from`: the directory each call was run from,
+//! which real orca takes the current worktree from where a call names none.
 //! A terminal's `command` is the worker's line behind what starts every one
 //! under `nice` with the worktree's own `TMPDIR`: one without it is refused,
 //! but for a question (`question::typed`), which is put to `$SHELL -lic` —

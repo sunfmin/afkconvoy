@@ -27,6 +27,7 @@ mod gate;
 mod goodbye;
 mod guard;
 mod help;
+mod host_runner;
 mod host_sleep;
 mod inspected;
 mod intake;
