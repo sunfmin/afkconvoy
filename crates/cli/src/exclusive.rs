@@ -2,12 +2,11 @@
 //! once no other `exclusive` command runs on the host, across all its fleets.
 //!
 //! The queue is one directory of the cache, shared by every fleet on the host
-//! whatever its repo, as host sleep's sockets are (docs/adr/0016). Each
-//! command waiting or running has a ticket there, a file its process holds
-//! locked for as long as it lives: a ticket whose lock can be taken is what a
-//! process that died left, and is removed. The directory is changed, and read,
-//! only by one holding its own lock. Which ticket runs is the core's to say
-//! (`afkconvoy_core::exclusive`).
+//! whatever its repo. Each command waiting or running has a ticket there, a
+//! file its process holds locked for as long as it lives: a ticket whose lock
+//! can be taken is what a process that died left, and is removed. The
+//! directory is changed, and read, only by one holding its own lock. Which
+//! ticket runs is the core's to say (`afkconvoy_core::exclusive`).
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};

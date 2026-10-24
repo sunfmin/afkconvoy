@@ -218,7 +218,8 @@ pub struct Heartbeats {
 /// The `run` of this host for this repo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Run {
-    /// Whether one listens for wakes: it is alive.
+    /// Whether this host's runner holds a fleet instance of this repo: it is
+    /// alive.
     pub alive: bool,
     /// Its fleet instance: the one its log names, else the one the claims
     /// stamped with this host name. `None`: this host never ran one.
@@ -531,7 +532,7 @@ fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
             run.host,
             numbered(&issues)
         ),
-        format!("nothing listens for wakes in this repo's git dir; {beat}"),
+        format!("this host's runner holds no fleet instance of this repo; {beat}"),
         "afkconvoy run".to_string(),
     )]
 }

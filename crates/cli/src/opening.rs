@@ -98,7 +98,7 @@ fn answered(reached: Reached) -> Result<Value> {
         Reached::Closed | Reached::Unanswered => bail!(unanswered),
     };
     if let Some(error) = answer["error"].as_str() {
-        bail!("the panel was not opened, and the fleet instance works on as it was: {error}");
+        bail!("the panel was not opened, and nothing changed: {error}");
     }
     let answer = answer.as_object_mut().context(unanswered)?;
     answer.remove("host_runner");
@@ -156,8 +156,8 @@ mod tests {
         let error = format!("{:#}", answered(Reached::Answer(refused)).err().unwrap());
         assert_eq!(
             error,
-            "the panel was not opened, and the fleet instance works on as it was: the panel \
-             cannot be served on port 80"
+            "the panel was not opened, and nothing changed: the panel cannot be served on port \
+             80"
         );
         let opened = json!({"panel": "http://127.0.0.1:7070/", "port": 7070, "opened": true,
             "instance": "alpha", "host_runner": {"pid": 42}});
