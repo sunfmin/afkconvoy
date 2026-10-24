@@ -857,11 +857,12 @@ mod tests {
             let found = |harness| {
                 if harness == Harness::Dsh { Ok(()) } else { Err("not installed".into()) }
             };
-            let listing = |_: Harness, _: &str| {
+            let answer = printed.clone();
+            let listing = move |_: Harness, _: &str| {
                 let ids = Harness::Dsh
-                    .models(&printed)
-                    .ok_or_else(|| Harness::Dsh.listing_failure(&printed).unwrap())?;
-                let shown = Harness::Dsh.shown(&printed);
+                    .models(&answer)
+                    .ok_or_else(|| Harness::Dsh.listing_failure(&answer).unwrap())?;
+                let shown = Harness::Dsh.shown(&answer);
                 Ok(ids
                     .into_iter()
                     .map(|id| {
