@@ -1,0 +1,34 @@
+The one directory of its own the fleet keeps on a host: where it is, what moves it, and what it holds. The helps that speak of a file under "the cache directory" mean this one.
+
+## Where it is
+
+- `$XDG_CACHE_HOME/afkconvoy`: where XDG_CACHE_HOME is set and not empty
+- `$HOME/.cache/afkconvoy`: otherwise — on macOS too: never ~/Library/Caches
+
+It is made when something is first kept in it. With neither variable set, a command that needs it fails and says so.
+
+## What moves it
+
+Setting XDG_CACHE_HOME, and nothing else: there is no flag and no config key for it. To keep everything under a directory of your choosing:
+
+```sh
+XDG_CACHE_HOME="$PWD/.cache" afkconvoy check
+```
+
+Each command reads the variable for itself, so two commands find the same copies and the same log only under the same value: a `doctor` run without the one a `run` was started with reads another directory, and finds no log there.
+
+## What it holds
+
+- `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. A worker of a bound repo starts in one; an unbound repo has none.
+- `harness/`: the user directory the fleet keeps for pi and for Codex, a worker's in place of yours: harness/pi, harness/codex.
+- `runs/`: the log of each repo's `run`, one file per repo: what `doctor` reads. It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}, the oldest dropped first.
+- `instances/`: the socket each `run` of this host listens on, whatever its repo, named for its fleet instance: how they find one another before one puts the host to sleep. A `run` removes its own as it exits.
+- `host-inspection/`: what the last inspection of the host was given (evidence.md) and what it found (last.json), whichever fleet of the host started it: what `doctor` and the panel show beside admission's reading.
+
+None of it is fleet state: that is in GitHub and on the repo's remote.
+
+## See also
+
+- `afkconvoy check --help`: when a copy is cloned, and what is read from it
+- `afkconvoy run --help`: the log, and what each harness's user directory holds
+- `afkconvoy doctor --help`: what is read back from the log and the copies

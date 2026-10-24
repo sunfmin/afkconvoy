@@ -304,7 +304,7 @@ fn the_readme_gives_the_install_lines_a_refusal_gives() {
     for line in [start, add] {
         assert!(readme.contains(&format!("`{line}`")), "the README lost `{line}`");
         assert!(
-            include_str!("../src/help.txt").contains(&format!("`{line}`")),
+            include_str!("../src/lib.rs").contains(&format!("`{line}`")),
             "the guide lost `{line}`"
         );
     }

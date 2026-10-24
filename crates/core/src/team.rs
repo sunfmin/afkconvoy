@@ -1047,6 +1047,9 @@ pub fn workflow_name(path: &str) -> Option<&str> {
     if name.is_empty() || name.contains('/') { None } else { Some(name) }
 }
 
+/// The most characters a patrol's name may have.
+pub const PATROL_NAME_MOST: usize = 40;
+
 /// The name of the patrol the file at `path` defines; `None` when the path is
 /// not `patrols/<name>.md` with a name made of words of lowercase letters and
 /// digits, each starting with a letter, joined by `-`. A ref and a worktree
@@ -1057,7 +1060,7 @@ pub fn patrol_name(path: &str) -> Option<&str> {
         word.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
             && word.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
     };
-    if name.len() <= 40 && name.split('-').all(word) { Some(name) } else { None }
+    if name.len() <= PATROL_NAME_MOST && name.split('-').all(word) { Some(name) } else { None }
 }
 
 /// The seconds a duration written as `text` lasts: a whole number from 1 up,

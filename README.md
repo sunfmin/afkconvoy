@@ -36,9 +36,9 @@ npx skills add sunfmin/afkconvoy
 afkconvoy --help
 ```
 
-It is the tool's own guide, written for a human and for an agent alike, and the only place afkconvoy is explained: what it needs, what to run first, every command — `afkconvoy <command> --help` says the rest of one — and the topics, each printed by `afkconvoy help <topic>`. Nothing here repeats it.
+It is the tool's own manual, in Markdown, written for a human and for an agent alike, and the only place afkconvoy is explained: what it needs, what to run first, every command — `afkconvoy <command> --help` says the rest of one — and the topics, each printed by `afkconvoy help <topic>`. Nothing here repeats it.
 
-The topics are also one page, for reading in a browser: [`docs/manual.md`](docs/manual.md), generated from them.
+The manual is also a page, for reading in a browser: [`docs/manual.md`](docs/manual.md), generated from it.
 
 ## Develop
 
@@ -58,7 +58,7 @@ Flux on the core crate needs the checker that [`crates/core/Cargo.toml`](crates/
 
 The decisions live in `crates/core` as pure functions checked by [Flux](https://github.com/flux-rs/flux) (`./verify.sh`); `crates/cli` carries them out through `git`, `gh` and `orca` ([ADR-0007](docs/adr/0007-refinement-types-on-a-pure-core.md)).
 
-**The manual** is generated, and never edited: after changing a help topic or `GLOSSARY.md`, run `cargo run -p afkconvoy --example manual` and commit what it wrote to [`docs/manual.md`](docs/manual.md). The gate fails while the page is not what that command writes.
+**The manual** is generated, and never edited: after changing the help — the guide, a command's, a topic, or `GLOSSARY.md` — run `cargo run -p afkconvoy --example manual` and commit what it wrote to [`docs/manual.md`](docs/manual.md). The gate fails while the page is not what that command writes.
 
 **Cutting a release**: set `version` in `Cargo.toml`, merge, then push the tag `v<version>`. The [release workflow](.github/workflows/release.yml) builds both macOS binaries on stable Rust and publishes them to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap): the archives to its release `afkconvoy-v<version>`, the formula to `Formula/afkconvoy.rb`. Homebrew downloads from the tap because this repository is private. The workflow needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may write the tap's contents, and fails before it builds without it.
 

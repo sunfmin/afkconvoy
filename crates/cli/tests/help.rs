@@ -1,6 +1,7 @@
-//! The help: the top-level `--help` is the text an agent learns the tool from,
-//! `-h` the one-screen listing, and the skill file only points at the former.
-//! Each subcommand's `--help` is the next rung: what its one line leaves out.
+//! The help: the top-level `--help` is the manual an agent learns the tool
+//! from — the guide, every command under who runs it, every topic — `-h` the
+//! one-screen listing, and the skill file only points at the former. Each
+//! subcommand's `--help` is the next rung: what its one line leaves out.
 
 use crate::common;
 
@@ -40,15 +41,35 @@ fn listed(short: &str) -> BTreeSet<&str> {
     names.filter_map(|line| line.split_whitespace().next()).filter(|name| *name != "help").collect()
 }
 
-/// The guide `--help` opens with: everything above clap's own listing.
+/// The guide the manual opens with: everything above its commands.
 fn guide(long: &str) -> &str {
-    long.split("\nUsage:").next().unwrap()
+    long.split("\n## Commands\n").next().unwrap()
 }
 
-/// The subcommands the guide sorts into groups: its lines of bare names.
-fn grouped(guide: &str) -> Vec<&str> {
-    let lines = between(guide, "THE COMMANDS", "THE TOPICS").into_iter();
-    lines.filter(|line| line.starts_with("      ")).flat_map(str::split_whitespace).collect()
+/// The manual's groups of commands, in order, each with its commands: a
+/// `### <group>` and the `#### \`afkconvoy <command>\`` under it.
+fn groups(long: &str) -> Vec<(&str, Vec<&str>)> {
+    let mut groups: Vec<(&str, Vec<&str>)> = vec![];
+    for line in between(long, "## Commands", "## Topics") {
+        if let Some(group) = line.strip_prefix("### ") {
+            groups.push((group, vec![]));
+        } else if let Some(command) = line.strip_prefix("#### `afkconvoy ") {
+            let command = command.strip_suffix('`').unwrap();
+            groups.last_mut().expect("a command under a group").1.push(command);
+        }
+    }
+    groups
+}
+
+/// The commands of the manual's group called `name`.
+fn group<'a>(long: &'a str, name: &str) -> Vec<&'a str> {
+    let found = groups(long).into_iter().find(|(group, _)| *group == name);
+    found.unwrap_or_else(|| panic!("the manual has no group {name:?}")).1
+}
+
+/// Every subcommand the manual puts in a group, in order: `help` too.
+fn grouped(long: &str) -> Vec<&str> {
+    groups(long).into_iter().flat_map(|(_, commands)| commands).collect()
 }
 
 /// Every word `text` puts after `before` as a name to run or to ask for: a
@@ -59,12 +80,11 @@ fn mentioned<'a>(text: &'a str, before: &str) -> BTreeSet<&'a str> {
     words.filter(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase())).collect()
 }
 
-/// The topics `--help` lists, each with its line.
-fn topics(long: &str) -> Vec<(&str, &str)> {
-    let rows = between(long, "THE TOPICS", "RULES").into_iter();
-    let rows = rows.filter(|row| row.starts_with("      "));
-    let rows = rows.map(|row| row.trim().split_once("  ").expect("a name and its line"));
-    rows.map(|(name, line)| (name, line.trim_start())).collect()
+/// The topics the manual holds, in its order.
+fn topics(long: &str) -> Vec<&str> {
+    let (_, topics) = long.split_once("\n## Topics\n").expect("the manual's topics");
+    let heads = topics.lines().filter_map(|line| line.strip_prefix("### `afkconvoy help "));
+    heads.map(|name| name.strip_suffix('`').unwrap()).collect()
 }
 
 /// Where this repository is checked out.
@@ -77,23 +97,29 @@ fn repository() -> PathBuf {
 fn topic_file(name: &str) -> String {
     match name {
         "glossary" => "GLOSSARY.md".to_string(),
-        name => format!("crates/cli/src/help/topics/{name}.txt"),
+        name => format!("crates/cli/src/help/topics/{name}.md"),
     }
 }
 
 /// Every help text the binary prints, each under the file it is written in:
-/// `--help`, each command's, each topic.
+/// the guide, each command's, each topic.
 fn help_texts() -> Vec<(String, String)> {
     let long = help("--help");
-    let mut texts = vec![("crates/cli/src/help.txt".to_string(), long.clone())];
+    let mut texts = vec![("crates/cli/src/lib.rs".to_string(), guide(&long).to_string())];
     for command in listed(&help("-h")) {
         let file = format!("crates/cli/src/help/{command}.txt");
         texts.push((file, asked(&[command, "--help"])));
     }
-    for (topic, _) in topics(&long) {
+    for topic in topics(&long) {
         texts.push((topic_file(topic), asked(&["help", topic])));
     }
     texts
+}
+
+/// What `help <topic>` prints of the file `text`: under its heading, and
+/// without the blank lines it ends with.
+fn printed(topic: &str, text: &str) -> String {
+    format!("# `afkconvoy help {topic}`\n\n{}\n", text.trim_end())
 }
 
 /// The glossary is a topic, and the file itself: nothing else is edited for
@@ -101,30 +127,39 @@ fn help_texts() -> Vec<(String, String)> {
 #[test]
 fn help_prints_a_topic_as_the_file_it_is_and_a_commands_help_as_before() {
     let glossary = fs::read_to_string(repository().join("GLOSSARY.md")).unwrap();
-    assert_eq!(asked(&["help", "glossary"]), glossary);
+    assert_eq!(asked(&["help", "glossary"]), printed("glossary", &glossary));
     assert!(glossary.contains("**Fleet instance**:"));
     assert_eq!(asked(&["help", "wake"]), asked(&["wake", "--help"]));
     assert_eq!(asked(&["help"]), help("--help"));
 }
 
 #[test]
-fn the_guide_lists_the_topics_there_are_and_no_other() {
+fn the_manual_holds_the_topics_there_are_and_no_other() {
     let long = help("--help");
-    let listed: BTreeSet<_> = topics(&long).into_iter().map(|(name, _)| name).collect();
+    let held: BTreeSet<_> = topics(&long).into_iter().collect();
     let mut there = BTreeSet::from(["glossary".to_string()]);
     if let Ok(files) = fs::read_dir(repository().join("crates/cli/src/help/topics")) {
         let names = files.map(|file| file.unwrap().path());
         there.extend(names.map(|file| file.file_stem().unwrap().to_str().unwrap().to_string()));
     }
-    assert_eq!(listed, there.iter().map(String::as_str).collect());
-    // Each is printed as the file it is, and has a line that says something.
-    for (name, line) in topics(&long) {
+    assert_eq!(held, there.iter().map(String::as_str).collect());
+    // Each is printed as the file it is, a value from code in place of each
+    // `{const:}`, and the manual holds it whole.
+    for name in topics(&long) {
         let file = fs::read_to_string(repository().join(topic_file(name))).unwrap();
-        assert_eq!(asked(&["help", name]), file, "{name}");
-        assert!(line.len() > 20, "{name}: {line}");
+        let said = asked(&["help", name]);
+        if file.contains("{const:") {
+            for line in file.lines().filter(|line| !line.contains("{const:")) {
+                assert!(said.contains(line), "{name} lost {line:?}");
+            }
+        } else {
+            assert_eq!(said, printed(name, &file), "{name}");
+        }
+        let (_, body) = said.split_once("\n\n").unwrap();
+        assert!(long.contains(&format!("\n### `afkconvoy help {name}`\n\n{body}")), "{name}");
     }
-    let said = guide(&long).split("\nTHE TOPICS\n").nth(1).unwrap();
-    assert!(said.contains("`afkconvoy help <topic>` prints one: plain text, as"), "{said}");
+    let said = guide(&long).split("\n## The topics\n").nth(1).unwrap();
+    assert!(said.contains("`afkconvoy help <topic>` prints one: Markdown, as"), "{said}");
 }
 
 #[test]
@@ -137,8 +172,7 @@ fn help_refuses_a_name_that_is_neither_a_command_nor_a_topic() {
     assert!(error.contains("`nosuch` is neither a command nor a help topic"), "{error}");
     let named = error.split("The topics: ").nth(1).unwrap().split('.').next().unwrap();
     let long = help("--help");
-    let topics: Vec<_> = topics(&long).into_iter().map(|(name, _)| name).collect();
-    assert_eq!(named.split(", ").collect::<Vec<_>>(), topics);
+    assert_eq!(named.split(", ").collect::<Vec<_>>(), topics(&long));
     assert!(error.contains("The commands: `afkconvoy -h` lists them."), "{error}");
 }
 
@@ -161,7 +195,7 @@ fn no_help_text_names_a_command_or_a_topic_that_does_not_exist() {
     let (short, long) = (help("-h"), help("--help"));
     let mut commands = listed(&short);
     commands.insert("help");
-    let topics: BTreeSet<_> = topics(&long).into_iter().map(|(name, _)| name).collect();
+    let topics: BTreeSet<_> = topics(&long).into_iter().collect();
     // What it catches: a command and a topic there is none of, and nothing else.
     let made_up = "Run `afkconvoy plan`, then afkconvoy frobnicate <dir> <dir>; `afkconvoy help \
                    glossary`, afkconvoy <command> --help and afkconvoy --help say more.";
@@ -202,7 +236,7 @@ fn no_topic_is_named_as_a_command_is_or_within_one_edit_of_one() {
     let (short, long) = (help("-h"), help("--help"));
     let mut commands = listed(&short);
     commands.insert("help");
-    for (topic, _) in topics(&long) {
+    for topic in topics(&long) {
         for command in &commands {
             assert!(
                 edits(topic, command) > 1,
@@ -290,16 +324,20 @@ fn no_help_text_holds_a_word_the_glossary_says_to_avoid() {
 /// topic but the glossary, which is the repository's own.
 fn topic_files() -> Vec<(String, String)> {
     let long = help("--help");
-    let names = topics(&long).into_iter().map(|(name, _)| name);
-    let names = names.filter(|name| *name != "glossary");
+    let names = topics(&long).into_iter().filter(|name| *name != "glossary");
     names.map(|name| (name.to_string(), asked(&["help", name]))).collect()
 }
 
-/// The rows of a topic that heads each with what is seen: the lines indented
-/// as a row's head is, and no deeper.
+/// The heads of a topic's rows: of each item of a list, what it is about,
+/// written in backticks or in bold before its `:`.
 fn heads(topic: &str) -> Vec<&str> {
-    let heads = topic.lines().filter(|line| line.starts_with("  ") && !line.starts_with("   "));
-    heads.map(str::trim).collect()
+    let items = topic.lines().filter_map(|line| line.strip_prefix("- "));
+    let heads = items.filter_map(|item| {
+        let mark = ["``", "`", "**"].into_iter().find(|mark| item.starts_with(mark))?;
+        let (head, _) = item[mark.len()..].split_once(&format!("{mark}:"))?;
+        Some(head.trim())
+    });
+    heads.collect()
 }
 
 #[test]
@@ -351,14 +389,14 @@ fn flagged(text: &str) -> Vec<(&str, &str)> {
     flagged
 }
 
-/// Each way the fleet stops for a human, by the title `humans` gives it.
+/// Each way the fleet stops for a human, by the heading `humans` gives it.
 const STOPS: [&str; 6] = [
-    "AN ESCALATION",
-    "A TRIPPED BREAKER",
-    "A STAGE `by: human`",
-    "A PATROL'S FAILED RUN",
-    "A FLEET LOCK",
-    "A PRECEDENT TO ACCEPT",
+    "An escalation",
+    "A tripped breaker",
+    "A stage `by: human`",
+    "A patrol's failed run",
+    "A fleet lock",
+    "A precedent to accept",
 ];
 
 #[test]
@@ -367,11 +405,10 @@ fn humans_names_for_each_way_the_fleet_stops_a_command_with_the_flags_its_help_g
     let short = help("-h");
     let commands = listed(&short);
     for stop in STOPS {
-        let part = said.split(&format!("\n{stop}\n")).nth(1);
+        let part = said.split(&format!("\n## {stop}\n")).nth(1);
         let part = part.unwrap_or_else(|| panic!("`humans` has no part {stop:?}"));
-        let part = part.split("\n\n").take_while(|part| part.starts_with([' ', '\n']));
-        let part = part.collect::<Vec<_>>().join("\n\n");
-        let named = mentioned(&part, "afkconvoy ");
+        let part = part.split("\n## ").next().unwrap();
+        let named = mentioned(part, "afkconvoy ");
         assert!(named.iter().any(|name| commands.contains(name)), "{stop} names no command");
     }
     // What it catches: a flag the command's help does not give.
@@ -389,6 +426,27 @@ fn humans_names_for_each_way_the_fleet_stops_a_command_with_the_flags_its_help_g
     assert!(seen >= 5, "{seen}");
 }
 
+/// The lines of `markdown` that go on with the paragraph or the item above
+/// them: a text wrapped, or filled, where each is written on one line. A
+/// line in a fence, a heading, an item, a line of a table and a line indented
+/// under an item each stand on their own.
+fn wrapped(markdown: &str) -> Vec<&str> {
+    let (mut fenced, mut above) = (false, "");
+    let mut wrapped = vec![];
+    for line in markdown.lines() {
+        let fence = line.trim_start().starts_with("```");
+        let numbered = line.split_once(". ").is_some_and(|(n, _)| n.parse::<u32>().is_ok());
+        let alone = fence || fenced || line.is_empty() || numbered;
+        let alone = alone || ["#", "- ", "|", "  "].iter().any(|mark| line.starts_with(mark));
+        if !alone && !above.is_empty() {
+            wrapped.push(line);
+        }
+        fenced ^= fence;
+        above = if fenced || fence { "" } else { line };
+    }
+    wrapped
+}
+
 #[test]
 fn a_topic_is_short_and_refers_to_nothing_outside_the_binary() {
     let files = topic_files();
@@ -400,17 +458,31 @@ fn a_topic_is_short_and_refers_to_nothing_outside_the_binary() {
         for outside in ["docs/", "crates/", "GLOSSARY", "README", "manual", "://", "github.com"] {
             assert!(!text.contains(outside), "{topic} refers to {outside:?}");
         }
-        // Plain text, as `--help` is.
-        assert!(text.lines().all(|line| line.chars().count() <= 90), "{topic} has a long line");
         assert!(text.ends_with('\n') && !text.ends_with("\n\n"), "{topic}");
     }
 }
 
+/// Markdown as written: the guide and every topic write each paragraph on
+/// one line, and nothing wraps or fills one.
 #[test]
-fn the_guide_groups_every_visible_subcommand_once_and_names_no_other() {
+fn no_paragraph_of_the_guide_or_a_topic_is_wrapped() {
+    // What it catches: a paragraph on two lines, and nothing else.
+    let made_up = "A paragraph\nwrapped.\n\n- an item\n  under it\n1. a step\n\n```\na\nb\n```\n";
+    assert_eq!(wrapped(made_up), ["wrapped."]);
+    let long = help("--help");
+    assert!(wrapped(guide(&long)).is_empty(), "{:?}", wrapped(guide(&long)));
+    for (topic, text) in topic_files() {
+        assert!(wrapped(&text).is_empty(), "{topic} is wrapped at: {:?}", wrapped(&text));
+    }
+}
+
+#[test]
+fn the_manual_groups_every_visible_subcommand_once_and_names_no_other() {
     let (short, long) = (help("-h"), help("--help"));
-    let (listed, grouped) = (listed(&short), grouped(guide(&long)));
+    let grouped = grouped(&long);
+    let mut listed = listed(&short);
     assert!(listed.len() > 10, "{short}");
+    listed.insert("help");
     assert_eq!(grouped.iter().copied().collect::<BTreeSet<_>>(), listed);
     assert_eq!(grouped.len(), listed.len(), "a subcommand is in two groups: {grouped:?}");
 }
@@ -438,22 +510,30 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     ] {
         assert!(guide.contains(needed), "the guide lost {needed:?}");
     }
-    // What to run when something looks wrong is named first among the operator's.
-    assert_eq!(group(guide, "  The operator")[0], "doctor");
-    let lead = between(guide, "  The operator", "      doctor").join(" ");
-    assert!(lead.contains("what to run when something looks wrong"), "{lead}");
+    // What to run when something looks wrong is named first of the operator's.
+    let operator = guide.lines().find(|line| line.starts_with("- **Run by the operator**"));
+    let operator = operator.expect("the guide says who the operator is");
+    assert!(operator.contains("`doctor` is what to run when something looks wrong"), "{operator}");
     // The operator's flow, in order.
-    let at = |command: &str| guide.find(&format!("afkconvoy {command} ")).unwrap();
+    let first = guide.split("\n## What to run first").nth(1).unwrap();
+    let at = |command: &str| first.find(&format!("`afkconvoy {command}`")).unwrap();
     assert!(at("config") < at("plan") && at("plan") < at("run"));
-    // clap's own listing still follows it.
-    assert_eq!(listed(&long), listed(&help("-h")));
+    // Each group the guide describes is one the manual puts commands in.
+    let described = guide.lines().filter_map(|line| line.strip_prefix("- **"));
+    let described: Vec<_> = described.filter_map(|line| line.split_once("** — ")).collect();
+    assert!(described.len() >= 9, "{described:?}");
+    for (name, _) in described {
+        assert!(!group(&long, name).is_empty(), "the guide describes a group of none: {name}");
+    }
 }
 
-/// Whether `text` shows `key` as a key of a file: followed by its `:`, and
-/// not as the end of a longer key.
+/// Whether `text` shows `key` as a key of a file: followed by its `:`, in
+/// backticks or not, and not as the end of a longer key.
 fn shows(text: &str, key: &str) -> bool {
-    let shown = format!("{key}:");
-    text.match_indices(&shown).any(|(at, _)| text[..at].ends_with([' ', '`', '{']))
+    [format!("{key}:"), format!("{key}`:")].iter().any(|shown| {
+        text.match_indices(shown.as_str())
+            .any(|(at, _)| text[..at].ends_with([' ', '`', '{', '\n']))
+    })
 }
 
 /// A team's files are described in the topics, each kind of file in its own:
@@ -473,8 +553,9 @@ fn every_key_the_loader_knows_is_described_in_the_topic_of_its_file_and_in_no_ot
         ("patrols", PATROL_KEYS.to_vec()),
     ];
     // What it catches: a key shown, and one that is only part of another's name.
-    assert!(shows("      max_open: 5", "max_open") && shows("{ by: <role>", "by"));
-    assert!(!shows("      max_open: 5", "open") && !shows("the stages follow", "stages"));
+    assert!(shows("x\nmax_open: 5", "max_open") && shows("{ by: <role>", "by"));
+    assert!(shows("- `intake_limit`: the open issues", "intake_limit"));
+    assert!(!shows("\nmax_open: 5", "open") && !shows("the stages follow", "stages"));
     for (topic, keys) in &files {
         let text = asked(&["help", topic]);
         for key in keys {
@@ -497,11 +578,10 @@ fn the_skill_file_topic_says_the_form_check_holds_a_skill_s_file_to() {
     let topic = asked(&["help", "skill-file"]);
     assert!(topic.contains(&format!("{SKILLS}/review/{SKILL_FILE}")), "{topic}");
     for key in SKILL_KEYS {
-        let row = format!("      {key}  ");
-        assert!(topic.lines().any(|line| line.starts_with(&row)), "no row for the key {key}");
+        assert!(heads(&topic).contains(&key), "no row for the key {key}");
     }
     // The example it shows is a skill's file: the one of the skill `review`.
-    let shown = "      ---";
+    let shown = "---";
     let example: Vec<&str> = topic
         .lines()
         .skip_while(|line| *line != shown)
@@ -560,19 +640,19 @@ fn the_team_topic_lays_out_the_files_of_a_team_and_a_role() {
     let limits = Harness::ALL.map(Harness::limits);
     for file in [&[TEAM_FILE, WORKFLOWS, PATROLS, PRECEDENTS, RULES, SKILLS][..], &limits].concat()
     {
-        assert!(team.contains(&format!("      {file}")), "the topic lays out no {file}");
+        assert!(team.contains(&format!("\n- `{file}")), "the topic lays out no {file}");
     }
     // The team rules are a file of the team's; what each of the four kinds of
     // text a worker reads is for is the topic `roles`'s to say.
-    assert!(team.contains(&format!("      {RULES}               the team rules: ")), "{team}");
-    assert!(team.contains("where a sentence belongs: `afkconvoy help roles`"), "{team}");
+    assert!(team.contains(&format!("\n- `{RULES}`: the team rules: ")), "{team}");
+    assert!(team.contains("where a sentence belongs: [`afkconvoy help roles`](help:roles)"));
     // A role is a directory, named in one of three ways.
-    for form in ["      owner/repo  ", "      owner/repo/path  ", "      ./path  "] {
-        assert!(team.contains(form), "the topic lost the form {form:?}");
+    for form in ["owner/repo", "owner/repo/path", "./path"] {
+        assert!(heads(&team).contains(&form), "the topic lost the form {form:?}");
     }
     assert!(team.contains(ROLE_FORMS));
     // How a repo is bound, and what `check` holds the team to.
-    for said in ["HOW A REPO IS BOUND TO IT", "intake_limit", "WHAT CHECK HOLDS IT TO"] {
+    for said in ["## How a repo is bound to it", "intake_limit", "## What `check` holds it to"] {
         assert!(team.contains(said), "the topic lost {said:?}");
     }
 }
@@ -584,15 +664,15 @@ fn a_topic_of_a_teams_files_opens_with_what_it_is_and_ends_with_what_to_read_nex
     for name in ["team", "workflows", "patrols"] {
         let text = asked(&["help", name]);
         let mut parts = text.split("\n\n");
-        assert_eq!(parts.next(), Some(name.to_uppercase().as_str()));
+        assert_eq!(parts.next(), Some(format!("# `afkconvoy help {name}`").as_str()));
         let opening = parts.next().unwrap();
-        assert!(opening.starts_with("  A ") && opening.contains(" is "), "{name}: {opening}");
+        assert!(opening.starts_with("A ") && opening.contains(" is "), "{name}: {opening}");
         assert!(opening.contains(". Read this to "), "{name} does not say when to read it");
-        let (_, next) = text.rsplit_once("\nWHERE TO READ ON\n").expect("its last section");
+        let (_, next) = text.rsplit_once("\n## Where to read on\n").expect("its last section");
         let rows: Vec<_> = next.lines().filter(|row| !row.is_empty()).collect();
         assert!(rows.len() >= 2, "{name}: {next}");
         for row in rows {
-            let other = row.trim_start().strip_prefix("`afkconvoy help ");
+            let other = row.strip_prefix("- [`afkconvoy help ");
             let other = other.and_then(|rest| rest.split('`').next());
             let other = other.unwrap_or_else(|| panic!("{name} ends with more than topics: {row}"));
             assert!(other != name && asked(&["help", other]).len() > 100, "{name}: {row}");
@@ -686,9 +766,9 @@ fn skill_prints_the_skill_file_which_names_no_command_but_the_help() {
 #[test]
 fn the_help_says_skill_prints_text_and_its_own_where_to_put_the_file() {
     let long = help("--help");
-    let answers = between(guide(&long), "WHAT A COMMAND ANSWERS", "THE COMMANDS").join(" ");
+    let answers = between(guide(&long), "## What a command answers", "## The commands").join(" ");
     assert!(answers.contains("`skill` the text of a file"), "{answers}");
-    assert_eq!(group(guide(&long), "  Whoever sets an agent up"), ["skill"]);
+    assert_eq!(group(&long, "Run by whoever sets an agent up"), ["skill"]);
     let own = asked(&["skill", "--help"]);
     assert!(own.lines().next().unwrap().ends_with("text, not JSON"));
     let when = section(&own, "WHEN TO RUN IT");
@@ -711,13 +791,6 @@ const SECTIONS: [&str; 5] = [
 fn section(long: &str, title: &str) -> String {
     let next = SECTIONS.iter().position(|section| *section == title).unwrap() + 1;
     between(long, title, SECTIONS.get(next).copied().unwrap_or("\0")).join("\n")
-}
-
-/// The subcommands the guide puts in the group whose lead starts with `lead`.
-fn group<'a>(guide: &'a str, lead: &str) -> Vec<&'a str> {
-    let after = guide.lines().skip_while(|line| !line.starts_with(lead));
-    let names = after.skip(1).find(|line| line.starts_with("      ")).unwrap();
-    names.split_whitespace().collect()
 }
 
 #[test]
@@ -743,27 +816,36 @@ fn every_visible_subcommand_has_a_long_help_and_keeps_its_one_line() {
 #[test]
 fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     let long = help("--help");
-    let guide = guide(&long);
     let who = |command: &str| section(&asked(&[command, "--help"]), "WHO RUNS IT");
-    let workers = group(guide, "  A worker");
+    let workers = group(&long, "Run by a worker");
     assert_eq!(
-        workers,
-        ["gate", "land", "verdict", "intake", "lock", "over", "wake", "exclusive", "inspected"]
+        workers.iter().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "gate",
+            "land",
+            "verdict",
+            "intake",
+            "lock",
+            "over",
+            "wake",
+            "exclusive",
+            "inspected"
+        ])
     );
     for command in &workers {
         let who = who(command);
         assert!(who.contains("worker") && who.contains("in its own worktree"), "{command}: {who}");
     }
     // The guard is nobody's to run: it is a hook of Claude Code's.
-    let hooks = group(guide, "  A worker's hook");
+    let hooks = group(&long, "Run by a worker's hook");
     assert_eq!(hooks, ["guard"]);
     assert!(who("guard").trim_start().starts_with("Claude Code, as a hook"));
     // Nor is opening issues the operator's: whoever has work for the fleet does.
-    let hands = group(guide, "  Whoever hands the fleet work");
+    let hands = group(&long, "Run by whoever hands the fleet work");
     assert_eq!(hands, ["flows"]);
     assert!(who("flows").trim_start().starts_with("Whoever hands the fleet work: "));
     // Nor is giving an agent of one's own the skill file.
-    let sets_up = group(guide, "  Whoever sets an agent up");
+    let sets_up = group(&long, "Run by whoever sets an agent up");
     assert_eq!(sets_up, ["skill"]);
     assert!(who("skill").trim_start().starts_with("Whoever sets an agent up: "));
     let operated = |command: &&str| {
@@ -774,7 +856,7 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
     }
     // Each transition the guide says a tick makes on its own says so itself,
     // and when to make it by hand; `recovery` only shows one.
-    let by_hand = group(guide, "  One transition by hand");
+    let by_hand = group(&long, "One transition by hand");
     for command in by_hand.iter().filter(|command| **command != "recovery") {
         let when = section(&asked(&[command, "--help"]), "WHEN TO RUN IT");
         let when = when.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -946,7 +1028,7 @@ fn one_topic_says_where_the_cache_directory_is_and_every_other_help_sends_there(
         "Setting XDG_CACHE_HOME, and nothing else",
         "copies/<owner>/<repo>/<commit>",
         "harness/pi, harness/codex",
-        "runs/ ",
+        "`runs/`",
     ] {
         assert!(topic.contains(said), "{said:?} is not in:\n{topic}");
     }

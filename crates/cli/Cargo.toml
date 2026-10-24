@@ -9,6 +9,7 @@ autotests = false
 
 [dependencies]
 afkconvoy-core = { path = "../core" }
+agent-help = { git = "https://github.com/sunfmin/agent-cli" }
 anyhow = "1"
 gethostname = "1"
 clap = { version = "4", features = ["derive", "env"] }

@@ -907,16 +907,12 @@ fn a_consult_runs_the_commands_a_human_answering_runs_and_the_two_lists_are_one(
     use afkconvoy_core::waiting::ANSWERING;
     // The commands the `humans` help names for answering an escalation.
     let help = world_help("humans");
-    let section = help.split("ANSWERING AN ESCALATION").nth(1).expect("the section");
-    let section = section
-        .split("\n\n")
-        .skip(1)
-        .take_while(|para| !para.starts_with(|c: char| c.is_ascii_uppercase()))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let section = help.split("\n## Answering an escalation\n").nth(1).expect("the section");
+    let section = section.split("\n## ").next().unwrap();
     let named: Vec<&str> = section
         .lines()
-        .filter_map(|line| line.strip_prefix("      "))
+        .filter_map(|line| line.strip_prefix("- `")?.split_once("`: "))
+        .map(|(command, _)| command)
         .filter(|line| line.starts_with("afkconvoy ") || line.starts_with("gh "))
         .collect();
     assert_eq!(named, ANSWERING, "{section}");
