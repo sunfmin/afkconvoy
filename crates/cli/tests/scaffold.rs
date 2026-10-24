@@ -296,14 +296,33 @@ fn hooked(dir: &std::path::Path, command: &str) -> Vec<Option<i32>> {
     hooks.map(run).collect()
 }
 
+/// The lines `help example` shows to write the example team and check it, each
+/// as its arguments, with `repo` for the `<owner/repo>` they name.
+fn example_lines(repo: &str) -> Vec<Vec<String>> {
+    let shown = common::shown("topic `example`", "sh");
+    let lines = shown[0].lines().map(|line| line.replace("<owner/repo>", repo));
+    let args = lines.map(|line| {
+        let line = line.strip_prefix("afkconvoy ").unwrap_or_else(|| panic!("{line}"));
+        line.split_whitespace().map(str::to_string).collect()
+    });
+    args.collect()
+}
+
+/// The lines `help example` shows, run as shown: the team is written whole,
+/// and the second line takes it as pushed.
 #[test]
 fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
     let world = World::new();
-    let team = world.root.join("made/hospital");
-    let dir = team.to_str().unwrap();
+    let made = world.root.join("made");
+    std::fs::create_dir_all(&made).unwrap();
+    let team = made.join("hospital");
     let hospital = afkconvoy::scaffold::example("hospital").unwrap();
-    let wrote =
-        world.afk(&["scaffold", "team", dir, "--example", "hospital", "--repo", "acme/h"]).ok();
+    let lines = example_lines("acme/h");
+    let [scaffold, check] = lines.as_slice() else { panic!("two lines: {lines:?}") };
+    let (scaffold, check): (Vec<&str>, Vec<&str>) =
+        (scaffold.iter().map(String::as_str).collect(), check.iter().map(String::as_str).collect());
+    assert_eq!(scaffold[..3], ["scaffold", "team", "hospital"]);
+    let wrote = world.afk_in(&made, &scaffold).ok();
     let files: Vec<&str> = hospital.files.iter().map(|(path, _)| *path).collect();
     assert_eq!(
         wrote,
@@ -322,7 +341,7 @@ fn the_example_team_is_written_whole_and_passes_check_as_pushed() {
 
     // The team's loader takes it as pushed, with no edit: seven roles in the
     // team's own repo, three workflows, four patrols, rules and precedents.
-    let read = world.afk(&["check", "--team", "acme/h"]).ok();
+    let read = world.afk(&check).ok();
     let names = |of: &str, key: &str| -> Vec<String> {
         let all = read[of].as_array().unwrap_or_else(|| panic!("{of}: {read}")).iter();
         all.map(|one| one[key].as_str().unwrap().to_string()).collect()
@@ -472,9 +491,13 @@ fn the_topic_names_every_file_the_example_writes_and_no_other() {
     written.sort_unstable();
     named.sort_unstable();
     assert_eq!(named, written);
-    // It says the line that writes them, and `scaffold --help` each name
-    // `--example` takes.
-    assert!(topic.contains("afkconvoy scaffold team hospital --example hospital --repo "));
+    // It shows the lines that write them and check them, which
+    // `the_example_team_is_written_whole_and_passes_check_as_pushed` runs,
+    // and `scaffold --help` names each `--example` takes.
+    assert_eq!(
+        example_lines("r")[0][..5],
+        ["scaffold", "team", "hospital", "--example", "hospital"]
+    );
     let (flags, help) = (printed(&["scaffold", "-h"]), printed(&["scaffold", "--help"]));
     for name in afkconvoy::scaffold::example_names() {
         assert!(flags.contains(&format!("[possible values: {name}]")), "{flags}");

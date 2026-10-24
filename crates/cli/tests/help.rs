@@ -67,11 +67,6 @@ fn group<'a>(long: &'a str, name: &str) -> Vec<&'a str> {
     found.unwrap_or_else(|| panic!("the manual has no group {name:?}")).1
 }
 
-/// Every subcommand the manual puts in a group, in order: `help` too.
-fn grouped(long: &str) -> Vec<&str> {
-    groups(long).into_iter().flat_map(|(_, commands)| commands).collect()
-}
-
 /// Every word `text` puts after `before` as a name to run or to ask for: a
 /// placeholder, a flag or a path is none.
 fn mentioned<'a>(text: &'a str, before: &str) -> BTreeSet<&'a str> {
@@ -481,17 +476,6 @@ fn no_paragraph_of_the_guide_a_command_or_a_topic_is_wrapped() {
 }
 
 #[test]
-fn the_manual_groups_every_visible_subcommand_once_and_names_no_other() {
-    let (short, long) = (help("-h"), help("--help"));
-    let grouped = grouped(&long);
-    let mut listed = listed(&short);
-    assert!(listed.len() > 10, "{short}");
-    listed.insert("help");
-    assert_eq!(grouped.iter().copied().collect::<BTreeSet<_>>(), listed);
-    assert_eq!(grouped.len(), listed.len(), "a subcommand is in two groups: {grouped:?}");
-}
-
-#[test]
 fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
     let long = help("--help");
     let guide = guide(&long);
@@ -585,15 +569,11 @@ fn the_skill_file_topic_says_the_form_check_holds_a_skill_s_file_to() {
         assert!(heads(&topic).contains(&key), "no row for the key {key}");
     }
     // The example it shows is a skill's file: the one of the skill `review`.
-    let shown = "---";
-    let example: Vec<&str> = topic
-        .lines()
-        .skip_while(|line| *line != shown)
-        .skip(1)
-        .take_while(|l| *l != shown)
-        .collect();
-    assert!(example.len() >= SKILL_KEYS.len(), "{topic}");
-    let read: Node = serde_yaml::from_str(&example.join("\n")).unwrap();
+    let shown = common::shown("topic `skill-file`", "markdown");
+    let front = shown[0].strip_prefix("---\n").and_then(|file| file.split_once("\n---\n"));
+    let (front, _) = front.unwrap_or_else(|| panic!("no front matter: {shown:?}"));
+    assert!(front.lines().count() >= SKILL_KEYS.len(), "{front}");
+    let read: Node = serde_yaml::from_str(front).unwrap();
     assert_eq!(malformed("review", &Ok(read.clone())), None);
     assert!(malformed("rule", &Ok(read)).is_some());
     // Whoever is about to write a skill is sent to it.

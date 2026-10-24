@@ -84,15 +84,9 @@ fn this_repos_own_config_names_the_gate() {
 /// The config file `config --help` shows whole: its ```` ```yaml ```` block,
 /// as the yaml a repo would write.
 fn shown_config() -> String {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"))
-        .args(["config", "--help"])
-        .output()
-        .unwrap();
-    let help = String::from_utf8(out.stdout).unwrap();
-    let block = help.lines().skip_while(|line| line.trim() != "```yaml").skip(1);
-    let block: Vec<&str> = block.take_while(|line| line.trim() != "```").map(str::trim).collect();
-    assert!(!block.is_empty(), "`config --help` shows no config file");
-    block.join("\n")
+    let blocks = common::shown("`afkconvoy config`", "yaml");
+    assert_eq!(blocks.len(), 1, "`config --help` shows one config file: {blocks:?}");
+    blocks[0].trim_end().to_string()
 }
 
 /// The file the help shows is one the loader reads, holds every key the
