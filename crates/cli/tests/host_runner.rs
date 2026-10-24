@@ -7,8 +7,10 @@
 use crate::common;
 
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use afkconvoy::log::{Entry, What};
 use common::{World, asked, commit, git};
@@ -51,6 +53,29 @@ fn listed(world: &World) -> Vec<String> {
 
 fn shown(path: &Path) -> String {
     path.display().to_string()
+}
+
+/// Asserts that each line of the host runner's log is one event, stamped in
+/// UTC.
+fn each_line_stamped(world: &World) {
+    let text = std::fs::read_to_string(world.cache().join("afkconvoy/host-runner.log")).unwrap();
+    for line in text.lines() {
+        let stamped = line.starts_with("20") && line.len() > 20 && line.as_bytes()[19] == b' ';
+        assert!(stamped, "{line:?} in:\n{text}");
+    }
+}
+
+/// Waits up to 30 seconds for the host runner's log to hold a line that
+/// starts with `start` → that line.
+fn logged(world: &World, start: &str) -> String {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(line) = world.runner_log().into_iter().find(|line| line.starts_with(start)) {
+            return line;
+        }
+        assert!(Instant::now() < until, "no {start:?} in {:#?}", world.runner_log());
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -135,10 +160,22 @@ fn the_host_runner_is_detached_and_writes_its_own_log() {
     let said = world.runner_log();
     assert!(said.iter().any(|line| line.starts_with("host runner started: ")), "{said:#?}");
     assert!(said.iter().any(|line| line.starts_with("checkout added: ")), "{said:#?}");
-    // each line stamped in UTC
-    let text = std::fs::read_to_string(&log).unwrap();
-    let first = text.lines().next().unwrap();
-    assert!(first.starts_with("20") && first.as_bytes()[19] == b' ', "{first}");
+    each_line_stamped(&world);
+}
+
+#[test]
+fn what_a_fleet_instance_warns_of_reaches_the_run_and_the_log_after_its_checkout() {
+    let world = World::new();
+    world.shell_knows("kim", Some("kim is an alias for ANTHROPIC_BASE_URL=x claude --model k"));
+    world.kit_command("claude-code", "kim");
+    let ran = world.afk(&RUN);
+    let warning = "the worker launch command \"kim\" shows no unattended flag";
+    assert!(ran.stderr.contains(&format!("warning: {warning}")), "{}", ran.stderr);
+    let answer = ran.ok();
+    let warnings = answer["warnings"].as_array().unwrap();
+    assert!(warnings.iter().any(|said| said.as_str().unwrap().starts_with(warning)), "{answer}");
+    logged(&world, &format!("{}: warning: {warning}", shown(&world.clone)));
+    each_line_stamped(&world);
 }
 
 #[test]
@@ -322,6 +359,48 @@ fn a_host_runner_started_again_starts_every_checkout_on_the_list() {
     let starts = tick_log(&second).iter().filter(|line| kind(line) == "start").count();
     assert_eq!(starts, 2, "{:#?}", tick_log(&second));
     assert_eq!(listed(&world), [shown(&world.clone), shown(&clone2)]);
+}
+
+#[test]
+fn a_run_of_a_listed_checkout_the_host_runner_could_not_start_starts_it_as_its_run_named_it() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.afk(&RUN).ok();
+    world.kill_host_runner("KILL");
+    // the next host runner cannot start the checkout by itself: its login
+    // shell sets a flag of `run` to what `run` refuses
+    let profile = std::fs::OpenOptions::new().append(true).open(world.home().join(".profile"));
+    writeln!(profile.unwrap(), "export AFKCONVOY_HOT_CORES=bogus").unwrap();
+
+    let again = world.afk(&["run", "--second-ms", "100"]).ok();
+    let log = world.runner_log();
+    let clone = shown(&world.clone);
+    let not_started = format!("fleet instance not started: {clone}: ");
+    let line = log.iter().find(|line| line.starts_with(&not_started)).expect("its start failed");
+    assert!(line.contains("'bogus'") && line.ends_with("stays on the checkout list"), "{log:#?}");
+    each_line_stamped(&world);
+    // started on the host its first `run` named, taking that host's claims
+    let instance = again["instance"].as_str().unwrap();
+    assert!(instance.starts_with("h1-"), "{again}");
+    assert_eq!(world.claims(), [(7, instance.to_string())]);
+    let list = world.checkout_list();
+    assert_eq!(list, json!({"checkouts": [{"checkout": world.clone, "named": {"host": "h1"}}]}));
+}
+
+#[test]
+fn a_fleet_instance_that_ended_stops_watching_its_workers() {
+    let world = World::new();
+    // its loop ends after its first tick, which `run` may answer or not
+    let _ = world.afk(&["run", "--host", "h1", "--second-ms", "10", "--ticks", "1"]);
+    logged(&world, &format!("fleet instance ended: {}: ", shown(&world.clone)));
+    // a sample it took as it ended is over
+    std::thread::sleep(Duration::from_secs(1));
+    let calls = || world.orca()["calls"].as_array().unwrap().clone();
+    let ended = calls().len();
+    // a watcher left watching asks orca for the worktrees every sixth
+    // sample, each a tenth of a second here and what it takes
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(calls()[ended..], [] as [Value; 0], "asked after its fleet instance ended");
 }
 
 #[test]

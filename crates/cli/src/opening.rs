@@ -30,8 +30,14 @@ const ANSWERS_WITHIN: Duration = Duration::from_secs(10);
 /// on, in a thread of its own: a tick is neither waited for nor interrupted.
 /// The address it opens is told to `say`. Called before the first tick, and
 /// after the wake's listener is open. A `run` that cannot listen is one whose
-/// panel only `--panel` opens.
-pub fn listen(repo: &Repo, live: Live, instance: &str, say: Box<dyn Fn(&str) + Send>) {
+/// panel only `--panel` opens, and says so to `warn`.
+pub fn listen(
+    repo: &Repo,
+    live: Live,
+    instance: &str,
+    say: Box<dyn Fn(&str) + Send>,
+    warn: &dyn Fn(&str),
+) {
     let waker = Waker::of(repo);
     let listener = home(repo).and_then(|dir| {
         reached(&dir, SOCKET, |path| {
@@ -43,10 +49,10 @@ pub fn listen(repo: &Repo, live: Live, instance: &str, say: Box<dyn Fn(&str) + S
     let listener = match listener {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!(
-                "warning: `afkconvoy panel --open` cannot reach this run, whose panel is \
+            warn(&format!(
+                "`afkconvoy panel --open` cannot reach this fleet instance, whose panel is \
                  opened by `--panel` alone: {error:#}"
-            );
+            ));
             return;
         }
     };

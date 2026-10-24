@@ -112,14 +112,15 @@ impl Heard {
 impl Listener {
     /// Listens for the wakes of the repo `repo` is a checkout of, telling
     /// `during` of the first heard during each tick. A `run` already
-    /// listening there stops hearing them: the newest one is woken.
-    pub fn open(repo: &Repo, during: During) -> Listener {
+    /// listening there stops hearing them: the newest one is woken. One that
+    /// cannot listen says why to `warn`.
+    pub fn open(repo: &Repo, during: During, warn: &dyn Fn(&str)) -> Listener {
         match home(repo).and_then(|dir| Listener::at(&dir, during)) {
             Ok(listener) => listener,
             Err(error) => {
-                eprintln!(
-                    "warning: this run cannot be woken, and waits out every sleep: {error:#}"
-                );
+                warn(&format!(
+                    "this fleet instance cannot be woken, and waits out every sleep: {error:#}"
+                ));
                 Listener { heard: None, thread: None }
             }
         }

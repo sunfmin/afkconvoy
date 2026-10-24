@@ -499,9 +499,18 @@ fn cooled(worker: String, episode: &Episode, gone: bool) -> What {
     What::Cooled { worker, since: episode.since, held: held_said(episode), gone }
 }
 
+/// Who hears what a watcher finds (`watch`): its fleet instance.
+pub trait Hears: Send + Sync {
+    /// A worker turned hot, or stopped being hot, at `at`.
+    fn turned(&self, at: u64, what: What);
+    /// Something went wrong that costs the watcher nothing but what it was
+    /// doing.
+    fn warn(&self, warning: &str);
+}
+
 /// Watches every worker of the checkout `repo` is of, on a thread of its own,
 /// until `stop` is told: a sample every `SAMPLE_EVERY` seconds of `second`
-/// each, timed by `clock` — the run's — and `keep` said of each turn
+/// each, timed by `clock` — the run's — and `hears` told of each turn
 /// (`Sampler::sample`). `hot` is kept as the workers hot now. What shows a
 /// worker that turned hot is taken down on a thread of its own, and the `run`
 /// woken once it is. A second that takes no time samples nothing.
@@ -510,7 +519,7 @@ pub fn watch(
     limits: Limits,
     second: Duration,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    keep: impl Fn(u64, What) + Send + 'static,
+    hears: Arc<dyn Hears>,
     hot: Hot,
     stop: Stop,
 ) {
@@ -542,16 +551,16 @@ pub fn watch(
             before = Instant::now();
             let (turned, to_take) = sampler.sample(source, at, SAMPLE_EVERY, wall_ms);
             for turned in turned {
-                keep(at, turned);
+                hears.turned(at, turned);
             }
             for (worktree, taken) in to_take {
-                let repo = Repo::new(repo.dir.clone());
+                let (repo, hears) = (Repo::new(repo.dir.clone()), Arc::clone(&hears));
                 std::thread::spawn(move || {
                     if let Err(error) = evidence::take(&worktree, &taken) {
-                        eprintln!(
-                            "hot: what shows {} hot was not taken down: {error:#}",
-                            taken.worker
-                        );
+                        let worker = &taken.worker;
+                        hears.warn(&format!(
+                            "what shows {worker} hot was not taken down: {error:#}"
+                        ));
                     }
                     if let Some(waker) = Waker::of(&repo) {
                         waker.wake();

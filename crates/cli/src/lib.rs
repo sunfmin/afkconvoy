@@ -1049,11 +1049,11 @@ enum Command {
     ///
     /// ##### What it reads and writes
     ///
-    /// The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not left there.
+    /// The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not left there. A `run` of a checkout on the list whose fleet instance does not run starts it with those, but for each that `run` names itself.
     ///
     /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on a socket in the cache directory (host-runner.sock), and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, and with `--no-host-sleep` and `--hot-*` as the login shell's environment says; a checkout whose fleet instance cannot start stays on the list, and its log says why.
     ///
-    /// The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as each fleet instance starts and ends, as a checkout is added, refused or removed, and each line a fleet instance says outside its tick log: its warnings, and the `panel:` line.
+    /// The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as each fleet instance starts and ends, as a checkout is added, refused or removed, and each line a fleet instance says outside its tick log, after its checkout: its warnings, the `start:` lines after its first, and the `panel:` line.
     ///
     /// Two kinds of checkout are refused, with an error and nothing on the list: one whose fleet instance is refused before its first tick — it fails the startup probe, say — which is taken off the list when it was on it; and a second checkout of a repo already on the list, a clone or a worktree of it: a host runs one fleet instance per repo, and the error names the checkout to run it from.
     ///
@@ -1095,9 +1095,9 @@ enum Command {
     /// - `added`: false when the checkout was on the list already. Where its fleet instance runs, the flags of this `run` change nothing, and the answer is that instance, with its own first tick.
     /// - `host_runner`: the one that answered — its pid, its version and its log — and whether this `run` started it.
     /// - `tick_log` and `first_tick`: the fleet instance's tick log, and the line that ended its first tick. `<cache>` stands for the cache directory, whole in the answer.
-    /// - `warnings`: the startup probe's, also on stderr; empty where this `run` waited on no start.
+    /// - `warnings`: what its fleet instance warned of until its first tick ended — the startup probe's warnings among them — also on stderr; empty where this `run` waited on no start.
     ///
-    /// Each fleet instance's lines, as its tick log holds them — `run` prints none of them, and `afkconvoy doctor` reads them back:
+    /// Each fleet instance's lines — `run` prints none of them. Its tick log holds them, and `afkconvoy doctor` reads them back, but for the `start:` lines after the first — the terms of host sleep, and the claims its start took — which are lines of the host runner's log, after the checkout (`/Users/me/Developments/hkj: start: took #4, #7 stamped with this host`):
     ///
     /// ```
     /// start: run as tester-h1-1a2b3c4d on h1, its workers started with `claude`
@@ -3314,7 +3314,8 @@ fn removed_worker_command(_: &str) -> Result<String, String> {
 impl AgentArgs {
     /// Reads this host's host kit for the checkout `repo` (`Launches::new`), with no probe:
     /// the one worker a command started this way starts is refused where its
-    /// harness's command resolves to nothing (`Agent::command`).
+    /// harness's command resolves to nothing (`Agent::command`). What that
+    /// command warns of is the caller's to say (`Launches::warned`).
     fn agent(self, repo: &Repo) -> anyhow::Result<Agent> {
         let launches = Launches::new(repo, true)?.with_no_proxy(&self.proxy.worker_no_proxy)?;
         Ok(Agent { launches, ready_timeout: self.ready_timeout })
@@ -3332,7 +3333,8 @@ impl AgentArgs {
 
 /// Builds the agent of a start that starts workers, in the checkout `repo`
 /// with this host's host kit, and makes its startup probe → the agent, and
-/// what the probe warned of. What each command needs of this host is the
+/// what the probe and the launch commands it resolved warned of
+/// (`Launches::warned`). What each command needs of this host is the
 /// probe's to check: for every harness the fleet could be asked for, before
 /// any worker is started. A start that is `trusting` makes none while one that
 /// checked these commands stands (`probe::standing`).
@@ -3349,10 +3351,12 @@ pub(crate) fn start_agent(
     // asked, where one must be, before anything else is.
     agent.launches.key()?;
     let stands = if trusting { probe::standing(repo, now, &agent.launches) } else { None };
-    let warnings = match stands {
+    let probed = match stands {
         Some(warnings) => warnings,
         None => probe::startup(repo, now, &agent.launches)?,
     };
+    let mut warnings = agent.launches.warned();
+    warnings.extend(probed);
     Ok((agent, warnings))
 }
 
@@ -3398,7 +3402,16 @@ fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start
 /// how a host runner starts a checkout on its list, with what that checkout's
 /// `run` named laid over it.
 pub(crate) fn unflagged_start() -> anyhow::Result<instance::Start> {
-    let unflagged = Cli::try_parse_from(["afkconvoy", "run"])?;
+    // Only a variable can refuse it: clap's first line says which flag, and why.
+    let unflagged = Cli::try_parse_from(["afkconvoy", "run"]).map_err(|error| {
+        let said = error.to_string();
+        let said = said.lines().next().unwrap_or_default();
+        anyhow::anyhow!(
+            "the login shell's environment sets a flag of `run` to what it refuses — correct it \
+             in your login shell's rc files: {}",
+            said.trim_start_matches("error: ")
+        )
+    })?;
     let start = start_of(unflagged.command, None).map(|(_, start)| start);
     start.context("a `run` asks for a start")
 }
@@ -3768,7 +3781,9 @@ fn run(
         Command::Tick { who, agent, .. } => {
             let repo = checkout?;
             let agent = agent.start(&repo, now, true)?;
-            Ok(tick::tick(&repo, &who.me(now), &agent, &stop::Stop::never(), None)?.0.json())
+            let ticked = tick::tick(&repo, &who.me(now), &agent, &stop::Stop::never(), None);
+            probe::announce(&agent.launches.warned());
+            Ok(ticked?.0.json())
         }
         Command::Gate { train, host, .. } => {
             let repo = checkout?;
@@ -3922,13 +3937,11 @@ fn run(
         Command::Dispatch { issue, who, agent, start, .. } => {
             let repo = checkout?;
             let agent = agent.agent(&repo)?;
-            dispatch::dispatch(
-                &mut Fleet::open(&repo, now)?,
-                &who.me(now),
-                &agent,
-                issue.number(),
-                start,
-            )
+            let mut fleet = Fleet::open(&repo, now)?;
+            let dispatched =
+                dispatch::dispatch(&mut fleet, &who.me(now), &agent, issue.number(), start);
+            probe::announce(&agent.launches.warned());
+            dispatched
         }
         Command::Recovery { issue, .. } => {
             recovery::recovery(&Fleet::open(&checkout?, now)?, issue.number())
@@ -3949,7 +3962,10 @@ fn run(
         Command::Restart { issue, who, agent, .. } => {
             let repo = checkout?;
             let agent = agent.agent(&repo)?;
-            watch::restart(&mut Fleet::open(&repo, now)?, &who.me(now), &agent, issue.number())
+            let restarted =
+                watch::restart(&mut Fleet::open(&repo, now)?, &who.me(now), &agent, issue.number());
+            probe::announce(&agent.launches.warned());
+            restarted
         }
         Command::Switch { harness, clear: _, issue, patrol, all, who, agent, .. } => {
             let which = match (issue, patrol, all) {
@@ -3960,7 +3976,10 @@ fn run(
             };
             let repo = checkout?;
             let agent = agent.agent(&repo)?;
-            switch::switch(&mut Fleet::open(&repo, now)?, &who.me(now), &agent, harness, which)
+            let mut fleet = Fleet::open(&repo, now)?;
+            let switched = switch::switch(&mut fleet, &who.me(now), &agent, harness, which);
+            probe::announce(&agent.launches.warned());
+            switched
         }
         Command::Abandon { who, .. } => {
             abandon::abandon_by_hand(&mut Fleet::open(&checkout?, now)?, &who.me(now))

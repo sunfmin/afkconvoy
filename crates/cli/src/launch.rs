@@ -2,7 +2,7 @@
 //! their first words in the login shell a worker gets. Commands are passed
 //! to orca as written, under nice with the worker's own TMPDIR.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Read;
@@ -94,6 +94,9 @@ pub struct Launches {
     /// in the directory the process happens to run in.
     dir: PathBuf,
     proposed: Vec<(Harness, OnceCell<Option<Proposed>>)>,
+    /// What the commands it resolved warn of, until whoever reports them
+    /// takes them (`warned`).
+    warned: RefCell<Vec<String>>,
 }
 
 impl Launches {
@@ -123,6 +126,7 @@ impl Launches {
             starts: false,
             dir: repo.dir.clone(),
             proposed: Harness::ALL.map(|harness| (harness, OnceCell::new())).into(),
+            warned: RefCell::default(),
         }
     }
 
@@ -167,7 +171,8 @@ impl Launches {
     }
 
     /// The host kit's command, with its first word resolved in the login shell.
-    /// An absent harness is an error; no stock command is substituted.
+    /// An absent harness is an error; no stock command is substituted. What a
+    /// start's command warns of is kept for `warned`.
     pub fn of(&self, harness: Harness) -> Result<Option<&Proposed>> {
         let cell = self.proposed.iter().find(|(named, _)| *named == harness).map(|(_, cell)| cell);
         let cell = cell.ok_or_else(|| anyhow!("`{}` is no harness", harness.key()))?;
@@ -176,7 +181,7 @@ impl Launches {
             if let Some(Ok(command)) = proposed.as_ref().map(Proposed::checked)
                 && let Some(warning) = command.warning().filter(|_| self.starts)
             {
-                eprintln!("warning: {warning}");
+                self.warned.borrow_mut().push(warning.to_string());
             }
             let _ = cell.set(proposed);
         }
@@ -221,6 +226,12 @@ impl Launches {
             ),
             callers => of_harness(fault, harness, callers),
         }
+    }
+
+    /// What the commands resolved since it was last asked warn of: a start
+    /// that starts workers says them where its other warnings go.
+    pub fn warned(&self) -> Vec<String> {
+        self.warned.take()
     }
 
     /// Fingerprint the entire kit so any edit invalidates a standing probe.

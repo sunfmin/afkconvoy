@@ -48,6 +48,20 @@ impl Named {
     pub fn is_empty(&self) -> bool {
         *self == Named::default()
     }
+
+    /// What it names, and of what it leaves unnamed, what `kept` names: a
+    /// `run` laid over what the checkout list kept of the one before.
+    pub fn or(self, kept: Named) -> Named {
+        let worker_no_proxy = match self.worker_no_proxy.is_empty() {
+            true => kept.worker_no_proxy,
+            false => self.worker_no_proxy,
+        };
+        Named {
+            instance: self.instance.or(kept.instance),
+            host: self.host.or(kept.host),
+            worker_no_proxy,
+        }
+    }
 }
 
 /// The knobs of the tests: never kept on the checkout list.
@@ -120,4 +134,28 @@ pub fn foreground(checkout: &Repo, start: &Start) -> Result<Value> {
         Line::Warning(warning) => probe::announce(&[warning.to_string()]),
     });
     hold(checkout, start, Holder { stop: stop.instance(), echo })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_a_run_names_is_laid_over_what_was_kept_field_by_field() {
+        let kept = Named {
+            instance: Some("me-h1-1a2b3c4d".into()),
+            host: Some("h1".into()),
+            worker_no_proxy: vec!["api.example.com".into()],
+        };
+        assert_eq!(Named::default().or(kept.clone()), kept, "naming nothing keeps it all");
+        let named = Named { host: Some("h2".into()), ..Named::default() };
+        let laid = named.or(kept.clone());
+        assert_eq!(laid.host.as_deref(), Some("h2"));
+        assert_eq!(
+            (&laid.instance, &laid.worker_no_proxy),
+            (&kept.instance, &kept.worker_no_proxy)
+        );
+        let bypass = Named { worker_no_proxy: vec!["pi=x".into()], ..Named::default() };
+        assert_eq!(bypass.clone().or(kept).worker_no_proxy, bypass.worker_no_proxy);
+    }
 }

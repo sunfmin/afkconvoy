@@ -89,7 +89,8 @@ struct Stage {
     asked: bool,
     /// Its id, once its start is kept in its tick log.
     instance: Option<String>,
-    /// What its startup probe warned of.
+    /// What it warned of before its first tick ended: its startup probe's
+    /// warnings among them.
     warnings: Vec<String>,
     came: Came,
 }
@@ -116,7 +117,8 @@ impl Seen {
 
 /// The host runner's own log: its stdout, which the `run` that started it
 /// points at host-runner.log. One line for each thing that happened to it,
-/// stamped in UTC, one at a time whichever thread says it.
+/// stamped in UTC, one at a time whichever thread says it; what spans
+/// several lines, as an error may, is folded into one.
 #[derive(Default)]
 struct RunnerLog {
     one: Mutex<()>,
@@ -124,6 +126,9 @@ struct RunnerLog {
 
 impl RunnerLog {
     fn say(&self, line: &str) {
+        let parts: Vec<&str> =
+            line.lines().map(str::trim).filter(|part| !part.is_empty()).collect();
+        let line = parts.join(" ");
         let _one = self.one.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // A log that cannot be written costs its lines, never the host runner.
         let _ = writeln!(std::io::stdout(), "{} {line}", log::utc(crate::clock()));
@@ -294,7 +299,9 @@ impl Runner {
     /// or the refusal of a checkout of a repo held from another, of one that
     /// is no checkout, or of one whose fleet instance ended before its first
     /// tick. A checkout whose fleet instance runs already is answered with
-    /// that instance, and `start` changes nothing.
+    /// that instance, and `start` changes nothing; one on the list whose
+    /// fleet instance does not run starts with what the list kept of its
+    /// `run`, and what `start` names laid over that.
     fn add(self: &Arc<Self>, checkout: &Path, start: Start) -> Result<Value> {
         if self.stop.told() {
             bail!(
@@ -309,13 +316,14 @@ impl Runner {
         let tick_log = log::Log::of(&repo)?.file;
         let (seen, added) = {
             let mut held = self.holding();
-            let listed = self.list.read()?.checkouts.into_iter();
+            let listed = self.list.read()?.checkouts;
             let repo_of =
                 |root: &Path| Repo::at(root).and_then(|repo| checkout_list::repo_of(&repo));
-            let listed =
-                listed.map(|entry| (entry.checkout.clone(), repo_of(&entry.checkout).ok()));
+            let listing = listed.iter();
+            let listing =
+                listing.map(|entry| (entry.checkout.clone(), repo_of(&entry.checkout).ok()));
             let holding = held.iter().map(|(root, held)| (root.clone(), Some(held.repo.clone())));
-            let known: Vec<(String, Option<String>)> = listed
+            let known: Vec<(String, Option<String>)> = listing
                 .chain(holding)
                 .map(|(root, repo)| (root.display().to_string(), repo))
                 .collect();
@@ -336,7 +344,12 @@ impl Runner {
                         running.seen.stage().asked = true;
                         (Arc::clone(&running.seen), false)
                     }
-                    None => (self.start(&mut held, root.clone(), key.clone(), start, true), false),
+                    None => {
+                        let kept = listed.into_iter().find(|entry| entry.checkout == root);
+                        let kept = kept.map(|entry| entry.named).unwrap_or_default();
+                        let start = Start { named: start.named.or(kept), ..start };
+                        (self.start(&mut held, root.clone(), key.clone(), start, true), false)
+                    }
                 },
                 OnList::No => (self.start(&mut held, root.clone(), key.clone(), start, true), true),
             }
@@ -402,6 +415,9 @@ impl Runner {
             let held = held.unwrap_or_else(|_| {
                 Err(anyhow!("its thread panicked: the host runner's log says why"))
             });
+            // However its loop ended, the threads it started end with it: a
+            // start of it again starts its own.
+            heard.stop.tell();
             runner.ended(&root, held);
         });
         seen
@@ -467,7 +483,8 @@ struct Heard {
     seen: Arc<Seen>,
     /// What its `run` named for it alone: kept on the list.
     named: Named,
-    /// Its own stop, told where the list cannot be written.
+    /// Its own stop, told where the list cannot be written, and once its
+    /// loop ended.
     stop: Stop,
 }
 
@@ -478,7 +495,12 @@ impl Heard {
             Line::Kept(entry) => self.kept(entry),
             Line::Said(text) => self.runner.log.say(&format!("{at}: {text}")),
             Line::Warning(warning) => {
-                self.seen.stage().warnings.push(warning.to_string());
+                let mut stage = self.seen.stage();
+                // Those of its start are the answer's.
+                if matches!(stage.came, Came::Starting) {
+                    stage.warnings.push(warning.to_string());
+                }
+                drop(stage);
                 self.runner.log.say(&format!("{at}: warning: {warning}"));
             }
         }

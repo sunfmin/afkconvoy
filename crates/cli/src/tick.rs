@@ -972,7 +972,9 @@ pub enum Line<'l> {
     /// Said and kept nowhere, as `run` printed and never logged it: what its
     /// start took, host sleep's terms, its panel's address.
     Said(&'l str),
-    /// What its startup probe warned of.
+    /// What it warns of: its startup probe's warnings, a worker launch
+    /// command with no unattended flag, what it cannot do and does without —
+    /// a socket it cannot listen on, a tick log it cannot keep.
     Warning(&'l str),
 }
 
@@ -1015,9 +1017,7 @@ impl Said {
         said.keep(me.now, log::What::Start { worker_command, harness_commands });
         said.log = said.log.filter(|log| log.file.exists());
         if said.log.is_none() {
-            eprintln!(
-                "warning: this run keeps no log of its ticks: `afkconvoy doctor` has none to read"
-            );
+            said.warn("this fleet instance keeps no tick log: `afkconvoy doctor` has none to read");
         }
         said
     }
@@ -1037,6 +1037,22 @@ impl Said {
     fn say(&self, line: &str) {
         let _one = self.one.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         (self.echo)(Line::Said(line));
+    }
+
+    /// Warns of `warning`, which no log keeps, in turn with the lines kept.
+    fn warn(&self, warning: &str) {
+        let _one = self.one.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        (self.echo)(Line::Warning(warning));
+    }
+}
+
+impl hot::Hears for Said {
+    fn turned(&self, at: u64, what: log::What) {
+        self.keep(at, what);
+    }
+
+    fn warn(&self, warning: &str) {
+        Said::warn(self, warning);
     }
 }
 
@@ -1108,19 +1124,19 @@ pub fn run(
         let (said, clock) = (Arc::clone(&said), Arc::clone(&clock));
         Box::new(move |during, by| said.keep(clock(), log::What::WokenDuring { during, by }))
     };
-    let wakes = Listener::open(repo, during);
+    let warn = |warning: &str| said.warn(warning);
+    let wakes = Listener::open(repo, during, &warn);
     let hot = Hot::default();
     let mut inspector = Inspector::new(repo, pacing.hot);
     {
-        let said = Arc::clone(&said);
-        let keep = move |at, what| said.keep(at, what);
+        let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
-        hot::watch(repo, pacing.hot, second, clock, keep, hot, stop.clone());
+        hot::watch(repo, pacing.hot, second, clock, hears, hot, stop.clone());
     }
     {
         let said = Arc::clone(&said);
         let say = Box::new(move |line: &str| said.say(line));
-        opening::listen(repo, live.clone(), me.instance.as_str(), say);
+        opening::listen(repo, live.clone(), me.instance.as_str(), say, &warn);
     }
     let mut cause = Cause::Start;
     let mut by = None;
@@ -1136,7 +1152,7 @@ pub fn run(
         since: me.now,
         worked: None,
     };
-    let mut host = HostSleep::open(standing, Waker::of(repo), pacing.host_sleep_after);
+    let mut host = HostSleep::open(standing, Waker::of(repo), pacing.host_sleep_after, &warn);
     loop {
         count += 1;
         said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });
@@ -1199,6 +1215,10 @@ pub fn run(
         let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         for what in inspector.step(agent, &hot_now, clock()) {
             said.keep(clock(), what);
+        }
+        // A launch command a worker first needed in this tick may warn.
+        for warning in agent.launches.warned() {
+            said.warn(&warning);
         }
         let busy = inspector.busy(&hot_now, clock());
         let sleep = if busy { sleep.min(INSPECTING_EVERY) } else { sleep };

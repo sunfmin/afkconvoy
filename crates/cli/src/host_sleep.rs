@@ -86,8 +86,14 @@ impl HostSleep {
     /// Listens as `standing` says this instance is, in the directory every
     /// instance of this host listens in, and puts the host to sleep unless
     /// `standing` was told `--no-host-sleep`. Called before the first tick.
-    /// One that cannot listen says so, and is seen by no other instance.
-    pub fn open(standing: Standing, waker: Option<Waker>, wait: u64) -> HostSleep {
+    /// One that cannot listen says so to `warn`, and is seen by no other
+    /// instance.
+    pub fn open(
+        standing: Standing,
+        waker: Option<Waker>,
+        wait: u64,
+        warn: &dyn Fn(&str),
+    ) -> HostSleep {
         let name = format!("{}{SUFFIX}", standing.instance);
         let on = !standing.no_host_sleep;
         let shared = Arc::new(Mutex::new(Shared { standing, waiting: vec![] }));
@@ -108,10 +114,10 @@ impl HostSleep {
                 true
             }
             Err(error) => {
-                eprintln!(
-                    "warning: the other fleets on this host cannot see this run, which they do \
+                warn(&format!(
+                    "the other fleets on this host cannot see this fleet instance, which they do \
                      not wait for to put the host to sleep: {error:#}"
-                );
+                ));
                 false
             }
         };
