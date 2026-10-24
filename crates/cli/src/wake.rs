@@ -120,8 +120,8 @@ impl Wakes {
         std::mem::take(&mut wakes.waiting).then_some(Woken { by })
     }
 
-    /// Whether a wake was heard that no rest has used up, and the tick now
-    /// or to come has not forgotten: the next rest ends at once.
+    /// Whether a wake heard waits, used up by neither a rest nor the start of
+    /// a tick: the next rest ends at once.
     pub fn heard(&self) -> bool {
         self.state().waiting
     }
