@@ -310,13 +310,16 @@ pub enum Answer {
     Unasked(String),
 }
 
+/// The models a harness offers through a command; why it offers none.
+type Listing = dyn Fn(Harness, &str) -> Result<Vec<String>, String> + Sync;
+
 /// What the host kit is written from: this host, as an orca terminal finds it.
 struct Host<'a> {
     /// Whether a harness's program is found; why it is taken as not.
     found: &'a (dyn Fn(Harness) -> Result<(), String> + Sync),
     /// The models a harness offers through a command, in its order; why it
     /// offers none.
-    listed: &'a (dyn Fn(Harness, &str) -> Result<Vec<String>, String> + Sync),
+    listed: &'a Listing,
     probe: &'a dyn Fn(&[Asked]) -> Vec<Answer>,
     now: u64,
 }
