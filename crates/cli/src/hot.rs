@@ -7,9 +7,10 @@
 //! stopped being hot. Each turn is a line of the log.
 //!
 //! A worker's processes are those started with its `TMPDIR`, the one of its
-//! worktree, and every process under one of them: a process whose
-//! environment cannot be read — a system binary — is counted through the one
-//! it was started under. The landing train's worktree is no worker's.
+//! worktree (`worker_tmp`), and every process under one of them: a process
+//! whose environment cannot be read — a system binary — is counted through
+//! the one it was started under. A server shared by the host that the worker
+//! started is not (`shared`). The landing train's worktree is no worker's.
 //!
 //! As a worker turns hot, what shows it is taken down there and then, on a
 //! thread of its own (`evidence`), and the `run` is woken: its inspector
@@ -32,9 +33,10 @@ use crate::git::Repo;
 use crate::host_settings;
 use crate::log::What;
 use crate::measure;
-use crate::orca::{Source, TMP_DIR, Worktree};
+use crate::orca::{Source, Worktree};
 use crate::stop::Stop;
 use crate::wake::Waker;
+use crate::worker_tmp;
 
 /// How many samples go by before the worktrees are asked of orca again, and
 /// what each holds is measured again: that is slow.
@@ -97,6 +99,40 @@ pub(crate) fn written_by(pid: u32) -> u64 {
     let io = std::fs::read_to_string(format!("/proc/{pid}/io")).unwrap_or_default();
     let line = io.lines().find_map(|line| line.strip_prefix("write_bytes:"));
     line.and_then(|bytes| bytes.trim().parse().ok()).unwrap_or(0)
+}
+
+/// The directory the process `pid` works in, as the kernel says it, every
+/// link in it followed; none where it cannot be read — a process of another
+/// user, or one gone.
+#[cfg(target_os = "macos")]
+fn works_in(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut info = std::mem::MaybeUninit::<libc::proc_vnodepathinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    // SAFETY: `info` is a `proc_vnodepathinfo`, the flavor asked for, and
+    // `size` is its size: the kernel writes no more than that.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if read != size {
+        return None;
+    }
+    // SAFETY: zeroed, then written by the kernel: every field is a number.
+    let info = unsafe { info.assume_init() };
+    let path: Vec<u8> = info.pvi_cdir.vip_path.iter().flatten().map(|&byte| byte as u8).collect();
+    let path = &path[..path.iter().position(|&byte| byte == 0)?];
+    (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(path)))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn works_in(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 /// The bytes of memory this host has; `None` where it cannot be read.
@@ -163,6 +199,10 @@ pub(crate) struct Proc {
     pub(crate) written: u64,
     /// Its command line, then its environment, where that can be read.
     pub(crate) line: String,
+    /// The directory it works in, read of a process handed to pid 1 alone:
+    /// what tells a server shared by the host from a process a worker left
+    /// behind (`shared`).
+    pub(crate) cwd: Option<PathBuf>,
 }
 
 /// Every process of this host, as `ps` says them, with what each wrote.
@@ -173,6 +213,9 @@ pub(crate) fn processes() -> Vec<Proc> {
         .unwrap_or_default();
     for proc in &mut procs {
         proc.written = written_by(proc.pid);
+        if proc.ppid == 1 {
+            proc.cwd = works_in(proc.pid);
+        }
     }
     procs
 }
@@ -189,7 +232,7 @@ fn parse(row: &str) -> Option<Proc> {
     let ppid = field().parse().ok()?;
     let resident = field().parse::<u64>().ok()?.saturating_mul(1024);
     let cpu_ms = cpu_time(field())?;
-    Some(Proc { pid, ppid, resident, cpu_ms, written: 0, line: rest.to_string() })
+    Some(Proc { pid, ppid, resident, cpu_ms, written: 0, line: rest.to_string(), cwd: None })
 }
 
 /// `[[dd-]hh:]mm:ss[.cc]`, as `ps` says CPU time → milliseconds.
@@ -211,22 +254,40 @@ fn cpu_time(said: &str) -> Option<u64> {
     Some(seconds * 1000 + hundredths * 10)
 }
 
-/// The processes of the worker started with `tmp` for its `TMPDIR`: each
-/// started with it, and each under one that was.
-pub(crate) fn tree<'a>(procs: &'a [Proc], tmp: &str) -> Vec<&'a Proc> {
+/// Whether `proc` was started with `tmp` for its `TMPDIR`.
+pub(crate) fn started_with(proc: &Proc, tmp: &str) -> bool {
     let needle = format!(" TMPDIR={tmp}");
-    let started_with = |proc: &Proc| {
-        proc.line.match_indices(&needle).any(|(at, _)| {
-            let after = &proc.line[at + needle.len()..];
-            let after = after.strip_prefix('/').unwrap_or(after);
-            after.is_empty() || after.starts_with(' ')
-        })
-    };
+    proc.line.match_indices(&needle).any(|(at, _)| {
+        let after = &proc.line[at + needle.len()..];
+        let after = after.strip_prefix('/').unwrap_or(after);
+        after.is_empty() || after.starts_with(' ')
+    })
+}
+
+/// Whether `proc`, started with the `TMPDIR` of the worker in `worktree`, is
+/// a server shared by the host that the worker started: handed to pid 1 —
+/// what started it is gone — and working outside the worktree, as a daemon
+/// does. sccache's server works in `/`, for every worktree of the host, and
+/// each compile it runs for a worker is started with that worker's
+/// `TMPDIR`: counted to it. One handed to pid 1 that works in the worktree —
+/// a test whose runner ended — is the worker's, left behind.
+fn shared(proc: &Proc, worktree: &Path) -> bool {
+    proc.ppid == 1 && proc.cwd.as_ref().is_some_and(|cwd| !cwd.starts_with(worktree))
+}
+
+/// The processes of the worker in the worktree `worktree`: each started with
+/// its `TMPDIR` but a server shared by the host (`shared`), and each under
+/// one of those.
+pub(crate) fn tree<'a>(procs: &'a [Proc], worktree: &Path) -> Vec<&'a Proc> {
+    let tmp = worker_tmp::of(worktree).display().to_string();
+    // A process's directory is said with every link followed.
+    let worktree = worktree.canonicalize().unwrap_or_else(|_| worktree.to_path_buf());
     let mut children: HashMap<u32, Vec<&Proc>> = HashMap::new();
     for proc in procs {
         children.entry(proc.ppid).or_default().push(proc);
     }
-    let mut found: Vec<&Proc> = procs.iter().filter(|proc| started_with(proc)).collect();
+    let mut found: Vec<&Proc> =
+        procs.iter().filter(|proc| started_with(proc, &tmp) && !shared(proc, &worktree)).collect();
     let mut seen: std::collections::HashSet<u32> = found.iter().map(|proc| proc.pid).collect();
     let mut next = 0;
     while next < found.len() {
@@ -397,7 +458,7 @@ impl Sampler {
                 .watched
                 .entry(path.clone())
                 .or_insert_with(|| Watched::new(worker.clone(), worktree.clone(), *issue));
-            let took = took(watched, &tree(&procs, &path.join(TMP_DIR).display().to_string()));
+            let took = took(watched, &tree(&procs, path));
             watched.resident.push_back((at, took.resident));
             if watched.resident.len() > RESIDENT_KEPT {
                 watched.resident.pop_front();
@@ -614,27 +675,73 @@ mod tests {
     }
 
     fn proc(pid: u32, ppid: u32, line: &str) -> Proc {
-        Proc { pid, ppid, resident: 1024, cpu_ms: 0, written: 0, line: line.to_string() }
+        Proc { pid, ppid, resident: 1024, cpu_ms: 0, written: 0, line: line.to_string(), cwd: None }
+    }
+
+    /// A process handed to pid 1, started with `line`, working in `cwd`.
+    fn orphan(pid: u32, line: &str, cwd: &str) -> Proc {
+        Proc { cwd: Some(PathBuf::from(cwd)), ..proc(pid, 1, line) }
+    }
+
+    fn pids(procs: &[Proc], worktree: &str) -> Vec<u32> {
+        let mut pids: Vec<u32> = tree(procs, Path::new(worktree)).iter().map(|p| p.pid).collect();
+        pids.sort();
+        pids
+    }
+
+    /// The `TMPDIR` of the worker in `worktree`.
+    fn tmp(worktree: &str) -> String {
+        worker_tmp::of(Path::new(worktree)).display().to_string()
     }
 
     #[test]
     fn a_workers_processes_are_those_started_with_its_tmpdir_and_all_under_them() {
+        let (a, b) = (tmp("/w/a"), tmp("/w/b"));
         let procs = [
             proc(1, 0, "launchd"),
             proc(10, 1, "zsh -l"),
-            proc(11, 10, "claude TMPDIR=/w/a/.afkconvoy-tmp HOME=/u"),
+            proc(11, 10, &format!("claude TMPDIR={a} HOME=/u")),
             proc(12, 11, "cargo test"),
             proc(13, 12, "rustc"),
-            proc(20, 1, "claude TMPDIR=/w/a/.afkconvoy-tmp-2 HOME=/u"),
-            proc(21, 1, "claude TMPDIR=/w/b/.afkconvoy-tmp"),
-            proc(30, 1, "cargo TMPDIR=/w/a/.afkconvoy-tmp/"),
+            proc(20, 1, &format!("claude TMPDIR={a}-2 HOME=/u")),
+            proc(21, 1, &format!("claude TMPDIR={b}")),
+            proc(30, 1, &format!("cargo TMPDIR={a}/")),
         ];
-        let mut pids: Vec<u32> =
-            tree(&procs, "/w/a/.afkconvoy-tmp").iter().map(|p| p.pid).collect();
-        pids.sort();
-        assert_eq!(pids, [11, 12, 13, 30]);
-        assert_eq!(tree(&procs, "/w/b/.afkconvoy-tmp").len(), 1);
-        assert!(tree(&procs, "/w/c/.afkconvoy-tmp").is_empty());
+        assert_eq!(pids(&procs, "/w/a"), [11, 12, 13, 30]);
+        assert_eq!(pids(&procs, "/w/b"), [21]);
+        assert!(pids(&procs, "/w/c").is_empty());
+    }
+
+    #[test]
+    fn a_server_a_worker_started_for_the_host_is_no_workers() {
+        let (a, b) = (tmp("/w/a"), tmp("/w/b"));
+        let procs = [
+            proc(11, 10, &format!("claude TMPDIR={a}")),
+            proc(12, 11, &format!("cargo build TMPDIR={a}")),
+            proc(13, 12, &format!("sccache rustc TMPDIR={a}")),
+            // the server a's first build started, which works in `/`…
+            orphan(40, &format!("sccache SCCACHE_START_SERVER=1 TMPDIR={a}"), "/"),
+            // …compiling for b, and for a
+            proc(41, 40, &format!("rustc --crate-name b TMPDIR={b}")),
+            proc(42, 40, &format!("rustc --crate-name a TMPDIR={a}")),
+            proc(43, 42, "ld"),
+            proc(21, 20, &format!("claude TMPDIR={b}")),
+        ];
+        assert_eq!(pids(&procs, "/w/a"), [11, 12, 13, 42, 43]);
+        assert_eq!(pids(&procs, "/w/b"), [21, 41]);
+    }
+
+    #[test]
+    fn a_process_a_worker_left_behind_is_still_its_own() {
+        let a = tmp("/w/a");
+        let procs = [
+            // a test its runner left, still in the worktree, and what it runs
+            orphan(50, &format!("deps/cli-0123 a_test TMPDIR={a}"), "/w/a/crates/cli"),
+            proc(51, 50, &format!("afkconvoy run TMPDIR={a}")),
+            // one whose directory cannot be read
+            proc(60, 1, &format!("cargo TMPDIR={a}")),
+        ];
+        assert_eq!(pids(&procs, "/w/a"), [50, 51, 60]);
     }
 
     #[test]

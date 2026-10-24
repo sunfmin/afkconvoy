@@ -7,7 +7,7 @@ use afkconvoy_core::train::Built;
 use anyhow::{Context, Result};
 
 use crate::git::Repo;
-use crate::orca::TMP_DIR;
+use crate::worker_tmp::TMP_DIR;
 
 /// The note of the bytes the worktree held after its first gate run, kept in
 /// the worktree's own git dir: gone when the worktree is.

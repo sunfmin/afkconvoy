@@ -70,12 +70,15 @@ fn a_claim_whose_issue_is_closed_is_settled_and_its_slot_refilled() {
     let world = backlog(&[3, 5, 9]);
     tick(&world, "1000");
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
+    let tmp = afkconvoy::worker_tmp::of(std::path::Path::new(&worktree));
+    assert!(tmp.is_dir(), "its worker's TMPDIR");
     world.close_issue(3);
     world.watch_pushes(None);
 
     let ticked = tick(&world, "1090");
     assert_eq!(did(&ticked), ["settle 3 done", "dispatch 9 done", "heartbeat done"]);
     assert!(!std::path::Path::new(&worktree).exists(), "the worktree is removed");
+    assert!(tmp.symlink_metadata().is_err(), "its worker's TMPDIR with it");
     assert_eq!(world.claims(), alpha(&[5, 9]));
     // the worktree went first, the claim last
     let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
