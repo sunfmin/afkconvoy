@@ -58,6 +58,10 @@ pub struct Seen {
     /// caster is told of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub good_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::kit_research::Source>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub researched_at: Option<u64>,
 }
 
 impl Seen {
@@ -285,7 +289,8 @@ pub fn write(now: u64) -> Result<Value> {
     let host = Host::here(now)?;
     let file = path()?;
     let current = if file.exists() { load()? } else { Kit::default() };
-    let (kit, left_out) = compose(&current, &host, Writing::Whole);
+    let (mut kit, left_out) = compose(&current, &host, Writing::Whole);
+    crate::kit_research::research(&current, &mut kit, now, crate::kit_research::session);
     store(&file, &kit, now)?;
     resume_answered(&kit, now)?;
     eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
@@ -426,7 +431,8 @@ fn refresh_at<'a>(
     std::fs::write(&lock, now.to_string())
         .with_context(|| format!("cannot write {}", lock.display()))?;
     let current = load_at(file)?;
-    let (kit, _) = compose(&current, &host()?, Writing::Refresh);
+    let (mut kit, _) = compose(&current, &host()?, Writing::Refresh);
+    crate::kit_research::research(&current, &mut kit, now, crate::kit_research::session);
     store(file, &kit, now)?;
     drop(held);
     Ok(Some((current, kit)))
@@ -710,7 +716,14 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
             Some(at) => &mut held.models[at],
             None => {
                 let probed = Some(Probed { at: host.now, seconds });
-                held.models.push(Seen { model: id.clone(), names: vec![], probed, good_at: None });
+                held.models.push(Seen {
+                    model: id.clone(),
+                    names: vec![],
+                    probed,
+                    good_at: None,
+                    sources: vec![],
+                    researched_at: None,
+                });
                 held.models.last_mut().expect("just pushed")
             }
         };
@@ -731,7 +744,11 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
                 push_new(&mut seen.names, [display]);
             }
             seen.names.retain(|name| name != &seen.model);
-            seen.good_at = good_at(current, held.harness, seen);
+            if let Some(before) = previous(current, &seen.model) {
+                seen.good_at = before.good_at.clone();
+                seen.sources = before.sources.clone();
+                seen.researched_at = before.researched_at;
+            }
         }
     }
     // A model held before that is neither listed nor answered as now is gone.
@@ -767,25 +784,15 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
     (kit, left_out)
 }
 
-/// What `current` says the model `seen` of `harness` is good at: as written
-/// beside it there — under its id, or one of its names — else beside the
-/// same model on another harness, its id the same with the provider prefix
-/// left off. One model has one `good_at`.
-fn good_at(current: &Kit, harness: Harness, seen: &Seen) -> Option<String> {
+/// The same answered identity held before, including on another harness.
+/// Aliases are deliberately excluded: they may now answer as a different model.
+fn previous<'a>(current: &'a Kit, id: &str) -> Option<&'a Seen> {
     let bare = |id: &str| id.rsplit('/').next().unwrap_or(id).to_lowercase();
-    let models = |of: Harness| {
-        current.held(of).into_iter().flat_map(|held| held.models.iter()).map(move |m| (of, m))
-    };
-    let all = current.harnesses.iter().flat_map(|held| models(held.harness));
-    let own = models(harness).find(|(_, before)| {
-        before.good_at.is_some()
-            && (before.model == seen.model || seen.names.contains(&before.model))
-    });
-    let own = own.and_then(|(_, before)| before.good_at.clone());
-    own.or_else(|| {
-        let mut same = all.filter(|(_, before)| bare(&before.model) == bare(&seen.model));
-        same.find_map(|(_, before)| before.good_at.clone())
-    })
+    current
+        .harnesses
+        .iter()
+        .flat_map(|held| &held.models)
+        .find(|before| bare(&before.model) == bare(id))
 }
 
 /// Adds to `into` each of `items` it does not hold yet.
@@ -845,6 +852,8 @@ mod tests {
                 names: vec![],
                 probed: Some(Probed { at: 1, seconds: 1.0 }),
                 good_at: None,
+                sources: vec![],
+                researched_at: None,
             })
             .collect();
         Held { harness, command: command.into(), models }

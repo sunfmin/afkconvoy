@@ -1,6 +1,6 @@
 //! `afkconvoy draft`: a team's roster drafted from this host's host kit, into
 //! the team file of the team's working tree (docs/adr/0020). The host kit's
-//! first model says what each of its models is good at and how each role is
+//! first model says how each role is
 //! to be cast among what it may run; the rest is the host kit's, in its
 //! order. It commits nothing: a human reads the draft, edits it and commits
 //! it. A roster there already is replaced only once its human confirms.
@@ -35,13 +35,28 @@ pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
     let first = kit.first().context("the host kit holds no harness: run `afkconvoy kit`")?;
     let launch = kit.command(first.harness).context("the host kit holds no harness")?;
     let kept = crate::kept::keep(first.harness, false)?.display().to_string();
-    let prompt = draft_prompt(&loaded.team, &range);
+    let strengths: Vec<Strength> = kit
+        .harnesses
+        .iter()
+        .flat_map(|held| {
+            held.models.iter().map(|seen| Strength {
+                harness: held.harness.key().into(),
+                model: Some(seen.model.clone()),
+                good_at: seen.good_at.clone().unwrap_or_else(|| "not researched".into()),
+            })
+        })
+        .collect();
+    let prompt = format!(
+        "{}\nHost kit research (use as given): {:?}",
+        draft_prompt(&loaded.team, &range),
+        strengths
+    );
     let question = first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt);
     let Some((true, answer)) = crate::launch::ask_login_shell_within(&question, ANSWER_TIMEOUT)
     else {
         bail!("the host kit's first, `{}`, did not answer the draft", first.harness.key());
     };
-    let (strengths, guidance) = read_answer(&answer);
+    let (_, guidance) = read_answer(&answer);
     let roster = afkconvoy_core::roster::draft(&loaded.team, &range, &strengths, &guidance);
     let unsaid = unsaid(&loaded.team, &range, &strengths, &guidance);
     for said in &unsaid {
