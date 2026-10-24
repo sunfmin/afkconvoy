@@ -11,12 +11,12 @@ One repo's fleet in its host's host runner, and everything it owns: the workers 
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
 
 **Host runner**:
-The one long-running afkconvoy process of a host, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way.
-_Avoid_: daemon, server, supervisor
+A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way.
+_Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
 The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it.
-_Avoid_: registry, workspace list, projects
+_Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Host settings**:
 What a host says for every fleet instance on it — whether it may be put to sleep, the limits past which a worker is hot, the shares admission holds back at — kept beside the checkout list and changed by any `run` that names one.
