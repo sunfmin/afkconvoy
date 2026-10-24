@@ -1069,9 +1069,12 @@ echo "    | |   \"HIDIdleTime\" = ${idle}000000000"
 
 impl World {
     /// Has every `run` of this world put its host to sleep, as one told
-    /// nothing does: the host is the stand-in one (`pmset.log`).
+    /// nothing does: the host is the stand-in one (`pmset.log`). Its sleep
+    /// hours are any hour, whenever the test runs, where `command` names no
+    /// others.
     pub fn host_sleeps(&self, command: &mut Command) {
         command.env_remove("AFKCONVOY_NO_HOST_SLEEP");
+        command.env("AFKCONVOY_HOST_SLEEP_HOURS", "00:00-24:00");
     }
 
     /// Has the stand-in host's 1-minute load be `load`, as `sysctl` says it.
