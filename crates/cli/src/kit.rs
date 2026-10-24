@@ -811,12 +811,12 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
 /// The same answered identity held before, including on another harness.
 /// Aliases are deliberately excluded: they may now answer as a different model.
 fn previous<'a>(current: &'a Kit, id: &str) -> Option<&'a Seen> {
-    let bare = |id: &str| id.rsplit('/').next().unwrap_or(id).to_lowercase();
+    use crate::kit_research::identity;
     current
         .harnesses
         .iter()
         .flat_map(|held| &held.models)
-        .filter(|before| bare(&before.model) == bare(id))
+        .filter(|before| identity(&before.model) == identity(id))
         .max_by_key(|before| (before.researched_at.is_some(), !before.sources.is_empty()))
 }
 

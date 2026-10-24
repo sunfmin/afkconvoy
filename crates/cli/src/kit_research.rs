@@ -19,7 +19,7 @@ pub struct Source {
     pub date: String,
 }
 
-fn identity(id: &str) -> String {
+pub(super) fn identity(id: &str) -> String {
     id.rsplit('/').next().unwrap_or(id).to_lowercase()
 }
 
@@ -52,21 +52,29 @@ struct Finding {
 /// Failure is data: writing the kit must still succeed.
 pub fn session(kit: &Kit, prompt: &str) -> Result<String> {
     let first = kit.first().context("no harness answered")?;
-    let command = kit.command(first.harness).context("no worker launch command")?;
     let kept = crate::kept::keep(first.harness, false)?;
-    let mut question = first.harness.prompt_question(
-        command,
-        &kept.display().to_string(),
-        first.model.as_deref(),
-        prompt,
-    );
-    if first.harness == afkconvoy_core::harness::Harness::ClaudeCode {
-        question.push_str(" --allowedTools WebSearch WebFetch");
-    }
+    let question = question(kit, &kept.display().to_string(), prompt)?;
     match crate::orca::ask(&question, LIMIT)? {
         Some((true, answer)) => Ok(answer),
         _ => bail!("research failed or gave no answer within 15 minutes"),
     }
+}
+
+/// Headless research with live search enabled on harnesses that require it.
+fn question(kit: &Kit, kept: &str, prompt: &str) -> Result<String> {
+    let first = kit.first().context("no harness answered")?;
+    let command = kit.command(first.harness).context("no worker launch command")?;
+    let command = if first.harness == afkconvoy_core::harness::Harness::Codex {
+        format!("{command} --search")
+    } else {
+        command.to_string()
+    };
+    let mut question =
+        first.harness.prompt_question(&command, kept, first.model.as_deref(), prompt);
+    if first.harness == afkconvoy_core::harness::Harness::ClaudeCode {
+        question.push_str(" --allowedTools WebSearch WebFetch");
+    }
+    Ok(question)
 }
 
 /// Researches only identities not held before, once across all harnesses.
@@ -254,6 +262,20 @@ fn checked(text: &str, kit: &Kit, targets: &[serde_json::Value]) -> Result<Answe
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn research_enables_live_web_search_on_the_first_harness() {
+        let mut kit = kit();
+        let asked = question(&kit, "/kept", "Research now.").unwrap();
+        assert!(asked.contains("--print 'Research now.' --allowedTools WebSearch WebFetch"));
+        kit.harnesses[0].harness = afkconvoy_core::harness::Harness::Codex;
+        kit.harnesses[0].command = "codex --dangerously-bypass-approvals-and-sandbox".into();
+        let asked = question(&kit, "/kept", "Research now.").unwrap();
+        assert!(
+            asked.contains("--search exec --skip-git-repo-check --ephemeral --model 'fast'"),
+            "{asked}"
+        );
+        assert!(asked.starts_with("export CODEX_HOME='/kept'"));
+    }
     fn kit() -> Kit {
         serde_json::from_value(json!({"harnesses": [
             {"harness":"claude-code", "command":"claude", "models":[{"model":"fast", "names":["default", "Fast"], "good_at":"not researched"}, {"model":"deep", "good_at":"not researched"}]},
