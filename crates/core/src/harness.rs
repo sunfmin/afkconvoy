@@ -242,12 +242,15 @@ impl Harness {
 
     /// The shell line whose answer says which models it knows on a host,
     /// asked of the worker launch command `command` with what the host keeps
-    /// for it in `kept` (`models` reads it). `None`: it has no way to say.
-    pub fn models_question(self, command: &str, kept: &str) -> Option<String> {
+    /// for it in `kept` (`models` reads it): the models its own login runs,
+    /// as it says them. DSH's goes through its headless profile instead
+    /// (`dsh::models_question`).
+    pub fn models_question(self, command: &str, kept: &str) -> String {
         match self {
-            Harness::ClaudeCode | Harness::Dsh => None,
-            Harness::Pi => Some(pi::models_question(command, kept)),
-            Harness::Codex => Some(codex::models_question(command, kept)),
+            Harness::ClaudeCode => claude_code::models_question(command),
+            Harness::Pi => pi::models_question(command, kept),
+            Harness::Codex => codex::models_question(command, kept),
+            Harness::Dsh => dsh::models_question(kept),
         }
     }
 
@@ -285,24 +288,24 @@ impl Harness {
     }
 
     /// The models it knows, given what the worker's shell printed for
-    /// `models_question`. `None`: it said none, and a model named for it is
-    /// passed as written.
+    /// `models_question`. `None`: it said none.
     pub fn models(self, answer: &str) -> Option<Vec<String>> {
         match self {
-            Harness::ClaudeCode | Harness::Dsh => None,
+            Harness::ClaudeCode => claude_code::models(answer),
             Harness::Pi => pi::models(answer),
             Harness::Codex => codex::models(answer),
+            Harness::Dsh => dsh::models(answer),
         }
     }
 
     /// Whether `model`, its own name for one as a stage writes it, is among
-    /// `listed`, the models it said it knows (`models`). A harness with no
-    /// way to say knows whatever it is given.
+    /// `listed`, the models it said it knows (`models`).
     pub fn knows(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode | Harness::Dsh => true,
             Harness::Pi => pi::knows(listed, model),
-            Harness::Codex => codex::knows(listed, model),
+            // Each of the rest takes any name at all and fails at its first
+            // turn on one it has no model for.
+            Harness::ClaudeCode | Harness::Codex | Harness::Dsh => whole(listed, model),
         }
     }
 
@@ -310,10 +313,9 @@ impl Harness {
     /// harness's name for a model would be taken for.
     pub fn names(self, listed: &[String], model: &str) -> bool {
         match self {
-            Harness::ClaudeCode | Harness::Dsh => false,
             Harness::Pi => pi::names(listed, model),
-            // Codex knows a model by its whole name and no other way.
-            Harness::Codex => codex::knows(listed, model),
+            // Each of the rest knows a model by its whole name and no other way.
+            Harness::ClaudeCode | Harness::Codex | Harness::Dsh => whole(listed, model),
         }
     }
 
@@ -441,6 +443,12 @@ impl Harness {
             Harness::Dsh => dsh::REFUSED,
         }
     }
+}
+
+/// Whether `model`, as a stage writes it, is one of `listed`, the models a
+/// harness lists on a host: its whole name, as written.
+fn whole(listed: &[String], model: &str) -> bool {
+    listed.iter().any(|name| name == model.trim())
 }
 
 #[cfg(test)]

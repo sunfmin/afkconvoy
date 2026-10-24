@@ -257,7 +257,7 @@ pub fn configure() -> Result<Value> {
         Harness::ALL.into_iter().filter(|h| crate::launch::on_path(h.program())).collect()
     };
     let host = Host {
-        listed: &|harness, command| crate::launch::models(harness, command).map(Result::ok),
+        listed: &crate::launch::models,
         probe: &probe_all,
         now: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -321,13 +321,12 @@ pub enum Answer {
     Unasked(String),
 }
 
-/// The models a harness offers through a command.
-type Listing = dyn Fn(Harness, &str) -> Option<Option<Vec<String>>>;
+/// The models a harness offers through a command; why it offers none.
+type Listing = dyn Fn(Harness, &str) -> Result<Vec<String>, String>;
 
 /// What the editor asks of the host, apart from the human.
 struct Host<'a> {
-    /// The models a harness offers through a command (`None`: it has no way
-    /// to say; `Some(None)`: asking it failed).
+    /// The models a harness offers through a command, or why it offers none.
     listed: &'a Listing,
     probe: &'a dyn Fn(&[Asked]) -> Vec<Answer>,
     now: u64,
@@ -424,13 +423,8 @@ fn edit(
             .flat_map(|held| held.models.iter().map(|seen| seen.model.clone()))
             .collect();
         match (host.listed)(*harness, command) {
-            Some(Some(listed)) => push_new(&mut candidates, listed),
-            Some(None) => writeln!(out, "{}: asking it for its models failed", harness.key())?,
-            None => writeln!(
-                out,
-                "{}: the fleet has no way to ask it for its models; name them by hand",
-                harness.key()
-            )?,
+            Ok(listed) => push_new(&mut candidates, listed),
+            Err(why) => writeln!(out, "{}: asking it for its models: {why}", harness.key())?,
         }
         let shown = if candidates.is_empty() { "none".to_string() } else { candidates.join(" ") };
         let Some(answer) = reply(input, out, &format!("{} models: {shown}\n> ", harness.key()))?
@@ -563,17 +557,16 @@ mod tests {
         Held { harness, command: command.into(), models }
     }
 
-    /// Lists `gpt-a gpt-b` for Codex, nothing for the rest; every model
+    /// Lists `gpt-a gpt-b` for Codex, none for the rest; every model
     /// answers but `bad`, in two seconds, and `ds-2`, which no terminal could
     /// be made for.
     fn host(
         probed: &std::cell::RefCell<Vec<Asked>>,
     ) -> impl Fn(&[u8]) -> (Result<Option<Kit>>, String) {
         move |replies: &[u8]| {
-            let listed = |harness: Harness, _: &str| match harness {
-                Harness::Codex => Some(Some(vec!["gpt-a".into(), "gpt-b".into()])),
-                Harness::Pi => Some(None),
-                _ => None,
+            let listed = |harness: Harness, command: &str| match harness {
+                Harness::Codex => Ok(vec!["gpt-a".into(), "gpt-b".into()]),
+                _ => Err(format!("it listed none: {command} --list")),
             };
             let probe = |asked: &[Asked]| {
                 probed.borrow_mut().extend(asked.iter().cloned());
@@ -606,8 +599,8 @@ mod tests {
         let replies = concat!(
             // commands: claude-code kept, pi dropped, codex added, dsh added
             "\n-\nmycodex --yolo\ndsh-tui\n",
-            // models: claude-code's held plus one named by hand, codex's
-            // listed, dsh's named by hand
+            // models: claude-code's held plus one typed, codex's listed,
+            // dsh's typed
             "opus bad sonnet\n\nds-1 ds-2\n",
             // order of harnesses: a typo asked again, then codex first
             "nope\ncodex\n",
@@ -647,7 +640,7 @@ mod tests {
             probed.borrow().iter().any(|(h, c, _)| *h == Harness::Codex && c == "mycodex --yolo")
         );
         for said in [
-            "dsh: the fleet has no way to ask it for its models",
+            "dsh: asking it for its models: it listed none: dsh-tui --list",
             "claude-code bad: did not answer",
             "codex gpt-a: answered in 2.0s",
             "dsh ds-1: answered in 2.0s",

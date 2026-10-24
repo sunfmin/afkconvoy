@@ -1,0 +1,5 @@
+# The overlay DSH's headless profile is booted with to say its models: the
+# plugin that prints them and stops before a prompt is sent.
+- insert:
+    - id: afkconvoy-models
+      name: '@AFKCONVOY_DSH_MODELS@'

@@ -65,6 +65,76 @@ pub(super) fn prompt_question(command: &str, model: Option<&str>, prompt: &str) 
     line.fixed(" --print ").word(prompt).done()
 }
 
+/// The control request Claude Code answers with, among the rest of what it
+/// offers, the models its login runs: sent before any prompt, it is the only
+/// thing sent, and no prompt follows.
+const INITIALIZE: &str =
+    r#"{"type":"control_request","request_id":"models","request":{"subtype":"initialize"}}"#;
+
+/// How Claude Code is started to read control requests from its input and
+/// answer them on its output, a JSON object a line.
+const STREAMED: &str = " -p --input-format stream-json --output-format stream-json --verbose";
+
+/// What comes before the list of models in Claude Code's answer to
+/// `INITIALIZE`, with no whitespace: a `"` inside a JSON string is written
+/// `\"`, so this is in the answer only where the key is.
+const MODELS: &str = "\"models\":[";
+
+/// What comes before each model's name in that list: the key of it.
+const NAMED: &str = "\"value\":\"";
+
+/// The line that asks `command`, a worker launch command of Claude Code's,
+/// which models its login runs: `INITIALIZE`, on its input, and nothing else.
+/// Claude Code keeps its logins with the host's user, as a worker finds them.
+pub(super) fn models_question(command: &str) -> String {
+    Line::new()
+        .fixed("printf '%s\\n' ")
+        .word(INITIALIZE)
+        .fixed(" | ")
+        .launch(command)
+        .fixed(STREAMED)
+        .done()
+}
+
+/// The models Claude Code lists in `answer`, what it printed for
+/// `models_question`, each by the name its `MODEL` flag takes, in the order
+/// listed: the `value` of each model there, whatever a shell printed around
+/// it or wherever a terminal broke its lines. `None` when it lists none: it
+/// said something else.
+pub(super) fn models(answer: &str) -> Option<Vec<String>> {
+    let dense: String = answer.split_whitespace().collect();
+    let (_, list) = dense.split_once(MODELS)?;
+    // The models are the objects one level into the list, which ends at the
+    // `]` that closes it; a `[`, `]`, `{` or `}` inside a string is none.
+    let mut listed = vec![];
+    let (mut depth, mut quoted, mut escaped) = (1_usize, false, false);
+    for (at, character) in list.char_indices() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => {
+                if !quoted && depth == 2 {
+                    let named =
+                        list[at..].strip_prefix(NAMED).and_then(|after| after.split_once('"'));
+                    listed.extend(named.map(|(name, _)| name.to_string()));
+                }
+                quoted = !quoted;
+            }
+            _ if quoted => {}
+            '[' | '{' => depth = depth.saturating_add(1),
+            ']' | '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    listed.retain(|name| !name.is_empty());
+    if listed.is_empty() { None } else { Some(listed) }
+}
+
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's: no hook, no MCP server, no
 /// permission of theirs.
@@ -498,5 +568,79 @@ mod tests {
         // no prompt in sight: the last line is the footer
         assert!(shows_background(&screen(&["output", "1 monitor", ""])));
         assert!(!shows_background(&screen(&["1 monitor", "output"])));
+    }
+
+    /// What Claude Code printed for `models_question` on a host, its
+    /// commands cut to one, after its hooks had begun.
+    const INITIALIZED: &str = include_str!("claude_code/initialize.jsonl");
+
+    #[test]
+    fn claude_code_is_asked_its_models_with_initialize_and_no_prompt() {
+        let question = Harness::ClaudeCode.models_question("kim  --verbose", "/kept");
+        assert_eq!(
+            question,
+            "printf '%s\\n' '{\"type\":\"control_request\",\"request_id\":\"models\",\
+             \"request\":{\"subtype\":\"initialize\"}}' | kim  --verbose -p \
+             --input-format stream-json --output-format stream-json --verbose"
+        );
+        // Nothing is sent but the one request: no prompt.
+        assert_eq!(question.matches("control_request").count(), 1);
+        assert!(!question.contains("\"user\""), "{question}");
+    }
+
+    #[test]
+    fn its_models_are_the_values_listed_in_its_answer_in_order() {
+        let listed = [
+            "default",
+            "opus",
+            "fable",
+            "sonnet",
+            "haiku",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-mythos-5-1",
+        ];
+        assert_eq!(Harness::ClaudeCode.models(INITIALIZED).unwrap(), listed);
+        // As a terminal shows it: an rc file's line first, broken every 80
+        // characters, with a prompt after.
+        let shown: Vec<String> = INITIALIZED
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(80)
+            .map(|row| row.iter().collect::<String>())
+            .collect();
+        let shown = format!("an rc file said so\n{}\n% ", shown.join("\n"));
+        assert_eq!(Harness::ClaudeCode.models(&shown).unwrap(), listed);
+        for nothing in [
+            "",
+            "Not logged in · Please run /login\n",
+            r#"{"type":"control_response","response":{"response":{"models":[]}}}"#,
+            r#"{"models":[{"name":"x","efforts":[{"value":"low"}]}]}"#,
+        ] {
+            assert_eq!(Harness::ClaudeCode.models(nothing), None, "{nothing}");
+        }
+        // A `value` of a model's own, or in a string, is no model.
+        let nested = r#"{"models":[{"value":"a","x":{"value":"no"},"d":"\"value\":\"no\""},
+            {"d":"]}","value":"b"}],"after":{"value":"no"}}"#;
+        assert_eq!(Harness::ClaudeCode.models(nested).unwrap(), ["a", "b"]);
+    }
+
+    #[test]
+    fn claude_code_knows_a_model_it_lists_by_its_whole_name_and_no_other() {
+        let listed = Harness::ClaudeCode.models(INITIALIZED).unwrap();
+        for known in ["opus", " sonnet ", "claude-opus-4-8"] {
+            assert!(Harness::ClaudeCode.knows(&listed, known), "{known}");
+            assert!(Harness::ClaudeCode.names(&listed, known), "{known}");
+        }
+        for unknown in ["Opus", "claude-opus", "gpt-5.5", ""] {
+            assert!(!Harness::ClaudeCode.knows(&listed, unknown), "{unknown}");
+            assert!(!Harness::ClaudeCode.names(&listed, unknown), "{unknown}");
+        }
     }
 }

@@ -56,9 +56,10 @@ pub(super) const FLAGS: [&str; 4] = [ADD_DIR, HOOKS_REVIEWED, CONFIG, MODEL];
 /// What Codex is asked for the flags it takes.
 const HELP: &str = " --help";
 
-/// What Codex is asked for the models it knows: the ones it was built with,
-/// which it says at once and without asking the network.
-const LIST_MODELS: &str = " debug models --bundled";
+/// What Codex is asked for the models it knows: those its login runs, which
+/// it fetches from its server with that login and keeps a while. Not the
+/// ones it was built with (`--bundled`): those differ from an account's.
+const LIST_MODELS: &str = " debug models";
 /// What comes before each model's name in what Codex answers: the key of it,
 /// in the JSON it prints. A `"` inside a JSON string is written `\"`, so this
 /// is in the answer only where a key is.
@@ -408,13 +409,6 @@ pub(super) fn models(answer: &str) -> Option<Vec<String>> {
     if listed.is_empty() { None } else { Some(listed) }
 }
 
-/// Whether `model`, as a stage writes it, is one of `listed`, the models
-/// Codex lists on a host: its whole name, as written. Codex takes any name
-/// at all and fails at its first turn on one it has no model for.
-pub(super) fn knows(listed: &[String], model: &str) -> bool {
-    listed.iter().any(|name| name == model.trim())
-}
-
 /// One tool call, as Codex describes it to a hook before making it.
 #[derive(Deserialize)]
 struct Described {
@@ -649,10 +643,7 @@ mod tests {
     fn codex_is_asked_its_models_under_the_directory_a_worker_is_given() {
         assert_eq!(
             Harness::Codex.models_question("kim  --search", "/it's kept"),
-            Some(
-                "export CODEX_HOME='/it'\\''s kept' && kim  --search debug models --bundled"
-                    .to_string()
-            )
+            "export CODEX_HOME='/it'\\''s kept' && kim  --search debug models"
         );
         assert_eq!(Harness::Codex.models(LISTED).unwrap(), ["gpt-5.5", "codex-auto-review"]);
         for nothing in ["", "{\"models\":[]}\n", "error: unrecognized subcommand 'models'\n"] {
