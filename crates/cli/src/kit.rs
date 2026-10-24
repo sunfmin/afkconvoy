@@ -833,6 +833,88 @@ fn named_said(named: &Named) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn dsh_server_models_are_probed_and_held_without_the_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("models.mjs"),
+            include_str!("../../core/src/harness/dsh/models.mjs"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("test.mjs"),
+            include_str!("../../core/src/harness/dsh/models-test.mjs"),
+        )
+        .unwrap();
+        for mode in ["list", "key", "refused", "none", "malformed", "redirect"] {
+            let run = std::process::Command::new("node")
+                .arg(root.path().join("test.mjs"))
+                .arg(mode)
+                .output()
+                .unwrap();
+            assert!(run.status.success(), "{mode}: {}", String::from_utf8_lossy(&run.stderr));
+            let printed = String::from_utf8(run.stdout).unwrap();
+            let found = |harness| {
+                if harness == Harness::Dsh { Ok(()) } else { Err("not installed".into()) }
+            };
+            let listing = |_: Harness, _: &str| {
+                let ids = Harness::Dsh
+                    .models(&printed)
+                    .ok_or_else(|| Harness::Dsh.listing_failure(&printed).unwrap())?;
+                let shown = Harness::Dsh.shown(&printed);
+                Ok(ids
+                    .into_iter()
+                    .map(|id| {
+                        let name = shown
+                            .iter()
+                            .find(|(model, _)| model == &id)
+                            .map(|(_, name)| name.clone());
+                        Listed { name: id, shown: name }
+                    })
+                    .collect())
+            };
+            let probe = |asked: &[Asked]| {
+                assert_eq!(
+                    asked.iter().map(|(_, _, id)| id.as_str()).collect::<Vec<_>>(),
+                    ["deepseek-flash", "deepseek-v4-pro"]
+                );
+                asked.iter().map(|(_, _, id)| Answer::Answered(1.0, Some(id.clone()))).collect()
+            };
+            let host = Host { found: &found, listed: &listing, probe: &probe, now: 77 };
+            // compose calls the probe even with no models to ask.
+            let silent = |_: &[Asked]| vec![];
+            let success = matches!(mode, "list" | "key");
+            let host = if success { host } else { Host { probe: &silent, ..host } };
+            let (kit, left_out) = compose(&Kit::default(), &host, Writing::Whole);
+            if success {
+                let models = &kit.harnesses[0].models;
+                assert_eq!(models.len(), 2);
+                assert_eq!(models[0].model, "deepseek-flash");
+                assert_eq!(models[0].names, ["DeepSeek V4.1 Flash"]);
+                assert!(models.iter().all(|model| model.probed.is_some()));
+            } else {
+                assert!(kit.harnesses.is_empty());
+                let why = &left_out.iter().find(|left| left.harness == Harness::Dsh).unwrap().why;
+                let expected = match mode {
+                    "refused" => "Authentication Fails",
+                    "none" => "not signed in",
+                    "malformed" => "server answered",
+                    _ => "could not read DSH credentials or ask the model server",
+                };
+                assert!(why.contains(expected), "{mode}: {why}");
+            }
+            let recorded = format!(
+                "{printed}{}{}{}",
+                String::from_utf8_lossy(&run.stderr),
+                serde_json::to_string(&kit).unwrap(),
+                serde_json::to_string(&left_out).unwrap()
+            );
+            for secret in ["account-secret-sentinel-396", "api-key-secret-sentinel-396"] {
+                assert!(!recorded.contains(secret), "credential leaked in {mode}");
+            }
+        }
+    }
+
     fn listed(name: &str, shown: Option<&str>) -> Listed {
         Listed { name: name.into(), shown: shown.map(str::to_string) }
     }

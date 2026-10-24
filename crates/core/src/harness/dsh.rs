@@ -93,7 +93,7 @@ const LISTED: &str = "AFKCONVOY_DSH_LISTED";
 /// The line that asks DSH which models it runs: through `dsh`, the launcher
 /// its TUI comes with, in its headless profile, with the overlay kept in
 /// `kept` whose plugin prints the models of each provider route DSH holds,
-/// as DSH lists them with its own credentials, and stops before the task is
+/// as the server lists them with DSH's own credentials, and stops before the task is
 /// sent. The worker launch command starts the TUI, which says nothing but
 /// at a terminal.
 pub(super) fn models_question(kept: &str) -> String {
@@ -104,20 +104,54 @@ pub(super) fn models_question(kept: &str) -> String {
         .own()
 }
 
-/// The models DSH lists in `answer`, what it printed for `models_question`,
-/// each by the name a stage gives it, once, in the order listed. `None`
-/// when it lists none: it holds no credential, or said something else.
+/// The server's model list or refusal, carried on one marked JSON line.
+#[derive(Deserialize)]
+struct Listing {
+    #[serde(default)]
+    models: Vec<Listed>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Listed {
+    id: String,
+    name: Option<String>,
+}
+
+fn listing(answer: &str) -> Option<Listing> {
+    answer.lines().find_map(|line| {
+        let json = line.strip_prefix(LISTED)?.strip_prefix(' ')?;
+        serde_json::from_str(json).ok()
+    })
+}
+
+/// The server's ids, once each in the order listed; no bundled fallback.
 pub(super) fn models(answer: &str) -> Option<Vec<String>> {
-    let mut listed: Vec<String> = vec![];
-    for line in answer.lines() {
-        let mut words = line.split_whitespace();
-        if let (Some(LISTED), Some(model), None) = (words.next(), words.next(), words.next())
-            && !listed.iter().any(|seen| seen == model)
-        {
-            listed.push(model.to_string());
+    let answer = listing(answer)?;
+    if answer.error.is_some() {
+        return None;
+    }
+    let mut listed = vec![];
+    for model in answer.models {
+        if !model.id.trim().is_empty() && !listed.contains(&model.id) {
+            listed.push(model.id);
         }
     }
     if listed.is_empty() { None } else { Some(listed) }
+}
+
+pub(super) fn shown(answer: &str) -> Vec<(String, String)> {
+    listing(answer).map_or_else(Vec::new, |answer| {
+        answer
+            .models
+            .into_iter()
+            .filter_map(|model| model.name.map(|name| (model.id, name)))
+            .collect()
+    })
+}
+
+pub(super) fn listing_failure(answer: &str) -> Option<String> {
+    listing(answer)?.error
 }
 
 #[spec(fn(Line[@l], &Start) -> Line[l])]
@@ -196,33 +230,25 @@ mod tests {
     use crate::harness::Harness;
 
     #[test]
-    fn dsh_is_asked_its_models_through_its_headless_profile_with_the_kept_overlay() {
+    fn dsh_asks_the_server_through_its_credential_service() {
         assert_eq!(
             Harness::Dsh.models_question("dsh-tui --theme dark", "/it's kept"),
             "dsh headless --patch '/it'\\''s kept/models.patch.yml' 'say your models'"
         );
-        // The overlay loads the plugin kept beside it, which prints what is read.
-        let files: Vec<&str> = KEPT.files.iter().map(|(name, _)| *name).collect();
-        assert!(files.contains(&MODELS_PATCH) && files.contains(&"models.mjs"), "{files:?}");
-        assert!(include_str!("dsh/models.yml").contains("@AFKCONVOY_DSH_MODELS@"));
-        assert!(include_str!("dsh/models.mjs").contains(&format!("`{LISTED} ${{id}}\\n`")));
-    }
-
-    #[test]
-    fn its_models_are_those_it_prints_once_each_in_order() {
-        let printed = "dsh: all_proxy names a SOCKS proxy, which is not supported\n\
-            AFKCONVOY_DSH_LISTED deepseek-flash\n\
-            AFKCONVOY_DSH_LISTED deepseek-v4-pro\r\n\
-            AFKCONVOY_DSH_LISTED deepseek-flash\n\
-            said AFKCONVOY_DSH_LISTED no-model\n\
-            AFKCONVOY_DSH_LISTED two words\n";
+        assert!(KEPT.files.iter().any(|(name, _)| *name == MODELS_PATCH));
+        let printed = r#"DSH startup
+AFKCONVOY_DSH_LISTED {"models":[{"id":"deepseek-flash","name":"DeepSeek V4.1 Flash"},{"id":"deepseek-v4-pro"},{"id":"deepseek-flash"}]}
+"#;
         assert_eq!(Harness::Dsh.models(printed).unwrap(), ["deepseek-flash", "deepseek-v4-pro"]);
-        // No credential: it prints no model, and says why on its own.
-        for nothing in ["", "dsh: MISSING_CREDENTIAL: llm-deepseek: no API key\n"] {
-            assert_eq!(Harness::Dsh.models(nothing), None, "{nothing}");
+        assert_eq!(
+            Harness::Dsh.shown(printed),
+            [("deepseek-flash".into(), "DeepSeek V4.1 Flash".into())]
+        );
+        for nothing in ["", "AFKCONVOY_DSH_LISTED {}", "AFKCONVOY_DSH_LISTED invalid"] {
+            assert_eq!(Harness::Dsh.models(nothing), None);
         }
-        let listed = Harness::Dsh.models(printed).unwrap();
-        assert!(Harness::Dsh.knows(&listed, "deepseek-v4-pro"));
-        assert!(!Harness::Dsh.knows(&listed, "deepseek"));
+        let refused = r#"AFKCONVOY_DSH_LISTED {"error":"Authentication Fails"}"#;
+        assert_eq!(Harness::Dsh.models(refused), None);
+        assert_eq!(Harness::Dsh.listing_failure(refused).as_deref(), Some("Authentication Fails"));
     }
 }
