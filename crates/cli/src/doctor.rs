@@ -23,11 +23,12 @@ use afkconvoy_core::team::Fault;
 use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout, harness_missing};
 use afkconvoy_core::waiting::{WAITED_LONG, Waiting};
 use afkconvoy_core::worker::WorkerState;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::admission::Admission;
+use crate::checkout_list::{List, repo_of};
 use crate::config;
 use crate::exclusive::Queue;
 use crate::fleet::Fleet;
@@ -84,6 +85,10 @@ pub struct Finding {
     pub fix: String,
     /// The command that prints the topic explaining it.
     pub see: See,
+    /// Whether it is the host's (`Kind::of_host`), which `doctor --all`
+    /// says once.
+    #[serde(skip)]
+    pub of_host: bool,
 }
 
 /// Names each kind of finding there is, with how much it matters and its
@@ -165,9 +170,26 @@ kinds! {
     NoGateLimit: Info, "declares no gate limit";
 }
 
+impl Kind {
+    /// Whether what a finding of this kind says is wrong is the host's, the
+    /// same whichever checkout `doctor` is asked in: a command missing or
+    /// logged out, orca not running, a harness paused.
+    fn of_host(self) -> bool {
+        matches!(
+            self,
+            Kind::ToolMissing
+                | Kind::ToolLoggedOut
+                | Kind::NoProvider
+                | Kind::OrcaNotRunning
+                | Kind::HarnessPaused
+        )
+    }
+}
+
 pub(crate) fn finding(kind: Kind, what: String, evidence: String, fix: String) -> Finding {
     debug_assert!(what.contains(kind.symptom()), "{kind:?} is not said in: {what}");
-    Finding { severity: kind.severity(), what, evidence, fix, see: kind.see() }
+    let (severity, see, of_host) = (kind.severity(), kind.see(), kind.of_host());
+    Finding { severity, what, evidence, fix, see, of_host }
 }
 
 /// An answer with a finding of the highest severity: printed as it is, with
@@ -1154,7 +1176,7 @@ fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
 /// The fleet instance of `host` broken, as the log has it: its newest line
 /// of a start, a break, a coming back or a stop is a break. `runs` says whether a
 /// host runner runs on this host, which starts it again.
-fn read_broken(entries: &[Entry], host: &str, runs: bool) -> Option<BrokenRead> {
+pub(crate) fn read_broken(entries: &[Entry], host: &str, runs: bool) -> Option<BrokenRead> {
     let of_host = entries.iter().rev().filter(|entry| entry.host == host);
     // A `stop:` line after it broke: `stop` took its checkout off the list.
     let mut starts = of_host.filter(|entry| {
@@ -1374,7 +1396,7 @@ fn read_unclaimed(fleet: &Fleet) -> Vec<Unclaimed> {
         .collect()
 }
 
-fn host_json(host: &Host, now: u64) -> Value {
+fn host_json(host: &Host) -> Value {
     let tool = |(tool, found): &(Tool, Found)| {
         let state = match found {
             Found::Ready => "ready",
@@ -1388,7 +1410,6 @@ fn host_json(host: &Host, now: u64) -> Value {
     };
     json!({
         "tools": host.looked_for().map(|(looked, _)| tool(looked)).collect::<Vec<_>>(),
-        "host_kit": crate::kit::show(now),
         "worker_commands": host.launches.iter().map(|Launch { checked }| json!({
             // An unbound repo knows of no harness: nothing calls for one.
             "harness": (!checked.callers.is_empty()).then_some(checked.harness),
@@ -1495,6 +1516,28 @@ pub fn doctor(repo: &Repo, now: u64, host: &str) -> Result<Value> {
 
 /// Adds the network settings of a start the host is considering.
 pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Value> {
+    let (mut answer, found) = examined(repo, now, host, proxy)?;
+    let unwell = critical(&found);
+    answer["findings"] = serde_json::to_value(found)?;
+    if unwell {
+        return Err(Unwell(answer).into());
+    }
+    Ok(answer)
+}
+
+/// Whether any of `found` is critical: an answer that holds one exits
+/// non-zero.
+fn critical(found: &[Finding]) -> bool {
+    found.iter().any(|finding| finding.severity == Severity::Critical)
+}
+
+/// What `doctor` makes of one checkout (`examined`): its answer but for
+/// `findings`, and what it found, most severe first.
+type Examined = (Value, Vec<Finding>);
+
+/// What `doctor` reads of the fleet of `host` in the checkout `repo`, under
+/// the network settings `proxy` names.
+fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Examined> {
     let launches = Launches::foreseen(repo).with_no_proxy(proxy)?;
 
     let log = Log::of(repo).ok();
@@ -1540,7 +1583,7 @@ pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) ->
         ),
         Err(_) => (vec![], Value::Null, Value::Null),
     };
-    let mut host = host_json(&seen_host, now);
+    let mut host = host_json(&seen_host);
     host["worker_no_proxy"] = launches.proxy_json();
     host["admission"] = match Admission::read(&repo.dir) {
         Ok(admission) => admission.json(),
@@ -1549,22 +1592,108 @@ pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) ->
     // Beside admission's reading: what the last host inspection found of it.
     host["admission"]["inspected"] = crate::inspection::last_on_host()
         .map_or(Value::Null, |last| crate::inspection::last_json(&last));
-    host["settings"] = match crate::checkout_list::List::of_host() {
+    host["settings"] = match List::of_host() {
         Ok(list) => crate::host_settings::json(&list, &repo.dir),
         Err(error) => json!({"error": format!("{error:#}")}),
     };
-    let mut answer = json!({
+    if let Some(host) = host.as_object_mut() {
+        host.extend(host_once(now));
+    }
+    let answer = json!({
         "host": host,
         "fleet": fleet_json(&run),
         "claims": Value::Array(claims),
         "issues": issues,
         "waiting_on_human": waiting,
-        "findings": found,
     });
-    answer["host"]["exclusive"] = exclusive_json(Queue::of_host().and_then(|q| q.standing()));
-    answer["host"]["inspection"] = crate::inspection::on_host()
-        .map_or(Value::Null, |running| crate::inspection::json(&running));
-    if found.iter().any(|finding| finding.severity == Severity::Critical) {
+    Ok((answer, found))
+}
+
+/// What of `doctor`'s `host` is the host's alone, the same whichever
+/// checkout it is asked in — the host kit, the queue of `exclusive`, the
+/// inspection running — by its key: `doctor --all` says it once.
+fn host_once(now: u64) -> Map<String, Value> {
+    let inspection = crate::inspection::on_host();
+    Map::from_iter([
+        ("host_kit".to_string(), crate::kit::show(now)),
+        ("exclusive".to_string(), exclusive_json(Queue::of_host().and_then(|q| q.standing()))),
+        (
+            "inspection".to_string(),
+            inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
+        ),
+    ])
+}
+
+/// `afkconvoy doctor --all`: `doctor` of every checkout on this host's
+/// checkout list, in its order, each asked on a thread of its own, as the
+/// fleet of `host` — else of the host its `run` named, else of this machine
+/// — under the network settings `proxy` names:
+///
+///   {"host": {"host_kit", "exclusive", "inspection"}, "findings",
+///    "checkouts": [{"checkout", "repo", "doctor"}]}
+///
+/// What is the host's is said once, at the top: the part of `host` that is
+/// (`host_once`), and each finding that is (`Kind::of_host`), however many
+/// checkouts found it. Each checkout's `doctor` is the rest of what `doctor`
+/// answers there, `waiting_on_human` among it; or {"error", "see"} where it
+/// could not be asked — the checkout is no git checkout any more, say. An
+/// answer with a critical finding, or a checkout that could not be asked,
+/// is an `Unwell` error.
+pub fn all(now: u64, host: Option<&str>, proxy: &[String]) -> Result<Value> {
+    let listed = List::of_host()?.read()?.checkouts;
+    // Each checkout's repo, where it can be read, beside what was made of it.
+    let asked: Vec<(Option<String>, Result<Examined>)> = std::thread::scope(|scope| {
+        let asking: Vec<_> = listed
+            .iter()
+            .map(|entry| {
+                let named = host.map(str::to_string).or_else(|| entry.named.host.clone());
+                let host = named.unwrap_or_else(crate::this_host);
+                scope.spawn(move || {
+                    let repo = Repo::at(&entry.checkout);
+                    let key = repo.as_ref().ok().and_then(|repo| repo_of(repo).ok());
+                    (key, repo.and_then(|repo| examined(&repo, now, &host, proxy)))
+                })
+            })
+            .collect();
+        let panicked = || (None, Err(anyhow!("its `doctor` panicked")));
+        asking.into_iter().map(|asked| asked.join().unwrap_or_else(|_| panicked())).collect()
+    });
+    let once = host_once(now);
+    let mut of_host: Vec<Finding> = vec![];
+    let mut unwell = false;
+    let mut checkouts = vec![];
+    for (entry, (key, examined)) in listed.iter().zip(asked) {
+        let doctor = match examined {
+            Ok((mut answer, found)) => {
+                let (host_found, own): (Vec<Finding>, Vec<Finding>) =
+                    found.into_iter().partition(|finding| finding.of_host);
+                for finding in host_found {
+                    if !of_host.contains(&finding) {
+                        of_host.push(finding);
+                    }
+                }
+                unwell |= critical(&own);
+                if let Some(host) = answer["host"].as_object_mut() {
+                    host.retain(|key, _| !once.contains_key(key));
+                }
+                answer["findings"] = serde_json::to_value(own)?;
+                answer
+            }
+            Err(error) => {
+                unwell = true;
+                crate::error_json(&error)
+            }
+        };
+        checkouts.push(json!({"checkout": entry.checkout, "repo": key, "doctor": doctor}));
+    }
+    of_host.sort_by_key(|finding| finding.severity);
+    unwell |= critical(&of_host);
+    let answer = json!({
+        "host": once,
+        "findings": of_host,
+        "checkouts": checkouts,
+    });
+    if unwell {
         return Err(Unwell(answer).into());
     }
     Ok(answer)
@@ -1845,7 +1974,7 @@ mod tests {
                 .ends_with("called for by the stage `build` of the workflow `feature`")
         );
         assert_eq!(found[0].severity, Severity::Critical);
-        assert_eq!(host_json(&missing, 0)["tools"][3], json!({"name": "pi", "state": "missing"}));
+        assert_eq!(host_json(&missing)["tools"][3], json!({"name": "pi", "state": "missing"}));
 
         let mut logged_out = pi(Found::LoggedOut);
         logged_out.launches[1].checked.fault = None;

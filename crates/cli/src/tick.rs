@@ -635,7 +635,8 @@ impl Ticked {
             })
             .collect();
         let mut answer = json!({"did": did, "errors": errors, "held": self.pass.held,
-            "frontier_remaining": self.pass.frontier_remaining, "locks": self.set.locks});
+            "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle().0,
+            "locks": self.set.locks});
         if self.pass.held_back(&self.set) {
             answer["held_back_by"] = json!(self.held_back_by());
         }

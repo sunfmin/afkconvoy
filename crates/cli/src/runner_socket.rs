@@ -1,8 +1,8 @@
-//! The host runner's socket: how `run` and `stop` reach the host runner of
-//! their host (docs/adr/0023). It is a file in the cache directory, so every
-//! afkconvoy that shares the cache directory reaches the same one. One line of
-//! JSON crosses it each way, the question and its answer, and then the
-//! connection closes.
+//! The host runner's socket: how `run`, `stop` and `checkouts` reach the host
+//! runner of their host (docs/adr/0023). It is a file in the cache directory,
+//! so every afkconvoy that shares the cache directory reaches the same one.
+//! One line of JSON crosses it each way, the question and its answer, and
+//! then the connection closes.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -25,8 +25,8 @@ pub const SOCKET: &str = "host-runner.sock";
 /// question is one line, written at once.
 const ASKED_WITHIN: Duration = Duration::from_secs(10);
 
-/// What `run` and `stop` ask the host runner: one line of JSON, tagged by its
-/// `op`.
+/// What `run`, `stop` and `checkouts` ask the host runner: one line of JSON,
+/// tagged by its `op`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -44,6 +44,9 @@ pub enum Request {
     /// Stop every fleet instance, and then the host runner, keeping the
     /// checkout list: answered once every fleet instance has stopped.
     StopAll,
+    /// The checkouts it holds a fleet instance of, each with that instance's
+    /// id once its start is logged: answered at once.
+    Checkouts,
 }
 
 /// The questions the host runner took and has not answered yet.
@@ -232,6 +235,7 @@ mod tests {
         let stop = serde_json::to_string(&Request::Stop { checkout: "/w".into() }).unwrap();
         assert_eq!(stop, r#"{"op":"stop","checkout":"/w"}"#);
         assert_eq!(serde_json::to_string(&Request::StopAll).unwrap(), r#"{"op":"stop_all"}"#);
+        assert_eq!(serde_json::to_string(&Request::Checkouts).unwrap(), r#"{"op":"checkouts"}"#);
         assert_eq!(serde_json::to_string(&Request::Version).unwrap(), r#"{"op":"version"}"#);
     }
 
@@ -267,7 +271,7 @@ mod tests {
                 Request::Add { checkout, .. } | Request::Stop { checkout } => {
                     json!({"checkout": checkout})
                 }
-                Request::Version | Request::StopAll => json!({}),
+                Request::Version | Request::StopAll | Request::Checkouts => json!({}),
             };
             answered(runner, &about, &checkout).unwrap();
             let mut answer = String::new();
