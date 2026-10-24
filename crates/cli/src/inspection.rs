@@ -16,15 +16,16 @@
 //! issue saying so.
 //!
 //! One inspection runs on the host at a time, of either kind, across its
-//! fleets: the `run` whose inspection runs holds the host's turn — a file of
-//! the cache it keeps locked, saying what runs — and another waits for it. A
-//! `run` that dies lets the turn go with it. An inspection takes no slot of
+//! fleets: the host's turn to inspect is held by its host runner (`Turn`),
+//! which gives it to the fleet instance whose inspection runs, and to an
+//! inspection of the host only while no fleet instance has a hot worker
+//! waiting for one. The turn goes with the inspection that holds it — ended,
+//! or dropped with a fleet instance that ends. An inspection takes no slot of
 //! the `concurrency`.
 
-use std::fs::{File, OpenOptions, TryLockError};
-use std::io::Read;
-use std::os::unix::fs::FileExt;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use afkconvoy_core::config::Bound;
 use afkconvoy_core::harness::Harness;
@@ -56,10 +57,8 @@ use crate::role::ToldRules;
 use crate::stage::records_of;
 use crate::team::keep;
 
-/// The host's turn to inspect, in the cache every fleet of the host shares.
-const TURN: &str = "inspection.lock";
-
-/// What the last host inspection found, in the same cache.
+/// What the last host inspection found, in the cache every fleet of the host
+/// shares.
 const LAST: &str = "host-inspection/last.json";
 
 /// What a host inspection's turn names as the worker it inspects.
@@ -82,50 +81,106 @@ pub struct Running {
     pub held_back_by: Option<Reason>,
 }
 
-fn turn_file() -> Result<PathBuf> {
-    Ok(cache()?.join(TURN))
+/// The host's one turn to inspect, held by its host runner for every fleet
+/// instance it holds: the inspection running, if one is, and the fleet
+/// instances with a hot worker waiting for one, which go before an
+/// inspection of the host. A clone is the same.
+#[derive(Clone, Default)]
+pub struct Turn {
+    held: Arc<Mutex<Turns>>,
 }
 
-/// Takes the host's turn to inspect for `running` → the file held locked for
-/// as long as it lives; `None` while another inspection holds it.
-fn take_turn(running: &Running) -> Result<Option<File>> {
-    let path = turn_file()?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("cannot make {}", dir.display()))?;
+#[derive(Default)]
+struct Turns {
+    running: Option<Running>,
+    /// The places of the inspectors with a hot worker waiting, by key.
+    waiting: BTreeSet<u64>,
+    /// The key the next place takes.
+    next: u64,
+}
+
+impl Turn {
+    fn held(&self) -> MutexGuard<'_, Turns> {
+        self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .with_context(|| format!("cannot open {}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => return Ok(None),
-        Err(TryLockError::Error(error)) => {
-            return Err(error).with_context(|| format!("cannot lock {}", path.display()));
+
+    /// The inspection running on the host now, across its fleets.
+    pub fn running(&self) -> Option<Running> {
+        self.held().running.clone()
+    }
+
+    /// Whether the turn can be taken now for an inspection of the host,
+    /// `of_host`, or of a hot worker: not while another inspection holds it,
+    /// nor — of the host — while a hot worker of any fleet instance waits for
+    /// one.
+    fn free(&self, of_host: bool) -> bool {
+        Turn::free_in(&self.held(), of_host)
+    }
+
+    fn free_in(held: &Turns, of_host: bool) -> bool {
+        held.running.is_none() && !(of_host && !held.waiting.is_empty())
+    }
+
+    /// Takes the turn for `running` → it, held until it is dropped; `None`
+    /// where it is not free (`free`).
+    fn take(&self, running: Running) -> Option<Taken> {
+        let mut held = self.held();
+        if !Turn::free_in(&held, running.held_back_by.is_some()) {
+            return None;
         }
+        held.running = Some(running);
+        Some(Taken { turn: self.clone() })
     }
-    let said = serde_json::to_vec(running)?;
-    file.set_len(0).and_then(|()| file.write_all_at(&said, 0))?;
-    Ok(Some(file))
+
+    /// A place at the turn for one fleet instance's inspector.
+    fn place(&self) -> Place {
+        let mut held = self.held();
+        let key = held.next;
+        held.next += 1;
+        Place { turn: self.clone(), key }
+    }
 }
 
-/// The inspection running on this host now, across its fleets; none where
-/// none holds the turn.
+/// The host's turn, taken: it is free again once this is dropped.
+struct Taken {
+    turn: Turn,
+}
+
+impl Drop for Taken {
+    fn drop(&mut self) {
+        self.turn.held().running = None;
+    }
+}
+
+/// One inspector's place at the host's turn: whether a hot worker of its
+/// waits for an inspection. It waits no more once this is dropped.
+struct Place {
+    turn: Turn,
+    key: u64,
+}
+
+impl Place {
+    /// Says whether a hot worker of this inspector's waits for an inspection.
+    fn waits(&self, waiting: bool) {
+        let mut held = self.turn.held();
+        match waiting {
+            true => held.waiting.insert(self.key),
+            false => held.waiting.remove(&self.key),
+        };
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.waits(false);
+    }
+}
+
+/// The inspection running on this host now, across its fleets, as its host
+/// runner says it; none where none runs, or no host runner can say.
 pub fn on_host() -> Option<Running> {
-    let mut file = File::open(turn_file().ok()?).ok()?;
-    match file.try_lock() {
-        // Nobody holds it: nothing runs. The lock goes with the file.
-        Ok(()) => None,
-        Err(TryLockError::WouldBlock) => {
-            let mut said = String::new();
-            file.read_to_string(&mut said).ok()?;
-            serde_json::from_str(&said).ok()
-        }
-        Err(TryLockError::Error(_)) => None,
-    }
+    let shared = crate::host_runner::shared().ok().flatten()?;
+    serde_json::from_value(shared["inspection"].clone()).ok()
 }
 
 /// `running`, as `doctor` and the panel show it.
@@ -227,7 +282,7 @@ struct Inspection {
     started: u64,
     by: String,
     /// The host's turn, held until it ends.
-    _turn: File,
+    _turn: Taken,
 }
 
 /// What a start came to.
@@ -368,6 +423,8 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
 pub struct Inspector {
     /// The checkout of the fleet whose `run` it is.
     checkout: Repo,
+    /// Its place at the host's turn to inspect.
+    place: Place,
     inspected: Inspected,
     running: Option<Box<Inspection>>,
     /// Admission, tick after tick: the host is inspected once it held back
@@ -382,10 +439,12 @@ pub struct Inspector {
 }
 
 impl Inspector {
-    /// The inspector of the `run` of the checkout `checkout`.
-    pub fn new(checkout: &Repo) -> Inspector {
+    /// The inspector of the `run` of the checkout `checkout`, inspecting in
+    /// turn with every other of the host's, `turn`.
+    pub fn new(checkout: &Repo, turn: &Turn) -> Inspector {
         Inspector {
             checkout: checkout.clone(),
+            place: turn.place(),
             inspected: Inspected::default(),
             running: None,
             holding: Holding::default(),
@@ -449,7 +508,10 @@ impl Inspector {
         }
         let seen = Inspector::seen(hot);
         self.inspected.keep_to(&seen);
-        let Some(next) = self.inspected.next(&seen) else {
+        let next = self.inspected.next(&seen);
+        // A hot worker waiting goes before the host, whichever fleet's it is.
+        self.place.waits(next.is_some());
+        let Some(next) = next else {
             said.extend(self.step_host(agent, now));
             return said;
         };
@@ -517,7 +579,7 @@ impl Inspector {
     /// in a checkout of the base branch of its own, once the host's turn is
     /// taken and what it is given is taken down.
     fn start_host(&self, agent: &Agent, due: &Due, now: u64) -> Result<Started> {
-        if on_host().is_some() {
+        if !self.place.turn.free(true) {
             return Ok(Started::Waits);
         }
         let fleet = Fleet::open(&self.checkout, now)?;
@@ -542,7 +604,7 @@ impl Inspector {
             since: now,
             held_back_by: Some(due.reason),
         };
-        let Some(turn) = take_turn(&running)? else { return Ok(Started::Waits) };
+        let Some(turn) = self.place.turn.take(running) else { return Ok(Started::Waits) };
         // Read again as it starts: what it is given is what holds back now.
         let admission = Admission::read(&fleet.repo.dir)?;
         let reading = admission
@@ -600,7 +662,7 @@ impl Inspector {
     /// branch of its own, once the host's turn is taken.
     fn start(&self, agent: &Agent, hot: &HotNow, now: u64) -> Result<Started> {
         // Asked first: a worker waiting its turn reads nothing of GitHub.
-        if on_host().is_some() {
+        if !self.place.turn.free(false) {
             return Ok(Started::Waits);
         }
         let fleet = Fleet::open(&self.checkout, now)?;
@@ -628,7 +690,7 @@ impl Inspector {
             since: now,
             held_back_by: None,
         };
-        let Some(turn) = take_turn(&running)? else { return Ok(Started::Waits) };
+        let Some(turn) = self.place.turn.take(running) else { return Ok(Started::Waits) };
         let source = Source::of(&fleet.repo)?;
         if let Some(left) = Worktree::named(&source, CHECKOUT)? {
             left.remove()?;

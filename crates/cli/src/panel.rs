@@ -18,7 +18,6 @@ use afkconvoy_core::tick::{Outcome, TickStep};
 use afkconvoy_core::worker::WorkerState;
 
 use crate::claims::Me;
-use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::hot::{HotNow, held_said};
 use crate::inspection::{Last, Running};
@@ -458,7 +457,7 @@ pub fn read(
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     // Soft: a queue that cannot be read shows nothing.
-    panel.exclusive = Queue::of_host().and_then(|queue| queue.standing()).unwrap_or_default();
+    panel.exclusive = crate::exclusive::standing().unwrap_or_default();
     // Soft too: a team or a host kit that cannot be read names no role.
     if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
         panel.nothing_safe = afkconvoy_core::casting::range_faults(team, &kit.range());

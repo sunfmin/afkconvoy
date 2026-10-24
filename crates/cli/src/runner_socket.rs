@@ -1,18 +1,22 @@
 //! The host runner's socket: the one socket of a host, on which every command
 //! that speaks to a running fleet reaches the host runner of its host —
 //! `run` (its version check among it), `stop`, `checkouts`, `wake`, `panel
-//! --open`, and `doctor` asking whether a fleet instance runs — each question
-//! about one repo naming its checkout (docs/adr/0023). It is a file in the
-//! cache directory, so every afkconvoy that shares the cache directory
-//! reaches the same one. One line of JSON crosses it each way, the question
-//! and its answer, and then the connection closes.
+//! --open`, `exclusive`, and `doctor` asking whether a fleet instance runs and
+//! what the host's fleets share — each question about one repo naming its
+//! checkout (docs/adr/0023). It is a file in the cache directory, so every
+//! afkconvoy that shares the cache directory reaches the same one. One line
+//! of JSON crosses it each way, the question and its answer, and then the
+//! connection closes: but for `exclusive`, which keeps the line open for as
+//! long as its command waits and runs, and is told on it when its turn comes
+//! (`Reply::Kept`, `Conversation`).
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::exclusive::Ticket;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,6 +69,17 @@ pub enum Request {
     /// Whether it holds a fleet instance of `checkout`'s repo: answered as
     /// `holds`.
     Holds { checkout: PathBuf },
+    /// Put `ticket`'s command in the host's exclusive queue — its `dir`
+    /// naming its checkout — and keep the asker on the line: answered at
+    /// once with how many are `ahead` of it, and then with `runs`, when, once
+    /// its turn comes. It leaves the queue once the asker closes its end: its
+    /// command ended, or its process did. A command that waits as its host
+    /// runner is replaced asks the next one the same, whichever afkconvoy
+    /// that is: this line changes by fields with a default alone.
+    Exclusive { ticket: Ticket },
+    /// What the host's fleets share: answered at once with the `exclusive`
+    /// queue, in the order it runs, and the `inspection` running, or null.
+    Shared,
 }
 
 /// The longest path a socket's address holds, with room to spare: 104 bytes
@@ -152,16 +167,55 @@ pub fn listen() -> Result<UnixListener> {
     .context("the host runner cannot listen on its socket")
 }
 
+/// How the host runner answers one question.
+pub enum Reply {
+    /// With one line, and the connection closes.
+    Line(Value),
+    /// With one line, and then as `keep` says, keeping the asker on the line
+    /// (`Kept`): an `exclusive` command, as it waits and runs.
+    Kept(Value, Box<dyn FnOnce(Kept) + Send>),
+}
+
+/// An asker the host runner keeps on the line past its first answer.
+pub struct Kept {
+    stream: UnixStream,
+    about: Value,
+}
+
+impl Kept {
+    /// Says `said` to the asker, with which host runner says it → whether it
+    /// was still there to be told.
+    pub fn say(&mut self, mut said: Value) -> bool {
+        if let Some(said) = said.as_object_mut() {
+            said.insert("host_runner".into(), self.about.clone());
+        }
+        writeln!(self.stream, "{said}").is_ok()
+    }
+
+    /// Calls `then`, on a thread of its own, once the asker has closed its
+    /// end of the line — at once where that cannot be watched.
+    pub fn on_close(&self, then: impl FnOnce() + Send + 'static) {
+        let Ok(stream) = self.stream.try_clone() else { return then() };
+        std::thread::spawn(move || {
+            // An asker says nothing more: whatever comes before its end is dropped.
+            let _ = stream.set_read_timeout(None);
+            let mut said = [0; 64];
+            while matches!((&stream).read(&mut said), Ok(read) if read > 0) {}
+            then();
+        });
+    }
+}
+
 /// Answers each asker on `listener`, from now on, each on a thread of its
 /// own: one waiting for a first tick holds up no other → the questions taken
-/// and not answered yet. Every answer gets `about` as its `host_runner`, an
-/// error and a question it cannot read included, so whoever asked can tell
-/// which afkconvoy answered. A question not read within `ASKED_WITHIN` is
-/// dropped.
+/// and not answered yet, one kept on the line being answered once its first
+/// line is. Every answer gets `about` as its `host_runner`, an error and a
+/// question it cannot read included, so whoever asked can tell which
+/// afkconvoy answered. A question not read within `ASKED_WITHIN` is dropped.
 pub fn serve(
     listener: UnixListener,
     about: Value,
-    answer: impl Fn(Request) -> Value + Send + Sync + 'static,
+    answer: impl Fn(Request) -> Reply + Send + Sync + 'static,
 ) -> Answering {
     let answer = Arc::new(answer);
     let answering = Answering::default();
@@ -172,37 +226,45 @@ pub fn serve(
             let taken = taking.took();
             std::thread::spawn(move || {
                 // Whatever goes wrong with one asker is its own loss.
-                let _ = answered(stream, &about, answer.as_ref());
-                drop(taken);
+                let _ = answered(stream, &about, answer.as_ref(), taken);
             });
         }
     });
     answering
 }
 
-/// Reads one question from `stream` and writes its answer back.
+/// Reads one question from `stream` and answers it, counted as `taken` until
+/// its first line is written.
 fn answered(
     stream: UnixStream,
     about: &Value,
-    answer: &dyn Fn(Request) -> Value,
+    answer: &dyn Fn(Request) -> Reply,
+    taken: Taken,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(ASKED_WITHIN))?;
     let mut asked = String::new();
     BufReader::new(&stream).read_line(&mut asked)?;
-    let mut answered = match serde_json::from_str::<Request>(asked.trim()) {
+    let reply = match serde_json::from_str::<Request>(asked.trim()) {
         Ok(request) => answer(request),
-        Err(_) => json!({"error": format!(
+        Err(_) => Reply::Line(json!({"error": format!(
             "this host runner (afkconvoy {}) cannot read {}: it is another version than the \
              afkconvoy that asked",
             crate::VERSION,
             asked.trim()
-        )}),
+        )})),
     };
-    if let Some(answered) = answered.as_object_mut() {
-        answered.insert("host_runner".into(), about.clone());
+    let mut kept = Kept { stream, about: about.clone() };
+    match reply {
+        Reply::Line(answered) => {
+            kept.say(answered);
+        }
+        Reply::Kept(first, keep) => {
+            kept.say(first);
+            drop(taken);
+            keep(kept);
+        }
     }
-    let mut stream = stream;
-    writeln!(stream, "{answered}")
+    Ok(())
 }
 
 /// How asking the host runner came out.
@@ -229,8 +291,56 @@ pub fn ask(request: &Request, within: Duration) -> Result<Reached> {
     ask_in(&cache()?, request, within)
 }
 
+/// `ask`, the asker staying on the line once answered: what the host runner
+/// says after its answer, as a `Conversation`, there with an answer alone.
+pub fn keep_asking(request: &Request, within: Duration) -> Result<(Reached, Option<Conversation>)> {
+    keep_asking_in(&cache()?, request, within)
+}
+
+/// What the host runner says to an asker it keeps on the line, after its
+/// answer. Dropped, it closes the line: the host runner is told the asker is
+/// gone.
+pub struct Conversation {
+    lines: BufReader<UnixStream>,
+}
+
+impl Conversation {
+    /// Waits, as long as it takes, for what the host runner says next →
+    /// `None`: it closed the line, as it ended. Errors: what it said is no
+    /// JSON; the line could not be read.
+    pub fn heard(&mut self) -> Result<Option<Value>> {
+        // A line the host runner closed refuses it (EINVAL on macOS), and reads
+        // its end at once.
+        let _ = self.lines.get_ref().set_read_timeout(None);
+        let mut line = String::new();
+        match self.lines.read_line(&mut line) {
+            // One that ended as it said something said nothing.
+            Ok(_) if !line.ends_with('\n') => Ok(None),
+            Ok(_) => serde_json::from_str(line.trim())
+                .map(Some)
+                .with_context(|| format!("the host runner said no JSON: {}", line.trim())),
+            Err(error) if closed(&error) => Ok(None),
+            Err(error) => Err(error).context("what the host runner said could not be read"),
+        }
+    }
+}
+
+/// Whether `error` is the host runner's end closing on the line: it ended.
+fn closed(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
+}
+
 /// `ask`, of the socket in `dir`.
 fn ask_in(dir: &Path, request: &Request, within: Duration) -> Result<Reached> {
+    Ok(keep_asking_in(dir, request, within)?.0)
+}
+
+/// `keep_asking`, of the socket in `dir`.
+fn keep_asking_in(
+    dir: &Path,
+    request: &Request,
+    within: Duration,
+) -> Result<(Reached, Option<Conversation>)> {
     let stream = match reached(dir, SOCKET, |path| UnixStream::connect(path)) {
         Ok(stream) => stream,
         Err(error) => {
@@ -240,33 +350,30 @@ fn ask_in(dir: &Path, request: &Request, within: Duration) -> Result<Reached> {
                 let _ = std::fs::remove_file(dir.join(SOCKET));
             }
             if matches!(kind, Some(ErrorKind::NotFound | ErrorKind::ConnectionRefused)) {
-                return Ok(Reached::Nobody);
+                return Ok((Reached::Nobody, None));
             }
             return Err(error.context("the host runner could not be asked"));
         }
     };
-    // One that closed on the question, or as it answered, ended.
-    let closed = |error: &std::io::Error| {
-        matches!(error.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset)
-    };
     let asked = serde_json::to_string(request)?;
     match writeln!(&stream, "{asked}") {
-        Err(error) if closed(&error) => return Ok(Reached::Closed),
+        Err(error) if closed(&error) => return Ok((Reached::Closed, None)),
         written => written.context("the host runner could not be asked")?,
     }
     stream.set_read_timeout(Some(within))?;
+    let mut lines = BufReader::new(stream);
     let mut line = String::new();
-    match BufReader::new(&stream).read_line(&mut line) {
-        Ok(0) => Ok(Reached::Closed),
+    match lines.read_line(&mut line) {
+        Ok(0) => Ok((Reached::Closed, None)),
         Ok(_) => {
             let answer = serde_json::from_str(line.trim())
                 .with_context(|| format!("the host runner answered no JSON: {}", line.trim()))?;
-            Ok(Reached::Answer(answer))
+            Ok((Reached::Answer(answer), Some(Conversation { lines })))
         }
         Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-            Ok(Reached::Unanswered)
+            Ok((Reached::Unanswered, None))
         }
-        Err(error) if closed(&error) => Ok(Reached::Closed),
+        Err(error) if closed(&error) => Ok((Reached::Closed, None)),
         Err(error) => Err(error).context("the host runner's answer could not be read"),
     }
 }
@@ -365,6 +472,23 @@ mod tests {
         assert_eq!(panel.unwrap(), r#"{"op":"panel","checkout":"/w","port":0}"#);
         let holds = serde_json::to_string(&Request::Holds { checkout: "/w".into() });
         assert_eq!(holds.unwrap(), r#"{"op":"holds","checkout":"/w"}"#);
+        assert_eq!(serde_json::to_string(&Request::Shared).unwrap(), r#"{"op":"shared"}"#);
+        // What a command waiting as its host runner is replaced asks the
+        // next, whichever afkconvoy that is.
+        let ticket = Ticket {
+            number: 0,
+            pid: 7,
+            dir: "/w".into(),
+            issue: Some(46),
+            command: "cargo test".into(),
+            asked: 1000,
+            ran: None,
+        };
+        let exclusive = serde_json::to_string(&Request::Exclusive { ticket }).unwrap();
+        assert_eq!(
+            exclusive,
+            r#"{"op":"exclusive","ticket":{"number":0,"pid":7,"command":"cargo test","dir":"/w","issue":46,"asked":1000,"ran":null}}"#
+        );
     }
 
     #[test]
@@ -395,15 +519,20 @@ mod tests {
         let ask = |line: &str| {
             let (asker, runner) = UnixStream::pair().unwrap();
             writeln!(&asker, "{line}").unwrap();
-            let checkout = |request: Request| match request {
-                Request::Add { checkout, .. }
-                | Request::Stop { checkout }
-                | Request::Wake { checkout, .. }
-                | Request::Panel { checkout, .. }
-                | Request::Holds { checkout } => json!({"checkout": checkout}),
-                Request::Version | Request::StopAll | Request::Checkouts => json!({}),
+            let checkout = |request: Request| {
+                Reply::Line(match request {
+                    Request::Add { checkout, .. }
+                    | Request::Stop { checkout }
+                    | Request::Wake { checkout, .. }
+                    | Request::Panel { checkout, .. }
+                    | Request::Holds { checkout } => json!({"checkout": checkout}),
+                    Request::Exclusive { ticket } => json!({"checkout": ticket.dir}),
+                    Request::Version | Request::StopAll | Request::Checkouts | Request::Shared => {
+                        json!({})
+                    }
+                })
             };
-            answered(runner, &about, &checkout).unwrap();
+            answered(runner, &about, &checkout, Answering::default().took()).unwrap();
             let mut answer = String::new();
             BufReader::new(&asker).read_line(&mut answer).unwrap();
             serde_json::from_str::<Value>(&answer).unwrap()
@@ -417,6 +546,40 @@ mod tests {
         assert!(error.starts_with("this host runner (afkconvoy "), "{error}");
         assert!(error.ends_with("it is another version than the afkconvoy that asked"), "{error}");
         assert_eq!(unread["host_runner"], about);
+    }
+
+    #[test]
+    fn an_asker_kept_on_the_line_hears_what_comes_after_and_its_leaving_is_heard() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = reached(dir.path(), SOCKET, |path| UnixListener::bind(path)).unwrap();
+        let (left, gone) = std::sync::mpsc::channel();
+        let answering = serve(listener, json!({"pid": 42}), move |_| {
+            let left = left.clone();
+            Reply::Kept(
+                json!({"ahead": 1}),
+                Box::new(move |mut kept: Kept| {
+                    kept.on_close(move || left.send(()).unwrap());
+                    assert!(kept.say(json!({"runs": 1000})));
+                }),
+            )
+        });
+        let (reached, conversation) =
+            keep_asking_in(dir.path(), &Request::Shared, Duration::from_secs(5)).unwrap();
+        let Reached::Answer(answer) = reached else { panic!("{reached:?}") };
+        assert_eq!(answer, json!({"ahead": 1, "host_runner": {"pid": 42}}));
+        let mut conversation = conversation.expect("kept on the line");
+        let said = conversation.heard().unwrap();
+        assert_eq!(said, Some(json!({"runs": 1000, "host_runner": {"pid": 42}})));
+        answering.settled(Duration::from_secs(5));
+        assert!(gone.try_recv().is_err(), "still on the line");
+        drop(conversation);
+        gone.recv_timeout(Duration::from_secs(5)).expect("its leaving is heard");
+
+        // one the host runner closes on hears nothing more
+        let (asker, runner) = UnixStream::pair().unwrap();
+        let mut conversation = Conversation { lines: BufReader::new(asker) };
+        drop(runner);
+        assert_eq!(conversation.heard().unwrap(), None);
     }
 
     #[test]

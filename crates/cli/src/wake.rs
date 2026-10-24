@@ -120,6 +120,12 @@ impl Wakes {
         std::mem::take(&mut wakes.waiting).then_some(Woken { by })
     }
 
+    /// Whether a wake was heard that no rest has used up, and the tick now
+    /// or to come has not forgotten: the next rest ends at once.
+    pub fn heard(&self) -> bool {
+        self.state().waiting
+    }
+
     /// The handle a thread of the host runner wakes this instance with.
     pub fn waker(&self) -> Waker {
         Waker { wakes: self.clone() }

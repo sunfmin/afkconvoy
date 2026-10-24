@@ -30,7 +30,6 @@ use serde_json::{Map, Value, json};
 use crate::admission::Admission;
 use crate::checkout_list::{List, repo_of};
 use crate::config;
-use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
 use crate::git::{REMOTE, Repo};
@@ -1617,7 +1616,7 @@ fn host_once(now: u64) -> Map<String, Value> {
     let inspection = crate::inspection::on_host();
     Map::from_iter([
         ("host_kit".to_string(), crate::kit::show(now)),
-        ("exclusive".to_string(), exclusive_json(Queue::of_host().and_then(|q| q.standing()))),
+        ("exclusive".to_string(), exclusive_json(crate::exclusive::standing())),
         (
             "inspection".to_string(),
             inspection.map_or(Value::Null, |running| crate::inspection::json(&running)),
