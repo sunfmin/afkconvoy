@@ -43,6 +43,13 @@ pub fn off_commit(repo: &Repo, head: Option<&str>) -> Result<Vec<String>> {
 /// was not at the terminal.
 const EXCERPT_LINES: usize = 40;
 
+/// The exit code of a run ended at the gate limit: `timeout`'s.
+pub(crate) const TIMED_OUT_CODE: i32 = 124;
+
+/// How many of the paths that keep a green run's tree from being the commit
+/// its answer lists.
+pub(crate) const STRAYS_LISTED: usize = 20;
+
 /// Runs the gate command in a worktree, its log going line by line to this
 /// process's stderr → (exit code, timed out, the whole seconds it took, the
 /// end of the log). A run that reaches the gate limit, `limit`, is killed, with
@@ -93,7 +100,7 @@ fn run_command(
             let _ = Command::new("kill").args(["-KILL", "--", &group]).status();
             let _ = child.wait();
             eprintln!("[afkconvoy] the gate reached the gate limit of {}s", limit.as_secs());
-            break (124, true);
+            break (TIMED_OUT_CODE, true);
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -354,7 +361,7 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
         } else {
             "the worktree had uncommitted or untracked files when the run started"
         };
-        answer["uncommitted"] = json!(run.strays.iter().take(20).collect::<Vec<_>>());
+        answer["uncommitted"] = json!(run.strays.iter().take(STRAYS_LISTED).collect::<Vec<_>>());
         format!(
             "green, but not on a committed tree — {why}. This run proves nothing about a commit. \
              Commit what belongs to the change (or have the gate's own artifacts ignored) and run \
