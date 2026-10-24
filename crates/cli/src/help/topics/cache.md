@@ -34,5 +34,6 @@ None of it is fleet state: that is in GitHub and on the repo's remote.
 ## See also
 
 - `afkconvoy check --help`: when a copy is cloned, and what is read from it
-- `afkconvoy run --help`: the log, and what each harness's user directory holds
+- `afkconvoy run --help`: the log
+- [`afkconvoy help worker-launch`](help:worker-launch): what each harness's user directory holds
 - `afkconvoy doctor --help`: what is read back from the log and the copies

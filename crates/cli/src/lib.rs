@@ -188,7 +188,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 /// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A missing harness refuses the start.
-/// - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard (`afkconvoy run --help` says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
+/// - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 ///
 /// ## Designing a team, for a bound repo
 ///
@@ -249,7 +249,7 @@ enum Command {
     ///
     /// ##### What trips you up
     ///
-    /// A harness or model left out is gone from the file: commands, the stock consult and research are kept only for what is kept. A missing harness is refused before workers start; it has no implicit stock command. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it as written, under nice with its worktree's TMPDIR, adding only its harness's model flag for the model an issue's casting, the host kit's first or the stock consult names. A bound repo adds its role flags.
+    /// A harness or model left out is gone from the file: commands, the stock consult and research are kept only for what is kept. A missing harness is refused before workers start; it has no implicit stock command. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it as written, under nice with its worktree's TMPDIR, adding only its harness's model flag for the model an issue's casting, the host kit's first or the stock consult names. A bound repo adds its role flags ([`afkconvoy help worker-launch`](help:worker-launch)).
     ///
     /// Probing sends each model a real prompt: it spends a little of each login. A harness the fleet finds refusing every prompt is paused on this host: left out of the host kit, and so of every range, until a probe finds it working. Each is probed every hour; one that answers here is back too.
     ///
@@ -352,10 +352,6 @@ enum Command {
     ///
     /// - It reads the config only. Whether the team it names loads is `afkconvoy check`.
     /// - It reads the file as it is in this checkout, committed or not. A worker reads the one in its own worktree, which is cut from the base branch: a change is in force only once it is on the base branch.
-    ///
-    /// DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on the DSH profile its team or role names: `dsh_profile: fleet` (default) or `host-user` (`afkconvoy help team`). The latter loads the host user's dsh-tui profile with its plugins, MCP servers, patches, theme and settings. Neither edits the user's DSH_HOME; both keep the role's limits.
-    ///
-    /// The --patch overlay, applied last on either profile, loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Config {
         #[arg(long, help = format!("The config file [default: {} of this checkout]", config::FILE))]
@@ -1202,54 +1198,8 @@ enum Command {
     /// - A host setting is the host's, not a `run`'s or a repo's: `--hot-cores 4` named in one checkout holds for every fleet instance on the host until a `run` names it again, and `--hot-cores default` changes it back. The variables that stand for the flags are read from the environment of a `run` and of nothing else — not of the host runner, nor of `tick`, `plan` or `doctor` — so one exported in your shell's rc files is named again by every `run` started from that shell.
     /// - The panel is served to this host only, and shows a tick, not this second: between two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
     /// - Every worker launch command comes from the host kit: run `afkconvoy kit` to write it again. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed. `--worker-command` is gone. On a host with no host kit, `run` writes one as `afkconvoy kit` does, at a terminal or not, asking nothing: it says on stderr where the file is, what it holds and what was left out, and goes on to its first tick. A harness absent from the kit has no implicit stock command. Harness selection still follows a switch, a stage or patrol, then the repo's config.
-    /// - Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. Nothing else of an unbound repo's worker launch command is touched.
+    /// - The fleet starts every worker launch command under `nice`, with a `TMPDIR` of the worktree's own, adding its harness's model flag where the worker runs a model — and, in a bound repo, what puts the worker in its role, under the guard: [`afkconvoy help worker-launch`](help:worker-launch) says, harness by harness, the line each worker is started with, what each part is for and what loads from where.
     /// - In a bound repo, before any worker is started, the command of every harness the fleet could be asked for is checked: the host kit's first, each harness of each role's range (`afkconvoy help roster`), and the stock consult's. One that cannot be started refuses the start, named with its harness and the range that calls for it, and no worker at all is started: no harness is ever started in another's place. So does a role whose range on this host is empty: the refusal names the role, what the roster allows it, what the host kit holds and what the range leaves out. A range leaves out each harness the role holds no limits for while it holds limits for another, so no worker runs a harness it holds no limits for; `plan` and `check` name each harness left out.
-    /// - A Claude Code worker of a bound repo starts in its role's directory, with the rest added to the worker launch command:
-    ///
-    ///   ```
-    ///   cd <the role's copy> && export <the stage's facts> && <worker launch command>
-    ///     --add-dir <the issue's worktree> --add-dir <the team's copy>
-    ///     [--add-dir <the fleet's own, with yours>]
-    ///     --setting-sources project --settings <the fleet's> [--model <its model>]
-    ///   ```
-    ///
-    ///   The role's rules, skills and hooks load because it starts there. The repo's own rules load from the added worktree, and its hooks do not; the team rules load from the team's copy. Your own skills and rules load too, unless the team file says `host_user: false` (`afkconvoy help team`): the third directory added is the fleet's own (harness/claude-code-host-user under the cache directory), and holds links to your ~/.claude/skills and ~/.claude/CLAUDE.md and nothing else. A skill of the role's wins over one of yours of the same name. Nothing of your settings, hooks, MCP servers or plugins is loaded either way. The settings added hold the guard and orca's status report, as hooks, and the answer to the bypass warning. A command you give must take `--add-dir`, `--setting-sources`, `--settings` and `--model`.
-    ///
-    /// - The stage's facts are in the environment of every worker of a bound repo, and a role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE, AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL, AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's worker has AFKCONVOY_PATROL in place of the first three.
-    /// - A pi worker — of a role whose range runs it pi — starts in its role's directory like any other, with what pi does not load from there added:
-    ///
-    ///   ```
-    ///   cd <the role's copy> && export PI_CODING_AGENT_DIR=<the fleet's own>
-    ///     <the stage's facts> && <worker launch command> --approve --no-skills
-    ///     --skill <the role's copy>/.claude/skills [--skill <the fleet's own>/skills]
-    ///     --extension <the fleet's own>/afkconvoy.js [--model <its model>]
-    ///   ```
-    ///
-    ///   `--approve` answers on the line what pi would ask at its terminal, and has it load the role's own limits (`.pi/extensions/`). The role's skills are named, then yours, and pi looks for no other; of two skills of one name pi keeps the first, the role's. pi's user directory is the fleet's own, not yours (~/.pi/agent): it holds links to your logins and to the models you defined (auth.json, models.json), a link to the extension orca installed to hear of a pi session's state, your skills and rules (skills, AGENTS.override.md, AGENTS.md, CLAUDE.md), and nothing else of yours — no setting or other extension. Under a team file that says `host_user: false` it is another (harness/pi under the cache directory, not harness/pi-host-user), with none of your skills and rules, and yours are not named. The extension named is afkconvoy's own: it asks `afkconvoy guard` before every tool call, refusing one the guard refuses or cannot be asked of, and loads the rules of the issue's worktree (its AGENTS.md, or CLAUDE.md) and the team rules (the team's CLAUDE.md). A command you give for pi must take `--approve`, `--no-skills`, `--skill`, `--extension` and `--model`.
-    ///
-    /// - A Codex worker — of a stage or a patrol that says `harness: codex` — is the session you would have at a terminal, not `codex exec`: the fleet sends to a worker after it starts. It starts in its role's directory like any other:
-    ///
-    ///   ```
-    ///   cd <the role's copy> && export CODEX_HOME=<the fleet's own>
-    ///     <the stage's facts> && <worker launch command> --add-dir <the worktree>
-    ///     --dangerously-bypass-hook-trust
-    ///     --config 'projects={"<the role's copy>"={trust_level="trusted"}}'
-    ///     --config 'project_doc_fallback_filenames=["CLAUDE.md"]'
-    ///     --config 'project_root_markers=[]'
-    ///     [--config 'developer_instructions="<the repo's own rules, the team rules>"']
-    ///     --config 'hooks={PreToolUse=[<what asks afkconvoy guard, and orca's status
-    ///       report>], <each other event a session's state changes at>=[<the report>]}'
-    ///     --config features.memories=false
-    ///     --config skills.bundled.enabled=false
-    ///     [--config 'skills.config=[<each skill of yours the role's stands for, off>]']
-    ///     [--model <the stage's>]
-    ///   ```
-    ///
-    ///   `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex would ask at its terminal — whether it trusts the folder, and a review of its hooks — and have it load the role's own limits (`.codex/hooks.json`). The next two have it load its role's rules — the CLAUDE.md of the directory it starts in — and those of no directory above. Codex loads rules from no directory added to it, so `developer_instructions` says the other two to it, each as what it is and with its file: the repo's own rules — the worktree's AGENTS.md, or its CLAUDE.md where it holds none — and the team rules (the team's CLAUDE.md), as they stand when the worker starts. A repo and a team with none are told none. The hook named asks `afkconvoy guard` before every tool call: one the guard refuses, or cannot be asked of, is not made. It is on the line and in no file, so no worker starts without it. The report is the hook orca installed to hear of a Codex session's state (~/.orca/agent-hooks/codex-hook.sh), which orca names in your own hooks and a worker loads none of: it is given ten seconds, and refuses no call, whatever it does; where orca installed none, nothing is told, and a worker's state is read off its terminal. Codex's user directory is the fleet's own (harness/codex-host-user under the cache directory), not yours (~/.codex): it holds links to your login (auth.json), your skills (skills) and your rules (AGENTS.override.md, AGENTS.md), and nothing else of yours — no hook or configuration, so no provider you defined in config.toml. Under a team file that says `host_user: false` it is another (harness/codex), with your login alone. A login Codex keeps in a keyring is in no file, and is no worker's: the start refuses, and `doctor` says so. Its memories are off. Codex finds skills in `.agents/skills/` and `.codex/skills/` of the directory it starts in, and not in `.claude/skills/`, where a role's are: the role's copy a Codex worker starts in is Codex's own (<commit>-role+codex-<path>), and holds a link, `.agents/skills` to `../.claude/skills`, made once with the copy. The role's repo holds nothing for it; a role that holds either directory itself is left as it is, and a worker is shown the skills there. The last key leaves out the skills Codex carries. Codex shows both of two skills of one name, so a skill of yours named as one of the role's is turned off on the line, by the path of its file (`--config 'skills.config=[{path="<its SKILL.md>",enabled=false}]'`): the role's is the one a worker is shown. One thing of yours a Codex worker loads even under `host_user: false`: the skills of your home (~/.agents/skills). Codex finds them wherever its user directory is and has no way to be told to leave them out, and the fleet does not work around it — so on two hosts such a worker may be shown different skills besides its role's. Keep none there on a host whose Codex workers must be shown their role's alone. The stock command runs Codex in no sandbox: a worker is limited by the guard, and a host that wants a sandbox says a command of its own. A command you give for Codex must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
-    ///
-    /// - A worker's model is its harness's own name for it: pi's is `<provider>/<id>`. A worker on pi with none gets whichever model pi picks for itself. A provider whose key is in your login shell's environment is reached too, and a rules file in a directory above the fleet's copies (~/AGENTS.md) is one pi loads.
-    ///
-    /// A DeepSeek Harness worker (`harness: dsh`) runs interactive `dsh-tui`, with `dsh` on PATH too. The stock command is `dsh-tui`; a host may name the `dsh` command in its host kit's file, which `afkconvoy kit` keeps and which must accept leading `--patch`. It starts in its role's copy, with the stage facts and AFKCONVOY_HARNESS=dsh, DSH_HOME set to harness/dsh-host-user under the fleet's cache (harness/dsh with host_user: false), and the issue's worktree as the TUI's path argument. The fleet's DSH_HOME loads the stock base and TUI bundles, the role's own .dsh/cordis.patch.yml where present, and the fleet's --patch overlay last. Only credentials (.credentials.yaml), skills and rules (skills, AGENTS.md) are linked from your DSH_HOME (default ~/.dsh), beside the skills and AGENTS.md of DSH_AGENTS_HOME (default ~/.agents). The role's native skill provider ranks its canonical skills ahead of these user roots. Dependency resolution uses your installed dsh-tui dependencies; its manifest and patches, and your home patches, MCP servers and plugins, are never loaded or edited. A team or role may instead choose `dsh_profile: host-user` (independent of host_user): DSH_HOME stays the host user's (default ~/.dsh), DSH_AGENTS_HOME stays theirs (default ~/.agents), and dsh-tui loads their manifest, dependencies, plugins, MCP servers, theme, settings and both profile and home patches. This can differ across hosts and the profile may itself load user skills and rules even with host_user: false. The fleet writes no file there: its plugin stays in its cache and its --patch overlay is still last, after the role's limits, with required guard dependencies. User settings cannot disable it. The fleet's plugin supplies role, repo and team rules, role skills before yours, and the worker's model as written. It asks `afkconvoy guard` before every tool call and reports running/idle, including interruption, to orca. The TUI and agent loop require the guard plugin's loader service, so a missing or broken plugin starts neither. Ctrl+C interrupts the running turn and leaves the interactive session open.
     ///
     /// ##### Worker proxy bypass
     ///
@@ -1541,7 +1491,7 @@ enum Command {
     ///
     /// ##### What it reads and writes
     ///
-    /// What one tick of `run` does: the startup probe, the rebuild, then every transition the working set calls for — on the remote, on GitHub and in orca. It does not wait for the workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it makes no probe while one that passed on this host in the last hour stands, and says so on stderr (`afkconvoy plan --help`) — one that checked the worker launch commands this tick starts its workers with: a changed host kit is probed for. The flag's two forms, and what is checked of each harness's command: `afkconvoy run --help`.
+    /// What one tick of `run` does: the startup probe, the rebuild, then every transition the working set calls for — on the remote, on GitHub and in orca. It does not wait for the workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it makes no probe while one that passed on this host in the last hour stands, and says so on stderr (`afkconvoy plan --help`) — one that checked the worker launch commands this tick starts its workers with: a changed host kit is probed for. What is checked of each harness's command: `afkconvoy run --help`; the line each harness's worker is started with: [`afkconvoy help worker-launch`](help:worker-launch).
     ///
     /// ##### What it answers
     ///
@@ -2333,6 +2283,10 @@ enum Command {
     ///
     /// Codex, as a hook too, said on the line that starts a Codex worker and kept in no file: Codex runs it before each tool call. Codex makes a call whose hook fails in any way but one, so the hook turns every answer but an allowed call into that one: a call this command refuses, and one it could not be asked of, is not made.
     ///
+    /// DSH, through a plugin of afkconvoy's own, which the overlay on the line that starts a DSH worker loads last: it asks this command before every tool call. A DSH worker whose plugin is missing or broken does not start.
+    ///
+    /// What each harness's worker is started with, the guard among it: [`afkconvoy help worker-launch`](help:worker-launch).
+    ///
     /// A role's own limits are hooks in the role's repo — for pi, extensions there. They load because the worker starts there, run beside this one, and refuse in the same way.
     ///
     /// ##### What it reads and writes
@@ -2370,8 +2324,6 @@ enum Command {
     /// - It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
     /// - What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a commit or a PR a patrol left is a failed run, reported to a human — see `afkconvoy tick --help`.
     /// - An unbound repo's workers have no guard: their worker launch command is opaque.
-    ///
-    /// DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a fleet-owned DSH_HOME. The --patch overlay loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
     #[command(next_help_heading = HOOK, verbatim_doc_comment)]
     Guard,
     /// Start a fresh worker on one issue
@@ -2392,7 +2344,7 @@ enum Command {
     ///
     /// In a bound repo the issue's flow label names its workflow, and the worker performs the stage the issue's stage records put it at — the workflow's first while there are none — in the stage's role, with the verdicts declared so far, and the reason of a rejection, in its brief. The team's repo and each role's are asked for the commit at their head; one the fleet has no copy of yet is cloned and kept, read-only, under the cache directory (copies/<owner>/<repo>/<commit>; `afkconvoy help cache` says where that directory is and what moves it), once however many roles it holds. A role that is a subdirectory of its repo is copied out of that on its own (<commit>-role-<path>; <commit>-role+codex-<path>, with a link to the role's skills where Codex finds them, for a Codex worker), and so is the team's directory, without the directories of its roles and without a `.claude/` at its top (<commit>-team+rules-<path>): a worker is given its role's directory and, of the team's, the team rules (its `CLAUDE.md`) — nothing else above its role, and no neighbour's.
     ///
-    /// The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment (AFKCONVOY_ISSUE, _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT, _HARNESS), and starts the worker launch command with the worktree and the team's copy added as directories, the user's own settings left out, and its model when it has one — as Claude Code takes them; what a pi worker and a Codex worker are started with is in `afkconvoy run --help`. The worker's harness and model are its role's range's answer to the issue's casting (`afkconvoy help roster`), or this host's switch's.
+    /// The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment, and starts the worker launch command with what puts the worker in its role: [`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness. The worker's harness and model are its role's range's answer to the issue's casting (`afkconvoy help roster`), or this host's switch's.
     ///
     /// Where the stage declared `escalate` and names a consult, the worker is started as that consult instead: in the consult's role, on a brief that names the skill, the stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`, or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is `true` in its environment, the guard refuses its commits, and it runs its own role's range, not the stage's.
     ///
@@ -2422,8 +2374,6 @@ enum Command {
     /// - It checks that the issue is open and, unless the instance holds it already, that no blocker of it is open — nothing else of the frontier: an issue without the ready label, or past the concurrency, is started all the same. A claim the instance holds is continued whatever blocks it.
     /// - A role in a subdirectory is not the directory a human opens in a checkout: a `CLAUDE.md` or a `.claude/` above it there is not in the worker's copy, nor above it — but for the `CLAUDE.md` of the team's own directory, the team rules, which every worker is given. `afkconvoy check` notes each role that has another above it.
     /// - It does not ask after a worker already there. On a claim whose worker is at work it starts another in the same worktree.
-    ///
-    /// DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a fleet-owned DSH_HOME. The --patch overlay loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
     #[command(next_help_heading = BY_HAND, verbatim_doc_comment)]
     Dispatch {
         #[command(flatten)]
@@ -2700,7 +2650,7 @@ enum Command {
     ///
     /// For --all, and with nothing named: {"harness" (null when cleared), "chosen", "switched": [each as above], "failed": [{"issue" or "patrol", "error"}]}.
     ///
-    /// Errors, each with nothing chosen and no worker ended: the harness chosen cannot be started here — missing, logged out, or its command not taking the flags its role needs — named with what is wrong; the instance holds no claim on the issue, or no run of the patrol; the claim is another instance's.
+    /// Errors, each with nothing chosen and no worker ended: the harness chosen cannot be started here — missing, logged out, or its command not taking the flags its role needs ([`afkconvoy help worker-launch`](help:worker-launch) names them) — named with what is wrong; the instance holds no claim on the issue, or no run of the patrol; the claim is another instance's.
     ///
     /// ##### What trips you up
     ///
@@ -3312,6 +3262,7 @@ pub fn manual() -> agent_help::Help {
         .topic::<ExampleRun>()
         .topic::<Cache>()
         .topic::<TickLog>()
+        .topic::<WorkerLaunch>()
         .topic::<WorkerProxy>()
         .topic::<Humans>()
         .topic::<Troubleshooting>()
