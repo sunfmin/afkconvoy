@@ -222,6 +222,54 @@ pub(super) fn prompt_question(
     line.fixed(" --print ").word(prompt).done()
 }
 
+/// What pi's probe adds: its events as JSON, a line each, of which the
+/// answer's names the provider and the model that answered.
+const AS_JSON: &str = " --mode json";
+
+/// The line that probes `model` with `prompt` through `command`, as
+/// `prompt_question` sends it, printing its events in JSON (`answered_as`).
+pub(super) fn probe_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    let line = Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command);
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(AS_JSON).fixed(" --print ").word(prompt).done()
+}
+
+/// What comes before the provider of a message, and between it and its
+/// model, in pi's events, with no whitespace.
+const PROVIDER: &str = "\"provider\":\"";
+const THEN_MODEL: &str = "\",\"model\":\"";
+
+/// The model that answered `probe_question`, by `answer`: as `provider/id`,
+/// the last message's — the answer's — whatever a terminal broke its lines
+/// at.
+pub(super) fn answered_as(answer: &str) -> Option<String> {
+    let dense: String = answer.split_whitespace().collect();
+    dense
+        .split(PROVIDER)
+        .skip(1)
+        .filter_map(|after| {
+            let (provider, rest) = after.split_once(THEN_MODEL)?;
+            let (id, _) = rest.split_once('"')?;
+            let named = !provider.is_empty() && !provider.contains('"') && !id.is_empty();
+            named.then(|| format!("{provider}/{id}"))
+        })
+        .last()
+}
+
 /// The models pi lists in `answer`, what it printed for `models_question`,
 /// each as `provider/id`: a table under a line that heads it `provider
 /// model`, whatever a shell printed above. `None` when it lists none: pi has

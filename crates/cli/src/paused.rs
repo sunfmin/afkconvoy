@@ -134,7 +134,7 @@ impl Pauses {
                     held.models.first().map(|seen| seen.model.as_str()),
                 )
             });
-            let resumed = matches!(answer, None | Some(Answer::Answered(_)));
+            let resumed = matches!(answer, None | Some(Answer::Answered(..)));
             let unasked = match answer {
                 Some(Answer::Unasked(why)) => Some(why),
                 _ => None,
@@ -246,7 +246,7 @@ mod tests {
         let pi_answers = |harness: Harness, command: &str, model: Option<&str>| {
             asked.borrow_mut().push((harness, command.to_string(), model.map(str::to_string)));
             match harness {
-                Harness::Pi => Answer::Answered(1.0),
+                Harness::Pi => Answer::Answered(1.0, None),
                 _ => Answer::Unasked("orca terminal create failed".into()),
             }
         };

@@ -397,6 +397,70 @@ pub(super) fn prompt_question(
     line.fixed(" ").word(prompt).done()
 }
 
+/// What Codex's probe adds: its events as JSON, a line each. None says
+/// which model answered; the first names the thread, whose session file,
+/// kept under `SESSIONS` (`answered_as`), does.
+const AS_JSON: &str = " --json";
+
+/// Where Codex keeps a session, under its user directory: in a file whose
+/// name ends with its thread's id and `SESSION_ENDS`.
+const SESSIONS: &str = "sessions";
+const SESSION_ENDS: &str = ".jsonl";
+
+/// The line that probes `model` with `prompt` through `command`, under the
+/// user directory `kept`, as `prompt_question` sends it, printing its events
+/// in JSON — and keeping its session, which says the model that answered
+/// (`answered_as`), and which the probe deletes.
+pub(super) fn probe_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    let line = Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command);
+    let line = line.fixed(" exec --skip-git-repo-check").fixed(AS_JSON);
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(" ").word(prompt).done()
+}
+
+/// What comes before the thread's id in Codex's events, and before the
+/// model in its session file's turn, with no whitespace.
+const THREAD: &str = "\"thread_id\":\"";
+const TURN: &str = "\"type\":\"turn_context\"";
+const TURN_MODEL: &str = "\"model\":\"";
+
+/// Where `answer`, what `probe_question` printed, says which model answered:
+/// the session file of the thread it names.
+pub(super) fn answered_as(answer: &str) -> super::AnsweredAs {
+    let dense: String = answer.split_whitespace().collect();
+    let thread = dense.split_once(THREAD).and_then(|(_, after)| after.split_once('"'));
+    match thread {
+        Some((thread, _)) if !thread.is_empty() => super::AnsweredAs::InSession {
+            under: SESSIONS,
+            ends: format!("{thread}{SESSION_ENDS}"),
+        },
+        _ => super::AnsweredAs::Unsaid,
+    }
+}
+
+/// The model of the first turn `session`, a session file of Codex's, holds.
+pub(super) fn answered_in_session(session: &str) -> Option<String> {
+    let dense: String = session.split_whitespace().collect();
+    let (_, turn) = dense.split_once(TURN)?;
+    let (_, after) = turn.split_once(TURN_MODEL)?;
+    let (model, _) = after.split_once('"')?;
+    (!model.is_empty()).then(|| model.to_string())
+}
+
 /// The models Codex lists in `answer`, what it printed for `models_question`,
 /// each by the name its `MODEL` flag takes: the `slug` of each model in the
 /// JSON there, whatever a shell printed around it, the ones Codex shows in no

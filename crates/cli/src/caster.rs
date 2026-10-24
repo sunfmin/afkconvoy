@@ -7,9 +7,9 @@
 use std::time::Duration;
 
 use afkconvoy_core::casting::{
-    CASTER_WORKTREE, Caster, Casting, Held, Offered, Paused, ToCast, any_choice, caster_comment,
-    caster_prompt, choice, held_by_none, holds, is_casting, paused_of, stage_ranges,
-    to_cast as is_to_cast, to_recast, uncast, without_casting,
+    self, CASTER_WORKTREE, Caster, Casting, Held, Model, Offered, Paused, ToCast, any_choice,
+    caster_comment, caster_prompt, choice, held_by_none, holds, is_casting, paused_of,
+    stage_ranges, to_cast as is_to_cast, to_recast, uncast, without_casting,
 };
 use afkconvoy_core::config::Config;
 use afkconvoy_core::role::workflow_of;
@@ -33,8 +33,9 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(540);
 
 /// The open issues of an unbound repo a caster started now is given, lowest
 /// number first: those with no casting (`casting::to_cast`), and those to be
-/// cast again because a caster cast them to a harness now `paused` (`recast`).
-pub fn to_cast(config: &Config, open: &OpenIssues, paused: &[Paused]) -> Vec<u64> {
+/// cast again because a caster cast them to a harness now `paused`, or to
+/// what the host kit `kit` holds nothing by (`recast`).
+pub fn to_cast(config: &Config, open: &OpenIssues, paused: &[Paused], kit: &[Held]) -> Vec<u64> {
     let (ready, epics) = (&config.ready_label, &config.epic_labels);
     let mut numbers: Vec<u64> = open
         .rows
@@ -42,7 +43,7 @@ pub fn to_cast(config: &Config, open: &OpenIssues, paused: &[Paused]) -> Vec<u64
         .filter(|issue| {
             is_to_cast(&issue.labels, ready, epics)
                 || (is_to_cast(&without_casting(&issue.labels), ready, epics)
-                    && recast(&issue.labels, open.comments(issue.number), paused))
+                    && recast(&issue.labels, open.comments(issue.number), paused, kit))
         })
         .map(|issue| issue.number)
         .collect();
@@ -69,7 +70,7 @@ pub fn to_cast_bound(
             let labels = &issue.labels;
             (uncast(labels)
                 || (uncast(&without_casting(labels))
-                    && recast(labels, open.comments(issue.number), paused)))
+                    && recast(labels, open.comments(issue.number), paused, kit)))
                 && !labels.iter().any(|label| config.epic_labels.contains(label))
                 && workflow_of(team, labels)
                     .is_ok_and(|workflow| any_choice(&stage_ranges(team, workflow, kit)))
@@ -81,11 +82,12 @@ pub fn to_cast_bound(
 }
 
 /// Whether an issue labelled `labels`, with `comments`, is to be cast again:
-/// a caster cast it to a harness now `paused`, and no worker has started on
-/// it — none has recorded its branch on it (`casting::to_recast`).
-pub fn recast(labels: &[String], comments: &[Comment], paused: &[Paused]) -> bool {
+/// a caster cast it to a harness now `paused`, or to what the host kit `kit`
+/// holds nothing by, and no worker has started on it — none has recorded its
+/// branch on it (`casting::to_recast`).
+pub fn recast(labels: &[String], comments: &[Comment], paused: &[Paused], kit: &[Held]) -> bool {
     let bodies = || comments.iter().map(|comment| comment.body.as_str());
-    to_recast(labels, bodies(), !recorded_branches(bodies()).is_empty(), paused)
+    to_recast(labels, bodies(), !recorded_branches(bodies()).is_empty(), paused, kit)
 }
 
 /// The last caster this host started for the repo, where it can be read: a
@@ -115,20 +117,28 @@ pub fn start(fleet: &Fleet, agent: &Agent, given: &[u64]) -> Result<Outcome> {
     Ok(Outcome::Done)
 }
 
-/// Each harness and model `range` holds, in order, with what `team`'s
-/// roster says each is good at, or else the host kit: a harness held with
-/// no model is one, on its command.
+/// Each harness and model `range` holds, in order, by its id, with what
+/// `team`'s roster says each is good at — of an entry naming it by any of its
+/// names — or else the host kit: a harness held with no model is one, on its
+/// command.
 fn offered(kit: &Kit, team: Option<&Team>, range: &[Held]) -> Vec<Offered> {
-    let rostered = |harness, model: Option<&String>| {
+    let rostered = |harness, model: Option<&Model>| {
         let entries = team.into_iter().flat_map(|team| &team.roles);
         let allowed = entries.filter_map(|role| role.roster.as_ref()).flat_map(|e| &e.run);
+        let names = |allowed: &Option<String>| match (allowed, model) {
+            (None, None) => true,
+            (Some(name), Some(model)) => {
+                Held { harness, models: vec![model.clone()] }.model(name).is_ok()
+            }
+            _ => false,
+        };
         allowed
-            .filter(|allowed| allowed.harness == harness && allowed.model.as_ref() == model)
+            .filter(|allowed| allowed.harness == harness && names(&allowed.model))
             .find_map(|allowed| allowed.good_at.clone())
     };
-    let seen = |harness, model: &String| {
+    let seen = |harness, model: &Model| {
         let held = kit.harnesses.iter().find(|held| held.harness == harness)?;
-        held.models.iter().find(|seen| &seen.model == model)?.good_at.clone()
+        held.models.iter().find(|seen| seen.model == model.id)?.good_at.clone()
     };
     let mut offered = vec![];
     for held in range {
@@ -138,7 +148,8 @@ fn offered(kit: &Kit, team: Option<&Team>, range: &[Held]) -> Vec<Offered> {
         }
         for model in &held.models {
             let good_at = rostered(held.harness, Some(model)).or_else(|| seen(held.harness, model));
-            offered.push(Offered { harness: held.harness, model: Some(model.clone()), good_at });
+            let model = Some(model.id.clone());
+            offered.push(Offered { harness: held.harness, model, good_at });
         }
     }
     offered
@@ -209,7 +220,7 @@ pub fn cast(now: u64) -> Result<Value> {
             return Ok(json!({"cast": [], "uncast": [],
                 "said": "the host kit holds one harness and model: there is no choice to make"}));
         }
-        None => to_cast(&fleet.config, &open.issues, &paused),
+        None => to_cast(&fleet.config, &open.issues, &paused, &range),
         Some(team) => to_cast_bound(&fleet.config, team, &open.issues, &range, &paused),
     };
     if numbers.is_empty() {
@@ -276,9 +287,13 @@ pub fn cast(now: u64) -> Result<Value> {
             }
         };
         // A human may have cast it while the model was asked. One cast to a
-        // paused harness is cast again: what was read of it said so.
+        // paused harness, or to what the host kit holds nothing by, is cast
+        // again: what was read of it said so.
         let now_labels = fleet.gh.issue(number)?.labels;
-        let again = paused_of(&now_labels, &paused);
+        let again = match paused_of(&now_labels, &paused) {
+            Some(pause) => Some(crate::paused::said(pause, now)),
+            None => casting::cast(&now_labels, &range, None).err(),
+        };
         if !uncast(&now_labels) && again.is_none() {
             left.push(json!({"issue": number, "why": "it was cast meanwhile"}));
             continue;
@@ -290,18 +305,15 @@ pub fn cast(now: u64) -> Result<Value> {
             fleet.gh.add_label(number, label)?;
         }
         let mut said = caster_comment(&labels, &casting.why);
-        if let Some(pause) = again {
+        if let Some(why) = again {
             let was = now_labels.iter().filter(|label| is_casting(label));
             let was: Vec<String> = was.map(|label| format!("`{label}`")).collect();
-            said.push_str(&format!(
-                "\n\nCast again, in place of {}: {}",
-                was.join(" and "),
-                crate::paused::said(pause, now)
-            ));
+            said.push_str(&format!("\n\nCast again, in place of {}: {why}", was.join(" and ")));
         }
         fleet.gh.comment(number, &said)?;
+        let model = labels.iter().find_map(|label| label.strip_prefix(casting::MODEL_LABEL));
         cast.push(json!({"issue": number, "harness": casting.harness,
-            "model": casting.model, "why": casting.why}));
+            "model": model, "why": casting.why}));
     }
     Ok(json!({"cast": cast, "uncast": left}))
 }

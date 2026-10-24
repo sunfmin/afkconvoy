@@ -80,11 +80,12 @@ fn a_casting_the_host_kit_does_not_hold_is_not_dispatched_and_plan_says_why() {
     for (labels, said) in [
         (
             &["harness:pi", "model:a/none"][..],
-            "`model:a/none` names a model the host kit holds for no `pi`",
+            "`model:a/none`: `a/none` names no model the host kit holds for pi; the nearest \
+             names: `a/fast`",
         ),
         (
             &["harness:codex", "model:gpt-x"][..],
-            "`model:gpt-x` names a model the host kit holds for no `codex`",
+            "`model:gpt-x`: `gpt-x` names no model the host kit holds for codex;",
         ),
         (&["model:opus"][..], "`model:opus` names a model of no harness"),
     ] {

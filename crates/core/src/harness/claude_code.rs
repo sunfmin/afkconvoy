@@ -135,6 +135,59 @@ pub(super) fn models(answer: &str) -> Option<Vec<String>> {
     if listed.is_empty() { None } else { Some(listed) }
 }
 
+/// What Claude Code's probe adds: its answer as one JSON object, whose
+/// `modelUsage` is keyed by the model that answered.
+const AS_JSON: &str = " --output-format json";
+
+/// What comes before the first model's id in that answer, with no
+/// whitespace.
+const USAGE: &str = "\"modelUsage\":{\"";
+
+/// The line that probes `model` with `prompt` through `command`, as
+/// `prompt_question` sends it, answering in JSON (`answered_as`).
+pub(super) fn probe_question(command: &str, model: Option<&str>, prompt: &str) -> String {
+    let line = Line::new().launch(command);
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(" --print ").word(prompt).fixed(AS_JSON).done()
+}
+
+/// The model that answered `probe_question`, by `answer`: the first key of
+/// its `modelUsage`, whatever a terminal broke its lines at.
+pub(super) fn answered_as(answer: &str) -> Option<String> {
+    let dense: String = answer.split_whitespace().collect();
+    let (_, after) = dense.split_once(USAGE)?;
+    let (id, _) = after.split_once('"')?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// What comes before a model's display name in Claude Code's answer to
+/// `INITIALIZE`.
+const SHOWN: &str = "\"displayName\":\"";
+
+/// The display name of each model Claude Code lists in `answer` (`models`),
+/// by its name: what its menu shows it as. A terminal's line breaks are
+/// taken out, and the spaces a display name holds kept.
+pub(super) fn shown(answer: &str) -> Vec<(String, String)> {
+    let listed = models(answer).unwrap_or_default();
+    let joined: String = answer.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+    let mut shown = vec![];
+    for each in joined.split(NAMED).skip(1) {
+        let Some((name, rest)) = each.split_once('"') else { continue };
+        let Some((_, after)) = rest.split_once(SHOWN) else { continue };
+        let Some((display, _)) = after.split_once('"') else { continue };
+        if listed.iter().any(|listed| listed == name)
+            && !display.is_empty()
+            && !shown.iter().any(|(had, _): &(String, String)| had == name)
+        {
+            shown.push((name.to_string(), display.to_string()));
+        }
+    }
+    shown
+}
+
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's: no hook, no MCP server, no
 /// permission of theirs.

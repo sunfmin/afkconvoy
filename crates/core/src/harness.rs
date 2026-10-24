@@ -55,6 +55,20 @@ pub enum Held<D> {
     Entries(usize),
 }
 
+/// Where a probe's answer says which model answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnsweredAs {
+    /// The answer says it: this id.
+    Said(String),
+    /// The answer names the session it was kept in: the file under `under`,
+    /// in what the host keeps for the harness, whose name ends `ends`. That
+    /// session file says it (`Harness::answered_in_session`), and is the
+    /// probe's to delete.
+    InSession { under: &'static str, ends: String },
+    /// It says none.
+    Unsaid,
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -271,6 +285,55 @@ impl Harness {
             Harness::Pi => pi::prompt_question(command, kept, model, prompt),
             Harness::Codex => codex::prompt_question(command, kept, model, prompt),
             Harness::Dsh => dsh::prompt_question(kept, model, prompt),
+        }
+    }
+
+    /// The shell line that probes `model` with the one-line `prompt`, as
+    /// `prompt_question` sends it, asked to answer in a form that says which
+    /// model answered (`answered_as` reads it).
+    pub fn probe_question(
+        self,
+        command: &str,
+        kept: &str,
+        model: Option<&str>,
+        prompt: &str,
+    ) -> String {
+        match self {
+            Harness::ClaudeCode => claude_code::probe_question(command, model, prompt),
+            Harness::Pi => pi::probe_question(command, kept, model, prompt),
+            Harness::Codex => codex::probe_question(command, kept, model, prompt),
+            Harness::Dsh => dsh::prompt_question(kept, model, prompt),
+        }
+    }
+
+    /// Which model answered a probe, given what the worker's shell printed
+    /// for `probe_question`: its harness's own id for it.
+    pub fn answered_as(self, answer: &str) -> AnsweredAs {
+        let said = match self {
+            Harness::ClaudeCode => claude_code::answered_as(answer),
+            Harness::Pi => pi::answered_as(answer),
+            Harness::Codex => return codex::answered_as(answer),
+            Harness::Dsh => dsh::answered_as(answer),
+        };
+        said.map_or(AnsweredAs::Unsaid, AnsweredAs::Said)
+    }
+
+    /// Which model answered, given the session file `AnsweredAs::InSession`
+    /// names. `None`: it says none.
+    pub fn answered_in_session(self, session: &str) -> Option<String> {
+        match self {
+            Harness::Codex => codex::answered_in_session(session),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => None,
+        }
+    }
+
+    /// The display name of each model it lists in `answer`, what it printed
+    /// for `models_question`, by the name its `models` gives it: a name a
+    /// human knows it by too. Only Claude Code says them.
+    pub fn shown(self, answer: &str) -> Vec<(String, String)> {
+        match self {
+            Harness::ClaudeCode => claude_code::shown(answer),
+            Harness::Pi | Harness::Codex | Harness::Dsh => vec![],
         }
     }
 
