@@ -277,15 +277,20 @@ It reads this host (the commands the fleet needs, in a login shell; orca), the l
   - `heartbeats`: {found, live}: how many heartbeats the remote has, whoever stamped them, and the instance ids of those within the lease. A `run` told to stop removes its own, and a start removes the dead ones that hold nothing: more than one found and not live is fleets nobody started again
   - `log`: the file its ticks are logged in, or "no log": no `run` of this version ran here
   - `last_tick`: {count, ended, next_due, line, did, error}: when its last tick ended and the next is due, in epoch seconds, the line `run` printed, and what `tick` answers as `did`; error, when the tick failed whole. null with no log
-  - `failed_steps`: the last ten failures, newest first: {tick, ended, do, issue, patrol, error, count}. One cause that stopped several steps of a tick is one failure: count is how many, and do, issue and patrol the first's
+  - `failed_steps`: the last 10 failures, newest first: {tick, ended, do, issue, patrol, error, count}. One cause that stopped several steps of a tick is one failure: count is how many, and do, issue and patrol the first's
   - `host_sleep`: {checked, slept, kept_awake_by}: its last check for host sleep — when it ended, whether it put the host to sleep, and else what kept the host awake, each in words. null: it made none, being told `--no-host-sleep` or never idle 10 minutes
-  - `events`: the last twenty events that reached a `run` of this host, newest first, whichever instance: {at, event, cause, instance} — event being wake (between ticks, or during one), start, stop (told to, by SIGTERM or SIGINT), host_sleep or host_wake; cause says what caused it, in words. [] with no log
+  - `events`: the last 20 events that reached a `run` of this host, newest first, whichever instance: {at, event, cause, instance} — event being wake (between ticks, or during one), start, stop (told to, by SIGTERM or SIGINT), host_sleep or host_wake; cause says what caused it, in words. [] with no log
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
 
-  - `severity`: critical  the fleet does not work until it is fixed warning   one issue or one patrol is held up, or about to be info      nothing is held up: said so that a surprise is explained
+  - `severity`:
+
+    - `critical`: the fleet does not work until it is fixed
+    - `warning`: one issue or one patrol is held up, or about to be
+    - `info`: nothing is held up: said so that a surprise is explained
+
   - `what`: the fault, in a sentence
   - `evidence`: what was read that says so
   - `fix`: one command line to run as it is — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit
