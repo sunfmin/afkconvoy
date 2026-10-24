@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::Repo;
 use crate::orca::Worktree;
+use crate::paused::Pauses;
 
 const FAILURES: usize = 3;
 pub(crate) const PROBE_SECONDS: u64 = 300;
@@ -56,15 +57,6 @@ impl Evidence {
 
 fn file(repo: &Repo, harness: Harness) -> Result<std::path::PathBuf> {
     repo.note(&format!("convoy-harness-down-{}.json", harness.key()))
-}
-/// Where a harness found down is paused: on this host — but a unit test's
-/// own repo, so that no test pauses a harness of whoever runs it.
-fn pauses(repo: &Repo) -> Result<crate::paused::Pauses> {
-    if cfg!(test) {
-        return Ok(crate::paused::Pauses::at(repo.note("convoy-paused.json")?));
-    }
-    let _ = repo;
-    crate::paused::Pauses::of_host()
 }
 
 fn read(path: &Path) -> Result<Evidence> {
@@ -126,7 +118,7 @@ pub fn tell(
             }
             // A prompt it took is a probe it answered.
             if evidence.down() {
-                pauses(&repo)?.resume(harness)?;
+                Pauses::of_host()?.resume(harness)?;
             }
             Ok(())
         }
@@ -141,7 +133,7 @@ pub fn tell(
                 keep(&path, &evidence)?;
                 if report {
                     // No worker is started on it until a probe finds it working.
-                    pauses(&repo)?.pause(harness, now, &evidence.reason)?;
+                    Pauses::of_host()?.pause(harness, now, &evidence.reason)?;
                     let instance = crate::log::Log::of(&repo)
                         .ok()
                         .and_then(|log| log.read())
@@ -253,7 +245,7 @@ mod tests {
             assert!(tell(&worker, terminal, 100, refuse).is_err());
         }
         assert_eq!(sends.get(), 3);
-        let paused = pauses(&repo).unwrap().of(Harness::ClaudeCode).unwrap().unwrap();
+        let paused = Pauses::of_host().unwrap().of(Harness::ClaudeCode).unwrap().unwrap();
         assert_eq!(
             (paused.since, paused.why.as_str()),
             (100, "organization disabled subscription access")
@@ -266,6 +258,21 @@ mod tests {
         assert!(found[0].evidence.contains("claims are held"));
         assert!(found[0].fix.contains("afkconvoy switch"));
         assert_eq!(found[0].fix, "afkconvoy switch --instance alpha --harness codex --all");
+        let reported = || {
+            let log = crate::log::Log::of(&repo).unwrap();
+            let entries = log.read().expect("the tick log, in this test's own cache");
+            let reported = |entry: &crate::log::Entry| match &entry.what {
+                crate::log::What::Command { command, on, outcome, .. } => {
+                    (command == "harness_down").then(|| (entry.at, on.clone(), outcome.clone()))
+                }
+                _ => None,
+            };
+            entries.iter().filter_map(reported).collect::<Vec<_>>()
+        };
+        let lines = reported();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!((lines[0].0, lines[0].1.as_deref()), (100, Some("claude-code")));
+        assert!(lines[0].2.contains("organization disabled subscription access"), "{lines:?}");
         for now in 101..400 {
             assert!(tell(&worker, "one", now, refuse).unwrap_err().is::<Held>());
         }
@@ -276,9 +283,14 @@ mod tests {
             assert!(tell(&worker, "two", now, refuse).is_err());
         }
         assert_eq!(sends.get(), 4);
+        assert_eq!(reported().len(), 1, "reported once in the episode");
         tell(&worker, "three", 700, || Ok(())).unwrap();
         assert!(findings(&repo, None).unwrap().is_empty());
-        assert_eq!(pauses(&repo).unwrap().of(Harness::ClaudeCode).unwrap(), None, "it answered");
+        assert_eq!(
+            Pauses::of_host().unwrap().of(Harness::ClaudeCode).unwrap(),
+            None,
+            "it answered"
+        );
         assert!(!holds(&worker, 700).unwrap());
         tell(&worker, "one", 701, || {
             sends.set(sends.get() + 1);

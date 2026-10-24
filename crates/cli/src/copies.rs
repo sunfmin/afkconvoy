@@ -23,16 +23,33 @@ use crate::git::Repo;
 /// Where on this host this user's fleets keep what they need not read again:
 /// their cache directory, outside every checkout.
 pub fn cache() -> Result<PathBuf> {
+    Ok(cache_home()?.join("afkconvoy"))
+}
+
+/// The directory the cache directory is in: this user's, as XDG_CACHE_HOME
+/// or HOME says it.
+#[cfg(not(test))]
+fn cache_home() -> Result<PathBuf> {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    let cache = match (set("XDG_CACHE_HOME"), set("HOME")) {
+    Ok(match (set("XDG_CACHE_HOME"), set("HOME")) {
         (Some(cache), _) => PathBuf::from(cache),
         (None, Some(home)) => PathBuf::from(home).join(".cache"),
         (None, None) => bail!(
             "neither XDG_CACHE_HOME nor HOME says where the fleet's cache directory is: \
              `afkconvoy help cache`"
         ),
-    };
-    Ok(cache.join("afkconvoy"))
+    })
+}
+
+/// The same, of a unit test: one of its own, made as it first asks and gone
+/// once it ends — no test reads or writes the cache of whoever runs it. Each
+/// thread has its own, and a test runs on one of its own.
+#[cfg(test)]
+fn cache_home() -> Result<PathBuf> {
+    thread_local! {
+        static OWN: tempfile::TempDir = tempfile::tempdir().expect("a unit test's own cache");
+    }
+    Ok(OWN.with(|own| own.path().to_path_buf()))
 }
 
 /// Where on this host the copies are kept.
@@ -353,4 +370,24 @@ fn read_only(path: &Path) -> Result<()> {
     let mode = found.permissions().mode() & !0o222;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .with_context(|| format!("cannot set the mode of {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_unit_test_has_a_cache_of_its_own_and_never_that_of_whoever_runs_it() {
+        let own = cache().unwrap();
+        let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+        let host = [set("XDG_CACHE_HOME").map(PathBuf::from), set("HOME").map(PathBuf::from)];
+        for host in host.into_iter().flatten() {
+            assert!(!own.starts_with(host.join("afkconvoy")), "{}", own.display());
+            assert!(!own.starts_with(host.join(".cache")), "{}", own.display());
+        }
+        assert_eq!(cache().unwrap(), own, "the same each time it is asked");
+        let other = std::thread::spawn(|| cache().unwrap()).join().unwrap();
+        assert_ne!(other, own, "another thread's is another");
+        assert!(!other.parent().unwrap().exists(), "and gone once its thread ended");
+    }
 }
