@@ -487,7 +487,7 @@ pub fn called_for(team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
     }
     if let Some(team) = team {
         for role in &team.roles {
-            for held in casting::range(role.roster.as_ref(), &kit.range()) {
+            for held in casting::range(role, &kit.range()) {
                 call(&mut called, held.harness, format!("the range of the role `{}`", role.name));
             }
         }

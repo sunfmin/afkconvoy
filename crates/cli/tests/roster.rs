@@ -165,7 +165,7 @@ fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to
 }
 
 #[test]
-fn a_role_whose_range_is_empty_or_holds_a_harness_it_has_no_limits_for_refuses_the_start() {
+fn a_role_whose_range_is_empty_refuses_the_start() {
     // `reviewer` may run a model the host kit does not hold.
     let world = bound(&TEAM.replace("model: haiku", "model: sonnet"));
     world.issue(7, &["flow:feature"]);
@@ -181,23 +181,46 @@ fn a_role_whose_range_is_empty_or_holds_a_harness_it_has_no_limits_for_refuses_t
         );
     }
     assert_eq!(world.worktrees().len(), 0);
+}
 
-    // A role the roster names none for ranges over the host kit whole: one
-    // that holds limits for Claude Code alone cannot run pi.
-    let world =
-        bound(&TEAM.replace("  reviewer: { run: [{ harness: claude-code, model: haiku }] }\n", ""));
+#[test]
+fn a_role_s_range_leaves_out_a_harness_it_holds_no_limits_for_and_plan_and_check_say_so() {
+    // No roster: every role ranges over the host kit, less what it holds no
+    // limits for. `reviewer` holds limits for Claude Code and Codex alone.
+    let world = bound("```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n");
     let reviewer = world.root.join("github/acme/reviewer");
     commit(&reviewer, ".claude/settings.json", r#"{"hooks": {"PreToolUse": [{"hooks": []}]}}"#);
+    commit(&reviewer, ".codex/hooks.json", r#"{"hooks": {"PreToolUse": [{"hooks": []}]}}"#);
     world.issue(7, &["flow:feature"]);
-    let error = world.afk(&PLAN).error();
-    assert!(
-        error.contains(
-            "the role `reviewer` may run `pi`, and holds limits for `claude-code` (in its \
-             `.claude/settings.json`) and none for `pi`"
-        ),
-        "{error}"
+
+    let checked = world.afk(&["check"]).ok();
+    let reviewer = &checked["roles"][1];
+    assert_eq!(reviewer["limits"], json!(["claude-code", "codex"]));
+    assert_eq!(
+        reviewer["range"],
+        json!([
+            {"harness": "claude-code", "models": ["opus", "haiku"]},
+            {"harness": "codex", "models": []},
+        ])
     );
-    assert!(error.contains("the roster allows it the host kit whole"), "{error}");
+    let left_out = json!([
+        {"harness": "pi", "why": "no limits for pi"},
+        {"harness": "dsh", "why": "no limits for dsh"},
+    ]);
+    assert_eq!(reviewer["left_out"], left_out);
+    // A role with no limits at all is right for every harness.
+    assert_eq!(checked["roles"][0]["left_out"], json!([]));
+
+    // `plan` and `run` start, and say the same.
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(
+        planned["left_out"],
+        json!([{"role": "dev", "left_out": []}, {"role": "reviewer", "left_out": left_out}])
+    );
+    // The issue has a choice to make: the tick starts its caster.
+    let ticked = world.afk(&TICK).ok();
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert_eq!(ticked["did"][0], json!({"do": "cast", "issue": null, "outcome": "done"}));
 }
 
 /// What the model a roster's draft is asked of answers: a strength for each

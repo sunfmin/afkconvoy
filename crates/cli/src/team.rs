@@ -722,6 +722,14 @@ fn roster_entry(entry: &team::Entry) -> Value {
     json!({"cast": entry.cast, "run": run})
 }
 
+/// Each harness `role`'s range on a host whose host kit holds `kit` leaves
+/// out (`casting::left_out`), as `check` and `plan` answer it: with why.
+pub fn left_out_json(role: &team::Role, kit: &[casting::Held]) -> Value {
+    let each =
+        |harness: Harness| json!({"harness": harness, "why": casting::left_out_why(harness)});
+    Value::Array(casting::left_out(role, kit).into_iter().map(each).collect())
+}
+
 /// A role's range on this host, as `check` and `show` answer it: each
 /// harness with its models, in order.
 fn range_json(range: &[casting::Held]) -> Value {
@@ -741,7 +749,8 @@ fn answer(loaded: &Loaded) -> Value {
                 "commit": role.commit, "host_user": role.host_user, "dsh_profile": role.dsh_profile.key(), "skills": role.skills,
                 "above": role.above, "limits": role.limits,
                 "roster": role.roster.as_ref().map(roster_entry),
-                "range": kit.as_ref().map(|kit| range_json(&casting::range(role.roster.as_ref(), kit)))})
+                "range": kit.as_ref().map(|kit| range_json(&casting::range(role, kit))),
+                "left_out": kit.as_ref().map(|kit| left_out_json(role, kit))})
         })
         .collect();
     json!({

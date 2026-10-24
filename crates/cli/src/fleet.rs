@@ -112,13 +112,11 @@ impl Fleet {
     /// paused, holds the issue back (`paused::Held`).
     pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
         let (kit, paused) = crate::kit::running()?;
-        let range = casting::range(role.roster.as_ref(), &kit.range());
+        let range = casting::range(role, &kit.range());
         if self.chosen.is_none() {
             let allowed = |pause: &&casting::Paused| {
                 let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
-                casting::range(role.roster.as_ref(), &whole)
-                    .iter()
-                    .any(|held| held.harness == pause.harness)
+                casting::range(role, &whole).iter().any(|held| held.harness == pause.harness)
             };
             if let Some(pause) = casting::paused_of(labels, &paused).filter(allowed) {
                 return Err(crate::paused::Held::of(pause, self.now).into());
@@ -501,7 +499,7 @@ impl Fleet {
                 });
                 continue;
             }
-            let range = casting::range(role.roster.as_ref(), &kit);
+            let range = casting::range(role, &kit);
             match casting::cast_within(&labels, &range, self.chosen) {
                 Ok(mut cast) => {
                     if held == ForCaster::Late && cast.why == Why::RangeFirst {

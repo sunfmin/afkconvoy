@@ -111,7 +111,7 @@ pub(crate) fn position(team: &Team, workflow: &Workflow, position: Position) -> 
         }
         _ => worker.and_then(|work| {
             let range = crate::kit::load().ok()?.range();
-            let range = casting::range(team.role_of(work).roster.as_ref(), &range);
+            let range = casting::range(team.role_of(work), &range);
             range.first().map(|held| held.harness)
         }),
     };

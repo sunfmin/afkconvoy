@@ -101,11 +101,11 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
              "roster": {"cast": "Hard work on opus.", "run": [
                  {"harness": "claude-code", "model": "opus", "good_at": "hard work"},
                  {"harness": "claude-code", "model": null, "good_at": null}]},
-             "range": [{"harness": "claude-code", "models": ["opus", "sonnet"]}]},
+             "range": [{"harness": "claude-code", "models": ["opus", "sonnet"]}], "left_out": []},
             {"name": "reviewer", "repo": "acme/reviewer", "path": "",
              "commit": head(&world, "acme/reviewer"), "host_user": true, "dsh_profile": "fleet", "skills": ["review", "rule"], "above": [],
              "limits": [], "roster": null,
-             "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}]},
+             "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}], "left_out": []},
         ])
     );
     assert_eq!(
@@ -538,7 +538,8 @@ fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
         read["roles"],
         json!([{"name": "fellow", "repo": "acme/hospital", "path": "roles/fellow",
             "commit": commit, "host_user": true, "dsh_profile": "fleet", "skills": ["treat"], "above": [],
-            "limits": [], "roster": null, "range": [{"harness": "claude-code", "models": []}]}])
+            "limits": [], "roster": null, "range": [{"harness": "claude-code", "models": []}],
+            "left_out": []}])
     );
     // The team's commit is its roles': the repo was read once.
     assert_eq!(read["commit"], commit);
@@ -570,7 +571,7 @@ fn a_role_is_named_by_repo_by_repo_and_path_and_twice_over() {
     let role = |name: &str, repo: &str, path: &str, skill: &str| {
         json!({"name": name, "repo": repo, "path": path, "commit": head(&world, repo),
             "host_user": true, "dsh_profile": "fleet", "skills": [skill], "above": [], "limits": [],
-            "roster": null, "range": [{"harness": "claude-code", "models": []}]})
+            "roster": null, "range": [{"harness": "claude-code", "models": []}], "left_out": []})
     };
     assert_eq!(
         read["roles"],
