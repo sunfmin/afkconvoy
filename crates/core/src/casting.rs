@@ -7,7 +7,7 @@ use flux_rs::attrs::*;
 use serde::Serialize;
 
 use crate::harness::Harness;
-use crate::team::{Entry, Performer, Team, Workflow};
+use crate::team::{Entry, Performer, Role, Team, Workflow};
 
 /// What the label that names an issue's harness starts with.
 pub const HARNESS_LABEL: &str = "harness:";
@@ -88,13 +88,36 @@ pub fn choice(range: &[Held]) -> bool {
     options > 1
 }
 
-/// A role's range on a host whose host kit holds `kit`, in its order: its
-/// roster `entry` cut to the host kit, in the roster's order, each harness
-/// once, with the models of it the entry allows and the host kit holds — a
-/// harness the entry allows on any model, with every model the host kit
-/// holds for it. A role the roster names none for ranges over the host kit
+/// `role`'s range on a host whose host kit holds `kit`, in its order: its
+/// roster entry cut to the host kit (`cut`), less each harness the role
+/// holds no limits for while it holds limits for another (`left_out`). No
+/// worker of the role runs a harness it holds no limits for.
+pub fn range(role: &Role, kit: &[Held]) -> Vec<Held> {
+    crate::roster::allowed(role, &cut(role.roster.as_ref(), kit))
+}
+
+/// Each harness `role`'s roster entry cut to the host kit holds (`cut`) and
+/// its range leaves out: one the role holds no limits for, while it holds
+/// limits for another (`team::unlimited`).
+pub fn left_out(role: &Role, kit: &[Held]) -> Vec<Harness> {
+    let cut = cut(role.roster.as_ref(), kit);
+    cut.iter()
+        .filter(|held| crate::team::unlimited(role, held.harness).is_some())
+        .map(|held| held.harness)
+        .collect()
+}
+
+/// Why a range leaves out `harness`, as a human is told it.
+pub fn left_out_why(harness: Harness) -> String {
+    format!("no limits for {}", harness.key())
+}
+
+/// A roster `entry` cut to the host kit `kit`, in the roster's order, each
+/// harness once, with the models of it the entry allows and the host kit
+/// holds — a harness the entry allows on any model, with every model the
+/// host kit holds for it. A role the roster names none for has the host kit
 /// whole. What the host kit does not hold is cut.
-pub fn range(entry: Option<&Entry>, kit: &[Held]) -> Vec<Held> {
+fn cut(entry: Option<&Entry>, kit: &[Held]) -> Vec<Held> {
     let Some(entry) = entry else { return kit.to_vec() };
     let mut range: Vec<Held> = vec![];
     for allowed in &entry.run {
@@ -130,7 +153,7 @@ pub fn stage_ranges(team: &Team, workflow: &Workflow, kit: &[Held]) -> Vec<(Stri
         if let Performer::Role(work) = &stage.by {
             let role = team.role_of(work);
             let by = format!("{} ({})", stage.name, role.name);
-            ranges.push((by, range(role.roster.as_ref(), kit)));
+            ranges.push((by, range(role, kit)));
         }
     }
     ranges
@@ -152,33 +175,33 @@ pub fn allows(entry: Option<&Entry>) -> String {
 }
 
 /// What keeps `team`'s workers from starting on a host whose host kit holds
-/// `kit`: each role whose range there holds nothing, or holds a harness the
-/// role holds no limits for (`team::unlimited`), with what its roster entry
-/// allows and what the host kit holds.
+/// `kit`: each role whose range there holds nothing, with what its roster
+/// entry allows, what the host kit holds, and what the range leaves out
+/// (`left_out`).
 pub fn range_faults(team: &Team, kit: &[Held]) -> Vec<String> {
     let mut faults = vec![];
     for role in &team.roles {
-        let range = range(role.roster.as_ref(), kit);
-        let sides = format!(
+        if !range(role, kit).is_empty() {
+            continue;
+        }
+        let mut sides = format!(
             "the roster allows it {}, and the host kit holds {}",
             allows(role.roster.as_ref()),
             holds(kit)
         );
-        if range.is_empty() {
-            faults.push(format!(
-                "the role `{}` has an empty range on this host: {sides}. Add one it allows to \
-the host kit with `afkconvoy kit`, or allow it one the host kit holds in the team's `roster`",
-                role.name
-            ));
+        let left: Vec<String> = left_out(role, kit)
+            .into_iter()
+            .map(|harness| format!("{} ({})", harness.key(), left_out_why(harness)))
+            .collect();
+        if !left.is_empty() {
+            sides.push_str(&format!("; its range leaves out {}", left.join(", ")));
         }
-        for held in &range {
-            if let Some(problem) = crate::team::unlimited(role, held.harness) {
-                faults.push(format!(
-                    "{problem} — its range on this host holds `{}`: {sides}",
-                    held.harness.key()
-                ));
-            }
-        }
+        faults.push(format!(
+            "the role `{}` has an empty range on this host: {sides}. Add one it allows to the \
+host kit with `afkconvoy kit`, or allow it one the host kit holds in the team's `roster`, or \
+write the role's limits for one it allows",
+            role.name
+        ));
     }
     faults
 }
@@ -855,7 +878,7 @@ mod tests {
             models: models.iter().map(|model| model.to_string()).collect(),
         };
         // None named: the host kit whole.
-        assert_eq!(super::range(None, &kit), kit);
+        assert_eq!(super::cut(None, &kit), kit);
         let entry = entry(&[
             (Harness::Codex, Some("gpt-x")),
             (Harness::Pi, Some("c/d")),
@@ -866,7 +889,7 @@ mod tests {
             (Harness::Pi, None),
         ]);
         assert_eq!(
-            super::range(Some(&entry), &kit),
+            super::cut(Some(&entry), &kit),
             [
                 held(Harness::Codex, &["gpt-x"]),
                 held(Harness::Pi, &["c/d", "a/b"]),
@@ -874,7 +897,7 @@ mod tests {
             ]
         );
         let nothing = self::entry(&[(Harness::Dsh, None), (Harness::Codex, Some("gone"))]);
-        assert_eq!(super::range(Some(&nothing), &kit), []);
+        assert_eq!(super::cut(Some(&nothing), &kit), []);
     }
 
     #[test]

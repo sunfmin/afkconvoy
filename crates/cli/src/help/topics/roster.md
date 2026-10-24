@@ -16,13 +16,13 @@ roster:
     run: [{ harness: codex, model: gpt-5.5 }]
 ```
 
-Each of `run` names a `harness` — claude-code, pi, codex or dsh — and may name a `model`, its harness's own name for it, and `good_at`, what it is good at, which the caster is told. One that names no model allows any model the host kit holds for the harness, or the harness's command as written where the host kit holds none. `cast` says, in the team's words, how an issue is to be cast among them: the caster is told it too. A role the roster names no entry for may run whatever the host kit holds.
+Each of `run` names a `harness` — claude-code, pi, codex or dsh — and may name a `model`, its harness's own name for it, and `good_at`, what it is good at, which the caster is told. One that names no model allows any model the host kit holds for the harness, or the harness's command as written where the host kit holds none. `cast` says, in the team's words, how an issue is to be cast among them: the caster is told it too. A role the roster names no entry for may run whatever the host kit holds, but a harness it holds no limits for (below).
 
 A roster is drafted rather than written from nothing: `afkconvoy draft`, in a checkout of the team, writes one into team.md from this host's host kit — every role, every harness and model in the host kit's order, what the host kit's first model says each is good at and how to cast — and commits nothing. A human reads it, edits it and commits it; the fleet never changes a team's roster.
 
 ## A role's range
 
-On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`), in the roster's order: a harness, or a model, the host kit does not hold is left out. `afkconvoy check` answers each role's entry and its range on the host it runs on; `afkconvoy show` draws the roster under the workflows.
+On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`), in the roster's order: a harness, or a model, the host kit does not hold is left out. So is a harness the role holds no limits for while it holds limits for another: no worker of the role runs a harness it holds no limits for, and a host kit may hold every harness its host can start. `afkconvoy check` and `afkconvoy plan` name each harness a range leaves out, and why (`no limits for pi`). `afkconvoy check` answers each role's entry and its range on the host it runs on; `afkconvoy show` draws the roster under the workflows.
 
 ## An issue's casting
 
@@ -32,7 +32,7 @@ An issue's casting is its `harness:` and `model:` labels, which the caster (`afk
 
 - A stage, a patrol and a config name no harness and no model: `check` refuses one that does, with the line to delete and the roster entry to write in its place.
 - In the roster, `check` refuses an entry for a name that is no role, a `run` that is missing or empty, a harness that is none, an allowance written twice, and a harness the role holds no limits for while it holds limits for another.
-- `afkconvoy run`, `tick` and `plan` refuse a role whose range on their host is empty, or holds a harness the role holds no limits for, naming what the roster allows it and what the host kit holds: add to the host kit with `afkconvoy kit`, or change the roster.
+- `afkconvoy run`, `tick` and `plan` refuse a role whose range on their host is empty, naming what the roster allows it, what the host kit holds and what the range leaves out: add to the host kit with `afkconvoy kit`, change the roster, or write the role's limits for a harness it allows.
 
 ## Where to read on
 
