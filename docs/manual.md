@@ -3164,8 +3164,20 @@ A command-line tool that works a repo's ready GitHub-issue backlog unattended: i
 ### The fleet
 
 **Fleet instance**:
-One `afkconvoy run` process and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
-_Avoid_: launcher, coordinator, node
+One repo's fleet in its host's host runner, and everything it owns: the workers it started and the claims it holds, under an id minted when it starts. One host runs at most one per repo.
+_Avoid_: launcher, coordinator, node, process (the host runner is the process)
+
+**Host runner**:
+The one long-running afkconvoy process of a host, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way.
+_Avoid_: daemon, server, supervisor
+
+**Checkout list**:
+The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it.
+_Avoid_: registry, workspace list, projects
+
+**Host settings**:
+What a host says for every fleet instance on it — whether it may be put to sleep, the limits past which a worker is hot, the shares admission holds back at — kept beside the checkout list and changed by any `run` that names one.
+_Avoid_: global config, runner flags
 
 **Tick**:
 One reconciliation pass: rebuild the working set from fleet state, then perform every transition it calls for, without waiting for the workers it started.
@@ -3418,7 +3430,7 @@ The single comment on a claimed issue that shows a human how far along it is, an
 _Avoid_: progress log, worklog
 
 **Panel**:
-The web page that shows a human where the whole fleet stands: each workflow as the line of its stages, the issues at work, queued and held back at each, and the landing train. A fleet instance serves it on its own host, made anew from what each tick read; it is never read back.
+The one web page that shows a human where every fleet of a host stands: the host itself, what waits for a human across its repos, and for each repo its workflows as the lines of their stages, the issues at work, queued and held back at each, and the landing train. The host runner serves it, made anew from what each tick read; it is never read back.
 _Avoid_: dashboard, status page, status board (the comment on one issue), UI
 
 **Tick log**:
