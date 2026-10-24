@@ -30,10 +30,14 @@ const ASKED_WITHIN: Duration = Duration::from_secs(10);
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// Its version: answered with nothing but `host_runner`, as every answer
+    /// is. One of an afkconvoy that cannot read the question says the same,
+    /// beside its error.
+    Version,
     /// Put `checkout` on the checkout list and start its fleet instance as
     /// `start` asks: answered once its first tick ended, or once it was
     /// refused before that.
-    Add { checkout: PathBuf, start: Start },
+    Add { checkout: PathBuf, start: Box<Start> },
     /// Take `checkout` off the checkout list and stop its fleet instance:
     /// answered once it has stopped.
     Stop { checkout: PathBuf },
@@ -217,7 +221,7 @@ mod tests {
                 "ready_timeout": 120, "now": null}
         }))
         .unwrap();
-        let add = Request::Add { checkout: "/w".into(), start };
+        let add = Request::Add { checkout: "/w".into(), start: Box::new(start) };
         let line = serde_json::to_string(&add).unwrap();
         assert!(line.starts_with(r#"{"op":"add","checkout":"/w","start":{"named":{"host":"h1"}"#));
         assert!(!line.contains('\n'));
@@ -228,6 +232,7 @@ mod tests {
         let stop = serde_json::to_string(&Request::Stop { checkout: "/w".into() }).unwrap();
         assert_eq!(stop, r#"{"op":"stop","checkout":"/w"}"#);
         assert_eq!(serde_json::to_string(&Request::StopAll).unwrap(), r#"{"op":"stop_all"}"#);
+        assert_eq!(serde_json::to_string(&Request::Version).unwrap(), r#"{"op":"version"}"#);
     }
 
     #[test]
@@ -262,7 +267,7 @@ mod tests {
                 Request::Add { checkout, .. } | Request::Stop { checkout } => {
                     json!({"checkout": checkout})
                 }
-                Request::StopAll => json!({}),
+                Request::Version | Request::StopAll => json!({}),
             };
             answered(runner, &about, &checkout).unwrap();
             let mut answer = String::new();
@@ -272,6 +277,7 @@ mod tests {
         let start = r#""start":{"named":{},"panel":null,"no_host_sleep":true,"hot":{"millicores":null,"resident":null,"written":null},"knobs":{"ticks":null,"second_ms":1000,"host_sleep_after":600,"ready_timeout":120,"now":null}}"#;
         let added = ask(&format!(r#"{{"op":"add","checkout":"/w",{start}}}"#));
         assert_eq!(added, json!({"checkout": "/w", "host_runner": about}));
+        assert_eq!(ask(r#"{"op":"version"}"#), json!({"host_runner": about}));
         let unread = ask(r#"{"op":"wake","checkout":"/w"}"#);
         let error = unread["error"].as_str().unwrap();
         assert!(error.starts_with("this host runner (afkconvoy "), "{error}");
