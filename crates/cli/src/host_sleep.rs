@@ -308,7 +308,7 @@ fn local(at: u64) -> Option<u64> {
     // or a pointer nothing here reads.
     let time = unsafe { time.assume_init() };
     let (hour, minute, second) = (time.tm_hour, time.tm_min, time.tm_sec);
-    Some(u64::try_from(hour * 3600 + minute * 60 + second).ok()?)
+    u64::try_from(hour * 3600 + minute * 60 + second).ok()
 }
 
 /// Only a macOS host is put to sleep (docs/adr/0016): elsewhere its local

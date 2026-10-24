@@ -211,7 +211,7 @@ fn a_check_outside_the_sleep_hours_keeps_the_host_awake_and_says_them() {
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     let said = format!("the host's local time is outside its sleep hours, {outside}");
     let kept = format!("host sleep: kept awake: {said}");
-    assert!(lines.iter().any(|line| *line == kept), "{lines:?}");
+    assert!(lines.contains(&kept), "{lines:?}");
     let start = format!("start: puts this host to sleep within its sleep hours, {outside}, ");
     assert!(lines[0].starts_with(&start), "{lines:?}");
     let checked = last_check(&world);
