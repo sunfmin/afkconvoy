@@ -53,12 +53,30 @@ h1 { font-size: 34px; line-height: 1.1; font-weight: 600; letter-spacing: -0.02e
 .tick .did { color: var(--soft); flex: 1 1 320px; }
 .tick .next { color: var(--soft); white-space: nowrap; }
 .tick.late .next { color: var(--wait); }
-.lock, .lost { margin-top: 12px; padding: 10px 14px; border-radius: 3px; color: #fff; background: var(--halt); }
+.lock, .lost, .holds { margin-top: 12px; padding: 10px 14px; border-radius: 3px; color: #fff; background: var(--halt); }
 .lost { background: var(--ink); color: var(--ground); }
 .hot { margin-top: 12px; padding: 10px 14px; border-radius: 3px; border: 1px solid var(--wait); }
 .hot ul { margin: 4px 0 0 18px; }
 
-.lane, .train, .patrols, .exclusive, .human { margin-top: 32px; }
+.lane, .train, .patrols, .exclusive, .human, .kit { margin-top: 32px; }
+
+/* The host first, once; then what waits for a human; then each repo. */
+.admission, .sleep { margin-top: 12px; }
+.admission { padding: 10px 0; border-top: 1px solid var(--hair); }
+.harnesses { display: flex; flex-wrap: wrap; gap: 4px 24px; margin-top: 8px; }
+.harnesses .note { color: var(--wait); font-size: 13px; }
+.card .repo {
+  margin-right: 4px; padding: 1px 6px; border-radius: 3px;
+  background: var(--hair); font-size: 13px; font-weight: 600;
+}
+.broken .card { border-left-color: var(--halt); }
+b.broken { color: var(--halt); }
+.checkouts { margin-top: 40px; padding: 10px 0; border-top: 2px solid var(--ink); }
+.checkouts ul { display: flex; flex-wrap: wrap; gap: 6px 28px; }
+.checkouts a { color: var(--ink); font-weight: 600; }
+.checkouts span { color: var(--soft); font-size: 13px; }
+section.repo { margin-top: 40px; padding-top: 20px; border-top: 2px solid var(--ink); }
+h2.name { font-size: 28px; line-height: 1.15; letter-spacing: -0.02em; }
 h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
 .by { font-size: 13px; color: var(--soft); }
 
@@ -147,6 +165,7 @@ code { font-size: 0.93em; }
 @media (max-width: 700px) {
   body { padding: 20px 16px 40px; }
   h1 { font-size: 26px; }
+  h2.name { font-size: 22px; }
   .line { grid-auto-flow: row; grid-auto-columns: auto; overflow: visible; }
   .node { padding: 4px 0 22px 50px; }
   .node::before { top: 0; bottom: 0; left: 15px; right: auto; width: 4px; height: auto; }

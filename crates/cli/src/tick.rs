@@ -29,15 +29,13 @@ use crate::git::Repo;
 use crate::host_settings;
 use crate::host_sleep::{Checked, HostSleep, Peers};
 use crate::hot::{self, Hot};
-use crate::inspection::{self, Inspector};
+use crate::inspection::Inspector;
 use crate::judge::judge;
 use crate::log::{self, Cause, Log};
 use crate::measure;
-use crate::opening::Opener;
 use crate::panel::{self, Panel};
 use crate::patrol;
 use crate::precedent;
-use crate::serve::{self, Live};
 use crate::settle::settle;
 use crate::slow_gate;
 use crate::stage::Flows;
@@ -533,6 +531,8 @@ impl Ticked {
         panel.declared = self.declared().min(self.pass.held);
         panel.held = self.pass.held - panel.declared;
         panel.bound = self.bound - panel.declared;
+        panel.frontier = self.pass.frontier_remaining;
+        panel.idle = self.idle().0;
         panel
     }
 
@@ -975,7 +975,7 @@ pub enum Line<'l> {
     /// Kept in its tick log (`Said::keep`).
     Kept(&'l log::Entry),
     /// Said and kept nowhere, as `run` printed and never logged it: what its
-    /// start took, host sleep's terms, its panel's address.
+    /// start took, host sleep's terms.
     Said(&'l str),
     /// What it warns of: its startup probe's warnings, a worker launch
     /// command with no unattended flag, what it cannot do and does without —
@@ -988,17 +988,21 @@ pub enum Line<'l> {
 /// tick and to the host runner's log.
 pub type Echo = Arc<dyn Fn(Line<'_>) + Send + Sync>;
 
+/// Where a fleet instance's part of the panel goes after each tick: in the
+/// host runner, to the page it serves.
+pub type Show = Arc<dyn Fn(Panel) + Send + Sync>;
+
 /// What holds a fleet instance's loop — the host runner: the stop it obeys,
-/// where its lines go, and what reaches it from outside its loop through the
-/// host runner (docs/adr/0023) — the wakes heard for it, the opening of its
-/// panel, and the host runner's other fleet instances, which host sleep
-/// asks.
+/// where its lines go, what reaches it from outside its loop through the
+/// host runner (docs/adr/0023) — the wakes heard for it, and the host
+/// runner's other fleet instances, which host sleep asks — and where its
+/// part of the panel goes: `None` where none is shown, and none is made.
 pub struct Holder {
     pub stop: Stop,
     pub echo: Echo,
     pub wakes: Wakes,
-    pub opener: Opener,
     pub peers: Peers,
+    pub show: Option<Show>,
 }
 
 /// The log a `run` keeps of itself (`log::Log`), and its echo: each line is
@@ -1092,10 +1096,10 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// finishes the step it is in and exits: no claim is released on the way out,
 /// and the next start on this host takes them back (docs/adr/0003); holding
 /// none, it removes its heartbeat. A start removes the heartbeats left by the
-/// runs that could not (`at_start`). It serves the panel once that is opened — at the start,
-/// on a `panel_port`, or later by `afkconvoy panel --open` (`Opener`) — a new page after
-/// every tick. It keeps a line in its log (`log::Log`) as each tick starts,
-/// with why, and as it ends, and one of each event that reaches it — a wake
+/// runs that could not (`at_start`). It shows its part of the panel to
+/// `holder` after every tick, where that shows one. It keeps a line in its
+/// log (`log::Log`) as each tick starts, with why, and as it ends, and one of
+/// each event that reaches it — a wake
 /// heard during a tick, said as it is heard — and prints each as it is
 /// written (`Said`); nothing here ever reads the log. It watches what each
 /// worker's processes take, and says as one turns hot and as it stops being
@@ -1111,18 +1115,12 @@ pub fn run(
     me: &mut Me,
     agent: &Agent,
     pacing: &Pacing,
-    panel_port: Option<u16>,
     clock: impl Fn() -> u64 + Send + Sync + 'static,
     holder: Holder,
 ) -> Result<Value> {
-    let Holder { stop, echo, wakes, opener, peers } = holder;
+    let Holder { stop, echo, wakes, peers, show } = holder;
     let clock: Clock = Arc::new(clock);
     let mut shown = Panel::empty(&Fleet::open(repo, me.now)?, Some(me));
-    let live = Live::new(panel::render(&shown));
-    if let Some(port) = panel_port {
-        // The first line of all, before the log is open: `panel` reads it first.
-        echo(Line::Said(&format!("panel: {}", serve::address(live.open(port)?.0))));
-    }
     let mut streak = 0;
     let mut skipped = 0;
     let mut count = 0;
@@ -1142,11 +1140,6 @@ pub fn run(
         let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
         hot::watch(repo, second, clock, hears, hot, wakes.waker(), stop.clone());
-    }
-    {
-        let said = Arc::clone(&said);
-        let say = Box::new(move |line: &str| said.say(line));
-        opener.offer(live.clone(), me.instance.as_str(), say, wakes.waker());
     }
     let mut cause = Cause::Start;
     let mut by = None;
@@ -1181,9 +1174,7 @@ pub fn run(
                 }
             }
         }
-        // Asked once a turn: a panel opened while the tick runs is the next
-        // tick's to fill, which the wake its opening sends starts at once.
-        let served = live.served();
+        let served = show.is_some();
         // A tick that could not even rebuild is a line, not the end of the loop.
         let ticked = turn(
             || wakes.forget(count),
@@ -1233,16 +1224,16 @@ pub fn run(
         let busy = inspector.busy(&hot_now, clock());
         let sleep = if busy { sleep.min(INSPECTING_EVERY) } else { sleep };
         let (bound, answer, error) = logged;
-        let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
-        said.keep(clock(), log::What::Tick(tick));
-        if served {
-            // A tick that failed leaves the page as the last one found it.
+        // Shown before its line is kept: whoever that line answers finds it on the page.
+        if let Some(show) = &show {
+            // A tick that failed leaves its part as the last one found it.
+            let line = line.clone();
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
-            shown.hot = hot_now;
-            shown.inspection = inspection::on_host();
-            shown.host_inspected = inspection::last_on_host();
-            live.show(panel::render(&shown));
+            shown.hot = hot_now.iter().map(panel::Hot::from).collect();
+            show(shown.clone());
         }
+        let tick = log::Tick { count, sleep, line, bound, answer, error };
+        said.keep(clock(), log::What::Tick(tick));
         if pacing.panic_at == Some(count) {
             panic!("told to panic as tick {count} ended (--panic-at-tick)");
         }

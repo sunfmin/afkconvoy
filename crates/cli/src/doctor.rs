@@ -1115,7 +1115,7 @@ type StartedWith = Vec<String>;
 
 /// What the log says of the `run` of `host`: its fleet instance, the worker
 /// launch commands it started with, and that instance's ticks.
-fn read_log(
+pub(crate) fn read_log(
     entries: &[Entry],
     host: &str,
 ) -> (Option<String>, Option<StartedWith>, Vec<(u64, Tick)>) {
@@ -1154,7 +1154,7 @@ fn read_host_sleep(entries: &[Entry], host: &str) -> Option<HostSleepChecked> {
 
 /// The workers the newest `run` of `host` found hot and has not found
 /// stopped being hot since, as the log has them, longest hot first.
-fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
+pub(crate) fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
     let Some(newest) = entries.iter().rev().find(|entry| entry.host == host && entry.of_run())
     else {
         return vec![];

@@ -1,29 +1,44 @@
-//! The panel: the page that shows a human where the whole fleet stands — each
-//! workflow as a line of stages, the issues at work, queued and held back at
-//! each, and the landing train they end on. Like a status board it is rendered
-//! from what a tick knows and never read back.
+//! The panel: the one page that shows a human where every fleet of a host
+//! stands (docs/adr/0023) — the host first, once; then what waits for a
+//! human across its repos, with the fleet instances that are broken; then
+//! each repo: its workflows as lines of stages, the issues at work, queued
+//! and held back at each, and the landing train they end on. Like a status
+//! board it is rendered from what the fleet read and never read back.
 //!
-//! `of` decides what goes where and `render` puts it into HTML; both are pure.
-//! `read` is the one function here that asks anything: orca, after each
-//! worker's state.
+//! A `Panel` is one repo's part, as one tick or one rebuild shows it, and a
+//! `Page` is the whole: the `Host` and each checkout. `Panel::show` decides
+//! what goes where and `render` puts a page into HTML, one rendering for
+//! each part, whoever made the page; both are pure. `read` asks orca after
+//! each worker's state, `Host::read` reads the host, and `printed` makes the
+//! page `afkconvoy panel` prints, from one rebuild of each checkout.
 
 use std::fmt::Write;
+use std::path::{Path, PathBuf};
 
+use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::exclusive::Ticket;
+use afkconvoy_core::host_sleep::Hours;
 use afkconvoy_core::patrol::{self, Standing};
 use afkconvoy_core::plan::{Excluded, Status, WorkingSet};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::team::{LAND, Performer, Team, Work, Workflow};
 use afkconvoy_core::tick::{Outcome, TickStep};
 use afkconvoy_core::worker::WorkerState;
+use anyhow::Result;
 
+use crate::admission::Admission;
+use crate::checkout_list;
 use crate::claims::Me;
 use crate::exclusive::Queue;
 use crate::fleet::Fleet;
+use crate::git::Repo;
 use crate::hot::{HotNow, held_said};
 use crate::inspection::{Last, Running};
+use crate::kit::Kit;
+use crate::log::Log;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
+use crate::{doctor, host_runner, host_settings, inspection};
 
 /// The stage of an unbound repo's one lane a worker writes its PR at.
 const WORK: &str = "work";
@@ -96,7 +111,8 @@ pub struct Tick {
     pub sleep: u64,
 }
 
-/// Everything the page shows.
+/// One repo's part of the page: what one tick of its fleet instance, or one
+/// rebuild, shows of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Panel {
     pub repo: String,
@@ -104,7 +120,7 @@ pub struct Panel {
     /// The fleet instance whose view this is, and its host; `None` of nobody's:
     /// every claim is then another instance's.
     pub who: Option<(String, String)>,
-    /// `None` of a panel no `run` made: it shows a rebuild, not a tick.
+    /// `None` of a part no tick made: it shows a rebuild.
     pub tick: Option<Tick>,
     /// The claims held that take a slot, of the `bound` the fleet may hold.
     pub held: usize,
@@ -112,41 +128,169 @@ pub struct Panel {
     /// The claims held whose worker declared a verdict not acted on yet: they
     /// take no slot, and are counted apart.
     pub declared: usize,
+    /// The issues a worker can be started on now that the tick left: those
+    /// queued, and those at no stage the page draws.
+    pub frontier: usize,
+    /// Whether its fleet instance has nothing to do now (GLOSSARY: Idle).
+    pub idle: bool,
     pub locks: Vec<u64>,
     pub lanes: Vec<Lane>,
     /// The issues whose PR is on the landing train.
     pub train: Vec<Card>,
     /// The issues that wait for a human, each with why and the line that
     /// answers it: the working set's `waiting_on_human`, as `doctor` gives it.
+    /// The page lists them across every repo.
     pub to_human: Vec<Card>,
     /// Every other open issue, with why the fleet leaves it.
     pub off: Vec<Card>,
     /// The patrols the repo names, each as it stands.
     pub patrols: Vec<patrol::Row>,
-    /// The host's `exclusive` queue, whatever its repo: the first runs alone,
-    /// and the rest wait their turn, next first.
-    pub exclusive: Vec<Ticket>,
-    /// When the page was made, in epoch seconds: what a patrol's wait is
+    /// When the part was made, in epoch seconds: what a patrol's wait is
     /// counted from.
     pub now: u64,
-    /// The workers hot as the tick ended, as the `run` that made the page
-    /// found them; none of a panel no `run` made.
-    pub hot: Vec<HotNow>,
-    /// The inspection running on the host as the tick ended, whichever of
-    /// its fleets started it.
+    /// Its workers hot as the tick ended — or, of a rebuild, as its tick log
+    /// has them. The page lists them with the host.
+    pub hot: Vec<Hot>,
+    /// An unbound repo's caster, while one runs or is due, and the issues
+    /// held back for it.
+    pub caster: Option<afkconvoy_core::casting::Standing>,
+    /// Each role no worker of which can be started on this host, with why
+    /// (`casting::nothing_safe`): its stages wait while it lasts.
+    pub nothing_safe: Vec<(String, String)>,
+}
+
+/// A worker that is hot, as the page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hot {
+    /// `#7`, or the name of its worktree.
+    pub worker: String,
+    /// When it turned hot.
+    pub since: u64,
+    /// Why, under the limits in force as it did, and what it held at the
+    /// most, in words.
+    pub why: String,
+    pub held: String,
+}
+
+impl From<&HotNow> for Hot {
+    fn from(hot: &HotNow) -> Hot {
+        let (worker, since) = (hot.worker.clone(), hot.episode.since);
+        Hot { worker, since, why: hot.why.clone(), held: held_said(&hot.episode) }
+    }
+}
+
+/// The whole page: the host, and each checkout on its list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page {
+    pub host: Host,
+    /// Whether the host runner serves it, made anew after every tick: else
+    /// `afkconvoy panel` printed it, from one rebuild of each checkout.
+    pub live: bool,
+    /// In the order of their roots.
+    pub checkouts: Vec<Checkout>,
+}
+
+/// One checkout, as the page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkout {
+    /// Its root.
+    pub dir: PathBuf,
+    pub part: Part,
+    /// Its fleet instance broken: the host runner starts it again after a
+    /// backoff. What it showed before is shown still.
+    pub broken: Option<Broken>,
+}
+
+/// What the page shows of a checkout's repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part {
+    /// Its part, as its fleet instance's last tick, or a rebuild, made it.
+    Shown(Box<Panel>),
+    /// Its fleet instance's first tick has not ended.
+    Starting,
+    /// A rebuild of it failed, as this says.
+    Unread(String),
+}
+
+/// A fleet instance that is broken: why it last broke, since when, and when
+/// the host runner starts it again — `None` where no host runner runs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Broken {
+    pub why: String,
+    pub since: u64,
+    pub next: Option<u64>,
+}
+
+impl Checkout {
+    /// The name its part goes by: its repo's, else its root's last name.
+    pub fn name(&self) -> String {
+        match &self.part {
+            Part::Shown(panel) => panel.repo.clone(),
+            Part::Starting | Part::Unread(_) => {
+                let name = self.dir.file_name().map(|name| name.to_string_lossy().into_owned());
+                name.unwrap_or_default()
+            }
+        }
+    }
+
+    /// Its part, where one was made.
+    fn shown(&self) -> Option<&Panel> {
+        match &self.part {
+            Part::Shown(panel) => Some(panel),
+            Part::Starting | Part::Unread(_) => None,
+        }
+    }
+
+    /// Whether its fleet instance is idle, as far as the page knows: one
+    /// broken, starting or unread is not known to be.
+    fn idle(&self) -> bool {
+        self.broken.is_none() && self.shown().is_some_and(|panel| panel.idle)
+    }
+}
+
+/// The host, as the page shows it once, above every repo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Host {
+    pub name: String,
+    /// When it was read, in epoch seconds.
+    pub now: u64,
+    /// Admission's reading of the host now; why it cannot be read.
+    pub admission: Result<Admission, String>,
+    /// The inspection running on the host, whichever of its fleets started it.
     pub inspection: Option<Running>,
     /// What the last host inspection of the host found, whichever of its
     /// fleets started it.
     pub host_inspected: Option<Last>,
-    /// An unbound repo's caster, while one runs or is due, and the issues
-    /// held back for it.
-    pub caster: Option<afkconvoy_core::casting::Standing>,
+    /// The host's `exclusive` queue, whatever its repo: the first runs alone,
+    /// and the rest wait their turn, next first.
+    pub exclusive: Vec<Ticket>,
+    /// The hours of its local time a fleet may put it to sleep in; `None`
+    /// where its host settings keep it awake.
+    pub sleep_hours: Option<Hours>,
+    /// Its host kit, every harness in it; why it cannot be read.
+    pub kit: Result<Kit, String>,
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
-    /// Each role no worker of which can be started on this host, with why
-    /// (`casting::nothing_safe`): its stages wait while it lasts.
-    pub nothing_safe: Vec<(String, String)>,
+}
+
+impl Host {
+    /// The host as it is at `now`, read soft: what cannot be read is said
+    /// so, or shows nothing. Admission reads the disk under `dir`.
+    pub fn read(dir: &Path, now: u64) -> Host {
+        Host {
+            name: crate::this_host(),
+            now,
+            admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
+            inspection: inspection::on_host(),
+            host_inspected: inspection::last_on_host(),
+            // Soft: a queue that cannot be read shows nothing.
+            exclusive: Queue::of_host().and_then(|queue| queue.standing()).unwrap_or_default(),
+            sleep_hours: host_settings::host_sleep(),
+            kit: crate::kit::load().map_err(|error| format!("{error:#}")),
+            paused: crate::paused::read(),
+        }
+    }
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -246,19 +390,17 @@ impl Panel {
             held: 0,
             bound: fleet.config.concurrency(),
             declared: 0,
+            frontier: 0,
+            idle: false,
             locks: vec![],
             lanes: vec![],
             train: vec![],
             to_human: vec![],
             off: vec![],
             patrols: vec![],
-            exclusive: vec![],
             now: fleet.now,
             hot: vec![],
-            inspection: None,
-            host_inspected: None,
             caster: None,
-            paused: crate::paused::read(),
             nothing_safe: vec![],
         }
     }
@@ -457,13 +599,96 @@ pub fn read(
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
-    // Soft: a queue that cannot be read shows nothing.
-    panel.exclusive = Queue::of_host().and_then(|queue| queue.standing()).unwrap_or_default();
-    // Soft too: a team or a host kit that cannot be read names no role.
+    panel.frontier = set.frontier.len();
+    let on_train = set.mine.iter().any(|mine| mine.status == Status::Joined);
+    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier, on_train);
+    // Soft: a team or a host kit that cannot be read names no role.
     if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
         panel.nothing_safe = afkconvoy_core::casting::range_faults(team, &kit.range());
     }
     panel
+}
+
+/// The page `afkconvoy panel` prints: one rebuild of each checkout on this
+/// host's checkout list, or of `checkout` alone where it was `named` or the
+/// list holds none, with the host as it is at `now`. Each is seen as the
+/// fleet instance `instance` of `host` — where none is named, as the one its
+/// tick log on this host names last: the one the host runner holds, or
+/// held — with the workers hot and the break its tick log has. A rebuild
+/// that fails is an error of a checkout alone, and of the list is said in
+/// that checkout's part, the others shown.
+pub fn printed(
+    checkout: Result<Repo>,
+    named: bool,
+    instance: Option<&InstanceId>,
+    host: &str,
+    now: u64,
+) -> Result<Page> {
+    let mut listed = if named { vec![] } else { checkout_list::List::of_host()?.read()?.checkouts };
+    listed.sort_by(|one, other| one.checkout.cmp(&other.checkout));
+    let runs = host_runner::runs();
+    let checkouts = match listed.is_empty() {
+        true => {
+            let repo = checkout?;
+            let entries = logged(&repo);
+            let part = Part::Shown(Box::new(rebuilt(&repo, &entries, instance, host, now)?));
+            let broken = broken_in(&entries, host, runs);
+            vec![Checkout { dir: repo.dir, part, broken }]
+        }
+        false => listed
+            .into_iter()
+            .map(|entry| {
+                let repo = Repo::at(&entry.checkout);
+                let entries = repo.as_ref().map(logged).unwrap_or_default();
+                let part = repo.and_then(|repo| rebuilt(&repo, &entries, instance, host, now));
+                let part = part.map_or_else(
+                    |error| Part::Unread(format!("{error:#}")),
+                    |panel| Part::Shown(Box::new(panel)),
+                );
+                let broken = broken_in(&entries, host, runs);
+                Checkout { dir: entry.checkout, part, broken }
+            })
+            .collect(),
+    };
+    let dir = checkouts.first().map_or_else(|| PathBuf::from("/"), |first| first.dir.clone());
+    Ok(Page { host: Host::read(&dir, now), live: false, checkouts })
+}
+
+/// What the tick log of `repo` on this host holds; nothing where it cannot
+/// be read.
+fn logged(repo: &Repo) -> Vec<crate::log::Entry> {
+    Log::of(repo).ok().and_then(|log| log.read()).unwrap_or_default()
+}
+
+/// The break of the fleet instance of `host` its tick log `entries` hold,
+/// where it is broken; `runs`: whether a host runner runs to start it again.
+fn broken_in(entries: &[crate::log::Entry], host: &str, runs: bool) -> Option<Broken> {
+    let broken = doctor::read_broken(entries, host, runs)?;
+    Some(Broken { why: broken.why, since: broken.since, next: broken.next })
+}
+
+/// The part of `repo` one rebuild shows, seen as `instance` of `host` or,
+/// where none is named, as the fleet instance its tick log `entries` name
+/// last; with the workers hot those entries have.
+fn rebuilt(
+    repo: &Repo,
+    entries: &[crate::log::Entry],
+    instance: Option<&InstanceId>,
+    host: &str,
+    now: u64,
+) -> Result<Panel> {
+    let (logged, ..) = doctor::read_log(entries, host);
+    let logged = logged.and_then(|logged| InstanceId::parse(&logged).ok());
+    let instance = instance.cloned().or(logged);
+    let me = instance.map(|instance| Me { instance, host: host.to_string(), now });
+    let (mut fleet, open) = Fleet::read(repo, now)?;
+    let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
+    let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[]);
+    panel.hot = doctor::read_hot(entries, host)
+        .into_iter()
+        .map(|hot| Hot { worker: hot.worker, since: hot.since, why: hot.why, held: hot.held })
+        .collect();
+    Ok(panel)
 }
 
 const STYLE: &str = include_str!("panel.css");
@@ -499,7 +724,9 @@ fn count(many: usize, one: &str) -> String {
     format!("{many} {one}{}", if many == 1 { "" } else { "s" })
 }
 
-fn card(out: &mut String, card: &Card) {
+/// The card of `card`, labelled with the name of its `repo` where the list
+/// it is on spans repos.
+fn card(out: &mut String, card: &Card, repo: Option<&str>) {
     let (class, worker) = match card.worker {
         Some(WorkerState::Busy) => ("busy", Some("busy".to_string())),
         Some(WorkerState::Idle { quiet: Some(quiet) }) => {
@@ -509,10 +736,12 @@ fn card(out: &mut String, card: &Card) {
         Some(WorkerState::Gone) => ("gone", Some("no worker".to_string())),
         None => ("", None),
     };
+    let repo = repo.map(|repo| format!("<span class=\"repo\">{}</span> ", esc(repo)));
     let _ = write!(
         out,
-        "<li class=\"card {class}\" data-issue=\"{n}\"><span class=\"num\">#{n}</span> \
+        "<li class=\"card {class}\" data-issue=\"{n}\">{}<span class=\"num\">#{n}</span> \
          <span class=\"title\">{}</span>",
+        repo.unwrap_or_default(),
         esc(&card.title),
         n = card.number,
     );
@@ -544,7 +773,7 @@ fn cards(out: &mut String, class: &str, heading: Option<&str>, list: &[Card]) {
     }
     let _ = write!(out, "<ul class=\"cards {class}\">");
     for one in list {
-        card(out, one);
+        card(out, one, None);
     }
     out.push_str("</ul>");
 }
@@ -661,10 +890,389 @@ fn gauge(out: &mut String, name: &str, value: usize, of: Option<usize>) {
     let _ = write!(out, "<div class=\"gauge\"><dt>{name}</dt><dd>{value}{of}</dd></div>");
 }
 
-/// The page: a whole HTML document, the same text for the same panel. It is
-/// complete as it is; the script it names only keeps an open page fresh.
-pub fn render(panel: &Panel) -> String {
+/// The page: a whole HTML document, the same text for the same page. It is
+/// complete as it is; the script it names only keeps an open page fresh. Its
+/// three parts are each one rendering, whoever made the page: the host
+/// (`host_part`), what waits for a human across every repo (`human_part`),
+/// and each repo (`repos_part`).
+pub fn render(page: &Page) -> String {
     let mut out = String::new();
+    let _ = write!(
+        out,
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>{} — afkconvoy</title><style>{STYLE}</style></head>\n<body>\n<p class=\"lost\" \
+         hidden>This page lost its host runner: it stopped, or was started again. What it shows \
+         is the last tick it heard of.</p>\n<main id=\"panel\">\n",
+        esc(&page.host.name),
+    );
+    host_part(&mut out, page);
+    human_part(&mut out, page);
+    repos_part(&mut out, page);
+    out.push_str("</main>\n<script src=\"live.js\" defer></script>\n</body></html>\n");
+    out
+}
+
+/// The host, once: who made the page, admission's reading, the hot workers
+/// of every repo, the inspection running and what the last host inspection
+/// found, the exclusive queue, host sleep and the host kit.
+fn host_part(out: &mut String, page: &Page) {
+    let host = &page.host;
+    let made = match page.live {
+        true => "served by its host runner, made anew after every tick of any fleet instance on it"
+            .to_string(),
+        false => "one rebuild of each checkout, read just now: its host runner serves this page \
+                  live, and <code>afkconvoy panel --open</code> says where"
+            .to_string(),
+    };
+    let _ = writeln!(
+        out,
+        "<header class=\"top host\"><div class=\"who\"><h1>{}</h1><p>afkconvoy {} · {} · {made}\
+         </p></div></header>",
+        esc(&host.name),
+        crate::VERSION,
+        count(page.checkouts.len(), "checkout"),
+    );
+    out.push_str("<section class=\"host\">\n");
+    admission(out, host);
+
+    let hot: Vec<(String, &Hot)> = page
+        .checkouts
+        .iter()
+        .flat_map(|checkout| {
+            let hot = checkout.shown().map(|panel| panel.hot.as_slice()).unwrap_or_default();
+            hot.iter().map(move |hot| (checkout.name(), hot))
+        })
+        .collect();
+    if !hot.is_empty() {
+        let hot: Vec<String> = hot
+            .iter()
+            .map(|(repo, hot)| {
+                format!(
+                    "<li data-hot=\"{worker}\"><b>{worker}</b> in {}, hot for {} — {}; holding at \
+                     most {}</li>",
+                    esc(repo),
+                    lasted(host.now.saturating_sub(hot.since)),
+                    esc(&hot.why),
+                    esc(&hot.held),
+                    worker = esc(&hot.worker),
+                )
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\"><b>Hot workers</b>: their processes take more than their \
+             share of the host.<ul>{}</ul></section>",
+            hot.concat(),
+        );
+    }
+
+    if let Some(reason) = host.inspection.as_ref().and_then(|running| running.held_back_by) {
+        let running = host.inspection.as_ref().expect("held back by above");
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\" data-inspection=\"host\"><b>Host inspection</b>: admission \
+             held back new workers for {} past its span; <b>the host</b> is inspected by \
+             <code>{by}</code>, for {} so far, for {}.</section>",
+            reason.word(),
+            lasted(host.now.saturating_sub(running.since)),
+            esc(&running.repo),
+            by = esc(&running.by),
+        );
+    } else if let Some(running) = &host.inspection {
+        let issue = running.issue.map(|issue| format!(" on #{issue}")).unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\" data-inspection=\"{worker}\"><b>Inspection</b>: \
+             <b>{worker}</b>{issue} is inspected by <code>{by}</code>, for {} so far, in {}.\
+             </section>",
+            lasted(host.now.saturating_sub(running.since)),
+            esc(&running.repo),
+            worker = esc(&running.worker),
+            by = esc(&running.by),
+        );
+    }
+
+    if let Some(last) = &host.host_inspected {
+        let issue = last.issue.map(|issue| format!(" (#{issue})")).unwrap_or_default();
+        let freed = last.freed_said();
+        let freed = if freed.is_empty() { freed } else { format!(" · {}", esc(&freed)) };
+        let _ = writeln!(
+            out,
+            "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
+             {} ago: admission held back for {} ({}); <code>{by}</code> found \
+             <b>{found}</b>{issue}: {}{freed}</section>",
+            lasted(host.now.saturating_sub(last.ended)),
+            last.reason.word(),
+            esc(&last.reading),
+            esc(&last.said),
+            found = esc(&last.found),
+            by = esc(&last.by),
+        );
+    }
+
+    if !host.exclusive.is_empty() {
+        out.push_str(
+            "<section class=\"exclusive\"><h2>Run alone on this host</h2><ul class=\"cards\">",
+        );
+        for (place, ticket) in host.exclusive.iter().enumerate() {
+            let class = if place == 0 { "busy" } else { "queued" };
+            let _ = write!(
+                out,
+                "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
+                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
+                esc(&ticket.command),
+                esc(&exclusive_says(ticket, place, host.now)),
+            );
+        }
+        out.push_str("</ul></section>\n");
+    }
+
+    let sleep = match host.sleep_hours {
+        None => {
+            "none: its host settings keep it awake, and <code>afkconvoy run --host-sleep</code> \
+                 lets the fleets on it put it to sleep"
+                .to_string()
+        }
+        Some(hours) => {
+            let busy: Vec<String> = page
+                .checkouts
+                .iter()
+                .filter(|checkout| !checkout.idle())
+                .map(|checkout| esc(&checkout.name()))
+                .collect();
+            let now = match busy.as_slice() {
+                [] => "every fleet instance on it is idle now".to_string(),
+                busy => format!("not idle now: {}", busy.join(", ")),
+            };
+            format!(
+                "within its sleep hours, {hours} of its local time, once every fleet instance on it \
+                 has been idle for ten minutes and nobody has used its keyboard or mouse for ten \
+                 minutes — {now}"
+            )
+        }
+    };
+    let _ = writeln!(
+        out,
+        "<p class=\"sleep\" data-kept-awake=\"{}\"><b>Host sleep</b>: {sleep}.</p>",
+        host.sleep_hours.is_none(),
+    );
+
+    kit(out, host);
+    out.push_str("</section>\n");
+}
+
+/// Admission's reading of the host: what it holds back for, or that it
+/// starts new workers, with what it read.
+fn admission(out: &mut String, host: &Host) {
+    let admission = match &host.admission {
+        Ok(admission) => admission,
+        Err(error) => {
+            let _ = writeln!(
+                out,
+                "<p class=\"admission\"><b>Admission</b>: the host cannot be read: {}</p>",
+                esc(error)
+            );
+            return;
+        }
+    };
+    let read = esc(&admission.read_said().join(" · "));
+    let holds: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();
+    let _ = match holds.as_slice() {
+        [] => writeln!(
+            out,
+            "<p class=\"admission\" data-admits=\"true\"><b>Admission</b> starts new workers: \
+             {read}</p>"
+        ),
+        holds => writeln!(
+            out,
+            "<p class=\"holds\" data-admits=\"false\"><b>Admission holds back new workers</b>: {}. \
+             It read {read}</p>",
+            esc(&holds.join("; ")),
+        ),
+    };
+}
+
+/// The host kit: every harness in it, in order, with its models in order,
+/// and what the stock consult runs; each harness paused, since when and why.
+fn kit(out: &mut String, host: &Host) {
+    for pause in &host.paused {
+        let _ = writeln!(
+            out,
+            "<p class=\"lock\" data-paused=\"{key}\"><b>The harness {key} is paused on this \
+             host</b>, for {}: {}. No worker is started on it; it is probed every hour.</p>",
+            lasted(host.now.saturating_sub(pause.since)),
+            esc(&pause.why),
+            key = esc(pause.harness.key()),
+        );
+    }
+    let kit = match &host.kit {
+        Ok(kit) => kit,
+        Err(error) => {
+            let _ = writeln!(
+                out,
+                "<p class=\"holds\" data-kit><b>The host kit cannot be read</b>: {}</p>",
+                esc(error)
+            );
+            return;
+        }
+    };
+    let harnesses: Vec<String> = kit
+        .harnesses
+        .iter()
+        .map(|held| {
+            let models: Vec<String> = held.models.iter().map(|seen| esc(&seen.model)).collect();
+            let models = match models.as_slice() {
+                [] => "any model it picks".to_string(),
+                models => models.join(", "),
+            };
+            let paused = host.paused.iter().any(|pause| pause.harness == held.harness);
+            let paused = if paused { " <span class=\"note\">paused</span>" } else { "" };
+            format!(
+                "<li data-harness=\"{key}\"><b>{key}</b> {models}{paused}</li>",
+                key = esc(held.harness.key())
+            )
+        })
+        .collect();
+    let consult = kit.without(&host.paused).stock_consult().map_or_else(
+        || "no harness: <code>afkconvoy kit</code> writes one".to_string(),
+        |named| match named.model {
+            Some(model) => format!("{} on {}", esc(named.harness.key()), esc(&model)),
+            None => esc(named.harness.key()),
+        },
+    );
+    let _ = writeln!(
+        out,
+        "<section class=\"kit\"><h2>Host kit</h2><p class=\"by\">The harnesses and models this \
+         host can start, in order of preference; the stock consult runs {consult}</p>\
+         <ul class=\"harnesses\">{}</ul></section>",
+        harnesses.concat(),
+    );
+}
+
+/// What waits for a human, across every repo: each fleet instance that is
+/// broken, with why, and each issue, labelled with its repo.
+fn human_part(out: &mut String, page: &Page) {
+    out.push_str("<section class=\"human\"><h2>With a human</h2>");
+    let now = page.host.now;
+    let broken: Vec<(&Checkout, &Broken)> = page
+        .checkouts
+        .iter()
+        .filter_map(|checkout| checkout.broken.as_ref().map(|broken| (checkout, broken)))
+        .collect();
+    if !broken.is_empty() {
+        out.push_str("<ul class=\"cards broken\">");
+        for (checkout, broken) in &broken {
+            let next = match broken.next {
+                Some(next) if next > now => {
+                    format!("tried again in {}", lasted(next.saturating_sub(now)))
+                }
+                Some(_) => "tried again now".to_string(),
+                None => "no host runner runs to try it again".to_string(),
+            };
+            let _ = write!(
+                out,
+                "<li class=\"card gone\" data-broken=\"{}\"><span class=\"repo\">{}</span> \
+                 <span class=\"title\">its fleet instance is broken</span><span class=\"meta\">\
+                 <span class=\"note\">{} · since {} ago · {next} · <code>afkconvoy run {}</code> \
+                 starts it again now</span></span></li>",
+                esc(&checkout.dir.display().to_string()),
+                esc(&checkout.name()),
+                esc(&broken.why),
+                lasted(now.saturating_sub(broken.since)),
+                esc(&checkout.dir.display().to_string()),
+            );
+        }
+        out.push_str("</ul>");
+    }
+    let asked: Vec<(String, &Card)> = page
+        .checkouts
+        .iter()
+        .flat_map(|checkout| {
+            let asked = checkout.shown().map(|panel| panel.to_human.as_slice()).unwrap_or_default();
+            asked.iter().map(move |card| (checkout.name(), card))
+        })
+        .collect();
+    if !asked.is_empty() {
+        out.push_str("<ul class=\"cards asked\">");
+        for (repo, asked) in &asked {
+            card(out, asked, Some(repo));
+        }
+        out.push_str("</ul>");
+    }
+    if broken.is_empty() && asked.is_empty() {
+        out.push_str("<p class=\"none\">Nothing waits for a human.</p>");
+    }
+    out.push_str("</section>\n");
+}
+
+/// Each repo: a row naming every checkout with whether its fleet instance
+/// is idle, the claims it holds and its frontier, each a link to its part;
+/// then each part.
+fn repos_part(out: &mut String, page: &Page) {
+    out.push_str("<nav class=\"checkouts\"><ul>");
+    for (at, checkout) in page.checkouts.iter().enumerate() {
+        let standing = match (&checkout.part, &checkout.broken) {
+            (_, Some(_)) => "<b class=\"broken\">broken</b>".to_string(),
+            (Part::Starting, None) => "starting".to_string(),
+            (Part::Unread(_), None) => "could not be read".to_string(),
+            (Part::Shown(panel), None) => format!(
+                "<b>{}</b> · holding {}/{} · frontier {}",
+                if panel.idle { "idle" } else { "at work" },
+                panel.held,
+                panel.bound,
+                panel.frontier,
+            ),
+        };
+        let _ = write!(
+            out,
+            "<li><a href=\"#checkout-{}\">{}</a> <span>{standing}</span></li>",
+            at + 1,
+            esc(&checkout.name()),
+        );
+    }
+    if page.checkouts.is_empty() {
+        out.push_str(
+            "<li>No checkout is on this host's checkout list: <code>afkconvoy run</code> in one \
+             adds it.</li>",
+        );
+    }
+    out.push_str("</ul></nav>\n");
+    for (at, checkout) in page.checkouts.iter().enumerate() {
+        let _ = write!(
+            out,
+            "<section class=\"repo\" id=\"checkout-{}\" data-checkout=\"{}\">",
+            at + 1,
+            esc(&checkout.dir.display().to_string()),
+        );
+        match &checkout.part {
+            Part::Shown(panel) => repo(out, at + 1, panel),
+            Part::Starting => {
+                let _ = write!(
+                    out,
+                    "<h2 class=\"name\">{}</h2><p class=\"tick\">Its fleet instance's first tick \
+                     is running. This part fills in when it ends.</p>",
+                    esc(&checkout.name()),
+                );
+            }
+            Part::Unread(why) => {
+                let _ = write!(
+                    out,
+                    "<h2 class=\"name\">{}</h2><p class=\"lock\">It could not be read: {}</p>",
+                    esc(&checkout.name()),
+                    esc(why),
+                );
+            }
+        }
+        out.push_str("</section>\n");
+    }
+}
+
+/// One repo's part, the `at`-th on the page: its fleet instance and its
+/// gauges, its tick, what holds it back, its workflows as lines of their
+/// stages with the issues at each, its landing train, its patrols, and what
+/// its fleet leaves alone.
+fn repo(out: &mut String, at: usize, panel: &Panel) {
     let who = match &panel.who {
         Some((instance, host)) => {
             format!("Fleet instance <b>{}</b> on {}", esc(instance), esc(host))
@@ -673,22 +1281,18 @@ pub fn render(panel: &Panel) -> String {
     };
     let _ = write!(
         out,
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>{repo} — afkconvoy</title><style>{STYLE}</style></head>\n<body>\n<p class=\"lost\" hidden>This page lost its fleet instance: <code>afkconvoy run</code> \
-         stopped, or was started again. What it shows is the last tick it heard of.</p>\n\
-         <main id=\"panel\">\n<header class=\"top\"><div class=\"who\"><h1>{repo}</h1>\
+        "<header class=\"top\"><div class=\"who\"><h2 class=\"name\">{repo}</h2>\
          <p>{who}, landing on <b>{}</b></p></div>\n<dl class=\"gauges\">",
         esc(&panel.base_branch),
         repo = esc(&panel.repo),
     );
-    gauge(&mut out, "Claims held", panel.held, Some(panel.bound));
+    gauge(out, "Claims held", panel.held, Some(panel.bound));
     if panel.declared > 0 {
-        gauge(&mut out, "Declared", panel.declared, None);
+        gauge(out, "Declared", panel.declared, None);
     }
-    gauge(&mut out, "Queued", panel.queued(), None);
-    gauge(&mut out, "On the train", panel.train.len(), None);
-    gauge(&mut out, "With a human", panel.with_a_human(), None);
+    gauge(out, "Queued", panel.queued(), None);
+    gauge(out, "On the train", panel.train.len(), None);
+    gauge(out, "With a human", panel.with_a_human(), None);
     out.push_str("</dl></header>\n");
 
     match &panel.tick {
@@ -707,14 +1311,7 @@ pub fn render(panel: &Panel) -> String {
                 tick.ended.saturating_add(tick.sleep),
             );
         }
-        None if panel.lanes.is_empty() => out.push_str(
-            "<p class=\"tick\">The first tick is running. This page fills in when it ends.</p>\n",
-        ),
-        None => out.push_str(
-            "<p class=\"tick\">One rebuild, read just now. No fleet instance keeps this page \
-             fresh: <code>afkconvoy run --panel</code> does, and so does one that is running \
-             already, asked with <code>afkconvoy panel --open</code>.</p>\n",
-        ),
+        None => out.push_str("<p class=\"tick\">One rebuild, read just now.</p>\n"),
     }
     if !panel.locks.is_empty() {
         let locks: Vec<String> = panel.locks.iter().map(|lock| format!("#{lock}")).collect();
@@ -745,90 +1342,12 @@ pub fn render(panel: &Panel) -> String {
         let _ = writeln!(out, "<p class=\"tick\" data-caster>{running}{held}.</p>");
     }
 
-    for pause in &panel.paused {
-        let _ = writeln!(
-            out,
-            "<p class=\"lock\" data-paused=\"{key}\"><b>The harness {key} is paused on this \
-             host</b>, for {}: {}. No worker is started on it; it is probed every hour.</p>",
-            lasted(panel.now.saturating_sub(pause.since)),
-            esc(&pause.why),
-            key = esc(pause.harness.key()),
-        );
-    }
-
     for (role, why) in &panel.nothing_safe {
         let _ = writeln!(
             out,
             "<p class=\"lock\" data-nothing-safe=\"{}\"><b>{}</b></p>",
             esc(role),
             esc(why),
-        );
-    }
-
-    if !panel.hot.is_empty() {
-        let hot: Vec<String> = panel
-            .hot
-            .iter()
-            .map(|hot| {
-                format!(
-                    "<li data-hot=\"{worker}\"><b>{worker}</b> hot on {} for {}, holding at most \
-                     {}</li>",
-                    hot.episode.why.word(),
-                    lasted(panel.now.saturating_sub(hot.episode.since)),
-                    esc(&held_said(&hot.episode)),
-                    worker = esc(&hot.worker),
-                )
-            })
-            .collect();
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\"><b>Hot workers</b>: their processes take more than their \
-             share of the host.<ul>{}</ul></section>",
-            hot.concat(),
-        );
-    }
-
-    if let Some(reason) = panel.inspection.as_ref().and_then(|running| running.held_back_by) {
-        let running = panel.inspection.as_ref().expect("held back by above");
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-inspection=\"host\"><b>Host inspection</b>: admission \
-             held back new workers for {} past its span; <b>the host</b> is inspected by \
-             <code>{by}</code>, for {} so far, for {}.</section>",
-            reason.word(),
-            lasted(panel.now.saturating_sub(running.since)),
-            esc(&running.repo),
-            by = esc(&running.by),
-        );
-    } else if let Some(running) = &panel.inspection {
-        let issue = running.issue.map(|issue| format!(" on #{issue}")).unwrap_or_default();
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-inspection=\"{worker}\"><b>Inspection</b>: \
-             <b>{worker}</b>{issue} is inspected by <code>{by}</code>, for {} so far, in {}.\
-             </section>",
-            lasted(panel.now.saturating_sub(running.since)),
-            esc(&running.repo),
-            worker = esc(&running.worker),
-            by = esc(&running.by),
-        );
-    }
-
-    if let Some(last) = &panel.host_inspected {
-        let issue = last.issue.map(|issue| format!(" (#{issue})")).unwrap_or_default();
-        let freed = last.freed_said();
-        let freed = if freed.is_empty() { freed } else { format!(" · {}", esc(&freed)) };
-        let _ = writeln!(
-            out,
-            "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
-             {} ago: admission held back for {} ({}); <code>{by}</code> found \
-             <b>{found}</b>{issue}: {}{freed}</section>",
-            lasted(panel.now.saturating_sub(last.ended)),
-            last.reason.word(),
-            esc(&last.reading),
-            esc(&last.said),
-            found = esc(&last.found),
-            by = esc(&last.by),
         );
     }
 
@@ -839,7 +1358,7 @@ pub fn render(panel: &Panel) -> String {
             name = esc(&lane.name),
         );
         for one in &lane.nodes {
-            node(&mut out, one);
+            node(out, one);
         }
         out.push_str("</ol></section>\n");
     }
@@ -862,7 +1381,7 @@ pub fn render(panel: &Panel) -> String {
         "<div class=\"rail\"><span class=\"base\">{}</span></div>",
         esc(&panel.base_branch)
     );
-    cards(&mut out, "cars", None, &panel.train);
+    cards(out, "cars", None, &panel.train);
     if panel.train.is_empty() {
         out.push_str("<p class=\"none\">No PR is on the train.</p>");
     }
@@ -883,43 +1402,148 @@ pub fn render(panel: &Panel) -> String {
         }
         out.push_str("</ul></section>\n");
     }
-    if !panel.exclusive.is_empty() {
-        out.push_str(
-            "<section class=\"exclusive\"><h2>Run alone on this host</h2><ul class=\"cards\">",
-        );
-        for (place, ticket) in panel.exclusive.iter().enumerate() {
-            let class = if place == 0 { "busy" } else { "queued" };
-            let _ = write!(
-                out,
-                "<li class=\"card {class}\"><span class=\"title\"><code>{}</code></span>\
-                 <span class=\"meta\"><span class=\"note\">{}</span></span></li>",
-                esc(&ticket.command),
-                esc(&exclusive_says(ticket, place, panel.now)),
-            );
-        }
-        out.push_str("</ul></section>\n");
-    }
-    if !panel.to_human.is_empty() {
-        out.push_str("<section class=\"human\"><h2>With a human</h2>");
-        cards(&mut out, "asked", None, &panel.to_human);
-        out.push_str("</section>\n");
-    }
     if !panel.off.is_empty() {
         let _ = write!(
             out,
-            "<details class=\"off\"><summary>{} the fleet leaves alone</summary>",
+            "<details class=\"off\" id=\"off-{at}\"><summary>{} the fleet leaves alone</summary>",
             count(panel.off.len(), "open issue"),
         );
-        cards(&mut out, "left", None, &panel.off);
+        cards(out, "left", None, &panel.off);
         out.push_str("</details>\n");
     }
-    out.push_str("</main>\n<script src=\"live.js\" defer></script>\n</body></html>\n");
-    out
 }
 
 #[cfg(test)]
 mod tests {
+    use afkconvoy_core::admission::{Disk, Reading, SHARES};
+    use afkconvoy_core::host_sleep::SLEEP_HOURS;
+
     use super::*;
+
+    fn part_of(repo: &str, now: u64) -> Panel {
+        Panel {
+            repo: repo.into(),
+            base_branch: "main".into(),
+            who: None,
+            tick: None,
+            held: 0,
+            bound: 2,
+            declared: 0,
+            frontier: 0,
+            idle: true,
+            locks: vec![],
+            lanes: vec![],
+            train: vec![],
+            to_human: vec![],
+            off: vec![],
+            patrols: vec![],
+            now,
+            hot: vec![],
+            caster: None,
+            nothing_safe: vec![],
+        }
+    }
+
+    fn host_of(now: u64) -> Host {
+        let reading = Reading {
+            cores: 8,
+            load: Some(150),
+            memory_free: Some(40),
+            disk: Some(Disk { free: 5 << 30, size: 100 << 30 }),
+        };
+        Host {
+            name: "h1".into(),
+            now,
+            admission: Ok(Admission { shares: SHARES, said: vec![], reading, span: 600 }),
+            inspection: None,
+            host_inspected: None,
+            exclusive: vec![],
+            sleep_hours: Some(SLEEP_HOURS),
+            kit: Ok(Kit::default()),
+            paused: vec![],
+        }
+    }
+
+    fn checkout(dir: &str, part: Panel) -> Checkout {
+        Checkout { dir: dir.into(), part: Part::Shown(Box::new(part)), broken: None }
+    }
+
+    /// The page of `parts`, each its own checkout, served live.
+    fn page_of(host: Host, parts: Vec<Panel>) -> Page {
+        let checkouts =
+            parts.into_iter().map(|part| checkout(&format!("/w/{}", part.repo), part)).collect();
+        Page { host, live: true, checkouts }
+    }
+
+    #[test]
+    fn the_page_is_the_host_once_then_what_waits_for_a_human_then_each_repo() {
+        let mut acme = part_of("acme", 1000);
+        acme.to_human = vec![Card::new(4, "Pick a name").noted("escalated")];
+        acme.idle = false;
+        (acme.held, acme.frontier) = (1, 3);
+        let mut widgets = part_of("widgets", 1000);
+        widgets.to_human = vec![Card::new(9, "Ship it?").noted("at a human's stage")];
+        let mut page = page_of(host_of(1000), vec![acme, widgets]);
+        page.checkouts.push(Checkout {
+            dir: "/w/gizmo".into(),
+            part: Part::Starting,
+            broken: Some(Broken {
+                why: "it panicked: <boom>".into(),
+                since: 940,
+                next: Some(1060),
+            }),
+        });
+        let html = render(&page);
+        let at = |text: &str| html.find(text).unwrap_or_else(|| panic!("no {text}: {html}"));
+        assert!(at("<header class=\"top host\">") < at("<section class=\"human\">"));
+        assert!(at("<section class=\"human\">") < at("<nav class=\"checkouts\">"));
+        assert!(at("<nav class=\"checkouts\">") < at("<section class=\"repo\" id=\"checkout-1\""));
+        assert_eq!(html.matches("<h1>").count(), 1, "the host is shown once: {html}");
+        assert!(html.contains("<h1>h1</h1>"), "{html}");
+        // admission's reading, in words
+        assert!(html.contains("data-admits=\"true\"><b>Admission</b> starts new workers: a load of 1.50 on 8 cores · 40% of its memory free · 5.0 GiB of the checkout's disk free"), "{html}");
+        // with a human: the broken fleet instance, with why, then each issue
+        // labelled with its repo
+        assert!(at("data-broken=\"/w/gizmo\"") < at("<ul class=\"cards asked\">"));
+        assert!(
+            html.contains("it panicked: &lt;boom&gt; · since 1m ago · tried again in 1m"),
+            "{html}"
+        );
+        assert!(html.contains("<span class=\"repo\">acme</span> <span class=\"num\">#4</span>"));
+        assert!(html.contains("<span class=\"repo\">widgets</span> <span class=\"num\">#9</span>"));
+        // the row naming every checkout, each a link to its part
+        assert!(html.contains("<li><a href=\"#checkout-1\">acme</a> <span><b>at work</b> · holding 1/2 · frontier 3</span></li>"), "{html}");
+        assert!(html.contains("<a href=\"#checkout-2\">widgets</a> <span><b>idle</b> · holding 0/2 · frontier 0</span>"), "{html}");
+        assert!(
+            html.contains(
+                "<a href=\"#checkout-3\">gizmo</a> <span><b class=\"broken\">broken</b></span>"
+            ),
+            "{html}"
+        );
+        assert!(html.contains("id=\"checkout-3\" data-checkout=\"/w/gizmo\"><h2 class=\"name\">gizmo</h2><p class=\"tick\">Its fleet instance's first tick is running."), "{html}");
+        // host sleep names the fleet instances not idle
+        assert!(html.contains("not idle now: acme, gizmo."), "{html}");
+        // the page made by one rebuild of each says so, and where the live one is
+        assert!(html.contains("made anew after every tick of any fleet instance on it"));
+        page.live = false;
+        assert!(render(&page).contains("<code>afkconvoy panel --open</code> says where"));
+    }
+
+    #[test]
+    fn nothing_waiting_for_a_human_is_said_so_and_no_checkout_on_the_list_too() {
+        let html = render(&page_of(host_of(1000), vec![part_of("acme", 1000)]));
+        assert!(html.contains("<p class=\"none\">Nothing waits for a human.</p>"), "{html}");
+        assert!(html.contains("within its sleep hours, 00:00-06:00 of its local time"), "{html}");
+        assert!(html.contains("every fleet instance on it is idle now"), "{html}");
+        let html = render(&page_of(host_of(1000), vec![]));
+        assert!(html.contains("No checkout is on this host's checkout list"), "{html}");
+        let mut host = host_of(1000);
+        host.sleep_hours = None;
+        host.admission = Err("sysctl: <none>".into());
+        let html = render(&page_of(host, vec![]));
+        assert!(html.contains("data-kept-awake=\"true\"><b>Host sleep</b>: none"), "{html}");
+        assert!(html.contains("the host cannot be read: sysctl: &lt;none&gt;"), "{html}");
+    }
 
     #[test]
     fn the_host_s_exclusive_queue_shows_what_runs_alone_and_what_waits() {
@@ -937,8 +1561,10 @@ mod tests {
         assert_eq!(exclusive_says(&running, 0, 1000), "runs alone, for 3m · #12 in acme");
         assert_eq!(exclusive_says(&waiting, 1, 1000), "waits behind 1, for 5m · in acme");
         assert_eq!(exclusive_says(&ticket("x", None, None), 0, 1000), "about to run · in acme");
-        let panel = Panel { exclusive: vec![running, waiting], ..page_of(1000) };
-        let page = render(&panel);
+        let mut host = host_of(1000);
+        assert!(!render(&page_of(host.clone(), vec![])).contains("Run alone on this host"));
+        host.exclusive = vec![running, waiting];
+        let page = render(&page_of(host, vec![]));
         assert!(page.contains("<h2>Run alone on this host</h2>"), "{page}");
         assert!(page.contains("<code>cargo test &lt;all&gt;</code>"), "{page}");
         assert!(page.find("cargo test").unwrap() < page.find("make bench").unwrap());
@@ -946,14 +1572,14 @@ mod tests {
 
     #[test]
     fn a_paused_harness_is_shown_with_since_when_and_why() {
-        let mut panel = page_of(1000 + 7200);
-        panel.paused = vec![afkconvoy_core::casting::Paused {
+        let mut host = host_of(1000 + 7200);
+        host.paused = vec![afkconvoy_core::casting::Paused {
             harness: afkconvoy_core::harness::Harness::Pi,
             since: 1000,
             why: "subscription <disabled>".into(),
             probed: None,
         }];
-        let page = render(&panel);
+        let page = render(&page_of(host, vec![]));
         assert!(
             page.contains(
                 "data-paused=\"pi\"><b>The harness pi is paused on this host</b>, for 2h"
@@ -961,16 +1587,17 @@ mod tests {
             "{page}"
         );
         assert!(page.contains("subscription &lt;disabled&gt;"), "{page}");
+        assert!(page.contains("<h2>Host kit</h2>"), "{page}");
     }
 
     #[test]
     fn a_role_that_can_run_nothing_safely_is_named() {
-        let mut panel = page_of(1000);
-        panel.nothing_safe = vec![(
+        let mut part = part_of("r", 1000);
+        part.nothing_safe = vec![(
             "lead".into(),
             "lead has no harness on this host it holds limits for: <x>".into(),
         )];
-        let page = render(&panel);
+        let page = render(&page_of(host_of(1000), vec![part]));
         assert!(
             page.contains(
                 "data-nothing-safe=\"lead\"><b>lead has no harness on this host it holds limits \
@@ -980,70 +1607,30 @@ mod tests {
         );
     }
 
-    fn page_of(now: u64) -> Panel {
-        Panel {
-            repo: "r".into(),
-            base_branch: "main".into(),
-            who: None,
-            tick: None,
-            held: 0,
-            bound: 2,
-            declared: 0,
-            locks: vec![],
-            lanes: vec![],
-            train: vec![],
-            to_human: vec![],
-            off: vec![],
-            patrols: vec![],
-            exclusive: vec![],
-            now,
-            hot: vec![],
-            inspection: None,
-            host_inspected: None,
-            caster: None,
-            paused: vec![],
-            nothing_safe: vec![],
-        }
-    }
-
     #[test]
     fn a_title_is_never_read_as_markup() {
-        let mut panel = Panel {
-            repo: "r".into(),
-            base_branch: "main".into(),
-            who: Some(("alpha".into(), "h1".into())),
-            tick: None,
-            held: 0,
-            bound: 2,
-            declared: 0,
-            locks: vec![],
-            lanes: vec![],
-            train: vec![Card::new(7, "<script>alert(\"x\")</script> & more")],
-            to_human: vec![],
-            off: vec![],
-            patrols: vec![],
-            exclusive: vec![],
-            now: 1000,
-            hot: vec![],
-            inspection: None,
-            host_inspected: None,
-            caster: None,
-            paused: vec![],
-            nothing_safe: vec![],
-        };
-        let page = render(&panel);
-        assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));
-        assert_eq!(page.matches("<script").count(), 1, "only the page's own");
-        // the same panel is the same page
-        assert_eq!(page, render(&panel));
-        assert!(!page.contains("Run alone on this host"), "no queue, no section");
-        panel.tick = Some(Tick { count: 3, line: "nothing to do".into(), ended: 1000, sleep: 90 });
-        let ticked = render(&panel);
+        let mut part = part_of("r", 1000);
+        part.who = Some(("alpha".into(), "h1".into()));
+        part.train = vec![Card::new(7, "<script>alert(\"x\")</script> & more")];
+        let mut page = page_of(host_of(1000), vec![part]);
+        let html = render(&page);
+        assert!(html.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));
+        assert_eq!(html.matches("<script").count(), 1, "only the page's own");
+        // the same page is the same text
+        assert_eq!(html, render(&page));
+        assert!(html.contains("<p class=\"tick\">One rebuild, read just now.</p>"), "{html}");
+        let Part::Shown(part) = &mut page.checkouts[0].part else { unreachable!() };
+        part.tick = Some(Tick { count: 3, line: "nothing to do".into(), ended: 1000, sleep: 90 });
+        let ticked = render(&page);
         assert!(
             ticked.contains("<b>Tick 3</b>")
                 && ticked.contains("data-next=\"1090\">next tick in 1m<")
         );
         assert!(!ticked.contains("Hot workers"));
+    }
+
+    #[test]
+    fn the_hot_workers_and_the_inspection_of_every_repo_are_the_host_s() {
         let episode = afkconvoy_core::hot::Episode {
             since: 280,
             why: afkconvoy_core::hot::Why::Held,
@@ -1052,18 +1639,21 @@ mod tests {
             written: 0,
             held: 5 << 30,
         };
-        panel.hot = vec![HotNow {
+        let mut part = part_of("acme", 1000);
+        part.hot = vec![Hot::from(&HotNow {
             worker: "#7".into(),
             episode,
             path: "/w/a".into(),
             branch: "a".into(),
             issue: Some(7),
-            why: String::new(),
-        }];
-        let hot = render(&panel);
-        assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> hot on disk held for 12m, holding at most 6.2 cores, 1.5 GiB resident, 0 B written in 10 minutes, 5.0 GiB held in its worktree</li>"), "{hot}");
+            why: "it holds 5.0 GiB in its worktree, past <4.0 GiB>".into(),
+        })];
+        let mut page = page_of(host_of(1000), vec![part]);
+        let hot = render(&page);
+        assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> in acme, hot for 12m — it holds 5.0 GiB in its worktree, past &lt;4.0 GiB&gt;; holding at most 6.2 cores, 1.5 GiB resident, 0 B written in 10 minutes, 5.0 GiB held in its worktree</li>"), "{hot}");
+        assert!(hot.find("Hot workers").unwrap() < hot.find("<nav").unwrap(), "{hot}");
         assert!(!hot.contains("Inspection"), "{hot}");
-        panel.inspection = Some(Running {
+        page.host.inspection = Some(Running {
             repo: "/src/widgets".into(),
             worker: "#7".into(),
             issue: Some(7),
@@ -1071,7 +1661,7 @@ mod tests {
             since: 700,
             held_back_by: None,
         });
-        let inspecting = render(&panel);
+        let inspecting = render(&page);
         assert!(
             inspecting.contains("<b>#7</b> on #7 is inspected by <code>stock-consult</code>, for 5m so far, in /src/widgets."),
             "{inspecting}"
@@ -1081,8 +1671,8 @@ mod tests {
     #[test]
     fn a_host_inspection_is_shown_as_it_runs_and_what_it_found_beside_admission() {
         use afkconvoy_core::host_inspection::Reason;
-        let mut panel = page_of(1000);
-        panel.inspection = Some(Running {
+        let mut host = host_of(1000);
+        host.inspection = Some(Running {
             repo: "/src/widgets".into(),
             worker: "the host".into(),
             issue: None,
@@ -1090,11 +1680,11 @@ mod tests {
             since: 700,
             held_back_by: Some(Reason::Disk),
         });
-        let running = render(&panel);
+        let running = render(&page_of(host.clone(), vec![]));
         assert!(running.contains("held back new workers for disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
         for (found, issue) in [("reclaimable", None), ("fleet", Some(12)), ("not-its", None)] {
-            panel.inspection = None;
-            panel.host_inspected = Some(Last {
+            host.inspection = None;
+            host.host_inspected = Some(Last {
                 repo: "/src/widgets".into(),
                 reason: Reason::Disk,
                 reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it".into(),
@@ -1110,7 +1700,7 @@ mod tests {
                 }],
                 named: vec![],
             });
-            let page = render(&panel);
+            let page = render(&page_of(host.clone(), vec![]));
             if issue.is_some() {
                 assert!(page.contains("found <b>fleet</b> (#12)"), "{page}");
             }
@@ -1123,10 +1713,10 @@ mod tests {
             );
             assert!(page.contains(&format!("found <b>{found}</b>")), "{page}");
         }
-        assert!(render(&panel).contains("found <b>not-its</b>: five worktrees"));
+        let page = render(&page_of(host, vec![]));
+        assert!(page.contains("found <b>not-its</b>: five worktrees"));
         assert!(
-            render(&panel)
-                .contains("five worktrees of 14 GiB · freed 14.0 GiB: /w/a/target (14.0 GiB)"),
+            page.contains("five worktrees of 14 GiB · freed 14.0 GiB: /w/a/target (14.0 GiB)"),
             "what it freed is shown"
         );
     }

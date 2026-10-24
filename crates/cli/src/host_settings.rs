@@ -5,7 +5,8 @@
 //! `run` that names one: that `run` writes them, and every fleet instance
 //! reads them where it uses them — admission at each tick, the hot limits at
 //! each sample, host sleep at each check — so a change holds for every one at
-//! once, and none is started again for it. A `run` names one by its flag, or
+//! once, and none is started again for it. The panel's port alone is read
+//! once, by the host runner as it starts. A `run` names one by its flag, or
 //! by the variable of its environment that stands for that flag; nothing
 //! else reads those variables.
 
@@ -55,12 +56,17 @@ pub struct Settings {
     /// `--admit-inspect-after`: the seconds admission holds back for one
     /// reason before the host is inspected.
     pub admit_inspect_after: Option<u64>,
-    /// `--panel`: the port the panel is served on.
+    /// `--panel`: the port the host runner serves the panel on; `PANEL_PORT`
+    /// where the host says none.
     pub panel: Option<u16>,
     /// What another afkconvoy says beside them, kept as it is.
     #[serde(flatten)]
     rest: Map<String, Value>,
 }
+
+/// The port the host runner serves the panel on where the host settings say
+/// none.
+pub const PANEL_PORT: u16 = 7070;
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -182,6 +188,11 @@ impl Settings {
         changed.collect()
     }
 
+    /// The port it has the host runner serve the panel on.
+    pub fn panel_port(&self) -> u16 {
+        self.panel.unwrap_or(PANEL_PORT)
+    }
+
     /// The sleep hours it says, else the default.
     pub fn sleep_hours(&self) -> Hours {
         self.host_sleep_hours.unwrap_or(SLEEP_HOURS)
@@ -199,8 +210,7 @@ impl Settings {
 
     /// Each setting in force for the fleet of the checkout at `dir`, by its
     /// key, in the units of its flag: what the host says, else its default
-    /// worked out for this host. The panel's port is null where any free
-    /// port will do.
+    /// worked out for this host.
     pub fn in_force(&self, dir: &Path) -> Map<String, Value> {
         let limits = hot::limits(self.hot(), dir);
         let gib = |bytes: u64| (bytes as u128 * 1000 / (1 << 30)) as f64 / 1000.0;
@@ -214,7 +224,7 @@ impl Settings {
             "admit_memory": self.admit_memory.unwrap_or(SHARES.memory),
             "admit_disk": self.admit_disk.unwrap_or(SHARES.disk),
             "admit_inspect_after": self.admit_inspect_after.unwrap_or(SPAN),
-            "panel": self.panel,
+            "panel": self.panel_port(),
         });
         match in_force {
             Value::Object(in_force) => in_force,

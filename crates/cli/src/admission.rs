@@ -15,6 +15,7 @@ use crate::host_sleep::output;
 use crate::measure;
 
 /// The shares this host is held to, and what was read of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Admission {
     pub shares: Shares,
     /// Which of `shares`, and of `span`, the host said, by the host setting it
@@ -83,6 +84,23 @@ impl Admission {
                 self.shares.disk
             ),
         }
+    }
+
+    /// What was read of the host, in words, as the panel shows it: what
+    /// could not be read is left out.
+    pub fn read_said(&self) -> Vec<String> {
+        let reading = &self.reading;
+        let mut said = vec![];
+        if let Some(load) = reading.load {
+            said.push(format!("a load of {} on {} cores", hundredths(load), reading.cores));
+        }
+        if let Some(free) = reading.memory_free {
+            said.push(format!("{free}% of its memory free"));
+        }
+        if let Some(disk) = reading.disk {
+            said.push(format!("{} of the checkout's disk free", measure::said(disk.free)));
+        }
+        said
     }
 
     /// The thresholds in force, the host's reading and what holds, as `plan`
