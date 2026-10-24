@@ -36,15 +36,7 @@ pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
     let launch = kit.command(first.harness).context("the host kit holds no harness")?;
     let kept = crate::kept::keep(first.harness, false)?.display().to_string();
     let prompt = draft_prompt(&loaded.team, &range);
-    let Some(question) =
-        first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt)
-    else {
-        bail!(
-            "the host kit's first, `{}`, can be sent a prompt only in a worker's terminal: put a \
-             harness first that can be, with `afkconvoy kit`",
-            first.harness.key()
-        );
-    };
+    let question = first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt);
     let Some((true, answer)) = crate::launch::ask_login_shell_within(&question, ANSWER_TIMEOUT)
     else {
         bail!("the host kit's first, `{}`, did not answer the draft", first.harness.key());

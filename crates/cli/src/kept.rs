@@ -24,8 +24,10 @@ use crate::copies::cache;
 pub fn keep(harness: Harness, host_user: bool) -> Result<PathBuf> {
     let dir = keep_under(&cache()?, home().as_deref(), harness, host_user)?;
     if harness == Harness::Dsh {
-        // Prefer the installed program's package to an editable profile copy.
-        let (_, path) = crate::launch::ask_login_shell("command -v dsh-tui").unwrap_or_default();
+        // Prefer the installed program's package to an editable profile copy,
+        // as the shell a worker gets finds it.
+        let asked = crate::orca::ask("command -v dsh-tui", crate::launch::SHELL_TIMEOUT);
+        let (_, path) = asked.ok().flatten().unwrap_or_default();
         if let Ok(program) = std::fs::canonicalize(path.trim())
             && let Some(package) = program.parent().and_then(Path::parent)
             && package.join("package.json").is_file()
@@ -65,11 +67,12 @@ pub fn keep_under(
     if !(kept.files.is_empty() && kept.links.is_empty() && theirs.is_empty()) {
         std::fs::create_dir_all(&dir).with_context(|| put("anything"))?;
     }
+    // An overlay names the plugin it loads by its whole path, as YAML quotes it.
+    let plugin = |file: &str| dir.join(file).display().to_string().replace('\'', "''");
     for (name, text) in kept.files {
-        let text = text.replace(
-            "@AFKCONVOY_DSH_PLUGIN@",
-            &dir.join("afkconvoy.mjs").display().to_string().replace('\'', "''"),
-        );
+        let text = text
+            .replace("@AFKCONVOY_DSH_PLUGIN@", &plugin("afkconvoy.mjs"))
+            .replace("@AFKCONVOY_DSH_PROBE@", &plugin("probe.mjs"));
         carry(&dir.join(name), &text).with_context(|| put(name))?;
     }
     for link in kept.links.iter().chain(theirs) {

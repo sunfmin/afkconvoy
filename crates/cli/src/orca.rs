@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
 use afkconvoy_core::guard::WritesNothing;
@@ -12,6 +13,7 @@ use afkconvoy_core::inspection::{self, Finding, Kind};
 use afkconvoy_core::launch::{Waited, until_ready};
 use afkconvoy_core::line::niced;
 use afkconvoy_core::prompt::brief_pointer;
+use afkconvoy_core::question;
 use afkconvoy_core::stopped::Nudged;
 use afkconvoy_core::tools::{Found, add_checkout};
 use afkconvoy_core::train::TRAIN_WORKTREE;
@@ -132,12 +134,77 @@ impl Asked {
     }
 }
 
+/// What a question's terminal is titled, where orca shows it.
+const QUESTION_TITLE: &str = "afkconvoy question";
+/// How many lines of a question's terminal are read: more than any question
+/// prints.
+const QUESTION_LINES: &str = "10000";
+/// How long a question is left between two reads of its terminal.
+const QUESTION_POLL: Duration = Duration::from_millis(200);
+
+/// Asks `script` of the login shell orca starts in a terminal of its own —
+/// the shell a worker gets, with its rc files, PATH and logins — given
+/// `timeout` to answer, and closes that terminal whatever came of it →
+/// whether it exited zero, and what it printed (`question::answer`); `None`
+/// when it did not answer in time. An error: orca made no terminal for it, or
+/// could not read it. The terminal is opened in the main checkout of the repo
+/// here where orca knows it, and where orca chooses elsewhere.
+pub fn ask(script: &str, timeout: Duration) -> Result<Option<(bool, String)>> {
+    static AT: OnceLock<Option<String>> = OnceLock::new();
+    let at = AT.get_or_init(|| {
+        let main = Repo::here().and_then(|repo| repo.main_checkout()).ok()?;
+        Source::at(&main).ok()??;
+        Some(format!("path:{}", main.display()))
+    });
+    ask_through(&orca, at.as_deref(), script, timeout)
+}
+
+/// `ask`, of the orca `orca` calls, in the worktree `at` selects.
+fn ask_through(
+    orca: &dyn Fn(&[&str]) -> Result<Value>,
+    at: Option<&str>,
+    script: &str,
+    timeout: Duration,
+) -> Result<Option<(bool, String)>> {
+    let typed = question::typed(script);
+    let mut create = vec!["terminal", "create", "--title", QUESTION_TITLE, "--command", &typed];
+    create.extend(at.map(|at| ["--worktree", at]).into_iter().flatten());
+    let made = orca(&create)?;
+    let handle = made["terminal"]["handle"].as_str();
+    let handle =
+        handle.ok_or_else(|| anyhow!("orca terminal create returned no terminal handle"))?;
+    let started = Instant::now();
+    let answered = loop {
+        let read = orca(&["terminal", "read", "--terminal", handle, "--limit", QUESTION_LINES]);
+        let lines = match read {
+            Ok(read) => read["terminal"]["tail"].as_array().cloned().unwrap_or_default(),
+            Err(error) => break Err(error),
+        };
+        let lines: Vec<String> =
+            lines.iter().filter_map(|line| line.as_str().map(str::to_string)).collect();
+        if let Some(answer) = question::answer(&lines) {
+            break Ok(Some(answer));
+        }
+        if started.elapsed() >= timeout {
+            break Ok(None);
+        }
+        std::thread::sleep(QUESTION_POLL);
+    };
+    // Soft: a terminal that is gone already is as wanted.
+    let _ = orca(&["terminal", "close", "--terminal", handle]);
+    answered
+}
+
+/// Whether orca is running. An orca that cannot say is not one a worker can
+/// be started through, nor a question asked in.
+pub fn running() -> bool {
+    orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready")
+}
+
 /// What a start finds of an installed orca: whether it is running, and then
 /// whether it knows this checkout. It only asks.
 pub fn found() -> Result<Found> {
-    // An orca that cannot say is not one a worker can be started through.
-    let ready = orca(&["status"]).is_ok_and(|status| status["runtime"]["state"] == "ready");
-    if !ready {
+    if !running() {
         return Ok(Found::NotRunning);
     }
     // No git, no checkout: another fault's to name.
@@ -868,6 +935,59 @@ impl Worktree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An orca whose question terminal shows `shown` at every read, after the
+    /// first: each call is kept in `calls`.
+    fn orca_showing<'a>(
+        calls: &'a std::cell::RefCell<Vec<String>>,
+        shown: &'a [&'a str],
+    ) -> impl Fn(&[&str]) -> Result<Value> + 'a {
+        move |args: &[&str]| {
+            calls.borrow_mut().push(args.join(" "));
+            Ok(match args {
+                ["terminal", "create", ..] => serde_json::json!({"terminal": {"handle": "t1"}}),
+                ["terminal", "read", ..] if calls.borrow().len() > 2 => {
+                    serde_json::json!({"terminal": {"tail": shown}})
+                }
+                _ => serde_json::json!({"terminal": {"tail": []}}),
+            })
+        }
+    }
+
+    #[test]
+    fn a_question_is_read_until_it_answers_and_its_terminal_closed() {
+        let calls = std::cell::RefCell::new(vec![]);
+        let shown = ["rc noise", "AFKCONVOY_ASKED", "OK", "", "AFKCONVOY_ANSWERED 0"];
+        let orca = orca_showing(&calls, &shown);
+        let answer =
+            ask_through(&orca, Some("path:/src/w"), "pi --print hi", Duration::from_secs(5));
+        assert_eq!(answer.unwrap(), Some((true, "OK".to_string())));
+        let calls = calls.borrow();
+        assert!(calls[0].starts_with("terminal create --title afkconvoy question --command "));
+        assert!(
+            calls[0].contains("( pi --print hi )") && calls[0].ends_with("--worktree path:/src/w")
+        );
+        assert_eq!(calls.iter().filter(|call| call.starts_with("terminal read")).count(), 2);
+        assert_eq!(calls.last().unwrap(), "terminal close --terminal t1");
+    }
+
+    #[test]
+    fn a_question_that_does_not_answer_in_time_is_none_and_its_terminal_closed() {
+        let calls = std::cell::RefCell::new(vec![]);
+        let orca = orca_showing(&calls, &["AFKCONVOY_ASKED", "thinking"]);
+        let answer = ask_through(&orca, None, "codex exec hi", Duration::from_millis(300));
+        assert_eq!(answer.unwrap(), None);
+        let calls = calls.borrow();
+        assert!(!calls[0].contains("--worktree"), "{}", calls[0]);
+        assert_eq!(calls.last().unwrap(), "terminal close --terminal t1");
+    }
+
+    #[test]
+    fn a_question_orca_made_no_terminal_for_is_an_error() {
+        let refused = |_: &[&str]| -> Result<Value> { Err(anyhow!("orca terminal create failed")) };
+        let error = ask_through(&refused, None, "pi", Duration::from_secs(1)).unwrap_err();
+        assert_eq!(error.to_string(), "orca terminal create failed");
+    }
 
     #[test]
     fn every_worktree_of_the_host_is_listed_with_its_repo_and_whether_a_worker_holds_it() {

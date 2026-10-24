@@ -254,20 +254,20 @@ impl Harness {
     /// The shell line that sends `model` the `prompt` through the worker
     /// launch command `command`, with what the host keeps for it in `kept`,
     /// and prints the model's answer: with no model, the one the command
-    /// starts on. `None`: the fleet has no way to send it one but a worker's
-    /// terminal.
+    /// starts on. DSH's goes through its headless profile instead
+    /// (`dsh::prompt_question`).
     pub fn prompt_question(
         self,
         command: &str,
         kept: &str,
         model: Option<&str>,
         prompt: &str,
-    ) -> Option<String> {
+    ) -> String {
         match self {
-            Harness::ClaudeCode => Some(claude_code::prompt_question(command, model, prompt)),
-            Harness::Pi => Some(pi::prompt_question(command, kept, model, prompt)),
-            Harness::Codex => Some(codex::prompt_question(command, kept, model, prompt)),
-            Harness::Dsh => None,
+            Harness::ClaudeCode => claude_code::prompt_question(command, model, prompt),
+            Harness::Pi => pi::prompt_question(command, kept, model, prompt),
+            Harness::Codex => codex::prompt_question(command, kept, model, prompt),
+            Harness::Dsh => dsh::prompt_question(kept, model, prompt),
         }
     }
 
@@ -451,17 +451,24 @@ mod tests {
     fn a_model_is_probed_through_the_command_with_one_line_and_nothing_else() {
         let asked =
             |harness: Harness| harness.prompt_question("agent -x", "/k", Some("m 1"), "Say OK.");
-        assert_eq!(asked(Harness::ClaudeCode).unwrap(), "agent -x --model 'm 1' --print 'Say OK.'");
+        assert_eq!(asked(Harness::ClaudeCode), "agent -x --model 'm 1' --print 'Say OK.'");
         assert_eq!(
-            asked(Harness::Pi).unwrap(),
+            asked(Harness::Pi),
             "export PI_CODING_AGENT_DIR='/k' && agent -x --model 'm 1' --print 'Say OK.'"
         );
         assert_eq!(
-            asked(Harness::Codex).unwrap(),
+            asked(Harness::Codex),
             "export CODEX_HOME='/k' && agent -x exec --skip-git-repo-check --ephemeral --model \
              'm 1' 'Say OK.'"
         );
-        assert_eq!(asked(Harness::Dsh), None);
+        assert_eq!(
+            asked(Harness::Dsh),
+            "AFKCONVOY_DSH_MODEL='m 1' dsh headless --patch '/k/probe.patch.yml' 'Say OK.'"
+        );
+        assert_eq!(
+            Harness::Dsh.prompt_question("dsh-tui", "/k", None, "Say OK."),
+            "dsh headless --patch '/k/probe.patch.yml' 'Say OK.'"
+        );
     }
 
     #[test]

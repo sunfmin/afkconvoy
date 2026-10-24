@@ -38,8 +38,31 @@ pub(super) const KEPT: Kept = Kept {
         ("fleet.patch.yml", include_str!("dsh/fleet.yml")),
         ("afkconvoy.mjs", include_str!("dsh/plugin.mjs")),
         ("start.sh", include_str!("dsh/start.sh")),
+        (PROBE_PATCH, include_str!("dsh/probe.yml")),
+        ("probe.mjs", include_str!("dsh/probe.mjs")),
     ],
 };
+
+/// The overlay a probe boots DSH's headless profile with, kept: it loads the
+/// plugin that sets the model the probe names.
+const PROBE_PATCH: &str = "probe.patch.yml";
+
+/// The line that sends `model` of DSH's the one-line `prompt` and prints its
+/// answer: through `dsh`, the launcher its TUI comes with, in its headless
+/// profile, with the overlay kept in `kept` that sets the model as a worker's
+/// plugin does — with no model, the one the profile starts on. The worker
+/// launch command starts the TUI, which answers no prompt but at a terminal.
+pub(super) fn prompt_question(kept: &str, model: Option<&str>, prompt: &str) -> String {
+    let line = match model {
+        Some(model) => Line::new().fixed("AFKCONVOY_DSH_MODEL=").word(model).fixed(" "),
+        None => Line::new(),
+    };
+    line.fixed("dsh headless --patch ")
+        .word(&format!("{kept}/{PROBE_PATCH}"))
+        .fixed(" ")
+        .word(prompt)
+        .own()
+}
 
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn environment(line: Line, start: &Start) -> Line {

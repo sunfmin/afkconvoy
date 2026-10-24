@@ -470,6 +470,16 @@ impl World {
             .collect()
     }
 
+    /// Each question put to the stand-in orca's login shell in a terminal of
+    /// its own, in order: what it asked, and whether its terminal is open.
+    pub fn questions(&self) -> Vec<(String, bool)> {
+        let orca = self.orca();
+        let rows = orca["questions"].as_array().cloned().unwrap_or_default();
+        rows.iter()
+            .map(|row| (row["script"].as_str().unwrap().to_string(), row["open"] == true))
+            .collect()
+    }
+
     /// Every `orca` call made since the last look, without the trailing `--json`.
     pub fn orca_calls(&self) -> Vec<Vec<String>> {
         let mut calls: Vec<Vec<String>> =
@@ -680,7 +690,8 @@ impl Drop for World {
 /// The login shell a worker would get, as far as the fleet asks it anything:
 /// `shell -lic 'alias'`, `shell -lic "type -- '<word>'"`, `shell -lic '<command> --help'` —
 /// where `pi` answers as pi does, `codex` as Codex and every other command as Claude Code —
-/// a model's probe, which fails unless a `probes-answer` beside `bin/` is there,
+/// a model's probe, which prints nothing and fails unless a `probes-answer` beside
+/// `bin/` is there,
 /// `shell -lic '… <command> --list-models'`, which fails unless a `shell-models` beside
 /// `bin/` holds what it prints, `shell -lic '… <command> debug models --bundled'`, which
 /// fails unless a `shell-built-with` there does, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
@@ -701,9 +712,9 @@ case "$2" in
     printf '%s' "$2" > "$root/drafter-asked"
     if [ -f "$root/drafter-answer" ]; then cat "$root/drafter-answer"; exit 0; fi
     exit 1 ;;
-  *"AFKCONVOY_PROBE_ANSWER"*)
+  *"Reply with the single word OK."*)
     # A model's probe: answered once `probes-answer` is there.
-    if [ -f "$root/probes-answer" ]; then echo AFKCONVOY_PROBE_ANSWER; echo OK; exit 0; fi
+    if [ -f "$root/probes-answer" ]; then echo OK; exit 0; fi
     exit 1 ;;
   "gh auth status"*)
     if [ -e "$root/logged-out-gh" ]; then echo "not logged in" >&2; exit 1; fi

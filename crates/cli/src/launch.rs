@@ -17,7 +17,7 @@ use crate::config;
 use crate::topic::{Explain, See};
 
 /// How long the login shell is given to answer.
-const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The command a start would give the workers of one harness, with what the
 /// login shell says its first word is: not yet one a worker may be started
@@ -238,17 +238,20 @@ pub fn on_path(program: &str) -> bool {
         })
 }
 
-/// The models `harness` knows on this host, as it says them to a login shell
-/// — the one a worker gets — when its worker launch command `command` is
-/// asked (`Harness::models_question`), with what this host keeps for it.
-/// `None`: it has no way to say. An error is the question that failed, or
-/// listed none.
+/// The models `harness` knows on this host, as it says them in an orca
+/// terminal — the shell a worker gets (`orca::ask`) — when its worker launch
+/// command `command` is asked (`Harness::models_question`), with what this
+/// host keeps for it. `None`: it has no way to say. An error is the question
+/// that failed, or listed none.
 pub fn models(harness: Harness, command: &str) -> Option<Result<Vec<String>, String>> {
     // The logins are in the directory kept with the host user's skills and
     // rules as they are in the one kept without.
     let kept = crate::kept::keep(harness, false).ok()?;
     let question = harness.models_question(command, &kept.display().to_string())?;
-    let listed = login_shell(&question).and_then(|answer| harness.models(&answer));
+    let answer = crate::orca::ask(&question, SHELL_TIMEOUT).ok().flatten();
+    let listed = answer
+        .filter(|(succeeded, _)| *succeeded)
+        .and_then(|(_, printed)| harness.models(&printed));
     Some(listed.ok_or(question))
 }
 
@@ -258,33 +261,26 @@ const PROBE_PROMPT: &str = "Reply with the single word OK.";
 /// How long a model is given to answer its probe.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// What comes before a probe's answer in what the login shell prints: what
-/// its rc files print comes before it.
-const PROBE_MARK: &str = "AFKCONVOY_PROBE_ANSWER";
-
-/// Sends `model` of `harness` the one-line probe through the worker launch
-/// command `command`, in the login shell a worker gets, with what this host
-/// keeps for it → whether it answered within the time limit, and how fast.
+/// Sends `model` of `harness` the one-line probe (`Harness::prompt_question`)
+/// through the worker launch command `command`, with what this host keeps for
+/// it, in an orca terminal — the shell a worker gets (`orca::ask`) → whether
+/// it answered within the time limit, and how fast; why it could not be asked,
+/// when it could not.
 pub fn probe(harness: Harness, command: &str, model: Option<&str>) -> crate::kit::Answer {
     use crate::kit::Answer;
-    let Ok(kept) = crate::kept::keep(harness, false) else { return Answer::Silent };
-    let kept = kept.display().to_string();
-    let Some(question) = harness.prompt_question(command, &kept, model, PROBE_PROMPT) else {
-        return Answer::Unsendable;
+    let kept = match crate::kept::keep(harness, false) {
+        Ok(kept) => kept.display().to_string(),
+        Err(error) => return Answer::Unasked(format!("{error:#}")),
     };
+    let question = harness.prompt_question(command, &kept, model, PROBE_PROMPT);
     let started = Instant::now();
-    let script = format!("printf '%s\\n' {PROBE_MARK} && {question}");
-    match ask_login_shell_within(&script, PROBE_TIMEOUT) {
-        Some((true, printed)) if answered(&printed) => {
+    match crate::orca::ask(&question, PROBE_TIMEOUT) {
+        Ok(Some((true, printed))) if !printed.trim().is_empty() => {
             Answer::Answered(started.elapsed().as_secs_f64())
         }
-        _ => Answer::Silent,
+        Ok(_) => Answer::Silent,
+        Err(error) => Answer::Unasked(format!("{error:#}")),
     }
-}
-
-/// Whether what a probe printed holds an answer after its mark.
-fn answered(printed: &str) -> bool {
-    printed.split_once(PROBE_MARK).is_some_and(|(_, answer)| !answer.trim().is_empty())
 }
 
 /// Runs `script` in the user's interactive login shell → what it printed.
@@ -332,16 +328,4 @@ pub(crate) fn ask_login_shell_within(script: &str, timeout: Duration) -> Option<
         }
     };
     Some((status.success(), reader.join().ok()?))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_probe_answered_only_with_words_after_its_mark() {
-        assert!(answered("rc noise\nAFKCONVOY_PROBE_ANSWER\nOK\n"));
-        assert!(!answered("rc noise\nAFKCONVOY_PROBE_ANSWER\n  \n"));
-        assert!(!answered("OK"));
-    }
 }

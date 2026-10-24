@@ -1,0 +1,5 @@
+# The overlay a probe of a DSH model boots its headless profile with: the
+# probe's plugin, which sets the model it names.
+- insert:
+    - id: afkconvoy-probe
+      name: '@AFKCONVOY_DSH_PROBE@'

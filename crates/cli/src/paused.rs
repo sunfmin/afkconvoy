@@ -116,9 +116,7 @@ impl Pauses {
     /// Probes each harness paused that is due `now` (`Paused::due`), with
     /// `probe` given its worker launch command and first model in `kit`, the
     /// host kit's file → each probed. One that answers is back in the host
-    /// kit; one that can be sent a prompt only in a worker's terminal is back
-    /// too, and a worker's prompt probes it, pausing it again on a refusal;
-    /// one `kit` no longer holds is forgotten.
+    /// kit; one `kit` no longer holds is forgotten.
     pub fn probe_due(
         &self,
         now: u64,
@@ -129,15 +127,18 @@ impl Pauses {
         let mut probed = vec![];
         for pause in due {
             let held = kit.harnesses.iter().find(|held| held.harness == pause.harness);
-            let answer = match held {
-                Some(held) => probe(
+            let answer = held.map(|held| {
+                probe(
                     held.harness,
                     &held.command,
                     held.models.first().map(|seen| seen.model.as_str()),
-                ),
-                None => Answer::Unsendable,
+                )
+            });
+            let resumed = matches!(answer, None | Some(Answer::Answered(_)));
+            let unasked = match answer {
+                Some(Answer::Unasked(why)) => Some(why),
+                _ => None,
             };
-            let resumed = !matches!(answer, Answer::Silent);
             if resumed {
                 self.resume(pause.harness)?;
             } else {
@@ -147,7 +148,7 @@ impl Pauses {
                 }
                 self.write(&paused)?;
             }
-            probed.push(Probed { harness: pause.harness, resumed });
+            probed.push(Probed { harness: pause.harness, resumed, unasked });
         }
         Ok(probed)
     }
@@ -158,6 +159,9 @@ pub struct Probed {
     pub harness: Harness,
     /// It is no longer paused.
     pub resumed: bool,
+    /// Why it could not be asked, when no terminal could be made for its
+    /// probe.
+    pub unasked: Option<String>,
 }
 
 /// Probes the harnesses paused on this host that are due `now`, each
@@ -172,9 +176,14 @@ pub fn probe(repo: &crate::git::Repo, instance: &str, host: &str, now: u64) -> R
     }
     let kit = crate::kit::load()?;
     for probed in pauses.probe_due(now, &kit, crate::launch::probe)? {
-        let outcome = match probed.resumed {
-            true => "it answered its probe: back in the host kit",
-            false => "it did not answer its probe: still paused, and probed again in an hour",
+        let outcome = match (probed.resumed, &probed.unasked) {
+            (true, _) => "it answered its probe: back in the host kit".to_string(),
+            (false, Some(why)) => format!(
+                "its probe could not be asked ({why}): still paused, and probed again in an hour"
+            ),
+            (false, None) => {
+                "it did not answer its probe: still paused, and probed again in an hour".to_string()
+            }
         };
         let entry = crate::log::Entry {
             at: now,
@@ -184,7 +193,7 @@ pub fn probe(repo: &crate::git::Repo, instance: &str, host: &str, now: u64) -> R
                 command: "probe_paused".into(),
                 on: Some(probed.harness.key().into()),
                 by: "fleet".into(),
-                outcome: outcome.to_string(),
+                outcome,
                 failed: false,
             },
         };
@@ -236,10 +245,15 @@ mod tests {
         let asked = std::cell::RefCell::new(vec![]);
         let pi_answers = |harness: Harness, command: &str, model: Option<&str>| {
             asked.borrow_mut().push((harness, command.to_string(), model.map(str::to_string)));
-            if harness == Harness::Pi { Answer::Answered(1.0) } else { Answer::Silent }
+            match harness {
+                Harness::Pi => Answer::Answered(1.0),
+                _ => Answer::Unasked("orca terminal create failed".into()),
+            }
         };
         let probed = pauses.probe_due(3700, &kit, pi_answers).unwrap();
         assert_eq!(probed.iter().filter(|probed| probed.resumed).count(), 1);
+        let unasked = probed.iter().find(|probed| probed.harness == Harness::Codex).unwrap();
+        assert_eq!(unasked.unasked.as_deref(), Some("orca terminal create failed"), "says why");
         assert_eq!(
             *asked.borrow(),
             [
