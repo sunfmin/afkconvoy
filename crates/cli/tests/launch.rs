@@ -265,7 +265,10 @@ fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() 
     assert!(ran.stderr.contains("left out: dsh: not installed"), "{}", ran.stderr);
     let kit = kit_unprobed(&world);
     assert_eq!(kit["harnesses"][0]["harness"], "claude-code");
-    assert_eq!(kit["harnesses"][0]["models"], json!([{"model": "default"}, {"model": "opus"}]));
+    assert_eq!(
+        kit["harnesses"][0]["models"],
+        json!([{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}])
+    );
     assert_eq!(started(&world).len(), 1, "its first tick started a worker");
 }
 
@@ -301,7 +304,10 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
     host_to_kit(&world);
     assert_eq!(answer(&world, &RUN, false).code, 0);
     let models = |world: &World| kit_unprobed(world)["harnesses"][0]["models"].clone();
-    assert_eq!(models(&world), json!([{"model": "default"}, {"model": "opus"}]));
+    assert_eq!(
+        models(&world),
+        json!([{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}])
+    );
     assert_eq!(world.afk(&["plan", "--now", "1000"]).json["host_kit"]["refreshed"], 1000);
     // Claude Code lists `sonnet` now, and no longer `opus`.
     world.shell_claude_models(&["default", "sonnet"]);
@@ -322,7 +328,10 @@ fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host
         ["refresh_kit (fleet): the host kit was written again: added claude-code sonnet; \
           dropped claude-code opus"]
     );
-    assert_eq!(models(&world), json!([{"model": "default"}, {"model": "sonnet"}]));
+    assert_eq!(
+        models(&world),
+        json!([{"model": "default", "good_at": "not researched"}, {"model": "sonnet", "good_at": "not researched"}])
+    );
     let plan = world.afk(&["plan", "--now", &(1000 + day).to_string()]);
     assert_eq!(plan.json["host_kit"]["refreshed"], 1000 + day);
     // The rest of that day, no tick writes it again.
@@ -349,8 +358,8 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
         json!({
             "harnesses": [
                 {"harness": "claude-code", "command": "agent",
-                    "models": [{"model": "default"}, {"model": "opus", "good_at": "hard work"}]},
-                {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5"}]},
+                    "models": [{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "hard work"}]},
+                {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5", "good_at": "not researched"}]},
             ],
             "stock_consult": {"harness": "claude-code", "model": "opus"},
         })
@@ -492,4 +501,31 @@ fn kit_holds_the_names_that_answered_as_one_model_once_by_its_id() {
     };
     assert_eq!(cast(8)["model"], "claude-opus-5-5", "{planned}");
     assert_eq!(cast(9)["model"], "openai-codex/gpt-6-sol", "{planned}");
+}
+
+#[test]
+fn kit_research_is_written_from_a_fake_session_and_is_not_repeated() {
+    let world = backlog();
+    std::fs::remove_file(world.kit_path()).unwrap();
+    host_to_kit(&world);
+    let source = json!({"url":"https://vendor.example/card", "date":"2026-10-24"});
+    std::fs::write(world.root.join("research-answer"), json!({
+        "harness_order":["claude-code","pi"],
+        "models":[
+            {"harness":"claude-code","model":"opus","good_at":"wide refactors; costly","sources":[source]},
+            {"harness":"claude-code","model":"default","good_at":"small fixes","sources":[source]},
+            {"harness":"pi","model":"openai/gpt-5.5","good_at":"review","sources":[source]}
+        ]
+    }).to_string()).unwrap();
+    let written = world.afk(&["kit", "--now", "1000"]).ok();
+    let models = &written["kit"]["harnesses"][0]["models"];
+    assert_eq!(models[0]["model"], "opus");
+    assert_eq!(models[0]["researched_at"], 1000);
+    assert_eq!(models[0]["sources"], json!([source]));
+    let asked = std::fs::read_to_string(world.root.join("research-asked")).unwrap();
+    assert!(asked.contains("--allowedTools WebSearch WebFetch"), "{asked}");
+    let again = world.afk(&["kit", "--now", "200000"]).ok();
+    assert_eq!(again["kit"]["harnesses"][0]["models"][0]["model"], "opus");
+    assert_eq!(again["kit"]["harnesses"][0]["models"][0]["researched_at"], 1000);
+    assert_eq!(std::fs::read_to_string(world.root.join("research-asked")).unwrap(), asked);
 }

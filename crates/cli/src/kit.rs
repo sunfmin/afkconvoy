@@ -290,7 +290,7 @@ pub fn write(now: u64) -> Result<Value> {
     let file = path()?;
     let current = if file.exists() { load()? } else { Kit::default() };
     let (mut kit, left_out) = compose(&current, &host, Writing::Whole);
-    crate::kit_research::research(&current, &mut kit, now, crate::kit_research::session);
+    crate::kit_research::research(&current, &mut kit, now, host.research);
     store(&file, &kit, now)?;
     resume_answered(&kit, now)?;
     eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
@@ -431,8 +431,9 @@ fn refresh_at<'a>(
     std::fs::write(&lock, now.to_string())
         .with_context(|| format!("cannot write {}", lock.display()))?;
     let current = load_at(file)?;
-    let (mut kit, _) = compose(&current, &host()?, Writing::Refresh);
-    crate::kit_research::research(&current, &mut kit, now, crate::kit_research::session);
+    let host = host()?;
+    let (mut kit, _) = compose(&current, &host, Writing::Refresh);
+    crate::kit_research::research(&current, &mut kit, now, host.research);
     store(file, &kit, now)?;
     drop(held);
     Ok(Some((current, kit)))
@@ -537,6 +538,7 @@ pub struct Host<'a> {
     /// offers none.
     listed: &'a Listing,
     probe: &'a dyn Fn(&[Asked]) -> Vec<Answer>,
+    research: &'a dyn Fn(&Kit, &str) -> Result<String>,
     now: u64,
 }
 
@@ -556,6 +558,7 @@ impl Host<'static> {
             found: &crate::launch::found,
             listed: &crate::launch::models,
             probe: &probe_all,
+            research: &crate::kit_research::session,
             now,
         })
     }
@@ -769,6 +772,26 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
             });
         }
     }
+    for held in &mut harnesses {
+        if let Some(before) = current.held(held.harness) {
+            let mut ranked: Vec<_> = held
+                .models
+                .iter()
+                .filter(|m| before.models.iter().any(|old| old.model == m.model))
+                .cloned()
+                .collect();
+            ranked.sort_by_key(|m| before.models.iter().position(|old| old.model == m.model));
+            // Only a successful research established a preference to preserve.
+            if before.models.iter().any(|m| m.researched_at.is_some()) {
+                let mut ranked = ranked.into_iter();
+                for model in &mut held.models {
+                    if before.models.iter().any(|old| old.model == model.model) {
+                        *model = ranked.next().expect("one replacement per held slot");
+                    }
+                }
+            }
+        }
+    }
     harnesses.retain(|held| {
         let kept = !held.models.is_empty();
         if !kept {
@@ -901,7 +924,13 @@ mod tests {
                 })
                 .collect()
         };
-        let host = Host { found: &found, listed: &listed, probe: &probe, now: 77 };
+        let host = Host {
+            research: &|_, _| bail!("fake research unavailable"),
+            found: &found,
+            listed: &listed,
+            probe: &probe,
+            now: 77,
+        };
         let (kit, left_out) = compose(current, &host, writing);
         (kit, left_out, probed.into_inner().unwrap())
     }
@@ -973,6 +1002,8 @@ mod tests {
     #[test]
     fn a_host_kit_written_again_keeps_its_order_commands_good_at_and_stock_consult() {
         let mut opus = held(Harness::ClaudeCode, "old", &["bad", "opus", "gone"]);
+        opus.models[1].model = "claude-opus-5-5".into();
+        opus.models[1].names = vec!["opus".into()];
         opus.models[1].good_at = Some("hard work".into());
         let current = Kit {
             harnesses: vec![held(Harness::Codex, "mycodex --yolo", &["gpt-a"]), opus],
@@ -989,7 +1020,7 @@ mod tests {
             ]
         );
         assert!(probed.iter().all(|(h, c, _)| *h != Harness::Codex || c == "mycodex --yolo"));
-        // What was written of `opus` is the model it answers as.
+        // Research is kept by answered identity, never by a moving alias.
         assert_eq!(kit.harnesses[1].models[0].good_at.as_deref(), Some("hard work"));
         assert_eq!(kit.harnesses[1].models[1].good_at, None);
         // A stock consult named by a name runs the model's id.
@@ -1020,6 +1051,7 @@ mod tests {
         };
         let probe = |asked: &[Asked]| asked.iter().map(|_| Answer::Silent).collect();
         let host = Host {
+            research: &|_, _| bail!("fake research unavailable"),
             found: &|_| Ok(()),
             listed: &|harness, _| match harness {
                 Harness::Codex => Ok(vec![listed("bad", None)]),
@@ -1116,7 +1148,13 @@ mod tests {
             );
             vec![Answer::Answered(1.0, Some("new-id".into()))]
         };
-        let host = Host { found: &found, listed: &listed, probe: &probe, now: 100 };
+        let host = Host {
+            research: &|_, _| bail!("fake research unavailable"),
+            found: &found,
+            listed: &listed,
+            probe: &probe,
+            now: 100,
+        };
         let (kit, _) = compose(&current, &host, Writing::Refresh);
         assert_eq!(kit.matched(Harness::ClaudeCode, "opus").unwrap(), "new-id");
         assert_eq!(kit.matched(Harness::ClaudeCode, "Opus").unwrap(), "new-id");
@@ -1153,7 +1191,13 @@ mod tests {
             Harness::Pi => Ok(()),
             _ => Err("not here".to_string()),
         };
-        let host = |now| Host { found: &found, listed: &listed, probe: &probe, now };
+        let host = |now| Host {
+            research: &|_, _| bail!("fake research unavailable"),
+            found: &found,
+            listed: &listed,
+            probe: &probe,
+            now,
+        };
         assert!(refresh_at(&file, 1000 + REFRESHED_EVERY - 1, || Ok(host(0))).unwrap().is_none());
         let now = 1000 + REFRESHED_EVERY;
         // While one process writes it again, another finds it locked and

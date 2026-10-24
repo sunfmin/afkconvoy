@@ -76,6 +76,9 @@ pub fn research(
     let mut targets = vec![];
     for held in &mut kit.harnesses {
         for model in &mut held.models {
+            if model.good_at.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                model.good_at = Some(UNKNOWN.into());
+            }
             let id = identity(&model.model);
             if !old.contains(&id) {
                 model.good_at = Some(UNKNOWN.into());
@@ -209,8 +212,8 @@ mod tests {
     use super::*;
     fn kit() -> Kit {
         serde_json::from_value(json!({"harnesses": [
-            {"harness":"claude-code", "command":"claude", "models":[{"model":"fast", "names":["default", "Fast"]}, {"model":"deep"}]},
-            {"harness":"pi", "command":"pi", "models":[{"model":"other"}]}
+            {"harness":"claude-code", "command":"claude", "models":[{"model":"fast", "names":["default", "Fast"], "good_at":"not researched"}, {"model":"deep", "good_at":"not researched"}]},
+            {"harness":"pi", "command":"pi", "models":[{"model":"other", "good_at":"not researched"}]}
         ]})).unwrap()
     }
     fn answer() -> serde_json::Value {
