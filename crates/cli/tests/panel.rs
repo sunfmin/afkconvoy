@@ -457,7 +457,8 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
     }
     for said in [
         "afkconvoy panel --open --port 7070",
-        "no afkconvoy run is running for this repo on this host",
+        "no host runner runs on this host",
+        "holds no fleet instance of",
         "the panel cannot be served on port <port>",
         "did not answer",
     ] {
