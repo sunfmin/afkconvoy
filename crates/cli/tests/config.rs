@@ -79,7 +79,7 @@ fn this_repos_own_config_names_the_gate() {
     let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/agents/afkconvoy.md");
     let world = World::new();
     let config = world.afk(&["config", "--file", file]).ok();
-    assert_eq!(config["gate_command"], "./gate.sh");
+    assert_eq!(config["gate_command"], "afkconvoy exclusive -- ./gate.sh");
 }
 
 /// The config file `config --help` shows whole: the ```` ```yaml ```` block of

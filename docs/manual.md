@@ -1877,7 +1877,7 @@ It exits 127 when the command cannot be started, and 125, with one JSON object {
 - It may wait long: as long as every heavy command ahead of it runs. Run it as you would the gate — in the background, or with a time limit of the gate limit — not under a short tool time limit that kills it while it waits.
 - Killing it kills its place in the queue, not only its wait: run it again to wait from the end.
 - Only commands run through it wait for one another. A heavy command run without it runs beside the one that runs alone.
-- The gate, run by `afkconvoy gate`, does not go through the queue.
+- The gate, run by `afkconvoy gate`, goes through the queue only when the config's `gate_command` does — `afkconvoy exclusive -- ./gate.sh`, for a gate that fills the host by itself. Never put `afkconvoy gate` itself through it: the gate's own `exclusive` would wait behind it, on itself, until the gate limit.
 
 ##### Which checkout it is about
 

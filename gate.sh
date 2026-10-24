@@ -1,6 +1,9 @@
 #!/bin/sh
 # The gate: what must pass before anything lands. This repo's own
-# docs/agents/afkconvoy.md names it as `gate_command`.
+# docs/agents/afkconvoy.md names it as `gate_command`, run through
+# `afkconvoy exclusive`: one gate fills the host by itself, so a host runs
+# this repo's gates one at a time. Run by hand, it is
+# `afkconvoy exclusive -- ./gate.sh`.
 set -e
 cd "$(dirname "$0")"
 # The whole gate runs on rustup's nightly, the one cargo-flux is built for,
