@@ -699,9 +699,11 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     let with_a_human = page.split("<h2>With a human</h2>").nth(1).expect("a list");
     let with_a_human = with_a_human.split("</section>").next().unwrap();
     assert_eq!(with_a_human.matches("<li class=\"card").count(), 1, "{with_a_human}");
-    let card = "data-issue=\"7\"><span class=\"num\">#7</span> <span class=\"title\">issue 7\
-                </span><span class=\"meta\"><span class=\"note\">escalated at build — afkconvoy \
-                rule --issue 7 --text-file &lt;file&gt;</span>";
+    // labelled with its repo: the list is of every repo on the host
+    let card = "data-issue=\"7\"><span class=\"repo\">clone</span> <span class=\"num\">#7</span> \
+                <span class=\"title\">issue 7</span><span class=\"meta\"><span \
+                class=\"note\">escalated at build — afkconvoy rule --issue 7 --text-file \
+                &lt;file&gt;</span>";
     assert!(with_a_human.contains(card), "{with_a_human}");
     assert!(page.contains("With a human</dt><dd>1<"), "{page}");
     assert!(!page.contains("the fleet leaves alone"), "it is listed once: {page}");
