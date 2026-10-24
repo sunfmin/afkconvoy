@@ -238,6 +238,19 @@ pub fn on_path(program: &str) -> bool {
         })
 }
 
+/// Whether `harness`'s program is found in an orca terminal — the shell a
+/// worker gets (`orca::ask`) — as `type` finds it there. An error says why it
+/// is taken as not installed: it was not found, or could not be looked for.
+pub fn found(harness: Harness) -> Result<(), String> {
+    let question = format!("type -- '{}'", harness.program());
+    match crate::orca::ask(&question, SHELL_TIMEOUT) {
+        Ok(Some((true, _))) => Ok(()),
+        Ok(Some((false, _))) => Err(format!("`{question}` found nothing")),
+        Ok(None) => Err(format!("`{question}` did not answer in time")),
+        Err(error) => Err(format!("{error:#}: {question}")),
+    }
+}
+
 /// The models `harness` knows on this host, as it says them in an orca
 /// terminal — the shell a worker gets (`orca::ask`) — when its worker launch
 /// command `command` is asked (`Harness::models_question`), with what this

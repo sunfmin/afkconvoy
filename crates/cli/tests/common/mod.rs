@@ -632,6 +632,15 @@ impl World {
         std::fs::write(self.root.join("shell-models"), table).unwrap();
     }
 
+    /// What the stand-in login shell prints when Claude Code is asked which
+    /// models its login runs, in place of failing: its answer to `initialize`.
+    pub fn shell_claude_models(&self, models: &[&str]) {
+        let models: Vec<Value> = models.iter().map(|model| json!({"value": model})).collect();
+        let answer = json!({"type": "control_response",
+            "response": {"subtype": "success", "response": {"models": models}}});
+        std::fs::write(self.root.join("shell-claude-models"), answer.to_string()).unwrap();
+    }
+
     /// What the stand-in login shell prints when a command is asked which
     /// models its server lists, in place of failing: Codex's JSON of them.
     pub fn shell_server_models(&self, slugs: &[&str]) {
@@ -715,6 +724,10 @@ case "$2" in
   *"Reply with the single word OK."*)
     # A model's probe: answered once `probes-answer` is there.
     if [ -f "$root/probes-answer" ]; then echo OK; exit 0; fi
+    exit 1 ;;
+  *'"subtype":"initialize"'*)
+    # Claude Code asked for its models: answered with `shell-claude-models`.
+    if [ -f "$root/shell-claude-models" ]; then cat "$root/shell-claude-models"; exit 0; fi
     exit 1 ;;
   "gh auth status"*)
     if [ -e "$root/logged-out-gh" ]; then echo "not logged in" >&2; exit 1; fi
