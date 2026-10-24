@@ -81,12 +81,16 @@ fn this_repos_own_config_names_the_gate() {
     assert_eq!(config["gate_command"], "./gate.sh");
 }
 
-/// The config file `config --help` shows whole: its ```` ```yaml ```` block,
-/// as the yaml a repo would write.
+/// The config file `config --help` shows whole: the ```` ```yaml ```` block of
+/// the one file it shows, as the yaml a repo would write.
 fn shown_config() -> String {
-    let blocks = common::shown("`afkconvoy config`", "yaml");
-    assert_eq!(blocks.len(), 1, "`config --help` shows one config file: {blocks:?}");
-    blocks[0].trim_end().to_string()
+    let files = common::shown("`afkconvoy config`", "markdown");
+    assert_eq!(files.len(), 1, "`config --help` shows one config file: {files:?}");
+    let yaml = files[0].split_once("```yaml\n").map(|(_, yaml)| yaml);
+    let yaml = yaml.and_then(|yaml| yaml.split_once("```")).map(|(yaml, _)| yaml);
+    yaml.unwrap_or_else(|| panic!("the config file shows no yaml block: {files:?}"))
+        .trim_end()
+        .into()
 }
 
 /// The file the help shows is one the loader reads, holds every key the

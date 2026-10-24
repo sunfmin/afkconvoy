@@ -1,0 +1,82 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling flux-attrs-impl v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+   Compiling flux-attrs v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.152
+   Compiling serde v1.0.229
+    Checking memchr v2.8.3
+    Checking itoa v1.0.18
+   Compiling syn v2.0.119
+   Compiling syn v3.0.7
+   Compiling serde_derive v1.0.229
+    Checking flux-core v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+    Checking flux-rs v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+
+summary. 60 functions processed: 2 checked; 58 trusted; 0 ignored. 0 constraints solved. Finished in 49.45ms
+
+summary. 0 functions processed: 0 checked; 0 trusted; 0 ignored. 0 constraints solved. Finished in 140.62ms
+    Checking flux-alloc v0.1.0 (https://github.com/flux-rs/flux.git?rev=b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9#b2f3e31e)
+
+summary. 1 functions processed: 0 checked; 1 trusted; 0 ignored. 0 constraints solved. Finished in 24.82ms
+    Checking afkconvoy-core v0.5.13 (/Users/sunfmin/orca/workspaces/afkconvoy/issue-416-afkconvoy-help-answers-the-index-and-hel/crates/core)
+
+warning: feature `custom_inner_attributes` is declared but not used
+ --> <crate attribute>:1:27
+  |
+1 | #![feature(register_tool, custom_inner_attributes)]
+  |                           ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_features)]` (part of `#[warn(unused)]`) on by default
+
+summary. 2201 functions processed: 2201 checked; 0 trusted; 0 ignored. 757 constraints solved. Finished in 23.31s
+warning: `afkconvoy-core` (lib) generated 1 warning
+    Finished `flux` profile [unoptimized + debuginfo] target(s) in 26.03s
+gate: what Flux took longest to check in the core crate:
+───────────────────── Timing Report ────────────────────────
+Total running time:                                   22.09s
+Functions checked:                                      2201
+Min:                                                 10.75µs
+Max:                                                   3.70s
+Mean:                                                 9.97ms
+Std. Dev.:                                          112.00ms
+────────────────────────────────────────────────────────────
+Top 5 Functions 
+• tick::run_pass                                       3.70s
+• stage_record::history                                3.05s
+• team::workflow_file                                  1.63s
+• tick::hand_over                                   668.26ms
+• team::load                                        602.79ms
+────────────────────────────────────────────────────────────
+────────────
+ Nextest run ID 7fe88008-b299-4c52-8155-5245266c0531 with nextest profile: default
+    Starting 1326 tests across 5 binaries (6 tests skipped)
+        FAIL [   0.249s] afkconvoy::cli config::the_help_shows_a_config_file_whole_with_every_key_at_its_default
+  stdout ───
+
+    running 1 test
+    test config::the_help_shows_a_config_file_whole_with_every_key_at_its_default ... FAILED
+
+    failures:
+
+    failures:
+        config::the_help_shows_a_config_file_whole_with_every_key_at_its_default
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 678 filtered out; finished in 0.24s
+
+  stderr ───
+
+    thread 'config::the_help_shows_a_config_file_whole_with_every_key_at_its_default' (440132280) panicked at crates/cli/tests/common/mod.rs:26:5:
+    `afkconvoy config` shows no yaml block
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 5 tests still running
+────────────
+     Summary [  40.492s] 256/1326 tests run: 255 passed, 1 failed, 6 skipped
+        FAIL [   0.249s] afkconvoy::cli config::the_help_shows_a_config_file_whole_with_every_key_at_its_default
+warning: 1070/1326 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed
+gate: a test listed above as TIMEOUT ran too long: it was ended at the limit for one test, which .config/nextest.toml gives
+{"command":"./gate.sh","detail":"the gate is red — nothing is on record; fix it, commit, and run this again","exit_code":100,"head":"17684e5753eb87a7fa72268f35b92f00e45f811e","merged":"9b530c9232beaefd8fa445450683a5759511cad8","recorded":false,"seconds":83,"status":"red","timed_out":false,"woke":true}
