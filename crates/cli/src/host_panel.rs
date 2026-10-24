@@ -11,6 +11,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use anyhow::Result;
 
+use crate::host_runner::Shared;
 use crate::panel::{self, Broken, Checkout, Host, Page, Panel, Part};
 use crate::serve::{self, Live};
 
@@ -20,26 +21,26 @@ pub struct HostPanel {
     /// Each checkout whose fleet instance it holds, by its root. Held while a
     /// page is made: pages are shown in the order they were made.
     checkouts: Mutex<BTreeMap<PathBuf, Checkout>>,
+    /// What the host runner holds for its fleets, read as each page is made.
+    shared: Shared,
     /// Where it is served, once it is.
     address: Mutex<Option<String>>,
 }
 
-impl Default for HostPanel {
-    fn default() -> HostPanel {
-        let page = Page {
-            host: Host::read(Path::new("/"), crate::clock()),
-            live: true,
-            checkouts: vec![],
-        };
+impl HostPanel {
+    /// The page of a host runner that holds `shared` for its fleets, served
+    /// nowhere yet, and with no checkout on it.
+    pub fn new(shared: Shared) -> HostPanel {
+        let host = Host::read(Path::new("/"), crate::clock(), shared.now());
+        let page = Page { host, live: true, checkouts: vec![] };
         HostPanel {
             live: Live::new(panel::render(&page)),
             checkouts: Mutex::default(),
+            shared,
             address: Mutex::default(),
         }
     }
-}
 
-impl HostPanel {
     fn checkouts(&self) -> MutexGuard<'_, BTreeMap<PathBuf, Checkout>> {
         self.checkouts.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -107,7 +108,7 @@ impl HostPanel {
     /// Shows the page made of `checkouts` and the host as it is now.
     fn remake(&self, checkouts: &BTreeMap<PathBuf, Checkout>) {
         let dir = checkouts.keys().next().map_or(Path::new("/"), PathBuf::as_path);
-        let host = Host::read(dir, crate::clock());
+        let host = Host::read(dir, crate::clock(), self.shared.now());
         let page = Page { host, live: true, checkouts: checkouts.values().cloned().collect() };
         self.live.show(panel::render(&page));
     }

@@ -41,20 +41,24 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::checkouts::{OnList, on_list};
+use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::host_runner::{Found, backoff, found};
 use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::checkout_list::{self, Entry, List};
 use crate::copies::cache;
+use crate::exclusive::Queue;
 use crate::git::Repo;
 use crate::host_panel::HostPanel;
 use crate::host_settings::To;
-use crate::host_sleep::Peers;
+use crate::host_sleep::Standings;
+use crate::inspection::{Running, Turn};
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
 use crate::panel::Broken;
-use crate::runner_socket::{self, Reached, Request};
+use crate::runner_socket::{self, Reached, Reply, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line, Show};
 use crate::wake::{self, Wakes};
@@ -76,8 +80,9 @@ const UP_WITHIN: Duration = Duration::from_secs(30);
 const FIRST_TICK_WITHIN: Duration = Duration::from_secs(30 * 60);
 
 /// How long `run` waits for the host runner to say its version, and
-/// `checkouts` for it to say which fleet instances it holds: it answers both
-/// at once, whatever its fleet instances are doing.
+/// `checkouts` for it to say which fleet instances it holds, and anyone for
+/// what its fleets share: it answers each at once, whatever its fleet
+/// instances are doing.
 const SAID_WITHIN: Duration = Duration::from_secs(10);
 
 /// How long `stop` waits for a fleet instance to finish the step it is in.
@@ -108,8 +113,62 @@ struct Runner {
     held: Mutex<BTreeMap<PathBuf, Held>>,
     /// The page it serves.
     panel: HostPanel,
-    /// Its fleet instances, as host sleep asks them.
-    peers: Peers,
+    shared: Shared,
+}
+
+/// What the fleet instances of a host share, held by its host runner for
+/// them all (docs/adr/0023): how each stands for host sleep, the one
+/// inspection on the host and who waits for it, and the exclusive queue. A
+/// clone is the same.
+#[derive(Clone, Default)]
+pub struct Shared {
+    pub standings: Standings,
+    pub turn: Turn,
+    pub queue: Queue,
+}
+
+impl Shared {
+    /// What it holds now: what `shared` is answered, and the panel the host
+    /// runner serves shows.
+    pub fn now(&self) -> SharedNow {
+        SharedNow { exclusive: self.queue.standing(), inspection: self.turn.running() }
+    }
+
+    /// What `shared` is answered.
+    fn said(&self) -> Value {
+        serde_json::to_value(self.now()).unwrap_or_default()
+    }
+}
+
+/// What the host's fleets share, as their host runner says it on its socket.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct SharedNow {
+    /// The exclusive queue, in the order it runs.
+    pub exclusive: Vec<Ticket>,
+    /// The inspection running on the host; `None`: none.
+    pub inspection: Option<Running>,
+}
+
+/// What the host's fleets share, as its host runner says it (`Shared`);
+/// `None`: no host runner listens. Errors: the one there did not answer
+/// within `SAID_WITHIN`, or answered an error — an older one, that holds none
+/// of it, among them.
+pub fn shared() -> Result<Option<SharedNow>> {
+    match runner_socket::ask(&Request::Shared, SAID_WITHIN)? {
+        Reached::Answer(answer) => match answer.get("error") {
+            Some(error) => bail!("the host runner says: {}", error.as_str().unwrap_or_default()),
+            None => serde_json::from_value(answer)
+                .map(Some)
+                .context("what the host runner says its fleets share cannot be read"),
+        },
+        Reached::Nobody => Ok(None),
+        Reached::Closed => bail!("the host runner ended as it was asked what its fleets share"),
+        Reached::Unanswered => bail!(
+            "the host runner said nothing within {}s of what its fleets share: its log, `afkconvoy \
+             doctor` says where, may say why",
+            SAID_WITHIN.as_secs()
+        ),
+    }
 }
 
 /// One checkout's fleet instance, from its start until its thread ends.
@@ -153,7 +212,9 @@ fn about_instance(request: &Request, held: impl FnOnce(&str) -> HeldAs) -> Resul
         | Request::Add { .. }
         | Request::Stop { .. }
         | Request::StopAll
-        | Request::Checkouts => {
+        | Request::Checkouts
+        | Request::Exclusive { .. }
+        | Request::Shared => {
             bail!("{request:?} is no question about one fleet instance")
         }
     };
@@ -333,7 +394,8 @@ pub fn serve() -> Result<Value> {
             before["pid"]
         ));
     }
-    let panel = HostPanel::default();
+    let (held, shared) = (Mutex::default(), Shared::default());
+    let panel = HostPanel::new(shared.clone());
     // Read once: a port the host settings change to holds from the next start.
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
     let address = match panel.open(port) {
@@ -347,8 +409,7 @@ pub fn serve() -> Result<Value> {
             None
         }
     };
-    let (held, peers) = (Mutex::default(), Peers::default());
-    let runner = Arc::new(Runner { list, log, stop: stop.clone(), held, panel, peers });
+    let runner = Arc::new(Runner { list, log, stop: stop.clone(), held, panel, shared });
     runner.start_listed(listed.checkouts);
     let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG), "panel": address});
     let answerer = Arc::clone(&runner);
@@ -460,7 +521,7 @@ impl Runner {
     }
 
     /// Answers one question asked on the socket.
-    fn answer(self: &Arc<Self>, request: Request) -> Value {
+    fn answer(self: &Arc<Self>, request: Request) -> Reply {
         let held = |key: &str| {
             let holding = self.holding();
             match holding.values().find(|held| held.repo == key) {
@@ -475,9 +536,11 @@ impl Runner {
             Request::Stop { checkout } => self.stop_checkout(&checkout),
             Request::StopAll => self.stop_all(),
             Request::Checkouts => Ok(self.checkouts()),
+            Request::Exclusive { ticket } => return self.shared.queue.answer(ticket),
+            Request::Shared => Ok(self.shared.said()),
             about => about_instance(&about, held),
         };
-        answered.unwrap_or_else(|error| crate::error_json(&error))
+        Reply::Line(answered.unwrap_or_else(|error| crate::error_json(&error)))
     }
 
     /// The checkouts it holds a fleet instance of → {"held": [{checkout,
@@ -678,8 +741,8 @@ impl Runner {
             };
             let held = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 let Reach { wakes } = reach.clone();
-                let peers = self.peers.clone();
-                let holder = Holder { stop: stop.clone(), echo, wakes, peers, show: Some(show) };
+                let shared = self.shared.clone();
+                let holder = Holder { stop: stop.clone(), echo, wakes, shared, show: Some(show) };
                 Repo::at(root).and_then(|repo| instance::hold(&repo, &start, holder))
             }));
             let held = held.unwrap_or_else(|panic| {
@@ -1475,8 +1538,8 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
     let key = checkout_list::repo_of(checkout).ok();
     // Its fleet instance's id, once its start is logged.
     let instance: Arc<Mutex<Option<String>>> = Arc::default();
-    let (held, named) = (reach.clone(), Arc::clone(&instance));
-    let panel = Arc::new(HostPanel::default());
+    let (held, named, shared) = (reach.clone(), Arc::clone(&instance), Shared::default());
+    let panel = Arc::new(HostPanel::new(shared.clone()));
     let port = host_settings::of_host().map_or(host_settings::PANEL_PORT, |said| said.panel_port());
     let address = panel.open(port).map(|(address, _)| address);
     let address = address.inspect_err(|error| {
@@ -1488,9 +1551,12 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
         Arc::new(move |part| panel.shown(&root, part))
     };
     let about = json!({"pid": pid, "version": VERSION, "foreground": true, "panel": address.ok()});
+    let answerer = shared.clone();
     let answering = runner_socket::serve(runner_socket::listen()?, about, move |request| {
         let answered = match request {
             Request::Version => Ok(json!({})),
+            Request::Exclusive { ticket } => return answerer.queue.answer(ticket),
+            Request::Shared => Ok(answerer.said()),
             Request::Checkouts => {
                 let instance = named.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 Ok(json!({"held": [{"checkout": root, "instance": *instance}]}))
@@ -1509,7 +1575,7 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
                 })
             }
         };
-        answered.unwrap_or_else(|error| crate::error_json(&error))
+        Reply::Line(answered.unwrap_or_else(|error| crate::error_json(&error)))
     });
     let echo: Echo = Arc::new(move |line| match line {
         Line::Kept(entry) => {
@@ -1520,8 +1586,8 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
         Line::Said(text) => println!("{text}"),
         Line::Warning(warning) => probe::announce(&[warning.to_string()]),
     });
-    let (Reach { wakes }, peers) = (reach, Peers::default());
-    let holder = Holder { stop: stop.instance(), echo, wakes, peers, show: Some(show) };
+    let Reach { wakes } = reach;
+    let holder = Holder { stop: stop.instance(), echo, wakes, shared, show: Some(show) };
     let held = instance::hold(checkout, start, holder);
     // It holds the host no more: a `run` from now on starts a host runner,
     // which waits for the lock.

@@ -26,8 +26,9 @@ use crate::fleet::Fleet;
 use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
+use crate::host_runner::Shared;
 use crate::host_settings;
-use crate::host_sleep::{Checked, HostSleep, Peers};
+use crate::host_sleep::{Checked, HostSleep};
 use crate::hot::{self, Hot};
 use crate::inspection::Inspector;
 use crate::judge::judge;
@@ -993,15 +994,16 @@ pub type Echo = Arc<dyn Fn(Line<'_>) + Send + Sync>;
 pub type Show = Arc<dyn Fn(Panel) + Send + Sync>;
 
 /// What holds a fleet instance's loop — the host runner: the stop it obeys,
-/// where its lines go, what reaches it from outside its loop through the
-/// host runner (docs/adr/0023) — the wakes heard for it, and the host
-/// runner's other fleet instances, which host sleep asks — and where its
-/// part of the panel goes: `None` where none is shown, and none is made.
+/// where its lines go, the wakes heard for it through the host runner
+/// (docs/adr/0023), what the host runner holds for all its fleet instances
+/// (how each stands for host sleep, the inspection running, the exclusive
+/// queue), and where its part of the panel goes: `None` where none is
+/// shown, and none is made.
 pub struct Holder {
     pub stop: Stop,
     pub echo: Echo,
     pub wakes: Wakes,
-    pub peers: Peers,
+    pub shared: Shared,
     pub show: Option<Show>,
 }
 
@@ -1108,7 +1110,8 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// it looks again within `INSPECTING_EVERY` while either is so
 /// (`Inspector`). Unless the host settings keep the host awake, it puts the
 /// host to sleep once every fleet on it has been idle long enough, within
-/// the host's sleep hours (`HostSleep`, docs/adr/0016). It obeys `holder`'s stop — whoever holds the
+/// the host's sleep hours, as its host runner holds how each stands
+/// (`HostSleep`, docs/adr/0016, 0023). It obeys `holder`'s stop — whoever holds the
 /// process listens for the signals — and says each line to its echo.
 pub fn run(
     repo: &Repo,
@@ -1118,7 +1121,7 @@ pub fn run(
     clock: impl Fn() -> u64 + Send + Sync + 'static,
     holder: Holder,
 ) -> Result<Value> {
-    let Holder { stop, echo, wakes, peers, show } = holder;
+    let Holder { stop, echo, wakes, shared, show } = holder;
     let clock: Clock = Arc::new(clock);
     let mut shown = Panel::empty(&Fleet::open(repo, me.now)?, Some(me));
     let mut streak = 0;
@@ -1135,7 +1138,7 @@ pub fn run(
     };
     wakes.telling(during);
     let hot = Hot::default();
-    let mut inspector = Inspector::new(repo);
+    let mut inspector = Inspector::new(repo, &shared.turn);
     {
         let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
@@ -1148,16 +1151,15 @@ pub fn run(
     }
     let standing = Standing {
         instance: me.instance.as_str().to_string(),
-        repo: repo.main_checkout().map(|main| main.display().to_string()).unwrap_or_default(),
-        version: crate::VERSION.to_string(),
         no_host_sleep: host_settings::kept_awake(),
         idle: false,
         since: me.now,
         worked: None,
     };
-    let mut host = HostSleep::open(standing, wakes.waker(), &peers, pacing.host_sleep_after);
+    let mut host = HostSleep::open(standing, &wakes, &shared.standings, pacing.host_sleep_after);
     loop {
         count += 1;
+        host.begins();
         said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });
         me.now = clock();
         // Once: a start takes every claim stamped with this host (docs/adr/0003).
