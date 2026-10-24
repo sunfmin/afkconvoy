@@ -74,7 +74,8 @@ pub struct Named {
 
 /// What a `run` sets one setting to: a value of its own, or back to its
 /// default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum To<T> {
     Default,
     Value(T),
@@ -82,7 +83,7 @@ pub enum To<T> {
 
 impl<T> To<T> {
     /// As a setting keeps it: the default is unsaid.
-    fn kept(self) -> Option<T> {
+    pub fn kept(self) -> Option<T> {
         match self {
             To::Default => None,
             To::Value(value) => Some(value),
@@ -91,7 +92,7 @@ impl<T> To<T> {
 
     /// The word that sets a setting back to its default, or `value` parsed
     /// as `parse` reads it.
-    fn parse(said: &str, parse: impl Fn(&str) -> Result<T, String>) -> Result<To<T>, String> {
+    pub fn parse(said: &str, parse: impl Fn(&str) -> Result<T, String>) -> Result<To<T>, String> {
         match said {
             "default" => Ok(To::Default),
             said => parse(said).map(To::Value),

@@ -8,6 +8,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::checkout_list::{self, Entry, List};
+use crate::concurrency;
 use crate::doctor::read_broken;
 use crate::git::Repo;
 use crate::host_runner::{self, Holding};
@@ -32,7 +33,7 @@ pub fn checkouts() -> Result<Value> {
 /// How the checkout `listed` names stands, as `holding` — what the host
 /// runner said it holds, `None` where none runs — and its tick log have it →
 /// {checkout, repo, instance, state, broken, idle, holding, frontier,
-/// ticked, tick_log}.
+/// concurrency, ticked, tick_log}.
 ///
 /// Its state is `broken` where its tick log says its fleet instance is, as
 /// `doctor` reads it (`read_broken`) of the host its `run` named; else
@@ -41,8 +42,10 @@ pub fn checkouts() -> Result<Value> {
 /// logged; else the last one its tick log names. That instance's last tick
 /// says when it ended, `ticked`, and whether it was idle, the claims it held
 /// and the frontier it left as it did: null with no tick, and the three
-/// where it failed whole. Its repo and its tick log are null where the
-/// checkout is no git checkout any more.
+/// where it failed whole. Its concurrency is the one its fleet instance goes
+/// by (`concurrency::json_of`), read from its config and its entry. Its repo
+/// and its tick log are null where the checkout is no git checkout any more,
+/// and its concurrency {error}.
 fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
     let root = &listed.checkout;
     let repo = Repo::at(root).ok();
@@ -78,6 +81,10 @@ fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
         "idle": last.and_then(|(_, tick)| tick.idle()),
         "holding": stood.map(|(held, _)| held),
         "frontier": stood.map(|(_, frontier)| frontier),
+        "concurrency": match &repo {
+            Some(repo) => concurrency::json_of(repo),
+            None => json!({"error": format!("{} is no git checkout", root.display())}),
+        },
         "ticked": last.map(|(at, _)| at),
         "tick_log": tick_log.map(|log| log.file),
     })

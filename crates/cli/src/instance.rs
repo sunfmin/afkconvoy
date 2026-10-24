@@ -2,6 +2,7 @@
 //! holding one — alone in this process (`run --foreground`) or in the host
 //! runner beside the others (docs/adr/0023).
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,19 +13,24 @@ use serde_json::Value;
 
 use crate::claims::Me;
 use crate::git::Repo;
+use crate::host_settings::To;
 use crate::stop::Stop;
 use crate::tick::{self, Echo, Holder, Line, Pacing};
-use crate::{host_settings, kit, probe};
+use crate::{concurrency, host_settings, kit, probe};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
-/// again starts it the same way; the port its panel is served on from this
-/// start; and the knobs that exist for the tests. What it named of the host
-/// is the host settings' (`host_settings`), which the instance reads as it
-/// goes.
+/// again starts it the same way; what it said of its checkout's concurrency;
+/// the port its panel is served on from this start; and the knobs that exist
+/// for the tests. What it named of the host is the host settings'
+/// (`host_settings`), which the instance reads as it goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Start {
     pub named: Named,
+    /// `--concurrency`: the checkout's, kept with its entry on the list and
+    /// read at each tick (`concurrency`), never with `named`. `None` leaves
+    /// it as it is.
+    pub concurrency: Option<To<NonZeroUsize>>,
     /// `--panel`: served from this start; `panel --open` opens it later.
     pub panel: Option<u16>,
     pub knobs: Knobs,
@@ -129,9 +135,13 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
 /// `run --foreground`: holds it in this process, printing every line as `run`
 /// printed it, until SIGTERM or SIGINT. The checkout list's file and any host
 /// runner are left alone: what it names of the host settings, `settings`,
-/// holds in this process alone, laid over the host's.
+/// holds in this process alone, laid over the host's; and what it says of
+/// its checkout's concurrency, where the list holds no entry of it.
 pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
     host_settings::lay_for_this_process(settings);
+    if let Some(to) = start.concurrency {
+        concurrency::ask(&checkout.dir, to);
+    }
     let stop = Stop::listen();
     let echo: Echo = Arc::new(|line| match line {
         Line::Kept(entry) => println!("{}", entry.said()),

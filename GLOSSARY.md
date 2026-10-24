@@ -15,7 +15,7 @@ A host's one long-running process of the fleet, holding a fleet instance for eac
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
-The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it.
+The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** there — how many claims its fleet instance holds at work at once on that host — which a `run` that names it changes, and its fleet instance reads at each tick; one that says none goes by its repo config's.
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Broken**:
