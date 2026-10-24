@@ -489,6 +489,21 @@ fn panel_open_with_no_host_runner_says_so_and_starts_nothing() {
     assert_eq!(world.host_runner(), None);
 }
 
+#[test]
+fn a_fleet_instance_held_in_the_foreground_serves_the_panel_as_a_host_runner_does() {
+    let world = World::new();
+    world.issue(3, &["ready-for-agent"]);
+    let running = world.running(&["--instance", "alpha", "--host", "h1"]);
+    let first = running.line(SOON).expect("the first tick");
+    assert!(first.starts_with("tick 1: dispatched #3"), "{first}");
+    // said where on its socket alone: what it prints is its ticks, as ever
+    let answer = world.afk_in(&world.root, &["panel", "--open"]).ok();
+    assert_eq!(answer["host_runner"]["foreground"], true, "{answer}");
+    let page = page_with(port_in(&answer["panel"]), "<b>Tick 1</b>");
+    assert_eq!(checkouts(&page), [world.clone.display().to_string()]);
+    assert_eq!(carded(page.node("work"), "at-work"), [3], "{}", page.html);
+}
+
 /// Has the remote lose the base branch the config names: a start of the
 /// fleet instance of the first repo fails its startup probe.
 fn base_branch_gone(world: &World) {

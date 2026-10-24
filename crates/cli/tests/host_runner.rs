@@ -67,7 +67,7 @@ fn each_line_stamped(world: &World) {
 
 /// Waits up to 30 seconds for the host runner's log to hold a line that
 /// starts with `start` → that line.
-fn logged(world: &World, start: &str) -> String {
+pub(crate) fn logged(world: &World, start: &str) -> String {
     let until = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(line) = world.runner_log().into_iter().find(|line| line.starts_with(start)) {
@@ -269,7 +269,7 @@ fn the_host_runner_starts_with_a_fresh_login_shells_environment() {
 
 /// A config whose base branch the remote does not have, committed and
 /// pushed: every start's probe refuses it.
-fn base_branch_gone(world: &World) {
+pub(crate) fn base_branch_gone(world: &World) {
     let config = "```yaml\nbase_branch: release\ngate_command: ./gate.sh\n```\n";
     commit(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["push", "-q", "origin", "main"]);
@@ -858,6 +858,11 @@ fn a_listed_checkout_whose_probe_no_longer_passes_is_broken_and_doctor_says_when
         .iter()
         .any(|finding| finding["what"].as_str().unwrap().starts_with("no `afkconvoy run`"));
     assert!(!alive_or_not, "said as broken, not as dead: {findings:#?}");
+    // a wake reaches it no more: it is told why
+    let woke = world.afk(&["wake"]).ok();
+    assert_eq!(woke["woke"], false, "{woke}");
+    let detail = woke["detail"].as_str().unwrap();
+    assert!(detail.contains("is broken, and waits to be started again"), "{detail}");
 
     // put right, a `run` there starts it at once, and it is back
     commit(&world.clone, "docs/agents/afkconvoy.md", common::CONFIG);

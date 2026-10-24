@@ -27,7 +27,7 @@ use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
 use crate::host_settings;
-use crate::host_sleep::{Checked, HostSleep};
+use crate::host_sleep::{Checked, HostSleep, Peers};
 use crate::hot::{self, Hot};
 use crate::inspection::Inspector;
 use crate::judge::judge;
@@ -43,7 +43,7 @@ use crate::stop::Stop;
 use crate::takeover::{at_start, reclaim, unlock};
 use crate::tend::{cut_train, tend_train};
 use crate::topic::{self, See};
-use crate::wake::{During, Listener, Waker};
+use crate::wake::{During, Wakes};
 use crate::watch::watch;
 
 /// What failed: a step, or the rebuild's read of one claimed issue.
@@ -635,7 +635,8 @@ impl Ticked {
             })
             .collect();
         let mut answer = json!({"did": did, "errors": errors, "held": self.pass.held,
-            "frontier_remaining": self.pass.frontier_remaining, "locks": self.set.locks});
+            "frontier_remaining": self.pass.frontier_remaining, "idle": self.idle().0,
+            "locks": self.set.locks});
         if self.pass.held_back(&self.set) {
             answer["held_back_by"] = json!(self.held_back_by());
         }
@@ -927,7 +928,7 @@ enum Rested {
 /// Sleeps for `sleep`, or until a wake, or until this run is told to stop →
 /// how it ended. A nap the wall clock says took far longer than it was to is
 /// the host waking from a sleep: said as it is noticed.
-fn rest(wakes: &Listener, stop: &Stop, sleep: Duration, (said, clock): (&Said, &Clock)) -> Rested {
+fn rest(wakes: &Wakes, stop: &Stop, sleep: Duration, (said, clock): (&Said, &Clock)) -> Rested {
     let mut left = sleep;
     while !stop.told() {
         let nap = left.min(HEARS_WITHIN);
@@ -974,7 +975,7 @@ pub enum Line<'l> {
     Said(&'l str),
     /// What it warns of: its startup probe's warnings, a worker launch
     /// command with no unattended flag, what it cannot do and does without —
-    /// a socket it cannot listen on, a tick log it cannot keep.
+    /// a tick log it cannot keep.
     Warning(&'l str),
 }
 
@@ -987,12 +988,16 @@ pub type Echo = Arc<dyn Fn(Line<'_>) + Send + Sync>;
 /// host runner, to the page it serves.
 pub type Show = Arc<dyn Fn(Panel) + Send + Sync>;
 
-/// What holds a fleet instance's loop: the stop it obeys, where its lines
-/// go, and where its part of the panel goes — `None` where none is shown,
-/// and none is made.
+/// What holds a fleet instance's loop — the host runner: the stop it obeys,
+/// where its lines go, what reaches it from outside its loop through the
+/// host runner (docs/adr/0023) — the wakes heard for it, and the host
+/// runner's other fleet instances, which host sleep asks — and where its
+/// part of the panel goes: `None` where none is shown, and none is made.
 pub struct Holder {
     pub stop: Stop,
     pub echo: Echo,
+    pub wakes: Wakes,
+    pub peers: Peers,
     pub show: Option<Show>,
 }
 
@@ -1088,8 +1093,9 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// and the next start on this host takes them back (docs/adr/0003); holding
 /// none, it removes its heartbeat. A start removes the heartbeats left by the
 /// runs that could not (`at_start`). It shows its part of the panel to
-/// `holder` after every tick, where that shows one. It keeps a line in its log (`log::Log`) as each tick starts,
-/// with why, and as it ends, and one of each event that reaches it — a wake
+/// `holder` after every tick, where that shows one. It keeps a line in its
+/// log (`log::Log`) as each tick starts, with why, and as it ends, and one of
+/// each event that reaches it — a wake
 /// heard during a tick, said as it is heard — and prints each as it is
 /// written (`Said`); nothing here ever reads the log. It watches what each
 /// worker's processes take, and says as one turns hot and as it stops being
@@ -1108,7 +1114,7 @@ pub fn run(
     clock: impl Fn() -> u64 + Send + Sync + 'static,
     holder: Holder,
 ) -> Result<Value> {
-    let Holder { stop, echo, show } = holder;
+    let Holder { stop, echo, wakes, peers, show } = holder;
     let clock: Clock = Arc::new(clock);
     let mut shown = Panel::empty(&Fleet::open(repo, me.now)?, Some(me));
     let mut streak = 0;
@@ -1123,14 +1129,13 @@ pub fn run(
         let (said, clock) = (Arc::clone(&said), Arc::clone(&clock));
         Box::new(move |during, by| said.keep(clock(), log::What::WokenDuring { during, by }))
     };
-    let warn = |warning: &str| said.warn(warning);
-    let wakes = Listener::open(repo, during, &warn);
+    wakes.telling(during);
     let hot = Hot::default();
     let mut inspector = Inspector::new(repo);
     {
         let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
-        hot::watch(repo, second, clock, hears, hot, stop.clone());
+        hot::watch(repo, second, clock, hears, hot, wakes.waker(), stop.clone());
     }
     let mut cause = Cause::Start;
     let mut by = None;
@@ -1146,7 +1151,7 @@ pub fn run(
         since: me.now,
         worked: None,
     };
-    let mut host = HostSleep::open(standing, Waker::of(repo), pacing.host_sleep_after, &warn);
+    let mut host = HostSleep::open(standing, wakes.waker(), &peers, pacing.host_sleep_after);
     loop {
         count += 1;
         said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });
