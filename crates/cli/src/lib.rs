@@ -117,18 +117,97 @@ pub const NO_HOST_SLEEP_ENV: &str = "AFKCONVOY_NO_HOST_SLEEP";
 /// `build.rs`.
 pub const VERSION: &str = env!("AFKCONVOY_VERSION");
 
+agent_help::binary!("afkconvoy");
+
+/// The groups the manual puts the commands in, each named for who runs it:
+/// each command declares its own, and the guide describes each by its name.
+const OPERATOR: &str = "Run by the operator";
+const DESIGNER: &str = "Run by whoever designs a team";
+const HANDS_WORK: &str = "Run by whoever hands the fleet work";
+const SETS_UP: &str = "Run by whoever sets an agent up";
+const WORKER: &str = "Run by a worker";
+const HUMAN: &str = "Run by a human an issue waits for";
+const HOOK: &str = "Run by a worker's hook";
+const BY_HAND: &str = "One transition by hand";
+const PLUMBING: &str = "The claim plumbing";
+const READER: &str = "Run by whoever reads this manual";
+
 /// The skill file `skill` prints, and the one `npx skills add` installs: a
 /// user's own agent learns from it that afkconvoy is there.
 const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 
-/// `-h` is the one-screen listing; `--help` is `help.txt`, the text an agent
-/// reads to learn the tool. Each subcommand keeps its one line for `-h`, and
-/// its `--help` adds `help/<name>.txt`: when to run it, and what it answers.
-/// `help` is this crate's own, not clap's: it prints a topic too. The
-/// listing goes straight from the usage line to the commands: one line less,
-/// so that `-h` stays one screen.
+// `-h` is clap's one-screen listing, each subcommand by its one line; `--help`
+// is the manual (`manual`), which opens with the doc comment below, the guide:
+// the text an agent reads to learn the tool. `help` is this crate's own, not
+// clap's: it prints a topic too. The listing goes straight from the usage
+// line to the commands: one line less, so that `-h` stays one screen.
+/// afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one `afkconvoy run` — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
+///
+/// This manual is the whole of afkconvoy's help: this guide, the way in; then every command under who runs it; then the topics, what belongs to no one command. `afkconvoy -h` lists the commands on one screen.
+///
+/// ## What it needs
+///
+/// - A config on the base branch: the first yaml block of {const:CONFIG_FILE}.
+/// - `gh` logged in as a user who may push to the repo.
+/// - `orca` on the PATH: every worker is started through it. It is running (`orca open`) and was given this checkout, once (`orca repo add --path "$PWD"`).
+/// - `claude` on the PATH and logged in, when it is what starts a worker.
+/// - `pi` there too, holding credentials for a provider (`/login` at its prompt), or `codex`, logged in (`codex login`): each when a stage or a patrol is on it, only then.
+///
+/// `plan`, `tick` and `run` check these first. With one missing, logged out, not running or not given the checkout they do nothing and the error gives the line to run for each: nothing is installed, started or added for you.
+///
+/// ## What to run first, in a checkout of the repo
+///
+/// 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only where the config names a team: does the team load? A team is designed first: see designing a team, below.
+/// 2. `afkconvoy plan`: what a tick would act on. It changes nothing.
+/// 3. `afkconvoy run`: the fleet instance, tick after tick, until stopped.
+///
+/// And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
+///
+/// ## What a command answers
+///
+/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. `run` instead prints its log — a line as each tick starts and one as it ends — until stopped, `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, and `exclusive` as its command does.
+///
+/// ## The commands, by who runs them
+///
+/// Read `afkconvoy <command> --help` before the first time you run one. The commands below are grouped by who runs them:
+///
+/// - **{const:OPERATOR}** — starting, watching or stopping a fleet. Read these first. `doctor` is what to run when something looks wrong, or you are asked whether the fleet is working: it says what the fleet on this host is doing and what is wrong, each finding with the line that fixes it.
+/// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, the others: to review a workflow, to try one out, or to ask where an issue is in it.
+/// - **{const:HANDS_WORK}** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read it before opening the first: it says which workflow takes which issue and the line that opens one, and creates the labels.
+/// - **{const:SETS_UP}** — it prints the skill file that sends their agent to this text.
+/// - **{const:WORKER}** — its prompt names each one as it is needed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
+/// - **{const:HUMAN}** — in a bound repo. Read them to answer an escalated issue, to put an issue at a stage of your choosing, or to see what a `by: human` stage asks.
+/// - **{const:HOOK}** — its harness asks it before each thing a bound repo's worker does. Nobody runs it by hand. Read it to learn what a worker is refused, and why one was.
+/// - **{const:BY_HAND}** — each is something a tick does on its own. Read one when a plan shows a transition the fleet is not making, or you are told to make it yourself.
+/// - **{const:PLUMBING}** — what the transitions are built on. Read these only to inspect or repair claims and heartbeats on the remote.
+///
+/// ## The topics
+///
+/// What belongs to no one command. `afkconvoy help <topic>` prints one: Markdown, as `--help` itself is, and no JSON object.
+///
+/// ## Rules to know before you start
+///
+/// - One fleet instance per host per repo. A second `run` on a host takes the first one's claims: never start one beside a fleet that is running.
+/// - `run` never returns. Do not wait on it: start it in the background and read its lines, or use `tick` for one pass that exits.
+/// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. Run `afkconvoy kit` at a terminal to inspect or edit it. `--worker-command` is gone. A missing harness refuses the start.
+/// - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard (`afkconvoy run --help` says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
+///
+/// ## Designing a team, for a bound repo
+///
+/// A repo whose config names a team — `team: owner/repo`, or `team: owner/repo/path` for a team in a subdirectory — is a bound repo. An issue of it that carries a flow label is walked through that workflow's stages, each performed by a new worker started in the stage's role. A team and a role are each a directory of text files — a whole repo, or a subdirectory of one, so that one repo can hold a team and every role it names — and designing one is editing them. Nothing else holds any of it.
+///
+/// What those files are, and every key of them, is three topics: [`afkconvoy help team`](help:team) (a team's directory and a role's), [`afkconvoy help workflows`](help:workflows), [`afkconvoy help patrols`](help:patrols).
+///
+/// The loop, from nothing:
+///
+/// 1. `afkconvoy scaffold team <dir> --role <name> --repo <owner/repo>`: a team's skeleton and, under roles/<name>/, each role's — `--role` once for each — in one repo created on GitHub, with one workflow of one stage, by the first role. For more than one stage — a review, a landing role — read [`afkconvoy help example`](help:example) first: `--example hospital`.
+/// 2. `afkconvoy scaffold role <dir>/roles/<name>`: one more role's skeleton, in that checkout: it answers the line to add to {const:TEAM_FILE}. A role several teams share is a repo of its own instead: `--repo`.
+/// 3. `afkconvoy check --dir <dir> --team <owner/repo>`: `afkconvoy draft` with the same flags first drafts the roster into {const:TEAM_FILE}. Edit a file, run it, and read the faults: each names its file and key. Repeat until it exits 0. `check` reads a role from GitHub only: a role's edit counts once it is pushed to its default branch.
+/// 4. Push the team, name it under `team` in the config of the repo it is to work, and run `afkconvoy check` in that checkout. Then `show` draws each workflow and `rehearse` tries one out.
+///
+/// A role's skill is a file you write ([`afkconvoy help skill-file`](help:skill-file) says its form), or one added with the skills installer you already use, run in the role's directory and committed there. The fleet installs no skill and wraps no installer.
 #[derive(Parser)]
-#[command(name = "afkconvoy", version = VERSION, about, long_about = guide(), disable_help_subcommand = true,
+#[command(name = "afkconvoy", version = VERSION, about, verbatim_doc_comment, disable_help_subcommand = true,
     help_template = "{before-help}{about-with-newline}\n{usage-heading} {usage}\n{all-args}{after-help}")]
 struct Cli {
     /// The time to act at, in epoch seconds [default: the clock's]
@@ -141,12 +220,15 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Inspect and edit this host's worker launch commands
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/kit.txt"))]
     Kit,
     /// Cast every uncast issue that has a choice to make, in one session of the host kit's first
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/cast.txt"))]
     Cast,
     /// Print the repo's config as JSON, defaults filled
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/config.txt"))]
     Config {
         /// The config file [default: docs/agents/afkconvoy.md of this checkout]
@@ -154,6 +236,7 @@ enum Command {
         file: Option<PathBuf>,
     },
     /// Read a team and its workflows: what was read, or every fault
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/check.txt"))]
     Check {
         #[command(flatten)]
@@ -161,6 +244,7 @@ enum Command {
     },
     /// Write the skeleton of a team with its roles, or of one role, or a whole example team,
     /// and create its repo on GitHub if asked
+    #[command(next_help_heading = DESIGNER)]
     #[command(after_long_help = include_str!("help/scaffold.txt"))]
     Scaffold {
         /// What to write the skeleton of
@@ -186,12 +270,15 @@ enum Command {
         public: bool,
     },
     /// Say how to open an issue the fleet will work, and create the labels that takes
+    #[command(next_help_heading = HANDS_WORK)]
     #[command(after_long_help = include_str!("help/flows.txt"))]
     Flows,
     /// Print the skill file that sends an agent of your own to `--help`: text, not JSON
+    #[command(next_help_heading = SETS_UP)]
     #[command(after_long_help = include_str!("help/skill.txt"))]
     Skill,
     /// Draw a team's workflows as graphs, or say where one issue is in its workflow
+    #[command(next_help_heading = DESIGNER)]
     #[command(after_long_help = include_str!("help/show.txt"))]
     Show {
         /// The workflow to draw [default: every workflow of the team] — or an issue's
@@ -206,6 +293,7 @@ enum Command {
         team: TeamArgs,
     },
     /// Draft a team's roster from this host's host kit, into the team file of its working tree
+    #[command(next_help_heading = DESIGNER)]
     #[command(after_long_help = include_str!("help/draft.txt"))]
     Draft {
         /// The team's working tree [default: this directory]
@@ -220,6 +308,7 @@ enum Command {
         yes: bool,
     },
     /// Say where an issue would be after each of a list of verdicts, starting no worker
+    #[command(next_help_heading = DESIGNER)]
     #[command(after_long_help = include_str!("help/rehearse.txt"))]
     Rehearse {
         /// The workflow the issue follows
@@ -232,6 +321,7 @@ enum Command {
         team: TeamArgs,
     },
     /// Say what the fleet on this host is doing and what is wrong with it, each finding with its fix
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/doctor.txt"))]
     Doctor {
         #[command(flatten)]
@@ -241,6 +331,7 @@ enum Command {
         host: Option<String>,
     },
     /// Show what a tick would act on, and change nothing
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/plan.txt"))]
     Plan {
         #[command(flatten)]
@@ -250,6 +341,7 @@ enum Command {
         instance: Option<InstanceId>,
     },
     /// Run the fleet: tick after tick, until stopped
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/run.txt"))]
     Run {
         /// The fleet instance to run as [default: a new one, named for this host]
@@ -290,6 +382,7 @@ enum Command {
         second_ms: u64,
     },
     /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/panel.txt"))]
     Panel {
         /// The fleet instance whose claims are its own [default: nobody's]
@@ -306,6 +399,7 @@ enum Command {
         port: Option<u16>,
     },
     /// Run one reconciliation pass and exit
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/tick.txt"))]
     Tick {
         #[command(flatten)]
@@ -314,6 +408,7 @@ enum Command {
         agent: AgentArgs,
     },
     /// Run the gate in this worktree and put a green run on record (a worker's command)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/gate.txt"))]
     Gate {
         /// First merge in what the PR lands behind: the landing train, or the base branch
@@ -324,6 +419,7 @@ enum Command {
         host: Option<String>,
     },
     /// Put this worktree's PR on the landing train (a worker's command), or land the train
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/land.txt"))]
     Land {
         /// The issue the PR closes
@@ -345,6 +441,7 @@ enum Command {
     },
     /// Declare the verdict that ends a stage, with the text it produced (a worker's
     /// command, and a human's for a stage nobody holds)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/verdict.txt"))]
     Verdict {
         /// What the stage declares: pass, reject, blocked, already-satisfied, or escalate
@@ -378,6 +475,7 @@ enum Command {
     },
     /// Answer an escalated issue with a ruling: its stage runs again under it (a human's
     /// command, and a consult's for the stage that asked it)
+    #[command(next_help_heading = HUMAN)]
     #[command(after_long_help = include_str!("help/rule.txt"))]
     Rule {
         #[command(flatten)]
@@ -402,6 +500,7 @@ enum Command {
         model: Option<String>,
     },
     /// Send an issue to a named stage of its workflow (a human's command, and a consult's)
+    #[command(next_help_heading = HUMAN)]
     #[command(after_long_help = include_str!("help/send.txt"))]
     Send {
         #[command(flatten)]
@@ -428,6 +527,7 @@ enum Command {
         consult: bool,
     },
     /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/intake.txt"))]
     Intake {
         #[command(flatten)]
@@ -452,6 +552,7 @@ enum Command {
         blocked_by: Vec<u64>,
     },
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/lock.txt"))]
     Lock {
         #[command(flatten)]
@@ -461,12 +562,14 @@ enum Command {
         role: Option<String>,
     },
     /// Have a patrol run now, past its interval and its daily bound: the next tick runs it
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/patrol-now.txt"))]
     PatrolNow {
         /// The patrol, as the repo's config names it under `patrols`
         name: String,
     },
     /// Declare a patrol's run or a proposal's over: the next tick ends it (a worker's command)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/over.txt"))]
     Over {
         /// The run, as its brief names it
@@ -476,6 +579,7 @@ enum Command {
     /// Say what an inspection of a hot worker or of the host found: its `run` types it at
     /// the worker and leaves it on the issue, or keeps it beside admission's reading (an
     /// inspection's command)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/inspected.txt"))]
     Inspected {
         /// What it found: of a hot worker wrong, heavy or not-its; of the host reclaimable,
@@ -494,6 +598,7 @@ enum Command {
     },
     /// Run a heavy command alone on this host, once no other `exclusive` command runs (a
     /// worker's command)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/exclusive.txt"))]
     Exclusive {
         /// The command and its arguments, after `--`
@@ -501,9 +606,11 @@ enum Command {
         command: Vec<OsString>,
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
+    #[command(next_help_heading = HOOK)]
     #[command(after_long_help = include_str!("help/guard.txt"))]
     Guard,
     /// Start a fresh worker on one issue
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/dispatch.txt"))]
     Dispatch {
         #[command(flatten)]
@@ -517,12 +624,14 @@ enum Command {
         start: dispatch::StartFrom,
     },
     /// Show what `dispatch` would continue an issue from, without acting
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/recovery.txt"))]
     Recovery {
         #[command(flatten)]
         issue: IssueArg,
     },
     /// Close one of my claims whose issue needed no change
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/close.txt"))]
     Close {
         #[command(flatten)]
@@ -531,6 +640,7 @@ enum Command {
         who: Who,
     },
     /// Hand one of my claims to a human
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/escalate.txt"))]
     Escalate {
         #[command(flatten)]
@@ -542,6 +652,7 @@ enum Command {
         reason: String,
     },
     /// Leave one of my claims waiting on the issues its worker declared it blocked by
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/park.txt"))]
     Park {
         #[command(flatten)]
@@ -550,6 +661,7 @@ enum Command {
         who: Who,
     },
     /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/nudge.txt"))]
     Nudge {
         #[command(flatten)]
@@ -558,6 +670,7 @@ enum Command {
         who: Who,
     },
     /// Replace the silent worker of one of my claims whose PR is joining the train, once
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/restart.txt"))]
     Restart {
         #[command(flatten)]
@@ -568,6 +681,7 @@ enum Command {
         agent: AgentArgs,
     },
     /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/switch.txt"))]
     Switch {
         /// The harness to move onto: claude-code, pi, codex or dsh
@@ -591,12 +705,14 @@ enum Command {
         agent: AgentArgs,
     },
     /// Give up the landing train, its worker silent past a nudge, with nothing landed
+    #[command(next_help_heading = BY_HAND)]
     #[command(after_long_help = include_str!("help/abandon.txt"))]
     Abandon {
         #[command(flatten)]
         who: Who,
     },
     /// Take another fleet instance's claims without waiting for the lease
+    #[command(next_help_heading = OPERATOR)]
     #[command(after_long_help = include_str!("help/takeover.txt"))]
     Takeover {
         /// Show every instance the remote remembers, and take nothing
@@ -615,12 +731,15 @@ enum Command {
         host: Option<String>,
     },
     /// End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
+    #[command(next_help_heading = WORKER)]
     #[command(after_long_help = include_str!("help/wake.txt"))]
     Wake,
     /// List every claim and heartbeat on the remote
+    #[command(next_help_heading = PLUMBING)]
     #[command(after_long_help = include_str!("help/scan.txt"))]
     Scan,
     /// Claim one issue for a fleet instance
+    #[command(next_help_heading = PLUMBING)]
     #[command(after_long_help = include_str!("help/claim.txt"))]
     Claim {
         #[command(flatten)]
@@ -629,6 +748,7 @@ enum Command {
         who: Who,
     },
     /// Release a fleet instance's own claim on one issue
+    #[command(next_help_heading = PLUMBING)]
     #[command(after_long_help = include_str!("help/release.txt"))]
     Release {
         #[command(flatten)]
@@ -637,12 +757,14 @@ enum Command {
         who: Who,
     },
     /// Refresh a fleet instance's heartbeat, if it is due
+    #[command(next_help_heading = PLUMBING)]
     #[command(after_long_help = include_str!("help/heartbeat.txt"))]
     Heartbeat {
         #[command(flatten)]
         who: Who,
     },
     /// Print this message, the help of the given command, or a help topic
+    #[command(next_help_heading = READER)]
     Help {
         /// A command, or a topic: `--help` lists both
         name: Option<String>,
@@ -814,25 +936,94 @@ fn cli() -> clap::Command {
     cli
 }
 
-/// What `--help` opens with: `help.txt`, with the topics listed where it says
-/// `{topics}`.
-fn guide() -> String {
-    include_str!("help.txt").replace("{topics}", &topic::listing())
+/// The manual: `--help` answers it whole, and `help <topic>` one topic of
+/// it. Its text is the guide (`Cli`'s doc comment), each command's and each
+/// topic's, in the order given here: the way in first, the reference last.
+pub fn manual() -> agent_help::Help {
+    use topic::*;
+    let mut help = agent_help::Help::new(cli())
+        .topic::<Concepts>()
+        .topic::<Team>()
+        .topic::<Roles>()
+        .topic::<Roster>()
+        .topic::<SkillFile>()
+        .topic::<Workflows>()
+        .topic::<Patrols>()
+        .topic::<Example>()
+        .topic::<ExampleRun>()
+        .topic::<Cache>()
+        .topic::<Humans>()
+        .topic::<Troubleshooting>()
+        .topic::<Glossary>()
+        .constant("CONFIG_FILE", config::FILE)
+        .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
+        .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
+        .constant("GATE_SECONDS", afkconvoy_core::config::GATE_SECONDS)
+        .constant("INTAKE_LIMIT", afkconvoy_core::config::INTAKE_LIMIT)
+        .constant("MAX_REWORK", afkconvoy_core::team::MAX_REWORK)
+        .constant("MAX_CONSECUTIVE_REWORK", afkconvoy_core::team::MAX_CONSECUTIVE_REWORK)
+        .constant("PATROL_NAME_MOST", afkconvoy_core::team::PATROL_NAME_MOST)
+        .constant("SLOW_GATE_LANDINGS", afkconvoy_core::slow_gate::LANDINGS)
+        .constant("SLOW_GATE_PERCENT", afkconvoy_core::slow_gate::PERCENT)
+        .constant("HARNESS_PROBE_MINUTES", harness_down::PROBE_SECONDS / 60)
+        .constant("LOG_KEPT_HOURS", log::KEPT_FOR / 3600)
+        .constant("LOG_KEPT_LEAST", log::KEPT_LEAST)
+        .constant("LOG_KEPT_MOST", log::KEPT_MOST);
+    for (name, group) in [
+        ("OPERATOR", OPERATOR),
+        ("DESIGNER", DESIGNER),
+        ("HANDS_WORK", HANDS_WORK),
+        ("SETS_UP", SETS_UP),
+        ("WORKER", WORKER),
+        ("HUMAN", HUMAN),
+        ("HOOK", HOOK),
+        ("BY_HAND", BY_HAND),
+        ("PLUMBING", PLUMBING),
+    ] {
+        help = help.constant(name, group);
+    }
+    help
 }
 
-/// What `help` prints: the guide with no name, the long help of the command
-/// called `name`, or the topic called that. `None` for any other name.
-fn help(name: Option<&str>) -> Option<String> {
+/// Whether `args` ask for the whole manual: `--help` before any command,
+/// where clap would answer with the root's help. `-h` is clap's own.
+fn asks_for_manual(args: &[OsString]) -> bool {
+    let mut args = args.iter().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--help") => return true,
+            Some("--now") => {
+                args.next();
+            }
+            Some(arg) if arg.starts_with("--now=") => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// What `help` prints: the manual with no name, the topic called `name`, or
+/// the long help of the command called that. `Err`: what it is refused with.
+fn help(name: Option<&str>) -> Result<String, String> {
+    let manual = manual();
+    let Some(name) = name else {
+        return manual.manual().map_err(|e| e.to_string());
+    };
+    let unknown = match manual.topic_help(name) {
+        Ok(topic) => return Ok(topic),
+        Err(error) => error,
+    };
     let mut cli = cli();
     // Built, so that a command's usage line names the whole command line.
     cli.build();
-    let Some(name) = name else {
-        return Some(cli.render_long_help().to_string());
-    };
-    match cli.find_subcommand_mut(name) {
-        Some(command) => Some(command.render_long_help().to_string()),
-        None => topic::text(name).map(str::to_string),
+    if let Some(command) = cli.find_subcommand_mut(name) {
+        return Ok(command.render_long_help().to_string());
     }
+    let topics = unknown.faults().iter().find_map(|fault| match fault {
+        agent_help::Fault::UnknownTopic { topics, .. } => Some(topics.clone()),
+        _ => None,
+    });
+    Err(topic::unknown(name, &topics.unwrap_or_default()))
 }
 
 fn repo(text: &str) -> Result<RepoName, String> {
@@ -941,6 +1132,16 @@ impl AgentArgs {
 /// harness that asks it, in that harness's way: for Claude Code, a hook's,
 /// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
+    let args: Vec<OsString> = args.into_iter().collect();
+    if asks_for_manual(&args) {
+        return match help(None) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(1, &error),
+        };
+    }
     let parsed =
         cli().try_get_matches_from(args).and_then(|matches| Cli::from_arg_matches(&matches));
     let cli = match parsed {
@@ -956,11 +1157,13 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         return exclusive::exclusive(command, || cli.now.unwrap_or_else(clock));
     }
     if let Command::Help { name } = &cli.command {
-        let Some(text) = help(name.as_deref()) else {
-            return fail(2, &topic::unknown(name.as_deref().unwrap_or_default()));
+        return match help(name.as_deref()) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(2, &error),
         };
-        print!("{text}");
-        return ExitCode::SUCCESS;
     }
     let acting = cli.command.acting();
     let now = || cli.now.unwrap_or_else(clock);

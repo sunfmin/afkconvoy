@@ -23,11 +23,11 @@ use crate::copies::cache;
 use crate::git::Repo;
 
 /// How far back a log keeps every line, in seconds: a day.
-const KEPT_FOR: u64 = 86_400;
+pub(crate) const KEPT_FOR: u64 = 86_400;
 /// The fewest lines a log is cut back to, however old they are.
-const KEPT_LEAST: usize = 200;
+pub(crate) const KEPT_LEAST: usize = 200;
 /// The most lines a log holds, however new they are.
-const KEPT_MOST: usize = 5000;
+pub(crate) const KEPT_MOST: usize = 5000;
 
 /// One line of the log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

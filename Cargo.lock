@@ -7,6 +7,7 @@ name = "afkconvoy"
 version = "0.5.11"
 dependencies = [
  "afkconvoy-core",
+ "agent-help",
  "anyhow",
  "clap",
  "gethostname",
@@ -28,6 +29,28 @@ dependencies = [
  "proptest",
  "serde",
  "serde_yaml",
+]
+
+[[package]]
+name = "agent-help"
+version = "0.1.0"
+source = "git+https://github.com/sunfmin/agent-cli#f82419e283ca8e02a03abf6b1ec22ec1f6ad1f33"
+dependencies = [
+ "agent-help-derive",
+ "clap",
+ "flux-alloc",
+ "flux-core",
+]
+
+[[package]]
+name = "agent-help-derive"
+version = "0.1.0"
+source = "git+https://github.com/sunfmin/agent-cli#f82419e283ca8e02a03abf6b1ec22ec1f6ad1f33"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

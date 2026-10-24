@@ -1,74 +1,87 @@
-//! The help topics: what belongs to no one command, printed by
-//! `afkconvoy help <topic>` as plain text. `TOPICS` is the one place a topic
-//! is named: `--help` lists what it holds, and adding a topic is adding its
-//! file and its line here.
+//! The help topics: what belongs to no one command, each a type whose doc
+//! comment is its Markdown, printed by `afkconvoy help <topic>` and placed in
+//! the manual in the order `manual` registers them. A topic is named nowhere
+//! else: a message points at one by its `REFERENCE`.
 
 use afkconvoy_core::team::{Fault, PATROLS, TEAM_FILE, WORKFLOWS};
+use agent_help::{Topic, TopicRef};
 use serde::{Serialize, Serializer};
 
 use crate::config;
 
-/// One help topic: the name it is asked for by, the line `--help` gives it,
-/// and its whole text.
-pub struct Topic {
-    pub name: &'static str,
-    pub line: &'static str,
-    pub text: &'static str,
-}
+#[derive(Topic)]
+#[topic(name = "concepts")]
+#[doc = include_str!("help/topics/concepts.md")]
+pub struct Concepts;
 
-/// A topic that is not the repository's own glossary: the file
-/// `help/topics/<name>.txt`.
-macro_rules! topic {
-    ($name:literal, $line:literal) => {
-        Topic {
-            name: $name,
-            line: $line,
-            text: include_str!(concat!("help/topics/", $name, ".txt")),
-        }
-    };
-}
+#[derive(Topic)]
+#[topic(name = "team")]
+#[doc = include_str!("help/topics/team.md")]
+pub struct Team;
 
-/// The topics, in the order `--help` lists them: the way in first, the
-/// reference last.
-pub const TOPICS: &[Topic] = &[
-    topic!("concepts", "one issue from intake to landing, and the four things that carry it"),
-    topic!("team", "a team's directory, its file, how it names a role, binding a repo"),
-    topic!("roles", "what a role is, what goes where in one, and the four kinds of text"),
-    topic!("roster", "what each role's workers may run, a role's range, an issue's casting"),
-    topic!("skill-file", "a skill's file: where it is, its frontmatter, what `check` holds it to"),
-    topic!("workflows", "stages, verdicts, rework, a consult, a landing: a workflow's file"),
-    topic!("patrols", "a role run on a schedule: a patrol's file, intake, the fleet lock"),
-    topic!("example", "the team `scaffold --example hospital` writes, read file by file"),
-    topic!("example-run", "that team at work: what a host needs, and one issue's run"),
-    topic!("cache", "the cache directory: where it is on this host, what moves it, what it holds"),
-    topic!("humans", "every way the fleet stops for a human, and the command that answers"),
-    topic!("troubleshooting", "a symptom, its cause and its fix: each finding, each refusal"),
-    Topic {
-        name: "glossary",
-        line: "every term the help uses, each with its one definition",
-        text: include_str!("../../../GLOSSARY.md"),
-    },
-];
+#[derive(Topic)]
+#[topic(name = "roles")]
+#[doc = include_str!("help/topics/roles.md")]
+pub struct Roles;
 
-/// The text of the topic called `name`.
-pub fn text(name: &str) -> Option<&'static str> {
-    TOPICS.iter().find(|topic| topic.name == name).map(|topic| topic.text)
-}
+#[derive(Topic)]
+#[topic(name = "roster")]
+#[doc = include_str!("help/topics/roster.md")]
+pub struct Roster;
 
-/// The topics as `--help` lists them: a name and its line, one topic a row.
-pub fn listing() -> String {
-    let width = TOPICS.iter().map(|topic| topic.name.len()).max().unwrap_or(0) + 2;
-    let rows = TOPICS.iter().map(|topic| format!("      {:<width$}{}", topic.name, topic.line));
-    rows.collect::<Vec<_>>().join("\n")
-}
+#[derive(Topic)]
+#[topic(name = "skill-file")]
+#[doc = include_str!("help/topics/skill-file.md")]
+pub struct SkillFile;
 
-/// What `help` refuses a name with that is neither a command's nor a topic's.
-pub fn unknown(name: &str) -> String {
-    let names: Vec<_> = TOPICS.iter().map(|topic| topic.name).collect();
+#[derive(Topic)]
+#[topic(name = "workflows")]
+#[doc = include_str!("help/topics/workflows.md")]
+pub struct Workflows;
+
+#[derive(Topic)]
+#[topic(name = "patrols")]
+#[doc = include_str!("help/topics/patrols.md")]
+pub struct Patrols;
+
+#[derive(Topic)]
+#[topic(name = "example")]
+#[doc = include_str!("help/topics/example.md")]
+pub struct Example;
+
+#[derive(Topic)]
+#[topic(name = "example-run")]
+#[doc = include_str!("help/topics/example-run.md")]
+pub struct ExampleRun;
+
+#[derive(Topic)]
+#[topic(name = "cache")]
+#[doc = include_str!("help/topics/cache.md")]
+pub struct Cache;
+
+#[derive(Topic)]
+#[topic(name = "humans")]
+#[doc = include_str!("help/topics/humans.md")]
+pub struct Humans;
+
+#[derive(Topic)]
+#[topic(name = "troubleshooting")]
+#[doc = include_str!("help/topics/troubleshooting.md")]
+pub struct Troubleshooting;
+
+/// The repository's own glossary: every term the help uses, each with its one
+/// definition. Nothing else is edited for what `help glossary` prints.
+#[derive(Topic)]
+#[topic(name = "glossary")]
+#[doc = include_str!("../../../GLOSSARY.md")]
+pub struct Glossary;
+
+/// `help` refuses `name`, neither a command nor one of `topics`.
+pub fn unknown(name: &str, topics: &[&str]) -> String {
     format!(
         "`{name}` is neither a command nor a help topic. The topics: {}. The commands: \
          `afkconvoy -h` lists them.",
-        names.join(", ")
+        topics.join(", ")
     )
 }
 
@@ -89,20 +102,20 @@ impl See {
     pub const ALL: &[See] =
         &[See::Team, See::Workflows, See::Patrols, See::Humans, See::Troubleshooting];
 
-    /// The name of the topic, as `TOPICS` has it.
-    pub fn topic(self) -> &'static str {
+    /// The command that prints the topic.
+    pub fn reference(self) -> TopicRef {
         match self {
-            See::Team => "team",
-            See::Workflows => "workflows",
-            See::Patrols => "patrols",
-            See::Humans => "humans",
-            See::Troubleshooting => "troubleshooting",
+            See::Team => Team::REFERENCE,
+            See::Workflows => Workflows::REFERENCE,
+            See::Patrols => Patrols::REFERENCE,
+            See::Humans => Humans::REFERENCE,
+            See::Troubleshooting => Troubleshooting::REFERENCE,
         }
     }
 
     /// The command that prints the topic: what `see` holds.
     pub fn line(self) -> String {
-        format!("afkconvoy help {}", self.topic())
+        self.reference().to_string()
     }
 
     /// The topic that describes the file `fault` is in: a workflow's, a
@@ -173,11 +186,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_see_names_a_topic_there_is() {
+    fn every_see_names_a_topic_the_manual_answers() {
+        let manual = crate::manual();
         for see in See::ALL {
             let line = see.line();
-            let name = line.strip_prefix("afkconvoy help ").unwrap();
-            assert!(text(name).is_some(), "a `see` says `{line}`, and there is no topic {name}");
+            let name = see.reference().topic();
+            assert_eq!(line, format!("afkconvoy help {name}"));
+            assert!(manual.topic_help(name).is_ok(), "a `see` says `{line}`, and there is no topic");
         }
     }
 

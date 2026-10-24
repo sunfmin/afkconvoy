@@ -11,7 +11,7 @@ use crate::git::Repo;
 use crate::orca::Worktree;
 
 const FAILURES: usize = 3;
-const PROBE_SECONDS: u64 = 300;
+pub(crate) const PROBE_SECONDS: u64 = 300;
 
 #[derive(Debug)]
 pub struct Held;

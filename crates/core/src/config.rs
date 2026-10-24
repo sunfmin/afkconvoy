@@ -53,6 +53,10 @@ impl EscalateTo {
 /// The gate limit of a repo that declares none, in seconds: an hour.
 pub const GATE_SECONDS: u64 = 3600;
 
+/// The most open issues a bound repo's workers take in, where it declares no
+/// `intake_limit`.
+pub const INTAKE_LIMIT: u64 = 50;
+
 /// The keys as a repo wrote them: any may be left out, none is yet checked.
 /// A key that is not one of these is refused where the file is read.
 #[derive(Debug, Default, Deserialize)]
@@ -213,7 +217,7 @@ impl Config {
             Some(team) => Some(Bound {
                 team: repo("team", team)?,
                 patrols: settings.patrols.unwrap_or_default(),
-                intake_limit: settings.intake_limit.unwrap_or(50),
+                intake_limit: settings.intake_limit.unwrap_or(INTAKE_LIMIT),
             }),
             None if settings.patrols.is_some() => return Err(ConfigError::NeedsTeam("patrols")),
             None if settings.intake_limit.is_some() => {
