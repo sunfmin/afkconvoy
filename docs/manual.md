@@ -49,7 +49,7 @@ What belongs to no one command. `afkconvoy help <topic>` prints one: Markdown, a
 ## Rules to know before you start
 
 - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
-- `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until it is stopped. `tick` is one pass that exits.
+- `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A missing harness refuses the start.
 - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard (`afkconvoy run --help` says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 
@@ -560,13 +560,13 @@ With `--panel <port>` its checkout's fleet instance serves the panel on that por
 
 Started without it — and started again by the host runner, which keeps no `--panel` — a fleet instance serves the same page once `afkconvoy panel --open` asks it to, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then logs that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
 
-Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
+Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; the checkout's fleet instance is stopping, told by `afkconvoy stop`; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
 
 ##### What trips you up
 
-- Stop the host runner with SIGTERM to its pid, `host_runner.pid` in any `run`'s answer: each fleet instance finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps — and the host runner exits once every one has, keeping the checkout list: the next `run` starts every checkout on it. No claim is released on the way out and no worker is stopped: the workers work on, and the next start on this host takes the claims back. Holding no claim, a fleet instance removes its heartbeat from the remote; holding one, it leaves it, and that next start removes it. A second signal ends the host runner at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run and a proposal it takes back are ended by its first tick once their worker is gone or has stopped, as any run of its own.
+- Stop the host runner with `afkconvoy stop --all`, or SIGTERM to its pid, `host_runner.pid` in any `run`'s answer: each fleet instance finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps — and the host runner exits once every one has, keeping the checkout list: the next `run` starts every checkout on it. No claim is released on the way out and no worker is stopped: the workers work on, and the next start on this host takes the claims back. Holding no claim, a fleet instance removes its heartbeat from the remote; holding one, it leaves it, and that next start removes it. A second signal ends the host runner at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run and a proposal it takes back are ended by its first tick once their worker is gone or has stopped, as any run of its own.
 - Ctrl-C while `run` waits ends that `run` alone: the host runner is in a process group of its own, and goes on with the checkout.
-- The flags of a `run` whose checkout's fleet instance runs already change nothing: stop the host runner, and run again with the flags you want.
+- The flags of a `run` whose checkout's fleet instance runs already change nothing: `afkconvoy stop` it, and run again with the flags you want. `afkconvoy stop --help` says how to stop one checkout and how to stop them all.
 - Without `--instance` each start mints a new instance id, named for this host: the answer says it as `instance`, and `afkconvoy doctor` as `fleet.instance`, for `plan --instance` and the commands that make one transition by hand.
 - AFKCONVOY_ADMIT_* reach every fleet instance from the host runner's environment, its login shell's, and not from the shell of any `run`; so do AFKCONVOY_NO_HOST_SLEEP and AFKCONVOY_HOT_*, to one the host runner starts again. Export them in your login shell's rc files.
 - The panel is served to this host only, and shows a tick, not this second: between two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
@@ -623,6 +623,74 @@ A DeepSeek Harness worker (`harness: dsh`) runs interactive `dsh-tui`, with `dsh
 ##### Worker proxy bypass
 
 A start on this host reaches some hosts past the proxy with `--worker-no-proxy [HARNESS=]HOSTS`, never a key of the repo's config: [`afkconvoy help worker-proxy`](help:worker-proxy) says what each worker is given.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
+
+#### `afkconvoy stop`
+
+Take a checkout off this host's checkout list and stop its fleet instance, or with `--all` stop the host runner and keep the list
+
+##### When to run it
+
+To stop working one repo on this host and leave the others worked: `afkconvoy stop` in its checkout, or naming it. To stop every repo — before an upgrade, or to start every fleet instance again with flags of its own — `afkconvoy stop --all`: the next `run`, in any checkout, starts every checkout on the list again.
+
+##### Who runs it
+
+The operator, in a checkout on the list or naming one; with `--all`, anywhere on this host.
+
+##### What it reads and writes
+
+The checkout list: checkouts.json in the cache directory. `stop` takes the checkout off it; `--all` leaves it as it is.
+
+The host runner, asked on its socket. Its fleet instance of the checkout — every one, with `--all` — stops as SIGTERM has it stop: it finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps. No claim is released and no worker is stopped: the workers work on. Holding no claim, it takes its heartbeat off the remote; holding one, it leaves it with the claims, and the next start on this host takes them back. Its tick log keeps its `stop:` line, as ever. With `--all`, the host runner ends once every fleet instance has, and `stop` answers once it has ended.
+
+The host runner's log has a line of each, beside the line of each fleet instance that ended:
+
+```
+checkout removed: /Users/me/Developments/hkj: by `afkconvoy stop`, its fleet instance stops
+fleet instance ended: /Users/me/Developments/hkj: {"instance":"me-h1-1a2b3c4d","stopped":true,"ticks":12}
+host runner told to stop by `afkconvoy stop --all`: it keeps the checkout list
+host runner stopping: told to stop, each fleet instance ends its step
+host runner stopped: 2 checkouts kept on the list
+```
+
+With no host runner running, `stop` takes the checkout off the list itself, and says so in that log; `--all` changes nothing.
+
+##### What it answers
+
+Once its fleet instance has stopped, with exit 0:
+
+```json
+{"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj", "removed": true,
+ "instance": "me-h1-1a2b3c4d", "stop": "stop: holding no claim, it took its heartbeat with it",
+ "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log"}}
+```
+
+- `removed`: false where the checkout was not on the list. Where no fleet instance of it ran either, nothing changed, and that is all it answers: a checkout not on the list exits 0.
+- `instance` and `stop`: the fleet instance that stopped, and the `stop:` line its tick log keeps; null where none ran — the host runner could not start it, or no host runner runs.
+- `host_runner`: the one that answered — its pid, its version and its log — or null where none runs. `<cache>` stands for the cache directory, whole in the answer.
+
+With `--all`, once the host runner has ended:
+
+```json
+{"stopped": [{"checkout": "/Users/me/Developments/hkj", "instance": "me-h1-1a2b3c4d",
+  "stop": "stop: it left its heartbeat with the claims it holds: the next start on this host takes them"}],
+ "checkouts": 2,
+ "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log"}}
+```
+
+- `stopped`: each fleet instance it stopped, with its checkout, its id and its `stop:` line; [] where no host runner runs.
+- `checkouts`: how many the list keeps: the next `run` starts each.
+
+Errors, as {"error": …} with a non-zero exit: a second checkout of a repo on the list, naming the checkout to stop it from; the checkout list cannot be read or written; the host runner ended before it answered; its fleet instance did not stop within 10 minutes — it is off the list, and still finishing the step it is in; the host runner did not end within 30 seconds of answering `--all`. Each error a host runner gave says which, as `host_runner`.
+
+##### What trips you up
+
+- SIGTERM to the host runner's pid is `stop --all` but for the answer, and the line that says who told it. A second signal ends it at once, as SIGKILL does, with no goodbye.
+- `stop` of the last checkout on the list leaves the host runner running, with none: the next `run` hands it its checkout.
+- A `run` of a checkout whose fleet instance is stopping is refused until it has stopped. `stop` answers once it has: run it after.
 
 ##### Which checkout it is about
 
@@ -3346,7 +3414,7 @@ One repo's fleet in its host's host runner, and everything it owns: the workers 
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
 
 **Host runner**:
-A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way.
+A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list.
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:

@@ -711,7 +711,7 @@ fn the_readme_explains_no_concept_and_sends_its_reader_to_the_help() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 51, "{short}");
+    assert!(short.lines().count() <= 52, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -922,6 +922,8 @@ fn a_help_names_every_key_its_command_answers_with() {
     let reason = [&["escalate"][..], &on("9", "alpha"), &["--reason", "why"]].concat();
     check(&reason, &["detail"]);
     check(&["land", "--train"], &["outcome"]);
+    check(&["stop"], &["removed"]);
+    check(&["stop", "--all"], &["stopped"]);
     assert!(seen.len() >= 15, "{seen:?}");
 }
 
