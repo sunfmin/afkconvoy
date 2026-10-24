@@ -1541,7 +1541,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
         Command::Exclusive { .. } => {
             anyhow::bail!("exclusive answers with its command's exit code")
         }
-        Command::Help { .. } => anyhow::bail!("help answers with plain text"),
+        Command::Help { .. } => anyhow::bail!("help answers with Markdown"),
         Command::Dispatch { issue, who, agent, start } => dispatch::dispatch(
             &mut Fleet::open(now)?,
             &who.me(now),

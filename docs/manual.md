@@ -1022,8 +1022,6 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 
 ### `afkconvoy help glossary`
 
-The repository's own glossary: every term the help uses, each with its one
-definition. Nothing else is edited for what `help glossary` prints.
 # afkconvoy
 
 A command-line tool that works a repo's ready GitHub-issue backlog unattended: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).

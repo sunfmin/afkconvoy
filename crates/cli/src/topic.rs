@@ -69,8 +69,8 @@ pub struct Humans;
 #[doc = include_str!("help/topics/troubleshooting.md")]
 pub struct Troubleshooting;
 
-/// The repository's own glossary: every term the help uses, each with its one
-/// definition. Nothing else is edited for what `help glossary` prints.
+// The repository's own glossary: every term the help uses, each with its one
+// definition. Nothing else is edited for what `help glossary` prints.
 #[derive(Topic)]
 #[topic(name = "glossary")]
 #[doc = include_str!("../../../GLOSSARY.md")]
@@ -192,7 +192,10 @@ mod tests {
             let line = see.line();
             let name = see.reference().topic();
             assert_eq!(line, format!("afkconvoy help {name}"));
-            assert!(manual.topic_help(name).is_ok(), "a `see` says `{line}`, and there is no topic");
+            assert!(
+                manual.topic_help(name).is_ok(),
+                "a `see` says `{line}`, and there is no topic"
+            );
         }
     }
 
