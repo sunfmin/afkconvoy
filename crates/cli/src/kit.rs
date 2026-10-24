@@ -4,7 +4,9 @@
 //! belongs to the host user, outside every checkout, and is written with no
 //! human: `afkconvoy kit`, or `run` on a host without one.
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::fs::{OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH};
 
 use afkconvoy_core::harness::Harness;
 use anyhow::{Context, Result, bail};
@@ -184,10 +186,14 @@ pub fn path() -> Result<PathBuf> {
 }
 
 pub fn load() -> Result<Kit> {
-    let file = path()?;
+    load_at(&path()?)
+}
+
+/// The host kit kept in `file`.
+fn load_at(file: &Path) -> Result<Kit> {
     let unreadable =
         || format!("cannot read the host kit at {}: run `afkconvoy kit`", file.display());
-    let text = std::fs::read_to_string(&file).with_context(unreadable)?;
+    let text = std::fs::read_to_string(file).with_context(unreadable)?;
     let kit: Kit = serde_json::from_str(&text).with_context(unreadable)?;
     if let Some(fault) = kit.fault() {
         bail!("cannot read the host kit at {}: {fault}: run `afkconvoy kit`", file.display());
@@ -228,6 +234,7 @@ pub fn show(now: u64) -> Value {
             let running = kit.without(&paused);
             json!({
                 "path": file,
+                "refreshed": refreshed(),
                 "harnesses": kit.harnesses,
                 "stock_consult": running.stock_consult().map(|named| json!({
                     "harness": named.harness,
@@ -244,9 +251,9 @@ pub fn show(now: u64) -> Value {
 
 /// Writes the host kit for `run` where this host has none (`write`), saying
 /// so on stderr; then reads it.
-pub fn ensure() -> Result<()> {
+pub fn ensure(now: u64) -> Result<()> {
     if !path()?.exists() {
-        write()?;
+        write(now)?;
     }
     load().map(|_| ())
 }
@@ -255,39 +262,196 @@ pub fn ensure() -> Result<()> {
 /// can start now (`compose`), whoever runs it and wherever. Says on stderr
 /// where it is, what it holds and what was left out, and answers
 /// `{path, written, kit, left_out}`.
-pub fn write() -> Result<Value> {
-    // Every harness is looked for, asked and probed in an orca terminal, the
-    // shell a worker gets.
-    if !crate::orca::running() {
-        bail!(
-            "the host kit looks for each harness, asks it for its models and probes them in an \
-             orca terminal, and orca is not running: {}",
-            afkconvoy_core::tools::START_ORCA
-        );
-    }
+pub fn write(now: u64) -> Result<Value> {
+    let host = Host::here(now)?;
     let file = path()?;
     let current = if file.exists() { load()? } else { Kit::default() };
-    let host = Host {
-        found: &crate::launch::found,
-        listed: &crate::launch::models,
-        probe: &probe_all,
-        now: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs()),
-    };
-    let (kit, left_out) = compose(&current, &host);
+    let (kit, left_out) = compose(&current, &host, Writing::Whole);
+    store(&file, &kit, now)?;
+    resume_answered(&kit, now)?;
+    eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
+    Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
+}
+
+/// Writes `kit` to `file` at once, as written `now`: the time its file
+/// keeps as when it was last modified, which says when the host kit was last
+/// written (`written`).
+fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
     let parent = file.parent().context("the host kit needs a parent directory")?;
     std::fs::create_dir_all(parent)?;
     let temporary = file.with_extension(format!("{}.tmp", std::process::id()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(&kit)?)?;
-    std::fs::rename(&temporary, &file)?;
-    // A harness paused on the host that answered its probe here is back.
+    std::fs::write(&temporary, serde_json::to_vec_pretty(kit)?)?;
+    stamp(&temporary, now)?;
+    std::fs::rename(&temporary, file)?;
+    Ok(())
+}
+
+/// Has each harness paused on the host that `kit` holds a model of that
+/// answered its probe `now` back.
+fn resume_answered(kit: &Kit, now: u64) -> Result<()> {
     let pauses = crate::paused::Pauses::here()?;
     for held in &kit.harnesses {
-        pauses.resume(held.harness)?;
+        if held.models.iter().any(|seen| seen.probed.is_some_and(|probed| probed.at == now)) {
+            pauses.resume(held.harness)?;
+        }
     }
-    eprint!("{}", report(&file.display().to_string(), &kit, &left_out));
-    Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
+    Ok(())
+}
+
+/// Has `file` say it was last modified `now`.
+fn stamp(file: &Path, now: u64) -> Result<()> {
+    let at = UNIX_EPOCH + Duration::from_secs(now);
+    OpenOptions::new()
+        .write(true)
+        .open(file)
+        .and_then(|opened| opened.set_modified(at))
+        .with_context(|| format!("cannot stamp {}", file.display()))
+}
+
+/// When `file` was last modified, in epoch seconds; `None` of one that is
+/// not there.
+fn written(file: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(file).and_then(|meta| meta.modified()).ok()?;
+    Some(modified.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()))
+}
+
+/// How long the host kit stands before a tick writes it again.
+pub const REFRESHED_EVERY: u64 = 86_400;
+
+/// How long after a refresh that could not be made the next is tried.
+const TRIED_AGAIN_AFTER: u64 = 3_600;
+
+/// Whether the host kit last written `written` is due to be written again
+/// `now`, its last refresh having been tried `tried`.
+fn due(written: Option<u64>, tried: Option<u64>, now: u64) -> bool {
+    let older = |at: Option<u64>, than: u64| at.is_none_or(|at| now.saturating_sub(at) >= than);
+    written.is_some() && older(written, REFRESHED_EVERY) && older(tried, TRIED_AGAIN_AFTER)
+}
+
+/// What a refresh of the host kit changed: each model, or harness, added
+/// and dropped, as `harness model`.
+#[derive(Debug, Default, PartialEq)]
+pub struct Changed {
+    pub added: Vec<String>,
+    pub dropped: Vec<String>,
+}
+
+impl Changed {
+    fn between(before: &Kit, after: &Kit) -> Changed {
+        let held = |kit: &Kit| -> Vec<String> {
+            let each = |held: &Held| -> Vec<String> {
+                let named =
+                    |seen: &Seen| Named { harness: held.harness, model: Some(seen.model.clone()) };
+                held.models.iter().map(|seen| named_said(&named(seen))).collect()
+            };
+            kit.harnesses.iter().flat_map(each).collect()
+        };
+        let (before, after) = (held(before), held(after));
+        let missing = |from: &[String], of: &[String]| -> Vec<String> {
+            of.iter().filter(|said| !from.contains(said)).cloned().collect()
+        };
+        Changed { added: missing(&before, &after), dropped: missing(&after, &before) }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.dropped.is_empty()
+    }
+
+    /// In words, as the run log says it.
+    pub fn said(&self) -> String {
+        let mut said = vec![];
+        if !self.added.is_empty() {
+            said.push(format!("added {}", self.added.join(", ")));
+        }
+        if !self.dropped.is_empty() {
+            said.push(format!("dropped {}", self.dropped.join(", ")));
+        }
+        format!("the host kit was written again: {}", said.join("; "))
+    }
+}
+
+/// Writes the host kit in `file` again where it is due `now` (`due`), with
+/// what `host` finds (`Writing::Refresh`) → the host kit before and after;
+/// `None` where it was not due, there is no host kit, or another process of
+/// the host is writing it again. Every fleet of the host shares the one file, and the
+/// lock beside it: one of them writes it again, once a day, and the others
+/// read what it wrote.
+fn refresh_at<'a>(
+    file: &Path,
+    now: u64,
+    host: impl FnOnce() -> Result<Host<'a>>,
+) -> Result<Option<(Kit, Kit)>> {
+    // The lock holds when a refresh was last tried, in epoch seconds.
+    let lock = file.with_extension("refresh");
+    let tried = || std::fs::read_to_string(&lock).ok().and_then(|text| text.trim().parse().ok());
+    if !due(written(file), tried(), now) {
+        return Ok(None);
+    }
+    let held = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .with_context(|| format!("cannot open {}", lock.display()))?;
+    match held.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Error(error)) => {
+            return Err(error).with_context(|| format!("cannot lock {}", lock.display()));
+        }
+    }
+    // Another process may have written it again since it was found due.
+    if !due(written(file), tried(), now) {
+        return Ok(None);
+    }
+    std::fs::write(&lock, now.to_string())
+        .with_context(|| format!("cannot write {}", lock.display()))?;
+    let current = load_at(file)?;
+    let (kit, _) = compose(&current, &host()?, Writing::Refresh);
+    store(file, &kit, now)?;
+    drop(held);
+    Ok(Some((current, kit)))
+}
+
+/// Writes this host's host kit again once a day (`refresh_at`), as a tick of
+/// `instance` on `host` in `repo` does before anything else, and appends a
+/// line to the run log of `repo` where that changed it, naming what was added
+/// and dropped, or where it failed. Its probes spend a little of each login,
+/// and only of a model it did not hold.
+pub fn refresh(repo: &crate::git::Repo, instance: &str, host: &str, now: u64) -> Result<()> {
+    let refreshed = refresh_at(&path()?, now, || Host::here(now)).and_then(|refreshed| {
+        let Some((before, after)) = refreshed else { return Ok(None) };
+        resume_answered(&after, now)?;
+        Ok(Some(Changed::between(&before, &after)))
+    });
+    let (outcome, failed) = match refreshed {
+        Ok(None) => return Ok(()),
+        Ok(Some(changed)) if changed.is_empty() => return Ok(()),
+        Ok(Some(changed)) => (changed.said(), false),
+        Err(error) => (
+            format!("the host kit could not be written again: {error:#}; tried again in an hour"),
+            true,
+        ),
+    };
+    let entry = crate::log::Entry {
+        at: now,
+        instance: instance.to_string(),
+        host: host.to_string(),
+        what: crate::log::What::Command {
+            command: "refresh_kit".into(),
+            on: None,
+            by: "fleet".into(),
+            outcome,
+            failed,
+        },
+    };
+    crate::log::Log::of(repo)?.append(&entry)
+}
+
+/// When this host's host kit was last written — by `kit`, by `run` on a host
+/// without one, or by a tick's daily refresh — in epoch seconds.
+pub fn refreshed() -> Option<u64> {
+    written(&path().ok()?)
 }
 
 /// How many probes run at once.
@@ -332,7 +496,7 @@ pub enum Answer {
 type Listing = dyn Fn(Harness, &str) -> Result<Vec<String>, String> + Sync;
 
 /// What the host kit is written from: this host, as an orca terminal finds it.
-struct Host<'a> {
+pub struct Host<'a> {
     /// Whether a harness's program is found; why it is taken as not.
     found: &'a (dyn Fn(Harness) -> Result<(), String> + Sync),
     /// The models a harness offers through a command, in its order; why it
@@ -340,6 +504,40 @@ struct Host<'a> {
     listed: &'a Listing,
     probe: &'a dyn Fn(&[Asked]) -> Vec<Answer>,
     now: u64,
+}
+
+impl Host<'static> {
+    /// This host `now`, as an orca terminal finds it.
+    fn here(now: u64) -> Result<Host<'static>> {
+        // Every harness is looked for, asked and probed in an orca terminal, the
+        // shell a worker gets.
+        if !crate::orca::running() {
+            bail!(
+                "the host kit looks for each harness, asks it for its models and probes them in \
+                 an orca terminal, and orca is not running: {}",
+                afkconvoy_core::tools::START_ORCA
+            );
+        }
+        Ok(Host {
+            found: &crate::launch::found,
+            listed: &crate::launch::models,
+            probe: &probe_all,
+            now,
+        })
+    }
+}
+
+/// How the host kit held is written again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Writing {
+    /// Whole: every harness and model is found, listed and probed again, and
+    /// what is not is left out.
+    Whole,
+    /// A tick's daily refresh: a model its harness now lists is added once it
+    /// answers its probe, and one it no longer lists dropped; the rest is
+    /// held as it was, unprobed — a harness that cannot be found or listed
+    /// too, which a pause, not the refresh, leaves out (docs/adr/0020).
+    Refresh,
 }
 
 /// A harness, or one model of it, the host kit does not hold, and why.
@@ -369,7 +567,11 @@ impl LeftOut {
 ///   afkconvoy knows them; each one's models in the order it lists them;
 /// - the stock consult `current` names while it still holds it, else none:
 ///   the host kit's first; and the `good_at` written beside a model kept.
-fn compose(current: &Kit, host: &Host) -> (Kit, Vec<LeftOut>) {
+///
+/// Written as a refresh (`Writing::Refresh`), what `current` holds is taken
+/// as it is but a model its harness no longer lists: only a model it did not
+/// hold is probed, and a harness that cannot be found or listed is kept.
+fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) {
     let mut order: Vec<Harness> = current.harnesses.iter().map(|held| held.harness).collect();
     push_new(&mut order, Harness::ALL);
     let command = |harness: Harness| {
@@ -407,22 +609,34 @@ fn compose(current: &Kit, host: &Host) -> (Kit, Vec<LeftOut>) {
     let mut left_out = vec![];
     let mut harnesses: Vec<Held> = vec![];
     let mut asked: Vec<Asked> = vec![];
+    // Each harness's models in the order it lists them.
+    let mut lists: Vec<(Harness, Vec<String>)> = vec![];
+    let refresh = writing == Writing::Refresh;
     for (harness, command, listed) in listed {
-        let listed = match listed {
-            Ok(listed) => listed,
-            Err(why) => {
+        let listed = match (listed, current.held(harness)) {
+            (Ok(listed), _) => listed,
+            (Err(_), Some(held)) if refresh => {
+                harnesses.push(held.clone());
+                continue;
+            }
+            (Err(why), _) => {
                 left_out.push(LeftOut::of(harness, None, why));
                 continue;
             }
         };
         let mut models: Vec<String> = vec![];
         push_new(&mut models, listed);
-        let gone = current.held(harness).into_iter().flat_map(|held| &held.models);
-        for seen in gone.filter(|seen| !models.contains(&seen.model)) {
+        let held = current.held(harness).into_iter().flat_map(|held| &held.models);
+        let (kept, gone): (Vec<&Seen>, Vec<&Seen>) =
+            held.partition(|seen| models.contains(&seen.model));
+        for seen in gone {
             left_out.push(LeftOut::of(harness, Some(&seen.model), "no longer listed"));
         }
-        asked.extend(models.into_iter().map(|model| (harness, command.clone(), model)));
-        harnesses.push(Held { harness, command, models: vec![] });
+        let kept: Vec<Seen> = if refresh { kept.into_iter().cloned().collect() } else { vec![] };
+        let new = models.iter().filter(|model| !kept.iter().any(|seen| &seen.model == *model));
+        asked.extend(new.map(|model| (harness, command.clone(), model.clone())));
+        harnesses.push(Held { harness, command, models: kept });
+        lists.push((harness, models));
     }
 
     let answers = (host.probe)(&asked);
@@ -446,6 +660,11 @@ fn compose(current: &Kit, host: &Host) -> (Kit, Vec<LeftOut>) {
         let probed = Some(Probed { at: host.now, seconds });
         if let Some(held) = harnesses.iter_mut().find(|held| held.harness == harness) {
             held.models.push(Seen { model, probed, good_at });
+        }
+    }
+    for (harness, listed) in &lists {
+        if let Some(held) = harnesses.iter_mut().find(|held| held.harness == *harness) {
+            held.models.sort_by_key(|seen| listed.iter().position(|model| *model == seen.model));
         }
     }
     harnesses.retain(|held| {
@@ -525,6 +744,10 @@ mod tests {
     /// every model answers its probe in two seconds but `bad`, which is
     /// silent, and `gpt-b`, which no terminal could be made for.
     fn composed(current: &Kit) -> (Kit, Vec<LeftOut>, Vec<Asked>) {
+        composed_as(current, Writing::Whole)
+    }
+
+    fn composed_as(current: &Kit, writing: Writing) -> (Kit, Vec<LeftOut>, Vec<Asked>) {
         let probed = std::sync::Mutex::new(vec![]);
         let found = |harness: Harness| match harness {
             Harness::Dsh => Err("`type -- 'dsh-tui'` found nothing".to_string()),
@@ -549,7 +772,7 @@ mod tests {
                 .collect()
         };
         let host = Host { found: &found, listed: &listed, probe: &probe, now: 77 };
-        let (kit, left_out) = compose(current, &host);
+        let (kit, left_out) = compose(current, &host, writing);
         (kit, left_out, probed.into_inner().unwrap())
     }
 
@@ -655,7 +878,7 @@ mod tests {
             probe: &probe,
             now: 5,
         };
-        let (kit, left_out) = compose(&current, &host);
+        let (kit, left_out) = compose(&current, &host, Writing::Whole);
         assert_eq!(kit, Kit::default());
         assert!(
             left_out.iter().any(|out| out.harness == Harness::Codex
@@ -666,6 +889,128 @@ mod tests {
         let said = report("/kit.json", &kit, &left_out);
         assert!(said.contains("no worker can be started"), "{said}");
         assert!(said.contains("left out: codex bad: silent to its probe"), "{said}");
+    }
+
+    #[test]
+    fn a_refresh_adds_a_model_newly_listed_that_answers_drops_one_no_longer_listed_and_keeps_the_rest()
+     {
+        let mut claude = held(Harness::ClaudeCode, "claude", &["opus", "gone"]);
+        claude.models[0].good_at = Some("hard work".into());
+        let current = Kit {
+            harnesses: vec![
+                claude,
+                held(Harness::Codex, "codex", &["gpt-a"]),
+                held(Harness::Pi, "pi", &["a/b"]),
+                held(Harness::Dsh, "dsh", &["d"]),
+            ],
+            stock_consult: None,
+        };
+        let (kit, left_out, probed) = composed_as(&current, Writing::Refresh);
+        // Pi fails to list and DSH is not found: each stops answering, and is
+        // kept as it was, for a pause to leave out.
+        assert_eq!(
+            summary(&kit),
+            [
+                (Harness::ClaudeCode, "claude", vec!["default", "opus", "sonnet"]),
+                (Harness::Codex, "codex", vec!["gpt-a"]),
+                (Harness::Pi, "pi", vec!["a/b"]),
+                (Harness::Dsh, "dsh", vec!["d"]),
+            ]
+        );
+        assert_eq!(kit.harnesses[2], current.harnesses[2]);
+        assert_eq!(kit.harnesses[3], current.harnesses[3]);
+        // Only a model it did not hold is probed; one held keeps its probe.
+        let asked: Vec<&str> = probed.iter().map(|(_, _, model)| model.as_str()).collect();
+        assert_eq!(asked, ["default", "sonnet", "bad", "gpt-b"]);
+        let claude = &kit.harnesses[0].models;
+        assert_eq!(claude[0].probed, Some(Probed { at: 77, seconds: 2.0 }));
+        assert_eq!(claude[1], current.harnesses[0].models[0]);
+        assert!(
+            left_out
+                .iter()
+                .any(|out| out.model.as_deref() == Some("gone") && out.why == "no longer listed")
+        );
+        let changed = Changed::between(&current, &kit);
+        assert_eq!(
+            changed,
+            Changed {
+                added: vec!["claude-code default".into(), "claude-code sonnet".into()],
+                dropped: vec!["claude-code gone".into()],
+            }
+        );
+        assert_eq!(
+            changed.said(),
+            "the host kit was written again: added claude-code default, claude-code sonnet; \
+             dropped claude-code gone"
+        );
+        // Refreshed again with nothing changed, it is the same.
+        let (again, _, probed) = composed_as(&kit, Writing::Refresh);
+        assert_eq!(again, kit);
+        assert!(Changed::between(&kit, &again).is_empty());
+        assert_eq!(probed.len(), 2, "only the two silent ones are asked again: {probed:?}");
+    }
+
+    #[test]
+    fn a_host_kit_is_due_a_day_after_it_was_written_and_an_hour_after_a_refresh_was_tried() {
+        let day = REFRESHED_EVERY;
+        assert!(!due(None, None, 10 * day), "no host kit: `run` writes it");
+        assert!(!due(Some(day), None, 2 * day - 1));
+        assert!(due(Some(day), None, 2 * day));
+        assert!(!due(Some(day), Some(2 * day), 2 * day + 3599), "tried within the hour");
+        assert!(due(Some(day), Some(2 * day), 2 * day + 3600));
+        assert!(!due(Some(3 * day), None, day), "written after now");
+    }
+
+    #[test]
+    fn one_process_refreshes_the_host_kit_and_the_others_read_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("afkconvoy/kit.json");
+        let current =
+            Kit { harnesses: vec![held(Harness::Pi, "pi", &["a/b"])], stock_consult: None };
+        store(&file, &current, 1000).unwrap();
+        assert_eq!(written(&file), Some(1000));
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let listed = |_: Harness, _: &str| Ok(vec!["a/b".to_string(), "c/d".to_string()]);
+        let probe = |asked: &[Asked]| {
+            probes.fetch_add(asked.len(), std::sync::atomic::Ordering::SeqCst);
+            asked.iter().map(|_| Answer::Answered(1.0)).collect()
+        };
+        let found = |harness: Harness| match harness {
+            Harness::Pi => Ok(()),
+            _ => Err("not here".to_string()),
+        };
+        let host = |now| Host { found: &found, listed: &listed, probe: &probe, now };
+        assert!(refresh_at(&file, 1000 + REFRESHED_EVERY - 1, || Ok(host(0))).unwrap().is_none());
+        let now = 1000 + REFRESHED_EVERY;
+        // While one process writes it again, another finds it locked and
+        // reads the file as it is.
+        let (writing, written_again) = (std::sync::Barrier::new(2), std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                refresh_at(&file, now, || {
+                    writing.wait();
+                    written_again.wait();
+                    Ok(host(now))
+                })
+            });
+            writing.wait();
+            let other = refresh_at(&file, now, || panic!("it is not this process's to write"));
+            assert!(other.unwrap().is_none());
+            written_again.wait();
+            let (before, after) = first.join().unwrap().unwrap().unwrap();
+            assert_eq!(before, current);
+            assert_eq!(summary(&after), [(Harness::Pi, "pi", vec!["a/b", "c/d"])]);
+        });
+        // Once written, it is not due again for a day, in any process.
+        assert_eq!(written(&file), Some(now));
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(refresh_at(&file, now + 60, || panic!("refreshed already")).unwrap().is_none());
+        // A refresh that fails is tried again an hour later, not every tick.
+        let later = now + REFRESHED_EVERY;
+        assert!(refresh_at(&file, later, || bail!("orca is not running")).is_err());
+        assert!(refresh_at(&file, later + 60, || panic!("tried a minute ago")).unwrap().is_none());
+        let again = refresh_at(&file, later + 3600, || Ok(host(later + 3600))).unwrap();
+        assert!(again.is_some());
     }
 
     #[test]

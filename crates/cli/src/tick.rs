@@ -145,8 +145,12 @@ pub fn tick(
     // Each harness paused on this host is probed every hour (docs/adr/0020):
     // one that answers is back in the host kit for this tick's rebuild. A
     // probe that cannot be made leaves it paused, and costs the tick nothing.
+    // The host kit is written again once a day, by one fleet of the host
+    // (docs/adr/0020): a failure is a line of the log, and costs the tick
+    // nothing.
     if let Ok(repo) = Repo::here() {
         let _ = crate::paused::probe(&repo, me.instance.as_str(), &me.host, me.now);
+        let _ = crate::kit::refresh(&repo, me.instance.as_str(), &me.host, me.now);
     }
     let (mut fleet, mut open) = Fleet::read(me.now)?;
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
