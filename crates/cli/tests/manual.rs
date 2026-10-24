@@ -1,4 +1,4 @@
-//! The manual: `docs/manual.md` is what `afkconvoy --help` prints, written by
+//! The manual: `docs/manual.md` is what `afkconvoy help all` prints, written by
 //! an example of this package and by nothing else. The gate runs its check.
 
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ fn the_page_says_at_its_top_that_it_is_generated_and_from_what() {
     let (_dir, _, page) = written();
     let top = page.lines().next().unwrap();
     assert!(top.starts_with("<!-- ") && top.ends_with(" -->"), "{top}");
-    for said in ["Generated", COMMAND, "`afkconvoy --help`", "Do not edit"] {
+    for said in ["Generated", COMMAND, "`afkconvoy help all`", "Do not edit"] {
         assert!(top.contains(said), "the top of the page lost {said:?}: {top}");
     }
 }
@@ -34,7 +34,8 @@ fn the_page_says_at_its_top_that_it_is_generated_and_from_what() {
 #[test]
 fn the_page_is_the_manual_that_help_prints() {
     let (_dir, _, page) = written();
-    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).arg("--help").output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args(["help", "all"]).output();
+    let out = out.unwrap();
     assert!(out.status.success());
     let manual = String::from_utf8(out.stdout).unwrap();
     let (top, rest) = page.split_once("\n\n").unwrap();

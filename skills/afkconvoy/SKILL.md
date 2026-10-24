@@ -5,4 +5,4 @@ description: The CLI that works a repo's ready GitHub issues unattended, with a 
 
 # afkconvoy
 
-Run `afkconvoy --help` and read all of it before anything else. It is the tool's own guide: it says what to run first, and which command's help or which topic to read next.
+Run `afkconvoy --help` and read it before anything else. It answers the tool's index: its guide says what to run first, and which command's help or which topic to read next.
