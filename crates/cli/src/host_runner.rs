@@ -1,8 +1,9 @@
 //! The host runner: the one process of the fleet on a host, holding a fleet
 //! instance for each checkout on the host's checkout list (docs/adr/0023);
 //! `run`, which hands it a checkout, starting it where none runs, and moving
-//! it onto its own afkconvoy where it is of an older release; and `stop`,
-//! which takes one off the list, or with `--all` stops the host runner.
+//! it onto its own afkconvoy where it is of an older release; `stop`, which
+//! takes one off the list, or with `--all` stops the host runner; and the
+//! fleet instances it holds, as `checkouts` asks after them.
 //!
 //! The host runner is whoever holds the lock `host-runner.lock` in the cache
 //! directory, so there is one for each cache directory, by construction, and
@@ -69,8 +70,9 @@ const UP_WITHIN: Duration = Duration::from_secs(30);
 /// write the host kit and make the startup probe before it.
 const FIRST_TICK_WITHIN: Duration = Duration::from_secs(30 * 60);
 
-/// How long `run` waits for the host runner to say its version:
-/// it answers at once, whatever its fleet instances are doing.
+/// How long `run` waits for the host runner to say its version, and
+/// `checkouts` for it to say which fleet instances it holds: it answers both
+/// at once, whatever its fleet instances are doing.
 const SAID_WITHIN: Duration = Duration::from_secs(10);
 
 /// How long `stop` waits for a fleet instance to finish the step it is in.
@@ -143,7 +145,11 @@ fn about_instance(request: &Request, held: impl FnOnce(&str) -> HeldAs) -> Resul
         Request::Wake { checkout, .. }
         | Request::Panel { checkout, .. }
         | Request::Holds { checkout } => checkout,
-        Request::Version | Request::Add { .. } | Request::Stop { .. } | Request::StopAll => {
+        Request::Version
+        | Request::Add { .. }
+        | Request::Stop { .. }
+        | Request::StopAll
+        | Request::Checkouts => {
             bail!("{request:?} is no question about one fleet instance")
         }
     };
@@ -447,9 +453,23 @@ impl Runner {
             Request::Add { checkout, start } => self.add(&checkout, *start),
             Request::Stop { checkout } => self.stop_checkout(&checkout),
             Request::StopAll => self.stop_all(),
+            Request::Checkouts => Ok(self.checkouts()),
             about => about_instance(&about, held),
         };
         answered.unwrap_or_else(|error| crate::error_json(&error))
+    }
+
+    /// The checkouts it holds a fleet instance of → {"held": [{checkout,
+    /// instance}]}: each by its root, with that fleet instance's id, null
+    /// until its start is logged. One `run` is adding is held before its
+    /// first tick puts it on the list, and one `stop` took off it until it
+    /// has stopped.
+    fn checkouts(&self) -> Value {
+        let holding = self.holding();
+        let held = holding
+            .iter()
+            .map(|(root, held)| json!({"checkout": root, "instance": held.seen.stage().instance}));
+        json!({"held": held.collect::<Vec<_>>()})
     }
 
     /// Puts the checkout `checkout` on the list and starts its fleet
@@ -1170,6 +1190,61 @@ pub fn stop_all() -> Result<Value> {
     Ok(answer)
 }
 
+/// What this host's runner said it holds (`holding`).
+pub struct Holding {
+    /// Its {pid, version, log}.
+    pub about: Value,
+    /// Each checkout it holds a fleet instance of, by its root, with that
+    /// fleet instance's id, `None` until its start is logged.
+    pub instances: BTreeMap<PathBuf, Option<String>>,
+}
+
+/// Asks this host's runner which checkouts it holds a fleet instance of →
+/// what it said; `None` where no host runner runs. One that cannot say — of
+/// an afkconvoy that cannot read the question, ended before it answered, or
+/// silent past `SAID_WITHIN` — is an error saying so, and where to look.
+pub fn holding() -> Result<Option<Holding>> {
+    let (log, lock) = (log_path()?, cache()?.join(LOCK));
+    let pid = || holder_of(&lock).map(|pid| format!(" (pid {pid})")).unwrap_or_default();
+    let answer = match runner_socket::ask(&Request::Checkouts, SAID_WITHIN)? {
+        Reached::Nobody => return Ok(None),
+        Reached::Answer(answer) => answer,
+        Reached::Closed => bail!(
+            "the host runner{} ended before it answered: its log, {}, says why",
+            pid(),
+            log.display()
+        ),
+        Reached::Unanswered => bail!(
+            "the host runner{} did not say which checkouts it holds within {}s: its log, {}, \
+             says why",
+            pid(),
+            SAID_WITHIN.as_secs(),
+            log.display()
+        ),
+    };
+    let about = answer["host_runner"].clone();
+    if let Some(error) = answer["error"].as_str() {
+        let theirs = about["version"].as_str().unwrap_or_default();
+        let fix = match found(VERSION, theirs) {
+            Found::Older => format!(
+                "; `afkconvoy run`, in any checkout, moves it onto this afkconvoy, {VERSION}"
+            ),
+            Found::Same | Found::Newer => String::new(),
+        };
+        bail!(
+            "the host runner (pid {}), of afkconvoy {theirs}, cannot say which checkouts it \
+             holds: {error}{fix}",
+            about["pid"]
+        );
+    }
+    let held = answer["held"].as_array().into_iter().flatten();
+    let instances = held.filter_map(|held| {
+        let root = PathBuf::from(held["checkout"].as_str()?);
+        Some((root, held["instance"].as_str().map(str::to_string)))
+    });
+    Ok(Some(Holding { about, instances: instances.collect() }))
+}
+
 /// What the host runner answered `stop` or `stop --all`, `waited_for`
 /// stopping: an error it answered is `Answered`; one that ended before it
 /// answered, or answered nothing within `STOPPED_WITHIN`, is an error saying
@@ -1297,11 +1372,17 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
     let stop = Stop::listen();
     let (pid, root, reach) = (std::process::id(), checkout.dir.clone(), Reach::default());
     let key = checkout_list::repo_of(checkout).ok();
-    let held = reach.clone();
+    // Its fleet instance's id, once its start is logged.
+    let instance: Arc<Mutex<Option<String>>> = Arc::default();
+    let (held, named) = (reach.clone(), Arc::clone(&instance));
     let about = json!({"pid": pid, "version": VERSION, "foreground": true});
     let answering = runner_socket::serve(runner_socket::listen()?, about, move |request| {
         let answered = match request {
             Request::Version => Ok(json!({})),
+            Request::Checkouts => {
+                let instance = named.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                Ok(json!({"held": [{"checkout": root, "instance": *instance}]}))
+            }
             Request::Add { .. } | Request::Stop { .. } | Request::StopAll => Err(anyhow!(
                 "this host's runner is a fleet instance held in the foreground (`run \
                  --foreground`, pid {pid}), of {}: it takes no other checkout, and stops on \
@@ -1318,8 +1399,12 @@ pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named
         };
         answered.unwrap_or_else(|error| crate::error_json(&error))
     });
-    let echo: Echo = Arc::new(|line| match line {
-        Line::Kept(entry) => println!("{}", entry.said()),
+    let echo: Echo = Arc::new(move |line| match line {
+        Line::Kept(entry) => {
+            let mut named = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            named.get_or_insert_with(|| entry.instance.clone());
+            println!("{}", entry.said());
+        }
         Line::Said(text) => println!("{text}"),
         Line::Warning(warning) => probe::announce(&[warning.to_string()]),
     });

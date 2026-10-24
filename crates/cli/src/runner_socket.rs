@@ -1,11 +1,11 @@
 //! The host runner's socket: the one socket of a host, on which every command
 //! that speaks to a running fleet reaches the host runner of its host —
-//! `run` (its version check among it), `stop`, `wake`, `panel --open`, and
-//! `doctor` asking whether a fleet instance runs — each question naming its
-//! checkout (docs/adr/0023). It is a file in the cache directory, so every
-//! afkconvoy that shares the cache directory reaches the same one. One line of
-//! JSON crosses it each way, the question and its answer, and then the
-//! connection closes.
+//! `run` (its version check among it), `stop`, `checkouts`, `wake`, `panel
+//! --open`, and `doctor` asking whether a fleet instance runs — each question
+//! about one repo naming its checkout (docs/adr/0023). It is a file in the
+//! cache directory, so every afkconvoy that shares the cache directory
+//! reaches the same one. One line of JSON crosses it each way, the question
+//! and its answer, and then the connection closes.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -48,6 +48,9 @@ pub enum Request {
     /// Stop every fleet instance, and then the host runner, keeping the
     /// checkout list: answered once every fleet instance has stopped.
     StopAll,
+    /// The checkouts it holds a fleet instance of, each with that instance's
+    /// id once its start is logged: answered at once.
+    Checkouts,
     /// End the sleep of the fleet instance of `checkout`'s repo, naming `by`
     /// — what woke it, `park #46` — where it names anything: answered at once
     /// with what it will do of it (`wake::Wakes::hear`).
@@ -351,6 +354,7 @@ mod tests {
         let stop = serde_json::to_string(&Request::Stop { checkout: "/w".into() }).unwrap();
         assert_eq!(stop, r#"{"op":"stop","checkout":"/w"}"#);
         assert_eq!(serde_json::to_string(&Request::StopAll).unwrap(), r#"{"op":"stop_all"}"#);
+        assert_eq!(serde_json::to_string(&Request::Checkouts).unwrap(), r#"{"op":"checkouts"}"#);
         assert_eq!(serde_json::to_string(&Request::Version).unwrap(), r#"{"op":"version"}"#);
         let woke = Request::Wake { checkout: "/w".into(), by: Some("park #46".into()) };
         let woke = serde_json::to_string(&woke).unwrap();
@@ -397,7 +401,7 @@ mod tests {
                 | Request::Wake { checkout, .. }
                 | Request::Panel { checkout, .. }
                 | Request::Holds { checkout } => json!({"checkout": checkout}),
-                Request::Version | Request::StopAll => json!({}),
+                Request::Version | Request::StopAll | Request::Checkouts => json!({}),
             };
             answered(runner, &about, &checkout).unwrap();
             let mut answer = String::new();

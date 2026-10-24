@@ -10,6 +10,7 @@ mod board;
 mod casting;
 mod check;
 mod checkout;
+mod checkouts;
 mod claims;
 mod codex;
 mod config;
