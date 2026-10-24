@@ -319,6 +319,19 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     // `reviewer` holds limits for Claude Code alone.
     let hooked = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}}"#;
     commit(&world.root.join("github/acme/reviewer"), ".claude/settings.json", hooked);
+    world.with_kit(|kit| {
+        for h in kit["harnesses"].as_array_mut().unwrap() {
+            let Some(models) = h.get_mut("models").and_then(Value::as_array_mut) else { continue };
+            for m in models {
+                m["good_at"] = match m["model"].as_str().unwrap() {
+                    "opus" => json!("hard, wide work"),
+                    "haiku" => json!("reviews"),
+                    "a/fast" => json!("small fixes"),
+                    _ => json!("not researched"),
+                };
+            }
+        }
+    });
     world.drafter_answers(DRAFTED);
     let team = world.root.join("github/acme/team");
     let dir = team.to_str().unwrap();
@@ -330,8 +343,8 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     assert_eq!(drafted["written"], true);
     assert_eq!(drafted["replaces"], false);
     assert_eq!(drafted["drafted_by"], json!({"harness": "claude-code", "model": "opus"}));
-    assert_eq!(drafted["unsaid"], json!(["what pi a/slow is good at"]));
-    assert!(answer.stderr.contains("the draft says nothing of what pi a/slow is good at"));
+    assert_eq!(drafted["unsaid"], json!(["what codex is good at", "what dsh is good at"]));
+    assert!(answer.stderr.contains("the draft says nothing of what codex is good at"));
 
     // The host kit's first was asked, of every role and every model in order.
     let asked = world.drafter_asked();
@@ -343,6 +356,8 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
     ] {
         assert!(asked.contains(given), "{given:?}\n{asked}");
     }
+    assert!(asked.contains("do not assess model abilities"));
+    assert!(!asked.contains("for each harness and model above, what it is good at"));
     let sent = world.shell_asked();
     assert!(sent.iter().any(|line| line.contains("--model 'opus' --print 'You are")), "{sent:?}");
 
@@ -356,9 +371,9 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         "      - { harness: claude-code, model: \"opus\", good_at: \"hard, wide work\" }\n",
         "      - { harness: claude-code, model: \"haiku\", good_at: \"reviews\" }\n",
         "      - { harness: pi, model: \"a/fast\", good_at: \"small fixes\" }\n",
-        "      - { harness: pi, model: \"a/slow\" }\n",
-        "      - { harness: codex, good_at: \"refactors\" }\n",
-        "      - { harness: dsh, good_at: \"cheap work\" }\n",
+        "      - { harness: pi, model: \"a/slow\", good_at: \"not researched\" }\n",
+        "      - { harness: codex }\n",
+        "      - { harness: dsh }\n",
         "  reviewer:\n",
         "    cast: \"Haiku unless the change is wide.\"\n",
         "    run:\n",
@@ -381,7 +396,11 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
 
     // Where a roster is, it says what it would change and writes nothing
     // unconfirmed; `--yes` confirms.
-    world.drafter_answers(&DRAFTED.replace("small fixes", "one-line fixes"));
+    // A model's invented strength is ignored; a changed host kit supplies it.
+    world.drafter_answers(&DRAFTED.replace("small fixes", "invented ability"));
+    assert_eq!(world.afk(&draft).ok()["written"], false);
+    world.with_kit(|kit| kit["harnesses"][1]["models"][0]["good_at"] = json!("one-line fixes"));
+
     let asked_again = world.afk(&draft);
     let unconfirmed = asked_again.json.clone();
     assert_eq!(asked_again.code, 0, "{unconfirmed}");

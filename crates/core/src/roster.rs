@@ -1,6 +1,6 @@
 //! A team's roster drafted from a host kit (docs/adr/0020): each role of the
 //! team given the harnesses and models the host kit holds, in its order, with
-//! what the host kit's first model says each is good at and how to cast among
+//! what the host kit says each is good at and how to cast among
 //! them. A human reads the draft, edits it and commits it; the fleet never
 //! changes a team's roster.
 
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::casting::Held;
 use crate::team::{ROSTER_KEY, Role, Team, unlimited};
 
-/// What the drafting model says one harness and model is good at.
+/// What the host kit says one harness and model is good at.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Strength {
     pub harness: String,
@@ -65,7 +65,7 @@ pub const DRAFT_PROMPT_OPENS: &str = "You are drafting the roster of a team of c
 pub fn draft_prompt(team: &Team, range: &[Held]) -> String {
     let mut prompt = format!(
         "{DRAFT_PROMPT_OPENS}: for each role, which harnesses and models its workers may run, \
-         in order of preference, what each model is good at, and how an issue is to be cast \
+         in order of preference, and how an issue is to be cast \
          among them. A human reads the draft and edits it.\n\nHarnesses and models this host \
          holds, in order of preference:\n"
     );
@@ -87,11 +87,10 @@ pub fn draft_prompt(team: &Team, range: &[Held]) -> String {
         prompt.push_str(&format!("- {}: {asked}. It may run: {may}.\n", role.name));
     }
     prompt.push_str(
-        "\nAnswer with one JSON object a line and nothing else:\n- for each harness and model \
-         above, what it is good at, in one sentence: {\"harness\": \"pi\", \"model\": \
-         \"a/fast\", \"good_at\": \"...\"}, with \"model\": null for a harness listed with no \
-         model;\n- for each role, how to cast an issue among what it may run, in one or two \
-         sentences: {\"role\": \"dev\", \"cast\": \"...\"}.\n",
+        "\nUse the host kit's good_at as given; do not assess model abilities. \
+         Answer with one JSON object a line and nothing else: for each role, how to cast \
+         an issue among what it may run, in one or two sentences: \
+         {\"role\": \"dev\", \"cast\": \"...\"}.\n",
     );
     prompt
 }

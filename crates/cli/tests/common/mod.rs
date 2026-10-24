@@ -728,6 +728,10 @@ case "$2" in
     printf '%s' "$2" > "$root/caster-asked"
     if [ -f "$root/caster-answer" ]; then cat "$root/caster-answer"; exit 0; fi
     exit 1 ;;
+*"Research new coding-agent models"*)
+    printf '%s\n' "$2" >> "$root/research-asked"
+    if [ -f "$root/research-answer" ]; then cat "$root/research-answer"; exit 0; fi
+    exit 1 ;;
   *"You are drafting the roster of a team"*)
     # A drafter's prompt: answered with what `drafter-answer` holds.
     printf '%s' "$2" > "$root/drafter-asked"

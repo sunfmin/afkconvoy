@@ -1,6 +1,6 @@
 //! `afkconvoy draft`: a team's roster drafted from this host's host kit, into
 //! the team file of the team's working tree (docs/adr/0020). The host kit's
-//! first model says what each of its models is good at and how each role is
+//! first model says how each role is
 //! to be cast among what it may run; the rest is the host kit's, in its
 //! order. It commits nothing: a human reads the draft, edits it and commits
 //! it. A roster there already is replaced only once its human confirms.
@@ -35,13 +35,28 @@ pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
     let first = kit.first().context("the host kit holds no harness: run `afkconvoy kit`")?;
     let launch = kit.command(first.harness).context("the host kit holds no harness")?;
     let kept = crate::kept::keep(first.harness, false)?.display().to_string();
-    let prompt = draft_prompt(&loaded.team, &range);
+    let strengths: Vec<Strength> = kit
+        .harnesses
+        .iter()
+        .flat_map(|held| {
+            held.models.iter().map(|seen| Strength {
+                harness: held.harness.key().into(),
+                model: Some(seen.model.clone()),
+                good_at: seen.good_at.clone().unwrap_or_else(|| "not researched".into()),
+            })
+        })
+        .collect();
+    let prompt = format!(
+        "{}\nHost kit research (use as given): {:?}",
+        draft_prompt(&loaded.team, &range),
+        strengths
+    );
     let question = first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt);
     let Some((true, answer)) = crate::launch::ask_login_shell_within(&question, ANSWER_TIMEOUT)
     else {
         bail!("the host kit's first, `{}`, did not answer the draft", first.harness.key());
     };
-    let (strengths, guidance) = read_answer(&answer);
+    let guidance = read_answer(&answer);
     let roster = afkconvoy_core::roster::draft(&loaded.team, &range, &strengths, &guidance);
     let unsaid = unsaid(&loaded.team, &range, &strengths, &guidance);
     for said in &unsaid {
@@ -103,20 +118,13 @@ fn confirmed(out: &mut impl Write) -> Result<bool> {
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
-/// What the drafting model answered: one JSON object a line, whatever it
-/// printed around them — a model's strength, or a role's guidance. The first
-/// said of each stands where the draft is made (`roster::draft`).
-fn read_answer(answer: &str) -> (Vec<Strength>, Vec<Guidance>) {
-    let (mut strengths, mut guidance) = (vec![], vec![]);
-    for line in answer.lines() {
-        let line = line.trim().trim_matches('`').trim();
-        if let Ok(strength) = serde_json::from_str::<Strength>(line) {
-            strengths.push(strength);
-        } else if let Ok(said) = serde_json::from_str::<Guidance>(line) {
-            guidance.push(said);
-        }
-    }
-    (strengths, guidance)
+/// Reads only role guidance. Model abilities always come from the host kit,
+/// even if a drafting model volunteers its own assessment.
+fn read_answer(answer: &str) -> Vec<Guidance> {
+    answer
+        .lines()
+        .filter_map(|line| serde_json::from_str(line.trim().trim_matches('`').trim()).ok())
+        .collect()
 }
 
 /// Whether `line` of a yaml block is its top-level `roster` key.
@@ -230,13 +238,11 @@ mod tests {
     }
 
     #[test]
-    fn a_model_s_answer_is_read_a_strength_or_a_guidance_a_line() {
+    fn only_role_guidance_is_read_from_the_drafting_answer() {
         let answer = "Here:\n```\n{\"harness\": \"pi\", \"model\": \"a/b\", \"good_at\": \"x\"}\n\
                       {\"harness\": \"dsh\", \"good_at\": \"y\"}\nnoise\n{\"role\": \"dev\", \
                       \"cast\": \"z\"}\n```";
-        let (strengths, guidance) = read_answer(answer);
-        assert_eq!(strengths.len(), 2);
-        assert_eq!(strengths[1].model, None);
+        let guidance = read_answer(answer);
         assert_eq!(guidance, [Guidance { role: "dev".into(), cast: "z".into() }]);
     }
 }
