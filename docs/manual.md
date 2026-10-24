@@ -3560,7 +3560,7 @@ _Avoid_: sleep (the wait between ticks), hibernate, suspend, shutdown
 
 **Sleep hours**:
 The hours of a host's local time its fleets may put it to sleep in: from 00:00 to 06:00 unless its host settings say others (`--host-sleep-hours 22:00-06:00`), the start included and the end not, past midnight where the end comes first, and any hour with `00:00-24:00`. A check for host sleep outside them keeps the host awake, says so, and is followed by the next as they start.
-_Avoid_: quiet hours, night mode, schedule
+_Avoid_: quiet hours, night mode
 
 **Base branch**:
 The one branch a repo's fleet work is cut from and lands on.
