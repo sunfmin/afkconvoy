@@ -272,7 +272,12 @@ pub fn models(harness: Harness, command: &str) -> Result<Vec<crate::kit::Listed>
                 let each = |name: String| crate::kit::Listed { shown: shown_as(&name), name };
                 return Ok(listed.into_iter().map(each).collect());
             }
-            None => "it listed none",
+            None => {
+                if let Some(why) = harness.listing_failure(&printed) {
+                    return Err(format!("{why}: {question}"));
+                }
+                "it listed none"
+            }
         },
         Ok(Some((false, _))) => "it failed",
         Ok(None) => "it did not answer in time",

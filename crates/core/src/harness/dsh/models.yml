@@ -1,5 +1,7 @@
-# The overlay DSH's headless profile is booted with to say its models: the
-# plugin that prints them and stops before a prompt is sent.
+# Headless DSH disables its credential service. Enable its read service so
+# the listing uses the same store and precedence as an interactive worker.
+- id: credentials
+  disabled: false
 - insert:
     - id: afkconvoy-models
       name: '@AFKCONVOY_DSH_MODELS@'
