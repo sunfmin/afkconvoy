@@ -107,7 +107,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
         if !blocked_by.is_empty() {
             bail!("--blocked-by is a worker's: nobody parks an issue no fleet instance holds");
         }
-        let team = crate::team::load(crate::team::From::Config)?.team;
+        let team = crate::team::load(crate::team::From::Config, Some(repo))?.team;
         return crate::steer::declare(repo, &team, issue, &stage, declared, text);
     };
     let scan = Scan::read(repo)?;
@@ -421,7 +421,7 @@ impl Flows {
             return Ok(Flows { team: None, issues: vec![] });
         };
         let labels = fleet.config.labels();
-        let team = Copies::here()
+        let team = Copies::of_host()
             .and_then(|copies| keep(&fleet.gh, &copies, &bound.team, &labels))
             .map_err(|error| match unreached(&error) {
                 Some(read) => Unkept::Unreached(read.clone()),

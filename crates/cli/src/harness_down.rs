@@ -64,7 +64,7 @@ fn pauses(repo: &Repo) -> Result<crate::paused::Pauses> {
         return Ok(crate::paused::Pauses::at(repo.note("convoy-paused.json")?));
     }
     let _ = repo;
-    crate::paused::Pauses::here()
+    crate::paused::Pauses::of_host()
 }
 
 fn read(path: &Path) -> Result<Evidence> {
@@ -75,7 +75,7 @@ fn read(path: &Path) -> Result<Evidence> {
     }
 }
 fn keep(path: &Path, evidence: &Evidence) -> Result<()> {
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
     std::fs::write(&temporary, serde_json::to_vec(evidence)?)?;
     Ok(std::fs::rename(temporary, path)?)
 }

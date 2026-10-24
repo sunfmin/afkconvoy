@@ -305,7 +305,7 @@ fn get(port: u16, path: &str) -> String {
 fn a_running_fleet_serves_its_panel_and_brings_it_up_to_date_after_each_tick() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    let args = ["run", "--instance", "alpha", "--host", "h1"];
+    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
     let mut run = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(args)
@@ -358,7 +358,7 @@ struct Running {
 fn run(world: &World, more: &[&str]) -> Running {
     let mut child = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["run", "--instance", "alpha", "--host", "h1"])
+        .args(["run", "--foreground", "--instance", "alpha", "--host", "h1"])
         .args(more)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -435,9 +435,15 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
     assert!(first.ends_with("next in 90s"), "{first}");
     running.sleeps();
 
-    // asked from the worker's worktree: the repo's fleet instance is what is reached
+    // asked from a worker's worktree, it is refused: that is the worker's
     let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
-    let answer = open(&world, Path::new(&worktree), &[]);
+    let refused = world.afk_in(Path::new(&worktree), &["panel", "--open"]).error();
+    assert!(refused.contains("is a worker's worktree"), "{refused}");
+    // asked from another worktree of the repo, a human's: the repo's fleet
+    // instance is what is reached
+    let own = world.root.join("own-worktree");
+    git(&world.clone, &["worktree", "add", "-q", "-b", "own", own.to_str().unwrap()]);
+    let answer = open(&world, &own, &[]);
     assert_eq!(answer["opened"], true, "{answer}");
     assert_eq!(answer["instance"], "alpha", "{answer}");
     let port = port_of(&answer);
@@ -487,7 +493,9 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
     let again = open(&world, &world.clone, &[]);
     assert_eq!((again["opened"].clone(), port_of(&again)), (json!(false), port), "{again}");
     let other = free_port().to_string();
-    let moved = open(&world, Path::new(&worktree), &["--port", &other]);
+    // …or from outside it, naming the checkout
+    let clone = world.clone.to_str().unwrap();
+    let moved = world.afk_in(&world.root, &["panel", clone, "--open", "--port", &other]).ok();
     assert_eq!((moved["opened"].clone(), port_of(&moved)), (json!(false), port), "{moved}");
     assert!(TcpStream::connect(("127.0.0.1", free_port())).is_err());
     assert!(TcpStream::connect(("127.0.0.1", other.parse::<u16>().unwrap())).is_err());

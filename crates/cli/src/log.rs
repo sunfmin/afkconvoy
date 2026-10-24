@@ -313,6 +313,24 @@ impl Failed {
     }
 }
 
+/// The time `at`, in epoch seconds, as a line stamped in UTC says it:
+/// `2026-10-20 23:03:00`.
+pub(crate) fn utc(at: u64) -> String {
+    let days = at / 86_400;
+    let (hour, minute, second) = (at % 86_400 / 3600, at % 3600 / 60, at % 60);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's `civil_from_days`).
+    let shifted = days + 719_468;
+    let era = shifted / 146_097;
+    let of_era = shifted % 146_097;
+    let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * of_year + 2) / 153;
+    let day = of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 { shifted_month + 3 } else { shifted_month - 9 };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    format!("{year}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+}
+
 /// `failed` with every failure of one cause told once: the first of each
 /// `error`, in the order they failed, with how many failed of it.
 pub fn by_cause<T>(failed: &[T], error: impl Fn(&T) -> &str) -> Vec<(&T, usize)> {

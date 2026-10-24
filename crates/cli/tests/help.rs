@@ -493,7 +493,7 @@ fn the_guide_carries_what_an_agent_needs_before_its_first_command() {
         "afkconvoy <command> --help",
         // The rules an agent would otherwise trip on.
         "One fleet instance per host per repo",
-        "`run` never returns",
+        "`run` returns once its checkout's first tick ended",
         "--worker-command",
     ] {
         assert!(guide.contains(needed), "the guide lost {needed:?}");

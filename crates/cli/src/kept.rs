@@ -160,7 +160,7 @@ fn carry(file: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let draft = file.with_extension(format!("{}.draft", std::process::id()));
+    let draft = file.with_extension(format!("{}.draft", crate::unique()));
     std::fs::write(&draft, text)?;
     std::fs::rename(&draft, file)
 }

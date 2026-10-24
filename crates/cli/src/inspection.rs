@@ -288,7 +288,7 @@ fn unbound_as(fleet: &Fleet) -> Result<As> {
 /// The stock consult of the repo `bound` to a team, which inspects the host:
 /// on what the host kit names for it.
 fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
-    let copies = Copies::here()?;
+    let copies = Copies::of_host()?;
     let kept = keep(&fleet.gh, &copies, &bound.team, &fleet.config.labels())?;
     let stock = fleet.stock_consult()?;
     Ok(As::Bound {
@@ -309,7 +309,7 @@ fn stock_as(fleet: &Fleet, bound: &Bound) -> Result<As> {
 /// `bound` to a team: its stage's consult, as the issue's records have it now
 /// (`inspection::inspector`). `None`: nobody does.
 fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<As>> {
-    let copies = Copies::here()?;
+    let copies = Copies::of_host()?;
     let kept = keep(&fleet.gh, &copies, &bound.team, &fleet.config.labels())?;
     let read = match issue {
         Some(issue) => Some((fleet.gh.issue(issue)?.labels, records_of(&fleet.gh, issue)?.0)),
@@ -367,6 +367,8 @@ fn bound_as(fleet: &Fleet, bound: &Bound, issue: Option<u64>) -> Result<Option<A
 
 /// What a `run` keeps of the inspections it starts.
 pub struct Inspector {
+    /// The checkout of the fleet whose `run` it is.
+    checkout: Repo,
     limits: Limits,
     inspected: Inspected,
     running: Option<Box<Inspection>>,
@@ -382,9 +384,11 @@ pub struct Inspector {
 }
 
 impl Inspector {
-    /// The inspector of a `run` whose hot workers are found under `limits`.
-    pub fn new(limits: Limits) -> Inspector {
+    /// The inspector of the `run` of the checkout `checkout`, whose hot
+    /// workers are found under `limits`.
+    pub fn new(checkout: &Repo, limits: Limits) -> Inspector {
         Inspector {
+            checkout: checkout.clone(),
             limits,
             inspected: Inspected::default(),
             running: None,
@@ -445,7 +449,7 @@ impl Inspector {
                 return said;
             }
             let running = self.running.take().expect("running above");
-            said.push(end(running, finding, now));
+            said.push(end(&self.checkout, running, finding, now));
         }
         let seen = Inspector::seen(hot);
         self.inspected.keep_to(&seen);
@@ -520,7 +524,7 @@ impl Inspector {
         if on_host().is_some() {
             return Ok(Started::Waits);
         }
-        let fleet = Fleet::open(now)?;
+        let fleet = Fleet::open(&self.checkout, now)?;
         let (who, escalate_label) = match &fleet.config.bound {
             Some(bound) => {
                 let who = stock_as(&fleet, bound)?;
@@ -603,7 +607,7 @@ impl Inspector {
         if on_host().is_some() {
             return Ok(Started::Waits);
         }
-        let fleet = Fleet::open(now)?;
+        let fleet = Fleet::open(&self.checkout, now)?;
         let worktree = hot.worktree();
         let evidence = evidence::of(&worktree, &hot.worker, hot.episode.since)
             .ok_or_else(|| anyhow!("what shows {} hot is not taken down", hot.worker))?;
@@ -734,17 +738,19 @@ fn command(
     Ok(harness.in_role(launch, &start))
 }
 
-/// Ends `inspection`, which found `finding` — at `now` — and removes its
-/// checkout, its terminal with it → what to log of it. What cannot be done of
-/// it is said, and the rest done all the same.
-fn end(inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> What {
+/// Ends `inspection` of the fleet of the checkout `repo`, which found
+/// `finding` — at `now` — and removes its checkout, its terminal with it →
+/// what to log of it. What cannot be done of it is said, and the rest done
+/// all the same.
+fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> What {
+    let gh = GitHub { dir: repo.dir.clone() };
     let mut what = match &inspection.on {
         Subject::Worker { hot, why, terminal } => {
-            end_worker(hot, why, terminal.as_deref(), &inspection.by, finding)
+            end_worker(&gh, hot, why, terminal.as_deref(), &inspection.by, finding)
         }
         Subject::Host { reason, since, reading, escalate_label } => {
             let host = (*reason, *since, reading.as_str(), escalate_label.as_str());
-            end_host(host, &inspection, finding, now)
+            end_host(repo, host, &inspection, finding, now)
         }
     };
     if let Err(error) = inspection.checkout.remove() {
@@ -759,11 +765,13 @@ fn end(inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> What 
     what
 }
 
-/// Ends the host's inspection of what admission held back for — `reason`,
-/// `since` then, having read `reading` — which found `finding` at `now`: keeps it for
-/// `doctor` and the panel, and where it found the fleet outgrowing its host,
-/// opens one issue saying so with `escalate_label`, none while one is open.
+/// Ends the host's inspection, which the fleet of the checkout `repo`
+/// started, of what admission held back for — `reason`, `since` then, having
+/// read `reading` — which found `finding` at `now`: keeps it for `doctor` and
+/// the panel, and where it found the fleet outgrowing its host, opens one
+/// issue saying so with `escalate_label`, none while one is open.
 fn end_host(
+    repo: &Repo,
     (reason, since, reading, escalate_label): (Reason, u64, &str, &str),
     inspection: &Inspection,
     finding: Option<Finding>,
@@ -786,7 +794,8 @@ fn end_host(
     if let Some(finding) = finding.as_ref().filter(|finding| finding.found == Found::Fleet) {
         // How long admission had held back as the inspection started.
         let minutes = inspection.started.saturating_sub(since) / 60;
-        match open_outgrown((reason, minutes, reading), escalate_label, finding) {
+        let gh = GitHub { dir: repo.dir.clone() };
+        match open_outgrown(&gh, (reason, minutes, reading), escalate_label, finding) {
             Ok((number, opened)) => {
                 issue = Some(number);
                 let did = if opened { "opened" } else { "already open:" };
@@ -796,10 +805,7 @@ fn end_host(
         }
     }
     let last = Last {
-        repo: Repo::here()
-            .and_then(|repo| repo.main_checkout())
-            .map(|main| main.display().to_string())
-            .unwrap_or_default(),
+        repo: repo.main_checkout().map(|main| main.display().to_string()).unwrap_or_default(),
         reason,
         reading: reading.to_string(),
         by: inspection.by.clone(),
@@ -817,16 +823,16 @@ fn end_host(
     What::HostInspected { reason: reason.word().to_string(), found: found.to_string(), said }
 }
 
-/// Opens the issue that says the fleet outgrows its host — admission having
-/// held back for `reason` for `minutes`, reading `reading` — as `finding`
-/// said → its number, and whether it was opened now: none is while one is
-/// open.
+/// Opens on `gh` the issue that says the fleet outgrows its host —
+/// admission having held back for `reason` for `minutes`, reading `reading` —
+/// as `finding` said → its number, and whether it was opened now: none is
+/// while one is open.
 fn open_outgrown(
+    gh: &GitHub,
     (reason, minutes, reading): (Reason, u64, &str),
     escalate_label: &str,
     finding: &Finding,
 ) -> Result<(u64, bool)> {
-    let gh = GitHub { dir: Repo::here()?.dir };
     let open = gh
         .carrying(host_inspection::LABEL)?
         .into_iter()
@@ -844,8 +850,9 @@ fn open_outgrown(
 
 /// Ends the inspection of the hot worker `hot`, `why` it turned hot, by
 /// `by`, which found `finding`: types it at the worker's `terminal` — not
-/// what is not its own — and leaves it on the issue.
+/// what is not its own — and leaves it on the issue, on `gh`.
 fn end_worker(
+    gh: &GitHub,
     hot: &HotNow,
     why: &str,
     terminal: Option<&str>,
@@ -869,9 +876,7 @@ fn end_worker(
     }
     if let Some(issue) = hot.issue {
         let body = inspection::comment(&worker, why, by, finding.as_ref());
-        let commented =
-            Repo::here().and_then(|repo| GitHub { dir: repo.dir }.comment(issue, &body));
-        if let Err(error) = commented {
+        if let Err(error) = gh.comment(issue, &body) {
             said.push_str(&format!(" · no comment was left on #{issue}: {error:#}"));
         }
     }
@@ -879,17 +884,24 @@ fn end_worker(
     What::Inspected { worker, found: found.to_string(), said }
 }
 
-/// `afkconvoy inspected`: keeps what the inspection in this checkout found,
-/// for its `run` to type at the hot worker and leave on its issue.
+/// `afkconvoy inspected`: keeps what the inspection in the checkout
+/// `checkout` found, for its `run` to type at the hot worker and leave on
+/// its issue.
 ///
 /// Of the host, it first frees `reclaim` — only where it found something
 /// `reclaimable`, and none of it where any may not be — and measures `name`,
 /// for a human to free.
-pub fn inspected(found: Found, said: &str, reclaim: &[PathBuf], name: &[PathBuf]) -> Result<Value> {
+pub fn inspected(
+    checkout: &Repo,
+    found: Found,
+    said: &str,
+    reclaim: &[PathBuf],
+    name: &[PathBuf],
+) -> Result<Value> {
     if said.trim().is_empty() {
         anyhow::bail!("say what was found, where and why: the text is empty");
     }
-    let checkout = Worktree::here()?;
+    let checkout = Worktree::of(checkout)?;
     let named = checkout.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
     if !afkconvoy_core::worker::is_worktree_named(named, CHECKOUT) {
         anyhow::bail!(

@@ -16,7 +16,7 @@
 //! starts the worker's inspection (`crate::inspection`).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,13 +25,14 @@ use afkconvoy_core::hot::{
     CPU_HELD, Episode, Limits, SAMPLE_EVERY, Sample, Turned, WRITTEN_WITHIN, Watch, Why, millicores,
 };
 use afkconvoy_core::train::{Built, OUTGROWN_FLOOR, OUTGROWN_TIMES};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::evidence::{self, Taken};
 use crate::git::Repo;
 use crate::log::What;
 use crate::measure;
 use crate::orca::{Source, TMP_DIR, Worktree};
+use crate::stop::Stop;
 use crate::wake::Waker;
 
 /// How many samples go by before the worktrees are asked of orca again, and
@@ -43,19 +44,19 @@ const RESIDENT_KEPT: usize = 30;
 
 /// What the host says of the limits, where it says any: `--hot-cores`,
 /// `--hot-memory` and `--hot-written`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Said {
     pub millicores: Option<u64>,
     pub resident: Option<u64>,
     pub written: Option<u64>,
 }
 
-/// The limits on this host: its shares (`Limits::of_host`), but for what it
-/// says.
-pub fn limits(said: Said) -> Limits {
+/// The limits on this host for the fleet of the checkout `dir`: its shares
+/// (`Limits::of_host`) — of the disk `dir` is on — but for what it says.
+pub fn limits(said: Said, dir: &Path) -> Limits {
     let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64);
-    let shares =
-        Limits::of_host(cores, memory().unwrap_or(u64::MAX), free_disk().unwrap_or(u64::MAX));
+    let disk = free_disk(dir).unwrap_or(u64::MAX);
+    let shares = Limits::of_host(cores, memory().unwrap_or(u64::MAX), disk);
     Limits {
         millicores: said.millicores.unwrap_or(shares.millicores),
         resident: said.resident.unwrap_or(shares.resident),
@@ -63,10 +64,10 @@ pub fn limits(said: Said) -> Limits {
     }
 }
 
-/// The bytes free on the disk the current directory is on, as `df` says
-/// them; `None` where it cannot be read.
-fn free_disk() -> Option<u64> {
-    let out = Command::new("df").args(["-Pk", "."]).output().ok()?;
+/// The bytes free on the disk `dir` is on, as `df` says them; `None` where
+/// they cannot be read.
+fn free_disk(dir: &Path) -> Option<u64> {
+    let out = Command::new("df").arg("-Pk").arg(dir).output().ok()?;
     let out = String::from_utf8_lossy(&out.stdout).into_owned();
     let kib: u64 = out.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
     Some(kib.saturating_mul(1024))
@@ -498,9 +499,18 @@ fn cooled(worker: String, episode: &Episode, gone: bool) -> What {
     What::Cooled { worker, since: episode.since, held: held_said(episode), gone }
 }
 
+/// Who hears what a watcher finds (`watch`): its fleet instance.
+pub trait Hears: Send + Sync {
+    /// A worker turned hot, or stopped being hot, at `at`.
+    fn turned(&self, at: u64, what: What);
+    /// Something went wrong that costs the watcher nothing but what it was
+    /// doing.
+    fn warn(&self, warning: &str);
+}
+
 /// Watches every worker of the checkout `repo` is of, on a thread of its own,
-/// for as long as the process lives: a sample every `SAMPLE_EVERY` seconds of
-/// `second` each, timed by `clock` — the run's — and `keep` said of each turn
+/// until `stop` is told: a sample every `SAMPLE_EVERY` seconds of `second`
+/// each, timed by `clock` — the run's — and `hears` told of each turn
 /// (`Sampler::sample`). `hot` is kept as the workers hot now. What shows a
 /// worker that turned hot is taken down on a thread of its own, and the `run`
 /// woken once it is. A second that takes no time samples nothing.
@@ -509,8 +519,9 @@ pub fn watch(
     limits: Limits,
     second: Duration,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    keep: impl Fn(u64, What) + Send + 'static,
+    hears: Arc<dyn Hears>,
     hot: Hot,
+    stop: Stop,
 ) {
     if second.is_zero() {
         return;
@@ -524,6 +535,11 @@ pub fn watch(
         let mut before = Instant::now();
         loop {
             std::thread::sleep(every);
+            // The fleet instance it watches for ended, and a start of it
+            // again watches for itself.
+            if stop.told() {
+                return;
+            }
             if source.is_none() {
                 source = Source::of(&repo).ok();
             }
@@ -535,16 +551,16 @@ pub fn watch(
             before = Instant::now();
             let (turned, to_take) = sampler.sample(source, at, SAMPLE_EVERY, wall_ms);
             for turned in turned {
-                keep(at, turned);
+                hears.turned(at, turned);
             }
             for (worktree, taken) in to_take {
-                let repo = Repo::new(repo.dir.clone());
+                let (repo, hears) = (Repo::new(repo.dir.clone()), Arc::clone(&hears));
                 std::thread::spawn(move || {
                     if let Err(error) = evidence::take(&worktree, &taken) {
-                        eprintln!(
-                            "hot: what shows {} hot was not taken down: {error:#}",
-                            taken.worker
-                        );
+                        let worker = &taken.worker;
+                        hears.warn(&format!(
+                            "what shows {worker} hot was not taken down: {error:#}"
+                        ));
                     }
                     if let Some(waker) = Waker::of(&repo) {
                         waker.wake();

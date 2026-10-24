@@ -101,10 +101,21 @@ impl World {
             bin,
         };
         world.write_gh(&json!({"bare": world.bare, "base": BASE, "issues": [], "prs": [],
-            "comments": {}, "labels": ["ready-for-agent"], "calls": []}));
+            "comments": {}, "labels": ["ready-for-agent"], "calls": [], "envs": []}));
         world.write_orca(&json!({"repos": [{"id": "repo-1", "path": world.clone}],
-            "root": world.root.join("wt"), "worktrees": [], "terminals": [], "calls": []}));
+            "root": world.root.join("wt"), "worktrees": [], "terminals": [], "calls": [],
+            "envs": []}));
         world.kit_command("claude-code", "agent");
+        // What a fresh login shell of its host user starts with: its
+        // commands' environment, a name only it sets, and a line its rc
+        // files print first.
+        let exported: String = world
+            .login_env()
+            .iter()
+            .map(|(name, value)| format!("export {name}='{}'\n", value.replace('\'', "'\\''")))
+            .collect();
+        let profile = "export AFKCONVOY_TEST_LOGIN=1\necho 'a line an rc file printed'\n";
+        write(&world.home(), ".profile", &format!("{exported}{profile}"));
         world
     }
 
@@ -199,28 +210,41 @@ impl World {
     /// git or GitHub setup leaking in.
     pub fn command(&self, program: impl AsRef<std::ffi::OsStr>, cwd: &Path) -> Command {
         let mut cmd = Command::new(program);
+        cmd.current_dir(cwd)
+            .envs(self.login_env())
+            .env("SHELL", self.bin.join("shell"))
+            .env("XDG_CACHE_HOME", self.cache())
+            .env_remove("XDG_CONFIG_HOME")
+            .env("HOME", self.home())
+            .env_remove("ANTHROPIC_BASE_URL");
+        cmd
+    }
+
+    /// What every command of this world is run with beyond the caller's
+    /// environment: the stand-ins first on PATH and nothing of the caller's git
+    /// or GitHub setup. The same is the world's login profile (`home/.profile`,
+    /// written once, with the world): what a fresh login shell of its host user
+    /// starts with, and so a host runner too.
+    pub fn login_env(&self) -> Vec<(String, String)> {
         let only = self.root.join("path");
         let path = match only.exists() {
             true => only.display().to_string(),
             false => format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
         };
-        cmd.current_dir(cwd)
-            .env("PATH", path)
-            .env("CONVOY_FAKE_GH", &self.gh_file)
-            .env("CONVOY_FAKE_ORCA", &self.orca_file)
-            .env("SHELL", self.bin.join("shell"))
-            .env("XDG_CACHE_HOME", self.cache())
-            .env_remove("XDG_CONFIG_HOME")
-            .env("HOME", self.home())
-            .envs(GIT_ENV)
-            // No checkout above the world is one of its: a test's directory
-            // is in this repo's, when a worker's TMPDIR is in its worktree.
-            .env("GIT_CEILING_DIRECTORIES", self.root.parent().unwrap())
-            .env_remove("ANTHROPIC_BASE_URL")
-            // A `run` keeps its host awake, but where a test says otherwise
-            // (`World::host_sleeps`).
-            .env("AFKCONVOY_NO_HOST_SLEEP", "true");
-        cmd
+        let shown = |path: &Path| path.display().to_string();
+        let mut env = vec![
+            ("PATH".to_string(), path),
+            ("CONVOY_FAKE_GH".to_string(), shown(&self.gh_file)),
+            ("CONVOY_FAKE_ORCA".to_string(), shown(&self.orca_file)),
+        ];
+        env.extend(GIT_ENV.iter().map(|(name, value)| (name.to_string(), value.to_string())));
+        // No checkout above the world is one of its: a test's directory
+        // is in this repo's, when a worker's TMPDIR is in its worktree.
+        env.push(("GIT_CEILING_DIRECTORIES".to_string(), shown(self.root.parent().unwrap())));
+        // A `run` keeps its host awake, but where a test says otherwise
+        // (`World::host_sleeps`).
+        env.push(("AFKCONVOY_NO_HOST_SLEEP".to_string(), "true".to_string()));
+        env
     }
 
     /// Where this world's fleet keeps what it caches on its host: the copies
@@ -447,8 +471,23 @@ impl World {
         let mut calls: Vec<Vec<String>> =
             serde_json::from_value(self.gh()["calls"].clone()).unwrap();
         calls.retain(|call| !call.iter().any(|arg| arg.ends_with("/protection")));
-        self.with_gh(|gh| gh["calls"] = json!([]));
+        self.with_gh(|gh| {
+            gh["calls"] = json!([]);
+            gh["envs"] = json!([]);
+        });
         calls
+    }
+
+    /// Every `gh` call made, as its argv, with the names of a session's
+    /// environment it ran in (`envs`).
+    pub fn gh_called_with(&self) -> Vec<(Vec<String>, Vec<String>)> {
+        called_with(&self.gh())
+    }
+
+    /// Every `orca` call made, as its argv, with the names of a session's
+    /// environment it ran in (`envs`).
+    pub fn orca_called_with(&self) -> Vec<(Vec<String>, Vec<String>)> {
+        called_with(&self.orca())
     }
 
     pub fn write_gh(&self, state: &Value) {
@@ -499,7 +538,10 @@ impl World {
         for call in &mut calls {
             call.pop();
         }
-        self.with_orca(|orca| orca["calls"] = json!([]));
+        self.with_orca(|orca| {
+            orca["calls"] = json!([]);
+            orca["envs"] = json!([]);
+        });
         calls
     }
 
@@ -675,6 +717,19 @@ impl World {
         log.lines().map(str::to_string).collect()
     }
 
+    /// The directory the stand-in login shell was started in, each time it
+    /// was, in order.
+    pub fn shell_asked_in(&self) -> Vec<String> {
+        let log = std::fs::read_to_string(self.root.join("shell-asked-in")).unwrap_or_default();
+        log.lines().map(str::to_string).collect()
+    }
+
+    /// The directory the stand-in orca was run from, each time it was, in
+    /// order: real orca takes the worktree a call names none of from there.
+    pub fn orca_run_from(&self) -> Vec<String> {
+        serde_json::from_value(self.orca()["from"].clone()).unwrap_or_default()
+    }
+
     /// Has the remote turn down every push of a ref whose name starts with
     /// `prefix`, as a server's rule would.
     pub fn remote_rejects(&self, prefix: &str) {
@@ -698,12 +753,125 @@ impl World {
     }
 }
 
-/// The copies a fleet kept are read-only, directories included: they are
-/// opened again so that the world's directory can be removed.
+/// A host runner this world started ends with it: killed, so that none is
+/// left ticking against a world that is gone. The copies a fleet kept are
+/// read-only, directories included: they are opened again so that the world's
+/// directory can be removed.
 impl Drop for World {
     fn drop(&mut self) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while self.runner_lock_held() && Instant::now() < until {
+            if let Some(pid) = self.host_runner() {
+                let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         if self.cache().exists() {
             let _ = Command::new("chmod").arg("-R").arg("u+w").arg(self.cache()).status();
+        }
+    }
+}
+
+/// The calls of a stand-in's `state`, each with the names of a session's
+/// environment it ran in.
+fn called_with(state: &Value) -> Vec<(Vec<String>, Vec<String>)> {
+    let calls: Vec<Vec<String>> = serde_json::from_value(state["calls"].clone()).unwrap();
+    let envs: Vec<Vec<String>> = serde_json::from_value(state["envs"].clone()).unwrap_or_default();
+    assert_eq!(calls.len(), envs.len(), "an environment beside each call");
+    calls.into_iter().zip(envs).collect()
+}
+
+impl World {
+    /// A second repo on this world's host: a remote of its own
+    /// (`remote2.git`), a clone of it with the config committed (`clone2`),
+    /// which orca is given too, and a stand-in GitHub of its own (`gh2`),
+    /// which every `gh` run in that clone reaches → the clone.
+    pub fn second_repo(&self) -> PathBuf {
+        let (bare, clone) = (self.root.join("remote2.git"), self.root.join("clone2"));
+        git(&self.root, &["init", "-q", "--bare", "-b", BASE, bare.to_str().unwrap()]);
+        append(&bare.join("config"), "[maintenance]\n\tauto = false\n");
+        git(&self.root, &["clone", "-q", bare.to_str().unwrap(), clone.to_str().unwrap()]);
+        std::fs::write(clone.join("README.md"), "gadgets\n").unwrap();
+        write(&clone, "docs/agents/afkconvoy.md", CONFIG);
+        git(&clone, &["add", "."]);
+        git(&clone, &["commit", "-q", "-m", "initial"]);
+        git(&clone, &["push", "-q", "origin", BASE]);
+        let gh2 = self.root.join("gh2.json");
+        let state = json!({"bare": bare, "base": BASE, "issues": [], "prs": [], "comments": {},
+            "labels": ["ready-for-agent"], "calls": [], "envs": []});
+        std::fs::write(&gh2, state.to_string()).unwrap();
+        std::fs::write(clone.join(".git/convoy-fake-gh"), gh2.display().to_string()).unwrap();
+        self.with_orca(|orca| {
+            let repos = orca["repos"].as_array_mut().unwrap();
+            repos.push(json!({"id": "repo-2", "path": clone}));
+        });
+        clone
+    }
+
+    /// The stand-in GitHub of the second repo (`second_repo`).
+    pub fn gh2(&self) -> Value {
+        read(&self.root.join("gh2.json"))
+    }
+
+    /// Another clone of the remote, as `name` in the world → its checkout.
+    pub fn clone_again(&self, name: &str) -> PathBuf {
+        let again = self.root.join(name);
+        git(&self.root, &["clone", "-q", self.bare.to_str().unwrap(), again.to_str().unwrap()]);
+        again
+    }
+
+    /// This host's checkout list, as the host runner keeps it: none yet is
+    /// an empty one.
+    pub fn checkout_list(&self) -> Value {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        std::fs::read(file)
+            .map_or(json!({"checkouts": []}), |bytes| serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// Every line of the host runner's log, the stamp of each taken off.
+    pub fn runner_log(&self) -> Vec<String> {
+        let file = self.cache().join("afkconvoy/host-runner.log");
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        let stamped = |line: &str| {
+            let bytes = line.as_bytes();
+            bytes.len() > 20 && bytes[4] == b'-' && bytes[10] == b' ' && bytes[19] == b' '
+        };
+        let unstamped =
+            |line: &str| if stamped(line) { line[20..].to_string() } else { line.into() };
+        text.lines().map(unstamped).collect()
+    }
+
+    /// The pid of this world's host runner: the one its lock says, while
+    /// that lock is held.
+    pub fn host_runner(&self) -> Option<u32> {
+        if !self.runner_lock_held() {
+            return None;
+        }
+        let text = std::fs::read_to_string(self.cache().join("afkconvoy/host-runner.lock"));
+        let holder: Value = serde_json::from_str(&text.ok()?).ok()?;
+        holder["pid"].as_u64().map(|pid| pid as u32)
+    }
+
+    /// Whether a process holds this world's host runner's lock.
+    fn runner_lock_held(&self) -> bool {
+        let file = self.cache().join("afkconvoy/host-runner.lock");
+        let Ok(lock) = std::fs::File::open(file) else { return false };
+        matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+    }
+
+    /// Sends this world's host runner `signal` (`TERM`, `KILL`) and waits up
+    /// to 30 seconds for it to let the host go.
+    pub fn kill_host_runner(&self, signal: &str) {
+        let pid = self.host_runner().expect("a host runner holds this world's host");
+        let sent = Command::new("kill").arg(format!("-{signal}")).arg(pid.to_string()).status();
+        assert!(sent.unwrap().success(), "kill -{signal} {pid}");
+        let until = Instant::now() + Duration::from_secs(30);
+        while self.runner_lock_held() {
+            assert!(
+                Instant::now() < until,
+                "host runner {pid} still holds the host 30s after {signal}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 }
@@ -718,11 +886,16 @@ impl Drop for World {
 /// fails unless a `shell-server-models` there does, and whether `gh`, `claude`, `pi` and `codex` are logged in. Every
 /// word is a program unless `shell-types`
 /// beside `bin/` says otherwise, and each is logged in unless a
-/// `logged-out-<tool>` there says otherwise. It needs nothing of PATH.
+/// `logged-out-<tool>` there says otherwise. It needs nothing of PATH. Asked
+/// for its environment (`AFKCONVOY_ENV`), it is a fresh login shell: it reads
+/// the world's profile, then runs what it was asked.
 const SHELL: &str = r#"#!/bin/sh
 root=${0%/*}/..
 echo "$2" >> "$root/shell-asked"
+pwd -P >> "$root/shell-asked-in"
 case "$2" in
+  *"AFKCONVOY_ENV"*)
+    . "$HOME/.profile"; eval "$2"; exit 0 ;;
   *"You are the caster of a fleet"*)
     # A caster's prompt: answered with what `caster-answer` holds.
     printf '%s' "$2" > "$root/caster-asked"
@@ -942,7 +1115,7 @@ impl World {
     pub fn running(&self, args: &[&str]) -> Running {
         let mut child = self
             .command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone)
-            .arg("run")
+            .args(["run", "--foreground"])
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1001,6 +1174,32 @@ pub fn git(cwd: &Path, args: &[&str]) -> String {
     let out = Command::new("git").current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The commands `brief` gives a worker that refuse a worker's worktree as
+/// their checkout, as each one's help says: of every word after `afkconvoy `
+/// in it that is a command. A worker runs each in its worktree, so none
+/// should.
+pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
+    let word = |after: &str| {
+        let end = after.find(|c: char| !(c.is_ascii_lowercase() || c == '-'));
+        after[..end.unwrap_or(after.len())].to_string()
+    };
+    let named = brief.split("afkconvoy ").skip(1).map(word);
+    let mut named: Vec<String> = named.filter(|name| !name.is_empty()).collect();
+    named.sort();
+    named.dedup();
+    named.retain(|name| {
+        let help = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args([name, "--help"]).output();
+        let help = help.unwrap();
+        // A word that is no command answers no help.
+        let text = String::from_utf8_lossy(&help.stdout);
+        let said = text.split_once("##### Which checkout it is about").map(|(_, said)| said);
+        let said = said.map(|said| said.split("\n##### ").next().unwrap_or_default());
+        help.status.success()
+            && said.is_some_and(|said| said.contains("A worker's worktree is refused"))
+    });
+    named
 }
 
 fn read(file: &Path) -> Value {

@@ -51,9 +51,10 @@ pub struct Copy {
 }
 
 impl Copies {
-    /// This user's copies: in their cache directory, outside every checkout —
-    /// a worker started in one finds no rules above it but its role's.
-    pub fn here() -> Result<Copies> {
+    /// This user's copies on this host, whichever repo a command is about: in
+    /// their cache directory, outside every checkout — a worker started in
+    /// one finds no rules above it but its role's.
+    pub fn of_host() -> Result<Copies> {
         Ok(Copies { root: cache()?.join("copies") })
     }
 
@@ -106,7 +107,7 @@ impl Copies {
         if kept.dir.is_dir() {
             return Ok(kept);
         }
-        let scratch = self.root.join(stock::ROLE).join(format!("taking-{}", std::process::id()));
+        let scratch = self.root.join(stock::ROLE).join(format!("taking-{}", crate::unique()));
         let _ = std::fs::remove_dir_all(&scratch);
         let taken = std::fs::create_dir_all(&scratch)
             .and_then(|()| std::fs::write(scratch.join(RULES), stock::INSTRUCTION))
@@ -151,7 +152,7 @@ impl Copies {
         if kept.dir.is_dir() {
             return Ok(kept);
         }
-        let scratch = repo.join(format!("taking-{}-{name}", std::process::id()));
+        let scratch = repo.join(format!("taking-{}-{name}", crate::unique()));
         let _ = std::fs::remove_dir_all(&scratch);
         let taken = copy_dir(&from, &scratch, Path::new(""), without)
             .and_then(|()| links.iter().try_for_each(|link| link.add(&scratch)))
@@ -164,8 +165,7 @@ impl Copies {
     /// Clones the head of `repo` and keeps its files, named for the commit
     /// the clone has: the branch may have moved since it was asked about.
     fn fetch(&self, gh: &GitHub, repo: &RepoName) -> Result<Copy> {
-        let scratch =
-            self.root.join(repo.as_str()).join(format!("fetching-{}", std::process::id()));
+        let scratch = self.root.join(repo.as_str()).join(format!("fetching-{}", crate::unique()));
         let _ = std::fs::remove_dir_all(&scratch);
         let (clone, files) = (scratch.join("git"), scratch.join("files"));
         std::fs::create_dir_all(&files)

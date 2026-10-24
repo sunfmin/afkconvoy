@@ -692,7 +692,18 @@ fn a_breaker_found_on_an_issue_nobody_holds_is_escalated_with_its_rounds_too() {
 /// `run` as alpha at `now`, for `ticks` ticks → its lines, and how long it took.
 fn run(world: &World, now: &str, ticks: &str, pacing: &[&str]) -> (Vec<String>, Duration) {
     let started = Instant::now();
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--now", now, "--ticks", ticks];
+    let args = [
+        "run",
+        "--foreground",
+        "--instance",
+        "alpha",
+        "--host",
+        "h1",
+        "--now",
+        now,
+        "--ticks",
+        ticks,
+    ];
     let (lines, _) = world.afk_lines(&[&args[..], pacing].concat());
     (lines, started.elapsed())
 }

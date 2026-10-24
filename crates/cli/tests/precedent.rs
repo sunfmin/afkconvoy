@@ -548,7 +548,7 @@ fn a_start_takes_a_proposal_stamped_with_its_host_and_the_next_tick_ends_it() {
     assert_eq!(plan["proposals"][0]["standing"], "peer_running");
 
     worker_leaves(&world, &checkout(&world, 7, comment));
-    let args = ["run", "--instance", "omega", "--host", "h1", "--second-ms", "0"];
+    let args = ["run", "--foreground", "--instance", "omega", "--host", "h1", "--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &["--ticks", "1", "--now", "1160"]].concat());
     assert_eq!(
         lines[0],

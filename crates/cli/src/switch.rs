@@ -112,7 +112,7 @@ pub fn switch(
         Which::Nothing | Which::All => {}
     }
     choose(&fleet.repo, to)?;
-    *fleet = Fleet::open(fleet.now)?;
+    *fleet = Fleet::open(&fleet.repo, fleet.now)?;
     let chosen = json!({"was": was, "now": to});
     let one = |moved: Value| {
         let mut moved = moved;

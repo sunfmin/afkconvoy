@@ -233,7 +233,7 @@ pub(crate) fn escalate_claim(
     // A bound repo's escalate label is its team's to name.
     let kept = match &fleet.config.bound {
         Some(bound) => {
-            Some(keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?)
+            Some(keep(&fleet.gh, &Copies::of_host()?, &bound.team, &fleet.config.labels())?)
         }
         None => None,
     };

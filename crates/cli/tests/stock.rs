@@ -108,6 +108,16 @@ fn an_escalated_issue_goes_to_the_stock_consult_first() {
     // Not a human's while it looks.
     let plan = world.afk(&["plan", "--now", "1200"]).ok();
     assert_eq!(plan["waiting_on_human"], json!([]), "{plan}");
+    // What its brief gives it to run, and any command that only reads, is
+    // run in the worktree it starts in.
+    assert_eq!(common::refusing_a_workers_worktree(&brief), [] as [String; 0]);
+    let dir = worktree(&world);
+    assert_eq!(
+        world.afk_in(&dir, &["scan"]).ok()["claims"],
+        json!(world.afk(&["scan"]).ok()["claims"])
+    );
+    world.afk_in(&dir, &["config"]).ok();
+    world.afk_in(&dir, &["takeover", "--list", "--now", "1200"]).ok();
 }
 
 #[test]

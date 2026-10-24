@@ -82,9 +82,9 @@ impl std::fmt::Display for NothingSafe {
 impl std::error::Error for NothingSafe {}
 
 impl Fleet {
-    /// The fleet's view from the checkout the command was run in.
-    pub fn open(now: u64) -> Result<Fleet> {
-        let repo = Repo::here()?;
+    /// The fleet's view from the checkout `repo`.
+    pub fn open(repo: &Repo, now: u64) -> Result<Fleet> {
+        let repo = repo.clone();
         let config = config::load(&repo.dir.join(config::FILE))?;
         let chosen = crate::switch::chosen(&repo)?;
         let listing = repo.listing(&config.base_branch)?;
@@ -109,11 +109,11 @@ impl Fleet {
     /// The fleet's view, opened for a rebuild → it, and what is open on
     /// GitHub. The remote and GitHub do not depend on each other: they are
     /// asked side by side.
-    pub fn read(now: u64) -> Result<(Fleet, Open)> {
-        let gh = GitHub { dir: Repo::here()?.dir };
+    pub fn read(repo: &Repo, now: u64) -> Result<(Fleet, Open)> {
+        let gh = GitHub { dir: repo.dir.clone() };
         let (fleet, open) = thread::scope(|scope| {
             let open = scope.spawn(|| gh.open());
-            (Fleet::open(now), beside(open))
+            (Fleet::open(repo, now), beside(open))
         });
         Ok((fleet?, open?))
     }

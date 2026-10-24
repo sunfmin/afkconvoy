@@ -4,6 +4,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
@@ -29,6 +30,8 @@ pub mod admission;
 pub mod advance;
 pub mod board;
 pub mod caster;
+pub mod checkout;
+pub mod checkout_list;
 pub mod claim_status;
 pub mod claims;
 pub mod config;
@@ -47,9 +50,11 @@ pub mod git;
 pub mod guard;
 pub mod harness_down;
 pub mod host_evidence;
+pub mod host_runner;
 pub mod host_sleep;
 pub mod hot;
 pub mod inspection;
+pub mod instance;
 pub mod intake;
 pub mod judge;
 pub mod kept;
@@ -72,6 +77,7 @@ pub mod reclaim;
 pub mod recovery;
 pub mod role;
 pub mod roster_issue;
+pub mod runner_socket;
 pub mod scaffold;
 pub mod serve;
 pub mod settle;
@@ -97,7 +103,6 @@ use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
 use launch::Launches;
-use tick::Pacing;
 
 /// The environment variables that tell `run` `--hot-cores`, `--hot-memory` and
 /// `--hot-written`.
@@ -144,7 +149,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 // the text an agent reads to learn the tool. `help` is this crate's own, not
 // clap's: it prints a topic too. The listing goes straight from the usage
 // line to the commands: one line less, so that `-h` stays one screen.
-/// afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one `afkconvoy run` — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
+/// afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one per repo, held by the host's one host runner, which `afkconvoy run` starts — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
 ///
 /// This manual is the whole of afkconvoy's help: this guide, the way in; then every command under who runs it; then the topics, what belongs to no one command. `afkconvoy -h` lists the commands on one screen.
 ///
@@ -162,13 +167,13 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only where the config names a team: does the team load? A team is designed first: see designing a team, below.
 /// 2. `afkconvoy plan`: what a tick would act on. It changes nothing.
-/// 3. `afkconvoy run`: the fleet instance, tick after tick, until stopped.
+/// 3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 ///
 /// And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
 ///
 /// ## What a command answers
 ///
-/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. `run` instead prints its log — a line as each tick starts and one as it ends — until stopped, `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, and `exclusive` as its command does.
+/// Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, and `exclusive` as its command does. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
 ///
 /// ## The commands, by who runs them
 ///
@@ -190,8 +195,8 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## Rules to know before you start
 ///
-/// - One fleet instance per host per repo. A second `run` on a host takes the first one's claims: never start one beside a fleet that is running.
-/// - `run` never returns. Do not wait on it: start it in the background and read its lines, or use `tick` for one pass that exits.
+/// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
+/// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until it is stopped. `tick` is one pass that exits.
 /// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A missing harness refuses the start.
 /// - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard (`afkconvoy run --help` says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 ///
@@ -295,7 +300,10 @@ enum Command {
     ///
     /// Casting sends the host kit's first a real prompt: it spends some of its login.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
-    Cast,
+    Cast {
+        #[command(flatten)]
+        at: At,
+    },
     /// Print the repo's config as JSON, defaults filled
     ///
     /// ##### When to run it
@@ -308,7 +316,7 @@ enum Command {
     ///
     /// ##### What it reads and writes
     ///
-    /// It reads one file — {const:CONFIG_FILE} of the checkout it is run in, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
+    /// It reads one file — {const:CONFIG_FILE} of the checkout it is about, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
     ///
     /// ##### The config file
     ///
@@ -362,6 +370,8 @@ enum Command {
     Config {
         #[arg(long, help = format!("The config file [default: {} of this checkout]", config::FILE))]
         file: Option<PathBuf>,
+        #[command(flatten)]
+        at: At,
     },
     /// Read a team and its workflows: what was read, or every fault
     ///
@@ -433,6 +443,8 @@ enum Command {
     Check {
         #[command(flatten)]
         team: TeamArgs,
+        #[command(flatten)]
+        at: At,
     },
     /// Write the skeleton of a team with its roles, or of one role, or a whole example team, and create its repo on GitHub if asked
     ///
@@ -597,7 +609,10 @@ enum Command {
     /// - It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.
     /// - A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
     #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment)]
-    Flows,
+    Flows {
+        #[command(flatten)]
+        at: At,
+    },
     /// Print the skill file that sends an agent of your own to `--help`: text, not JSON
     ///
     /// ##### When to run it
@@ -727,6 +742,8 @@ enum Command {
         issue: Option<u64>,
         #[command(flatten)]
         team: TeamArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Draft a team's roster from this host's host kit, into the team file of its working tree
     ///
@@ -841,6 +858,8 @@ enum Command {
         declared: Vec<Declared>,
         #[command(flatten)]
         team: TeamArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Say what the fleet on this host is doing and what is wrong with it, each finding with its fix
     ///
@@ -917,6 +936,8 @@ enum Command {
         /// The host whose fleet is asked after [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: At,
     },
     /// Show what a tick would act on, and change nothing
     ///
@@ -1013,43 +1034,70 @@ enum Command {
         /// The fleet instance whose claims are its own [default: nobody's]
         #[arg(long, value_parser = InstanceId::parse)]
         instance: Option<InstanceId>,
+        #[command(flatten)]
+        at: At,
     },
-    /// Run the fleet: tick after tick, until stopped
+    /// Add a checkout to this host's checkout list, start the host runner where none runs, and answer the checkout's first tick
     ///
     /// ##### When to run it
     ///
-    /// To work the backlog: after `config` answers and `plan` shows the frontier you expect. Run it again to start a fleet that was stopped — it picks up where that one left off.
+    /// To have a repo worked: after `config` answers and `plan` shows the frontier you expect. Run it again after the host runner was stopped or killed, or the host restarted: it starts every checkout on the list, each where its fleet instance left off.
     ///
     /// ##### Who runs it
     ///
-    /// The operator, in a checkout of the repo, in the background: it never returns.
+    /// The operator, in a checkout of the repo or naming one. It returns once that checkout's fleet instance has ended its first tick; the host runner ticks on, in the background, until it is stopped.
     ///
     /// ##### What it reads and writes
     ///
-    /// Everything the fleet does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run, on the proposal of a precedent — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep.
+    /// The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not left there. A `run` of a checkout on the list whose fleet instance does not run starts it with those, but for each that `run` names itself.
     ///
-    /// Once every fleet on this host has been idle {const:HOST_IDLE_MINUTES} minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless it was told `--no-host-sleep` (or AFKCONVOY_NO_HOST_SLEEP=true), which keeps the host awake for every fleet on it. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every `run` listens on a socket in the cache directory (instances/, named for its fleet instance) and removes it as it exits; one nobody listens on is removed by whoever finds it. Asked there, a `run` says its instance, repo and version, whether it was told `--no-host-sleep`, since when it has been idle or not, and when it last worked; asked to tick first, it ticks, then says so.
+    /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on a socket in the cache directory (host-runner.sock), and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, and with `--no-host-sleep` and `--hot-*` as the login shell's environment says; a checkout whose fleet instance cannot start stays on the list, and its log says why.
     ///
-    /// ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so are the landing train and the worker a declared verdict starts. The host says its own shares, each a whole percent, in the environment of `run`, `tick`, `plan` and `doctor`: AFKCONVOY_ADMIT_LOAD (of its cores), AFKCONVOY_ADMIT_MEMORY and AFKCONVOY_ADMIT_DISK (free) — AFKCONVOY_ADMIT_LOAD=400 lets the load reach four times the cores, and AFKCONVOY_ADMIT_DISK=0 never holds for disk. A value that is no whole percent is an error. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
+    /// The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as each fleet instance starts and ends, as a checkout is added, refused or removed, and each line a fleet instance says outside its tick log, after its checkout: its warnings, the `start:` lines after its first, and the `panel:` line.
     ///
-    /// When admission has held back for one reason — load, memory or disk — at every tick for ten minutes in a row (AFKCONVOY_ADMIT_INSPECT_AFTER, in whole seconds, says the host's own span), `run` starts an inspection of the host: the stock consult, in a checkout of its own, given what was taken down as it started — admission's reading and shares; for disk, what each of this host's worktrees of every fleet holds, with its issue, its stage and whether a worker holds it, the landing train's among them, the fleet's caches and the largest directories of the whole volume under the home folder outside them (`du -x`, at most five minutes); for load or memory, the process trees of each worker and of the train, and the hottest processes outside them. Holding back for reasons that change starts none. It runs once an episode, which ends once admission has admitted for five minutes, and not where another fleet of the host inspected it in the same episode. It says what it found with `afkconvoy inspected`: reclaimable, fleet or not-its. For reclaimable it frees what can be rebuilt under the home folder — what git ignores in a checkout no process uses, a closed issue's worktree, a tool's cache — and names what cannot, never deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the repo, with the escalate label and the label fleet-outgrows-host, and no other while that one is open. What it found is a line of the log, and shown by the panel and `doctor` beside admission's reading.
+    /// Two kinds of checkout are refused, with an error and nothing on the list: one whose fleet instance is refused before its first tick — it fails the startup probe, say — which is taken off the list when it was on it; and a second checkout of a repo already on the list, a clone or a worktree of it: a host runs one fleet instance per repo, and the error names the checkout to run it from.
     ///
-    /// A `run` idle {const:HOST_IDLE_MINUTES} minutes checks then, tick due or not, and again {const:HOST_IDLE_MINUTES} minutes after a check that kept the host awake. It puts the host to sleep only when all hold:
+    /// Then everything a fleet instance does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run, on the proposal of a precedent — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep.
+    ///
+    /// Once every fleet on this host has been idle {const:HOST_IDLE_MINUTES} minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless it was told `--no-host-sleep` (or AFKCONVOY_NO_HOST_SLEEP=true), which keeps the host awake for every fleet on it. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet instance listens on a socket in the cache directory (instances/, named for it) and removes it as it ends; one nobody listens on is removed by whoever finds it. Asked there, a fleet instance says its instance, repo and version, whether it was told `--no-host-sleep`, since when it has been idle or not, and when it last worked; asked to tick first, it ticks, then says so.
+    ///
+    /// ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so are the landing train and the worker a declared verdict starts. The host says its own shares, each a whole percent, in the environment of the host runner — its login shell's — and of `tick`, `plan` and `doctor`: AFKCONVOY_ADMIT_LOAD (of its cores), AFKCONVOY_ADMIT_MEMORY and AFKCONVOY_ADMIT_DISK (free) — AFKCONVOY_ADMIT_LOAD=400 lets the load reach four times the cores, and AFKCONVOY_ADMIT_DISK=0 never holds for disk. A value that is no whole percent is an error. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
+    ///
+    /// When admission has held back for one reason — load, memory or disk — at every tick for ten minutes in a row (AFKCONVOY_ADMIT_INSPECT_AFTER, in whole seconds, says the host's own span), the fleet instance starts an inspection of the host: the stock consult, in a checkout of its own, given what was taken down as it started — admission's reading and shares; for disk, what each of this host's worktrees of every fleet holds, with its issue, its stage and whether a worker holds it, the landing train's among them, the fleet's caches and the largest directories of the whole volume under the home folder outside them (`du -x`, at most five minutes); for load or memory, the process trees of each worker and of the train, and the hottest processes outside them. Holding back for reasons that change starts none. It runs once an episode, which ends once admission has admitted for five minutes, and not where another fleet of the host inspected it in the same episode. It says what it found with `afkconvoy inspected`: reclaimable, fleet or not-its. For reclaimable it frees what can be rebuilt under the home folder — what git ignores in a checkout no process uses, a closed issue's worktree, a tool's cache — and names what cannot, never deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the repo, with the escalate label and the label fleet-outgrows-host, and no other while that one is open. What it found is a line of the log, and shown by the panel and `doctor` beside admission's reading.
+    ///
+    /// A fleet instance idle {const:HOST_IDLE_MINUTES} minutes checks then, tick due or not, and again {const:HOST_IDLE_MINUTES} minutes after a check that kept the host awake. It puts the host to sleep only when all hold:
     ///
     /// - it worked — held a claim, or had something on the landing train — since the host last woke (`sysctl kern.waketime`): a host woken, by hand or otherwise, stays awake until a fleet on it works again;
-    /// - every `run` on the host answers within two seconds, none was told `--no-host-sleep`, and each has been idle {const:HOST_IDLE_MINUTES} minutes;
+    /// - every fleet instance on the host answers within two seconds, none was told `--no-host-sleep`, and each has been idle {const:HOST_IDLE_MINUTES} minutes;
     /// - nobody touched the keyboard or mouse for ten minutes (HIDIdleTime, from `ioreg`);
-    /// - every `run`, itself included, asked to tick, does so and still answers idle within two minutes.
+    /// - every fleet instance, itself included, asked to tick, does so and still answers idle within two minutes.
     ///
     /// One that does not answer in time is not idle: the host stays awake this time, and is checked again later. A `run` of a version without the socket is not seen, and keeps nothing awake.
     ///
-    /// It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, that says what it found with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets; it takes no slot of the `concurrency`, and is ended after {const:INSPECTION_MINUTES} minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, `run` sleeps 30 seconds at most.
+    /// It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, that says what it found with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets; it takes no slot of the `concurrency`, and is ended after {const:INSPECTION_MINUTES} minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, a fleet instance sleeps 30 seconds at most.
     ///
-    /// It also keeps a log on this host, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under "What it logs", and [`afkconvoy help tick-log`](help:tick-log) says what the line holds); `run` does not print those. It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}. A line is written whole as it happens, so killing `run` loses none, and none a command appends while `run` cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
+    /// Each fleet instance also keeps a log on this host, its tick log, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under "What it logs", and [`afkconvoy help tick-log`](help:tick-log) says what the line holds). It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}. A line is written whole as it happens, so killing the host runner loses none, and none a command appends while the fleet instance cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
     ///
     /// ##### What it answers
     ///
-    /// On stdout, every line it writes to its log, as it is written and in the same order, until it is stopped; then, told to stop with SIGTERM or Ctrl-C, one `stop:` line and {"stopped": true, "ticks", "instance"}, with exit 0.
+    /// Once its checkout's fleet instance has ended its first tick, with exit 0:
+    ///
+    /// ```json
+    /// {"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj", "added": true,
+    ///  "instance": "me-h1-1a2b3c4d",
+    ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log", "started": true},
+    ///  "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl",
+    ///  "first_tick": "tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s",
+    ///  "warnings": []}
+    /// ```
+    ///
+    /// - `repo`: the repo the checkout is of, as its remote `origin` names it.
+    /// - `added`: false when the checkout was on the list already. Where its fleet instance runs, the flags of this `run` change nothing, and the answer is that instance, with its own first tick.
+    /// - `host_runner`: the one that answered — its pid, its version and its log — and whether this `run` started it.
+    /// - `tick_log` and `first_tick`: the fleet instance's tick log, and the line that ended its first tick. `<cache>` stands for the cache directory, whole in the answer.
+    /// - `warnings`: what its fleet instance warned of until its first tick ended — the startup probe's warnings among them — also on stderr; empty where this `run` waited on no start.
+    ///
+    /// Each fleet instance's lines — `run` prints none of them. Its tick log holds them, and `afkconvoy doctor` reads them back, but for the `start:` lines after the first — the terms of host sleep, and the claims its start took — which are lines of the host runner's log, after the checkout (`/Users/me/Developments/hkj: start: took #4, #7 stamped with this host`):
     ///
     /// ```
     /// start: run as tester-h1-1a2b3c4d on h1, its workers started with `claude`
@@ -1071,7 +1119,7 @@ enum Command {
     /// tick 7: dispatched #71 · skipped #68 (blocked by #71) · holding 2/3 · frontier 0 · next in 90s
     /// ```
     ///
-    /// The second `start:` line is there unless it was told `--no-host-sleep`. Every tick has a line as it starts, before it does anything, naming why: `timer` (its sleep ran out), `woken` (a wake ended the sleep, or was heard during the tick before: `woken by` the command that sent it, and what that acted on, where it named them), `start` (the run's first) or `follow-up` (the tick before left a worker to start, or could not reach GitHub, so it runs with no sleep). A wake heard during a tick is a line as it is heard — the first of each tick — and the next tick starts as that one ends: ticks never overlap. A check for host sleep is a line, and so is the host waking from a sleep, as `run` notices it — a rest that took a minute past its length — and being told to stop:
+    /// The second `start:` line is there unless it was told `--no-host-sleep`. Every tick has a line as it starts, before it does anything, naming why: `timer` (its sleep ran out), `woken` (a wake ended the sleep, or was heard during the tick before: `woken by` the command that sent it, and what that acted on, where it named them), `start` (the fleet instance's first) or `follow-up` (the tick before left a worker to start, or could not reach GitHub, so it runs with no sleep). A wake heard during a tick is a line as it is heard — the first of each tick — and the next tick starts as that one ends: ticks never overlap. A check for host sleep is a line, and so is the host waking from a sleep, as the fleet instance notices it — a rest that took a minute past its length — and being told to stop:
     ///
     /// ```
     /// tick 4: started (woken by verdict #121)
@@ -1089,7 +1137,7 @@ enum Command {
     ///
     /// `escalated #15 (workup: consult let it through)`: the tick handed #15 to a human, whichever step did, with why in a few words — the stage first, where it was at one. It is named as nothing else. The comment on the issue says why in full and ends with the line that answers it; `afkconvoy doctor` lists it under `waiting_on_human`.
     ///
-    /// A change made on GitHub, or by another host's fleet, shows on this host at the next tick, and in no other way: that tick reads GitHub and the remote, as every tick does. Nothing reaches a `run` sooner — no webhook, no port — and `afkconvoy wake` makes that next tick start now. Where the tick acts on such a change, its line says what changed since the tick before, and who changed it where that is known:
+    /// A change made on GitHub, or by another host's fleet, shows on this host at the next tick, and in no other way: that tick reads GitHub and the remote, as every tick does. Nothing reaches a fleet instance sooner — no webhook, no port — and `afkconvoy wake` makes that next tick start now. Where the tick acts on such a change, its line says what changed since the tick before, and who changed it where that is known:
     ///
     /// ```
     /// tick 8: lost #46 to instance beta-1a2b3c4d on host h2 (takeover) · holding 1/3 · frontier 0 · next in 90s
@@ -1099,28 +1147,29 @@ enum Command {
     /// tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
     /// ```
     ///
-    /// `lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, or `(the issue is gone from this repo)`, transferred. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the `run`'s first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
+    /// `lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, or `(the issue is gone from this repo)`, transferred. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
     ///
     /// `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one without starting what follows, and left a slot free, so what follows — a consult, the join of a PR, an issue the landing unblocked — is the next tick's to start, and that tick starts with no sleep.
     ///
     /// So does the tick after one that failed on a read GitHub could not be reached for (`GitHub could not be reached: …`): nothing says the next read fails too. At most {const:BACK_TO_BACK} ticks run back to back; then it sleeps, whatever the last one left.
     ///
-    /// With `--panel <port>` its first line is the panel's address, and it serves the panel there until it is killed: the fleet as a web page — every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train — brought up to date in the browser after every tick, by itself. `afkconvoy panel --help` says what the page shows.
+    /// With `--panel <port>` its checkout's fleet instance serves the panel on that port until it ends: the fleet as a web page — every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train — brought up to date in the browser after every tick, by itself. `afkconvoy panel --help` says what the page shows. Its address is a line of the host runner's log, after the checkout:
     ///
     /// ```
-    /// panel: http://127.0.0.1:7070/
+    /// /Users/me/Developments/hkj: panel: http://127.0.0.1:7070/
     /// ```
     ///
-    /// Started without it, it serves the same page once `afkconvoy panel --open` asks it to, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then prints that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
+    /// Started without it — and started again by the host runner, which keeps no `--panel` — a fleet instance serves the same page once `afkconvoy panel --open` asks it to, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then logs that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
     ///
-    /// Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role.
+    /// Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
     ///
     /// ##### What trips you up
     ///
-    /// - Stop it with SIGTERM or Ctrl-C: it finishes the step it is in, makes none of the steps left in its tick, and exits — within a second when it sleeps. No claim is released on the way out and no worker is stopped: the workers work on, and the next `run` on this host takes the claims back. Holding no claim, it removes its heartbeat from the remote; holding one, it leaves it, and that next `run` removes it. A second signal ends it at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run and a proposal it takes back are ended by its first tick once their worker is gone or has stopped, as any run of its own.
-    /// - Without `--instance` it mints a new instance id, named for this host, and its lines never print it. `afkconvoy doctor` finds it, and says it as `fleet.instance`, for `plan --instance` and the commands that make one transition by hand.
-    /// - Its lines are gone with the terminal they were printed in. The same lines are in its log, a day of them at the least: `afkconvoy doctor` reads it back.
-    /// - A second `run` on this host for this repo takes the first one's claims at its start.
+    /// - Stop the host runner with SIGTERM to its pid, `host_runner.pid` in any `run`'s answer: each fleet instance finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps — and the host runner exits once every one has, keeping the checkout list: the next `run` starts every checkout on it. No claim is released on the way out and no worker is stopped: the workers work on, and the next start on this host takes the claims back. Holding no claim, a fleet instance removes its heartbeat from the remote; holding one, it leaves it, and that next start removes it. A second signal ends the host runner at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run and a proposal it takes back are ended by its first tick once their worker is gone or has stopped, as any run of its own.
+    /// - Ctrl-C while `run` waits ends that `run` alone: the host runner is in a process group of its own, and goes on with the checkout.
+    /// - The flags of a `run` whose checkout's fleet instance runs already change nothing: stop the host runner, and run again with the flags you want.
+    /// - Without `--instance` each start mints a new instance id, named for this host: the answer says it as `instance`, and `afkconvoy doctor` as `fleet.instance`, for `plan --instance` and the commands that make one transition by hand.
+    /// - AFKCONVOY_ADMIT_* reach every fleet instance from the host runner's environment, its login shell's, and not from the shell of any `run`; so do AFKCONVOY_NO_HOST_SLEEP and AFKCONVOY_HOT_*, to one the host runner starts again. Export them in your login shell's rc files.
     /// - The panel is served to this host only, and shows a tick, not this second: between two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
     /// - Every worker launch command comes from the host kit: run `afkconvoy kit` to write it again. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed. `--worker-command` is gone. On a host with no host kit, `run` writes one as `afkconvoy kit` does, at a terminal or not, asking nothing: it says on stderr where the file is, what it holds and what was left out, and goes on to its first tick. A harness absent from the kit has no implicit stock command. Harness selection still follows a switch, a stage or patrol, then the repo's config.
     /// - Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. Nothing else of an unbound repo's worker launch command is touched.
@@ -1213,7 +1262,15 @@ enum Command {
         /// Milliseconds one second of sleep takes
         #[arg(long, hide = true, default_value_t = 1000)]
         second_ms: u64,
+        /// Hold the fleet instance in this process, printing its lines, until it is told to stop
+        #[arg(long, hide = true)]
+        foreground: bool,
+        #[command(flatten)]
+        at: At,
     },
+    /// Hold every checkout on this host's checkout list, as `run` starts it in the background
+    #[command(hide = true)]
+    HostRunner,
     /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
     ///
     /// ##### When to run it
@@ -1235,7 +1292,7 @@ enum Command {
     ///
     /// ##### Who runs it
     ///
-    /// The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any of its worktrees, and no other repo's.
+    /// The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any checkout of it but a worker's worktree, and no other repo's.
     ///
     /// ##### What it reads and writes
     ///
@@ -1293,6 +1350,8 @@ enum Command {
         /// With --open: the port of this host to serve it on [default: any free one]
         #[arg(long, value_name = "PORT", requires = "open")]
         port: Option<u16>,
+        #[command(flatten)]
+        at: At,
     },
     /// Run one reconciliation pass and exit
     ///
@@ -1364,6 +1423,8 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+        #[command(flatten)]
+        at: At,
     },
     /// Run the gate in this worktree and put a green run on record (a worker's command)
     ///
@@ -1418,6 +1479,8 @@ enum Command {
         /// The host a green run is recorded as made on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: At,
     },
     /// Put this worktree's PR on the landing train (a worker's command), or land the train
     ///
@@ -1491,6 +1554,8 @@ enum Command {
         /// machine's name]
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Declare the verdict that ends a stage, with the text it produced (a worker's command, and a human's for a stage nobody holds)
     ///
@@ -1588,6 +1653,8 @@ enum Command {
         /// The worker is the stage's consult, letting its `escalate` through [a human is none]
         #[arg(long, env = CONSULT_ENV)]
         consult: bool,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Answer an escalated issue with a ruling: its stage runs again under it (a human's command, and a consult's for the stage that asked it)
     ///
@@ -1668,6 +1735,8 @@ enum Command {
         /// The model a worker ran, where it was started on one [a human names none]
         #[arg(long, env = MODEL_ENV, requires = "role_commit")]
         model: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Send an issue to a named stage of its workflow (a human's command, and a consult's)
     ///
@@ -1732,6 +1801,8 @@ enum Command {
         /// The worker is the stage's consult [a human is none]
         #[arg(long, env = CONSULT_ENV)]
         consult: bool,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
     ///
@@ -1816,6 +1887,8 @@ enum Command {
         /// The issues it is to wait for, as numbers separated by commas
         #[arg(long, value_delimiter = ',')]
         blocked_by: Vec<u64>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
     ///
@@ -1867,6 +1940,8 @@ enum Command {
         /// The role that raises it [default: the one this worker was started in, if any]
         #[arg(long, env = ROLE_ENV)]
         role: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Have a patrol run now, past its interval and its daily bound: the next tick runs it
     ///
@@ -1921,6 +1996,8 @@ enum Command {
     PatrolNow {
         /// The patrol, as the repo's config names it under `patrols`
         name: String,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Declare a patrol's run or a proposal's over: the next tick ends it (a worker's command)
     ///
@@ -1952,6 +2029,8 @@ enum Command {
         /// The run, as its brief names it
         #[arg(long)]
         run: String,
+        #[command(flatten)]
+        at: At,
     },
     /// Say what an inspection of a hot worker or of the host found: its `run` types it at the worker and leaves it on the issue, or keeps it beside admission's reading (an inspection's command)
     ///
@@ -1994,7 +2073,7 @@ enum Command {
     ///
     /// {"inspected": true, "found", "kind", "reclaimed", "freed", "named", "woke"} — what was found is kept; `kind` is worker or host; `reclaimed` and `named` are each [{path, bytes}] it freed and named, `freed` the bytes freed in all; `woke` is whether a `run` on this host was told.
     ///
-    /// Errors: the text is empty; the checkout it runs in is no inspection's; the word is not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim of another word than reclaimable; a path that may not be freed, or does not exist.
+    /// Errors: the text is empty; the checkout it is about is no inspection's; the word is not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim of another word than reclaimable; a path that may not be freed, or does not exist.
     ///
     /// ##### What trips you up
     ///
@@ -2016,6 +2095,8 @@ enum Command {
         /// Of the host: a path to name for a human, which is never deleted
         #[arg(long, value_name = "PATH")]
         name: Vec<PathBuf>,
+        #[command(flatten)]
+        at: At,
     },
     /// Run a heavy command alone on this host, once no other `exclusive` command runs (a worker's command)
     ///
@@ -2035,7 +2116,7 @@ enum Command {
     ///
     /// ##### What it reads and writes
     ///
-    /// It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then: the commands run one after the other, in the order they asked. The queue is a directory of the fleet's cache (`afkconvoy help cache`), holding one file for each command waiting or running. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next.
+    /// It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then: the commands run one after the other, in the order they asked. The queue is a directory of the fleet's cache (`afkconvoy help cache`), holding one file for each command waiting or running. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
     /// It writes three lines to the tick log of this host for this repo: as it starts to wait, when another command is ahead of it; as its command runs; and as it ends, with its exit status. `doctor` and the panel show what runs alone and what waits.
     ///
@@ -2045,7 +2126,7 @@ enum Command {
     ///
     /// Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
     ///
-    /// It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the queue cannot be reached: the command did not run.
+    /// It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the queue cannot be reached, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
     ///
     /// ##### What trips you up
     ///
@@ -2058,6 +2139,8 @@ enum Command {
         /// The command and its arguments, after `--`
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<OsString>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     ///
@@ -2175,6 +2258,8 @@ enum Command {
         /// Where to start from: what survives, or — discarding it — the base branch
         #[arg(long, value_enum, default_value = "auto")]
         start: dispatch::StartFrom,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Show what `dispatch` would continue an issue from, without acting
     ///
@@ -2207,6 +2292,8 @@ enum Command {
     Recovery {
         #[command(flatten)]
         issue: IssueArg,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Close one of my claims whose issue needed no change
     ///
@@ -2238,6 +2325,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Hand one of my claims to a human
     ///
@@ -2276,6 +2365,8 @@ enum Command {
         /// Why: what a human needs to act on it in one reply
         #[arg(long)]
         reason: String,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Leave one of my claims waiting on the issues its worker declared it blocked by
     ///
@@ -2309,6 +2400,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
     ///
@@ -2347,6 +2440,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Replace the silent worker of one of my claims whose PR is joining the train, once
     ///
@@ -2381,6 +2476,8 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
     ///
@@ -2454,6 +2551,8 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Give up the landing train, its worker silent past a nudge, with nothing landed
     ///
@@ -2489,6 +2588,8 @@ enum Command {
     Abandon {
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: At,
     },
     /// Take another fleet instance's claims without waiting for the lease
     ///
@@ -2545,6 +2646,8 @@ enum Command {
         instance: Option<InstanceId>,
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: At,
     },
     /// End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
     ///
@@ -2576,7 +2679,10 @@ enum Command {
     /// - `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
     /// - It reaches a `run` only, on this host only. A fleet driven by `tick` hears nothing.
     #[command(next_help_heading = WORKER, verbatim_doc_comment)]
-    Wake,
+    Wake {
+        #[command(flatten)]
+        at: At,
+    },
     /// List every claim and heartbeat on the remote
     ///
     /// ##### When to run it
@@ -2605,7 +2711,10 @@ enum Command {
     /// - It looks where this repo's last startup probe found the remote keeps the fleet's refs. In a clone no `plan`, `tick` or `run` was ever run in, it looks under refs/convoy/ — and finds nothing on a remote that keeps them as convoy-* branches.
     /// - It does not say whether a claim is live: compare its instance's heartbeat with the lease, or read `takeover --list`.
     #[command(next_help_heading = PLUMBING, verbatim_doc_comment)]
-    Scan,
+    Scan {
+        #[command(flatten)]
+        at: At,
+    },
     /// Claim one issue for a fleet instance
     ///
     /// ##### When to run it
@@ -2638,6 +2747,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Release a fleet instance's own claim on one issue
     ///
@@ -2669,6 +2780,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Refresh a fleet instance's heartbeat, if it is due
     ///
@@ -2699,6 +2812,8 @@ enum Command {
     Heartbeat {
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: At,
     },
     /// Print this message, the help of the given command, or a help topic
     #[command(next_help_heading = READER)]
@@ -2728,6 +2843,28 @@ impl IssueArg {
     }
 }
 
+/// The checkout a command is about, named after it: for a command with no
+/// argument of its own after it (`AtFlag` for one with).
+#[derive(clap::Args)]
+struct At {
+    /// The checkout it is about, or a directory in it [default: the one it is run in]
+    #[arg(value_name = "CHECKOUT")]
+    checkout: Option<PathBuf>,
+}
+
+/// The checkout a command is about, named with `-C`: for a command whose
+/// arguments after it are its own.
+#[derive(clap::Args)]
+struct AtFlag {
+    /// The checkout it is about, or a directory in it [default: the one it is run in]
+    #[arg(short = 'C', value_name = "CHECKOUT")]
+    checkout: Option<PathBuf>,
+}
+
+/// The id of the argument of `At` and of `AtFlag`: a command that has it is
+/// about one repo, and one that has neither is about none.
+const CHECKOUT_ARG: &str = "checkout";
+
 /// The team a command reads.
 #[derive(clap::Args)]
 struct TeamArgs {
@@ -2742,6 +2879,18 @@ struct TeamArgs {
 }
 
 impl TeamArgs {
+    /// Where the team they name is read from, with the checkout to read it
+    /// for: `checkout`, which names the team where they name none — and must
+    /// then be had — and otherwise gives its labels where it is had.
+    fn read(self, checkout: anyhow::Result<Repo>) -> anyhow::Result<(team::From, Option<Repo>)> {
+        let from = self.from();
+        let checkout = match from {
+            team::From::Config => Some(checkout?),
+            _ => checkout.ok(),
+        };
+        Ok((from, checkout))
+    }
+
     fn from(self) -> team::From {
         match (self.team, self.dir) {
             (of, Some(dir)) => team::From::Dir(dir, of),
@@ -2860,17 +3009,113 @@ const ACTS: [&str; 25] = [
     "tick",
 ];
 
-/// The command line as parsed: `Cli`, each command that acts with what it logs
-/// added to its text.
+/// The commands a worker runs in its own worktree, as its brief, a stage's
+/// consult's, the caster's and an inspection's give them: with those that
+/// only read (`ONLY_READ`), the only commands a worker's worktree is taken
+/// for (`checkout::resolve`).
+const IN_ITS_WORKTREE: [&str; 15] = [
+    "cast",
+    "doctor",
+    "plan",
+    "show",
+    "gate",
+    "land",
+    "verdict",
+    "rule",
+    "send",
+    "intake",
+    "lock",
+    "over",
+    "inspected",
+    "exclusive",
+    "wake",
+];
+
+/// The commands about one repo that only read — each but with the flag
+/// beside it, which makes it act: they change nothing on GitHub, on the
+/// remote, in the checkout or of a `run`. A worker's worktree is taken for
+/// each, as for a worker's own commands: a consult's brief lets it run any
+/// command that only reads, and what one reads from a worker's branch acts
+/// for nobody.
+const ONLY_READ: [(&str, Option<&str>); 7] = [
+    ("config", None),
+    ("check", None),
+    ("rehearse", None),
+    ("recovery", None),
+    ("scan", None),
+    ("panel", Some("open")),
+    ("takeover", Some("from")),
+];
+
+/// Whether the command `name`, as `given`, only reads (`ONLY_READ`): it is
+/// one of them, and is not given the flag that makes it act.
+fn only_reads(name: &str, given: &clap::ArgMatches) -> bool {
+    let acts =
+        |flag: &str| given.value_source(flag) == Some(clap::parser::ValueSource::CommandLine);
+    ONLY_READ.iter().any(|(reads, with)| *reads == name && !with.is_some_and(acts))
+}
+
+/// The commands that start the fleet's work: each checks this host before
+/// anything else (`probe::startup`), and is refused on a host with no git
+/// naming every command it lacks (`checkout::started`).
+const STARTS: [&str; 3] = ["run", "tick", "plan"];
+
+/// The command line as parsed: `Cli`, each command about one repo with how it
+/// takes its checkout added to its text, and each command that acts with what
+/// it logs.
 fn cli() -> clap::Command {
     let mut cli = Cli::command();
+    let about: Vec<(String, String)> = cli
+        .get_subcommands()
+        .filter_map(|command| {
+            let arg = command.get_arguments().find(|arg| arg.get_id() == CHECKOUT_ARG)?;
+            let name = command.get_name();
+            Some((name.to_string(), checkout_help(name, arg.is_positional())))
+        })
+        .collect();
+    for (name, said) in about {
+        cli = cli.mut_subcommand(name, |command| added(command, &said));
+    }
     for name in ACTS {
-        cli = cli.mut_subcommand(name, |command| {
-            let text = command.get_long_about().map(ToString::to_string).unwrap_or_default();
-            command.long_about(format!("{}\n\n{}", text.trim_end(), acting::HELP))
-        });
+        cli = cli.mut_subcommand(name, |command| added(command, acting::HELP));
     }
     cli
+}
+
+/// `command` with `said` added to the end of its text.
+fn added(command: clap::Command, said: &str) -> clap::Command {
+    let text = command.get_long_about().map(ToString::to_string).unwrap_or_default();
+    command.long_about(format!("{}\n\n{said}", text.trim_end()))
+}
+
+/// What the manual adds to the text of the command `name`, about one repo:
+/// how it is told the checkout — after it, or with `-C` where what follows it
+/// is its own (`positional`) — and whether a worker's worktree is one.
+fn checkout_help(name: &str, positional: bool) -> String {
+    let (named, own) = match positional {
+        true => ("Name it after the command, as `[CHECKOUT]`", ""),
+        false => (
+            "Name it with `-C <CHECKOUT>`",
+            " What follows the command is its own: the checkout is not among it.",
+        ),
+    };
+    let refused = "A worker's worktree is refused as its checkout: only a worker's own commands, \
+                   and those that only read, are run there.";
+    let reads = ONLY_READ.iter().find(|(reads, _)| *reads == name).map(|(_, with)| with);
+    let worker = match (IN_ITS_WORKTREE.contains(&name), reads) {
+        (true, _) => "A worker runs it in its own worktree.".to_string(),
+        (false, Some(None)) => "It only reads: a worker's worktree is one too.".to_string(),
+        (false, Some(Some(flag))) => format!(
+            "Without `--{flag}` it only reads, and a worker's worktree is one too. With `--{flag}`, \
+             it is not: only a worker's own commands, and those that only read, are run there."
+        ),
+        (false, None) => refused.to_string(),
+    };
+    format!(
+        "##### Which checkout it is about\n\n{named}: a checkout of the repo, or any directory in \
+         one, which names that checkout.{own} Naming none, it is about the checkout it is run in. \
+         {worker}"
+    )
 }
 
 /// The manual: `--help` answers it whole, and `help <topic>` one topic of
@@ -3067,32 +3312,108 @@ fn removed_worker_command(_: &str) -> Result<String, String> {
 }
 
 impl AgentArgs {
-    /// Reads this host's host kit (`Launches::new`), with no probe:
+    /// Reads this host's host kit for the checkout `repo` (`Launches::new`), with no probe:
     /// the one worker a command started this way starts is refused where its
-    /// harness's command resolves to nothing (`Agent::command`).
-    fn agent(self) -> anyhow::Result<Agent> {
-        let launches = Launches::new(true)?.with_no_proxy(&self.proxy.worker_no_proxy)?;
+    /// harness's command resolves to nothing (`Agent::command`). What that
+    /// command warns of is the caller's to say (`Launches::warned`).
+    fn agent(self, repo: &Repo) -> anyhow::Result<Agent> {
+        let launches = Launches::new(repo, true)?.with_no_proxy(&self.proxy.worker_no_proxy)?;
         Ok(Agent { launches, ready_timeout: self.ready_timeout })
     }
 
     /// Makes the startup probe of a start that starts workers → what it
-    /// starts them with. What each command needs of this host is the probe's
-    /// to check: for every harness the fleet could be asked for, before any
-    /// worker is started. A start that is `trusting` makes none while one
-    /// that checked these commands stands (`probe::standing`).
-    fn start(self, now: u64, trusting: bool) -> anyhow::Result<Agent> {
-        let agent = self.agent()?;
-        // The default harness's is settled whatever stands: a human is
-        // asked, where one must be, before anything else is.
-        agent.launches.key()?;
-        let stands = if trusting { probe::standing(now, &agent.launches) } else { None };
-        let warnings = match stands {
-            Some(warnings) => warnings,
-            None => probe::startup(now, &agent.launches)?,
-        };
+    /// starts them with (`start_agent`), its warnings said on stderr.
+    fn start(self, repo: &Repo, now: u64, trusting: bool) -> anyhow::Result<Agent> {
+        let no_proxy = &self.proxy.worker_no_proxy;
+        let (agent, warnings) = start_agent(repo, no_proxy, self.ready_timeout, now, trusting)?;
         probe::announce(&warnings);
         Ok(agent)
     }
+}
+
+/// Builds the agent of a start that starts workers, in the checkout `repo`
+/// with this host's host kit, and makes its startup probe → the agent, and
+/// what the probe and the launch commands it resolved warned of
+/// (`Launches::warned`). What each command needs of this host is the
+/// probe's to check: for every harness the fleet could be asked for, before
+/// any worker is started. A start that is `trusting` makes none while one that
+/// checked these commands stands (`probe::standing`).
+pub(crate) fn start_agent(
+    repo: &Repo,
+    worker_no_proxy: &[String],
+    ready_timeout: u64,
+    now: u64,
+    trusting: bool,
+) -> anyhow::Result<(Agent, Vec<String>)> {
+    let launches = Launches::new(repo, true)?.with_no_proxy(worker_no_proxy)?;
+    let agent = Agent { launches, ready_timeout };
+    // The default harness's is settled whatever stands: a human is
+    // asked, where one must be, before anything else is.
+    agent.launches.key()?;
+    let stands = if trusting { probe::standing(repo, now, &agent.launches) } else { None };
+    let probed = match stands {
+        Some(warnings) => warnings,
+        None => probe::startup(repo, now, &agent.launches)?,
+    };
+    let mut warnings = agent.launches.warned();
+    warnings.extend(probed);
+    Ok((agent, warnings))
+}
+
+/// The start `run` asks for, from its flags and the global `--now` → whether
+/// it was `--foreground`, and the start; `None` for any other command. One
+/// mapping for `run` and for a host runner that starts a checkout again.
+fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start)> {
+    let Command::Run {
+        instance,
+        host,
+        agent,
+        panel,
+        no_host_sleep,
+        host_sleep_after,
+        hot_cores,
+        hot_memory,
+        hot_written,
+        ticks,
+        second_ms,
+        foreground,
+        ..
+    } = command
+    else {
+        return None;
+    };
+    let bytes = |thousandths: u64| thousandths.saturating_mul(1 << 30) / 1000;
+    let named = instance::Named {
+        instance: instance.map(|instance| instance.as_str().to_string()),
+        host,
+        worker_no_proxy: agent.proxy.worker_no_proxy,
+    };
+    let hot = hot::Said {
+        millicores: hot_cores,
+        resident: hot_memory.map(bytes),
+        written: hot_written.map(bytes),
+    };
+    let ready_timeout = agent.ready_timeout;
+    let knobs = instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now };
+    Some((foreground, instance::Start { named, panel, no_host_sleep, hot, knobs }))
+}
+
+/// The start of a `run` that named nothing, in this process's environment:
+/// how a host runner starts a checkout on its list, with what that checkout's
+/// `run` named laid over it.
+pub(crate) fn unflagged_start() -> anyhow::Result<instance::Start> {
+    // Only a variable can refuse it: clap's first line says which flag, and why.
+    let unflagged = Cli::try_parse_from(["afkconvoy", "run"]).map_err(|error| {
+        let said = error.to_string();
+        let said = said.lines().next().unwrap_or_default();
+        anyhow::anyhow!(
+            "the login shell's environment sets a flag of `run` to what it refuses — correct it \
+             in your login shell's rc files: {}",
+            said.trim_start_matches("error: ")
+        )
+    })?;
+    let start = start_of(unflagged.command, None).map(|(_, start)| start);
+    start.context("a `run` asks for a start")
 }
 
 /// Runs one command line. Prints exactly one JSON object on stdout: the
@@ -3112,10 +3433,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             Err(error) => fail(1, &error),
         };
     }
-    let parsed =
-        cli().try_get_matches_from(&args).and_then(|matches| Cli::from_arg_matches(&matches));
-    let cli = match parsed {
-        Ok(cli) => cli,
+    let parsed = cli()
+        .try_get_matches_from(&args)
+        .and_then(|matches| Ok((Cli::from_arg_matches(&matches)?, matches)));
+    let (cli, matches) = match parsed {
+        Ok(parsed) => parsed,
         // A command's `--help` is its text in the manual.
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => {
             let text = asks_for_text(&args).and_then(|name| help(Some(name)).ok());
@@ -3134,9 +3456,6 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if matches!(cli.command, Command::Guard) {
         return guard::guard();
     }
-    if let Command::Exclusive { command } = &cli.command {
-        return exclusive::exclusive(command, || cli.now.unwrap_or_else(clock));
-    }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
             Ok(text) => {
@@ -3146,15 +3465,53 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             Err(error) => fail(2, &error),
         };
     }
-    let acting = cli.command.acting();
-    let now = || cli.now.unwrap_or_else(clock);
-    if let Some(acting) = &acting {
-        acting.start(now());
+    // The checkout the command is about, found once, here, and handed to all
+    // it does. One about no repo is about none.
+    let about = matches.subcommand().filter(|(name, _)| {
+        Cli::command()
+            .find_subcommand(name)
+            .is_some_and(|command| command.get_arguments().any(|arg| arg.get_id() == CHECKOUT_ARG))
+    });
+    let named = about.and_then(|(_, command)| command.get_one::<PathBuf>(CHECKOUT_ARG));
+    let named = named.map(PathBuf::as_path);
+    let checkout = match about {
+        Some((name, given)) => {
+            let taken = IN_ITS_WORKTREE.contains(&name) || only_reads(name, given);
+            match STARTS.contains(&name) {
+                true => checkout::started(named, taken),
+                false => checkout::resolve(named, taken),
+            }
+        }
+        None => Err(anyhow::anyhow!("this command is about no repo")),
+    };
+    // Run anywhere, in a checkout or not: the queue is the host's. A
+    // directory named is refused before it waits where it is no checkout's.
+    if let Command::Exclusive { command, .. } = &cli.command {
+        return match (checkout, checkout::dir(named)) {
+            (Err(error), _) if named.is_some() => exclusive::failed(&format!("{error:#}")),
+            (checkout, Ok(dir)) => {
+                exclusive::exclusive(command, &dir, checkout.ok(), || cli.now.unwrap_or_else(clock))
+            }
+            (_, Err(error)) => exclusive::failed(&format!("{error:#}")),
+        };
     }
-    let ran = run(cli.command, cli.now);
-    let ran = match &acting {
-        Some(acting) => acting.end(now(), ran),
-        None => ran,
+    // A checkout named is one the command is about, whether it needs one or
+    // not: where it cannot be had, the command is refused before it starts.
+    let ran = match checkout {
+        Err(error) if named.is_some() => Err(error),
+        checkout => {
+            let in_it = checkout.as_ref().ok().cloned();
+            let acting = cli.command.acting().map(|acting| acting.in_checkout(in_it));
+            let now = || cli.now.unwrap_or_else(clock);
+            if let Some(acting) = &acting {
+                acting.start(now());
+            }
+            let ran = run(cli.command, checkout, cli.now);
+            match &acting {
+                Some(acting) => acting.end(now(), ran),
+                None => ran,
+            }
+        }
     };
     match ran {
         Ok(Value::String(drawing)) => {
@@ -3166,18 +3523,29 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            if let Some(refused) = e.downcast_ref::<team::Refused>() {
-                println!("{}", json!({ "error": refused.to_string(), "faults": refused.json() }));
-            } else if let Some(doctor::Unwell(answer)) = e.downcast_ref() {
+            if let Some(doctor::Unwell(answer)) = e.downcast_ref() {
                 // Not an error to report: the answer itself, which says what is wrong.
                 println!("{answer}");
-            } else if let Some(see) = topic::explains(&e) {
-                println!("{}", json!({ "error": format!("{e:#}"), "see": see }));
+            } else if let Some(host_runner::Answered(answer)) = e.downcast_ref() {
+                // The host runner's own words, with which host runner said them.
+                println!("{answer}");
             } else {
-                return fail(1, &format!("{e:#}"));
+                println!("{}", error_json(&e));
             }
             ExitCode::from(1)
         }
+    }
+}
+
+/// What a command prints for an error: {"error", "faults"} of a team's
+/// refusal, {"error", "see"} where a topic explains it, else {"error"}.
+pub(crate) fn error_json(e: &anyhow::Error) -> Value {
+    if let Some(refused) = e.downcast_ref::<team::Refused>() {
+        json!({ "error": refused.to_string(), "faults": refused.json() })
+    } else if let Some(see) = topic::explains(e) {
+        json!({ "error": format!("{e:#}"), "see": see })
+    } else {
+        json!({ "error": format!("{e:#}") })
     }
 }
 
@@ -3188,6 +3556,14 @@ fn fail(code: u8, message: &str) -> ExitCode {
 
 fn clock() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
+}
+
+/// A name no other thread of this process makes: the pid and a counter. A
+/// file or a directory named with it is one thread's own, however many fleet
+/// instances work in the process.
+pub(crate) fn unique() -> String {
+    static MADE: AtomicU64 = AtomicU64::new(0);
+    format!("{}-{}", std::process::id(), MADE.fetch_add(1, Ordering::Relaxed))
 }
 
 impl Command {
@@ -3205,10 +3581,10 @@ impl Command {
         let as_who = |name, who: &Who| Acting::new(name).as_instance(who.instance.as_str());
         Some(match self {
             Command::Dispatch { issue, who, .. } => of("dispatch", issue, Some(who)),
-            Command::Close { issue, who } => of("close", issue, Some(who)),
+            Command::Close { issue, who, .. } => of("close", issue, Some(who)),
             Command::Escalate { issue, who, .. } => of("escalate", issue, Some(who)),
-            Command::Park { issue, who } => of("park", issue, Some(who)),
-            Command::Nudge { issue, who } => of("nudge", issue, Some(who)),
+            Command::Park { issue, who, .. } => of("park", issue, Some(who)),
+            Command::Nudge { issue, who, .. } => of("nudge", issue, Some(who)),
             Command::Restart { issue, who, .. } => of("restart", issue, Some(who)),
             Command::Switch { issue, patrol, all, who, .. } => {
                 let acting = Acting::new("switch").as_instance(who.instance.as_str());
@@ -3219,7 +3595,7 @@ impl Command {
                     (None, None, false) => acting,
                 }
             }
-            Command::Abandon { who } => as_who("abandon", who),
+            Command::Abandon { who, .. } => as_who("abandon", who),
             Command::Takeover { list: true, .. } => return None,
             Command::Takeover { from, instance, .. } => {
                 let acting = Acting::new("takeover");
@@ -3232,30 +3608,32 @@ impl Command {
                     None => acting,
                 }
             }
-            Command::Claim { issue, who } => of("claim", issue, Some(who)),
-            Command::Release { issue, who } => of("release", issue, Some(who)),
-            Command::Heartbeat { who } => as_who("heartbeat", who),
+            Command::Claim { issue, who, .. } => of("claim", issue, Some(who)),
+            Command::Release { issue, who, .. } => of("release", issue, Some(who)),
+            Command::Heartbeat { who, .. } => as_who("heartbeat", who),
             Command::Rule { issue, .. } => of("rule", issue, None),
             Command::Send { issue, .. } => of("send", issue, None),
             Command::Land { number, issue, .. } => Acting::new("land").on_issue(issue.or(*number)),
             Command::Verdict { issue, .. } => of("verdict", issue, None),
             Command::Intake { issue, .. } => of("intake", issue, None),
             Command::Lock { issue, .. } => of("lock", issue, None),
-            Command::PatrolNow { name } => Acting::new("patrol-now").on(name.trim().to_string()),
-            Command::Over { run } => Acting::new("over").on(format!("run {}", run.trim())),
+            Command::PatrolNow { name, .. } => {
+                Acting::new("patrol-now").on(name.trim().to_string())
+            }
+            Command::Over { run, .. } => Acting::new("over").on(format!("run {}", run.trim())),
             Command::Inspected { .. } => match std::env::var(INSPECTION_ENV) {
                 Ok(worker) => Acting::new("inspected").on(worker),
                 Err(_) => Acting::new("inspected"),
             },
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
-            Command::Wake => Acting::new("wake").on_own_issue(),
-            Command::Cast => Acting::new("cast"),
+            Command::Wake { .. } => Acting::new("wake").on_own_issue(),
+            Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             Command::Kit
             | Command::Config { .. }
             | Command::Check { .. }
             | Command::Scaffold { .. }
-            | Command::Flows
+            | Command::Flows { .. }
             | Command::Skill
             | Command::Show { .. }
             | Command::Draft { .. }
@@ -3263,64 +3641,86 @@ impl Command {
             | Command::Doctor { .. }
             | Command::Plan { .. }
             | Command::Run { .. }
+            | Command::HostRunner
             | Command::Panel { .. }
             | Command::Guard
             | Command::Exclusive { .. }
             | Command::Recovery { .. }
-            | Command::Scan
+            | Command::Scan { .. }
             | Command::Help { .. } => return None,
         })
     }
 }
 
-fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
+/// Runs `command` about the checkout `checkout`, found where it started: an
+/// error where it is about none, or the one it would be about could not be had
+/// — which a command that needs none passes over.
+fn run(
+    command: Command,
+    checkout: anyhow::Result<Repo>,
+    fixed_now: Option<u64>,
+) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
         Command::Kit => kit::write(now),
-        Command::Cast => caster::cast(now),
-        Command::Config { file } => {
+        Command::Cast { .. } => caster::cast(&checkout?, now),
+        Command::Config { file, .. } => {
             let file = match file {
                 Some(file) => file,
-                None => config::default_file()?,
+                None => config::file_of(&checkout?),
             };
             Ok(serde_json::to_value(config::load(&file)?)?)
         }
-        Command::Check { team } => team::check(team.from()),
+        Command::Check { team, .. } => {
+            let (from, checkout) = team.read(checkout)?;
+            team::check(from, checkout.as_ref())
+        }
         Command::Scaffold { what, dir, role, example, repo, public } => {
             let create = repo.map(|repo| scaffold::Create { repo, public });
             // The parser took the name for one there is an example of.
             let example = example.as_deref().and_then(scaffold::example);
             scaffold::scaffold(what, &dir, &role, example, create.as_ref())
         }
-        Command::Flows => flows::flows(&Repo::here()?),
+        Command::Flows { .. } => flows::flows(&checkout?),
         Command::Skill => Ok(Value::String(SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),
-        Command::Show { workflow, issue, team } => {
-            let loaded = team::load(team.from())?;
+        Command::Show { workflow, issue, team, .. } => {
             // A workflow is not named by a number: one given is an issue's.
             let numbered = workflow.as_deref().and_then(|named| named.parse().ok());
             match issue.or(numbered) {
+                // An issue is of the checkout's repo, whichever team reads it.
                 Some(issue) => {
-                    let gh = gh::GitHub { dir: Repo::here()?.dir };
+                    let repo = checkout?;
+                    let loaded = team::load(team.from(), Some(&repo))?;
+                    let gh = gh::GitHub { dir: repo.dir.clone() };
                     stage::show_issue(&gh, &loaded.team, issue)
                 }
-                None => Ok(Value::String(workflow::show(&loaded, workflow.as_deref())?)),
+                None => {
+                    let (from, checkout) = team.read(checkout)?;
+                    let loaded = team::load(from, checkout.as_ref())?;
+                    Ok(Value::String(workflow::show(&loaded, workflow.as_deref())?))
+                }
             }
         }
-        Command::Rehearse { workflow, declared, team } => {
-            workflow::rehearse(&team::load(team.from())?, &workflow, &declared)
+        Command::Rehearse { workflow, declared, team, .. } => {
+            let (from, checkout) = team.read(checkout)?;
+            workflow::rehearse(&team::load(from, checkout.as_ref())?, &workflow, &declared)
         }
-        Command::Doctor { host, proxy } => {
-            doctor::doctor_with_proxy(now, &host.unwrap_or_else(this_host), &proxy.worker_no_proxy)
-        }
-        Command::Plan { instance, proxy } => {
-            let launches = Launches::foreseen().with_no_proxy(&proxy.worker_no_proxy)?;
-            let warnings = match probe::standing(now, &launches) {
+        Command::Doctor { host, proxy, .. } => doctor::doctor_with_proxy(
+            &checkout?,
+            now,
+            &host.unwrap_or_else(this_host),
+            &proxy.worker_no_proxy,
+        ),
+        Command::Plan { instance, proxy, .. } => {
+            let repo = checkout?;
+            let launches = Launches::foreseen(&repo).with_no_proxy(&proxy.worker_no_proxy)?;
+            let warnings = match probe::standing(&repo, now, &launches) {
                 Some(warnings) => warnings,
-                None => probe::startup(now, &launches)?,
+                None => probe::startup(&repo, now, &launches)?,
             };
             probe::announce(&warnings);
-            let (mut fleet, open) = Fleet::read(now)?;
+            let (mut fleet, open) = Fleet::read(&repo, now)?;
             let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
             let admission = admission::Admission::read(&fleet.repo.dir)?;
             set.held_back = admission.holds();
@@ -3361,61 +3761,38 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             plan["worker_no_proxy"] = launches.proxy_json();
             Ok(plan)
         }
-        Command::Run {
-            instance,
-            host,
-            agent,
-            panel,
-            no_host_sleep,
-            host_sleep_after,
-            hot_cores,
-            hot_memory,
-            hot_written,
-            ticks,
-            second_ms,
-        } => {
-            if !no_host_sleep && !cfg!(target_os = "macos") {
-                anyhow::bail!(
-                    "this host is not macOS, the one a fleet can put to sleep once every fleet \
-                     on it is idle: start it with `--no-host-sleep`, which keeps it awake"
-                );
+        Command::Run { .. } => {
+            let Some((foreground, start)) = start_of(command, fixed_now) else { unreachable!() };
+            match foreground {
+                true => instance::foreground(&checkout?, &start),
+                false => host_runner::run(&checkout?, start, now),
             }
-            let host = host.unwrap_or_else(this_host);
-            let salt = clock() as u32 ^ std::process::id();
-            let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
-            let mut me = Me { instance, host, now };
-            let second = Duration::from_millis(second_ms);
-            let hot = hot::limits(hot::Said {
-                millicores: hot_cores,
-                resident: hot_memory.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
-                written: hot_written.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
-            });
-            let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after, hot };
-            kit::ensure(now)?;
-            let agent = agent.start(now, false)?;
-            tick::run(&mut me, &agent, &pacing, panel, move || fixed_now.unwrap_or_else(clock))
         }
-        Command::Panel { open: true, port, .. } => opening::open(&Repo::here()?, port),
+        Command::HostRunner => host_runner::serve(),
+        Command::Panel { open: true, port, .. } => opening::open(&checkout?, port),
         Command::Panel { instance, host, .. } => {
-            let (mut fleet, open) = Fleet::read(now)?;
+            let (mut fleet, open) = Fleet::read(&checkout?, now)?;
             let host = host.unwrap_or_else(this_host);
             let me = instance.map(|instance| Me { instance, host, now });
             let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
             let shown = panel::read(&fleet, me.as_ref(), &set, &flows, &[]);
             Ok(Value::String(panel::render(&shown)))
         }
-        Command::Tick { who, agent } => {
-            let agent = agent.start(now, true)?;
-            Ok(tick::tick(&who.me(now), &agent, &stop::Stop::never(), None)?.0.json())
+        Command::Tick { who, agent, .. } => {
+            let repo = checkout?;
+            let agent = agent.start(&repo, now, true)?;
+            let ticked = tick::tick(&repo, &who.me(now), &agent, &stop::Stop::never(), None);
+            probe::announce(&agent.launches.warned());
+            Ok(ticked?.0.json())
         }
-        Command::Gate { train, host } => {
-            let repo = Repo::here()?;
+        Command::Gate { train, host, .. } => {
+            let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
             gate::gate(&repo, &config, train, &host, now)
         }
         Command::Land { number, issue, merged_timeout, host, .. } => {
-            let repo = Repo::here()?;
+            let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
             match issue.or(number) {
@@ -3438,6 +3815,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             harness,
             model,
             consult,
+            ..
         } => {
             let declaring = stage::Declaring {
                 issue: issue.number(),
@@ -3448,9 +3826,10 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 ran: ran(role_commit, team_commit, harness, model),
                 consult,
             };
-            stage::verdict(&Repo::here()?, declaring)
+            stage::verdict(&checkout?, declaring)
         }
-        Command::Rule { issue, text, stage, role_commit, team_commit, harness, model } => {
+        Command::Rule { issue, text, stage, role_commit, team_commit, harness, model, .. } => {
+            let repo = checkout?;
             let issue = issue.number();
             // With the commits it ran under, the ruling is a consult's: a
             // stage record under its claim, as a verdict is.
@@ -3471,14 +3850,25 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                     ran: Some(ran),
                     consult: true,
                 };
-                return stage::verdict(&Repo::here()?, declaring);
+                return stage::verdict(&repo, declaring);
             }
-            let team = team::load(team::From::Config)?.team;
-            steer::rule(&Repo::here()?, &team, issue, text.read()?)
+            let team = team::load(team::From::Config, Some(&repo))?.team;
+            steer::rule(&repo, &team, issue, text.read()?)
         }
-        Command::Send { issue, stage, text, role_commit, team_commit, harness, model, consult } => {
+        Command::Send {
+            issue,
+            stage,
+            text,
+            role_commit,
+            team_commit,
+            harness,
+            model,
+            consult,
+            ..
+        } => {
+            let repo = checkout?;
             let issue = issue.number();
-            let team = team::load(team::From::Config)?.team;
+            let team = team::load(team::From::Config, Some(&repo))?.team;
             // With the commits it ran under, the sending is a consult's: a
             // stage record under its claim, as its ruling is.
             if let Some(ran) = ran(role_commit, team_commit, harness, model) {
@@ -3488,18 +3878,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                          stage declares its verdict, and the workflow says where it leads"
                     );
                 }
-                return stage::consult_send(
-                    &Repo::here()?,
-                    &team,
-                    issue,
-                    &stage,
-                    text.read()?,
-                    ran,
-                );
+                return stage::consult_send(&repo, &team, issue, &stage, text.read()?, ran);
             }
-            steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
+            steer::send(&repo, &team, issue, &stage, text.read()?)
         }
-        Command::Intake { issue, workflow, role, from, patrol, train, blocked_by } => {
+        Command::Intake { issue, workflow, role, from, patrol, train, blocked_by, .. } => {
             use afkconvoy_core::intake::{By, On};
             let on = match (from, patrol) {
                 (Some(issue), _) => Some(On::Issue(issue)),
@@ -3523,27 +3906,27 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 ),
             };
             let taking = intake::Taking { issue: issue.number(), workflow, by, blocked_by };
-            intake::intake(&Repo::here()?, taking)
+            intake::intake(&checkout?, taking)
         }
-        Command::Lock { issue, role } => {
-            let repo = Repo::here()?;
+        Command::Lock { issue, role, .. } => {
+            let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
             lock::lock(&config, &gh, issue.number(), role)
         }
-        Command::PatrolNow { name } => patrol::ask(name.trim(), &this_host(), now),
-        Command::Over { run } => {
+        Command::PatrolNow { name, .. } => patrol::ask(&checkout?, name.trim(), &this_host(), now),
+        Command::Over { run, .. } => {
             if let Ok(issue) = std::env::var(ISSUE_ENV) {
                 anyhow::bail!(
                     "this worker is on issue #{issue} ({ISSUE_ENV}), whose stage ends with \
                      `afkconvoy verdict`: only a patrol's run and a proposal's are declared over"
                 );
             }
-            claims::declare_over(&Repo::here()?, run.trim())
+            claims::declare_over(&checkout?, run.trim())
         }
-        Command::Inspected { found, text, reclaim, name } => {
-            inspection::inspected(found, &text.read()?, &reclaim, &name)
+        Command::Inspected { found, text, reclaim, name, .. } => {
+            inspection::inspected(&checkout?, found, &text.read()?, &reclaim, &name)
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
@@ -3551,42 +3934,58 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             anyhow::bail!("exclusive answers with its command's exit code")
         }
         Command::Help { .. } => anyhow::bail!("help answers with Markdown"),
-        Command::Dispatch { issue, who, agent, start } => dispatch::dispatch(
-            &mut Fleet::open(now)?,
-            &who.me(now),
-            &agent.agent()?,
-            issue.number(),
-            start,
-        ),
-        Command::Recovery { issue } => recovery::recovery(&Fleet::open(now)?, issue.number()),
-        Command::Close { issue, who } => {
-            judge::close(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        Command::Dispatch { issue, who, agent, start, .. } => {
+            let repo = checkout?;
+            let agent = agent.agent(&repo)?;
+            let mut fleet = Fleet::open(&repo, now)?;
+            let dispatched =
+                dispatch::dispatch(&mut fleet, &who.me(now), &agent, issue.number(), start);
+            probe::announce(&agent.launches.warned());
+            dispatched
         }
-        Command::Escalate { issue, who, reason } => {
-            judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue.number(), &reason)
+        Command::Recovery { issue, .. } => {
+            recovery::recovery(&Fleet::open(&checkout?, now)?, issue.number())
         }
-        Command::Park { issue, who } => {
-            park::park(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        Command::Close { issue, who, .. } => {
+            judge::close(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())
         }
-        Command::Nudge { issue, who } => {
-            judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        Command::Escalate { issue, who, reason, .. } => {
+            let mut fleet = Fleet::open(&checkout?, now)?;
+            judge::escalate(&mut fleet, &who.me(now), issue.number(), &reason)
         }
-        Command::Restart { issue, who, agent } => {
-            watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue.number())
+        Command::Park { issue, who, .. } => {
+            park::park(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())
         }
-        Command::Switch { harness, clear: _, issue, patrol, all, who, agent } => {
+        Command::Nudge { issue, who, .. } => {
+            judge::nudge(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())
+        }
+        Command::Restart { issue, who, agent, .. } => {
+            let repo = checkout?;
+            let agent = agent.agent(&repo)?;
+            let restarted =
+                watch::restart(&mut Fleet::open(&repo, now)?, &who.me(now), &agent, issue.number());
+            probe::announce(&agent.launches.warned());
+            restarted
+        }
+        Command::Switch { harness, clear: _, issue, patrol, all, who, agent, .. } => {
             let which = match (issue, patrol, all) {
                 (Some(issue), _, _) => switch::Which::Issue(issue),
                 (None, Some(patrol), _) => switch::Which::Patrol(patrol.trim().to_string()),
                 (None, None, true) => switch::Which::All,
                 (None, None, false) => switch::Which::Nothing,
             };
-            let mut fleet = Fleet::open(now)?;
-            switch::switch(&mut fleet, &who.me(now), &agent.agent()?, harness, which)
+            let repo = checkout?;
+            let agent = agent.agent(&repo)?;
+            let mut fleet = Fleet::open(&repo, now)?;
+            let switched = switch::switch(&mut fleet, &who.me(now), &agent, harness, which);
+            probe::announce(&agent.launches.warned());
+            switched
         }
-        Command::Abandon { who } => abandon::abandon_by_hand(&mut Fleet::open(now)?, &who.me(now)),
-        Command::Takeover { list, from, yes, instance, host } => {
-            let mut fleet = Fleet::open(now)?;
+        Command::Abandon { who, .. } => {
+            abandon::abandon_by_hand(&mut Fleet::open(&checkout?, now)?, &who.me(now))
+        }
+        Command::Takeover { list, from, yes, instance, host, .. } => {
+            let mut fleet = Fleet::open(&checkout?, now)?;
             let me =
                 instance.map(|instance| Me { instance, host: host.unwrap_or_else(this_host), now });
             match (list, from, me) {
@@ -3599,18 +3998,18 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             }
         }
         // `Acting::end` sends it, as it does for every command that acts.
-        Command::Wake => Ok(json!({})),
-        Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
-        Command::Claim { issue, who } => {
-            let repo = Repo::here()?;
+        Command::Wake { .. } => Ok(json!({})),
+        Command::Scan { .. } => Ok(Scan::read(&checkout?)?.json()),
+        Command::Claim { issue, who, .. } => {
+            let repo = checkout?;
             claims::take(&repo, &mut Scan::read(&repo)?, &who.me(now), issue.number(), Take::Fresh)
         }
-        Command::Release { issue, who } => {
-            let repo = Repo::here()?;
+        Command::Release { issue, who, .. } => {
+            let repo = checkout?;
             claims::release(&repo, &mut Scan::read(&repo)?, &who.instance, issue.number())
         }
-        Command::Heartbeat { who } => {
-            let repo = Repo::here()?;
+        Command::Heartbeat { who, .. } => {
+            let repo = checkout?;
             claims::beat(&repo, &mut Scan::read(&repo)?, &who.me(now))
         }
     }
@@ -3634,6 +4033,7 @@ mod tests {
         &["doctor"],
         &["plan"],
         &["run"],
+        &["host-runner"],
         &["panel"],
         &["tick", "--instance", "a-h1-1"],
         &["gate"],
@@ -3709,5 +4109,71 @@ mod tests {
             "takeover from b-h2-2"
         );
         assert_eq!(named(&["land", "--train"]), "land");
+    }
+
+    /// The commands a worker's worktree is taken for are commands about one
+    /// repo, and among them every one the manual says a worker runs.
+    #[test]
+    fn a_workers_worktree_is_taken_for_every_command_a_worker_runs() {
+        let cli = Cli::command();
+        let about = |command: &clap::Command| {
+            command.get_arguments().any(|arg| arg.get_id() == CHECKOUT_ARG)
+        };
+        for name in IN_ITS_WORKTREE {
+            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
+            assert!(about(command), "`{name}` is about no repo");
+        }
+        let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
+        let workers: Vec<&str> = workers.map(clap::Command::get_name).collect();
+        assert!(workers.len() >= 9, "{workers:?}");
+        for name in workers {
+            assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
+        }
+        // Those that only read are about one repo and no worker's own, and
+        // the flag that makes one act is one of its own: one with none acts
+        // never.
+        for (name, with) in ONLY_READ {
+            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
+            assert!(about(command), "`{name}` is about no repo");
+            assert!(!IN_ITS_WORKTREE.contains(&name), "`{name}` is a worker's own");
+            match with {
+                Some(flag) => assert!(command.get_arguments().any(|arg| arg.get_id() == flag)),
+                None => assert!(!ACTS.contains(&name), "`{name}` acts"),
+            }
+        }
+        for name in STARTS {
+            assert!(cli.find_subcommand(name).is_some_and(about), "`{name}` is about no repo");
+        }
+    }
+
+    /// A command that only reads but for a flag is taken in a worker's
+    /// worktree without that flag, and not with it.
+    #[test]
+    fn a_command_that_only_reads_but_for_a_flag_reads_only_without_it() {
+        let reads = |line: &[&str]| {
+            let matches = cli()
+                .try_get_matches_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
+            let matches = matches.unwrap();
+            let (name, given) = matches.subcommand().unwrap();
+            only_reads(name, given)
+        };
+        assert!(reads(&["takeover", "--list"]));
+        assert!(!reads(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]));
+        assert!(reads(&["panel"]));
+        assert!(!reads(&["panel", "--open"]));
+        assert!(reads(&["scan"]));
+        assert!(!reads(&["claim", "7", "--instance", "a-h1-1"]));
+    }
+
+    #[test]
+    fn no_two_threads_make_one_name() {
+        let threads: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| (0..100).map(|_| unique()).collect::<Vec<_>>()))
+            .collect();
+        let made: Vec<String> = threads.into_iter().flat_map(|t| t.join().unwrap()).collect();
+        let distinct: std::collections::BTreeSet<&String> = made.iter().collect();
+        assert_eq!(distinct.len(), 800, "{made:?}");
+        let pid = format!("{}-", std::process::id());
+        assert!(made.iter().all(|name| name.starts_with(&pid)), "{made:?}");
     }
 }

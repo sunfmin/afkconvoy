@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::git::Repo;
 use crate::serve::{self, Live};
-use crate::wake::{Waker, home, named_inside};
+use crate::wake::{Waker, home, reached};
 
 /// The name the `run` of a repo is asked under, in the repo's git dir.
 const SOCKET: &str = "convoy-panel.sock";
@@ -28,24 +28,31 @@ const ANSWERS_WITHIN: Duration = Duration::from_secs(10);
 
 /// Has this `run`, which is `instance`, open `live` for whoever asks from now
 /// on, in a thread of its own: a tick is neither waited for nor interrupted.
-/// Called before the first tick, and after the wake's listener is open. A
-/// `run` that cannot listen is one whose panel only `--panel` opens.
-pub fn listen(repo: &Repo, live: Live, instance: &str) {
+/// The address it opens is told to `say`. Called before the first tick, and
+/// after the wake's listener is open. A `run` that cannot listen is one whose
+/// panel only `--panel` opens, and says so to `warn`.
+pub fn listen(
+    repo: &Repo,
+    live: Live,
+    instance: &str,
+    say: Box<dyn Fn(&str) + Send>,
+    warn: &dyn Fn(&str),
+) {
     let waker = Waker::of(repo);
     let listener = home(repo).and_then(|dir| {
-        named_inside(&dir, SOCKET, |name| {
+        reached(&dir, SOCKET, |path| {
             // What a `run` that ended left: nobody listens on it any more.
-            let _ = std::fs::remove_file(name);
-            UnixListener::bind(name)
+            let _ = std::fs::remove_file(path);
+            UnixListener::bind(path)
         })
     });
     let listener = match listener {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!(
-                "warning: `afkconvoy panel --open` cannot reach this run, whose panel is \
+            warn(&format!(
+                "`afkconvoy panel --open` cannot reach this fleet instance, whose panel is \
                  opened by `--panel` alone: {error:#}"
-            );
+            ));
             return;
         }
     };
@@ -53,7 +60,7 @@ pub fn listen(repo: &Repo, live: Live, instance: &str) {
     std::thread::spawn(move || {
         // One at a time: whoever asks second is told what the first opened.
         for stream in listener.incoming().flatten() {
-            let _ = answer(stream, &live, &instance, waker.as_ref());
+            let _ = answer(stream, &live, &instance, waker.as_ref(), &say);
         }
     });
 }
@@ -64,6 +71,7 @@ fn answer(
     live: &Live,
     instance: &str,
     waker: Option<&Waker>,
+    say: &dyn Fn(&str),
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(ANSWERS_WITHIN))?;
     stream.set_write_timeout(Some(ANSWERS_WITHIN))?;
@@ -74,7 +82,7 @@ fn answer(
             if began {
                 // The address, as a `run` started with `--panel` says it; and
                 // a tick now, to fill a page no tick was read for yet.
-                println!("panel: {}", answer["panel"].as_str().unwrap_or_default());
+                say(&format!("panel: {}", answer["panel"].as_str().unwrap_or_default()));
                 if let Some(waker) = waker {
                     waker.wake();
                 }
@@ -105,7 +113,7 @@ pub fn open(repo: &Repo, port: Option<u16>) -> Result<Value> {
 }
 
 fn ask(dir: &Path, port: u16) -> Result<Value> {
-    let mut stream = match named_inside(dir, SOCKET, |name| UnixStream::connect(name)) {
+    let mut stream = match reached(dir, SOCKET, |path| UnixStream::connect(path)) {
         Ok(stream) => stream,
         Err(error) => {
             let kind = error.downcast_ref::<std::io::Error>().map(std::io::Error::kind);
@@ -139,10 +147,10 @@ fn ask(dir: &Path, port: u16) -> Result<Value> {
 mod tests {
     use super::*;
 
-    /// Listens where a `run` would in `dir`, named from inside it as a `run`
-    /// names it: a temporary directory's path may be too long for a socket's.
+    /// Listens where a `run` would in `dir`, reached as a `run` reaches it: a
+    /// temporary directory's path may be too long for a socket's.
     fn bind(dir: &Path) -> UnixListener {
-        named_inside(dir, SOCKET, |name| UnixListener::bind(name)).unwrap()
+        reached(dir, SOCKET, |path| UnixListener::bind(path)).unwrap()
     }
 
     /// A git dir with something other than a `run` listening in it, which
@@ -175,7 +183,6 @@ mod tests {
 
     #[test]
     fn an_asker_says_what_went_wrong_whoever_is_at_the_socket() {
-        let _cwd = crate::wake::tests::CWD.lock().unwrap();
         let nobody = tempfile::tempdir().unwrap();
         let error = format!("{:#}", ask(nobody.path(), 0).err().unwrap());
         assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");

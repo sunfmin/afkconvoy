@@ -268,7 +268,7 @@ const ENDED: [&str; 4] = [
 /// The lines one tick of `run` at `now` prints.
 fn run_line(world: &World, now: u64) -> Vec<String> {
     let now = now.to_string();
-    let args = ["run", "--host", "h1", "--second-ms", "0"];
+    let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
     let more = ["--instance", "alpha", "--ticks", "1", "--now", &now];
     world.afk_lines(&[&args[..], &more[..]].concat()).0
 }

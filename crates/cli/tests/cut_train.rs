@@ -123,6 +123,7 @@ fn an_idle_train_whose_worktree_outgrew_its_build_has_it_cut_again_and_the_log_s
     let train = train_worktree(&world);
     let (lines, ticked) = world.afk_lines(&[
         "run",
+        "--foreground",
         "--instance",
         "alpha",
         "--host",
@@ -220,6 +221,7 @@ fn a_worktree_with_no_fresh_build_past_the_floor_is_cut_once_and_then_follows_th
 
     let (lines, _) = world.afk_lines(&[
         "run",
+        "--foreground",
         "--instance",
         "alpha",
         "--host",

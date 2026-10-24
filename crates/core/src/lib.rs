@@ -13,6 +13,7 @@ pub mod before;
 pub mod blocked;
 pub mod board;
 pub mod casting;
+pub mod checkouts;
 pub mod claims;
 pub mod closing;
 pub mod config;

@@ -2,9 +2,11 @@
 //! their first words in the login shell a worker gets. Commands are passed
 //! to orca as written, under nice with the worker's own TMPDIR.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -14,6 +16,7 @@ use afkconvoy_core::launch::{LaunchCommand, checked, first_word, of_harness};
 use anyhow::{Result, anyhow, bail};
 
 use crate::config;
+use crate::git::Repo;
 use crate::topic::{Explain, See};
 
 /// How long the login shell is given to answer.
@@ -27,6 +30,8 @@ pub struct Proposed {
     command: String,
     /// `type`'s answer about the first word; `None` when it found nothing.
     resolution: Option<String>,
+    /// Where its login shell was asked (`Launches::dir`).
+    dir: PathBuf,
 }
 
 impl Proposed {
@@ -45,11 +50,17 @@ impl Proposed {
         self.resolution.is_some()
     }
 
+    /// Where its login shell was asked, and is asked again about it: the
+    /// checkout of the start it is for.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// What the login shell prints when the command is asked which flags it
     /// takes, as its harness asks (`Harness::flags_question`); `None` when
     /// that failed.
     pub fn flags(&self) -> Option<String> {
-        login_shell(&self.harness.flags_question(&self.command))
+        login_shell(&self.dir, &self.harness.flags_question(&self.command))
     }
 
     /// Why it cannot start a worker, when it cannot.
@@ -68,22 +79,31 @@ impl Proposed {
 pub struct Launches {
     kit: Result<crate::kit::Kit, String>,
     bypass: afkconvoy_core::proxy::Lists,
-    /// The default harness of the repo here: the one the bare form names.
+    /// The default harness of the repo it is for: the one the bare form names.
     default: Harness,
-    /// Whether the repo here is bound: an unbound repo knows of no harness,
+    /// Whether that repo is bound: an unbound repo knows of no harness,
     /// and a fault of its one command names none.
     bound: bool,
     /// Whether this is a start that starts workers. One that starts none
     /// (`plan`, `doctor`) asks no human, and a command only a human could
     /// say is unknown to it.
     starts: bool,
+    /// The checkout of that repo the start is in, where the login shell is
+    /// asked: a worker's shell starts in a worktree of it, with the files
+    /// that set up a toolchain for the repo there too, and nothing is asked
+    /// in the directory the process happens to run in.
+    dir: PathBuf,
     proposed: Vec<(Harness, OnceCell<Option<Proposed>>)>,
+    /// What the commands it resolved warn of, until whoever reports them
+    /// takes them (`warned`).
+    warned: RefCell<Vec<String>>,
 }
 
 impl Launches {
-    /// Read the host kit for a start that may start workers.
-    pub fn new(starts: bool) -> Result<Launches> {
-        let mut launches = Self::foreseen();
+    /// Read the host kit for a start in the checkout `repo` that may start
+    /// workers.
+    pub fn new(repo: &Repo, starts: bool) -> Result<Launches> {
+        let mut launches = Self::foreseen(repo);
         if let Err(why) = &launches.kit {
             bail!("{why}");
         }
@@ -91,8 +111,10 @@ impl Launches {
         Ok(launches)
     }
 
-    pub fn foreseen() -> Launches {
-        let config = config::default_file().and_then(|file| config::load(&file)).ok();
+    /// Read the host kit for a command in the checkout `repo` that starts no
+    /// worker.
+    pub fn foreseen(repo: &Repo) -> Launches {
+        let config = config::load(&config::file_of(repo)).ok();
         let kit = crate::kit::load().map_err(|error| format!("{error:#}"));
         // The host kit's first is what a worker nothing casts runs.
         let first = kit.as_ref().ok().and_then(|kit| kit.first()).map(|first| first.harness);
@@ -102,7 +124,9 @@ impl Launches {
             default: first.unwrap_or(Harness::DEFAULT),
             bound: config.is_some_and(|config| config.bound.is_some()),
             starts: false,
+            dir: repo.dir.clone(),
             proposed: Harness::ALL.map(|harness| (harness, OnceCell::new())).into(),
+            warned: RefCell::default(),
         }
     }
 
@@ -123,9 +147,8 @@ impl Launches {
     pub fn proxy_json(&self) -> serde_json::Value {
         // A login rc file may print anything before the answer. Frame the
         // two values so those lines cannot become proxy bypass hosts.
-        let inherited =
-            login_shell("printf 'AFKCONVOY_PROXY\\000%s\\000%s' \"${no_proxy-}\" \"${NO_PROXY-}\"")
-                .unwrap_or_default();
+        let asked = "printf 'AFKCONVOY_PROXY\\000%s\\000%s' \"${no_proxy-}\" \"${NO_PROXY-}\"";
+        let inherited = login_shell(&self.dir, asked).unwrap_or_default();
         let values = inherited.split_once("AFKCONVOY_PROXY\0").map_or("", |(_, values)| values);
         let (lower, upper) = values.split_once('\0').unwrap_or(("", ""));
         serde_json::Value::Array(Harness::ALL.into_iter().map(|harness| {
@@ -148,7 +171,8 @@ impl Launches {
     }
 
     /// The host kit's command, with its first word resolved in the login shell.
-    /// An absent harness is an error; no stock command is substituted.
+    /// An absent harness is an error; no stock command is substituted. What a
+    /// start's command warns of is kept for `warned`.
     pub fn of(&self, harness: Harness) -> Result<Option<&Proposed>> {
         let cell = self.proposed.iter().find(|(named, _)| *named == harness).map(|(_, cell)| cell);
         let cell = cell.ok_or_else(|| anyhow!("`{}` is no harness", harness.key()))?;
@@ -157,7 +181,7 @@ impl Launches {
             if let Some(Ok(command)) = proposed.as_ref().map(Proposed::checked)
                 && let Some(warning) = command.warning().filter(|_| self.starts)
             {
-                eprintln!("warning: {warning}");
+                self.warned.borrow_mut().push(warning.to_string());
             }
             let _ = cell.set(proposed);
         }
@@ -171,9 +195,11 @@ impl Launches {
             harness.key()
         ))?;
         let resolution = first_word(&command)
-            .and_then(|word| login_shell(&format!("type -- '{}'", word.replace('\'', "'\\''"))))
+            .and_then(|word| {
+                login_shell(&self.dir, &format!("type -- '{}'", word.replace('\'', "'\\''")))
+            })
             .filter(|answer| !answer.trim().is_empty());
-        Ok(Some(Proposed { harness, command, resolution }))
+        Ok(Some(Proposed { harness, command, resolution, dir: self.dir.clone() }))
     }
 
     /// The command every worker of `harness` is started with, checked to
@@ -200,6 +226,12 @@ impl Launches {
             ),
             callers => of_harness(fault, harness, callers),
         }
+    }
+
+    /// What the commands resolved since it was last asked warn of: a start
+    /// that starts workers says them where its other warnings go.
+    pub fn warned(&self) -> Vec<String> {
+        self.warned.take()
     }
 
     /// Fingerprint the entire kit so any edit invalidates a standing probe.
@@ -350,37 +382,62 @@ fn found_under(dir: &std::path::Path, ends: &str) -> Option<std::path::PathBuf> 
     None
 }
 
-/// Runs `script` in the user's interactive login shell → what it printed.
-/// `None` when it failed, timed out, or exited non-zero: `type` prints "not
-/// found" and exits 1, so its output alone proves nothing.
-fn login_shell(script: &str) -> Option<String> {
-    let (succeeded, printed) = ask_login_shell(script)?;
+/// Runs `script` in the user's interactive login shell, started in `dir` →
+/// what it printed. `None` when it failed, timed out, or exited non-zero:
+/// `type` prints "not found" and exits 1, so its output alone proves nothing.
+fn login_shell(dir: &Path, script: &str) -> Option<String> {
+    let (succeeded, printed) = ask_login_shell(dir, script)?;
     succeeded.then_some(printed)
 }
 
 /// Runs `script` in the user's interactive login shell — where aliases and
 /// rc-defined functions exist, and what orca gives a worker: it inherits
-/// nothing from the shell the fleet was started in → whether it exited zero,
-/// and what it printed. `None` when it could not run or timed out.
-pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
-    ask_login_shell_within(script, SHELL_TIMEOUT)
+/// nothing from the shell the fleet was started in — started in `dir`, a
+/// checkout of the repo it is asked for, as a worker's is started in a
+/// worktree of it → whether it exited zero, and what it printed. `None` when
+/// it could not run or timed out.
+pub fn ask_login_shell(dir: &Path, script: &str) -> Option<(bool, String)> {
+    ask_login_shell_within(dir, script, SHELL_TIMEOUT)
 }
 
 /// `ask_login_shell`, given `timeout` to answer.
-pub(crate) fn ask_login_shell_within(script: &str, timeout: Duration) -> Option<(bool, String)> {
+pub(crate) fn ask_login_shell_within(
+    dir: &Path,
+    script: &str,
+    timeout: Duration,
+) -> Option<(bool, String)> {
+    let (succeeded, printed) = ask_shell(dir, script, timeout, None)?;
+    Some((succeeded, String::from_utf8_lossy(&printed).into_owned()))
+}
+
+/// The user's login shell: `$SHELL`, or zsh, macOS's, where it is unset.
+fn login_shell_program() -> String {
     let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty());
-    let mut child = Command::new(shell.as_deref().unwrap_or("/bin/zsh"))
-        .args(["-lic", script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    shell.unwrap_or_else(|| "/bin/zsh".to_string())
+}
+
+/// Runs `script` in the user's interactive login shell, started in `dir`
+/// with `env` alone where it is given, else with this process's
+/// environment → whether it exited zero, and the bytes it printed. `None`
+/// when it could not run or did not end within `timeout`.
+fn ask_shell(
+    dir: &Path,
+    script: &str,
+    timeout: Duration,
+    env: Option<&[(OsString, OsString)]>,
+) -> Option<(bool, Vec<u8>)> {
+    let mut shell = Command::new(login_shell_program());
+    shell.args(["-lic", script]).current_dir(dir);
+    if let Some(env) = env {
+        shell.env_clear().envs(env.iter().map(|(name, value)| (name, value)));
+    }
+    let mut child =
+        shell.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let mut printed = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = printed.read_to_string(&mut text);
-        text
+        let mut bytes = Vec::new();
+        let _ = printed.read_to_end(&mut bytes);
+        bytes
     });
     let started = Instant::now();
     let status = loop {
@@ -395,4 +452,83 @@ pub(crate) fn ask_login_shell_within(script: &str, timeout: Duration) -> Option<
         }
     };
     Some((status.success(), reader.join().ok()?))
+}
+
+/// What login gives every shell of this user, whatever session started it:
+/// the part of a session's environment a fresh login shell starts from.
+const LOGIN_GIVES: [&str; 7] =
+    ["HOME", "USER", "LOGNAME", "SHELL", "SSH_AUTH_SOCK", "LANG", "__CF_USER_TEXT_ENCODING"];
+
+/// The PATH a fresh login shell starts from, before its rc files add to it.
+const LOGIN_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// What a shell keeps of itself in its environment: no process it starts
+/// is given them as the shell holds them.
+const SHELL_KEEPS: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
+
+/// The word the login shell prints before its environment: rc files may
+/// print anything first.
+const ENV_FRAME: &str = "AFKCONVOY_ENV";
+
+/// The environment of a fresh login shell of this user: `$SHELL -lic`
+/// (/bin/zsh where SHELL is unset), started in the home directory from
+/// `LOGIN_GIVES` and `LOGIN_PATH`, less what the shell keeps for itself
+/// (`SHELL_KEEPS`). Nothing a session set for itself reaches it: no
+/// CLAUDE_CODE_*, ORCA_*, AFKCONVOY_* or TMPDIR. An error where the shell did
+/// not answer within `SHELL_TIMEOUT`.
+pub fn login_environment() -> Result<Vec<(OsString, OsString)>> {
+    let given = LOGIN_GIVES
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)));
+    let given: Vec<_> = given.chain([("PATH".into(), LOGIN_PATH.into())]).collect();
+    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|home| home.is_dir());
+    let home = home.unwrap_or_else(|| PathBuf::from("/"));
+    let question = format!("printf '{ENV_FRAME}\\000'; /usr/bin/env -0");
+    let shell = login_shell_program();
+    let fix = "fix what your shell's rc files do without a terminal, then run again";
+    let Some((_, printed)) = ask_shell(&home, &question, SHELL_TIMEOUT, Some(&given)) else {
+        bail!("`{shell} -lic` did not answer within {}s: {fix}", SHELL_TIMEOUT.as_secs());
+    };
+    login_answered(&printed)
+        .ok_or_else(|| anyhow!("`{shell} -lic` printed no environment, as `env -0` does: {fix}"))
+}
+
+/// The environment a login shell printed after `ENV_FRAME`, one `NAME=value`
+/// a NUL, less what the shell keeps for itself; `None` where it printed no
+/// frame.
+fn login_answered(printed: &[u8]) -> Option<Vec<(OsString, OsString)>> {
+    use std::os::unix::ffi::OsStrExt;
+    let frame = [ENV_FRAME.as_bytes(), b"\0"].concat();
+    let at = printed.windows(frame.len()).position(|window| window == frame)?;
+    let pairs = printed[at + frame.len()..].split(|byte| *byte == 0);
+    let pairs = pairs.filter_map(|pair| {
+        let equals = pair.iter().position(|byte| *byte == b'=').filter(|at| *at > 0)?;
+        let (name, value) = (&pair[..equals], &pair[equals + 1..]);
+        let name = std::ffi::OsStr::from_bytes(name);
+        let kept = SHELL_KEEPS.iter().any(|kept| name == *kept);
+        (!kept).then(|| (name.to_os_string(), std::ffi::OsStr::from_bytes(value).to_os_string()))
+    });
+    Some(pairs.collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_login_shells_environment_is_read_after_its_frame_less_what_the_shell_keeps() {
+        let printed = b"a line an rc file printed\nAFKCONVOY_ENV=no\0\
+            AFKCONVOY_ENV\0PWD=/Users/me\0PATH=/opt/bin:/usr/bin\0SHLVL=1\0_=/usr/bin/env\0\
+            NOTE=two\nlines=and an equals\0OLDPWD=/\0EMPTY=\0";
+        let read = login_answered(printed).unwrap();
+        let read: Vec<(&str, &str)> = read
+            .iter()
+            .map(|(name, value)| (name.to_str().unwrap(), value.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            read,
+            [("PATH", "/opt/bin:/usr/bin"), ("NOTE", "two\nlines=and an equals"), ("EMPTY", "")]
+        );
+        assert_eq!(login_answered(b"PATH=/usr/bin\0"), None, "no frame, no environment");
+    }
 }

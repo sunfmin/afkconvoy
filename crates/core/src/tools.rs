@@ -176,15 +176,22 @@ pub const ALWAYS: [Tool; 3] = [Tool::Git, Tool::Gh, Tool::Orca];
 /// `ssh://git@host:22/o/r` and `git@host:o/r`. `None` for a path, and for
 /// anything that is not plainly a host name — it goes into a shell line.
 pub fn remote_host(url: &str) -> Option<&str> {
+    remote_parts(url).map(|(host, _)| host)
+}
+
+/// The host a remote's URL names (`remote_host`), and the path after it as
+/// written: `o/r` of each of the three. One reading of a remote's URL, for
+/// `gh` and for which repo a checkout is of (`checkouts::repo_of`).
+pub(crate) fn remote_parts(url: &str) -> Option<(&str, &str)> {
     let url = url.trim();
-    let authority = match url.split_once("://") {
-        Some((_, rest)) => rest.split('/').next()?,
-        None => url.split_once(':')?.0,
+    let (authority, path) = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/').unwrap_or((rest, "")),
+        None => url.split_once(':')?,
     };
     let host = authority.rsplit('@').next()?;
     let host = host.split(':').next()?;
     let plain = host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
-    (plain && host.contains('.') && !host.starts_with('-')).then_some(host)
+    (plain && host.contains('.') && !host.starts_with('-')).then_some((host, path))
 }
 
 /// The line of a refusal that names what is in the way of `tool`, with the
@@ -465,6 +472,22 @@ mod tests {
                 prop_assert!(host.bytes().all(plain), "{host:?} of {url:?}");
                 prop_assert!(host.contains('.'), "{host:?} of {url:?}");
                 prop_assert!(!host.starts_with('-'), "{host:?} of {url:?}");
+            }
+        }
+
+        /// The repo of a URL is on the host `gh` is asked about for it, and a
+        /// URL with no host is the caller's to read as a path.
+        #[test]
+        fn the_repo_read_from_any_url_is_on_the_host_read_from_it(url in remote_url()) {
+            let repo = crate::checkouts::repo_of(&url);
+            match remote_host(&url) {
+                Some(host) => {
+                    let host = host.to_ascii_lowercase();
+                    let repo = repo.unwrap_or_default();
+                    let on_it = repo == host || repo.starts_with(&format!("{host}/"));
+                    prop_assert!(on_it, "{repo:?} of {url:?}");
+                }
+                None => prop_assert_eq!(repo, None, "{:?}", url),
             }
         }
     }

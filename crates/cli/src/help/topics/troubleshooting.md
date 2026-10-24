@@ -64,4 +64,4 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - **The labels were moved back, and the issue escalated again**: A label is not where an issue is: [`afkconvoy help humans`](help:humans).
 - **A stage's verdict counted for nothing**: Its record names another stage than its claim was for. `afkconvoy show --issue <n>` says how each record was read; `afkconvoy send` puts the issue where it belongs.
 - **Another host's fleet died**: Its claims go stale by themselves and are taken. Or: `afkconvoy takeover --help`.
-- **Everything must stop now**: Kill `run`, then close the workers' terminals in orca. Every issue keeps its labels and stage records: a later `run` goes on from where each one was.
+- **Everything must stop now**: SIGTERM the host runner (`host_runner.pid` in any `run`'s answer), then close the workers' terminals in orca. Every issue keeps its labels and stage records: a later `run` goes on from where each one was.

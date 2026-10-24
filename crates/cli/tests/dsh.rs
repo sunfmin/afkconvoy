@@ -41,6 +41,7 @@ fn dsh_is_read_in_a_role_s_range_and_is_probed_before_start() {
         vec!["tick", "--instance", "a", "--host", "h1", "--now", "1000"],
         vec![
             "run",
+            "--foreground",
             "--instance",
             "a",
             "--host",

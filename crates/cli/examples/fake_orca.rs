@@ -3,14 +3,17 @@
 //!
 //! State: `repos` [{id, path}], `root` (where worktrees are made), `worktrees`
 //! [{path, branch, linkedIssue, repoId, lastActivityAt}], `terminals` [{handle,
-//! worktreePath, command, sent, open, agent?, lastOutputAt?, screen?}], `calls`.
+//! worktreePath, command, sent, open, agent?, lastOutputAt?, screen?}], `calls`,
+//! `envs`: beside each of `calls`, the names of the session's environment it
+//! ran in (`fake::State`), and `from`: the directory each call was run from,
+//! which real orca takes the current worktree from where a call names none.
 //! A terminal's `command` is the worker's line behind what starts every one
 //! under `nice` with the worktree's own `TMPDIR`: one without it is refused,
 //! but for a question (`question::typed`), which is put to `$SHELL -lic` —
 //! the stand-in login shell — at once. Its terminal is kept apart, in
 //! `questions` [{handle, worktreePath, script, stream, open}]: it shows what
 //! that printed between the question's marks (`stream`). A question's
-//! terminal is opened in the main checkout or wherever orca chooses.
+//! terminal is opened in the worktree it names, or with none named in none.
 //! Knobs: `stopped` (it is not running: it says so, and every other call
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
@@ -28,6 +31,8 @@ use serde_json::{Value, json};
 fn main() {
     let mut st = State::open("CONVOY_FAKE_ORCA");
     assert_eq!(st.argv.last().map(String::as_str), Some("--json"), "{:?}", st.argv);
+    let from = std::env::current_dir().map(|dir| dir.display().to_string()).unwrap_or_default();
+    st.list("from").push(json!(from));
     if st.argv[0] == "status" {
         status(&st);
     }

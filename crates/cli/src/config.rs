@@ -10,9 +10,9 @@ use crate::git::Repo;
 /// Where a repo keeps its config, relative to the checkout's top.
 pub const FILE: &str = "docs/agents/afkconvoy.md";
 
-/// The config file of the checkout the command was run in.
-pub fn default_file() -> Result<PathBuf> {
-    Ok(Repo::here()?.dir.join(FILE))
+/// The config file of the checkout `repo`.
+pub fn file_of(repo: &Repo) -> PathBuf {
+    repo.dir.join(FILE)
 }
 
 pub fn load(file: &Path) -> Result<Config> {

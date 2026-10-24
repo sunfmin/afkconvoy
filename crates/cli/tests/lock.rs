@@ -118,7 +118,7 @@ fn the_line_of_a_tick_says_that_a_lock_stands_and_which_issue_it_is() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
     world.issue(7, &["ready-for-agent", "fleet-lock"]);
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--now", "1000"];
+    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1", "--now", "1000"];
     let paced = ["--ticks", "1", "--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &AGENT, &paced].concat());
     let line = lines.iter().find(|line| line.starts_with("tick 1: ")).expect("a tick's line");
@@ -449,7 +449,7 @@ fn the_line_of_a_tick_shows_the_claims_a_lock_leaves_alone_apart_from_the_bound(
     world.issue(5, &["ready-for-agent"]);
     tick(&world, 1000);
     world.issue(7, &["ready-for-agent", "fleet-lock"]);
-    let args = ["run", "--instance", "alpha", "--host", "h1", "--now", "1010"];
+    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1", "--now", "1010"];
     let paced = ["--ticks", "1", "--second-ms", "0"];
     let (lines, _) = world.afk_lines(&[&args[..], &AGENT, &paced].concat());
     let line = lines.iter().find(|line| line.starts_with("tick 1: ")).expect("a tick's line");

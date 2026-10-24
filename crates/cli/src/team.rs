@@ -19,12 +19,13 @@ use serde_json::{Value, json};
 use crate::config;
 use crate::copies::{self, Copies, Copy};
 use crate::gh::{GitHub, Unreached, unreached};
+use crate::git::Repo;
 use crate::topic::See;
 
 /// Where a team's own files are taken from. Its roles' directories are
 /// always read from the fleet's copies of their repos' heads on GitHub.
 pub enum From {
-    /// The team the config of this checkout names.
+    /// The team the config of the checkout it is read for names.
     Config,
     /// A team's directory on GitHub: a repo, or a subdirectory of one.
     Repo(RepoDir),
@@ -233,8 +234,9 @@ fn changed(copies: &Copies, dir: &RepoDir, since: &str, head: &str, without: &[P
 /// is for, and a note for a team whose directory holds hooks and skills no
 /// worker loads, and for each role a directory above which holds rules a
 /// worker in it is not given. A team with a fault fails with `Refused`.
-pub fn check(from: From) -> Result<Value> {
-    let loaded = load(from)?;
+/// `checkout` is the checkout it is read for, as `load` reads it.
+pub fn check(from: From, checkout: Option<&Repo>) -> Result<Value> {
+    let loaded = load(from, checkout)?;
     let faults = held(&loaded);
     if !faults.is_empty() {
         return Err(Refused { team: loaded.called, faults }.into());
@@ -282,13 +284,16 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
 }
 
 /// Reads the team `from` names and every role's directory, and loads it
-/// against the labels of this checkout's repo — or, where its config cannot
-/// be read, the labels a repo that names none has. A team with a fault fails
-/// with `Refused`.
-pub fn load(from: From) -> Result<Loaded> {
-    let gh = GitHub { dir: PathBuf::from(".") };
-    let copies = Copies::here()?;
-    let here = config::default_file().and_then(|file| config::load(&file));
+/// against the labels of the repo of `checkout`, the checkout it is read for
+/// — or, where there is none or its config cannot be read, the labels a repo
+/// that names none has. A team with a fault fails with `Refused`.
+pub fn load(from: From, checkout: Option<&Repo>) -> Result<Loaded> {
+    let gh = checkout.map_or_else(GitHub::in_no_checkout, |repo| GitHub { dir: repo.dir.clone() });
+    let copies = Copies::of_host()?;
+    let here = match checkout {
+        Some(repo) => config::load(&config::file_of(repo)),
+        None => Err(anyhow!("no checkout is named, whose config would name the team")),
+    };
     let labels = here.as_ref().map(|config| config.labels()).unwrap_or_default();
     // The patrols this checkout's repo names, when it is its team that is
     // read.
@@ -706,7 +711,8 @@ pub fn keep(gh: &GitHub, copies: &Copies, team: &RepoDir, labels: &RepoLabels) -
 /// stands now: none in an unbound repo, or where the team does not load.
 pub fn flow_labels(gh: &GitHub, config: &Config) -> FlowLabels {
     let Some(bound) = &config.bound else { return FlowLabels::default() };
-    let kept = Copies::here().and_then(|copies| keep(gh, &copies, &bound.team, &config.labels()));
+    let kept =
+        Copies::of_host().and_then(|copies| keep(gh, &copies, &bound.team, &config.labels()));
     kept.map(|kept| kept.team.flow_labels()).unwrap_or_default()
 }
 

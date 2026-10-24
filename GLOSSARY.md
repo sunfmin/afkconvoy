@@ -11,12 +11,12 @@ One repo's fleet in its host's host runner, and everything it owns: the workers 
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
 
 **Host runner**:
-The one long-running afkconvoy process of a host, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way.
-_Avoid_: daemon, server, supervisor
+A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way.
+_Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
 The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it.
-_Avoid_: registry, workspace list, projects
+_Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Host settings**:
 What a host says for every fleet instance on it — whether it may be put to sleep, the limits past which a worker is hot, the shares admission holds back at — kept beside the checkout list and changed by any `run` that names one.
@@ -277,7 +277,7 @@ The one web page that shows a human where every fleet of a host stands: the host
 _Avoid_: dashboard, status page, status board (the comment on one issue), UI
 
 **Tick log**:
-The file a fleet instance's `run` keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake and the command that sent it, the `run`'s start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the `run`: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state, whoever runs it, appends a line of its own to the file of its host and repo as it acts — the command, the issue, who ran it, and how it came out or that it failed — whether a `run` is there or not. `run` prints each of its own lines as it is written. Each line is appended whole, and only `run` cuts the file back: it keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
+The file a fleet instance keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake and the command that sent it, the fleet instance's start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the fleet instance: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state, whoever runs it, appends a line of its own to the file of its host and repo as it acts — the command, the issue, who ran it, and how it came out or that it failed — whether a fleet instance is there or not. Each line is appended whole, and only the fleet instance cuts the file back: it keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
 _Avoid_: state file, journal, history
 
 **Finding**:

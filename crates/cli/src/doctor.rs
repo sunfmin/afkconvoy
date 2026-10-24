@@ -1024,14 +1024,18 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     found
 }
 
-/// What this host has of what the fleet needs, read from its current host kit.
-fn read_host(config: Option<&Config>) -> Host {
-    let launches = Launches::foreseen();
+/// What this host has of what the fleet of the checkout `repo`, under
+/// `config`, needs, read from its current host kit.
+fn read_host(repo: &Repo, config: Option<&Config>) -> Host {
+    let launches = Launches::foreseen(repo);
     let default = launches.default();
-    let looked = tools::look(launches.of(default).ok().flatten());
+    let looked = tools::look(repo, launches.of(default).ok().flatten());
     // An unbound repo knows of no harness: nothing calls for its one command's.
     let called = match config.and_then(|config| config.bound.as_ref()) {
-        Some(bound) => role::called_for(role::current(bound, &config.unwrap().labels()).as_ref()),
+        Some(bound) => {
+            let team = role::current(repo, bound, &config.unwrap().labels());
+            role::called_for(repo, team.as_ref())
+        }
         None => vec![(default, vec![])],
     };
     let checked = role::check(&launches, &called).unwrap_or_default();
@@ -1121,13 +1125,14 @@ fn read_events(entries: &[Entry], host: &str) -> Vec<Event> {
     of_host.filter_map(event).take(EVENTS_SHOWN).collect()
 }
 
-/// The team a bound repo names, as it stands at its head → with the team
-/// itself, where it loaded: what a stage in flight is held against.
-fn read_team(bound: bool) -> (TeamRead, Option<team::Loaded>) {
+/// The team the config of the checkout `repo` names, where it is `bound`,
+/// as it stands at its head → with the team itself, where it loaded: what a
+/// stage in flight is held against.
+fn read_team(repo: &Repo, bound: bool) -> (TeamRead, Option<team::Loaded>) {
     if !bound {
         return (TeamRead::Unbound, None);
     }
-    match team::load(team::From::Config) {
+    match team::load(team::From::Config, Some(repo)) {
         Ok(loaded) => {
             let workflows = loaded.team.workflows.iter();
             let flow_labels = workflows.map(|workflow| workflow.flow_label().to_string()).collect();
@@ -1247,8 +1252,8 @@ fn stamped_instance(fleet: &Fleet, host: &str) -> Option<String> {
     newest.map(|owner| owner.instance.clone())
 }
 
-fn read_state(now: u64, run: &mut Run) -> Result<State> {
-    let (mut fleet, open) = Fleet::read(now)?;
+fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
+    let (mut fleet, open) = Fleet::read(repo, now)?;
     if run.instance.is_none() {
         run.instance = stamped_instance(&fleet, &run.host);
     }
@@ -1263,7 +1268,7 @@ fn read_state(now: u64, run: &mut Run) -> Result<State> {
     };
     let (set, flows) = fleet.rebuild(&open, instance.as_ref())?;
     let stood = flows.stood();
-    let (team, loaded) = read_team(fleet.config.bound.is_some());
+    let (team, loaded) = read_team(repo, fleet.config.bound.is_some());
     let held = read_held(&fleet, &set, &stood, loaded.as_ref());
     let unclaimed = read_unclaimed(&fleet);
     let ready_label = fleet.config.ready_label.clone();
@@ -1418,7 +1423,7 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
     }
 }
 
-/// `afkconvoy doctor`, for the fleet of `host` in the checkout it is run in:
+/// `afkconvoy doctor`, for the fleet of `host` in the checkout `repo`:
 ///
 ///   {"host", "fleet", "claims", "issues", "waiting_on_human": [{"issue", "title",
 ///    "why", "since", "answer"}], "findings": [{"severity", "what", "evidence",
@@ -1427,20 +1432,19 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
 /// An answer with a `critical` finding is an `Unwell` error: the same object,
 /// and a non-zero exit. It reads only — but for the fleet's own cache, where
 /// reading a team keeps its copies.
-pub fn doctor(now: u64, host: &str) -> Result<Value> {
-    doctor_with_proxy(now, host, &[])
+pub fn doctor(repo: &Repo, now: u64, host: &str) -> Result<Value> {
+    doctor_with_proxy(repo, now, host, &[])
 }
 
 /// Adds the network settings of a start the host is considering.
-pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value> {
-    let launches = Launches::foreseen().with_no_proxy(proxy)?;
+pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Value> {
+    let launches = Launches::foreseen(repo).with_no_proxy(proxy)?;
 
-    let repo = Repo::here()?;
-    let log = Log::of(&repo).ok();
+    let log = Log::of(repo).ok();
     let entries = log.as_ref().and_then(Log::read);
     let (instance, _started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
     let mut run = Run {
-        alive: listening(&repo),
+        alive: listening(repo),
         instance,
         host: host.to_string(),
         heartbeat_age: None,
@@ -1453,8 +1457,8 @@ pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
     let config = config::load(&repo.dir.join(config::FILE));
-    let seen_host = read_host(config.as_ref().ok());
-    let state = read_state(now, &mut run).map_err(|error| format!("{error:#}"));
+    let seen_host = read_host(repo, config.as_ref().ok());
+    let state = read_state(repo, now, &mut run).map_err(|error| format!("{error:#}"));
     let seen = Seen {
         now,
         host: &seen_host,
@@ -1463,7 +1467,7 @@ pub fn doctor_with_proxy(now: u64, host: &str, proxy: &[String]) -> Result<Value
         state: state.as_ref().map_err(String::as_str),
     };
     let mut found = findings(&seen);
-    found.extend(crate::harness_down::findings(&repo, run.instance.as_deref())?);
+    found.extend(crate::harness_down::findings(repo, run.instance.as_deref())?);
     found.extend(crate::paused::findings(now));
     found.sort_by_key(|finding| finding.severity);
     let (claims, issues, waiting) = match &state {
