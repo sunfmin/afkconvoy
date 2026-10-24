@@ -1,4 +1,4 @@
-What every command that acts does as it ends, whoever runs it: the line it adds to the tick log, and the `run` it wakes. A command's own `--help` says, under "What it logs", that it is one.
+What every command that acts does as it ends, whoever runs it: the line it adds to the tick log, and the fleet instance it wakes. A command's own `--help` says, under "What it logs", that it is one.
 
 ## The line it logs
 
@@ -9,8 +9,8 @@ park #46 (operator): blocked by #99
 verdict #121 (worker): FAILED: issue #121 is closed
 ```
 
-## The `run` it wakes
+## The fleet instance it wakes
 
-Then it wakes this host's fleet instance of this repo, which logs `woken by park #46` and starts its next tick, or follows the one in progress with it; it waits {const:WAKE_ANSWER_SECONDS} seconds at most for it to answer. Its answer says whether it woke one, as "woke". With none listening it does nothing more.
+Then it wakes this host's fleet instance of this repo, asking the host runner on its socket, naming its checkout: the fleet instance logs `woken by park #46` and starts its next tick, or follows the one in progress with it. It waits {const:WAKE_ANSWER_SECONDS} seconds at most for the answer, which says whether it woke one, as "woke". With no host runner, or none holding a fleet instance of this repo, it does nothing more.
 
-Both are soft: a command acts the same whether either can be done, and with no `run` listening its line is in the log all the same.
+Both are soft: a command acts the same whether either can be done, and with no fleet instance to wake its line is in the log all the same.

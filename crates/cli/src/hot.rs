@@ -516,14 +516,15 @@ pub trait Hears: Send + Sync {
 /// each, timed by `clock` — the run's — and `hears` told of each turn
 /// (`Sampler::sample`), under the limits the host settings say as it takes
 /// it. `hot` is kept as the workers hot now. What shows a worker that turned
-/// hot is taken down on a thread of its own, and the `run` woken once it is.
-/// A second that takes no time samples nothing.
+/// hot is taken down on a thread of its own, and the fleet instance woken by
+/// `waker` once it is. A second that takes no time samples nothing.
 pub fn watch(
     repo: &Repo,
     second: Duration,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     hears: Arc<dyn Hears>,
     hot: Hot,
+    waker: Waker,
     stop: Stop,
 ) {
     if second.is_zero() {
@@ -571,7 +572,7 @@ pub fn watch(
                 hears.turned(at, turned);
             }
             for (worktree, taken) in to_take {
-                let (repo, hears) = (Repo::new(repo.dir.clone()), Arc::clone(&hears));
+                let (waker, hears) = (waker.clone(), Arc::clone(&hears));
                 std::thread::spawn(move || {
                     if let Err(error) = evidence::take(&worktree, &taken) {
                         let worker = &taken.worker;
@@ -579,9 +580,7 @@ pub fn watch(
                             "what shows {worker} hot was not taken down: {error:#}"
                         ));
                     }
-                    if let Some(waker) = Waker::of(&repo) {
-                        waker.wake();
-                    }
+                    waker.wake();
                 });
             }
             *hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = sampler.hot();
