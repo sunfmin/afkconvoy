@@ -1,7 +1,8 @@
 //! A team's roster gives each role a range (docs/adr/0020): a stage's
 //! worker runs its issue's casting within its role's range, a casting no
-//! range of its workflow holds is not dispatched, the caster is given each
-//! stage's range, and a range a role cannot run refuses the start.
+//! range of its workflow holds runs each stage's range's first, the caster is
+//! given each stage's range, and a role that can run nothing safely only
+//! waits.
 
 use crate::common;
 
@@ -114,20 +115,40 @@ fn a_stage_s_worker_runs_its_casting_within_its_role_s_range_and_plan_says_which
 }
 
 #[test]
-fn a_casting_no_range_of_its_workflow_holds_is_not_dispatched_and_plan_says_why() {
+fn a_casting_no_range_of_its_workflow_holds_runs_each_stage_s_first_and_is_told_once() {
     let world = bound(TEAM);
     world.issue(7, &["flow:feature", "harness:codex"]);
     world.issue(8, &["flow:audit", "harness:pi", "model:a/fast"]);
+    world.issue(9, &["flow:feature", "harness:claude-code", "model:sonnet"]);
     let planned = world.afk(&PLAN).ok();
     assert_eq!(
         said(&planned, 7),
-        "not dispatched: its casting `harness:codex` is held by no range of its workflow's \
-         stages: build (dev): claude-code (opus); pi (a/fast) · review (reviewer): claude-code \
-         (haiku)"
+        json!({"harness": "claude-code", "model": "opus", "why": "unmatched", "unmatched": "`harness:codex`"})
     );
-    assert!(said(&planned, 8).as_str().unwrap().contains("look (reviewer): claude-code (haiku)"));
+    // A range of one runs its one, whatever the casting.
+    assert_eq!(said(&planned, 8)["why"], "only");
+    assert_eq!(
+        said(&planned, 9),
+        json!({"harness": "claude-code", "model": "opus", "why": "unmatched", "unmatched": "`model:sonnet`"})
+    );
+    let not = planned.to_string();
+    assert!(!not.contains("not dispatched"), "{planned}");
     world.afk(&TICK).ok();
-    assert_eq!(world.worktrees().len(), 0, "nothing is started");
+    assert_eq!(world.worktrees().len(), 3, "each is started");
+    let told = |number| -> Vec<String> {
+        let comments = world.comments(number);
+        comments.into_iter().filter(|body| body.starts_with("<!--convoy:unmatched-->")).collect()
+    };
+    assert_eq!(told(7).len(), 1);
+    assert!(
+        told(7)[0].contains("`harness:codex` matches nothing this host holds"),
+        "{:?}",
+        told(7)
+    );
+    assert!(told(7)[0].contains("this worker runs `claude-code` on `opus` instead"));
+    assert_eq!(told(8).len(), 0, "a range of one is no fallback");
+    assert_eq!(told(9).len(), 1);
+    assert!(world.labels(7).contains(&"harness:codex".to_string()), "never taken off");
 }
 
 #[test]
@@ -165,22 +186,78 @@ fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to
 }
 
 #[test]
-fn a_role_whose_range_is_empty_refuses_the_start() {
+fn a_roster_entry_that_matches_nothing_ranges_over_the_host_kit_and_is_named() {
     // `reviewer` may run a model the host kit does not hold.
     let world = bound(&TEAM.replace("model: haiku", "model: sonnet"));
-    world.issue(7, &["flow:feature"]);
-    for start in [&PLAN[..], &TICK] {
-        let error = world.afk(start).error();
-        assert!(
-            error.contains(
-                "the role `reviewer` has an empty range on this host: the roster allows it \
-                 claude-code (sonnet), and the host kit holds claude-code (opus, haiku); pi \
-                 (a/fast, a/slow); codex (no model); dsh (no model)"
-            ),
-            "{error}"
-        );
-    }
-    assert_eq!(world.worktrees().len(), 0);
+    world.issue(7, &["flow:audit"]);
+    let checked = world.afk(&["check"]).ok();
+    let reviewer = &checked["roles"][1];
+    assert_eq!(
+        reviewer["range"][0],
+        json!({"harness": "claude-code", "models": ["opus", "haiku"]})
+    );
+    let unmatched = reviewer["unmatched"].as_str().unwrap();
+    assert!(
+        unmatched.starts_with(
+            "the roster's entry for the role `reviewer` allows it claude-code (sonnet), none of \
+             which the host kit holds"
+        ),
+        "{unmatched}"
+    );
+    assert_eq!(checked["roles"][0]["unmatched"], Value::Null);
+    // `plan` and `tick` start, and say so.
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["unmatched"][0]["role"], "reviewer", "{planned}");
+    let ticked = world.afk(&TICK).ok();
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+}
+
+#[test]
+fn a_role_with_nothing_it_can_run_safely_waits_and_goes_on_once_it_has() {
+    // `reviewer` holds limits for Claude Code alone, and Claude Code is
+    // paused: nothing the host kit holds is safe for it.
+    let world = bound("```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n");
+    let hooked = r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}}"#;
+    commit(&world.root.join("github/acme/reviewer"), ".claude/settings.json", hooked);
+    world.pause("claude-code", 900, "refused every prompt");
+    world.issue(7, &["flow:feature", "harness:pi", "model:a/fast"]);
+    world.issue(8, &["flow:audit", "harness:claude-code", "model:haiku"]);
+
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(said(&planned, 7)["harness"], "pi", "{planned}");
+    let waits = said(&planned, 8);
+    assert!(
+        waits.as_str().unwrap().starts_with(
+            "reviewer has no harness on this host it holds limits for: it holds limits for \
+             claude-code, and the host kit holds pi (a/fast, a/slow); codex (no model); dsh (no \
+             model)"
+        ),
+        "{planned}"
+    );
+    assert_eq!(planned["nothing_safe"][0]["role"], "reviewer", "{planned}");
+    let ticked = world.afk(&TICK).ok();
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    assert_eq!(world.worktrees().len(), 1, "only dev's stage is started");
+    let doctor = world.afk(&["doctor"]).json;
+    assert!(doctor.to_string().contains("reviewer has no harness on this host"), "{doctor}");
+
+    // Claude Code back: its stage is dispatched, with no one doing anything.
+    std::fs::remove_file(world.paused_path()).unwrap();
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(
+        said(&planned, 8),
+        json!({"harness": "claude-code", "model": "haiku", "why": "casting"}),
+        "{planned}"
+    );
+    world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1100"]).ok();
+    assert_eq!(world.worktrees().len(), 2);
+    // No worker ran a harness its role holds no limits for.
+    let orca = world.orca();
+    let reviewer_on_pi = orca["terminals"].as_array().unwrap().iter().any(|terminal| {
+        let line = terminal["command"].as_str().unwrap_or_default();
+        line.contains("reviewer") && !line.contains("claude")
+    });
+    assert!(!reviewer_on_pi, "{orca}");
 }
 
 #[test]
@@ -352,7 +429,7 @@ fn a_roster_names_a_model_by_any_name_and_one_naming_nothing_is_said_and_opened_
             {"harness": "pi", "models": ["a/fast"]}]),
         "{checked}"
     );
-    let unmatched = &team["unmatched"];
+    let unmatched = &team["unmatched_models"];
     assert_eq!(unmatched.as_array().unwrap().len(), 1, "{checked}");
     assert_eq!(
         (&unmatched[0]["role"], &unmatched[0]["model"]),
@@ -361,7 +438,7 @@ fn a_roster_names_a_model_by_any_name_and_one_naming_nothing_is_said_and_opened_
     assert!(unmatched[0]["said"].as_str().unwrap().contains("the nearest names: `opus`"));
     // `plan` names it, and casts by any name, running the id.
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(planned["unmatched"][0]["model"], "opuss", "{planned}");
+    assert_eq!(planned["unmatched_models"][0]["model"], "opuss", "{planned}");
     assert_eq!(
         said(&planned, 7),
         json!({"harness": "claude-code", "model": "claude-opus-5-5", "why": "casting"})

@@ -156,7 +156,7 @@ pub fn tick(
     if let (Some(bound), Ok(team), Ok(kit)) =
         (&fleet.config.bound, flows.team(), crate::kit::load())
     {
-        let unmatched = afkconvoy_core::casting::unmatched_entries(team, &kit.range());
+        let unmatched = afkconvoy_core::casting::unmatched_models(team, &kit.range());
         let _ = crate::roster_issue::open(&fleet.gh, &bound.team.repo, &unmatched);
     }
     // What no consult saw goes to one first (docs/adr/0018), and is read

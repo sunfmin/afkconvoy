@@ -67,6 +67,20 @@ pub struct Fleet {
     pub cut_train: Option<Built>,
 }
 
+/// Why no worker of a role can be started on this host: it holds limits for
+/// no harness the host kit holds (`casting::nothing_safe`). Its stages wait
+/// while it lasts; nothing else does.
+#[derive(Debug)]
+pub struct NothingSafe(pub String);
+
+impl std::fmt::Display for NothingSafe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for NothingSafe {}
+
 impl Fleet {
     /// The fleet's view from the checkout the command was run in.
     pub fn open(now: u64) -> Result<Fleet> {
@@ -108,11 +122,16 @@ impl Fleet {
     /// (`casting::cast_within`) within its range on this host — its roster
     /// entry cut to the host kit without the harnesses paused here — and
     /// this host's switch → it, or why it cannot be started. A casting to a
-    /// paused harness the role may run, or a range every harness of which is
-    /// paused, holds the issue back (`paused::Held`).
+    /// paused harness the role may run holds the issue back (`paused::Held`);
+    /// so does a range that holds nothing (`NothingSafe`): no worker of the
+    /// role runs without its limits.
     pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
         let (kit, paused) = crate::kit::running()?;
-        let range = casting::range(role, &kit.range());
+        let kit = kit.range();
+        let range = casting::range(role, &kit);
+        if let Some(why) = casting::nothing_safe(role, &kit) {
+            return Err(NothingSafe(why).into());
+        }
         if self.chosen.is_none() {
             let allowed = |pause: &&casting::Paused| {
                 let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
@@ -121,51 +140,61 @@ impl Fleet {
             if let Some(pause) = casting::paused_of(labels, &paused).filter(allowed) {
                 return Err(crate::paused::Held::of(pause, self.now).into());
             }
-            if range.is_empty() && !paused.is_empty() {
-                return Err(crate::paused::Held::every(&paused, self.now).into());
-            }
         }
-        casting::cast_within(labels, &range, self.chosen)
+        casting::cast_within(labels, &range, &kit, self.chosen)
             .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
     }
 
     /// The harness and model the stock consult runs: the host kit's
     /// (`Kit::stock_consult`), without the harnesses paused on this host —
-    /// but this host's chosen harness, where a switch chose one, without the
-    /// model of another. Every harness paused holds it back (`paused::Held`).
-    pub fn stock_consult(&self) -> Result<crate::kit::Named> {
+    /// its first where what it names matches nothing held, `unmatched` — but
+    /// this host's chosen harness, where a switch chose one the host kit
+    /// holds, without the model of another; its first, `unmatched`, where the
+    /// switch matches nothing held. Every harness paused holds it back
+    /// (`paused::Held`).
+    pub fn stock_consult(&self) -> Result<Cast> {
         let (kit, paused) = crate::kit::running()?;
-        if kit.harnesses.is_empty() && !paused.is_empty() && self.chosen.is_none() {
+        if kit.harnesses.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
         let named =
             kit.stock_consult().context("the host kit holds no harness: run `afkconvoy kit`")?;
+        let (why, unmatched) = match (&kit.stock_consult, kit.stock_unmatched()) {
+            (Some(said), Some(_)) => (Why::Unmatched, Some(format!("`{}`", said.harness.key()))),
+            (Some(_), None) => (Why::Casting, None),
+            (None, _) => (Why::First, None),
+        };
+        let cast = Cast { harness: named.harness, model: named.model, why, unmatched };
         Ok(match self.chosen {
-            Some(chosen) if chosen != named.harness => {
-                crate::kit::Named { harness: chosen, model: None }
+            Some(chosen) if kit.command(chosen).is_none() => {
+                let first = kit.first().context("the host kit holds no harness")?;
+                let unmatched = Some(format!("this host's switch to `{}`", chosen.key()));
+                Cast { harness: first.harness, model: first.model, why: Why::Unmatched, unmatched }
             }
-            _ => named,
+            Some(chosen) if chosen != cast.harness => {
+                Cast { harness: chosen, model: None, why: Why::Switch, unmatched: None }
+            }
+            _ => cast,
         })
     }
 
     /// What the worker of an unbound repo's issue labelled `labels` runs
     /// (`casting::cast`) within the host kit without the harnesses paused on
-    /// this host, and this host's switch → it, or why the issue is not
-    /// dispatched. A casting to be cast again (`recast`) is taken for none.
-    /// A casting to a paused harness, or a host kit every harness of which
-    /// is paused, holds the issue back (`paused::Held`); any other error is
-    /// the host kit's.
+    /// this host, and this host's switch → it: a casting or a switch that
+    /// matches nothing held runs the host kit's first. A casting to be cast
+    /// again (`recast`) is taken for none. A casting to a paused harness, or
+    /// a host kit every harness of which is paused, holds the issue back
+    /// (`paused::Held`); any other error is the host kit's.
     pub fn cast(&self, labels: &[String], recast: bool) -> Result<Result<Cast, String>> {
         let (kit, paused) = crate::kit::running()?;
         let range = kit.range();
         let labels = if recast { casting::without_casting(labels) } else { labels.to_vec() };
-        if self.chosen.is_none() {
-            if let Some(pause) = casting::paused_of(&labels, &paused) {
-                return Err(crate::paused::Held::of(pause, self.now).into());
-            }
-            if range.is_empty() && !paused.is_empty() {
-                return Err(crate::paused::Held::every(&paused, self.now).into());
-            }
+        if let Some(pause) = casting::paused_of(&labels, &paused).filter(|_| self.chosen.is_none())
+        {
+            return Err(crate::paused::Held::of(pause, self.now).into());
+        }
+        if range.is_empty() && !paused.is_empty() {
+            return Err(crate::paused::Held::every(&paused, self.now).into());
         }
         Ok(casting::cast(&labels, &range, self.chosen))
     }
@@ -297,8 +326,8 @@ impl Fleet {
     }
 
     /// Says of each issue on an unbound repo's frontier what its worker
-    /// would run, and why; one whose casting the host kit does not hold is
-    /// not dispatched, and is excluded with why. The stock consult's runs
+    /// would run, and why; one whose casting the host kit does not hold runs
+    /// its first, `unmatched`, naming the label. The stock consult's runs
     /// what the host kit names for it, and is cast by nothing. A host kit
     /// that cannot be read casts nothing: a start refuses it, saying so.
     ///
@@ -390,7 +419,7 @@ impl Fleet {
                 Err(why) => set.excluded.push(Excluded {
                     number: issue.number,
                     title: issue.title,
-                    reason: format!("not dispatched: {why}"),
+                    reason: format!("{why}: run `afkconvoy kit`"),
                 }),
             }
         }
@@ -402,9 +431,10 @@ impl Fleet {
 
     /// Says of each issue on a bound repo's frontier what the worker due on
     /// it runs, and why (`casting::cast_within`): its casting where its
-    /// role's range holds it, the range's first where not. One whose casting
-    /// none of its workflow's stages' ranges holds is not dispatched, and is
-    /// excluded with why (`casting::held_by_none`). The stock consult's runs
+    /// role's range holds it, the range's first where not — `unmatched` where
+    /// none of its workflow's stages' ranges holds it (`casting::unmatched_in`).
+    /// One at a stage whose role can run nothing safely on this host waits,
+    /// excluded with why (`casting::nothing_safe`). The stock consult's runs
     /// what the host kit names for it, and is cast by nothing. A host kit or
     /// a team that cannot be read casts nothing: a start refuses it.
     ///
@@ -466,22 +496,22 @@ impl Fleet {
                 continue;
             };
             let ranges = casting::stage_ranges(team, workflow, &kit);
-            let excluded = |reason: String| Excluded {
-                number: issue.number,
-                title: issue.title.clone(),
-                reason: format!("not dispatched: {reason}"),
-            };
-            // Held back while a harness it is cast to, or every one, is paused.
-            if let Err(error) = self.cast_in(role, &labels)
-                && let Some(held) = error.downcast_ref::<crate::paused::Held>()
-            {
-                let reason = held.0.clone();
-                set.excluded.push(Excluded { number: issue.number, title: issue.title, reason });
-                continue;
-            }
-            if let Some(why) = casting::held_by_none(&labels, &ranges, self.chosen) {
-                set.excluded.push(excluded(why));
-                continue;
+            // Held back while a harness it is cast to is paused, and while its
+            // role can run nothing safely.
+            if let Err(error) = self.cast_in(role, &labels) {
+                let reason = match (
+                    error.downcast_ref::<crate::paused::Held>(),
+                    error.downcast_ref::<NothingSafe>(),
+                ) {
+                    (Some(held), _) => Some(held.0.clone()),
+                    (_, Some(nothing)) => Some(nothing.0.clone()),
+                    _ => None,
+                };
+                if let Some(reason) = reason {
+                    let title = issue.title;
+                    set.excluded.push(Excluded { number: issue.number, title, reason });
+                    continue;
+                }
             }
             let held = casting::for_caster(
                 issue.number,
@@ -502,15 +532,20 @@ impl Fleet {
                 continue;
             }
             let range = casting::range(role, &kit);
-            match casting::cast_within(&labels, &range, self.chosen) {
-                Ok(mut cast) => {
+            match casting::cast_within(&labels, &range, &kit, self.chosen) {
+                Ok(cast) => {
+                    let mut cast = casting::unmatched_in(cast, &labels, &ranges);
                     if held == ForCaster::Late && cast.why == Why::RangeFirst {
                         cast.why = Why::Uncast;
                     }
                     issue.cast = Some(cast);
                     set.frontier.push(issue);
                 }
-                Err(why) => set.excluded.push(excluded(format!("the role `{}`: {why}", role.name))),
+                Err(why) => set.excluded.push(Excluded {
+                    number: issue.number,
+                    title: issue.title,
+                    reason: format!("the role `{}`: {why}", role.name),
+                }),
             }
         }
         set.excluded.sort_by_key(|excluded| excluded.number);

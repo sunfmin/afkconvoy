@@ -1,10 +1,10 @@
 //! A team's roster entry that names no model the host kit holds
-//! (`casting::UnmatchedEntry`). The fleet never changes a team's roster: a
+//! (`casting::UnmatchedModel`). The fleet never changes a team's roster: a
 //! tick opens one issue for it in the team's repo instead, carrying that
 //! repo's ready label, so that the team's own fleet corrects the roster.
 //! None is opened for an entry while one for it is open.
 
-use afkconvoy_core::casting::UnmatchedEntry;
+use afkconvoy_core::casting::UnmatchedModel;
 use afkconvoy_core::config::RepoName;
 use anyhow::Result;
 
@@ -15,7 +15,7 @@ const READY: &str = "ready-for-agent";
 
 /// The mark that opens the body of the issue opened for `entry`: how one
 /// still open for it is found.
-fn mark(entry: &UnmatchedEntry) -> String {
+fn mark(entry: &UnmatchedModel) -> String {
     format!(
         "<!--convoy:roster-unmatched role={} harness={} model={}-->",
         entry.role,
@@ -25,7 +25,7 @@ fn mark(entry: &UnmatchedEntry) -> String {
 }
 
 /// The title and the body of the issue opened for `entry`.
-fn issue(entry: &UnmatchedEntry) -> (String, String) {
+fn issue(entry: &UnmatchedModel) -> (String, String) {
     let title = format!(
         "Roster: the role `{}` names `{}` on {}, which matches no model a host kit holds",
         entry.role,
@@ -50,7 +50,7 @@ fn issue(entry: &UnmatchedEntry) -> (String, String) {
 /// Opens an issue in `team`, the team's repo, for each of `entries` none is
 /// open for → how many it opened. Its config's ready label is put on each:
 /// the team's own fleet works it.
-pub fn open(gh: &GitHub, team: &RepoName, entries: &[UnmatchedEntry]) -> Result<usize> {
+pub fn open(gh: &GitHub, team: &RepoName, entries: &[UnmatchedModel]) -> Result<usize> {
     if entries.is_empty() {
         return Ok(0);
     }
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn an_entry_s_issue_names_it_what_the_host_kit_holds_and_the_nearest_names() {
-        let entry = UnmatchedEntry {
+        let entry = UnmatchedModel {
             role: "dev".into(),
             harness: Harness::ClaudeCode,
             model: "opuss".into(),
