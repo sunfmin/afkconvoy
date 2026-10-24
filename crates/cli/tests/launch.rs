@@ -269,6 +269,67 @@ fn no_host_kit_has_run_write_it_and_start_its_first_tick_while_a_tick_refuses() 
     assert_eq!(started(&world).len(), 1, "its first tick started a worker");
 }
 
+/// What the run log of `world`'s repo says of the host kit's refreshes, as
+/// `run` would print it.
+fn refreshes(world: &World) -> Vec<String> {
+    let Ok(files) = std::fs::read_dir(world.cache().join("afkconvoy/runs")) else { return vec![] };
+    let mut said = vec![];
+    for file in files.map(|entry| entry.unwrap().path()) {
+        for line in std::fs::read_to_string(file).unwrap().lines() {
+            let entry: afkconvoy::log::Entry = serde_json::from_str(line).unwrap();
+            if entry.said().starts_with("refresh_kit") {
+                said.push(entry.said());
+            }
+        }
+    }
+    said
+}
+
+/// A tick of `instance` at `now`, in a process of its own.
+fn tick_at(world: &World, instance: &str, now: u64) -> std::process::Child {
+    let now = now.to_string();
+    let args = ["tick", "--instance", instance, "--host", "h1", "--now", &now];
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    command.args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    command.spawn().unwrap()
+}
+
+#[test]
+fn a_tick_a_day_later_writes_the_host_kit_again_once_for_every_fleet_of_the_host() {
+    let world = backlog();
+    std::fs::remove_file(world.kit_path()).unwrap();
+    host_to_kit(&world);
+    assert_eq!(answer(&world, &RUN, false).code, 0);
+    let models = |world: &World| kit_unprobed(world)["harnesses"][0]["models"].clone();
+    assert_eq!(models(&world), json!([{"model": "default"}, {"model": "opus"}]));
+    assert_eq!(world.afk(&["plan", "--now", "1000"]).json["host_kit"]["refreshed"], 1000);
+    // Claude Code lists `sonnet` now, and no longer `opus`.
+    world.shell_claude_models(&["default", "sonnet"]);
+    let day = 86_400;
+    let mut tick = tick_at(&world, "alpha", 1000 + day - 1);
+    tick.wait().unwrap();
+    assert!(refreshes(&world).is_empty(), "within the day: {:?}", refreshes(&world));
+    // Several fleets tick a day later at once: one of them writes it again.
+    let ticks: Vec<_> = ["alpha", "beta", "gamma"]
+        .iter()
+        .map(|instance| tick_at(&world, instance, 1000 + day))
+        .collect();
+    for mut tick in ticks {
+        tick.wait().unwrap();
+    }
+    assert_eq!(
+        refreshes(&world),
+        ["refresh_kit (fleet): the host kit was written again: added claude-code sonnet; \
+          dropped claude-code opus"]
+    );
+    assert_eq!(models(&world), json!([{"model": "default"}, {"model": "sonnet"}]));
+    let plan = world.afk(&["plan", "--now", &(1000 + day).to_string()]);
+    assert_eq!(plan.json["host_kit"]["refreshed"], 1000 + day);
+    // The rest of that day, no tick writes it again.
+    tick_at(&world, "beta", 1000 + 2 * day - 1).wait().unwrap();
+    assert_eq!(refreshes(&world).len(), 1);
+}
+
 #[test]
 fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_out() {
     let world = backlog();

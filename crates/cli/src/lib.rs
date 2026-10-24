@@ -3262,7 +3262,7 @@ impl Command {
 fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
-        Command::Kit => kit::write(),
+        Command::Kit => kit::write(now),
         Command::Cast => caster::cast(now),
         Command::Config { file } => {
             let file = match file {
@@ -3359,7 +3359,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 written: hot_written.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
             });
             let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after, hot };
-            kit::ensure()?;
+            kit::ensure(now)?;
             let agent = agent.start(now, false)?;
             tick::run(&mut me, &agent, &pacing, panel, move || fixed_now.unwrap_or_else(clock))
         }
