@@ -31,6 +31,7 @@ pub mod advance;
 pub mod board;
 pub mod caster;
 pub mod checkout;
+pub mod checkout_list;
 pub mod claim_status;
 pub mod claims;
 pub mod config;

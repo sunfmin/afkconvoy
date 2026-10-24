@@ -1,0 +1,243 @@
+//! The checkout list: which checkouts this host's runner works. One file on
+//! the host, never pushed (docs/adr/0023).
+//!
+//! It is read whole by anyone, never under its lock: a change is written
+//! whole beside it and moved over it, so a reader sees one list or the
+//! next. Changes take the lock beside it, which keeps out a change made by
+//! another thread of the same process as well as by another process.
+
+use std::path::{Path, PathBuf};
+
+use afkconvoy_core::checkouts;
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::copies::cache;
+use crate::git::{REMOTE, Repo};
+use crate::instance::Named;
+
+/// The file's name in the cache directory.
+const FILE: &str = "checkouts.json";
+
+/// What the checkout list holds.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Listed {
+    #[serde(default)]
+    pub checkouts: Vec<Entry>,
+    /// What another afkconvoy keeps beside them — host settings — kept as it is.
+    #[serde(flatten)]
+    rest: Map<String, Value>,
+}
+
+/// One checkout on the list: its root, and what the `run` that started it
+/// named for its fleet instance alone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub checkout: PathBuf,
+    #[serde(default, skip_serializing_if = "Named::is_empty")]
+    pub named: Named,
+}
+
+/// A host's checkout list: its file, and the lock beside it.
+pub struct List {
+    file: PathBuf,
+}
+
+impl List {
+    /// This host's: `checkouts.json` in the cache directory.
+    pub fn of_host() -> Result<List> {
+        Ok(List::at(cache()?.join(FILE)))
+    }
+
+    /// The list kept in `file`.
+    pub fn at(file: PathBuf) -> List {
+        List { file }
+    }
+
+    /// The file it is kept in.
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
+    /// What it lists. None yet is an empty list; a file that cannot be read
+    /// is an error naming it.
+    pub fn read(&self) -> Result<Listed> {
+        let bytes = match std::fs::read(&self.file) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Listed::default());
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {}", self.file.display()));
+            }
+        };
+        serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "{} cannot be read as the checkout list: mend it, or remove it and run \
+                 `afkconvoy run` again in each checkout to be worked",
+                self.file.display()
+            )
+        })
+    }
+
+    /// Changes it under its lock → what `change` answered: read, `change`d,
+    /// written whole beside it (`checkouts.json.<unique()>.tmp`) and moved
+    /// over it. A reader sees the old list or the new one, whole.
+    pub fn change<T>(&self, change: impl FnOnce(&mut Listed) -> T) -> Result<T> {
+        let unwritten = || format!("the checkout list {} cannot be written", self.file.display());
+        if let Some(dir) = self.file.parent() {
+            std::fs::create_dir_all(dir).with_context(unwritten)?;
+        }
+        let lock = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.file.with_extension("lock"))
+            .with_context(unwritten)?;
+        lock.lock().with_context(unwritten)?;
+        let mut listed = self.read()?;
+        let changed = change(&mut listed);
+        let temporary = self.file.with_extension(format!("json.{}.tmp", crate::unique()));
+        let written = serde_json::to_vec_pretty(&listed)
+            .map_err(std::io::Error::other)
+            .and_then(|text| std::fs::write(&temporary, text))
+            .and_then(|()| std::fs::rename(&temporary, &self.file));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        written.with_context(unwritten)?;
+        Ok(changed)
+    }
+}
+
+/// The repo the checkout `repo` is of, as its remote `origin` names it
+/// (`checkouts::repo_of`); a remote that is a path is that directory, made
+/// canonical against the checkout. A checkout with no `origin` is an error
+/// saying a fleet works its repo through it.
+pub fn repo_of(repo: &Repo) -> Result<String> {
+    let ran = repo.try_git(&["remote", "get-url", REMOTE])?;
+    if !ran.ok {
+        bail!(
+            "{} has no remote `{REMOTE}`, and a fleet works its repo through that remote: add \
+             it with `git remote add {REMOTE} <url>`",
+            repo.dir.display()
+        );
+    }
+    let url = ran.stdout.as_str();
+    if let Some(repo) = checkouts::repo_of(url) {
+        return Ok(repo);
+    }
+    let path = url.strip_prefix("file://").unwrap_or(url);
+    let dir = repo.dir.join(path).canonicalize().with_context(|| {
+        format!("the remote `{REMOTE}` of {}, {url}, is no directory here", repo.dir.display())
+    })?;
+    Ok(dir.display().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+
+    fn entry(checkout: &str) -> Entry {
+        Entry { checkout: PathBuf::from(checkout), named: Named::default() }
+    }
+
+    #[test]
+    fn none_yet_is_an_empty_list_and_one_that_cannot_be_read_is_an_error_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = List::at(dir.path().join(FILE));
+        assert!(list.read().unwrap().checkouts.is_empty());
+        std::fs::write(list.file(), "{\"checkouts\": [").unwrap();
+        let error = format!("{:#}", list.read().unwrap_err());
+        assert!(error.contains(&list.file().display().to_string()), "{error}");
+        assert!(list.change(|_| ()).is_err(), "a list that cannot be read is not written over");
+        assert_eq!(std::fs::read_to_string(list.file()).unwrap(), "{\"checkouts\": [");
+    }
+
+    #[test]
+    fn a_change_keeps_what_it_does_not_know_and_names_only_what_was_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let list = List::at(dir.path().join(FILE));
+        let kept = r#"{"settings": {"no_host_sleep": true}, "checkouts": [{"checkout": "/a"}]}"#;
+        std::fs::write(list.file(), kept).unwrap();
+        let named = Named { host: Some("h1".into()), ..Named::default() };
+        let added = list.change(|listed| {
+            listed.checkouts.push(Entry { checkout: PathBuf::from("/b"), named: named.clone() });
+            listed.checkouts.len()
+        });
+        assert_eq!(added.unwrap(), 2);
+        let text: Value =
+            serde_json::from_str(&std::fs::read_to_string(list.file()).unwrap()).unwrap();
+        assert_eq!(text["settings"], serde_json::json!({"no_host_sleep": true}), "{text}");
+        assert_eq!(text["checkouts"][0], serde_json::json!({"checkout": "/a"}), "{text}");
+        assert_eq!(
+            text["checkouts"][1],
+            serde_json::json!({"checkout": "/b", "named": {"host": "h1"}})
+        );
+        assert_eq!(
+            list.read().unwrap().checkouts,
+            [entry("/a"), Entry { checkout: "/b".into(), named }]
+        );
+        // nothing is left beside it
+        let left: Vec<_> =
+            std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 2, "the list and its lock: {left:?}");
+    }
+
+    #[test]
+    fn changes_made_at_once_are_each_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE);
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let file = file.clone();
+                std::thread::spawn(move || {
+                    let list = List::at(file);
+                    for m in 0..10 {
+                        let checkout = format!("/{n}/{m}");
+                        list.change(|listed| listed.checkouts.push(entry(&checkout))).unwrap();
+                        // a reader never waits, and never sees half a list
+                        assert!(list.read().is_ok());
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let listed = List::at(file).read().unwrap();
+        assert_eq!(listed.checkouts.len(), 80);
+    }
+
+    #[test]
+    fn a_checkout_is_of_the_repo_its_origin_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("w");
+        let git = |args: &[&str]| {
+            let ran = Command::new("git").args(args).current_dir(dir.path()).output().unwrap();
+            assert!(ran.status.success(), "{ran:?}");
+        };
+        git(&["init", "--quiet", "--bare", "remote.git"]);
+        git(&["init", "--quiet", "w"]);
+        let repo = Repo::new(checkout.clone());
+        let error = format!("{:#}", repo_of(&repo).unwrap_err());
+        assert!(error.contains("has no remote `origin`"), "{error}");
+        let set = |url: &str| git(&["-C", "w", "remote", "add", "origin", url]);
+        set("git@github.com:Me/W.git");
+        assert_eq!(repo_of(&repo).unwrap(), "github.com/me/w");
+        git(&["-C", "w", "remote", "remove", "origin"]);
+        // a path, however it is written, is the directory it names
+        let bare = dir.path().join("remote.git").canonicalize().unwrap().display().to_string();
+        for url in ["../remote.git", &bare, &format!("file://{bare}")] {
+            set(url);
+            assert_eq!(repo_of(&repo).unwrap(), bare, "{url}");
+            git(&["-C", "w", "remote", "remove", "origin"]);
+        }
+        set("../gone.git");
+        let error = format!("{:#}", repo_of(&repo).unwrap_err());
+        assert!(error.contains("is no directory here"), "{error}");
+    }
+}
