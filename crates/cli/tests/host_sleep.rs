@@ -1,27 +1,11 @@
 use crate::common;
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::{World, bookkeeping};
-use serde_json::Value;
-
-/// The directory every `run` of a world's host listens in.
-fn instances(world: &World) -> PathBuf {
-    world.cache().join("afkconvoy/instances")
-}
-
-/// Listens as `name` where every `run` of `world`'s host does, as a `run`
-/// would: named from inside the directory, whose path is too long for a
-/// socket's. Each test is a process of its own under nextest.
-fn bind(world: &World, name: &str) -> UnixListener {
-    std::fs::create_dir_all(instances(world)).unwrap();
-    std::env::set_current_dir(instances(world)).unwrap();
-    UnixListener::bind(name).unwrap()
-}
+use serde_json::{Value, json};
 
 /// A world whose fleet worked: alpha of h1 held a claim on #7, which is now
 /// closed. Its next start takes the claim and its first tick settles it.
@@ -61,48 +45,67 @@ fn last_check(world: &World) -> Value {
     answer.json["fleet"]["host_sleep"].clone()
 }
 
-/// Another fleet on the same host, of a repo of its own, running until it is
-/// dropped: told `--no-host-sleep` when `told`.
-struct Peer {
-    _world: World,
-    child: Child,
+/// Has the world's one host runner hold the checkout `dir` as `run` with
+/// `args` asks, putting the host to sleep unless told otherwise → what that
+/// `run` answered, once the first tick of its fleet instance ended.
+fn hold(world: &World, dir: &Path, args: &[&str]) -> Value {
+    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), dir);
+    world.host_sleeps(&mut command);
+    let out = command.args(["run", "--host", "h1"]).args(args).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_str(stdout.lines().last().unwrap()).unwrap()
 }
 
-impl Peer {
-    fn start(world: &World, told: bool) -> Peer {
-        Peer::start_with(world, told, &[])
+/// Another fleet on the host, beta, of the world's second repo, which the
+/// host runner holds beside alpha: its `run` told `--no-host-sleep`, which
+/// the host then says, when `told`; with these issues ready on its repo →
+/// what its `run` answered.
+fn beta(world: &World, told: bool, issues: &[u64]) -> Value {
+    let clone2 = world.second_repo();
+    with_gh2(world, |gh| {
+        for number in issues {
+            let issue = json!({"number": number, "title": format!("issue {number}"),
+                "labels": ["ready-for-agent"], "state": "open"});
+            gh["issues"].as_array_mut().unwrap().push(issue);
+        }
+    });
+    let mut args = vec!["--instance", "beta"];
+    if told {
+        args.push("--no-host-sleep");
     }
+    hold(world, &clone2, &args)
+}
 
-    /// The same, with these issues ready on its repo.
-    fn start_with(world: &World, told: bool, issues: &[u64]) -> Peer {
-        let peer = World::new();
-        for issue in issues {
-            peer.issue(*issue, &["ready-for-agent"]);
-        }
-        let mut command = peer.command(env!("CARGO_BIN_EXE_afkconvoy"), &peer.clone);
-        peer.host_sleeps(&mut command);
-        command.env("XDG_CACHE_HOME", world.cache());
-        let args = ["run", "--foreground", "--instance", "beta", "--host", "h1"];
-        command.args(args);
-        if told {
-            command.arg("--no-host-sleep");
-        }
-        let child = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-        let socket = instances(world).join("beta.sock");
-        let started = std::time::Instant::now();
-        while !socket.exists() {
-            assert!(started.elapsed().as_secs() < 20, "beta never listened");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        Peer { _world: peer, child }
+/// Changes the second repo's stand-in GitHub in place.
+fn with_gh2(world: &World, change: impl FnOnce(&mut Value)) {
+    let mut state = world.gh2();
+    change(&mut state);
+    std::fs::write(world.root.join("gh2.json"), state.to_string()).unwrap();
+}
+
+/// Alpha of h1, held by the world's host runner beside beta, checking for
+/// host sleep after each tick, `pacing` its ticks → what its `run` answered.
+fn alpha(world: &World, pacing: &[&str]) -> Value {
+    let args = [&["--instance", "alpha", "--second-ms", "0", "--host-sleep-after", "0"], pacing];
+    hold(world, &world.clone, &args.concat())
+}
+
+/// Waits up to 30 seconds for alpha's fleet instance to end.
+fn ended(world: &World) {
+    let ended = format!("fleet instance ended: {}: ", world.clone.display());
+    let until = Instant::now() + Duration::from_secs(30);
+    while !world.runner_log().iter().any(|line| line.starts_with(&ended)) {
+        assert!(Instant::now() < until, "alpha never ended: {:#?}", world.runner_log());
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-impl Drop for Peer {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+/// What the tick log `answer` names said, line by line.
+fn tick_log(answer: &Value) -> Vec<String> {
+    let text = std::fs::read_to_string(answer["tick_log"].as_str().unwrap()).unwrap();
+    let entry = |line: &str| serde_json::from_str::<afkconvoy::log::Entry>(line).unwrap().said();
+    text.lines().map(entry).collect()
 }
 
 #[test]
@@ -125,9 +128,11 @@ fn a_fleet_that_worked_puts_its_host_to_sleep_once_every_fleet_on_it_is_idle() {
     assert_eq!(world.pmset_calls(), ["sleepnow"]);
     let checked = last_check(&world);
     assert_eq!(checked["slept"], true, "{checked}");
-    assert!(!instances(&world).join("alpha.sock").exists(), "it removes its socket as it exits");
+    // it made no socket of its own, and the host runner's goes as it exits
+    let cache = world.cache().join("afkconvoy");
+    assert!(!cache.join("instances").exists(), "no socket of a fleet instance's");
+    assert!(!cache.join("host-runner.sock").exists(), "it removes its socket as it exits");
 }
-
 #[test]
 fn a_host_woken_since_the_fleet_last_worked_is_not_put_back_to_sleep() {
     let world = World::new();
@@ -211,7 +216,7 @@ fn a_check_outside_the_sleep_hours_keeps_the_host_awake_and_says_them() {
     assert!(lines[0].starts_with(&start), "{lines:?}");
     let checked = last_check(&world);
     assert_eq!(checked["slept"], false, "{checked}");
-    assert_eq!(checked["kept_awake_by"], serde_json::json!([said]), "{checked}");
+    assert_eq!(checked["kept_awake_by"], json!([said]), "{checked}");
     // the next check is as they start: none more in this run
     let checks = lines.iter().filter(|line| line.starts_with("host sleep:")).count();
     assert_eq!(checks, 1, "{lines:?}");
@@ -238,102 +243,74 @@ fn the_sleep_hours_are_of_the_host_s_local_time() {
 }
 
 #[test]
-fn a_fleet_told_no_host_sleep_keeps_the_host_awake_for_every_fleet_on_it() {
+fn a_run_told_no_host_sleep_keeps_the_host_awake_for_every_fleet_on_it() {
     let world = worked();
-    let peer = Peer::start(&world, true);
-    run(&world, "2");
+    // beta's `run` says it of the host: alpha, which says nothing, checks never
+    beta(&world, true, &[]);
+    let alpha = alpha(&world, &["--ticks", "2"]);
+    ended(&world);
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
-    let checked = last_check(&world);
-    assert_eq!(checked["kept_awake_by"][0], "beta was told --no-host-sleep", "{checked}");
-    drop(peer);
+    assert_eq!(last_check(&world), Value::Null);
+    let lines = tick_log(&alpha);
+    assert!(!lines.iter().any(|line| line.starts_with("host sleep:")), "{lines:#?}");
 }
 
 #[test]
-fn a_busy_peer_keeps_the_host_awake_and_one_that_never_answers_too() {
+fn a_busy_peer_keeps_the_host_awake() {
     // beta has an issue to work: its first tick claims it
     let world = worked();
-    let peer = Peer::start_with(&world, false, &[9]);
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    run(&world, "2");
+    let beta = beta(&world, false, &[9]);
+    assert!(beta["first_tick"].as_str().unwrap().contains("dispatched #9"), "{beta}");
+    alpha(&world, &["--ticks", "2"]);
+    ended(&world);
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     let checked = last_check(&world);
     assert_eq!(checked["kept_awake_by"][0], "beta is not idle", "{checked}");
-    drop(peer);
-
-    // something listens as gamma, and never answers
-    let world = worked();
-    let _mute = bind(&world, "gamma.sock");
-    run(&world, "2");
-    assert_eq!(world.pmset_calls(), Vec::<String>::new());
-    let checked = last_check(&world);
-    assert_eq!(checked["kept_awake_by"][0], "gamma did not answer in time", "{checked}");
 }
 
 #[test]
-fn an_idle_peer_is_asked_to_tick_and_a_socket_nobody_listens_on_is_removed() {
+fn an_idle_peer_is_asked_to_tick_and_the_host_sleeps_once_it_did() {
     let world = worked();
-    // what a run killed with no goodbye left
-    drop(bind(&world, "ghost.sock"));
-    let peer = Peer::start(&world, false);
-    // beta must have been idle the wait: none here, but its first tick ended
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    let lines = run(&world, "2");
-    assert!(!instances(&world).join("ghost.sock").exists(), "{lines:?}");
+    // idle, and asleep for 90 seconds at the least: its first tick ended
+    let beta = beta(&world, false, &[]);
+    alpha(&world, &["--ticks", "2"]);
+    ended(&world);
     // beta has not worked since the host woke, which keeps nothing awake: only
     // the instance that puts the host to sleep must have
     let checked = last_check(&world);
     assert_eq!(checked["slept"], true, "{checked}");
     assert_eq!(world.pmset_calls(), ["sleepnow"]);
-    drop(peer);
-}
-
-/// Listens as `delta` where every `run` of `world`'s host does: idle since the
-/// epoch, it answers how it stands, and never answers once asked to tick.
-fn never_ticks(world: &World) {
-    let listener = bind(world, "delta.sock");
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            std::thread::spawn(move || {
-                let mut asked = String::new();
-                BufReader::new(&stream).read_line(&mut asked).unwrap();
-                if asked.trim() == "standing" {
-                    let standing = r#"{"instance":"delta","repo":"o/r","version":"0.4.3","no_host_sleep":false,"idle":true,"since":0,"worked":null}"#;
-                    writeln!(&stream, "{standing}").unwrap();
-                }
-                // asked to tick: it holds on, answering nothing
-                std::thread::sleep(Duration::from_secs(300));
-            });
-        }
-    });
+    // asked to tick first, it was woken to, at once
+    let lines = tick_log(&beta);
+    assert!(lines.contains(&"tick 2: started (woken)".to_string()), "{lines:#?}");
 }
 
 #[test]
-fn a_run_told_to_stop_while_a_check_waits_for_the_ticks_stops_at_once() {
+fn a_fleet_instance_told_to_stop_while_a_check_waits_for_the_ticks_stops_at_once() {
     let world = worked();
-    never_ticks(&world);
-    let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
-    world.host_sleeps(&mut command);
-    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
-    let pacing = ["--second-ms", "0", "--host-sleep-after", "0"];
-    let mut run = command.args(args).args(pacing).stdout(Stdio::piped()).spawn().unwrap();
-    let mut lines = BufReader::new(run.stdout.take().unwrap()).lines();
-    // the check asked delta to tick, and its own second tick has ended
-    for line in lines.by_ref() {
-        let line = line.unwrap();
-        if line.starts_with("tick 2: ") && !bookkeeping(&line) {
-            break;
-        }
+    let beta = beta(&world, false, &[]);
+    // asked to tick, beta takes far longer than this test: every read of its
+    // GitHub takes half a minute
+    with_gh2(&world, |gh| gh["slow_ms"] = json!(30_000));
+    let alpha = alpha(&world, &[]);
+    // the check asked beta to tick, and alpha's own second tick has ended
+    let until = Instant::now() + Duration::from_secs(30);
+    let ticked = |line: &String| line.starts_with("tick 2: ") && !bookkeeping(line);
+    while !tick_log(&alpha).iter().any(ticked) {
+        assert!(Instant::now() < until, "{:#?}", tick_log(&alpha));
+        std::thread::sleep(Duration::from_millis(20));
     }
+    assert!(tick_log(&beta).contains(&"tick 2: started (woken)".to_string()));
+
     let told = Instant::now();
-    let pid = run.id().to_string();
-    assert!(Command::new("kill").args(["-TERM", &pid]).status().unwrap().success());
-    let rest: Vec<String> = lines.map(|line| line.unwrap()).collect();
-    assert!(run.wait().unwrap().success(), "{rest:?}");
+    let stopped = world.afk(&["stop"]).ok();
+    assert_eq!(stopped["removed"], true, "{stopped}");
     assert!(told.elapsed() < Duration::from_secs(5), "it waited {:?}", told.elapsed());
-    assert!(rest.iter().any(|line| line.starts_with("stop:")), "{rest:?}");
+    let lines = tick_log(&alpha);
+    assert!(lines.last().unwrap().starts_with("stop:"), "{lines:#?}");
     assert_eq!(
         world.pmset_calls(),
         Vec::<String>::new(),
-        "a run told to stop puts nothing to sleep"
+        "a fleet instance told to stop puts nothing to sleep"
     );
 }

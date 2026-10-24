@@ -875,6 +875,13 @@ fn a_listed_checkout_whose_probe_no_longer_passes_is_broken_and_doctor_says_when
         .iter()
         .any(|finding| finding["what"].as_str().unwrap().starts_with("no `afkconvoy run`"));
     assert!(!alive_or_not, "said as broken, not as dead: {findings:#?}");
+    // a wake reaches it no more than `panel --open` does: each is told why
+    let woke = world.afk(&["wake"]).ok();
+    assert_eq!(woke["woke"], false, "{woke}");
+    let detail = woke["detail"].as_str().unwrap();
+    assert!(detail.contains("is broken, and waits to be started again"), "{detail}");
+    let panel = world.afk(&["panel", "--open"]).error();
+    assert!(panel.contains("is broken, and waits to be started again"), "{panel}");
 
     // put right, a `run` there starts it at once, and it is back
     commit(&world.clone, "docs/agents/afkconvoy.md", common::CONFIG);

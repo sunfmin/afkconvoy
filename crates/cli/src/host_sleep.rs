@@ -1,20 +1,17 @@
-//! Host sleep's effect half (docs/adr/0016): the socket each `run` listens on
-//! to say how it stands, the asking of every other instance on the host, the
-//! reading of the host — when it last woke, how long its keyboard and mouse
-//! have gone untouched, its local time — and `pmset sleepnow`. What keeps the host awake is
-//! the core's to decide (`afkconvoy_core::host_sleep::awake`).
+//! Host sleep's effect half (docs/adr/0016): the asking of every other fleet
+//! instance of the host runner how it stands, the reading of the host — when
+//! it last woke, how long its keyboard and mouse have gone untouched, its
+//! local time — and `pmset sleepnow`. What keeps the host awake is the core's to decide
+//! (`afkconvoy_core::host_sleep::awake`).
 //!
-//! The sockets are in one directory of the cache, shared by every instance on
-//! the host whatever its repo, one named for each instance. One line crosses
-//! a socket each way: `standing`, or `tick` to have the instance tick first,
-//! and the instance's `Standing` as JSON.
+//! Every fleet instance of a host is held by its one host runner
+//! (docs/adr/0023), so the instances it asks are those of its own process
+//! (`Peers`): each is asked how it stands, or to tick first and then say
+//! so, and answers with its `Standing`.
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -23,23 +20,44 @@ use afkconvoy_core::host_sleep::{
 };
 use anyhow::{Context, Result, bail};
 
-use crate::copies::cache;
 use crate::host_settings;
 use crate::stop::Stop;
-use crate::wake::{Waker, reached};
+use crate::wake::Waker;
 
-/// How a socket is named: for its instance, with this after it.
-const SUFFIX: &str = ".sock";
-
-/// The directory every instance on this host listens in.
-fn home() -> Result<PathBuf> {
-    Ok(cache()?.join("instances"))
-}
-
-/// What this instance answers, and the askers waiting for its next tick.
+/// What an instance answers, and the askers waiting for its next tick.
 struct Shared {
     standing: Standing,
     waiting: Vec<Sender<Standing>>,
+}
+
+/// The fleet instances of one host runner, as host sleep asks them: each from
+/// its `HostSleep::open` until that is dropped. A clone is the same.
+#[derive(Clone, Default)]
+pub struct Peers {
+    open: Arc<Mutex<Vec<Peer>>>,
+}
+
+/// One fleet instance among its peers: how it stands, and how it is woken to
+/// tick.
+#[derive(Clone)]
+struct Peer {
+    shared: Arc<Mutex<Shared>>,
+    waker: Waker,
+}
+
+impl Peers {
+    fn open(&self) -> MutexGuard<'_, Vec<Peer>> {
+        self.open.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// What to ask a peer.
+#[derive(Clone, Copy)]
+enum Question {
+    /// How it stands.
+    Standing,
+    /// To tick first, and then say how it stands.
+    Tick,
 }
 
 /// One check, as far as it got.
@@ -58,13 +76,10 @@ pub enum Checked {
     Stopped,
 }
 
-/// A `run`'s part in host sleep: it listens from `open` until it is dropped,
-/// which removes its socket.
+/// A fleet instance's part in host sleep: its peers ask it from `open` until
+/// it is dropped, which takes it from among them.
 pub struct HostSleep {
-    dir: PathBuf,
-    name: String,
-    /// Whether it listens there: what it removes as it is dropped.
-    listening: bool,
+    peers: Peers,
     shared: Arc<Mutex<Shared>>,
     /// How long, in seconds, every instance must have been idle.
     wait: u64,
@@ -82,45 +97,14 @@ struct Asking {
 }
 
 impl HostSleep {
-    /// Listens as `standing` says this instance is, in the directory every
-    /// instance of this host listens in, and puts the host to sleep within its
-    /// sleep hours unless the host settings keep it awake, as they say at
-    /// each check. Called
-    /// before the first tick. One that cannot listen says so to `warn`, and
-    /// is seen by no other instance.
-    pub fn open(
-        standing: Standing,
-        waker: Option<Waker>,
-        wait: u64,
-        warn: &dyn Fn(&str),
-    ) -> HostSleep {
-        let name = format!("{}{SUFFIX}", standing.instance);
+    /// Joins `peers` as `standing` says this instance is, woken by `waker`
+    /// when one asks it to tick, and puts the host to sleep within its sleep
+    /// hours unless the host settings keep it awake, as they say at each
+    /// check. Called before the first tick.
+    pub fn open(standing: Standing, waker: Waker, peers: &Peers, wait: u64) -> HostSleep {
         let shared = Arc::new(Mutex::new(Shared { standing, waiting: vec![] }));
-        let dir = home().unwrap_or_default();
-        let listener = home().and_then(|dir| {
-            std::fs::create_dir_all(&dir)
-                .with_context(|| format!("cannot make {}", dir.display()))?;
-            reached(&dir, &name, |path| {
-                // What a `run` of the same instance that ended left.
-                let _ = std::fs::remove_file(path);
-                UnixListener::bind(path)
-            })
-        });
-        let listening = match listener {
-            Ok(listener) => {
-                let shared = shared.clone();
-                std::thread::spawn(move || serve(listener, shared, waker));
-                true
-            }
-            Err(error) => {
-                warn(&format!(
-                    "the other fleets on this host cannot see this fleet instance, which they do \
-                     not wait for to put the host to sleep: {error:#}"
-                ));
-                false
-            }
-        };
-        HostSleep { dir, name, listening, shared, wait, checked: None, asking: None }
+        peers.open().push(Peer { shared: Arc::clone(&shared), waker });
+        HostSleep { peers: peers.clone(), shared, wait, checked: None, asking: None }
     }
 
     /// Says how this instance stands after a tick at `now`: idle or not, and
@@ -184,7 +168,7 @@ impl HostSleep {
         let (standing, hours) = self.standing();
         let mut asked = vec![Asked::Answered(standing.clone())];
         let answers = Duration::from_secs(ANSWERS_WITHIN);
-        asked.extend(wait_for(self.ask("standing"), answers, || {}, || stop.told()));
+        asked.extend(wait_for(self.ask(Question::Standing), answers, || {}, || stop.told()));
         if stop.told() {
             return Some(Checked::Stopped);
         }
@@ -192,7 +176,7 @@ impl HostSleep {
         if !awake.is_empty() {
             return Some(Checked::Awake(awake));
         }
-        self.asking = Some(self.ask("tick"));
+        self.asking = Some(self.ask(Question::Tick));
         Some(Checked::TickNow)
     }
 
@@ -230,39 +214,46 @@ impl HostSleep {
         }
     }
 
-    /// Asks every other instance listening here `what`, each in a thread of
-    /// its own. A socket nobody listens on is removed, and counts for nothing.
-    fn ask(&self, what: &str) -> Vec<Asking> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return vec![] };
-        let mut asking = vec![];
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(instance) = name.strip_suffix(SUFFIX) else { continue };
-            if name == self.name {
-                continue;
-            }
-            let instance = instance.to_string();
-            let connected = reached(&self.dir, &name, |path| match UnixStream::connect(path) {
-                Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
-                    // What a `run` killed with no goodbye left.
-                    let _ = std::fs::remove_file(path);
-                    Err(error)
-                }
-                connected => connected,
-            });
-            let Ok(stream) = connected else { continue };
-            let what = what.to_string();
-            let answer = std::thread::spawn(move || asked(stream, &what).ok());
-            asking.push(Asking { instance, answer });
-        }
-        asking
+    /// Asks every other instance among its peers `question`, each in a
+    /// thread of its own.
+    fn ask(&self, question: Question) -> Vec<Asking> {
+        let others: Vec<Peer> = self
+            .peers
+            .open()
+            .iter()
+            .filter(|peer| !Arc::ptr_eq(&peer.shared, &self.shared))
+            .cloned()
+            .collect();
+        let asked = |peer: Peer| {
+            let instance = lock(&peer.shared).standing.instance.clone();
+            let answer = std::thread::spawn(move || answer(&peer, question));
+            Asking { instance, answer }
+        };
+        others.into_iter().map(asked).collect()
     }
 }
 
 impl Drop for HostSleep {
     fn drop(&mut self) {
-        if self.listening {
-            let _ = std::fs::remove_file(self.dir.join(&self.name));
+        self.peers.open().retain(|peer| !Arc::ptr_eq(&peer.shared, &self.shared));
+    }
+}
+
+fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
+    shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// What `peer` answers `question`: how it stands; asked to tick first, how
+/// it stands once it ticked, or nothing where it did not within
+/// `TICKS_WITHIN`.
+fn answer(peer: &Peer, question: Question) -> Option<Standing> {
+    match question {
+        Question::Standing => Some(lock(&peer.shared).standing.clone()),
+        Question::Tick => {
+            let (send, ticked): (Sender<Standing>, Receiver<Standing>) = channel();
+            lock(&peer.shared).waiting.push(send);
+            peer.waker.wake();
+            ticked.recv_timeout(Duration::from_secs(TICKS_WITHIN)).ok()
         }
     }
 }
@@ -293,52 +284,6 @@ fn wait_for(
         false => Asked::Silent { instance: one.instance },
     };
     asking.into_iter().map(came_out).collect()
-}
-
-/// Asks the instance at the other end of `stream` `what` → its answer.
-fn asked(mut stream: UnixStream, what: &str) -> Result<Standing> {
-    let within = match what {
-        "tick" => TICKS_WITHIN,
-        _ => ANSWERS_WITHIN,
-    };
-    stream.set_read_timeout(Some(Duration::from_secs(within)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(ANSWERS_WITHIN)))?;
-    writeln!(stream, "{what}")?;
-    let mut line = String::new();
-    BufReader::new(&stream).read_line(&mut line)?;
-    Ok(serde_json::from_str(line.trim())?)
-}
-
-/// Answers whoever asks on `listener`, each in a thread of its own: one
-/// waiting for a tick holds up nobody else.
-fn serve(listener: UnixListener, shared: Arc<Mutex<Shared>>, waker: Option<Waker>) {
-    let waker = waker.map(Arc::new);
-    for stream in listener.incoming().flatten() {
-        let (shared, waker) = (shared.clone(), waker.clone());
-        std::thread::spawn(move || answer(stream, &shared, waker.as_deref()));
-    }
-}
-
-/// Answers one asker. Whatever goes wrong with it is its own loss.
-fn answer(mut stream: UnixStream, shared: &Mutex<Shared>, waker: Option<&Waker>) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(ANSWERS_WITHIN)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(ANSWERS_WITHIN)))?;
-    let mut asked = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut asked)?;
-    let lock = || shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let standing = match asked.trim() {
-        "tick" => {
-            let (send, ticked): (Sender<Standing>, Receiver<Standing>) = channel();
-            lock().waiting.push(send);
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-            ticked.recv_timeout(Duration::from_secs(TICKS_WITHIN))?
-        }
-        _ => lock().standing.clone(),
-    };
-    writeln!(stream, "{}", serde_json::to_string(&standing)?)?;
-    Ok(())
 }
 
 /// What a check at `now` reads of the host.
@@ -419,6 +364,54 @@ fn sleep_now() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wake::Wakes;
+
+    fn standing(instance: &str) -> Standing {
+        Standing {
+            instance: instance.into(),
+            repo: "o/r".into(),
+            version: crate::VERSION.into(),
+            no_host_sleep: false,
+            idle: true,
+            since: 0,
+            worked: None,
+        }
+    }
+
+    /// Each one asked, and what it answered: its instance, where it did.
+    fn answers(asking: Vec<Asking>) -> Vec<(String, Option<String>)> {
+        let answered = |one: Asking| {
+            let answer = one.answer.join().unwrap();
+            (one.instance, answer.map(|standing| standing.instance))
+        };
+        asking.into_iter().map(answered).collect()
+    }
+
+    #[test]
+    fn an_instance_asks_its_peers_alone_and_one_asked_to_tick_is_woken_and_answers_once_it_ticked()
+    {
+        let peers = Peers::default();
+        let (alpha_wakes, beta_wakes) = (Wakes::default(), Wakes::default());
+        let alpha = HostSleep::open(standing("alpha"), alpha_wakes.waker(), &peers, 0);
+        let beta = HostSleep::open(standing("beta"), beta_wakes.waker(), &peers, 0);
+        let other =
+            HostSleep::open(standing("gamma"), Wakes::default().waker(), &Peers::default(), 0);
+        let beta_answered = vec![("beta".to_string(), Some("beta".to_string()))];
+        assert_eq!(answers(alpha.ask(Question::Standing)), beta_answered, "not itself");
+        assert!(alpha_wakes.rest(Duration::ZERO).is_none(), "asked how it stands, none ticks");
+        assert!(beta_wakes.rest(Duration::ZERO).is_none());
+        assert!(answers(other.ask(Question::Standing)).is_empty(), "another runner's are not");
+
+        // asked to tick: woken, and answered once it ticked, as it stands then
+        let asking = alpha.ask(Question::Tick);
+        assert!(beta_wakes.rest(Duration::from_secs(5)).is_some(), "beta is woken");
+        beta.ticked(100, Some((false, true)));
+        let answer = asking.into_iter().next().unwrap().answer.join().unwrap().unwrap();
+        assert_eq!((answer.idle, answer.since, answer.worked), (false, 100, Some(100)));
+
+        drop(beta);
+        assert!(answers(alpha.ask(Question::Standing)).is_empty(), "one dropped is asked no more");
+    }
 
     #[test]
     fn the_host_is_read_as_sysctl_and_ioreg_say_it() {
