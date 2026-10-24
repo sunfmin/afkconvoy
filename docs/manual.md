@@ -794,7 +794,9 @@ afkconvoy run [OPTIONS] [CHECKOUT]
 - `--panel <PORT>`: The panel's port, a host setting, and serve the panel — the fleet as a web page, live — on it from this start; `default` changes it back [default: any free port]
 - `--no-host-sleep`: Keep this host awake: no fleet on it puts it to sleep. A host setting, for every fleet on it until a `run` says `--host-sleep`, which changes it back
   - Environment: `AFKCONVOY_NO_HOST_SLEEP`
-- `--host-sleep`: Let the fleets on this host put it to sleep once every one has been idle ten minutes, as they do by default: a host setting, for every fleet on it. Said, it holds over `--no-host-sleep` and its variable
+- `--host-sleep`: Let the fleets on this host put it to sleep once every one has been idle ten minutes, within its sleep hours, as they do by default: a host setting, for every fleet on it. Said, it holds over `--no-host-sleep` and its variable
+- `--host-sleep-hours <HH:MM-HH:MM>`: The hours of this host's local time a fleet may put it to sleep in, from the first, included, to the second, not — past midnight where the second comes first (22:00-06:00); 00:00-24:00 is any hour: a host setting, for every fleet on it; `default` changes them back [default: 00:00-06:00]
+  - Environment: `AFKCONVOY_HOST_SLEEP_HOURS`
 - `--hot-cores <CORES>`: The cores a worker's processes may take before it turns hot, held two minutes: a host setting; `default` changes it back [default: half this host's cores, one at the least]
   - Environment: `AFKCONVOY_HOT_CORES`
 - `--hot-memory <GIB>`: The GiB of memory a worker's processes may hold resident before it turns hot: a host setting; `default` changes it back [default: a quarter of this host's memory]
