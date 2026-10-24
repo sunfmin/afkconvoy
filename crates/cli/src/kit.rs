@@ -674,7 +674,7 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
                 .filter(|seen| models.contains(&seen.model))
                 .cloned()
                 .map(|mut seen| {
-                    seen.names.retain(|name| models.contains(name));
+                    seen.names.clear();
                     seen
                 })
                 .collect()
