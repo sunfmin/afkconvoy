@@ -924,3 +924,121 @@ fn stop_takes_a_broken_checkout_off_the_list_at_once_and_it_is_broken_no_more() 
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(doctor["fleet"]["broken"], Value::Null, "{doctor}");
 }
+
+/// What a `run` changed of its checkout's concurrency, as it answers it:
+/// from the one in force, and who said it, to the one in force after.
+fn changed(from: (u64, &str), to: (u64, &str)) -> Value {
+    let (from, to) = (
+        json!({"in_force": from.0, "said_by": from.1}),
+        json!({"in_force": to.0, "said_by": to.1}),
+    );
+    json!({"from": from, "to": to})
+}
+
+/// Each tick's line the tick log of the fleet instance `answer` names
+/// holds, in order.
+fn tick_lines(answer: &Value) -> Vec<String> {
+    let lines = tick_log(answer).into_iter().filter(|line| kind(line) == "tick");
+    lines.map(|line| serde_json::from_value::<Entry>(line).unwrap().said()).collect()
+}
+
+#[test]
+fn a_checkouts_concurrency_a_run_says_holds_at_its_next_tick_and_nothing_is_started_again() {
+    let world = World::new();
+    for issue in [7, 8, 9] {
+        world.issue(issue, &["ready-for-agent"]);
+    }
+    let first = world.afk(&RUN).ok();
+    let first_tick = first["first_tick"].as_str().unwrap();
+    assert!(first_tick.contains("holding 2/2 · frontier 1"), "the config's: {first}");
+    assert_eq!(first["concurrency"], Value::Null, "it named none: {first}");
+
+    // raised: the next tick of the same fleet instance, started once, takes
+    // one more
+    let raised = world.afk(&[&RUN[..], &["--concurrency", "3"]].concat()).ok();
+    assert_eq!(raised["concurrency"], changed((2, "config"), (3, "checkout")), "{raised}");
+    assert_eq!((&raised["added"], &raised["instance"]), (&json!(false), &first["instance"]));
+    assert_eq!(raised["host_runner"]["pid"], first["host_runner"]["pid"]);
+    assert!(ticked(&first, "dispatched #9").contains("holding 3/3 · frontier 0"));
+    let starts = tick_log(&first).iter().filter(|line| kind(line) == "start").count();
+    assert_eq!(starts, 1, "{:#?}", tick_log(&first));
+    // the checkout's, with its entry, apart from what its `run` named
+    let list = world.checkout_list();
+    assert_eq!(
+        list["checkouts"],
+        json!([{"checkout": world.clone, "named": {"host": "h1"},
+        "concurrency": 3}])
+    );
+
+    // lowered below the claims held: no worker is ended, and no new claim is
+    // taken until fewer are held
+    world.issue(10, &["ready-for-agent"]);
+    let lowered = world.afk(&[&RUN[..], &["--concurrency", "1"]].concat()).ok();
+    assert_eq!(lowered["concurrency"], changed((3, "checkout"), (1, "checkout")), "{lowered}");
+    let past = ticked(&first, "holding 1/1 · 2 past the bound · frontier 1");
+    assert!(!past.contains("dispatched"), "{past}");
+    assert_eq!(world.claims().len(), 3, "{:?}", world.claims());
+    assert_eq!(world.open_terminals().len(), 3, "every worker works on");
+    world.close_issue(7);
+    world.close_issue(8);
+    ticked(&first, "holding 1/1 · frontier 1");
+    world.close_issue(9);
+    assert!(ticked(&first, "dispatched #10").contains("holding 1/1 · frontier 0"));
+    let lines = tick_lines(&first);
+    let at = |said: &str| lines.iter().position(|line| line.contains(said)).unwrap();
+    assert!(at("left #9") <= at("dispatched #10"), "{lines:#?}");
+}
+
+#[test]
+fn default_sets_a_checkouts_concurrency_back_and_a_host_runner_started_again_keeps_it() {
+    let world = World::new();
+    // a checkout not on the list yet goes by it from its first tick, which
+    // puts it on the list with it
+    let first = world.afk(&[&RUN[..], &["--concurrency", "4"]].concat()).ok();
+    assert_eq!(first["concurrency"], changed((2, "config"), (4, "checkout")), "{first}");
+    assert!(first["first_tick"].as_str().unwrap().contains("holding 0/4"), "{first}");
+    assert_eq!(world.checkout_list()["checkouts"][0]["concurrency"], 4);
+    world.kill_host_runner("KILL");
+
+    // a host runner started again keeps it, and a `run` that names none
+    // leaves it as it is
+    let again = world.afk(&["run"]).ok();
+    assert_eq!(
+        (&again["host_runner"]["started"], &again["concurrency"]),
+        (&json!(true), &Value::Null)
+    );
+    assert!(again["first_tick"].as_str().unwrap().contains("holding 0/4"), "{again}");
+
+    // `plan`, `doctor` and `checkouts` say the one in force, and who says it
+    let said = |in_force: u64, said_by: &str| {
+        let said = json!({"in_force": in_force, "said_by": said_by});
+        assert_eq!(world.afk(&["plan"]).ok()["concurrency"], said);
+        let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+        assert_eq!(doctor["fleet"]["concurrency"], said, "{doctor}");
+        let checkouts = world.afk(&["checkouts"]).ok();
+        assert_eq!(checkouts["checkouts"][0]["concurrency"], said, "{checkouts}");
+    };
+    said(4, "checkout");
+
+    // naming the one in force changes nothing; `default` goes back to the
+    // repo config's, and says from what to what
+    let same = world.afk(&[&RUN[..], &["--concurrency", "4"]].concat()).ok();
+    assert_eq!(same["concurrency"], Value::Null, "{same}");
+    let back = world.afk(&[&RUN[..], &["--concurrency", "default"]].concat()).ok();
+    assert_eq!(back["concurrency"], changed((4, "checkout"), (2, "config")), "{back}");
+    assert_eq!(world.checkout_list()["checkouts"][0].get("concurrency"), None);
+    said(2, "config");
+    // a config that says none: the default
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n```\n";
+    std::fs::write(world.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
+    said(3, "default");
+
+    // no slot at all, and what is no whole number, are refused, naming what
+    // is taken; nothing is said
+    for wrong in ["0", "1.5"] {
+        let error = world.afk(&["run", "--concurrency", wrong]).error();
+        let taken = format!("`{wrong}` is not a whole number of at least 1, nor `default`");
+        assert!(error.contains(&taken), "{error}");
+    }
+    assert_eq!(world.checkout_list()["checkouts"][0].get("concurrency"), None);
+}

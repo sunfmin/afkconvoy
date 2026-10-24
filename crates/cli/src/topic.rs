@@ -65,6 +65,11 @@ pub struct Cache;
 pub struct TickLog;
 
 #[derive(Topic)]
+#[topic(name = "worker-launch")]
+#[doc = include_str!("help/topics/worker-launch.md")]
+pub struct WorkerLaunch;
+
+#[derive(Topic)]
 #[topic(name = "worker-proxy")]
 #[doc = include_str!("help/topics/worker-proxy.md")]
 pub struct WorkerProxy;

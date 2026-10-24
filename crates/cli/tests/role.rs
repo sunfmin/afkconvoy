@@ -643,11 +643,24 @@ fn a_worker_that_is_gone_is_started_again_in_its_role() {
     assert!(second[0]["command"].as_str().unwrap().starts_with("cd '"));
 }
 
+/// The topic that says how each harness's worker is started names, under each
+/// harness, every flag a bound repo requires of its worker launch command.
 #[test]
-fn the_help_of_run_names_what_a_bound_repo_requires_of_the_launch_command() {
-    use afkconvoy_core::role::{FLAGS, Facts, On};
-    let mut run = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
-    let help = String::from_utf8(run.args(["run", "--help"]).output().unwrap().stdout).unwrap();
+fn the_worker_launch_topic_names_what_a_bound_repo_requires_of_each_launch_command() {
+    use afkconvoy_core::harness::Harness;
+    use afkconvoy_core::role::{Facts, On};
+    let mut topic = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let output = topic.args(["help", "worker-launch"]).output().unwrap();
+    let help = String::from_utf8(output.stdout).unwrap();
+    for harness in Harness::ALL {
+        let heading = format!("\n## {}\n", harness.name());
+        let (_, section) = help.split_once(&heading).unwrap_or_else(|| panic!("no {heading:?}"));
+        let section = section.split("\n## ").next().unwrap();
+        for flag in harness.flags() {
+            let named = section.contains(&format!("`{flag}`"));
+            assert!(named, "the topic does not name {flag} under {}", harness.name());
+        }
+    }
     let facts = Facts {
         on: On::Stage { issue: 7, flow: "f", stage: "s" },
         role: "r",
@@ -660,11 +673,16 @@ fn the_help_of_run_names_what_a_bound_repo_requires_of_the_launch_command() {
         role_commit: "a",
         team_commit: "b",
     };
-    for flag in FLAGS {
-        assert!(help.contains(&format!("`{flag}`")), "the help of run does not name {flag}");
-    }
     for (name, _) in facts.env() {
-        assert!(help.contains(name), "the help of run does not name {name}");
+        assert!(help.contains(name), "the topic does not name {name}");
+    }
+    // `run --help` names the topic, and holds no harness's launch line.
+    let mut run = std::process::Command::new(env!("CARGO_BIN_EXE_afkconvoy"));
+    let run = String::from_utf8(run.args(["run", "--help"]).output().unwrap().stdout).unwrap();
+    assert!(run.contains("`afkconvoy help worker-launch`"), "{run}");
+    let lines = ["cd <the role's copy> && export", "PI_CODING_AGENT_DIR", "CODEX_HOME", "DSH_HOME"];
+    for line in lines {
+        assert!(!run.contains(line), "run --help still holds {line:?}");
     }
 }
 
