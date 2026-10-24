@@ -19,9 +19,8 @@ use crate::{host_settings, kit};
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
 /// again starts it the same way; what it said of its checkout's concurrency;
-/// the port its panel is served on from this start; and the knobs that exist
-/// for the tests. What it named of the host is the host settings'
-/// (`host_settings`), which the instance reads as it goes.
+/// and the knobs that exist for the tests. What it named of the host is the
+/// host settings' (`host_settings`), which the instance reads as it goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Start {
     pub named: Named,
@@ -29,8 +28,6 @@ pub struct Start {
     /// read at each tick (`concurrency`), never with `named`. `None` leaves
     /// it as it is.
     pub concurrency: Option<To<NonZeroUsize>>,
-    /// `--panel`: served from this start; `panel --open` opens it later.
-    pub panel: Option<u16>,
     pub knobs: Knobs,
 }
 
@@ -91,7 +88,7 @@ pub struct Knobs {
 /// to stop or has made `start.knobs.ticks` → what its loop answers.
 /// Everything before its first tick may refuse it: host settings that
 /// cannot be read, or that have a host put to sleep that cannot be, the host
-/// kit, the startup probe, the panel's port. Its startup probe's warnings are
+/// kit, the startup probe. Its startup probe's warnings are
 /// said as `Line::Warning`.
 pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     if !host_settings::of_host()?.no_host_sleep && !cfg!(target_os = "macos") {
@@ -127,7 +124,7 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     for warning in &warnings {
         (holder.echo)(Line::Warning(warning));
     }
-    tick::run(checkout, &mut me, &agent, &pacing, start.panel, clock, holder)
+    tick::run(checkout, &mut me, &agent, &pacing, clock, holder)
 }
 
 #[cfg(test)]

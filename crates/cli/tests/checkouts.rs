@@ -60,7 +60,7 @@ fn checkouts_answers_each_checkout_on_the_list_as_the_host_runner_holds_it() {
     assert_eq!(keys(&answer), keys(&help), "{answer}");
     assert_eq!(keys(&answer["host_runner"]), keys(&help["host_runner"]), "{answer}");
     let about = &first["host_runner"];
-    for key in ["pid", "version", "log"] {
+    for key in ["pid", "version", "log", "panel"] {
         assert_eq!(answer["host_runner"][key], about[key], "{answer}");
     }
     let rows = answer["checkouts"].as_array().unwrap();

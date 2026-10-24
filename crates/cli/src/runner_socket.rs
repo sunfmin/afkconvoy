@@ -1,13 +1,14 @@
 //! The host runner's socket: the one socket of a host, on which every command
 //! that speaks to a running fleet reaches the host runner of its host —
 //! `run` (its version check among it), `stop`, `checkouts`, `wake`, `panel
-//! --open`, `exclusive`, and `doctor` asking whether a fleet instance runs and
-//! what the host's fleets share — each question about one repo naming its
-//! checkout (docs/adr/0023). It is a file in the cache directory, so every
-//! afkconvoy that shares the cache directory reaches the same one. One line
-//! of JSON crosses it each way, the question and its answer, and then the
-//! connection closes: but for `exclusive`, which keeps the line open for as
-//! long as its command waits and runs, and is told on it when its turn comes
+//! --open` (its version, which says where it serves the panel), `exclusive`,
+//! and `doctor` asking whether a fleet instance runs and what the host's
+//! fleets share — each question about one repo naming its checkout
+//! (docs/adr/0023). It is a file in the cache directory, so every afkconvoy
+//! that shares the cache directory reaches the same one. One line of JSON
+//! crosses it each way, the question and its answer, and then the connection
+//! closes: but for `exclusive`, which keeps the line open for as long as its
+//! command waits and runs, and is told on it when its turn comes
 //! (`Reply::Kept`, `Conversation`).
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
@@ -63,9 +64,6 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<String>,
     },
-    /// Have the fleet instance of `checkout`'s repo serve its panel on `port`,
-    /// or any free one for 0: answered with where (`opening::Opener::open`).
-    Panel { checkout: PathBuf, port: u16 },
     /// Whether it holds a fleet instance of `checkout`'s repo: answered as
     /// `holds`.
     Holds { checkout: PathBuf },
@@ -468,8 +466,6 @@ mod tests {
         assert_eq!(woke, r#"{"op":"wake","checkout":"/w","by":"park #46"}"#);
         let unnamed = serde_json::to_string(&Request::Wake { checkout: "/w".into(), by: None });
         assert_eq!(unnamed.unwrap(), r#"{"op":"wake","checkout":"/w"}"#, "naming nothing");
-        let panel = serde_json::to_string(&Request::Panel { checkout: "/w".into(), port: 0 });
-        assert_eq!(panel.unwrap(), r#"{"op":"panel","checkout":"/w","port":0}"#);
         let holds = serde_json::to_string(&Request::Holds { checkout: "/w".into() });
         assert_eq!(holds.unwrap(), r#"{"op":"holds","checkout":"/w"}"#);
         assert_eq!(serde_json::to_string(&Request::Shared).unwrap(), r#"{"op":"shared"}"#);
@@ -524,7 +520,6 @@ mod tests {
                     Request::Add { checkout, .. }
                     | Request::Stop { checkout }
                     | Request::Wake { checkout, .. }
-                    | Request::Panel { checkout, .. }
                     | Request::Holds { checkout } => json!({"checkout": checkout}),
                     Request::Exclusive { ticket } => json!({"checkout": ticket.dir}),
                     Request::Version | Request::StopAll | Request::Checkouts | Request::Shared => {
