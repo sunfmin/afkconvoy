@@ -15,21 +15,11 @@ use crate::git::Repo;
 use crate::log::{Entry, Log, What};
 use crate::wake;
 
-/// What `--help` adds to the help of each command that acts.
-pub const HELP: &str = "\
-WHAT IT LOGS
-
-  As it acts it appends one line to the tick log of this host for this repo — the
-  command, what it acted on, who ran it (a worker or the operator) and how it came
-  out, or that it failed — whether a `run` is there or not:
-
-    park #46 (operator): blocked by #99
-    verdict #121 (worker): FAILED: issue #121 is closed
-
-  Then it wakes this host's `run` for this repo, which logs `woken by park #46` and
-  starts its next tick, or follows the one in progress with it; it waits 3 seconds at
-  most for the `run` to answer. Its answer says whether it woke one, as \"woke\". With
-  no `run` listening it does nothing more.";
+/// What the manual adds to the text of each command that acts: what it logs
+/// and whom it wakes, said whole once, in the topic it links to.
+pub const HELP: &str = "##### What it logs\n\nAs it acts it appends one line to the tick log \
+     of this host for this repo, then wakes this host's `run` for this repo; its answer says \
+     whether it woke one, as \"woke\": [`afkconvoy help tick-log`](help:tick-log).";
 
 /// One command that acts, as it starts.
 pub struct Acting {

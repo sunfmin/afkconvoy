@@ -475,9 +475,9 @@ fn the_topic_names_every_file_the_example_writes_and_no_other() {
     // It says the line that writes them, and `scaffold --help` each name
     // `--example` takes.
     assert!(topic.contains("afkconvoy scaffold team hospital --example hospital --repo "));
-    let help = printed(&["scaffold", "--help"]);
+    let (flags, help) = (printed(&["scaffold", "-h"]), printed(&["scaffold", "--help"]));
     for name in afkconvoy::scaffold::example_names() {
-        assert!(help.contains(&format!("[possible values: {name}]")), "{help}");
+        assert!(flags.contains(&format!("[possible values: {name}]")), "{flags}");
         assert!(help.contains(&format!("--example {name}")), "{help}");
     }
     assert!(help.contains("`scaffold team <dir> --example <name>` writes an example team whole"));

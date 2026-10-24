@@ -447,7 +447,7 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
     let help = { help }.args(["panel", "--help"]).output().unwrap().stdout;
     let help = String::from_utf8(help).unwrap();
     for key in answer.as_object().unwrap().keys() {
-        assert!(help.contains(&format!("\n    {key} ")), "`panel --help` never names {key:?}");
+        assert!(help.contains(&format!("\n- `{key}`: ")), "`panel --help` never names {key:?}");
     }
     for said in [
         "afkconvoy panel --open --port 7070",

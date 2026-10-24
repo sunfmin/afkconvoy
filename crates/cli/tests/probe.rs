@@ -193,9 +193,7 @@ fn plan_help_says_when_it_probes() {
         .output()
         .unwrap();
     let help = String::from_utf8_lossy(&out.stdout);
-    for said in
-        ["WHEN IT PROBES", "in the last\n  hour stands", "`base_branch`", "the remote's\n  URL"]
-    {
+    for said in ["WHEN IT PROBES", "in the last hour stands", "`base_branch`", "the remote's URL"] {
         assert!(help.contains(said), "plan --help lost {said:?}:\n{help}");
     }
 }

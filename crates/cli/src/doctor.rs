@@ -47,9 +47,9 @@ use crate::wake::listening;
 /// How many ticks in a row a step fails in before it is a finding.
 const FAILED_TICKS: usize = 3;
 /// How many failed steps the answer lists, newest first.
-const FAILED_SHOWN: usize = 10;
+pub(crate) const FAILED_SHOWN: usize = 10;
 /// How many of the events that reached a `run` the answer lists, newest first.
-const EVENTS_SHOWN: usize = 20;
+pub(crate) const EVENTS_SHOWN: usize = 20;
 /// How long a worker is stopped for before it is a finding: past every wait
 /// a tick gives one before it nudges.
 const STOPPED_LONG: u64 = 1800;

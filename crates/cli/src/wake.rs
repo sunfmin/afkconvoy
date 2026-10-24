@@ -254,7 +254,7 @@ pub fn listening(repo: &Repo) -> bool {
 }
 
 /// How long a wake waits for the `run`'s answer.
-const ANSWER_WITHIN: Duration = Duration::from_secs(3);
+pub(crate) const ANSWER_WITHIN: Duration = Duration::from_secs(3);
 
 /// The socket `afkconvoy wake` hears its answer on: a file of its own in the
 /// temp dir, named short enough for a socket, and gone with it.
