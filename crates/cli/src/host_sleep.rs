@@ -1,7 +1,7 @@
 //! Host sleep's effect half (docs/adr/0016): the asking of every other fleet
 //! instance of the host runner how it stands, the reading of the host — when
-//! it last woke, how long its keyboard and mouse have gone untouched — and
-//! `pmset sleepnow`. What keeps the host awake is the core's to decide
+//! it last woke, how long its keyboard and mouse have gone untouched, its
+//! local time — and `pmset sleepnow`. What keeps the host awake is the core's to decide
 //! (`afkconvoy_core::host_sleep::awake`).
 //!
 //! Every fleet instance of a host is held by its one host runner
@@ -16,7 +16,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::host_sleep::{
-    ANSWERS_WITHIN, Asked, Awake, Host, Standing, TICKS_WITHIN, awake, check_at,
+    ANSWERS_WITHIN, Asked, Awake, Host, Hours, SLEEP_HOURS, Standing, TICKS_WITHIN, awake, check_at,
 };
 use anyhow::{Context, Result, bail};
 
@@ -98,9 +98,9 @@ struct Asking {
 
 impl HostSleep {
     /// Joins `peers` as `standing` says this instance is, woken by `waker`
-    /// when one asks it to tick, and puts the host to sleep unless the host
-    /// settings keep it awake, as they say at each check. Called before the
-    /// first tick.
+    /// when one asks it to tick, and puts the host to sleep within its sleep
+    /// hours unless the host settings keep it awake, as they say at each
+    /// check. Called before the first tick.
     pub fn open(standing: Standing, waker: Waker, peers: &Peers, wait: u64) -> HostSleep {
         let shared = Arc::new(Mutex::new(Shared { standing, waiting: vec![] }));
         peers.open().push(Peer { shared: Arc::clone(&shared), waker });
@@ -129,23 +129,25 @@ impl HostSleep {
         }
     }
 
-    /// How this instance stands now, with whether the host settings keep
-    /// the host awake read again: what it is answered as from then on.
-    fn standing(&self) -> Standing {
-        let kept_awake = host_settings::kept_awake();
+    /// How this instance stands now, with what the host settings say of
+    /// host sleep read again — whether they keep the host awake is what it is
+    /// answered as from then on — and the host's sleep hours.
+    fn standing(&self) -> (Standing, Hours) {
+        let host_sleep = host_settings::host_sleep();
         let mut shared = self.shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        shared.standing.no_host_sleep = kept_awake;
-        shared.standing.clone()
+        shared.standing.no_host_sleep = host_sleep.is_none();
+        (shared.standing.clone(), host_sleep.unwrap_or(SLEEP_HOURS))
     }
 
     /// When this instance checks next; `None`: it does not, not being idle or
     /// the host settings keeping the host awake. A check underway is due now.
     pub fn due(&self) -> Option<u64> {
-        let standing = self.standing();
+        let (standing, hours) = self.standing();
+        let idle_since = standing.idle.then_some(standing.since);
         match self.asking {
             Some(_) => Some(0),
             None if standing.no_host_sleep => None,
-            None => check_at(standing.idle.then_some(standing.since), self.checked, self.wait),
+            None => check_at(idle_since, self.checked, self.wait, &hours, local),
         }
     }
 
@@ -163,14 +165,14 @@ impl HostSleep {
             return None;
         }
         self.checked = Some(now);
-        let standing = self.standing();
+        let (standing, hours) = self.standing();
         let mut asked = vec![Asked::Answered(standing.clone())];
         let answers = Duration::from_secs(ANSWERS_WITHIN);
         asked.extend(wait_for(self.ask(Question::Standing), answers, || {}, || stop.told()));
         if stop.told() {
             return Some(Checked::Stopped);
         }
-        let awake = awake(standing.worked, &read_host(), &asked, now, self.wait);
+        let awake = awake(standing.worked, &read_host(now), &hours, &asked, now, self.wait);
         if !awake.is_empty() {
             return Some(Checked::Awake(awake));
         }
@@ -189,10 +191,10 @@ impl HostSleep {
         }
         let now = clock();
         self.checked = Some(now);
-        let standing = self.standing();
+        let (standing, hours) = self.standing();
         let mut asked = vec![Asked::Answered(standing.clone())];
         asked.extend(others);
-        let awake = awake(standing.worked, &read_host(), &asked, now, self.wait);
+        let awake = awake(standing.worked, &read_host(now), &hours, &asked, now, self.wait);
         if !awake.is_empty() {
             return Checked::Awake(awake);
         }
@@ -284,9 +286,36 @@ fn wait_for(
     asking.into_iter().map(came_out).collect()
 }
 
-/// What a check reads of the host.
-fn read_host() -> Host {
-    Host { woke: woke().ok(), untouched: untouched().ok() }
+/// What a check at `now` reads of the host.
+fn read_host(now: u64) -> Host {
+    Host { woke: woke().ok(), untouched: untouched().ok(), local: local(now) }
+}
+
+/// How far past the host's local midnight the instant `at`, in epoch
+/// seconds, is, in seconds, as its time zone has it (`localtime_r`, which
+/// reads TZ, else /etc/localtime); `None` where that cannot be said.
+#[cfg(target_os = "macos")]
+fn local(at: u64) -> Option<u64> {
+    let at = libc::time_t::try_from(at).ok()?;
+    let mut time = std::mem::MaybeUninit::<libc::tm>::zeroed();
+    // SAFETY: `time` is a `tm`, which `localtime_r` writes whole where it
+    // returns it, and leaves alone where it returns null.
+    let said = unsafe { libc::localtime_r(&at, time.as_mut_ptr()) };
+    if said.is_null() {
+        return None;
+    }
+    // SAFETY: zeroed, then written by `localtime_r`: every field is a number,
+    // or a pointer nothing here reads.
+    let time = unsafe { time.assume_init() };
+    let (hour, minute, second) = (time.tm_hour, time.tm_min, time.tm_sec);
+    u64::try_from(hour * 3600 + minute * 60 + second).ok()
+}
+
+/// Only a macOS host is put to sleep (docs/adr/0016): elsewhere its local
+/// time is never asked.
+#[cfg(not(target_os = "macos"))]
+fn local(_at: u64) -> Option<u64> {
+    None
 }
 
 /// The output of `program` with `args`, which must succeed.
