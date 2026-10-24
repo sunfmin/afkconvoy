@@ -35,7 +35,7 @@ use crate::gate::{head_tree, recorded};
 use crate::git::{REMOTE, Repo};
 use crate::judge::leaving;
 use crate::launch::Launches;
-use crate::log::{Entry, Failed, Log, Tick, What, by_cause};
+use crate::log::{self, Entry, Failed, Log, Tick, What, by_cause};
 use crate::orca::{Source, Under, Worktree};
 use crate::panel::lasted;
 use crate::role::{self, Checked};
@@ -137,6 +137,7 @@ kinds! {
     LaunchStartsNone: Critical, "cannot start a worker";
     LaunchTakesNoRole: Critical, "cannot start a worker in its role";
     NoRun: Critical, "no `afkconvoy run` is alive";
+    Broken: Critical, "is broken";
     StepFailed: Critical, "failed in each of the last";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
@@ -240,6 +241,9 @@ pub struct Run {
     /// The workers its log says are hot: each turned hot, and has not
     /// stopped being hot since.
     pub hot: Vec<HotRead>,
+    /// Its fleet instance broken, as its log has it: the host runner starts
+    /// it again after a backoff.
+    pub broken: Option<BrokenRead>,
 }
 
 /// A worker that is hot, as the log has it.
@@ -251,6 +255,20 @@ pub struct HotRead {
     pub since: u64,
     pub why: String,
     pub held: String,
+}
+
+/// A fleet instance that is broken, as the log has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BrokenRead {
+    /// Why it broke, as it last did.
+    pub why: String,
+    /// When it broke: a start of it again that failed since is no end of it.
+    pub since: u64,
+    /// When the host runner starts it again; `None`: no host runner runs on
+    /// this host to.
+    pub next: Option<u64>,
+    /// The fleet instance that broke; empty where it broke before it was any.
+    pub instance: String,
 }
 
 /// One event that reached a `run` from outside it: a wake, its start or
@@ -511,9 +529,28 @@ fn host_findings(host: &Host) -> Vec<Finding> {
     found
 }
 
-/// No `run` is alive, and claims are held.
+/// The fleet instance of this checkout is broken: why, since when, and when
+/// the host runner starts it again.
+fn broken_finding(run: &Run) -> Option<Finding> {
+    let broken = run.broken.as_ref()?;
+    let since = format!("it broke at {} UTC", log::utc(broken.since));
+    let evidence = match broken.next {
+        Some(next) => format!("{since}; the host runner starts it again at {} UTC", log::utc(next)),
+        None => format!("{since}, and no host runner runs on this host to start it again"),
+    };
+    Some(finding(
+        Kind::Broken,
+        format!("the fleet instance of this checkout is broken: {}", broken.why),
+        evidence,
+        named_line(&broken.why).unwrap_or_else(|| "afkconvoy run".to_string()),
+    ))
+}
+
+/// No `run` is alive, and claims are held: a broken fleet instance is said
+/// as one (`broken_finding`).
 fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
-    let Some(instance) = run.instance.as_ref().filter(|_| !run.alive && !held.is_empty()) else {
+    let alive = run.alive || run.broken.is_some();
+    let Some(instance) = run.instance.as_ref().filter(|_| !alive && !held.is_empty()) else {
         return vec![];
     };
     let issues: Vec<u64> = held.iter().map(|held| held.issue).collect();
@@ -1001,6 +1038,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
     let mut found = host_findings(seen.host);
     found.extend(seen.config.and_then(config_finding));
     found.extend(log_findings(seen.run));
+    found.extend(broken_finding(seen.run));
     match seen.state {
         Ok(state) => {
             found.extend(run_findings(seen.run, &state.held));
@@ -1111,6 +1149,20 @@ fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
         }
     }
     hot
+}
+
+/// The fleet instance of `host` broken, as the log has it: its newest line
+/// of a start, a break or a coming back is a break. `runs` says whether a
+/// host runner runs on this host, which starts it again.
+fn read_broken(entries: &[Entry], host: &str, runs: bool) -> Option<BrokenRead> {
+    let of_host = entries.iter().rev().filter(|entry| entry.host == host);
+    let mut starts = of_host.filter(|entry| {
+        matches!(entry.what, What::Start { .. } | What::Broken { .. } | What::Back { .. })
+    });
+    let newest = starts.next()?;
+    let What::Broken { why, since, next } = &newest.what else { return None };
+    let (why, since, next) = (why.clone(), *since, runs.then_some(*next));
+    Some(BrokenRead { why, since, next, instance: newest.instance.clone() })
 }
 
 /// The events that reached the `run`s of `host` (`Entry::event`), as the log
@@ -1380,6 +1432,7 @@ fn fleet_json(run: &Run) -> Value {
         "events": run.events,
         // Only a `run` that is alive watches its workers.
         "hot_workers": if run.alive { json!(run.hot) } else { json!([]) },
+        "broken": run.broken,
     })
 }
 
@@ -1452,6 +1505,11 @@ pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) ->
         log_file: log.map(|log| log.file),
         host_sleep: read_host_sleep(entries.as_deref().unwrap_or_default(), host),
         hot: read_hot(entries.as_deref().unwrap_or_default(), host),
+        broken: read_broken(
+            entries.as_deref().unwrap_or_default(),
+            host,
+            crate::host_runner::runs(),
+        ),
         events: read_events(entries.as_deref().unwrap_or_default(), host),
         // A log only commands wrote to is no `run`'s.
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
@@ -1561,6 +1619,7 @@ mod tests {
             ticks: Some(ticks),
             host_sleep: None,
             hot: vec![],
+            broken: None,
             events: vec![],
         }
     }

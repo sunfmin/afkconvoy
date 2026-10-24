@@ -12,6 +12,7 @@
 //! checkout added, refused or removed, a fleet instance started or ended —
 //! and the lines a fleet instance says that no tick log holds.
 
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -25,7 +26,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::checkouts::{OnList, on_list};
-use afkconvoy_core::host_runner::{Found, found};
+use afkconvoy_core::host_runner::{Found, backoff, found};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -68,7 +69,7 @@ const LOG_ROLLS_AT: u64 = 1 << 20;
 /// The host runner as it holds its checkouts.
 struct Runner {
     list: List,
-    log: RunnerLog,
+    log: Arc<RunnerLog>,
     /// The process's: SIGTERM, SIGINT, the lock file gone.
     stop: Stop,
     /// Every fleet instance this host runner holds, by checkout root.
@@ -91,14 +92,21 @@ struct Seen {
 
 #[derive(Default)]
 struct Stage {
-    /// Whether a `run` asked for it: one refused then is taken off the list.
+    /// Whether a `run` asked for this start: one refused then is taken off
+    /// the list.
     asked: bool,
-    /// Its id, once its start is kept in its tick log.
+    /// Its id, once this start is kept in its tick log.
     instance: Option<String>,
-    /// What it warned of before its first tick ended: its startup probe's
-    /// warnings among them.
+    /// What it warned of before this start's first tick ended: its startup
+    /// probe's warnings among them.
     warnings: Vec<String>,
     came: Came,
+    /// When it broke, while it has not been back since: a start of it again
+    /// that ends its first tick is back.
+    broken_since: Option<u64>,
+    /// What a `run` asked of it while it was broken: it is started again
+    /// now, as this asks.
+    again: Option<Start>,
 }
 
 #[derive(Default)]
@@ -113,6 +121,9 @@ enum Came {
     Refused(Value),
     /// Its loop ended after its first tick, or its thread did, and why.
     Ended(String),
+    /// Broken: it waits to be started again, after a backoff or once a
+    /// `run` asks for it.
+    Broken,
 }
 
 impl Seen {
@@ -171,7 +182,13 @@ pub fn serve() -> Result<Value> {
     std::env::set_current_dir("/").context("the host runner cannot work from /")?;
     let dir = cache()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
-    let log = RunnerLog::default();
+    let log = Arc::new(RunnerLog::default());
+    {
+        // A panic is a line of the log, as any thing that happened: the
+        // fleet instance it broke says so after it.
+        let log = Arc::clone(&log);
+        std::panic::set_hook(Box::new(move |panic| log.say(&panic.to_string())));
+    }
     let Some((lock, before)) = took_host(&dir.join(LOCK))? else {
         let holder = holder_of(&dir.join(LOCK));
         let said = holder.map_or("another".to_string(), |pid| format!("pid {pid}"));
@@ -319,8 +336,8 @@ impl Runner {
     /// is no checkout, or of one whose fleet instance ended before its first
     /// tick. A checkout whose fleet instance runs already is answered with
     /// that instance, and `start` changes nothing; one on the list whose
-    /// fleet instance does not run starts with what the list kept of its
-    /// `run`, and what `start` names laid over that.
+    /// fleet instance does not run, or is broken, starts now with what the
+    /// list kept of its `run`, and what `start` names laid over that.
     fn add(self: &Arc<Self>, checkout: &Path, start: Start) -> Result<Value> {
         if self.stop.told() {
             bail!(
@@ -358,18 +375,28 @@ impl Runner {
                          worked from there"
                     );
                 }
-                OnList::Itself => match held.get(&root) {
-                    Some(running) => {
-                        running.seen.stage().asked = true;
-                        (Arc::clone(&running.seen), false)
+                OnList::Itself => {
+                    let kept = listed.into_iter().find(|entry| entry.checkout == root);
+                    let kept = kept.map(|entry| entry.named).unwrap_or_default();
+                    let start = Start { named: start.named.or(kept), ..start };
+                    match held.get(&root) {
+                        Some(running) => {
+                            let mut stage = running.seen.stage();
+                            stage.asked = true;
+                            // A broken one is started again now, not after its backoff.
+                            if matches!(stage.came, Came::Broken) {
+                                stage.again = Some(start);
+                                stage.came = Came::Starting;
+                                running.seen.changed.notify_all();
+                            }
+                            drop(stage);
+                            (Arc::clone(&running.seen), false)
+                        }
+                        None => {
+                            (self.start(&mut held, root.clone(), key.clone(), start, true), false)
+                        }
                     }
-                    None => {
-                        let kept = listed.into_iter().find(|entry| entry.checkout == root);
-                        let kept = kept.map(|entry| entry.named).unwrap_or_default();
-                        let start = Start { named: start.named.or(kept), ..start };
-                        (self.start(&mut held, root.clone(), key.clone(), start, true), false)
-                    }
-                },
+                }
                 OnList::No => (self.start(&mut held, root.clone(), key.clone(), start, true), true),
             }
         };
@@ -393,6 +420,11 @@ impl Runner {
             Came::Ended(why) => {
                 bail!("its fleet instance ended before this run was answered: {why}")
             }
+            Came::Broken => bail!(
+                "its fleet instance broke before this run was answered: the host runner's log, \
+                 {}, says why",
+                log_path()?.display()
+            ),
             Came::Starting => unreachable!("waited for above"),
         }
     }
@@ -411,49 +443,134 @@ impl Runner {
         let seen = Arc::new(Seen::default());
         seen.stage().asked = asked;
         held.insert(root.clone(), Held { repo: key.clone(), seen: Arc::clone(&seen) });
-        let heard = Heard {
-            runner: Arc::clone(self),
-            root,
-            key,
-            seen: Arc::clone(&seen),
-            named: start.named.clone(),
-            stop: self.stop.instance(),
-        };
-        std::thread::spawn(move || {
-            let heard = Arc::new(heard);
-            let (runner, root, stop) =
-                (Arc::clone(&heard.runner), heard.root.clone(), heard.stop.clone());
-            let echo: Echo = {
-                let heard = Arc::clone(&heard);
-                Arc::new(move |line| heard.line(line))
-            };
-            let held = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                Repo::at(&root)
-                    .and_then(|repo| instance::hold(&repo, &start, Holder { stop, echo }))
-            }));
-            let held = held.unwrap_or_else(|_| {
-                Err(anyhow!("its thread panicked: the host runner's log says why"))
-            });
-            // However its loop ended, the threads it started end with it: a
-            // start of it again starts its own.
-            heard.stop.tell();
-            runner.ended(&root, held);
-        });
+        let (runner, holding) = (Arc::clone(self), Arc::clone(&seen));
+        std::thread::spawn(move || runner.hold(&root, &key, start, &holding));
         seen
     }
 
-    /// The fleet instance of `root` ended, as `held` says: it is held no
-    /// more. One that ended before its first tick was refused: a `run` that
-    /// asked for it is told why and its checkout taken off the list; one the
-    /// host runner started from the list, with nobody asking, stays there.
-    fn ended(&self, root: &Path, held: Result<Value>) {
+    /// Holds the fleet instance of the checkout `root`, of the repo `key`, on
+    /// this thread, as `start` asks, until it ends (`ended`). One that breaks
+    /// is held again after a backoff that grows at each break in a row
+    /// (`backoff`), or as soon as a `run` asks for it; every other fleet
+    /// instance goes on meanwhile.
+    fn hold(self: Arc<Self>, root: &Path, key: &str, mut start: Start, seen: &Arc<Seen>) {
+        // What it waited before its last start, where it broke before it.
+        let mut waited = None;
+        // The last fleet instance it started as: the one that broke.
+        let mut broke_as = String::new();
+        loop {
+            let begun = Instant::now();
+            let stop = self.stop.instance();
+            let heard = Arc::new(Heard {
+                runner: Arc::clone(&self),
+                root: root.to_path_buf(),
+                key: key.to_string(),
+                seen: Arc::clone(seen),
+                named: start.named.clone(),
+                stop: stop.clone(),
+            });
+            let echo: Echo = Arc::new(move |line| heard.line(line));
+            let held = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let holder = Holder { stop: stop.clone(), echo };
+                Repo::at(root).and_then(|repo| instance::hold(&repo, &start, holder))
+            }));
+            let held = held.unwrap_or_else(|panic| {
+                Err(anyhow!("it panicked: {}", panic_said(panic.as_ref())))
+            });
+            // However its loop ended, the threads it started end with it: a
+            // start of it again starts its own.
+            stop.tell();
+            let Some(why) = self.ended(root, held) else { return };
+            // Measured in the seconds its sleeps take.
+            let second = start.knobs.second_ms;
+            let up = begun.elapsed().as_millis() / u128::from(second.max(1));
+            let wait = backoff(waited, u64::try_from(up).unwrap_or(u64::MAX));
+            waited = Some(wait);
+            let now = start.knobs.now.unwrap_or_else(crate::clock);
+            let next = now.saturating_add(wait);
+            let since = {
+                let mut stage = seen.stage();
+                stage.came = Came::Broken;
+                stage.warnings.clear();
+                broke_as = stage.instance.take().unwrap_or(broke_as);
+                *stage.broken_since.get_or_insert(now)
+            };
+            let said = log::broken(&why, since, next, now);
+            let said = format!("fleet instance broken: {}: {said}", root.display());
+            let host = start.named.host.clone().unwrap_or_else(crate::this_host);
+            let what = What::Broken { why, since, next };
+            let entry = log::Entry { at: now, instance: broke_as.clone(), host, what };
+            self.said_of(root, &entry, &said);
+            let until = Instant::now() + Duration::from_millis(wait.saturating_mul(second));
+            match self.rested(seen, until) {
+                Rest::Due => {}
+                Rest::Asked(again) => start = *again,
+                Rest::Stopped => {
+                    let mut holding = self.holding();
+                    holding.remove(root);
+                    seen.stage().came = Came::Ended("it was broken".to_string());
+                    drop(holding);
+                    seen.changed.notify_all();
+                    let at = root.display();
+                    self.log.say(&format!(
+                        "fleet instance ended: {at}: broken since the host runner stops"
+                    ));
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Rests the thread of a broken fleet instance until `until` → `Due`;
+    /// until a `run` asks for it → `Asked`, with what that asks; or until the
+    /// host runner is told to stop → `Stopped`.
+    fn rested(&self, seen: &Seen, until: Instant) -> Rest {
+        let mut stage = seen.stage();
+        loop {
+            if self.stop.told() {
+                return Rest::Stopped;
+            }
+            if let Some(again) = stage.again.take() {
+                return Rest::Asked(Box::new(again));
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                // A `run` that asks from now on waits for this start.
+                (stage.came, stage.asked) = (Came::Starting, false);
+                return Rest::Due;
+            }
+            let rested = seen.changed.wait_timeout(stage, left.min(WATCHED_EVERY));
+            stage = rested.map_or_else(|poisoned| poisoned.into_inner().0, |(stage, _)| stage);
+        }
+    }
+
+    /// The loop of the fleet instance of `root` ended, as `held` says → why
+    /// it broke, where it did: it is still held, and its thread holds it
+    /// again. It broke where its loop ended in an error or a panic while the
+    /// host runner goes on — after its first tick, or before it where nobody
+    /// asked for it. Otherwise it ended, and is held no more: one that ended
+    /// before its first tick was refused, and a `run` that asked for it is
+    /// told why and its checkout taken off the list.
+    fn ended(&self, root: &Path, held: Result<Value>) -> Option<String> {
         let mut holding = self.holding();
-        let Some(gone) = holding.remove(root) else { return };
-        let mut stage = gone.seen.stage();
         let why = match &held {
             Ok(answer) => answer.to_string(),
             Err(error) => format!("{error:#}"),
         };
+        let broke = holding.get(root).is_some_and(|holds| {
+            let stage = holds.seen.stage();
+            let at_work = match stage.came {
+                Came::Starting => !stage.asked,
+                Came::Ticked { .. } => true,
+                Came::Refused(_) | Came::Ended(_) | Came::Broken => false,
+            };
+            at_work && held.is_err() && !self.stop.told()
+        });
+        if broke {
+            return Some(why);
+        }
+        let gone = holding.remove(root)?;
+        let mut stage = gone.seen.stage();
         let at = root.display();
         match stage.came {
             Came::Starting => {
@@ -484,13 +601,45 @@ impl Runner {
                 self.log.say(&format!("fleet instance ended: {at}: {why}"));
                 stage.came = Came::Ended(why);
             }
-            Came::Refused(_) | Came::Ended(_) => {
+            Came::Refused(_) | Came::Ended(_) | Came::Broken => {
                 self.log.say(&format!("fleet instance ended: {at}: {why}"));
             }
         }
         drop(stage);
         gone.seen.changed.notify_all();
+        None
     }
+
+    /// Says `said` in the host runner's log, and keeps `entry` in the tick
+    /// log of the checkout `root`: a line the host runner writes of one of
+    /// its fleet instances. A tick log that cannot keep it costs that line.
+    fn said_of(&self, root: &Path, entry: &log::Entry, said: &str) {
+        let kept = Repo::at(root).and_then(|repo| log::Log::of(&repo)?.append(entry));
+        match kept {
+            Ok(()) => self.log.say(said),
+            Err(error) => {
+                self.log.say(&format!("{said}; its tick log could not be written: {error:#}"))
+            }
+        }
+    }
+}
+
+/// How the thread of a broken fleet instance ended its rest (`rested`).
+enum Rest {
+    /// Its backoff is over: it is started again as before.
+    Due,
+    /// A `run` asked for it: it is started again now, as that `run` asks.
+    Asked(Box<Start>),
+    /// The host runner is stopping: it is held no more.
+    Stopped,
+}
+
+/// What a panic said, from what it unwound with: its message, where it gave
+/// one.
+fn panic_said(panic: &(dyn Any + Send)) -> &str {
+    let text = panic.downcast_ref::<&str>().copied();
+    let text = text.or_else(|| panic.downcast_ref::<String>().map(String::as_str));
+    text.unwrap_or("it said nothing")
 }
 
 /// One fleet instance as the host runner hears its lines (`Echo`).
@@ -558,6 +707,14 @@ impl Heard {
             Ok(added) => {
                 if added {
                     self.runner.log.say(&format!("checkout added: {at} ({})", self.key));
+                }
+                if let Some(since) = stage.broken_since.take() {
+                    let (instance, host) = (entry.instance.clone(), entry.host.clone());
+                    let said = log::back(since, entry.at);
+                    let said = format!("fleet instance back: {at}: {instance}, {said}");
+                    let back =
+                        log::Entry { at: entry.at, instance, host, what: What::Back { since } };
+                    self.runner.said_of(&self.root, &back, &said);
                 }
                 Came::Ticked { first_tick: entry.said() }
             }
@@ -669,6 +826,11 @@ fn moved(about: &Value) -> Result<Option<Value>> {
             Ok(Some(json!({"pid": pid, "version": theirs})))
         }
     }
+}
+
+/// Whether a host runner holds this host now.
+pub fn runs() -> bool {
+    cache().is_ok_and(|dir| held(&dir.join(LOCK)))
 }
 
 /// Whether a process holds the lock in `file`: one nobody holds is taken

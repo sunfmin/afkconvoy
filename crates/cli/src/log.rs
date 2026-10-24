@@ -98,6 +98,16 @@ pub enum What {
     HostWoke { asleep: u64 },
     /// The `run` was told to stop, and said `line` of its heartbeat as it went.
     Stop { line: String },
+    /// The fleet instance broke — its loop panicked or ended in an error, or
+    /// a start of it again failed before its first tick — and the host runner
+    /// starts it again at `next`. `since` is when it broke, a start that
+    /// failed again since being no end of it. Written by the host runner, not
+    /// by the instance: `instance` is the one that broke, or empty where it
+    /// broke before it was any.
+    Broken { why: String, since: u64, next: u64 },
+    /// The fleet instance broken `since` then is back: a start of it again
+    /// ended its first tick. Written by the host runner, as that instance.
+    Back { since: u64 },
     /// A worker turned hot (`crate::hot`): `worker` is `#7`, or its worktree's
     /// name; `why` and what it `held` as it did, in words.
     Hot { worker: String, why: String, held: String },
@@ -190,6 +200,10 @@ impl Entry {
             }
             What::HostWoke { asleep } => format!("host woke: after {asleep}s asleep"),
             What::Stop { line } => format!("stop: {line}"),
+            What::Broken { why, since, next } => {
+                format!("broken: {}", broken(why, *since, *next, self.at))
+            }
+            What::Back { since } => format!("back: {}", back(*since, self.at)),
             What::Hot { worker, why, held } => {
                 format!("hot: {worker} is hot: {why} · it holds {held}")
             }
@@ -243,6 +257,12 @@ impl Entry {
             What::Stop { line } => {
                 Some(("stop", format!("told to stop (SIGTERM or SIGINT): {line}")))
             }
+            What::Broken { why, next, .. } => {
+                Some(("broken", format!("{why}; started again at {} UTC", utc(*next))))
+            }
+            What::Back { since } => {
+                Some(("back", format!("started again, broken since {} UTC", utc(*since))))
+            }
             What::TickStarted { .. }
             | What::Tick(_)
             | What::HostSleep { slept: false, .. }
@@ -256,11 +276,23 @@ impl Entry {
         }
     }
 
-    /// Whether a `run` wrote it, not a command that acted beside it: only
-    /// such a line says which instance the `run` is.
+    /// Whether a `run` wrote it, not a command that acted beside it nor the
+    /// host runner of it: only such a line says which instance the `run` is.
     pub fn of_run(&self) -> bool {
-        !matches!(self.what, What::Command { .. })
+        !matches!(self.what, What::Command { .. } | What::Broken { .. } | What::Back { .. })
     }
+}
+
+/// A fleet instance broken, in words, said at `at`: why, since when, and when
+/// it is started again.
+pub(crate) fn broken(why: &str, since: u64, next: u64, at: u64) -> String {
+    let wait = next.saturating_sub(at);
+    format!("{why} · since {} UTC · started again at {} UTC, in {wait}s", utc(since), utc(next))
+}
+
+/// A fleet instance broken `since` then back, in words, said at `at`.
+pub(crate) fn back(since: u64, at: u64) -> String {
+    format!("broken since {} UTC, for {}s", utc(since), at.saturating_sub(since))
 }
 
 /// A wake, in words: with what it named, where it named something.

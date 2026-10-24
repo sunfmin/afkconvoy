@@ -1265,6 +1265,9 @@ enum Command {
         /// Milliseconds one second of sleep takes
         #[arg(long, hide = true, default_value_t = 1000)]
         second_ms: u64,
+        /// Panic as this tick ends: its fleet instance breaks
+        #[arg(long, hide = true)]
+        panic_at_tick: Option<u64>,
         /// Hold the fleet instance in this process, printing its lines, until it is told to stop
         #[arg(long, hide = true)]
         foreground: bool,
@@ -3379,6 +3382,7 @@ fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start
         hot_written,
         ticks,
         second_ms,
+        panic_at_tick,
         foreground,
         ..
     } = command
@@ -3397,7 +3401,9 @@ fn start_of(command: Command, now: Option<u64>) -> Option<(bool, instance::Start
         written: hot_written.map(bytes),
     };
     let ready_timeout = agent.ready_timeout;
-    let knobs = instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now };
+    let panic_at = panic_at_tick;
+    let knobs =
+        instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now, panic_at };
     Some((foreground, instance::Start { named, panel, no_host_sleep, hot, knobs }))
 }
 

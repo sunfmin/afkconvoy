@@ -859,6 +859,8 @@ pub struct Pacing {
     pub host_sleep_after: u64,
     /// What a worker's processes may take before it turns hot.
     pub hot: Limits,
+    /// Panic as this tick ends, its line kept: the tests' broken instance.
+    pub panic_at: Option<u64>,
 }
 
 /// What a `run` says at its start of host sleep, when it puts its host to
@@ -1232,6 +1234,9 @@ pub fn run(
             shown.inspection = inspection::on_host();
             shown.host_inspected = inspection::last_on_host();
             live.show(panel::render(&shown));
+        }
+        if pacing.panic_at == Some(count) {
+            panic!("told to panic as tick {count} ended (--panic-at-tick)");
         }
         let mut due_now = check_host(&mut host, &said, &stop, &clock);
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {
