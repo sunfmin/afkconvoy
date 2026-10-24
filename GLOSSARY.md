@@ -18,6 +18,10 @@ _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model pr
 The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it.
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
+**Broken**:
+A fleet instance whose loop panicked or ended in an error, or that the host runner started again, with nobody asking, and that ended before its first tick — its startup probe no longer passing, say. It harms no other and stays on the checkout list: the host runner starts it again after a backoff — a minute, twice as long at each break in a row, half an hour at the most — or at once when a `run` of its checkout asks. It is **back** once such a start ended its first tick. A tick that fails is no break: the loop goes on.
+_Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
+
 **Host settings**:
 What a host says for every fleet instance on it — whether it may be put to sleep, the limits past which a worker is hot, the shares admission holds back at — kept beside the checkout list and changed by any `run` that names one.
 _Avoid_: global config, runner flags

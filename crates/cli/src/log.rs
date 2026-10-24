@@ -780,4 +780,29 @@ mod tests {
         assert_eq!(tick.failed()[0].named(), "tick");
         assert!(!tick.dispatched());
     }
+
+    #[test]
+    fn a_fleet_instance_broken_and_back_is_said_with_since_when_and_is_no_runs_own_line() {
+        let entry = |at, what| Entry { at, instance: "alpha".into(), host: "h1".into(), what };
+        let since = 1_792_537_380; // 2026-10-20 23:03:00 UTC
+        let why = "it panicked: no".to_string();
+        let broken = entry(since + 120, What::Broken { why, since, next: since + 360 });
+        assert_eq!(
+            broken.said(),
+            "broken: it panicked: no · since 2026-10-20 23:03:00 UTC · started again at \
+             2026-10-20 23:09:00 UTC, in 240s"
+        );
+        let event = broken.event().unwrap();
+        assert_eq!(
+            event,
+            ("broken", "it panicked: no; started again at 2026-10-20 23:09:00 UTC".into())
+        );
+        let back = entry(since + 400, What::Back { since });
+        assert_eq!(back.said(), "back: broken since 2026-10-20 23:03:00 UTC, for 400s");
+        assert_eq!(back.event().unwrap().0, "back");
+        // the host runner's lines: which instance a `run` is, its own say
+        assert!(!broken.of_run() && !back.of_run());
+        let line = serde_json::to_value(&broken).unwrap();
+        assert_eq!(line["broken"]["next"], since + 360, "{line}");
+    }
 }
