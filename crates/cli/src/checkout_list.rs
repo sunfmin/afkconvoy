@@ -44,7 +44,7 @@ pub struct Entry {
     pub checkout: PathBuf,
     #[serde(default, skip_serializing_if = "Named::is_empty")]
     pub named: Named,
-    /// `--concurrency`: none, and the repo config's holds.
+    /// `--concurrency`: none, and the default holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<NonZeroUsize>,
 }

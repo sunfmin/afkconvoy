@@ -1,6 +1,8 @@
 //! A repo's config: the keys of `docs/agents/afkconvoy.md` (docs/adr/0001), and
 //! whether they bind the repo to a team (docs/adr/0008).
 
+use std::num::NonZeroUsize;
+
 use flux_rs::attrs::*;
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +52,10 @@ impl EscalateTo {
     }
 }
 
+/// How many claims a fleet instance holds at work at once where its checkout
+/// says none on its host.
+pub const CONCURRENCY: usize = 3;
+
 /// The gate limit of a repo that declares none, in seconds: an hour.
 pub const GATE_SECONDS: u64 = 3600;
 
@@ -67,7 +73,10 @@ pub struct Settings {
     pub gate_seconds: Option<u64>,
     pub ready_label: Option<String>,
     pub epic_labels: Option<Vec<String>>,
-    pub concurrency: Option<usize>,
+    /// Read only to be said: a checkout's concurrency is said on its host,
+    /// and a config's changes nothing (docs/adr/0025). `doctor` says the line
+    /// that keeps it on the host.
+    pub concurrency: Option<NonZeroUsize>,
     pub escalate_label: Option<String>,
     pub team: Option<String>,
     pub patrols: Option<Vec<String>>,
@@ -95,9 +104,7 @@ pub struct Bound {
 pub enum SaidBy {
     /// Its checkout, on the host it is worked from (`Config::laid`).
     Checkout,
-    /// The repo's config, as its `concurrency` key.
-    Config,
-    /// Nobody: the default, 3.
+    /// Nobody: `CONCURRENCY`.
     Default,
 }
 
@@ -117,11 +124,18 @@ pub struct Config {
     pub gate_limit_declared: bool,
     pub ready_label: String,
     pub epic_labels: Vec<String>,
+    /// The checkout's, on the host it is worked from: never the repo's, so
+    /// never in what `afkconvoy config` answers.
     #[field(usize[concurrency])]
+    #[serde(skip)]
     concurrency: usize,
     /// Who says `concurrency`.
     #[serde(skip)]
     concurrency_said_by: SaidBy,
+    /// The `concurrency` the repo's config still names, which changes
+    /// nothing: what `doctor` says to keep on the host.
+    #[serde(skip)]
+    pub retired_concurrency: Option<NonZeroUsize>,
     pub escalate_label: String,
     /// An open issue carrying this is a fleet lock, in a bound repo and an
     /// unbound one alike.
@@ -142,7 +156,6 @@ pub enum ConfigError {
     Required(&'static str),
     /// A label key set to the empty string.
     Empty(&'static str),
-    ZeroConcurrency,
     /// `gate_seconds` is 0: a gate given no time at all.
     ZeroGateSeconds,
     /// `escalate_label` is `ready_label`: escalating would leave the issue dispatchable.
@@ -164,7 +177,6 @@ impl std::fmt::Display for ConfigError {
         match self {
             ConfigError::Required(key) => write!(f, "{key}: required, and it has no default"),
             ConfigError::Empty(key) => write!(f, "{key}: must not be empty"),
-            ConfigError::ZeroConcurrency => write!(f, "concurrency: must be at least 1"),
             ConfigError::ZeroGateSeconds => {
                 write!(f, "gate_seconds: must be a whole number of seconds, at least 1")
             }
@@ -240,13 +252,6 @@ impl Config {
             }
             None => None,
         };
-        let (concurrency, concurrency_said_by) = match settings.concurrency {
-            Some(concurrency) => (concurrency, SaidBy::Config),
-            None => (3, SaidBy::Default),
-        };
-        if concurrency == 0 {
-            return Err(ConfigError::ZeroConcurrency);
-        }
         match checked(
             base_branch,
             gate_command,
@@ -254,8 +259,8 @@ impl Config {
             settings.gate_seconds.is_some(),
             ready_label,
             epic_labels,
-            concurrency,
-            concurrency_said_by,
+            CONCURRENCY,
+            settings.concurrency,
             escalate_label,
             lock_label,
             escalate_to,
@@ -284,14 +289,14 @@ impl Config {
         self.concurrency
     }
 
-    /// Who says `concurrency`: the checkout, the repo's config, or nobody.
+    /// Who says `concurrency`: the checkout, or nobody.
     pub fn concurrency_said_by(&self) -> SaidBy {
         self.concurrency_said_by
     }
 
     /// This config with `concurrency`, the one its checkout says on the host
-    /// it is worked from, laid over the repo's: the checkout's wins. A
-    /// concurrency of no slot at all is none, and leaves it as it is.
+    /// it is worked from, laid over the default. A concurrency of no slot at
+    /// all is none, and leaves it as it is.
     #[spec(fn(Config[@c], concurrency: usize) -> Config)]
     pub fn laid(self, concurrency: usize) -> Config {
         if concurrency == 0 {
@@ -311,8 +316,8 @@ impl Config {
 /// The one place a `Config` is built: a zero concurrency never gets in, nor
 /// a gate limit of no seconds.
 #[spec(fn(String, String, gate_seconds: u64, bool, String, Vec<String>,
-        concurrency: usize{concurrency > 0}, SaidBy, String, String, Option<EscalateTo>,
-        Option<Bound>)
+        concurrency: usize{concurrency > 0}, Option<NonZeroUsize>, String, String,
+        Option<EscalateTo>, Option<Bound>)
     -> Option<Config[concurrency, gate_seconds]>)]
 #[allow(clippy::too_many_arguments)]
 fn checked(
@@ -323,7 +328,7 @@ fn checked(
     ready_label: String,
     epic_labels: Vec<String>,
     concurrency: usize,
-    concurrency_said_by: SaidBy,
+    retired_concurrency: Option<NonZeroUsize>,
     escalate_label: String,
     lock_label: String,
     escalate_to: Option<EscalateTo>,
@@ -340,7 +345,8 @@ fn checked(
         ready_label,
         epic_labels,
         concurrency,
-        concurrency_said_by,
+        concurrency_said_by: SaidBy::Default,
+        retired_concurrency,
         escalate_label,
         lock_label,
         escalate_to,
@@ -535,23 +541,30 @@ mod tests {
     }
 
     #[test]
-    fn a_checkouts_concurrency_is_laid_over_the_repos() {
-        let declared = Config::new(Settings { concurrency: Some(5), ..minimal() }).unwrap();
-        assert_eq!((declared.concurrency(), declared.concurrency_said_by()), (5, SaidBy::Config));
-        let laid = declared.laid(1);
-        assert_eq!((laid.concurrency(), laid.concurrency_said_by()), (1, SaidBy::Checkout));
-        let defaulted = Config::new(minimal()).unwrap().laid(8);
-        assert_eq!(
-            (defaulted.concurrency(), defaulted.concurrency_said_by()),
-            (8, SaidBy::Checkout)
-        );
-        // No slot at all is none: the repo's stands.
+    fn a_checkouts_concurrency_is_laid_over_the_default() {
+        let laid = Config::new(minimal()).unwrap().laid(8);
+        assert_eq!((laid.concurrency(), laid.concurrency_said_by()), (8, SaidBy::Checkout));
+        // No slot at all is none: the default stands.
         let none = Config::new(minimal()).unwrap().laid(0);
         assert_eq!((none.concurrency(), none.concurrency_said_by()), (3, SaidBy::Default));
-        // What `afkconvoy config` answers is the repo's alone: who says it is not a key.
+        // What `afkconvoy config` answers is the repo's alone, and the
+        // concurrency is no fact of the repo's.
         let said = serde_json::to_value(&laid).unwrap();
-        assert_eq!(said["concurrency"], 1);
+        assert!(said.get("concurrency").is_none(), "{said}");
         assert!(said.get("concurrency_said_by").is_none(), "{said}");
+    }
+
+    #[test]
+    fn a_config_that_names_a_concurrency_is_read_and_it_changes_nothing() {
+        let named = Config::new(Settings { concurrency: NonZeroUsize::new(5), ..minimal() });
+        let named = named.unwrap();
+        assert_eq!((named.concurrency(), named.concurrency_said_by()), (3, SaidBy::Default));
+        assert_eq!(named.retired_concurrency, NonZeroUsize::new(5));
+        let laid = named.laid(6);
+        assert_eq!((laid.concurrency(), laid.retired_concurrency), (6, NonZeroUsize::new(5)));
+        assert_eq!(Config::new(minimal()).unwrap().retired_concurrency, None);
+        let said = serde_json::to_value(&laid).unwrap();
+        assert!(said.get("retired_concurrency").is_none(), "{said}");
     }
 
     #[test]
@@ -669,8 +682,6 @@ mod tests {
 
     #[test]
     fn a_config_nothing_could_run_on_is_refused() {
-        let zero = Settings { concurrency: Some(0), ..minimal() };
-        assert_eq!(Config::new(zero), Err(ConfigError::ZeroConcurrency));
         let no_time = Settings { gate_seconds: Some(0), ..minimal() };
         assert_eq!(Config::new(no_time), Err(ConfigError::ZeroGateSeconds));
         let same = Settings { escalate_label: Some("ready-for-agent".into()), ..minimal() };
