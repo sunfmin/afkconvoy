@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::World;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// A load no host of any number of cores is under.
 const PAST_ANY: &str = "100000.00";
@@ -105,11 +105,12 @@ fn plan_says_what_would_be_dispatched_and_that_admission_holds_it_back() {
 fn doctor_shows_the_thresholds_in_force_and_what_the_host_reads() {
     let world = backlog(&[]);
     world.busy("1.50");
+    world.say_host_settings(json!({"admit_load": 150, "admit_memory": 90}));
+    // the variables that stand for the flags of `run` are `run`'s alone
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
         .args(["doctor", "--host", "h1", "--now", "1000"])
-        .env("AFKCONVOY_ADMIT_LOAD", "150")
-        .env("AFKCONVOY_ADMIT_MEMORY", "90")
+        .env("AFKCONVOY_ADMIT_LOAD", "400")
         .output()
         .unwrap();
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -125,7 +126,7 @@ fn doctor_shows_the_thresholds_in_force_and_what_the_host_reads() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert_eq!(said, ["AFKCONVOY_ADMIT_LOAD", "AFKCONVOY_ADMIT_MEMORY"]);
+    assert_eq!(said, ["admit_load", "admit_memory"]);
     assert_eq!(admission["reading"]["disk_free_bytes"], 500u64 << 30, "the stand-in `df`");
     assert_eq!(
         admission["held_back_by"],
@@ -134,16 +135,25 @@ fn doctor_shows_the_thresholds_in_force_and_what_the_host_reads() {
 }
 
 #[test]
-fn a_share_the_host_says_wrong_is_an_error_not_a_default() {
+fn a_share_said_wrong_is_refused_and_one_kept_wrong_is_an_error_not_a_default() {
     let world = backlog(&[3]);
+    let error = world.afk(&["run", "--admit-load", "lots"]).error();
+    assert!(error.contains("`lots` is not a whole number, nor `default`"), "{error}");
+    // said by the variable that stands for the flag, the same
     let out = world
         .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["plan", "--now", "1000"])
-        .env("AFKCONVOY_ADMIT_LOAD", "lots")
+        .arg("run")
+        .env("AFKCONVOY_ADMIT_DISK", "5%")
         .output()
         .unwrap();
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(2));
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
     let error = answer["error"].as_str().unwrap();
-    assert!(error.contains("AFKCONVOY_ADMIT_LOAD=\"lots\" is no share"), "{error}");
+    assert!(error.contains("`5%` is not a whole number"), "{error}");
+    assert_eq!(world.checkout_list(), json!({"checkouts": []}), "nothing was written");
+
+    // a file mended wrong by hand holds nothing back by a default
+    world.say_host_settings(json!({"hot_cores": -1}));
+    let error = world.afk(&["plan", "--now", "1000"]).error();
+    assert!(error.contains("checkouts.json cannot be read"), "{error}");
 }
