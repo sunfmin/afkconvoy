@@ -507,6 +507,30 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
 }
 
 #[test]
+fn a_panel_opened_with_no_port_named_is_on_the_port_the_host_settings_say() {
+    // the port a `run --panel` said for the host: free, it is the panel's
+    let world = World::new();
+    world.issue(3, &["ready-for-agent"]);
+    let running = run(&world, &[]);
+    running.line();
+    let said = free_port();
+    world.say_host_settings(json!({"panel": said}));
+    assert_eq!(port_of(&open(&world, &world.clone, &[])), said);
+
+    // taken by something else, any free port will do
+    let world = World::new();
+    world.issue(3, &["ready-for-agent"]);
+    let running = run(&world, &[]);
+    running.line();
+    let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let said = taken.local_addr().unwrap().port();
+    world.say_host_settings(json!({"panel": said}));
+    let opened = open(&world, &world.clone, &[]);
+    assert_ne!(port_of(&opened), said, "{opened}");
+    assert!(get(port_of(&opened), "/").starts_with("HTTP/1.1 200 OK"), "served there");
+}
+
+#[test]
 fn a_panel_asked_for_during_a_tick_is_opened_at_once_and_the_tick_goes_on() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);

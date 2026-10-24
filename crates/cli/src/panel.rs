@@ -1058,6 +1058,7 @@ mod tests {
             path: "/w/a".into(),
             branch: "a".into(),
             issue: Some(7),
+            why: String::new(),
         }];
         let hot = render(&panel);
         assert!(hot.contains("<li data-hot=\"#7\"><b>#7</b> hot on disk held for 12m, holding at most 6.2 cores, 1.5 GiB resident, 0 B written in 10 minutes, 5.0 GiB held in its worktree</li>"), "{hot}");

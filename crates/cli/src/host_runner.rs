@@ -1,7 +1,8 @@
 //! The host runner: the one process of the fleet on a host, holding a fleet
 //! instance for each checkout on the host's checkout list (docs/adr/0023);
-//! and `run`, which hands it a checkout, starting it where none runs, and
-//! moving it onto its own afkconvoy where it is of an older release.
+//! `run`, which hands it a checkout, starting it where none runs, and moving
+//! it onto its own afkconvoy where it is of an older release; and `stop`,
+//! which takes one off the list, or with `--all` stops the host runner.
 //!
 //! The host runner is whoever holds the lock `host-runner.lock` in the cache
 //! directory, so there is one for each cache directory, by construction. It
@@ -40,7 +41,7 @@ use crate::log::{self, What};
 use crate::runner_socket::{self, Reached, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line};
-use crate::{VERSION, kit, launch};
+use crate::{VERSION, host_settings, kit, launch};
 
 /// The lock whose holder is the host runner, in the cache directory. It
 /// holds the holder's {pid, version, started}.
@@ -60,6 +61,13 @@ const FIRST_TICK_WITHIN: Duration = Duration::from_secs(30 * 60);
 /// How long `run` waits for the host runner to say its version:
 /// it answers at once, whatever its fleet instances are doing.
 const SAID_WITHIN: Duration = Duration::from_secs(10);
+
+/// How long `stop` waits for a fleet instance to finish the step it is in.
+const STOPPED_WITHIN: Duration = Duration::from_secs(10 * 60);
+
+/// How long a host runner whose fleet instances have all stopped waits to
+/// answer whoever asked it before it ends.
+const ANSWERED_WITHIN: Duration = Duration::from_secs(10);
 
 /// How often the host runner looks whether its lock file is still there.
 const WATCHED_EVERY: Duration = Duration::from_millis(250);
@@ -83,6 +91,9 @@ struct Held {
     /// The repo it is of (`checkout_list::repo_of`).
     repo: String,
     seen: Arc<Seen>,
+    /// The stop of its start now, which `stop` tells: the thread of a broken
+    /// one puts here that of each start of it again (`rested`).
+    stop: Stop,
 }
 
 /// How far a fleet instance has come, for whoever waits on it.
@@ -97,12 +108,19 @@ struct Stage {
     /// Whether a `run` asked for this start: one refused then is taken off
     /// the list.
     asked: bool,
+    /// Whether `stop` took its checkout off the list: its first tick, where
+    /// it has yet to end, puts it back on it never.
+    removed: bool,
     /// Its id, once this start is kept in its tick log.
     instance: Option<String>,
     /// What it warned of before this start's first tick ended: its startup
     /// probe's warnings among them.
     warnings: Vec<String>,
+    /// Its `stop:` line, once its tick log keeps it.
+    stop_line: Option<String>,
     came: Came,
+    /// Whether its thread has ended: it is held no more.
+    ended: bool,
     /// When it broke, while it has not been back since: a start of it again
     /// that ends its first tick is back.
     broken_since: Option<u64>,
@@ -132,12 +150,20 @@ impl Seen {
     fn stage(&self) -> MutexGuard<'_, Stage> {
         self.now.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    /// Its stage once its thread has ended.
+    fn over(&self) -> MutexGuard<'_, Stage> {
+        let mut stage = self.stage();
+        while !stage.ended {
+            stage = self.changed.wait(stage).unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        stage
+    }
 }
 
 /// The host runner's own log: its stdout, which the `run` that started it
 /// points at host-runner.log. One line for each thing that happened to it,
-/// stamped in UTC, one at a time whichever thread says it; what spans
-/// several lines, as an error may, is folded into one.
+/// one at a time whichever thread says it (`stamped`).
 #[derive(Default)]
 struct RunnerLog {
     one: Mutex<()>,
@@ -145,13 +171,18 @@ struct RunnerLog {
 
 impl RunnerLog {
     fn say(&self, line: &str) {
-        let parts: Vec<&str> =
-            line.lines().map(str::trim).filter(|part| !part.is_empty()).collect();
-        let line = parts.join(" ");
+        let line = stamped(line);
         let _one = self.one.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // A log that cannot be written costs its lines, never the host runner.
-        let _ = writeln!(std::io::stdout(), "{} {line}", log::utc(crate::clock()));
+        let _ = writeln!(std::io::stdout(), "{line}");
     }
+}
+
+/// `line` as the host runner's log keeps it: stamped in UTC, and what spans
+/// several lines, as an error may, folded into one.
+fn stamped(line: &str) -> String {
+    let parts: Vec<&str> = line.lines().map(str::trim).filter(|part| !part.is_empty()).collect();
+    format!("{} {}", log::utc(crate::clock()), parts.join(" "))
 }
 
 /// An answer the host runner gave that is an error: `run` prints it as it
@@ -174,10 +205,11 @@ pub fn log_path() -> Result<PathBuf> {
 
 /// The hidden `afkconvoy host-runner`, as `run` starts it: takes the host,
 /// starts every checkout on its list, and answers on its socket, until
-/// SIGTERM or SIGINT, or until its lock file is gone. Then it lets every fleet
-/// instance finish the step it is in and keep its `stop` line, and ends,
-/// leaving the list as it is → {"stopped", "pid", "checkouts"}; or, where
-/// another host runner held the host all the while, {"started": false}.
+/// SIGTERM or SIGINT, `stop --all`, or until its lock file is gone. Then it
+/// lets every fleet instance finish the step it is in and keep its `stop`
+/// line, answers whoever asked it, and ends, leaving the list as it is →
+/// {"stopped", "pid", "checkouts"}; or, where another host runner held the
+/// host all the while, {"started": false}.
 pub fn serve() -> Result<Value> {
     // Before any thread starts: nothing moves it after, and nothing the
     // fleet does leans on it.
@@ -219,8 +251,8 @@ pub fn serve() -> Result<Value> {
     let runner = Arc::new(Runner { list, log, stop: stop.clone(), held: Mutex::default() });
     runner.start_listed(listed.checkouts);
     let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG)});
-    let answering = Arc::clone(&runner);
-    runner_socket::serve(listener, about, move |request| answering.answer(request));
+    let answerer = Arc::clone(&runner);
+    let answering = runner_socket::serve(listener, about, move |request| answerer.answer(request));
 
     let lock_file = dir.join(LOCK);
     let still_ours = || std::fs::metadata(&lock_file).is_ok_and(|now| identity(&now) == ours);
@@ -241,6 +273,8 @@ pub fn serve() -> Result<Value> {
     while !runner.holding().is_empty() {
         std::thread::sleep(Duration::from_millis(50));
     }
+    // `stop --all` among them, which is answered once they all stopped.
+    answering.settled(ANSWERED_WITHIN);
     let kept = runner.list.read().map_or(0, |listed| listed.checkouts.len());
     runner.log.say(&format!("host runner stopped: {kept} checkouts kept on the list"));
     drop(lock);
@@ -328,6 +362,8 @@ impl Runner {
         let answered = match request {
             Request::Version => Ok(json!({})),
             Request::Add { checkout, start } => self.add(&checkout, *start),
+            Request::Stop { checkout } => self.stop_checkout(&checkout),
+            Request::StopAll => self.stop_all(),
         };
         answered.unwrap_or_else(|error| crate::error_json(&error))
     }
@@ -355,16 +391,7 @@ impl Runner {
         let (seen, added) = {
             let mut held = self.holding();
             let listed = self.list.read()?.checkouts;
-            let repo_of =
-                |root: &Path| Repo::at(root).and_then(|repo| checkout_list::repo_of(&repo));
-            let listing = listed.iter();
-            let listing =
-                listing.map(|entry| (entry.checkout.clone(), repo_of(&entry.checkout).ok()));
-            let holding = held.iter().map(|(root, held)| (root.clone(), Some(held.repo.clone())));
-            let known: Vec<(String, Option<String>)> = listing
-                .chain(holding)
-                .map(|(root, repo)| (root.display().to_string(), repo))
-                .collect();
+            let known = known(&listed, &held);
             match on_list(&known, &root.display().to_string(), &key) {
                 OnList::Other(first) => {
                     self.log.say(&format!(
@@ -384,6 +411,13 @@ impl Runner {
                     match held.get(&root) {
                         Some(running) => {
                             let mut stage = running.seen.stage();
+                            if stage.removed {
+                                bail!(
+                                    "the fleet instance of {} is stopping, told by `afkconvoy \
+                                     stop`: run again once it has stopped",
+                                    root.display()
+                                );
+                            }
                             stage.asked = true;
                             // A broken one is started again now, not after its backoff.
                             if matches!(stage.came, Came::Broken) {
@@ -444,25 +478,33 @@ impl Runner {
     ) -> Arc<Seen> {
         let seen = Arc::new(Seen::default());
         seen.stage().asked = asked;
-        held.insert(root.clone(), Held { repo: key.clone(), seen: Arc::clone(&seen) });
+        let stop = self.stop.instance();
+        let holding = Held { repo: key.clone(), seen: Arc::clone(&seen), stop: stop.clone() };
+        held.insert(root.clone(), holding);
         let (runner, holding) = (Arc::clone(self), Arc::clone(&seen));
-        std::thread::spawn(move || runner.hold(&root, &key, start, &holding));
+        std::thread::spawn(move || runner.hold(&root, &key, start, &holding, stop));
         seen
     }
 
     /// Holds the fleet instance of the checkout `root`, of the repo `key`, on
-    /// this thread, as `start` asks, until it ends (`ended`). One that breaks
-    /// is held again after a backoff that grows at each break in a row
-    /// (`backoff`), or as soon as a `run` asks for it; every other fleet
-    /// instance goes on meanwhile.
-    fn hold(self: Arc<Self>, root: &Path, key: &str, mut start: Start, seen: &Arc<Seen>) {
+    /// this thread, as `start` asks and `stop` tells, until it ends
+    /// (`ended`). One that breaks is held again after a backoff that grows at
+    /// each break in a row (`backoff`), or as soon as a `run` asks for it;
+    /// every other fleet instance goes on meanwhile.
+    fn hold(
+        self: Arc<Self>,
+        root: &Path,
+        key: &str,
+        mut start: Start,
+        seen: &Arc<Seen>,
+        mut stop: Stop,
+    ) {
         // What it waited before its last start, where it broke before it.
         let mut waited = None;
         // The last fleet instance it started as: the one that broke.
         let mut broke_as = String::new();
         loop {
             let begun = Instant::now();
-            let stop = self.stop.instance();
             let heard = Arc::new(Heard {
                 runner: Arc::clone(&self),
                 root: root.to_path_buf(),
@@ -503,55 +545,94 @@ impl Runner {
             let entry = log::Entry { at: now, instance: broke_as.clone(), host, what };
             self.said_of(root, &entry, &said);
             let until = Instant::now() + Duration::from_millis(wait.saturating_mul(second));
-            match self.rested(seen, until) {
-                Rest::Due => {}
-                Rest::Asked(again) => start = *again,
-                Rest::Stopped => {
-                    let mut holding = self.holding();
-                    holding.remove(root);
-                    seen.stage().came = Came::Ended("it was broken".to_string());
-                    drop(holding);
-                    seen.changed.notify_all();
-                    let at = root.display();
-                    self.log.say(&format!(
-                        "fleet instance ended: {at}: broken since the host runner stops"
-                    ));
-                    return;
-                }
+            let Some((anew, again)) = self.rested(root, seen, until) else {
+                self.let_go(root, seen, &start, broke_as);
+                return;
+            };
+            stop = anew;
+            if let Some(again) = again {
+                start = again;
             }
         }
     }
 
-    /// Rests the thread of a broken fleet instance until `until` → `Due`;
-    /// until a `run` asks for it → `Asked`, with what that asks; or until the
-    /// host runner is told to stop → `Stopped`.
-    fn rested(&self, seen: &Seen, until: Instant) -> Rest {
-        let mut stage = seen.stage();
-        loop {
-            if self.stop.told() {
-                return Rest::Stopped;
+    /// Rests the thread of the broken fleet instance of `root` until its
+    /// backoff is over, at `until`, or a `run` asks for it → the stop of its
+    /// next start, kept where `stop` finds it, and what that `run` asked;
+    /// `None` where `stop` took its checkout off the list, or the host runner
+    /// was told to stop, first.
+    fn rested(&self, root: &Path, seen: &Seen, until: Instant) -> Option<(Stop, Option<Start>)> {
+        let again = {
+            let mut stage = seen.stage();
+            loop {
+                if stage.removed || self.stop.told() {
+                    return None;
+                }
+                if let Some(again) = stage.again.take() {
+                    break Some(again);
+                }
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    // A `run` that asks from now on waits for this start.
+                    (stage.came, stage.asked) = (Came::Starting, false);
+                    break None;
+                }
+                let rested = seen.changed.wait_timeout(stage, left.min(WATCHED_EVERY));
+                stage = rested.map_or_else(|poisoned| poisoned.into_inner().0, |(stage, _)| stage);
             }
-            if let Some(again) = stage.again.take() {
-                return Rest::Asked(Box::new(again));
-            }
-            let left = until.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                // A `run` that asks from now on waits for this start.
-                (stage.came, stage.asked) = (Came::Starting, false);
-                return Rest::Due;
-            }
-            let rested = seen.changed.wait_timeout(stage, left.min(WATCHED_EVERY));
-            stage = rested.map_or_else(|poisoned| poisoned.into_inner().0, |(stage, _)| stage);
+        };
+        // Under the lock `stop` takes: one before this ends it here, one
+        // after tells this start.
+        let mut holding = self.holding();
+        let held = holding.get_mut(root)?;
+        if seen.stage().removed || self.stop.told() {
+            return None;
         }
+        held.stop = self.stop.instance();
+        Some((held.stop.clone(), again))
+    }
+
+    /// Lets go of the broken fleet instance of `root`, `broke_as` as it last
+    /// broke under `start`, at rest when `stop` took its checkout off the
+    /// list or the host runner was told to stop: it is held no more. One
+    /// `stop` took off keeps a `stop:` line in its tick log, after which it is
+    /// broken no more.
+    fn let_go(&self, root: &Path, seen: &Seen, start: &Start, broke_as: String) {
+        let mut holding = self.holding();
+        holding.remove(root);
+        let mut stage = seen.stage();
+        let why = if stage.removed {
+            "it was broken, and `afkconvoy stop` took its checkout off the list"
+        } else {
+            "it was broken, and the host runner stops"
+        };
+        let said = format!("fleet instance ended: {}: {why}", root.display());
+        if stage.removed {
+            let at = start.knobs.now.unwrap_or_else(crate::clock);
+            let host = start.named.host.clone().unwrap_or_else(crate::this_host);
+            let what = What::Stop { line: why.to_string() };
+            let entry = log::Entry { at, instance: broke_as.clone(), host, what };
+            stage.stop_line = Some(entry.said());
+            self.said_of(root, &entry, &said);
+        } else {
+            self.log.say(&said);
+        }
+        stage.instance = Some(broke_as).filter(|instance| !instance.is_empty());
+        (stage.came, stage.ended) = (Came::Ended(why.to_string()), true);
+        drop(stage);
+        drop(holding);
+        seen.changed.notify_all();
     }
 
     /// The loop of the fleet instance of `root` ended, as `held` says → why
     /// it broke, where it did: it is still held, now `Came::Broken`, and its
     /// thread holds it again. It broke where its loop ended in an error or a
-    /// panic while the host runner goes on — after its first tick, or before
-    /// it where nobody asked for it. Otherwise it ended, and is held no more:
-    /// one that ended before its first tick was refused, and a `run` that
-    /// asked for it is told why and its checkout taken off the list.
+    /// panic while the host runner goes on and `stop` did not take its
+    /// checkout off the list — after its first tick, or before it where
+    /// nobody asked for it. Otherwise it ended, and is held no more: one that
+    /// ended before its first tick was refused, and a `run` that asked for it
+    /// is told why and its checkout taken off the list; one `stop` took off
+    /// before its first tick, it is told so.
     fn ended(&self, root: &Path, held: Result<Value>) -> Option<String> {
         let mut holding = self.holding();
         let why = match &held {
@@ -567,7 +648,7 @@ impl Runner {
                 Came::Ticked { .. } => true,
                 Came::Refused(_) | Came::Ended(_) | Came::Broken => false,
             };
-            let broke = at_work && held.is_err() && !self.stop.told();
+            let broke = at_work && held.is_err() && !stage.removed && !self.stop.told();
             if broke {
                 stage.came = Came::Broken;
             }
@@ -578,8 +659,13 @@ impl Runner {
         }
         let gone = holding.remove(root)?;
         let mut stage = gone.seen.stage();
+        stage.ended = true;
         let at = root.display();
         match stage.came {
+            Came::Starting if stage.removed => {
+                stage.came = Came::Refused(json!({"error": STOPPED_BEFORE_FIRST_TICK}));
+                self.log.say(&format!("fleet instance ended: {at}: {why}"));
+            }
             Came::Starting => {
                 let error = held.err().unwrap_or_else(|| anyhow!("it ended before its first tick"));
                 stage.came = Came::Refused(crate::error_json(&error));
@@ -629,16 +715,128 @@ impl Runner {
             }
         }
     }
+
+    /// Takes the checkout `checkout` off the list and stops its fleet
+    /// instance, which finishes the step it is in → once it has stopped,
+    /// `stop`'s answer. One neither on the list nor held is answered so, and
+    /// nothing changes; a second checkout of a repo on the list is refused,
+    /// naming the first.
+    fn stop_checkout(&self, checkout: &Path) -> Result<Value> {
+        let repo = Repo::at(checkout)?;
+        let (root, key) = (repo.dir.clone(), checkout_list::repo_of(&repo).ok());
+        let at = root.display();
+        let (removed, running) = {
+            let held = self.holding();
+            let running = held.get(&root).map(|held| (Arc::clone(&held.seen), held.stop.clone()));
+            let removed = {
+                // Its first tick, ending now, waits: it adds the checkout
+                // before this takes it off, or sees it taken off.
+                let stage = running.as_ref().map(|(seen, _)| seen.stage());
+                let removed = taken_off(&self.list, &root)?;
+                if let Some(mut stage) = stage {
+                    stage.removed = true;
+                }
+                removed
+            };
+            if running.is_none() && !removed {
+                let known = known(&self.list.read()?.checkouts, &held);
+                return not_listed(&known, &root, key.as_deref());
+            }
+            (removed, running)
+        };
+        self.log.say(&match (removed, &running) {
+            (true, Some(_)) => {
+                format!("checkout removed: {at}: by `afkconvoy stop`, its fleet instance stops")
+            }
+            (true, None) => {
+                format!("checkout removed: {at}: by `afkconvoy stop`, no fleet instance of it ran")
+            }
+            (false, _) => format!(
+                "fleet instance stopping: {at}: by `afkconvoy stop`, before its first tick put \
+                 it on the checkout list"
+            ),
+        });
+        let Some((seen, stop)) = running else {
+            return Ok(stopped(&root, key.as_deref(), removed, None));
+        };
+        stop.tell();
+        Ok(stopped(&root, key.as_deref(), removed, Some(&seen.over())))
+    }
+
+    /// Stops every fleet instance, and then the host runner, keeping the
+    /// list → once every fleet instance has stopped, `stop --all`'s answer:
+    /// each one stopped, and how many checkouts the list keeps.
+    fn stop_all(&self) -> Result<Value> {
+        self.log
+            .say("host runner told to stop by `afkconvoy stop --all`: it keeps the checkout list");
+        // Let go of before waiting: each one that ends takes it.
+        let held: Vec<(PathBuf, Arc<Seen>)> = {
+            let holding = self.holding();
+            holding.iter().map(|(root, held)| (root.clone(), Arc::clone(&held.seen))).collect()
+        };
+        self.stop.tell();
+        let stopped: Vec<Value> = held
+            .into_iter()
+            .map(|(root, seen)| {
+                let stage = seen.over();
+                json!({"checkout": root, "instance": stage.instance, "stop": stage.stop_line})
+            })
+            .collect();
+        let kept = self.list.read()?.checkouts.len();
+        Ok(json!({"stopped": stopped, "checkouts": kept}))
+    }
 }
 
-/// How the thread of a broken fleet instance ended its rest (`rested`).
-enum Rest {
-    /// Its backoff is over: it is started again as before.
-    Due,
-    /// A `run` asked for it: it is started again now, as that `run` asks.
-    Asked(Box<Start>),
-    /// The host runner is stopping: it is held no more.
-    Stopped,
+/// Why a `run` waiting on a fleet instance that `stop` stopped before its
+/// first tick ended is refused.
+const STOPPED_BEFORE_FIRST_TICK: &str =
+    "`afkconvoy stop` took the checkout off the checkout list before its first tick ended";
+
+/// Each checkout `listed` or `held`, with the repo it is of where that can be
+/// read: what `on_list` holds a checkout against.
+fn known(listed: &[Entry], held: &BTreeMap<PathBuf, Held>) -> Vec<(String, Option<String>)> {
+    let repo_of = |root: &Path| Repo::at(root).and_then(|repo| checkout_list::repo_of(&repo)).ok();
+    let listing = listed.iter().map(|entry| (entry.checkout.clone(), repo_of(&entry.checkout)));
+    let holding = held.iter().map(|(root, held)| (root.clone(), Some(held.repo.clone())));
+    listing.chain(holding).map(|(root, repo)| (root.display().to_string(), repo)).collect()
+}
+
+/// Takes `root` off `list` → whether it was on it.
+fn taken_off(list: &List, root: &Path) -> Result<bool> {
+    list.change(|listed| {
+        let before = listed.checkouts.len();
+        listed.checkouts.retain(|entry| entry.checkout != root);
+        listed.checkouts.len() < before
+    })
+}
+
+/// `stop`'s answer for the checkout `root`, of the repo `key`, on no list
+/// and held by no fleet instance: that it is not on the list; or, where
+/// another checkout of its repo is, the refusal that names it.
+fn not_listed(known: &[(String, Option<String>)], root: &Path, key: Option<&str>) -> Result<Value> {
+    if let Some(key) = key
+        && let OnList::Other(first) = on_list(known, &root.display().to_string(), key)
+    {
+        bail!(
+            "{key} is on this host's checkout list as {first}, not as {}: a host runs one fleet \
+             instance per repo. Run `afkconvoy stop {first}` to stop it",
+            root.display()
+        );
+    }
+    Ok(stopped(root, key, false, None))
+}
+
+/// `stop`'s answer: the checkout `root`, of the repo `key`; whether it was
+/// `removed` from the list; and the fleet instance stopped, as its `stage`
+/// ended — its id and its `stop:` line — where one ran.
+fn stopped(root: &Path, key: Option<&str>, removed: bool, stage: Option<&Stage>) -> Value {
+    json!({
+        "checkout": root,
+        "repo": key,
+        "removed": removed,
+        "instance": stage.and_then(|stage| stage.instance.clone()),
+        "stop": stage.and_then(|stage| stage.stop_line.clone()),
+    })
 }
 
 /// What a panic said, from what it unwound with: its message, where it gave
@@ -682,8 +880,9 @@ impl Heard {
     }
 
     /// A line it kept in its tick log, which it is not said again: its
-    /// start, said in the log as a fleet instance started; its first tick,
-    /// which puts its checkout on the list and answers whoever waits.
+    /// start, said in the log as a fleet instance started; its `stop:` line,
+    /// for whoever stopped it; its first tick, which puts its checkout on the
+    /// list — unless `stop` took it off before — and answers whoever waits.
     fn kept(&self, entry: &log::Entry) {
         let at = self.root.display();
         let mut stage = self.seen.stage();
@@ -694,7 +893,16 @@ impl Heard {
             let (instance, host) = (&entry.instance, &entry.host);
             self.runner.log.say(&format!("fleet instance started: {at}: {instance} on {host}"));
         }
+        if let What::Stop { .. } = entry.what {
+            stage.stop_line = Some(entry.said());
+        }
         if !matches!(entry.what, What::Tick(_)) || !matches!(stage.came, Came::Starting) {
+            return;
+        }
+        if stage.removed {
+            stage.came = Came::Refused(json!({"error": STOPPED_BEFORE_FIRST_TICK}));
+            drop(stage);
+            self.seen.changed.notify_all();
             return;
         }
         let listed = self.runner.list.change(|listed| {
@@ -737,13 +945,20 @@ impl Heard {
     }
 }
 
-/// `afkconvoy run`: hands the checkout `checkout` to this host's runner,
-/// starting one detached where none answers, and waits for its fleet
-/// instance's first tick → the host runner's answer, `host_runner.started`
-/// saying whether this `run` started it, and `host_runner.replaced` which
-/// host runner of an older release it stopped first (`moved`). A refusal the
-/// host runner answered is `Answered`, printed as it is.
-pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
+/// `afkconvoy run`: has the host say what `settings` names of its host
+/// settings, hands the checkout `checkout` to this host's runner, starting
+/// one detached where none answers, and waits for its fleet instance's first
+/// tick → the host runner's answer, `host_runner.started` saying whether this
+/// `run` started it, `host_runner.replaced` which host runner of an older
+/// release it stopped first (`moved`), and `settings` what it changed of the
+/// host settings. A refusal the host runner answered is `Answered`, printed
+/// as it is.
+pub fn run(
+    checkout: &Repo,
+    start: Start,
+    settings: &host_settings::Named,
+    now: u64,
+) -> Result<Value> {
     let (log, lock) = (log_path()?, cache()?.join(LOCK));
     let pid = || holder_of(&lock).map(|pid| format!(" (pid {pid})")).unwrap_or_default();
     // Before anything changes: which afkconvoy the host runner is.
@@ -759,6 +974,9 @@ pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
     };
     // A first start writes the host kit here, saying so to whoever ran `run`.
     kit::ensure(now)?;
+    // Before the checkout is handed over: its fleet instance starts under
+    // them, and every other on the host reads them as it goes.
+    let changed = host_settings::change(&List::of_host()?, settings)?;
     let add = Request::Add { checkout: checkout.dir.clone(), start: Box::new(start) };
     let (reached, started) = match runner_socket::ask(&add, FIRST_TICK_WITHIN)? {
         Reached::Nobody => (started_and_asked(&add)?, true),
@@ -784,12 +1002,102 @@ pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
         about.insert("started".into(), json!(started));
         about.insert("replaced".into(), json!(replaced));
     }
+    answer["settings"] = Value::Object(changed);
     if answer.get("error").is_some() {
         return Err(Answered(answer).into());
     }
     let warnings = answer["warnings"].as_array().into_iter().flatten();
     for warning in warnings.filter_map(Value::as_str) {
         eprintln!("warning: {warning}");
+    }
+    Ok(answer)
+}
+
+/// `afkconvoy stop CHECKOUT`: has this host's runner take the checkout
+/// `checkout` off the checkout list and stop its fleet instance → once it
+/// has stopped, the host runner's answer. Where none answers, the list is
+/// changed here, and said in the host runner's log: no fleet instance ran.
+/// A refusal the host runner answered is `Answered`, printed as it is.
+pub fn stop(checkout: &Repo) -> Result<Value> {
+    let asked = Request::Stop { checkout: checkout.dir.clone() };
+    match runner_socket::ask(&asked, STOPPED_WITHIN)? {
+        Reached::Nobody => {}
+        reached => return answered_stop(reached, "its fleet instance"),
+    }
+    let (list, root) = (List::of_host()?, &checkout.dir);
+    let key = checkout_list::repo_of(checkout).ok();
+    let mut answer = match taken_off(&list, root)? {
+        true => {
+            let line = format!(
+                "checkout removed: {}: by `afkconvoy stop`, with no host runner running",
+                root.display()
+            );
+            // A log that cannot be written costs its line, never the stop.
+            let _ = opened_log(&log_path()?).and_then(|mut log| {
+                writeln!(log, "{}", stamped(&line)).context("cannot write the host runner's log")
+            });
+            stopped(root, key.as_deref(), true, None)
+        }
+        false => {
+            not_listed(&known(&list.read()?.checkouts, &BTreeMap::new()), root, key.as_deref())?
+        }
+    };
+    answer["host_runner"] = Value::Null;
+    Ok(answer)
+}
+
+/// `afkconvoy stop --all`: has this host's runner stop every fleet instance
+/// and then itself, keeping the checkout list → once it has ended, its
+/// answer. Where none answers, nothing changes.
+pub fn stop_all() -> Result<Value> {
+    let answer = match runner_socket::ask(&Request::StopAll, STOPPED_WITHIN)? {
+        Reached::Nobody => {
+            let kept = List::of_host()?.read()?.checkouts.len();
+            return Ok(json!({"stopped": [], "checkouts": kept, "host_runner": null}));
+        }
+        reached => answered_stop(reached, "every fleet instance")?,
+    };
+    // It ends once it has answered: a `run` after this one starts a host
+    // runner that need not wait for it.
+    let lock = cache()?.join(LOCK);
+    if !let_go(&lock, UP_WITHIN) {
+        bail!(
+            "the host runner (pid {}) stopped every fleet instance, and has not ended within {}s: \
+             its log, {}, says how far it got",
+            answer["host_runner"]["pid"],
+            UP_WITHIN.as_secs(),
+            log_path()?.display()
+        );
+    }
+    Ok(answer)
+}
+
+/// What the host runner answered `stop` or `stop --all`, `waited_for`
+/// stopping: an error it answered is `Answered`; one that ended before it
+/// answered, or answered nothing within `STOPPED_WITHIN`, is an error saying
+/// so and where to look.
+fn answered_stop(reached: Reached, waited_for: &str) -> Result<Value> {
+    let log = log_path()?;
+    let answer = match reached {
+        Reached::Answer(answer) => answer,
+        Reached::Nobody => bail!("no host runner answered: its log, {}, says why", log.display()),
+        Reached::Closed => {
+            let pid = holder_of(&cache()?.join(LOCK)).map(|pid| format!(" (pid {pid})"));
+            bail!(
+                "the host runner{} ended before it answered: its log, {}, says why",
+                pid.unwrap_or_default(),
+                log.display()
+            )
+        }
+        Reached::Unanswered => bail!(
+            "{waited_for} did not stop within {} minutes: it is still finishing the step it is \
+             in, and the host runner's log, {}, says when it ends",
+            STOPPED_WITHIN.as_secs() / 60,
+            log.display()
+        ),
+    };
+    if answer.get("error").is_some() {
+        return Err(Answered(answer).into());
     }
     Ok(answer)
 }
@@ -817,18 +1125,14 @@ fn moved(about: &Value) -> Result<Option<Value>> {
             let told = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
             told.context("`kill` could not be run to stop the host runner")?;
             // However `kill` ended: one already gone has let the host go.
-            let (lock, until) = (cache()?.join(LOCK), Instant::now() + UP_WITHIN);
-            while held(&lock) {
-                if Instant::now() >= until {
-                    bail!(
-                        "the host runner of afkconvoy {theirs} (pid {pid}) was told to stop, to \
-                         make way for this afkconvoy, {VERSION}, and still holds the host after \
-                         {}s: its log, {}, says how far it is. Run again once it has stopped",
-                        UP_WITHIN.as_secs(),
-                        log_path()?.display()
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(50));
+            if !let_go(&cache()?.join(LOCK), UP_WITHIN) {
+                bail!(
+                    "the host runner of afkconvoy {theirs} (pid {pid}) was told to stop, to make \
+                     way for this afkconvoy, {VERSION}, and still holds the host after {}s: its \
+                     log, {}, says how far it is. Run again once it has stopped",
+                    UP_WITHIN.as_secs(),
+                    log_path()?.display()
+                );
             }
             Ok(Some(json!({"pid": pid, "version": theirs})))
         }
@@ -845,6 +1149,19 @@ pub fn runs() -> bool {
 fn held(file: &Path) -> bool {
     let Ok(lock) = File::open(file) else { return false };
     matches!(lock.try_lock(), Err(TryLockError::WouldBlock))
+}
+
+/// Waits, `within` at most, for whoever holds the lock in `file` to let it
+/// go → whether it did.
+fn let_go(file: &Path, within: Duration) -> bool {
+    let until = Instant::now() + within;
+    while held(file) {
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    true
 }
 
 /// Starts a host runner and asks it `add` once it answers, until

@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use afkconvoy_core::before::{Before, Lost};
 use afkconvoy_core::host_sleep::{self, IDLE_WAIT, Standing};
-use afkconvoy_core::hot::Limits;
 use afkconvoy_core::lease::stamp_age;
 use afkconvoy_core::lock::named;
 use afkconvoy_core::plan::{Status, WorkingSet, handed_by};
@@ -27,6 +26,7 @@ use crate::fleet::Fleet;
 use crate::forget::forget;
 use crate::gh::{Gone, unreached};
 use crate::git::Repo;
+use crate::host_settings;
 use crate::host_sleep::{Checked, HostSleep};
 use crate::hot::{self, Hot};
 use crate::inspection::{self, Inspector};
@@ -846,31 +846,29 @@ impl Ticked {
     }
 }
 
-/// How `run` paces itself; the knobs exist for the tests.
+/// How `run` paces itself; the knobs exist for the tests. What the host says
+/// of host sleep and of hot workers is its host settings', read as they are
+/// used (`host_settings`).
 pub struct Pacing {
     /// Stop after this many ticks [default: never].
     pub ticks: Option<u64>,
     /// How long one second of sleep really takes.
     pub second: Duration,
-    /// Whether it was told `--no-host-sleep`.
-    pub no_host_sleep: bool,
     /// How long, in seconds, every fleet on this host must have been idle
     /// before it is put to sleep [default: `IDLE_WAIT`].
     pub host_sleep_after: u64,
-    /// What a worker's processes may take before it turns hot.
-    pub hot: Limits,
     /// Panic as this tick ends, its line kept: the tests' broken instance.
     pub panic_at: Option<u64>,
 }
 
-/// What a `run` says at its start of host sleep, when it puts its host to
-/// sleep: after how long, and how not to.
+/// What a `run` says at its start of host sleep, when the host settings have
+/// it put its host to sleep as it starts: after how long, and how not to.
 fn host_sleep_line(pacing: &Pacing) -> Option<String> {
     let after = match pacing.host_sleep_after {
         IDLE_WAIT => "ten minutes".to_string(),
         seconds => format!("{seconds}s"),
     };
-    (!pacing.no_host_sleep).then(|| {
+    (!host_settings::kept_awake()).then(|| {
         format!(
             "start: puts this host to sleep once every fleet on it has been idle {after} \
              (`--no-host-sleep` keeps it awake)"
@@ -1093,7 +1091,7 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// hot (`hot::watch`, docs/adr/0019); after each tick its inspector ends the
 /// inspection that is over and starts the next a hot worker waits for, and
 /// it looks again within `INSPECTING_EVERY` while either is so
-/// (`Inspector`). Unless told `--no-host-sleep`, it puts the
+/// (`Inspector`). Unless the host settings keep the host awake, it puts the
 /// host to sleep once every fleet on it has been idle long enough
 /// (`HostSleep`, docs/adr/0016). It obeys `holder`'s stop — whoever holds the
 /// process listens for the signals — and says each line to its echo.
@@ -1129,11 +1127,11 @@ pub fn run(
     let warn = |warning: &str| said.warn(warning);
     let wakes = Listener::open(repo, during, &warn);
     let hot = Hot::default();
-    let mut inspector = Inspector::new(repo, pacing.hot);
+    let mut inspector = Inspector::new(repo);
     {
         let hears: Arc<dyn hot::Hears> = Arc::clone(&said) as _;
         let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
-        hot::watch(repo, pacing.hot, second, clock, hears, hot, stop.clone());
+        hot::watch(repo, second, clock, hears, hot, stop.clone());
     }
     {
         let said = Arc::clone(&said);
@@ -1149,7 +1147,7 @@ pub fn run(
         instance: me.instance.as_str().to_string(),
         repo: repo.main_checkout().map(|main| main.display().to_string()).unwrap_or_default(),
         version: crate::VERSION.to_string(),
-        no_host_sleep: pacing.no_host_sleep,
+        no_host_sleep: host_settings::kept_awake(),
         idle: false,
         since: me.now,
         worked: None,

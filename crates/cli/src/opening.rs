@@ -16,6 +16,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::git::Repo;
+use crate::host_settings;
 use crate::serve::{self, Live};
 use crate::wake::{Waker, home, reached};
 
@@ -105,11 +106,20 @@ fn opened(live: &Live, instance: &str, asked: &str) -> Result<(Value, bool)> {
 }
 
 /// `afkconvoy panel --open`: has the `run` of this host for the repo `repo` is
-/// a checkout of serve its panel — on `port`, or any free one — and says where.
-/// A `run` that serves it already says the address it has, whatever `port`
-/// asks. Nothing else of that `run` changes, and a refusal changes nothing.
+/// a checkout of serve its panel — on `port`; where none is named, on the
+/// panel's port of the host settings, or any free one where they say none or
+/// it is taken — and says where. A `run` that serves it already says the
+/// address it has, whatever `port` asks. Nothing else of that `run` changes,
+/// and a refusal changes nothing.
 pub fn open(repo: &Repo, port: Option<u16>) -> Result<Value> {
-    ask(&home(repo)?, port.unwrap_or(0))
+    let dir = home(repo)?;
+    if let Some(port) = port {
+        return ask(&dir, port);
+    }
+    match host_settings::of_host()?.panel {
+        Some(port) => ask(&dir, port).or_else(|_| ask(&dir, 0)),
+        None => ask(&dir, 0),
+    }
 }
 
 fn ask(dir: &Path, port: u16) -> Result<Value> {

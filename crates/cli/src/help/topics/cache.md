@@ -23,7 +23,7 @@ Each command reads the variable for itself, so two commands find the same copies
 - `harness/`: the user directory the fleet keeps for pi and for Codex, a worker's in place of yours: harness/pi, harness/codex.
 - `runs/`: the tick log of each repo's fleet instance, one file per repo: what `doctor` reads. It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}, the oldest dropped first.
 - `instances/`: the socket each fleet instance of this host listens on, whatever its repo, named for it: how they find one another before one puts the host to sleep. A fleet instance removes its own as it ends.
-- `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; `checkouts.lock`, held while it is changed.
+- `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named, and beside them the host settings (`afkconvoy run --help`); `checkouts.lock`, held while it is changed.
 - `host-runner.lock`: held by the host runner as long as it runs, so a host has one; it says its pid, its version and when it started.
 - `host-runner.sock`: the socket `run` asks the host runner on.
 - `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC.

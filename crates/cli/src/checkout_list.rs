@@ -1,5 +1,6 @@
 //! The checkout list: which checkouts this host's runner works. One file on
-//! the host, never pushed (docs/adr/0023).
+//! the host, never pushed, which holds the host settings beside them
+//! (`host_settings`, docs/adr/0023).
 //!
 //! It is read whole by anyone, never under its lock: a change is written
 //! whole beside it and moved over it, so a reader sees one list or the
@@ -15,17 +16,21 @@ use serde_json::{Map, Value};
 
 use crate::copies::cache;
 use crate::git::{REMOTE, Repo};
+use crate::host_settings::Settings;
 use crate::instance::Named;
 
 /// The file's name in the cache directory.
 const FILE: &str = "checkouts.json";
 
-/// What the checkout list holds.
+/// What the checkout list's file holds: the checkouts, and the host settings
+/// beside them.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Listed {
     #[serde(default)]
     pub checkouts: Vec<Entry>,
-    /// What another afkconvoy keeps beside them — host settings — kept as it is.
+    #[serde(default)]
+    pub settings: Settings,
+    /// What another afkconvoy keeps beside them, kept as it is.
     #[serde(flatten)]
     rest: Map<String, Value>,
 }
@@ -161,7 +166,8 @@ mod tests {
     fn a_change_keeps_what_it_does_not_know_and_names_only_what_was_named() {
         let dir = tempfile::tempdir().unwrap();
         let list = List::at(dir.path().join(FILE));
-        let kept = r#"{"settings": {"no_host_sleep": true}, "checkouts": [{"checkout": "/a"}]}"#;
+        let kept = r#"{"settings": {"no_host_sleep": true}, "kept_by_another": {"a": 1},
+            "checkouts": [{"checkout": "/a"}]}"#;
         std::fs::write(list.file(), kept).unwrap();
         let named = Named { host: Some("h1".into()), ..Named::default() };
         let added = list.change(|listed| {
@@ -171,7 +177,9 @@ mod tests {
         assert_eq!(added.unwrap(), 2);
         let text: Value =
             serde_json::from_str(&std::fs::read_to_string(list.file()).unwrap()).unwrap();
-        assert_eq!(text["settings"], serde_json::json!({"no_host_sleep": true}), "{text}");
+        assert_eq!(text["kept_by_another"], serde_json::json!({"a": 1}), "{text}");
+        assert_eq!(text["settings"]["no_host_sleep"], true, "{text}");
+        assert_eq!(text["settings"]["hot_cores"], Value::Null, "every setting, said or not");
         assert_eq!(text["checkouts"][0], serde_json::json!({"checkout": "/a"}), "{text}");
         assert_eq!(
             text["checkouts"][1],

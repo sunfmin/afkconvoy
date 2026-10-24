@@ -1152,12 +1152,16 @@ fn read_hot(entries: &[Entry], host: &str) -> Vec<HotRead> {
 }
 
 /// The fleet instance of `host` broken, as the log has it: its newest line
-/// of a start, a break or a coming back is a break. `runs` says whether a
+/// of a start, a break, a coming back or a stop is a break. `runs` says whether a
 /// host runner runs on this host, which starts it again.
 fn read_broken(entries: &[Entry], host: &str, runs: bool) -> Option<BrokenRead> {
     let of_host = entries.iter().rev().filter(|entry| entry.host == host);
+    // A `stop:` line after it broke: `stop` took its checkout off the list.
     let mut starts = of_host.filter(|entry| {
-        matches!(entry.what, What::Start { .. } | What::Broken { .. } | What::Back { .. })
+        matches!(
+            entry.what,
+            What::Start { .. } | What::Broken { .. } | What::Back { .. } | What::Stop { .. }
+        )
     });
     let newest = starts.next()?;
     let What::Broken { why, since, next } = &newest.what else { return None };
@@ -1545,6 +1549,10 @@ pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) ->
     // Beside admission's reading: what the last host inspection found of it.
     host["admission"]["inspected"] = crate::inspection::last_on_host()
         .map_or(Value::Null, |last| crate::inspection::last_json(&last));
+    host["settings"] = match crate::checkout_list::List::of_host() {
+        Ok(list) => crate::host_settings::json(&list, &repo.dir),
+        Err(error) => json!({"error": format!("{error:#}")}),
+    };
     let mut answer = json!({
         "host": host,
         "fleet": fleet_json(&run),
