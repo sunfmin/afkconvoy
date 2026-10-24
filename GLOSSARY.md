@@ -1,6 +1,4 @@
-# afkconvoy
-
-A command-line tool that works a repo's ready GitHub-issue backlog unattended: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).
+Every term afkconvoy's help uses, each with its one definition and the words to avoid in its place. afkconvoy works a repo's ready GitHub-issue backlog unattended, from the command line: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).
 
 ## Language
 
@@ -298,9 +296,17 @@ _Avoid_: diagnosis, alert, warning (one of its severities), error (what a comman
 The repo's build-and-test command. It is the only machine verification a change must pass before it lands.
 _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and the startup probe make), local CI
 
+**Gate limit**:
+How long the gate may run. A run that reaches it is ended and is red. A repo declares it; nothing learns it from past runs.
+_Avoid_: timeout (what a run that reached it did), budget, baseline
+
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
 _Avoid_: gate cache, CI status
+
+**Slow gate**:
+What the gate is when its recent runs for the base branch, on one host, all took most of the gate limit. The fleet opens one issue that says so, and no second while that one is open.
+_Avoid_: regression, drift, creep
 
 **Sync**:
 Bringing a branch up to date by merging into it. Nothing is ever rebased.

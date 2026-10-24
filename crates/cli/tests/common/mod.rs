@@ -498,8 +498,11 @@ impl World {
         read(&self.orca_file)
     }
 
-    /// Changes the stand-in orca's state in place.
+    /// Changes the stand-in orca's state under the same lock its calls hold:
+    /// a running host runner may be calling it while a test changes it.
     pub fn with_orca(&self, change: impl FnOnce(&mut Value)) {
+        let lock = std::fs::File::create(self.orca_file.with_extension("lock")).unwrap();
+        lock.lock().unwrap();
         let mut state = self.orca();
         change(&mut state);
         self.write_orca(&state);
@@ -1228,8 +1231,8 @@ pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
         let help = help.unwrap();
         // A word that is no command answers no help.
         let text = String::from_utf8_lossy(&help.stdout);
-        let said = text.split_once("##### Which checkout it is about").map(|(_, said)| said);
-        let said = said.map(|said| said.split("\n##### ").next().unwrap_or_default());
+        let said = text.split_once("## Which checkout it is about").map(|(_, said)| said);
+        let said = said.map(|said| said.split("\n## ").next().unwrap_or_default());
         help.status.success()
             && said.is_some_and(|said| said.contains("A worker's worktree is refused"))
     });

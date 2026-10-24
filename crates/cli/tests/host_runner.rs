@@ -338,6 +338,39 @@ fn a_second_checkout_of_a_repo_on_the_list_is_refused_naming_the_first() {
 }
 
 #[test]
+fn changing_orca_state_keeps_updates_from_a_call_already_in_progress() {
+    let world = World::new();
+    world.with_orca(|orca| orca["slow_ms"] = json!(1000));
+    let lock = std::fs::File::create(world.root.join("orca.lock")).unwrap();
+    let mut call = world
+        .command(world.root.join("bin/orca"), &world.clone)
+        .args(["status", "--json"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // The stand-in holds this lock after reading its state, until it saves
+    // the call. Change that same state while the call is still in progress.
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        match lock.try_lock() {
+            Err(std::fs::TryLockError::WouldBlock) => break,
+            Ok(()) => lock.unlock().unwrap(),
+            Err(error) => panic!("{error}"),
+        }
+        assert!(Instant::now() < until, "orca never held its state lock");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let clone2 = world.root.join("clone2");
+    world.with_orca(|orca| {
+        orca["repos"].as_array_mut().unwrap().push(json!({"id": "repo-2", "path": clone2}));
+    });
+    assert!(call.wait().unwrap().success());
+    let state = world.orca();
+    assert_eq!(state["repos"][1]["path"], json!(clone2), "{state}");
+    assert_eq!(state["calls"], json!([["status", "--json"]]), "{state}");
+}
+
+#[test]
 fn a_host_runner_started_again_starts_every_checkout_on_the_list() {
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
