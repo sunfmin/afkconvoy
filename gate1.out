@@ -1,0 +1,1 @@
+{"detail":"merging what this PR lands behind into this branch conflicted; the merge is in progress here — resolve every file, `git add` it, COMMIT the merge, and run this again. No gate ran","files":["crates/cli/src/acting.rs","docs/manual.md"],"recorded":false,"status":"conflict","woke":true}

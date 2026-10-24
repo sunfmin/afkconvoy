@@ -378,7 +378,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
   - `inspection`: the inspection running on this host, whatever its repo: {kind, repo, worker, issue, by, since, held_back_by} — worker or host, the repo whose fleet started it, the hot worker and its issue ("the host" and null of a host's), the role it runs in, when it started, in epoch seconds, and of a host's what admission held back for; null with none (`afkconvoy inspected --help`)
 - `fleet`: the `run` of this host for this repo:
 
-  - `alive`: whether one is running now
+  - `alive`: whether one is running now: this host's runner, asked on its socket naming this checkout, holds a fleet instance of this repo
   - `instance`, `host`: its fleet instance id: the one its log names, else the one the claims stamped with this host name; null when this host never ran one
   - `heartbeat_age`: seconds since its heartbeat; null: it has none
   - `heartbeats`: {found, live}: how many heartbeats the remote has, whoever stamped them, and the instance ids of those within the lease. A `run` told to stop removes its own, and a start removes the dead ones that hold nothing: more than one found and not live is fleets nobody started again
@@ -580,7 +580,7 @@ The checkout list: checkouts.json in the cache directory, kept on this host and 
 
 The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
 
-The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on a socket in the cache directory (host-runner.sock), and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
+The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
 
 Before anything else, `run` asks the host runner for its version. One of an older release than this `run`'s — after `brew upgrade afkconvoy` — is stopped as SIGTERM stops it: each fleet instance finishes the step it is in, and the checkout list is kept. Once it has let the host go, `run` starts a host runner of its own version, which starts every checkout on the same list, and then adds its own. One of a newer release refuses this `run`, which changes nothing. A build past a release (`afkconvoy --version` says `0.6.0+11.g9f58035`) is of that release, and one of the same release as the host runner's is handed the checkout as ever.
 
@@ -597,7 +597,7 @@ A fleet instance is broken when its loop panics or ends in an error, or when a s
 
 Then everything a fleet instance does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run, on the proposal of a precedent — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep.
 
-Once every fleet on this host has been idle 10 minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless the host settings keep it awake: `--no-host-sleep`, for every fleet on it, until a `run` says `--host-sleep`. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet instance listens on a socket in the cache directory (instances/, named for it) and removes it as it ends; one nobody listens on is removed by whoever finds it. Asked there, a fleet instance says its instance, repo and version, whether it keeps the host awake, since when it has been idle or not, and when it last worked; asked to tick first, it ticks, then says so.
+Once every fleet on this host has been idle 10 minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless the host settings keep it awake: `--no-host-sleep`, for every fleet on it, until a `run` says `--host-sleep`. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet on this host is a fleet instance of its one host runner, so a fleet instance asks the others there: each says its instance, repo and version, whether it keeps the host awake, since when it has been idle or not, and when it last worked; asked to tick first, it is woken, ticks, then says so.
 
 ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so are the landing train and the worker a declared verdict starts. The host says its own shares, each a whole percent, in its host settings: `--admit-load` (of its cores), `--admit-memory` and `--admit-disk` (free) — `--admit-load 400` lets the load reach four times the cores, and `--admit-disk 0` never holds for disk. A value that is no whole percent is refused, and `default` changes a share back. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
 
@@ -610,7 +610,7 @@ A fleet instance idle 10 minutes checks then, tick due or not, and again 10 minu
 - nobody touched the keyboard or mouse for ten minutes (HIDIdleTime, from `ioreg`);
 - every fleet instance, itself included, asked to tick, does so and still answers idle within two minutes.
 
-One that does not answer in time is not idle: the host stays awake this time, and is checked again later. A `run` of a version without the socket is not seen, and keeps nothing awake.
+One that does not answer in time is not idle: the host stays awake this time, and is checked again later.
 
 It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, that says what it found with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets; it takes no slot of the `concurrency`, and is ended after 15 minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, a fleet instance sleeps 30 seconds at most.
 
@@ -824,7 +824,7 @@ The operator, in a checkout on the list or naming one; with `--all`, anywhere on
 
 The checkout list: checkouts.json in the cache directory. `stop` takes the checkout off it; `--all` leaves it as it is.
 
-The host runner, asked on its socket. Its fleet instance of the checkout — every one, with `--all` — stops as SIGTERM has it stop: it finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps. No claim is released and no worker is stopped: the workers work on. Holding no claim, it takes its heartbeat off the remote; holding one, it leaves it with the claims, and the next start on this host takes them back. Its tick log keeps its `stop:` line, as ever. With `--all`, the host runner ends once every fleet instance has, and `stop` answers once it has ended.
+The host runner, spoken to on its socket in the cache directory (host-runner.sock), naming the checkout. Its fleet instance of the checkout — every one, with `--all` — stops as SIGTERM has it stop: it finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps. No claim is released and no worker is stopped: the workers work on. Holding no claim, it takes its heartbeat off the remote; holding one, it leaves it with the claims, and the next start on this host takes them back. Its tick log keeps its `stop:` line, as ever. With `--all`, the host runner ends once every fleet instance has, and `stop` answers once it has ended.
 
 The host runner's log has a line of each, beside the line of each fleet instance that ended:
 
@@ -910,13 +910,13 @@ and open the address it answers. Run it again whenever you want that address bac
 
 ##### Who runs it
 
-The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any checkout of it but a worker's worktree, and no other repo's.
+The operator, in a checkout of the repo. `--open` reaches this host's fleet instance of the repo, through the host runner, from any checkout of it but a worker's worktree, and no other repo's.
 
 ##### What it reads and writes
 
 It writes nothing, on GitHub or on the remote, and makes no startup probe. It makes the rebuild `plan` makes — the open issues and PRs, the claims and heartbeats, the landing train, and in a bound repo the team and every stage record — then asks orca after the worker of each claim of `--instance` on this host.
 
-With `--open` it reads nothing itself and takes no `--instance`: it asks the `run` of this host for this repo, over a socket in the repo's git dir, to serve the panel that `run` holds. That `run` goes on as the fleet instance it is — its claims, its workers and the tick it is in are untouched, and it answers whether it sleeps or ticks. A panel newly opened ends its sleep, as a `wake` does: the page is filled by the tick that follows, then by every tick after it. It is served to this host only.
+With `--open` it reads nothing itself and takes no `--instance`: it speaks to the host runner, on its socket in the cache directory (host-runner.sock), naming its checkout, and has the fleet instance it holds of this repo serve the panel that fleet instance holds. That fleet instance goes on as it is — its claims, its workers and the tick it is in are untouched, and it answers whether it sleeps or ticks. A panel newly opened ends its sleep, as a `wake` does: the page is filled by the tick that follows, then by every tick after it. It is served to this host only.
 
 ##### What it answers
 
@@ -937,14 +937,17 @@ With `--open`, one JSON object:
 
 - `panel`: the address to open in a browser of this host: http://127.0.0.1:<port>/
 - `port`: the port in it
-- `opened`: true: this call had the `run` begin serving it. false: it was served already — since its start, or an earlier `--open` — and this is where
+- `opened`: true: this call had the fleet instance begin serving it. false: it was served already — since its start, or an earlier `--open` — and this is where
 - `instance`: the fleet instance that serves it
 
-Its errors, as {"error": …} with a non-zero exit, none of which changes anything of a `run`, which works on as it was:
+Its errors, as {"error": …} with a non-zero exit, none of which changes anything of the host runner or its fleet instances, which work on as they were:
 
-- no afkconvoy run is running for this repo on this host: start one with `afkconvoy run`, or print the page once, without `--open`
-- the panel was not opened …: the panel cannot be served on port <port>: …: the port is taken, or not yours to take: name another, or none
-- the run of this repo on this host did not answer …: ask again: one that opened it says so, with `opened` false
+- no host runner runs on this host, so there is no live panel to open: start one with `afkconvoy run`, or print the panel once with `afkconvoy panel` — what it answers when none runs
+- the panel was not opened, and nothing changed: this host runner (pid <pid>) holds no fleet instance of <repo>: `afkconvoy run <checkout>` adds it
+- the panel was not opened, and nothing changed: the fleet instance of <repo> is broken, and waits to be started again: `afkconvoy doctor` says why, and `afkconvoy run <checkout>` starts it again now
+- the panel was not opened, and nothing changed: its fleet instance is starting, and holds no panel yet: ask again once its first tick ended
+- the panel was not opened, and nothing changed: the panel cannot be served on port <port>: …: the port is taken, or not yours to take: name another, or none
+- the host runner did not answer …: ask again: one that opened it says so, with `opened` false
 
 ##### What trips you up
 
@@ -1013,7 +1016,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -1085,7 +1088,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -1153,7 +1156,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -1228,7 +1231,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -1315,7 +1318,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -1985,7 +1988,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2078,7 +2081,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2177,7 +2180,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2252,7 +2255,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2302,7 +2305,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2372,7 +2375,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2443,7 +2446,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2467,19 +2470,19 @@ Once, as a worker's last command: after its PR is on the landing train, or its v
 
 ##### Who runs it
 
-A worker, in its own worktree — any worktree or checkout of the repo on the fleet's host reaches the same `run`.
+A worker, in its own worktree — any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
 
 ##### What it reads and writes
 
-It sends one signal to the `run` of this host for this repo, over a socket in the repo's git directory — naming itself, and the issue the worker is on if its environment says one — and waits 3 seconds at most for that `run`'s answer, on a socket of its own in the temp directory that it removes as it ends. The signal carries nothing else and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
+It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits 3 seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
 
 ##### What it answers
 
-{"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The `run`'s log says "tick N: started (woken by wake #12)" of it.
+{"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
 
-{"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The `run`'s log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
+{"woke": true, "after_tick"} — tick `after_tick` is in progress: the next starts as it ends. The fleet instance's tick log says "woken by wake #12 during tick N: tick N+1 follows" of the first such wake.
 
-{"woke": false, "detail"} — no `run` heard it: none is listening for this repo on this host, or the one listening did not answer within 3 seconds. `detail` says which, with the line that fixes it: start one with `afkconvoy run`, or ask `afkconvoy doctor`.
+{"woke": false, "detail"} — no fleet instance heard it. With no host runner on this host, `detail` is "no host runner runs on this host, so no fleet instance heard it: start one with `afkconvoy run <checkout>`". Otherwise the host runner holds no fleet instance of this repo, holds it broken — waiting to be started again — or did not answer within 3 seconds: `detail` says which, with the line that fixes it — `afkconvoy run <checkout>`, or ask `afkconvoy doctor`.
 
 It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the 3 seconds it waits.
 
@@ -2487,7 +2490,7 @@ It exits 0 with each of them. Errors: only "is not in a git checkout". Failing t
 
 - It reports nothing. A worker's outcome is its PR on the train or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
 - `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
-- It reaches a `run` only, on this host only. A fleet driven by `tick` hears nothing.
+- It reaches a fleet instance of this host's runner only. A fleet driven by `tick` hears nothing.
 
 ##### Which checkout it is about
 
@@ -2495,7 +2498,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2614,7 +2617,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2669,7 +2672,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2722,7 +2725,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2774,7 +2777,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2830,7 +2833,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2880,7 +2883,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -2936,7 +2939,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -3031,7 +3034,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -3080,7 +3083,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -3130,7 +3133,7 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -3212,7 +3215,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -3286,7 +3289,7 @@ Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, w
 
 ##### What it logs
 
-As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
+As it acts it appends one line to the tick log of this host for this repo, then wakes this host's fleet instance of this repo, through the host runner; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
 
 ##### Usage
 
@@ -3908,10 +3911,9 @@ Each command reads the variable for itself, so two commands find the same copies
 - `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. A worker of a bound repo starts in one; an unbound repo has none.
 - `harness/`: the user directory the fleet keeps for pi and for Codex, a worker's in place of yours: harness/pi, harness/codex.
 - `runs/`: the tick log of each repo's fleet instance, one file per repo: what `doctor` reads. It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000, the oldest dropped first.
-- `instances/`: the socket each fleet instance of this host listens on, whatever its repo, named for it: how they find one another before one puts the host to sleep. A fleet instance removes its own as it ends.
 - `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named, and beside them the host settings (`afkconvoy run --help`); `checkouts.lock`, held while it is changed.
 - `host-runner.lock`: held by the host runner as long as it runs, so a host has one; it says its pid, its version and when it started.
-- `host-runner.sock`: the socket `run` asks the host runner on.
+- `host-runner.sock`: the host runner's socket, the one socket of the host: `run`, `stop`, `wake`, `panel --open` and `doctor` speak to the host runner there, each naming its checkout. No fleet instance and no repo has a socket of its own. One nobody listens on — a host runner killed with no goodbye left it — is removed by whoever finds it.
 - `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC.
 - `host-inspection/`: what the last inspection of the host was given (evidence.md) and what it found (last.json), whichever fleet of the host started it: what `doctor` and the panel show beside admission's reading.
 
@@ -3925,7 +3927,7 @@ None of it is fleet state: that is in GitHub and on the repo's remote.
 
 ### `afkconvoy help tick-log`
 
-What every command that acts does as it ends, whoever runs it: the line it adds to the tick log, and the `run` it wakes. A command's own `--help` says, under "What it logs", that it is one.
+What every command that acts does as it ends, whoever runs it: the line it adds to the tick log, and the fleet instance it wakes. A command's own `--help` says, under "What it logs", that it is one.
 
 #### The line it logs
 
@@ -3936,11 +3938,11 @@ park #46 (operator): blocked by #99
 verdict #121 (worker): FAILED: issue #121 is closed
 ```
 
-#### The `run` it wakes
+#### The fleet instance it wakes
 
-Then it wakes this host's fleet instance of this repo, which logs `woken by park #46` and starts its next tick, or follows the one in progress with it; it waits 3 seconds at most for it to answer. Its answer says whether it woke one, as "woke". With none listening it does nothing more.
+Then it wakes this host's fleet instance of this repo, asking the host runner on its socket, naming its checkout: the fleet instance logs `woken by park #46` and starts its next tick, or follows the one in progress with it. It waits 3 seconds at most for the answer, which says whether it woke one, as "woke". With no host runner, or none holding a fleet instance of this repo, it does nothing more.
 
-Both are soft: a command acts the same whether either can be done, and with no `run` listening its line is in the log all the same.
+Both are soft: a command acts the same whether either can be done, and with no fleet instance to wake its line is in the log all the same.
 
 ### `afkconvoy help worker-proxy`
 

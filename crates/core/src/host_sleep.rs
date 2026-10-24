@@ -54,7 +54,7 @@ pub fn worked(held: usize, on_train: bool) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Asked {
     Answered(Standing),
-    /// Something listens on its socket, and did not answer in time.
+    /// It was asked, and did not answer in time.
     Silent {
         instance: String,
     },
@@ -125,8 +125,7 @@ pub struct Host {
 /// What keeps the host awake at `now`, for an instance that last worked at
 /// `worked`, given `host` and what every instance on it — itself included —
 /// answered, each having to have been idle `wait` seconds and the keyboard and
-/// mouse untouched `IDLE_WAIT`: nothing, and the host is put to sleep. An instance of a version without the socket is in
-/// none of `asked`, and keeps nothing awake.
+/// mouse untouched `IDLE_WAIT`: nothing, and the host is put to sleep.
 pub fn awake(worked: Option<u64>, host: &Host, asked: &[Asked], now: u64, wait: u64) -> Vec<Awake> {
     let mut awake = vec![];
     match host.woke {

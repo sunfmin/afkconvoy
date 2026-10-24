@@ -232,3 +232,15 @@ fn doctor_all_answers_each_checkouts_doctor_and_the_hosts_findings_once() {
     let none = world.afk(&["doctor", "--all"]).ok();
     assert_eq!((&none["checkouts"], &none["findings"]), (&json!([]), &json!([])));
 }
+
+#[test]
+fn a_fleet_instance_held_in_the_foreground_says_it_holds_its_checkout_alone() {
+    let world = World::new();
+    let running = world.running(&["--instance", "alpha", "--host", "h1"]);
+    let first = running.line(std::time::Duration::from_secs(20)).expect("the first tick");
+    assert!(first.starts_with("tick 1: "), "{first}");
+
+    let answer = world.afk_in(&world.root, &["checkouts"]).ok();
+    assert_eq!(answer["host_runner"]["foreground"], true, "{answer}");
+    assert_eq!(answer["checkouts"], json!([]), "it leaves the list alone: {answer}");
+}
