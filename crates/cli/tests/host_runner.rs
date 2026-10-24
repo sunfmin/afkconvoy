@@ -58,11 +58,11 @@ fn run_adds_its_checkout_and_answers_once_its_first_tick_ended() {
     let world = World::new();
     // from a directory in the checkout: the checkout is its root
     let answer = world.afk_in(&world.clone.join("docs"), &RUN).ok();
-    let expected = ["added", "checkout", "first_tick", "host_runner", "instance", "repo"];
-    let expected = expected.into_iter().chain(["tick_log", "warnings"]).map(String::from);
-    assert_eq!(keys(&answer), expected.collect(), "{answer}");
-    let about = ["log", "pid", "started", "version"].map(String::from);
-    assert_eq!(keys(&answer["host_runner"]), BTreeSet::from(about), "{answer}");
+    // what the help shows is what it answers, key for key
+    let help = &common::shown("`afkconvoy run`", "json")[0];
+    let help: Value = serde_json::from_str(help).unwrap();
+    assert_eq!(keys(&answer), keys(&help), "{answer}");
+    assert_eq!(keys(&answer["host_runner"]), keys(&help["host_runner"]), "{answer}");
     assert_eq!(answer["checkout"], json!(world.clone), "{answer}");
     assert_eq!(answer["repo"], json!(world.bare), "a remote that is a path is its directory");
     assert_eq!((&answer["added"], &answer["host_runner"]["started"]), (&json!(true), &json!(true)));

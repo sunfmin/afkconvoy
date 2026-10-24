@@ -11,6 +11,6 @@ verdict #121 (worker): FAILED: issue #121 is closed
 
 ## The `run` it wakes
 
-Then it wakes this host's `run` for this repo, which logs `woken by park #46` and starts its next tick, or follows the one in progress with it; it waits {const:WAKE_ANSWER_SECONDS} seconds at most for the `run` to answer. Its answer says whether it woke one, as "woke". With no `run` listening it does nothing more.
+Then it wakes this host's fleet instance of this repo, which logs `woken by park #46` and starts its next tick, or follows the one in progress with it; it waits {const:WAKE_ANSWER_SECONDS} seconds at most for it to answer. Its answer says whether it woke one, as "woke". With none listening it does nothing more.
 
 Both are soft: a command acts the same whether either can be done, and with no `run` listening its line is in the log all the same.

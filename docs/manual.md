@@ -2,7 +2,7 @@
 
 # `afkconvoy`
 
-afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one `afkconvoy run` — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
+afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one per repo, held by the host's one host runner, which `afkconvoy run` starts — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
 
 This manual is the whole of afkconvoy's help: this guide, the way in; then every command under who runs it; then the topics, what belongs to no one command. `afkconvoy -h` lists the commands on one screen.
 
@@ -20,13 +20,13 @@ This manual is the whole of afkconvoy's help: this guide, the way in; then every
 
 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only where the config names a team: does the team load? A team is designed first: see designing a team, below.
 2. `afkconvoy plan`: what a tick would act on. It changes nothing.
-3. `afkconvoy run`: the fleet instance, tick after tick, until stopped.
+3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 
 And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
 
 ## What a command answers
 
-Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. `run` instead prints its log — a line as each tick starts and one as it ends — until stopped, `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, and `exclusive` as its command does.
+Every command prints exactly one JSON object on stdout. A failure is {"error": …} with a non-zero exit — and "see" beside it, where a topic explains it: the command that prints that topic. Warnings go to stderr. A few print otherwise: `show` a drawing unless asked about an issue, `help` Markdown as `--help` does, `skill` the text of a file, `guard` answers as a hook does, with its exit code, and `exclusive` as its command does. A fleet instance prints nothing: it logs a line as each tick starts and one as it ends, in its tick log.
 
 ## The commands, by who runs them
 
@@ -48,8 +48,8 @@ What belongs to no one command. `afkconvoy help <topic>` prints one: Markdown, a
 
 ## Rules to know before you start
 
-- One fleet instance per host per repo. A second `run` on a host takes the first one's claims: never start one beside a fleet that is running.
-- `run` never returns. Do not wait on it: start it in the background and read its lines, or use `tick` for one pass that exits.
+- One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
+- `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until it is stopped. `tick` is one pass that exits.
 - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A missing harness refuses the start.
 - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard (`afkconvoy run --help` says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 
@@ -436,42 +436,67 @@ Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any direc
 
 #### `afkconvoy run`
 
-Run the fleet: tick after tick, until stopped
+Add a checkout to this host's checkout list, start the host runner where none runs, and answer the checkout's first tick
 
 ##### When to run it
 
-To work the backlog: after `config` answers and `plan` shows the frontier you expect. Run it again to start a fleet that was stopped — it picks up where that one left off.
+To have a repo worked: after `config` answers and `plan` shows the frontier you expect. Run it again after the host runner was stopped or killed, or the host restarted: it starts every checkout on the list, each where its fleet instance left off.
 
 ##### Who runs it
 
-The operator, in a checkout of the repo, in the background: it never returns.
+The operator, in a checkout of the repo or naming one. It returns once that checkout's fleet instance has ended its first tick; the host runner ticks on, in the background, until it is stopped.
 
 ##### What it reads and writes
 
-Everything the fleet does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run, on the proposal of a precedent — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep.
+The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not left there.
 
-Once every fleet on this host has been idle 10 minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless it was told `--no-host-sleep` (or AFKCONVOY_NO_HOST_SLEEP=true), which keeps the host awake for every fleet on it. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every `run` listens on a socket in the cache directory (instances/, named for its fleet instance) and removes it as it exits; one nobody listens on is removed by whoever finds it. Asked there, a `run` says its instance, repo and version, whether it was told `--no-host-sleep`, since when it has been idle or not, and when it last worked; asked to tick first, it ticks, then says so.
+The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on a socket in the cache directory (host-runner.sock), and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, and with `--no-host-sleep` and `--hot-*` as the login shell's environment says; a checkout whose fleet instance cannot start stays on the list, and its log says why.
 
-ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so are the landing train and the worker a declared verdict starts. The host says its own shares, each a whole percent, in the environment of `run`, `tick`, `plan` and `doctor`: AFKCONVOY_ADMIT_LOAD (of its cores), AFKCONVOY_ADMIT_MEMORY and AFKCONVOY_ADMIT_DISK (free) — AFKCONVOY_ADMIT_LOAD=400 lets the load reach four times the cores, and AFKCONVOY_ADMIT_DISK=0 never holds for disk. A value that is no whole percent is an error. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
+The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as each fleet instance starts and ends, as a checkout is added, refused or removed, and each line a fleet instance says outside its tick log: its warnings, and the `panel:` line.
 
-When admission has held back for one reason — load, memory or disk — at every tick for ten minutes in a row (AFKCONVOY_ADMIT_INSPECT_AFTER, in whole seconds, says the host's own span), `run` starts an inspection of the host: the stock consult, in a checkout of its own, given what was taken down as it started — admission's reading and shares; for disk, what each of this host's worktrees of every fleet holds, with its issue, its stage and whether a worker holds it, the landing train's among them, the fleet's caches and the largest directories of the whole volume under the home folder outside them (`du -x`, at most five minutes); for load or memory, the process trees of each worker and of the train, and the hottest processes outside them. Holding back for reasons that change starts none. It runs once an episode, which ends once admission has admitted for five minutes, and not where another fleet of the host inspected it in the same episode. It says what it found with `afkconvoy inspected`: reclaimable, fleet or not-its. For reclaimable it frees what can be rebuilt under the home folder — what git ignores in a checkout no process uses, a closed issue's worktree, a tool's cache — and names what cannot, never deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the repo, with the escalate label and the label fleet-outgrows-host, and no other while that one is open. What it found is a line of the log, and shown by the panel and `doctor` beside admission's reading.
+Two kinds of checkout are refused, with an error and nothing on the list: one whose fleet instance is refused before its first tick — it fails the startup probe, say — which is taken off the list when it was on it; and a second checkout of a repo already on the list, a clone or a worktree of it: a host runs one fleet instance per repo, and the error names the checkout to run it from.
 
-A `run` idle 10 minutes checks then, tick due or not, and again 10 minutes after a check that kept the host awake. It puts the host to sleep only when all hold:
+Then everything a fleet instance does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run, on the proposal of a precedent — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep.
+
+Once every fleet on this host has been idle 10 minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless it was told `--no-host-sleep` (or AFKCONVOY_NO_HOST_SLEEP=true), which keeps the host awake for every fleet on it. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet instance listens on a socket in the cache directory (instances/, named for it) and removes it as it ends; one nobody listens on is removed by whoever finds it. Asked there, a fleet instance says its instance, repo and version, whether it was told `--no-host-sleep`, since when it has been idle or not, and when it last worked; asked to tick first, it ticks, then says so.
+
+ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so are the landing train and the worker a declared verdict starts. The host says its own shares, each a whole percent, in the environment of the host runner — its login shell's — and of `tick`, `plan` and `doctor`: AFKCONVOY_ADMIT_LOAD (of its cores), AFKCONVOY_ADMIT_MEMORY and AFKCONVOY_ADMIT_DISK (free) — AFKCONVOY_ADMIT_LOAD=400 lets the load reach four times the cores, and AFKCONVOY_ADMIT_DISK=0 never holds for disk. A value that is no whole percent is an error. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
+
+When admission has held back for one reason — load, memory or disk — at every tick for ten minutes in a row (AFKCONVOY_ADMIT_INSPECT_AFTER, in whole seconds, says the host's own span), the fleet instance starts an inspection of the host: the stock consult, in a checkout of its own, given what was taken down as it started — admission's reading and shares; for disk, what each of this host's worktrees of every fleet holds, with its issue, its stage and whether a worker holds it, the landing train's among them, the fleet's caches and the largest directories of the whole volume under the home folder outside them (`du -x`, at most five minutes); for load or memory, the process trees of each worker and of the train, and the hottest processes outside them. Holding back for reasons that change starts none. It runs once an episode, which ends once admission has admitted for five minutes, and not where another fleet of the host inspected it in the same episode. It says what it found with `afkconvoy inspected`: reclaimable, fleet or not-its. For reclaimable it frees what can be rebuilt under the home folder — what git ignores in a checkout no process uses, a closed issue's worktree, a tool's cache — and names what cannot, never deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the repo, with the escalate label and the label fleet-outgrows-host, and no other while that one is open. What it found is a line of the log, and shown by the panel and `doctor` beside admission's reading.
+
+A fleet instance idle 10 minutes checks then, tick due or not, and again 10 minutes after a check that kept the host awake. It puts the host to sleep only when all hold:
 
 - it worked — held a claim, or had something on the landing train — since the host last woke (`sysctl kern.waketime`): a host woken, by hand or otherwise, stays awake until a fleet on it works again;
-- every `run` on the host answers within two seconds, none was told `--no-host-sleep`, and each has been idle 10 minutes;
+- every fleet instance on the host answers within two seconds, none was told `--no-host-sleep`, and each has been idle 10 minutes;
 - nobody touched the keyboard or mouse for ten minutes (HIDIdleTime, from `ioreg`);
-- every `run`, itself included, asked to tick, does so and still answers idle within two minutes.
+- every fleet instance, itself included, asked to tick, does so and still answers idle within two minutes.
 
 One that does not answer in time is not idle: the host stays awake this time, and is checked again later. A `run` of a version without the socket is not seen, and keeps nothing awake.
 
-It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, that says what it found with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets; it takes no slot of the `concurrency`, and is ended after 15 minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, `run` sleeps 30 seconds at most.
+It samples what each worker's processes take every ten seconds. As one turns hot (`afkconvoy help concepts`, Hot worker) it takes down what shows it — the process tree, a five-second `sample` of the hottest process, the resident memory of late, what its processes wrote, the largest directories of its worktree — and starts an inspection of it once per episode: a worker in the role of the stage's consult, in a checkout of its own, that says what it found with `afkconvoy inspected`. One inspection runs on this host at a time, across its fleets; it takes no slot of the `concurrency`, and is ended after 15 minutes. A host inspection is held to the same: of either kind, one runs on the host at a time, and a hot worker waiting for one goes first. While one runs, or a hot worker or the host waits for one, a fleet instance sleeps 30 seconds at most.
 
-It also keeps a log on this host, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under "What it logs", and [`afkconvoy help tick-log`](help:tick-log) says what the line holds); `run` does not print those. It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000. A line is written whole as it happens, so killing `run` loses none, and none a command appends while `run` cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
+Each fleet instance also keeps a log on this host, its tick log, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under "What it logs", and [`afkconvoy help tick-log`](help:tick-log) says what the line holds). It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000. A line is written whole as it happens, so killing the host runner loses none, and none a command appends while the fleet instance cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
 
 ##### What it answers
 
-On stdout, every line it writes to its log, as it is written and in the same order, until it is stopped; then, told to stop with SIGTERM or Ctrl-C, one `stop:` line and {"stopped": true, "ticks", "instance"}, with exit 0.
+Once its checkout's fleet instance has ended its first tick, with exit 0:
+
+```json
+{"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj", "added": true,
+ "instance": "me-h1-1a2b3c4d",
+ "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log", "started": true},
+ "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl",
+ "first_tick": "tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s",
+ "warnings": []}
+```
+
+- `repo`: the repo the checkout is of, as its remote `origin` names it.
+- `added`: false when the checkout was on the list already. Where its fleet instance runs, the flags of this `run` change nothing, and the answer is that instance, with its own first tick.
+- `host_runner`: the one that answered — its pid, its version and its log — and whether this `run` started it.
+- `tick_log` and `first_tick`: the fleet instance's tick log, and the line that ended its first tick. `<cache>` stands for the cache directory, whole in the answer.
+- `warnings`: the startup probe's, also on stderr; empty where this `run` waited on no start.
+
+Each fleet instance's lines, as its tick log holds them — `run` prints none of them, and `afkconvoy doctor` reads them back:
 
 ```
 start: run as tester-h1-1a2b3c4d on h1, its workers started with `claude`
@@ -493,7 +518,7 @@ tick 6: escalated #15 (workup: consult let it through) · holding 1/3 · frontie
 tick 7: dispatched #71 · skipped #68 (blocked by #71) · holding 2/3 · frontier 0 · next in 90s
 ```
 
-The second `start:` line is there unless it was told `--no-host-sleep`. Every tick has a line as it starts, before it does anything, naming why: `timer` (its sleep ran out), `woken` (a wake ended the sleep, or was heard during the tick before: `woken by` the command that sent it, and what that acted on, where it named them), `start` (the run's first) or `follow-up` (the tick before left a worker to start, or could not reach GitHub, so it runs with no sleep). A wake heard during a tick is a line as it is heard — the first of each tick — and the next tick starts as that one ends: ticks never overlap. A check for host sleep is a line, and so is the host waking from a sleep, as `run` notices it — a rest that took a minute past its length — and being told to stop:
+The second `start:` line is there unless it was told `--no-host-sleep`. Every tick has a line as it starts, before it does anything, naming why: `timer` (its sleep ran out), `woken` (a wake ended the sleep, or was heard during the tick before: `woken by` the command that sent it, and what that acted on, where it named them), `start` (the fleet instance's first) or `follow-up` (the tick before left a worker to start, or could not reach GitHub, so it runs with no sleep). A wake heard during a tick is a line as it is heard — the first of each tick — and the next tick starts as that one ends: ticks never overlap. A check for host sleep is a line, and so is the host waking from a sleep, as the fleet instance notices it — a rest that took a minute past its length — and being told to stop:
 
 ```
 tick 4: started (woken by verdict #121)
@@ -511,7 +536,7 @@ A tick's line names what it did — lost, escalated, released, left, settled, en
 
 `escalated #15 (workup: consult let it through)`: the tick handed #15 to a human, whichever step did, with why in a few words — the stage first, where it was at one. It is named as nothing else. The comment on the issue says why in full and ends with the line that answers it; `afkconvoy doctor` lists it under `waiting_on_human`.
 
-A change made on GitHub, or by another host's fleet, shows on this host at the next tick, and in no other way: that tick reads GitHub and the remote, as every tick does. Nothing reaches a `run` sooner — no webhook, no port — and `afkconvoy wake` makes that next tick start now. Where the tick acts on such a change, its line says what changed since the tick before, and who changed it where that is known:
+A change made on GitHub, or by another host's fleet, shows on this host at the next tick, and in no other way: that tick reads GitHub and the remote, as every tick does. Nothing reaches a fleet instance sooner — no webhook, no port — and `afkconvoy wake` makes that next tick start now. Where the tick acts on such a change, its line says what changed since the tick before, and who changed it where that is known:
 
 ```
 tick 8: lost #46 to instance beta-1a2b3c4d on host h2 (takeover) · holding 1/3 · frontier 0 · next in 90s
@@ -521,28 +546,29 @@ tick 9: left #97 (closed by @alice) · holding 1/3 · frontier 0 · next now
 tick 9: skipped #320 (blocked by #379, added since tick 8) · holding 1/3 · frontier 0 · next in 90s
 ```
 
-`lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, or `(the issue is gone from this repo)`, transferred. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the `run`'s first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
+`lost #46`: a claim this instance held is another's now — taken by a takeover, or `(stale: past the lease)`, as a stale claim, this instance's heartbeat being past the lease. `released #231`: its issue was deleted, or `(the issue is gone from this repo)`, transferred. `left #97`: a claim with no PR whose issue was closed, by whoever GitHub says closed it (`closed on GitHub` where it says no one), is settled — nothing of the fleet's landed. `labelled …` and `added since …` say what the tick before saw otherwise. A change the tick does nothing about is in no line; nor is one made before the fleet instance's first tick, which has no tick before it, nor anything of the kind in what `afkconvoy tick` answers.
 
 `next now` in place of `next in <n>s`: the tick settled an issue, or advanced one without starting what follows, and left a slot free, so what follows — a consult, the join of a PR, an issue the landing unblocked — is the next tick's to start, and that tick starts with no sleep.
 
 So does the tick after one that failed on a read GitHub could not be reached for (`GitHub could not be reached: …`): nothing says the next read fails too. At most 4 ticks run back to back; then it sleeps, whatever the last one left.
 
-With `--panel <port>` its first line is the panel's address, and it serves the panel there until it is killed: the fleet as a web page — every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train — brought up to date in the browser after every tick, by itself. `afkconvoy panel --help` says what the page shows.
+With `--panel <port>` its checkout's fleet instance serves the panel on that port until it ends: the fleet as a web page — every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train — brought up to date in the browser after every tick, by itself. `afkconvoy panel --help` says what the page shows. Its address is a line of the host runner's log, after the checkout:
 
 ```
-panel: http://127.0.0.1:7070/
+/Users/me/Developments/hkj: panel: http://127.0.0.1:7070/
 ```
 
-Started without it, it serves the same page once `afkconvoy panel --open` asks it to, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then prints that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
+Started without it — and started again by the host runner, which keeps no `--panel` — a fleet instance serves the same page once `afkconvoy panel --open` asks it to, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then logs that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
 
-Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role.
+Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
 
 ##### What trips you up
 
-- Stop it with SIGTERM or Ctrl-C: it finishes the step it is in, makes none of the steps left in its tick, and exits — within a second when it sleeps. No claim is released on the way out and no worker is stopped: the workers work on, and the next `run` on this host takes the claims back. Holding no claim, it removes its heartbeat from the remote; holding one, it leaves it, and that next `run` removes it. A second signal ends it at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run and a proposal it takes back are ended by its first tick once their worker is gone or has stopped, as any run of its own.
-- Without `--instance` it mints a new instance id, named for this host, and its lines never print it. `afkconvoy doctor` finds it, and says it as `fleet.instance`, for `plan --instance` and the commands that make one transition by hand.
-- Its lines are gone with the terminal they were printed in. The same lines are in its log, a day of them at the least: `afkconvoy doctor` reads it back.
-- A second `run` on this host for this repo takes the first one's claims at its start.
+- Stop the host runner with SIGTERM to its pid, `host_runner.pid` in any `run`'s answer: each fleet instance finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps — and the host runner exits once every one has, keeping the checkout list: the next `run` starts every checkout on it. No claim is released on the way out and no worker is stopped: the workers work on, and the next start on this host takes the claims back. Holding no claim, a fleet instance removes its heartbeat from the remote; holding one, it leaves it, and that next start removes it. A second signal ends the host runner at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run and a proposal it takes back are ended by its first tick once their worker is gone or has stopped, as any run of its own.
+- Ctrl-C while `run` waits ends that `run` alone: the host runner is in a process group of its own, and goes on with the checkout.
+- The flags of a `run` whose checkout's fleet instance runs already change nothing: stop the host runner, and run again with the flags you want.
+- Without `--instance` each start mints a new instance id, named for this host: the answer says it as `instance`, and `afkconvoy doctor` as `fleet.instance`, for `plan --instance` and the commands that make one transition by hand.
+- AFKCONVOY_ADMIT_* reach every fleet instance from the host runner's environment, its login shell's, and not from the shell of any `run`; so do AFKCONVOY_NO_HOST_SLEEP and AFKCONVOY_HOT_*, to one the host runner starts again. Export them in your login shell's rc files.
 - The panel is served to this host only, and shows a tick, not this second: between two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
 - Every worker launch command comes from the host kit: run `afkconvoy kit` to write it again. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed. `--worker-command` is gone. On a host with no host kit, `run` writes one as `afkconvoy kit` does, at a terminal or not, asking nothing: it says on stderr where the file is, what it holds and what was left out, and goes on to its first tick. A harness absent from the kit has no implicit stock command. Harness selection still follows a switch, a stage or patrol, then the repo's config.
 - Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. Nothing else of an unbound repo's worker launch command is touched.
@@ -3089,14 +3115,18 @@ Setting XDG_CACHE_HOME, and nothing else: there is no flag and no config key for
 XDG_CACHE_HOME="$PWD/.cache" afkconvoy check
 ```
 
-Each command reads the variable for itself, so two commands find the same copies and the same log only under the same value: a `doctor` run without the one a `run` was started with reads another directory, and finds no log there.
+Each command reads the variable for itself, so two commands find the same copies and the same log only under the same value: a `doctor` run without the one a `run` was started with reads another directory, and finds no log there. The host runner keeps the directory of the `run` that started it, whatever its login shell sets, and so does every fleet instance it holds; a `run` under another value asks the host runner of that directory, and starts one there where none answers.
 
 ## What it holds
 
 - `copies/`: the fleet's copy of a team's repo and of each role's, one per commit, read-only: copies/<owner>/<repo>/<commit>. A worker of a bound repo starts in one; an unbound repo has none.
 - `harness/`: the user directory the fleet keeps for pi and for Codex, a worker's in place of yours: harness/pi, harness/codex.
-- `runs/`: the log of each repo's `run`, one file per repo: what `doctor` reads. It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000, the oldest dropped first.
-- `instances/`: the socket each `run` of this host listens on, whatever its repo, named for its fleet instance: how they find one another before one puts the host to sleep. A `run` removes its own as it exits.
+- `runs/`: the tick log of each repo's fleet instance, one file per repo: what `doctor` reads. It keeps every line of the last 24 hours, and never fewer than 200 lines nor more than 5000, the oldest dropped first.
+- `instances/`: the socket each fleet instance of this host listens on, whatever its repo, named for it: how they find one another before one puts the host to sleep. A fleet instance removes its own as it ends.
+- `checkouts.json`: the checkout list, the checkouts the host runner works, each with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; `checkouts.lock`, held while it is changed.
+- `host-runner.lock`: held by the host runner as long as it runs, so a host has one; it says its pid, its version and when it started.
+- `host-runner.sock`: the socket `run` asks the host runner on.
+- `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC.
 - `host-inspection/`: what the last inspection of the host was given (evidence.md) and what it found (last.json), whichever fleet of the host started it: what `doctor` and the panel show beside admission's reading.
 
 None of it is fleet state: that is in GitHub and on the repo's remote.
@@ -3122,7 +3152,7 @@ verdict #121 (worker): FAILED: issue #121 is closed
 
 ## The `run` it wakes
 
-Then it wakes this host's `run` for this repo, which logs `woken by park #46` and starts its next tick, or follows the one in progress with it; it waits 3 seconds at most for the `run` to answer. Its answer says whether it woke one, as "woke". With no `run` listening it does nothing more.
+Then it wakes this host's fleet instance of this repo, which logs `woken by park #46` and starts its next tick, or follows the one in progress with it; it waits 3 seconds at most for it to answer. Its answer says whether it woke one, as "woke". With none listening it does nothing more.
 
 Both are soft: a command acts the same whether either can be done, and with no `run` listening its line is in the log all the same.
 
@@ -3299,7 +3329,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - **The labels were moved back, and the issue escalated again**: A label is not where an issue is: [`afkconvoy help humans`](help:humans).
 - **A stage's verdict counted for nothing**: Its record names another stage than its claim was for. `afkconvoy show --issue <n>` says how each record was read; `afkconvoy send` puts the issue where it belongs.
 - **Another host's fleet died**: Its claims go stale by themselves and are taken. Or: `afkconvoy takeover --help`.
-- **Everything must stop now**: Kill `run`, then close the workers' terminals in orca. Every issue keeps its labels and stage records: a later `run` goes on from where each one was.
+- **Everything must stop now**: SIGTERM the host runner (`host_runner.pid` in any `run`'s answer), then close the workers' terminals in orca. Every issue keeps its labels and stage records: a later `run` goes on from where each one was.
 
 ### `afkconvoy help glossary`
 
@@ -3582,7 +3612,7 @@ The one web page that shows a human where every fleet of a host stands: the host
 _Avoid_: dashboard, status page, status board (the comment on one issue), UI
 
 **Tick log**:
-The file a fleet instance's `run` keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake and the command that sent it, the `run`'s start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the `run`: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state, whoever runs it, appends a line of its own to the file of its host and repo as it acts — the command, the issue, who ran it, and how it came out or that it failed — whether a `run` is there or not. `run` prints each of its own lines as it is written. Each line is appended whole, and only `run` cuts the file back: it keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
+The file a fleet instance keeps on its own host: one line as it starts, a line as each tick starts — with why: its timer, a wake and the command that sent it, the fleet instance's start, or a follow-up — and one as it ends — what it did, and what changed on GitHub or by another host since the tick before where it acted on that — plus the lines of the events that reached the fleet instance: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state, whoever runs it, appends a line of its own to the file of its host and repo as it acts — the command, the issue, who ran it, and how it came out or that it failed — whether a fleet instance is there or not. Each line is appended whole, and only the fleet instance cuts the file back: it keeps every line of the last day, and never fewer than 200 lines nor more than 5000. It is a log and not fleet state: nothing reads it to decide what the fleet does.
 _Avoid_: state file, journal, history
 
 **Finding**:
