@@ -2,6 +2,7 @@
 //! holding one, in the host runner beside the others or alone in the process
 //! of `run --foreground` (docs/adr/0023).
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use afkconvoy_core::claims::InstanceId;
@@ -11,18 +12,23 @@ use serde_json::Value;
 
 use crate::claims::Me;
 use crate::git::Repo;
+use crate::host_settings::To;
 use crate::tick::{self, Holder, Line, Pacing};
 use crate::{host_settings, kit};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
-/// again starts it the same way; the port its panel is served on from this
-/// start; and the knobs that exist for the tests. What it named of the host
-/// is the host settings' (`host_settings`), which the instance reads as it
-/// goes.
+/// again starts it the same way; what it said of its checkout's concurrency;
+/// the port its panel is served on from this start; and the knobs that exist
+/// for the tests. What it named of the host is the host settings'
+/// (`host_settings`), which the instance reads as it goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Start {
     pub named: Named,
+    /// `--concurrency`: the checkout's, kept with its entry on the list and
+    /// read at each tick (`concurrency`), never with `named`. `None` leaves
+    /// it as it is.
+    pub concurrency: Option<To<NonZeroUsize>>,
     /// `--panel`: served from this start; `panel --open` opens it later.
     pub panel: Option<u16>,
     pub knobs: Knobs,

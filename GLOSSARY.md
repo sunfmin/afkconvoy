@@ -1,6 +1,4 @@
-# afkconvoy
-
-A command-line tool that works a repo's ready GitHub-issue backlog unattended: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).
+Every term afkconvoy's help uses, each with its one definition and the words to avoid in its place. afkconvoy works a repo's ready GitHub-issue backlog unattended, from the command line: it dispatches one worktree-isolated coding agent per issue and lands their finished PRs on the base branch behind a local gate. It is a trimmed Rust port of the `afk-fleet` skill (`docs/adr/0001`).
 
 ## Language
 
@@ -15,7 +13,7 @@ A host's one long-running process of the fleet, holding a fleet instance for eac
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
-The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it.
+The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** there — how many claims its fleet instance holds at work at once on that host — which a `run` that names it changes, and its fleet instance reads at each tick; one that says none goes by its repo config's.
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Broken**:
@@ -23,7 +21,7 @@ A fleet instance whose loop panicked or ended in an error, or that the host runn
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
-What a host says for every fleet instance on it — whether it may be put to sleep, the limits past which a worker is hot, the shares admission holds back at, the panel's port — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
+What a host says for every fleet instance on it — whether it may be put to sleep and its sleep hours, the limits past which a worker is hot, the shares admission holds back at, the panel's port — kept beside the checkout list and changed by any `run` that names one, for every fleet instance on the host at once.
 _Avoid_: global config, runner flags
 
 **Tick**:
@@ -63,8 +61,12 @@ A fleet instance with nothing to do now: it holds no claim — on an issue, a pa
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
-A fleet instance putting its host to sleep: every fleet instance on the host has been idle for ten minutes, as its host runner holds how each stands, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and the host settings do not keep it awake. A host woken stays awake until some instance on it has worked again.
+A fleet instance putting its host to sleep: the host's local time is within its sleep hours, every fleet instance on the host has been idle for ten minutes, as its host runner holds how each stands, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and the host settings do not keep it awake. A host woken stays awake until some instance on it has worked again. The fleet never wakes a host: one put to sleep within its sleep hours sleeps on past their end.
 _Avoid_: sleep (the wait between ticks), hibernate, suspend, shutdown
+
+**Sleep hours**:
+The hours of a host's local time its fleets may put it to sleep in: from 00:00 to 06:00 unless its host settings say others (`--host-sleep-hours 22:00-06:00`), the start included and the end not, past midnight where the end comes first, and any hour with `00:00-24:00`. A check for host sleep outside them keeps the host awake, says so, and is followed by the next as they start.
+_Avoid_: quiet hours, night mode
 
 **Base branch**:
 The one branch a repo's fleet work is cut from and lands on.
@@ -294,9 +296,17 @@ _Avoid_: diagnosis, alert, warning (one of its severities), error (what a comman
 The repo's build-and-test command. It is the only machine verification a change must pass before it lands.
 _Avoid_: CI (what a push to an ordinary branch starts), checks (what `check` and the startup probe make), local CI
 
+**Gate limit**:
+How long the gate may run. A run that reaches it is ended and is red. A repo declares it; nothing learns it from past runs.
+_Avoid_: timeout (what a run that reached it did), budget, baseline
+
 **Recorded gate run**:
 The evidence that the gate passed on one committed tree, with how long the run took and on which host, made by the tool that saw the exit code and kept where every host can read it.
 _Avoid_: gate cache, CI status
+
+**Slow gate**:
+What the gate is when its recent runs for the base branch, on one host, all took most of the gate limit. The fleet opens one issue that says so, and no second while that one is open.
+_Avoid_: regression, drift, creep
 
 **Sync**:
 Bringing a branch up to date by merging into it. Nothing is ever rebased.

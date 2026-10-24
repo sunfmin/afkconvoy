@@ -35,7 +35,7 @@ dependencies = [
 [[package]]
 name = "agent-help"
 version = "0.1.0"
-source = "git+https://github.com/sunfmin/agent-cli#f82419e283ca8e02a03abf6b1ec22ec1f6ad1f33"
+source = "git+https://github.com/sunfmin/agent-cli#0cb4270c4ab74ce650572ff22afbdf2499afeaa0"
 dependencies = [
  "agent-help-derive",
  "clap",
@@ -46,7 +46,7 @@ dependencies = [
 [[package]]
 name = "agent-help-derive"
 version = "0.1.0"
-source = "git+https://github.com/sunfmin/agent-cli#f82419e283ca8e02a03abf6b1ec22ec1f6ad1f33"
+source = "git+https://github.com/sunfmin/agent-cli#0cb4270c4ab74ce650572ff22afbdf2499afeaa0"
 dependencies = [
  "heck",
  "proc-macro2",

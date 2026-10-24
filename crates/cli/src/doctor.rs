@@ -1599,9 +1599,11 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     if let Some(host) = host.as_object_mut() {
         host.extend(host_once(now));
     }
+    let mut fleet = fleet_json(&run);
+    fleet["concurrency"] = crate::concurrency::json_of(repo);
     let answer = json!({
         "host": host,
-        "fleet": fleet_json(&run),
+        "fleet": fleet,
         "claims": Value::Array(claims),
         "issues": issues,
         "waiting_on_human": waiting,

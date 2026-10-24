@@ -22,7 +22,6 @@ use anyhow::{Context, Result, anyhow};
 use std::thread;
 
 use crate::claims::Scan;
-use crate::config;
 use crate::gh::{GitHub, Gone, Open, OpenIssues, beside, gone};
 use crate::git::{Listing, Repo};
 use crate::measure;
@@ -36,7 +35,8 @@ use crate::train::Train;
 
 pub struct Fleet {
     pub repo: Repo,
-    /// The repo's config.
+    /// The repo's config, with the concurrency its checkout says on this
+    /// host laid over it (`concurrency::config_of`).
     pub config: Config,
     /// The harness a switch on this host chose for the repo: every worker
     /// this host starts for it is of this one, whatever a role's range or an
@@ -85,7 +85,9 @@ impl Fleet {
     /// The fleet's view from the checkout `repo`.
     pub fn open(repo: &Repo, now: u64) -> Result<Fleet> {
         let repo = repo.clone();
-        let config = config::load(&repo.dir.join(config::FILE))?;
+        // As this checkout's fleet instance goes by it on this host: read
+        // anew at each view, so a concurrency said since holds now.
+        let config = crate::concurrency::config_of(&repo)?;
         let chosen = crate::switch::chosen(&repo)?;
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), listing.records.clone());

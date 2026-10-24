@@ -1,7 +1,7 @@
 //! Host sleep's effect half (docs/adr/0016): how every fleet instance of the
 //! host runner stands, held by the host runner itself (docs/adr/0023); the
 //! reading of the host — when it last woke, how long its keyboard and mouse
-//! have gone untouched — and `pmset sleepnow`. What keeps the host awake is
+//! have gone untouched, its local time — and `pmset sleepnow`. What keeps the host awake is
 //! the core's to decide (`afkconvoy_core::host_sleep::awake`).
 //!
 //! Each fleet instance says how it stands as each of its ticks ends
@@ -16,7 +16,7 @@ use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use afkconvoy_core::host_sleep::{Awake, Host, Standing, awake, check_at};
+use afkconvoy_core::host_sleep::{Awake, Host, Hours, SLEEP_HOURS, Standing, awake, check_at};
 use anyhow::{Context, Result, bail};
 
 use crate::host_settings;
@@ -163,8 +163,8 @@ pub struct HostSleep {
 impl HostSleep {
     /// Stands among `standings` as `standing` says this instance is, woken by
     /// `wakes` when a check has it tick once more, and puts the host to sleep
-    /// unless the host settings keep it awake, as they say at each check.
-    /// Called before the first tick.
+    /// within its sleep hours unless the host settings keep it awake, as they
+    /// say at each check. Called before the first tick.
     pub fn open(standing: Standing, wakes: &Wakes, standings: &Standings, wait: u64) -> HostSleep {
         let key = {
             let mut held = standings.held();
@@ -209,14 +209,15 @@ impl HostSleep {
         });
     }
 
-    /// How this instance stands now, with whether the host settings keep
-    /// the host awake read again: how it stands from then on.
-    fn standing(&self) -> Option<Standing> {
-        let kept_awake = host_settings::kept_awake();
+    /// How this instance stands now, with what the host settings say of
+    /// host sleep read again — whether they keep the host awake is how it
+    /// stands from then on — and the host's sleep hours.
+    fn standing(&self) -> Option<(Standing, Hours)> {
+        let host_sleep = host_settings::host_sleep();
         let mut held = self.standings.held();
         let one = held.each.get_mut(&self.key)?;
-        one.standing.no_host_sleep = kept_awake;
-        Some(one.standing.clone())
+        one.standing.no_host_sleep = host_sleep.is_none();
+        Some((one.standing.clone(), host_sleep.unwrap_or(SLEEP_HOURS)))
     }
 
     /// When this instance checks next; `None`: it does not, not being idle,
@@ -226,11 +227,12 @@ impl HostSleep {
         if self.asked.is_some() {
             return Some(0);
         }
-        let standing = self.standing()?;
+        let (standing, hours) = self.standing()?;
         if standing.no_host_sleep || self.standings.held().checking.is_some() {
             return None;
         }
-        check_at(standing.idle.then_some(standing.since), self.checked, self.wait)
+        let idle_since = standing.idle.then_some(standing.since);
+        check_at(idle_since, self.checked, self.wait, &hours, local)
     }
 
     /// Checks at `now`, if a check is due → how far it got. A check reads how
@@ -248,6 +250,7 @@ impl HostSleep {
         if self.due().is_none_or(|due| due > now) {
             return None;
         }
+        let hours = self.standing().map_or(SLEEP_HOURS, |(_, hours)| hours);
         let (worked, every) = {
             let mut held = self.standings.held();
             if held.checking.is_some() {
@@ -258,7 +261,7 @@ impl HostSleep {
             (worked, Standings::every(&held))
         };
         self.checked = Some(now);
-        let awake = awake(worked, &read_host(), &every, now, self.wait);
+        let awake = awake(worked, &read_host(now), &hours, &every, now, self.wait);
         if !awake.is_empty() {
             self.standings.let_go(self.key);
             return Some(Checked::Awake(awake));
@@ -278,8 +281,8 @@ impl HostSleep {
             return Checked::Stopped;
         }
         let Some(every) = every else { return Checked::Awake(vec![Awake::Woken]) };
-        let worked = self.standing().and_then(|standing| standing.worked);
-        let awake = awake(worked, &read_host(), &every, now, self.wait);
+        let Some((standing, hours)) = self.standing() else { return Checked::Stopped };
+        let awake = awake(standing.worked, &read_host(now), &hours, &every, now, self.wait);
         if !awake.is_empty() {
             return Checked::Awake(awake);
         }
@@ -303,9 +306,36 @@ impl Drop for HostSleep {
     }
 }
 
-/// What a check reads of the host.
-fn read_host() -> Host {
-    Host { woke: woke().ok(), untouched: untouched().ok() }
+/// What a check at `now` reads of the host.
+fn read_host(now: u64) -> Host {
+    Host { woke: woke().ok(), untouched: untouched().ok(), local: local(now) }
+}
+
+/// How far past the host's local midnight the instant `at`, in epoch
+/// seconds, is, in seconds, as its time zone has it (`localtime_r`, which
+/// reads TZ, else /etc/localtime); `None` where that cannot be said.
+#[cfg(target_os = "macos")]
+fn local(at: u64) -> Option<u64> {
+    let at = libc::time_t::try_from(at).ok()?;
+    let mut time = std::mem::MaybeUninit::<libc::tm>::zeroed();
+    // SAFETY: `time` is a `tm`, which `localtime_r` writes whole where it
+    // returns it, and leaves alone where it returns null.
+    let said = unsafe { libc::localtime_r(&at, time.as_mut_ptr()) };
+    if said.is_null() {
+        return None;
+    }
+    // SAFETY: zeroed, then written by `localtime_r`: every field is a number,
+    // or a pointer nothing here reads.
+    let time = unsafe { time.assume_init() };
+    let (hour, minute, second) = (time.tm_hour, time.tm_min, time.tm_sec);
+    u64::try_from(hour * 3600 + minute * 60 + second).ok()
+}
+
+/// Only a macOS host is put to sleep (docs/adr/0016): elsewhere its local
+/// time is never asked.
+#[cfg(not(target_os = "macos"))]
+fn local(_at: u64) -> Option<u64> {
+    None
 }
 
 /// The output of `program` with `args`, which must succeed.

@@ -2,6 +2,7 @@
 //! core crate what to do, and does it (docs/adr/0007).
 
 use std::ffi::OsString;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,6 +36,7 @@ pub mod checkout_list;
 pub mod checkouts;
 pub mod claim_status;
 pub mod claims;
+pub mod concurrency;
 pub mod config;
 pub mod copies;
 pub mod dispatch;
@@ -105,9 +107,9 @@ use dispatch::Agent;
 use fleet::Fleet;
 use git::Repo;
 use host_settings::{
-    ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV, HOT_CORES_ENV,
-    HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To, port_or_default,
-    thousandths_or_default, whole_or_default,
+    ADMIT_DISK_ENV, ADMIT_INSPECT_AFTER_ENV, ADMIT_LOAD_ENV, ADMIT_MEMORY_ENV,
+    HOST_SLEEP_HOURS_ENV, HOT_CORES_ENV, HOT_MEMORY_ENV, HOT_WRITTEN_ENV, NO_HOST_SLEEP_ENV, To,
+    hours_or_default, port_or_default, thousandths_or_default, whole_or_default,
 };
 use launch::Launches;
 
@@ -135,13 +137,14 @@ const READER: &str = "Run by whoever reads this manual";
 const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 
 // `-h` is clap's one-screen listing, each subcommand by its one line; `--help`
-// is the manual (`manual`), which opens with the doc comment below, the guide:
-// the text an agent reads to learn the tool. `help` is this crate's own, not
-// clap's: it prints a topic too. The listing goes straight from the usage
-// line to the commands: one line less, so that `-h` stays one screen.
+// is the index of the manual (`manual`), which opens with the doc comment
+// below, the guide: the text an agent reads to learn the tool. `help` is this
+// crate's own, not clap's: it prints a topic too, and `help all` the whole
+// manual. The listing goes straight from the usage line to the commands: one
+// line less, so that `-h` stays one screen.
 /// afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance — one per repo, held by the host's one host runner, which `afkconvoy run` starts — dispatches one worker per issue, a coding agent isolated in its own git worktree, and lands each finished PR on the base branch through the landing train, behind the gate. Fleet state lives entirely in GitHub and the repo's remote: no process holds it.
 ///
-/// This manual is the whole of afkconvoy's help: this guide, the way in; then every command under who runs it; then the topics, what belongs to no one command. `afkconvoy -h` lists the commands on one screen.
+/// `afkconvoy --help` answers the index: this guide, the way in; then every command by its one line, under who runs it; then every topic by its first sentence, what belongs to no one command. `afkconvoy help all` answers the whole manual: this guide, then every command and every topic in full. `afkconvoy -h` lists the commands on one screen.
 ///
 /// ## What it needs
 ///
@@ -172,7 +175,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// - **{const:OPERATOR}** — starting, watching or stopping a fleet. Read these first. `doctor` is what to run when something looks wrong, or you are asked whether the fleet is working: it says what the fleet on this host is doing and what is wrong, each finding with the line that fixes it.
 /// - **{const:DESIGNER}** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, the others: to review a workflow, to try one out, or to ask where an issue is in it.
 /// - **{const:HANDS_WORK}** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read it before opening the first: it says which workflow takes which issue and the line that opens one, and creates the labels.
-/// - **{const:SETS_UP}** — it prints the skill file that sends their agent to this text.
+/// - **{const:SETS_UP}** — it prints the skill file that sends their agent to `afkconvoy --help`.
 /// - **{const:WORKER}** — its prompt names each one as it is needed. Read them only when you are a worker, or are finding out why one stopped (`rule` is a consult's too).
 /// - **{const:HUMAN}** — in a bound repo. Read them to answer an escalated issue, to put an issue at a stage of your choosing, or to see what a `by: human` stage asks.
 /// - **{const:HOOK}** — its harness asks it before each thing a bound repo's worker does. Nobody runs it by hand. Read it to learn what a worker is refused, and why one was.
@@ -181,14 +184,15 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 ///
 /// ## The topics
 ///
-/// What belongs to no one command. `afkconvoy help <topic>` prints one: Markdown, as `--help` itself is, and no JSON object.
+/// Read `afkconvoy help <topic>` when this guide or a command's help names the topic: it prints that topic, Markdown, as `--help` itself is, and no JSON object. The topics below are what belongs to no one command, each opening with the sentence that says what it is for.
 ///
 /// ## Rules to know before you start
 ///
 /// - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 /// - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
 /// - Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A missing harness refuses the start.
-/// - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard (`afkconvoy run --help` says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
+/// - A host whose fleets are all idle is put to sleep, but only within its sleep hours: {const:SLEEP_HOURS} of its local time, unless it says others. `afkconvoy run --host-sleep-hours 22:00-06:00` says others for every fleet on the host, `--host-sleep-hours default` changes them back, and `--no-host-sleep` keeps the host awake at any hour.
+/// - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 ///
 /// ## Designing a team, for a bound repo
 ///
@@ -219,15 +223,15 @@ struct Cli {
 enum Command {
     /// Write this host's host kit: every harness and model it can start now
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When a harness is installed or removed, a login changes, or its models are to be probed again. `run` writes the host kit itself on a host that has none, and a tick writes it again once a day (below). It needs no repo and changes no remote.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or a machine in their place, on the host that starts the workers: it asks nothing, at a terminal or not, and does the same whoever runs it.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// The host kit is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json when XDG_CONFIG_HOME is unset. It is kept on this host and never pushed. It is the only source of worker launch commands. It holds the harnesses this host can start, in order of preference, each with its worker launch command and the models it was seen to answer with, in order — each by its id, the model its probe answered as, with its other names — and the harness and model of the stock consult. It is written automatically, with no confirmation:
     ///
@@ -243,32 +247,32 @@ enum Command {
     ///
     /// It says on stderr where the file is, what it holds and what was left out.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, `no longer listed` (a model the host kit held that its harness lists no more), `silent to its probe`, or `no model answered its probe`, with what was asked. Run twice with nothing changed, it writes the same kit but for the probe times. Errors: orca not running, with the line that starts it; a kit that cannot be read or written.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
-    /// A harness or model left out is gone from the file: commands, the stock consult and research are kept only for what is kept. A missing harness is refused before workers start; it has no implicit stock command. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it as written, under nice with its worktree's TMPDIR, adding only its harness's model flag for the model an issue's casting, the host kit's first or the stock consult names. A bound repo adds its role flags.
+    /// A harness or model left out is gone from the file: commands, the stock consult and research are kept only for what is kept. A missing harness is refused before workers start; it has no implicit stock command. `--worker-command` is gone: a harness's command is the host kit's. A command is an opaque shell string; an unbound repo starts it as written, under nice with its worktree's TMPDIR, adding only its harness's model flag for the model an issue's casting, the host kit's first or the stock consult names. A bound repo adds its role flags ([`afkconvoy help worker-launch`](help:worker-launch)).
     ///
     /// Probing sends each model a real prompt: it spends a little of each login. A harness the fleet finds refusing every prompt is paused on this host: left out of the host kit, and so of every range, until a probe finds it working. Each is probed every hour; one that answers here is back too.
     ///
-    /// ##### It stays current
+    /// ## It stays current
     ///
     /// A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a model a harness now lists is added once it answers its probe, and one it no longer lists is dropped. The rest is kept as it is, unprobed: a harness that cannot be found or listed, or that stops answering, is kept, and a pause leaves it out, as above. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Kit,
     /// Cast every uncast issue that has a choice to make, in one session of the host kit's first
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Run `afkconvoy cast` in a repo to cast its issues now, at the terminal, rather than wait for a tick to start a caster. It casts the same issues a caster does, the same way.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in the repo's checkout. A tick runs it too: the caster it starts is this command, in an orca terminal of the repo's `convoy-caster` worktree.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// An issue is cast by its `harness:` and `model:` labels. It is a caster's to cast while it is open and carries the ready label, no epic label, and no `harness:` or `model:` label — and while the host kit leaves a choice to make: more than one harness and model, a harness held with no model being one.
     ///
@@ -280,11 +284,11 @@ enum Command {
     ///
     /// A casting a human put on is never changed: an issue with a `harness:` or a `model:` label is never given to the caster. A caster's own casting is cast again, before a worker started on it, when its harness is paused, or when its model matches none the host kit holds any more.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {cast, uncast}: cast lists {issue, harness, model, why} of each issue it labelled, uncast {issue, why} of each it did not. With no choice to make or no issue to cast, both are empty and `said` says why. Errors: a host kit, or a bound repo's team, that cannot be read; a model that did not answer.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// A tick holds an issue that waits for a caster back while one runs, for ten minutes at most from its start, and starts no second one meanwhile; `plan` shows it as `caster` and the issue as "held for the caster". An issue the caster had and did not cast is dispatched uncast, on its range's first, and `plan` and the panel say so. A switch chooses whatever the casting: while one stands, nothing is held for a caster.
     ///
@@ -296,19 +300,19 @@ enum Command {
     },
     /// Print the repo's config as JSON, defaults filled
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// First, before `plan` and `run`: it shows what the fleet goes by in this repo, or why the config cannot be read. Run it again after editing the config.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads one file — {const:CONFIG_FILE} of the checkout it is about, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
     ///
-    /// ##### The config file
+    /// ## The config file
     ///
     /// A markdown file. The keys of its ```yaml block are the keys of the answer below, named and written alike: a file holding every key, each at its default, is
     ///
@@ -340,22 +344,18 @@ enum Command {
     ///
     /// No command writes this file: write it, commit it, and run `afkconvoy config`.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
-    /// {"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels", "concurrency", "escalate_label", "lock_label"} — every key, the defaults filled in. `gate_seconds` is the gate limit: how many seconds a run of `gate_command` is given, by `afkconvoy gate` and by `afkconvoy land --train` alike, before it is ended and is red (default {const:GATE_SECONDS}). It is written nowhere else: neither command has a flag for it. A config that leaves it out is a finding of `afkconvoy doctor`. `lock_label` is the label of a fleet lock (default fleet-lock): while an open issue carries it, the fleet works lock issues only (`afkconvoy lock --help`).
+    /// {"base_branch", "gate_command", "gate_seconds", "ready_label", "epic_labels", "concurrency", "escalate_label", "lock_label"} — every key, the defaults filled in. `gate_seconds` is the gate limit: how many seconds a run of `gate_command` is given, by `afkconvoy gate` and by `afkconvoy land --train` alike, before it is ended and is red (default {const:GATE_SECONDS}). It is written nowhere else: neither command has a flag for it. A config that leaves it out is a finding of `afkconvoy doctor`. `lock_label` is the label of a fleet lock (default fleet-lock): while an open issue carries it, the fleet works lock issues only (`afkconvoy lock --help`). `concurrency` is how many claims a fleet holds at work at once (default 3) where its checkout says none of its own: a checkout's own on its host, said by `afkconvoy run --concurrency`, wins there. This answers the repo's alone; `afkconvoy plan` says the one in force, and who says it.
     ///
     /// A repo whose config names a team is a bound repo, and answers three keys more: {"team", "patrols", "intake_limit"} — the team's directory as owner/repo or owner/repo/path (a whole repo, or a subdirectory of one), which of its patrols run here, by name (default none; `afkconvoy check` holds them against the team's, and `afkconvoy tick --help` says when one runs), how many issues taken in by workers may be open (default {const:INTAKE_LIMIT}). A config names no harness: what each worker runs is its team's `roster`'s to say (`afkconvoy help roster`), within what the host kit holds (`afkconvoy kit --help`). A repo that names no team is unbound and answers the eight above and one more: {"escalate_to"} — where a hand-off to a human goes first. `consult` (the default): the stock consult, afkconvoy's own, is asked first and stands where the human would; a human is reached only where it lets the issue through, or fails. `human`: every hand-off goes straight to a human, as `afkconvoy help humans` says. A bound repo's stages say this each (`afkconvoy help workflows`).
     ///
     /// Errors: the file cannot be read; it has no ```yaml block; `base_branch` or `gate_command` is missing; a key is unknown or of the wrong type; `gate_seconds` is not a whole number from 1; `team` is neither owner/repo nor owner/repo/path; a `harness`, which a config names no more — the error says the line to delete; `patrols` or `intake_limit` is set where no `team` is; `escalate_to` is neither consult nor human, or is set beside `team` — the error names the key. Without `--file`, outside a git checkout: "is not in a git checkout".
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It reads the config only. Whether the team it names loads is `afkconvoy check`.
     /// - It reads the file as it is in this checkout, committed or not. A worker reads the one in its own worktree, which is cut from the base branch: a change is in force only once it is on the base branch.
-    ///
-    /// DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on the DSH profile its team or role names: `dsh_profile: fleet` (default) or `host-user` (`afkconvoy help team`). The latter loads the host user's dsh-tui profile with its plugins, MCP servers, patches, theme and settings. Neither edits the user's DSH_HOME; both keep the role's limits.
-    ///
-    /// The --patch overlay, applied last on either profile, loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Config {
         #[arg(long, help = format!("The config file [default: {} of this checkout]", config::FILE))]
@@ -365,15 +365,15 @@ enum Command {
     },
     /// Read a team and its workflows: what was read, or every fault
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// After every edit to a team's files, a role's skills or a repo's `team` key, and before a fleet is started on a bound repo: it says whether the team loads, and if not, every fault at once. Edit, run it, and repeat until it exits 0.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It writes nothing but a copy the fleet has not got yet (below). It reads a team's files, and of each role's directory which skills it holds and what each one's `SKILL.md` opens with, which harnesses it holds limits for, and whether a file of it would have a harness load other rules.
     ///
@@ -389,7 +389,7 @@ enum Command {
     ///
     /// It reads this host's host kit (`afkconvoy kit --help`) for each role's range, and asks no harness anything: which models a harness knows is the host kit's to hold.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"team", "path", "commit", "files", "escalate_label", "rules", "host_user", "dsh_profile", "split", "roles", "workflows", "patrols", "precedents"} — what it read.
     ///
@@ -422,7 +422,7 @@ enum Command {
     ///
     /// Other errors, as {"error": …}: the repo's config names no team and no flag was given; the config cannot be read, the error naming its file and the key — a `harness` there is one, which a config names no more; the team's repo cannot be read, or the team's path is no directory at its head.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - From GitHub it reads what is pushed to the default branch. An edit in a checkout of the team is checked with `--dir`; a role's is checked only once it is pushed, wherever the role is — in the team's own repo too.
     /// - A role's `range` is this host's: run `check` on the host the fleet runs on, after `afkconvoy kit`.
@@ -438,7 +438,7 @@ enum Command {
     },
     /// Write the skeleton of a team with its roles, or of one role, or a whole example team, and create its repo on GitHub if asked
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To start a team from files `check` accepts as they are, instead of from an empty repo. A team and its roles, in one repo created on GitHub:
     ///
@@ -464,11 +464,11 @@ enum Command {
     ///
     /// Read that one first when the team is to have more than one stage — a review, a landing role of its own: a skeleton's workflow has one stage, and a skeleton holds no skill to review or to land with. The example holds each, to copy from.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or whoever designs the team: anywhere. It reads no config.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It writes in the directory named, which must not be there yet or be empty: nothing is ever overwritten.
     ///
@@ -500,7 +500,7 @@ enum Command {
     ///
     /// A skill is added to a role afterwards with the skills installer, run in the role's directory and committed: this command installs none.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"scaffolded", "dir", "files", "repo", "team_line"} — "team" or "role"; the directory written in, as an absolute path; the files written, as paths in it; the repo created, null without `--repo`; and, of a role, the line to add under `roles` in `team.md`:
     ///
@@ -511,7 +511,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit: the directory is not empty; a team with no `--role` and no `--example`, or one name given twice; a role with a `--role` or an `--example`; an `--example` with a `--role`; an `--example` there is no example of, which lists the names there are; a `--role` that is neither <name> nor <name>=<owner/repo[/path]>; a file that cannot be written; and, with `--repo`, a `git` or `gh` call that failed — the error says the skeleton is written and its repo is not created.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `check` reads every role from GitHub: a team's skeleton passes it once it is pushed — `--repo` does that — and not before.
     /// - `check --dir <dir>` alone refuses a role named `./path`: a directory says no repo. Say the team's beside it — `check --dir <dir> --team <owner/repo>` — as the skeleton's own files do.
@@ -544,7 +544,7 @@ enum Command {
     },
     /// Say how to open an issue the fleet will work, and create the labels that takes
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Before opening an issue the fleet is to work, and again whenever the team gains a workflow: it says which workflow takes which kind of issue, what label puts an issue in it, and which labels to keep off — and it creates the labels that takes, so the line it gives works. Run it once for all the issues you open, not once per issue.
     ///
@@ -552,17 +552,17 @@ enum Command {
     /// afkconvoy flows
     /// ```
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// Whoever hands the fleet work: a human, or the agent a human is talking to, with work decided on and issues to open for it. In a checkout of the repo the issues go to, bound or unbound. A worker does not: it takes an issue in with `afkconvoy intake`.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the config of the checkout and the labels the repo has. In a bound repo it also reads the team as `afkconvoy check` does — the team's files and every role's repo, from GitHub at the head of each default branch — and, to count, the comments of every open issue that carries a flow label.
     ///
     /// It writes one thing: each label its lines name that the repo lacks. In a bound repo that is the flow label of every workflow of the team — `flow:<workflow>`, or the one its file's `label` names; in an unbound one, the ready label. It puts no label on any issue and opens none. Everything is read first: a team with a fault creates nothing.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// In a bound repo:
     ///
@@ -590,7 +590,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team's repo cannot be read; the config cannot be read; "is not in a git checkout"; GitHub refused to list or create a label.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `gh issue create --label` refuses a label the repo lacks, and nothing but this command creates a flow label ahead of the first issue. Run it before the line.
     /// - An issue follows one workflow: put one flow label on it. With several it follows none, and no stage of any is performed on it.
@@ -605,7 +605,7 @@ enum Command {
     },
     /// Print the skill file that sends an agent of your own to `--help`: text, not JSON
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Once for each agent of your own that is to learn of afkconvoy: it prints the skill file to install into it. The file says when to reach for afkconvoy, and sends the agent to `afkconvoy --help`. It repeats nothing the help says, so it has nothing to go stale: a newer release asks for no newer file.
     ///
@@ -623,21 +623,21 @@ enum Command {
     /// afkconvoy skill > .claude/skills/afkconvoy/SKILL.md
     /// ```
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// Whoever sets an agent up: a human, or the agent a human is talking to. In any directory: it is asked nothing about a repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// Nothing. The file is part of the binary, and it is printed: where it goes is yours to say, with a redirection as above.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// The file's text and no JSON object: a frontmatter of `name` and `description`, as a Claude Code skill needs, and under it the one instruction. It exits 0.
     ///
     /// Errors: none of its own.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It installs nothing. Printed to a terminal, the file is nowhere an agent reads it.
     /// - A worker needs none of it: a worker is told what to run by its prompt and its role.
@@ -646,7 +646,7 @@ enum Command {
     Skill,
     /// Draw a team's workflows as graphs, or say where one issue is in its workflow
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// After `check` accepts a team, to review a workflow as a whole: where an issue enters, which role performs each stage, and where every `pass` and `reject` leads. Paste it into a GitHub comment inside a code block to have it reviewed there.
     ///
@@ -658,17 +658,17 @@ enum Command {
     ///
     /// Or `afkconvoy show 7`: a workflow is not named by a number, so one given is an issue's.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It writes nothing. It reads a team as `check` does, with the same `--team` and `--dir`: the team's files, and every role's repo from GitHub. See `afkconvoy check --help`. With a workflow's name it draws that one; with none, every workflow of the team.
     ///
     /// With `--issue` it also reads, in a checkout of the issue's repo, the issue's labels and its comments. The workflow is the one the issue's flow label names — for an escalated issue, whose flow label was swapped out, the one its escalation's comment says it left. The position is read off the issue's stage records — the comments `afkconvoy verdict`, `rule` and `send` write — and off nothing else: not its `stage:` label, which the fleet writes for humans to filter by and never reads. How it came in is read off its intake record, the comment `afkconvoy intake` writes.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// Not JSON: a drawing, as plain text. One workflow:
     ///
@@ -715,7 +715,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error", "faults"}, as `check` answers it; the team has no workflow of that name, or none at all; the issue has no position — it carries several flow labels, one that names no workflow of the team, or none with no escalation that says which it left; and every error of `check`.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It draws only a team that loads. Run `check` first: a fault is reported, not drawn.
     /// - `blocked`, `already-satisfied` and `escalate` are not drawn: they mean the same at every stage. `afkconvoy rehearse` shows where each leads.
@@ -737,15 +737,15 @@ enum Command {
     },
     /// Draft a team's roster from this host's host kit, into the team file of its working tree
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When a team has no roster yet, or the host kit has changed and its roster is to follow: a team's roster is drafted rather than written from nothing. Run it on a host whose host kit holds what the team's workers are to run (`afkconvoy kit`).
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or whoever designs the team, in a checkout of it: the team's working tree. The fleet never runs it, and never changes a team's roster.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the team's files from `--dir` — this directory unless it says another — as `afkconvoy check --dir` does, each role from GitHub, and this host's host kit without the harnesses paused on it. A role named as ./path is read from the repo `--team` names: give it for a team whose roles are in its own repo.
     ///
@@ -755,13 +755,13 @@ enum Command {
     ///
     /// Where the team file holds a roster, it says on stderr each line the draft would take out (-) and put in (+), and writes only once the human at the terminal confirms, or with `--yes`. With no terminal and no `--yes` it writes nothing.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"path", "drafted_by", "roster", "replaces", "removed", "added", "unsaid", "written"}: `path` the team file, `drafted_by` the {harness, model} asked, `roster` the draft as written, `replaces` whether the team file held a roster, `removed` and `added` the lines the draft takes out and puts in, `unsaid` what the model said nothing of — each also a warning on stderr, to write in by hand — and `written` whether the team file was written. A roster the same as the draft is not written again.
     ///
     /// Errors: a team that does not load, with every fault, as `check` answers it; a host kit that cannot be read or holds no harness; a model that did not answer.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - Read the draft before committing it: model strengths come from the host kit's sourced research, and how to cast comes from the drafting model. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
     /// - A team file whose roster has a fault does not load: delete the roster, and draft again.
@@ -782,7 +782,7 @@ enum Command {
     },
     /// Say where an issue would be after each of a list of verdicts, starting no worker
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// While designing a workflow, to test it without starting a worker or spending anything: name the workflow and what is declared on an issue, in order, and it says where the issue would be after each and where it ends. Use it to see that a rejection leads back where you meant, and how many it takes to trip a breaker.
     ///
@@ -790,11 +790,11 @@ enum Command {
     /// afkconvoy rehearse feature pass pass reject pass pass
     /// ```
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or whoever designs the team: in a checkout of a bound repo, or anywhere with `--team` or `--dir`.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It writes nothing and starts nothing. It reads a team as `check` does, with the same `--team` and `--dir`: see `afkconvoy check --help`. No issue is read: the issue is one that has just entered the workflow, at its first stage.
     ///
@@ -808,7 +808,7 @@ enum Command {
     ///
     /// and `ruling`: what a consult, or a human on an escalated issue, decides. The stage that asked runs again under it.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"workflow", "max_rework", "max_consecutive_rework", "enters", "steps", "ends"}
     ///
@@ -833,7 +833,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit: a word that is none of the six; the team has no workflow of that name; the team has a fault — {"error", "faults"}, as `check` answers it; and every error of `check`.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It rehearses only a team that loads. Run `check` first.
     /// - A count never passes its breaker. With `max_rework: 3` the fourth rework is the one refused: the step says `"breaker": "max_rework"` and `"rework": 3`.
@@ -853,23 +853,23 @@ enum Command {
     },
     /// Say what the fleet on this host is doing and what is wrong with it, each finding with its fix
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When something looks wrong, and before anything else: a fleet that seems stuck, an issue nobody works, a worker that sits there — or when you are asked "is it working?". Run it before you file a bug, too, and put its answer in the report. It is one command for what `scan`, `takeover --list`, `plan`, `show` and orca each say a part of, and it is the only one that says what is wrong.
     ///
     /// With `--all`, for every repo of this host at once: each checkout on the host's checkout list, as `doctor` in it answers. A session that looks after every repo of the host runs it, beside `afkconvoy checkouts`, and keeps no list of its own.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the fleet runs on. No `--instance` is needed: it finds the fleet instance of this host's `run` itself. With `--all`, anywhere on that host.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads this host (the commands the fleet needs, in a login shell; orca), the log this host's `run` keeps of its ticks, the open issues, PRs and stage records on GitHub, the claims, heartbeats and recorded gate runs on the remote, and orca after the worker of each claim. It writes nothing on GitHub and nothing on the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes nothing either: each finding names the command that does.
     ///
     /// With `--all` it reads the checkout list (checkouts.json in the cache directory) and the same of each checkout on it, all at once.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"host", "fleet", "claims", "issues", "waiting_on_human", "findings"}
     ///
@@ -891,9 +891,10 @@ enum Command {
     ///   - `log`: the file its ticks are logged in, or "no log": no `run` of this version ran here
     ///   - `last_tick`: {count, ended, next_due, line, did, error}: when its last tick ended and the next is due, in epoch seconds, the line `run` printed, and what `tick` answers as `did`; error, when the tick failed whole. null with no log
     ///   - `failed_steps`: the last {const:DOCTOR_FAILED_SHOWN} failures, newest first: {tick, ended, do, issue, patrol, error, count}. One cause that stopped several steps of a tick is one failure: count is how many, and do, issue and patrol the first's
-    ///   - `host_sleep`: {checked, slept, kept_awake_by}: its last check for host sleep — when it ended, whether it put the host to sleep, and else what kept the host awake, each in words. null: it made none, the host settings keeping the host awake, or never idle {const:HOST_IDLE_MINUTES} minutes
+    ///   - `host_sleep`: {checked, slept, kept_awake_by}: its last check for host sleep — when it ended, whether it put the host to sleep, and else what kept the host awake, each in words: "the host's local time is outside its sleep hours, 00:00-06:00" among them. null: it made none, the host settings keeping the host awake, or never idle {const:HOST_IDLE_MINUTES} minutes
     ///   - `events`: the last {const:DOCTOR_EVENTS_SHOWN} events that reached a `run` of this host, newest first, whichever instance: {at, event, cause, instance} — event being wake (between ticks, or during one), start, stop (told to, by SIGTERM or SIGINT), broken, back (`afkconvoy run --help`), host_sleep or host_wake; cause says what caused it, in words. [] with no log
     ///   - `broken`: {why, since, next, instance}: its fleet instance is broken (`afkconvoy run --help`) — why, as it last broke; since when, and when the host runner starts it again, in epoch seconds, null where no host runner runs on this host; and the fleet instance that broke, "" where none had started. null: it is not broken
+    ///   - `concurrency`: {in_force, said_by}: how many claims its fleet instance holds at work at once on this host, as `plan` says it — said_by `checkout`, `config` or `default`. {error} where the config or the checkout list cannot be read
     /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
     /// - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
     /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it. null when the issues could not be read
@@ -925,14 +926,14 @@ enum Command {
     ///
     /// Moved: the role's directory holds something else at the head of its repo than at the commit the stage started under — a file added, removed or changed. A new commit is not it: in a repo of several roles a push gives every role a new commit, and moves the ones whose directory it changed. The team has moved when its directory has, without what a worker is not given of it: the directories of its roles, and the .claude/ at its top. So a push that changes only a role moves no team, one that changes only the team's rules — the CLAUDE.md at its top, which every worker is given — moves the team, and one that changes a workflow moves no role. A role in a repo of its own moves with every push that changes a file there. The two are compared in the copies this host keeps (copies/ under the cache directory); where the one the stage started under is no longer there, a different commit is all there is to go by, and it is said to have moved. `evidence` gives both commits.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - A warning may be the fleet mid-step: a claim has no worker between the tick that took it and the one that starts its worker. Run it again after a tick before you act on one; a critical finding does not go away by waiting.
     /// - It says nothing of ticks nobody logged. A `run` logs under your cache directory (`afkconvoy help cache` says where it is) on the host it runs on: run `doctor` there, as the same user. The log is a log: nothing reads it to decide anything, and deleting it loses only what `doctor` could say of the ticks before.
     /// - It makes no startup probe, so it looks for the fleet's refs where this repo's last `plan`, `tick` or `run` found the remote keeps them. In a clone none ever ran in, it looks under refs/convoy/.
     /// - `fix` is the first thing to try, not a promise: read `afkconvoy <command> --help` of the command it names before you run it.
     ///
-    /// ##### Worker proxy bypass
+    /// ## Worker proxy bypass
     ///
     /// `--worker-no-proxy [HARNESS=]HOSTS` shows what a start with those flags would give each harness, under `worker_no_proxy`: [`afkconvoy help worker-proxy`](help:worker-proxy).
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
@@ -950,15 +951,15 @@ enum Command {
     },
     /// Show what a tick would act on, and change nothing
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Before `run`, to see what the fleet would start on; and beside a running fleet, to see where every claim stands and why an issue is not on the frontier.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It makes the startup probe — which checks, as a start does, the worker launch command a `run` started now would give every harness the fleet could be asked for (`afkconvoy run --help`) — then the rebuild: the open issues and PRs on GitHub, the claims and heartbeats on the remote, and the landing train. It changes nothing on GitHub. On the remote it pushes its startup probe and deletes it again, together with what the probe sweeps: a probe an earlier start left behind, and recorded gate runs too old for a landing to believe.
     ///
@@ -966,9 +967,9 @@ enum Command {
     ///
     /// The rebuild asks GitHub twice, side by side with one listing of the remote, however many issues are open: one query for the open issues with their comments (an issue with more than a hundred comments is asked about once more), one for the open PRs. It asks once more — for the issues that carry the label `slow-gate` — only while the recorded gate runs of the base branch's landings say the gate is slow.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
-    /// {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some, and "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate" while the gate is slow; and "caster" while one runs or is due
+    /// {"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some, and "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate" while the gate is slow; and "caster" while one runs or is due
     ///
     /// - `host_kit`: {path, refreshed, harnesses, stock_consult}: this host's kit file; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh, which writes it again once a day (`afkconvoy kit --help`); each harness in order of preference, first first, as {harness, command, models}, each model {model, names, probed: {at, seconds}, good_at, sources, researched_at} — good_at, from sourced research or `not researched`, what a caster is told the model is good at; sources the dated URLs and researched_at the epoch seconds of the research, absent where none succeeded — in order — `at` when it last answered a probe, in epoch seconds, and `probed` null for one a kit written before DSH was probed holds as named; and {harness, model, named, unmatched} that the stock consult runs, named false when it is the host kit's first, and unmatched, where what the host kit names for it matches nothing held, saying so — it then runs the host kit's first. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
     /// - `frontier`: the issues a tick would dispatch, lowest number first: {number, title} — in a bound repo with the stage each is at: {number, title, stage}, those a stage has already declared on ahead of those never started; an issue whose stage's `escalate` waits for its consult is here too, at that stage; the stage is `land` once the last one passed to the landing train and the issue's PR waits for a worker to join it. Each but the stock consult's has cast: {harness, model, why}: what its worker would run, model null for its command as written, and why — `casting` (its `harness:` and `model:` labels, which the range holds), `switch` (this host's switch, over any casting), `unmatched` (a name it was given matches nothing held — a label, or a switch to a harness the host kit does not hold — and cast has `unmatched` too, naming it: the range's first, and the issue is told so once, in a comment, as its worker starts), `uncast` (a caster had it and did not cast it in ten minutes: the range's first); in an unbound repo `first` (no casting: the host kit's first); in a bound repo, of its stage's role's range (`afkconvoy help roster`), `range_first` (no casting: its first), `outside` (it does not hold the casting, and another stage's range does: its first) or `only` (it holds one harness and model, whatever the casting)
@@ -987,6 +988,7 @@ enum Command {
     /// - `stale`: other instances' claims past the lease, on open issues — a tick takes them
     /// - `stale_closed`: the same on closed issues — a tick deletes them (each of the three: {number, instance, sha})
     /// - `free_slots`: how many more claims the instance may take
+    /// - `concurrency`: {in_force, said_by}: how many claims the fleet of this checkout holds at work at once on this host — what `free_slots` counts from, beside the claims a fleet lock leaves alone and those whose worker declared — and who says it: `checkout`, where `afkconvoy run --concurrency` said it of this checkout, which keeps it on the checkout list; `config`, where the repo config's `concurrency` does; `default`, where neither does (3)
     /// - `now`: the time the plan was made at, in epoch seconds
     /// - `locks`: the fleet locks standing: the open issues that carry the lock label, lowest number first — none: []. While there is one, the frontier holds lock issues only, and every issue a tick would otherwise dispatch or hand to a human is under `excluded` with the reason "a fleet lock stands (#n)"
     /// - `admission`: whether a tick would start a new worker on this host now (`afkconvoy run --help`, ADMISSION): {admits, held_back_by, shares, thresholds, reading}. held_back_by is each threshold the host is past, as a tick's line says it: none, and it admits. shares are the percentages in force — load_percent_of_cores, memory_free_percent, disk_free_percent — and said_by_host the host settings that said one, by key (admit_load, admit_memory, admit_disk, admit_inspect_after); thresholds what they come to on this host — load, memory_free_percent, disk_free_bytes; reading what the host reads now — cores, load, memory_free_percent, disk_free_bytes, disk_size_bytes, each null where it could not be read
@@ -1021,7 +1023,7 @@ enum Command {
     ///
     /// The probe's warnings go to stderr. Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run; `claude` is among them when no custom provider is set, as `run` would then start its workers with it); the repo fails the startup probe (the remote has no base branch, its protection refuses the fleet's push, or the remote takes none of the fleet's refs); the config cannot be read; GitHub or the remote cannot be read.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - Without `--instance` nobody's claims are its own: `mine` is empty, a running fleet's claims show under `peer_live`, and `free_slots` is the whole concurrency. To see a running fleet as it sees itself, pass its instance id — `takeover --list` shows every id the remote remembers.
     /// - A lock that stands is not thereby worked. A lock issue is on the frontier only when it would be without the lock: with the ready label in an unbound repo, a flow label in a bound one, no epic label, no open blocker, no claim. `excluded` says which of these keeps it off — and the lock stands until the issue is closed.
@@ -1033,7 +1035,7 @@ enum Command {
     /// - A slow gate is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and {const:SLOW_GATE_LANDINGS} landings spread over hosts none of which has {const:SLOW_GATE_LANDINGS} say nothing. After an issue for a slow gate closed, only the landings made since count.
     /// - A probe that stands is trusted, not checked: a command uninstalled or logged out since, or a rule the remote gained, shows as the error of whatever runs into it — or, for the ref layout, not until the next probe. `run` probes at every start.
     ///
-    /// ##### Worker proxy bypass
+    /// ## Worker proxy bypass
     ///
     /// `--worker-no-proxy [HARNESS=]HOSTS` shows what a start with those flags would give each harness, under `worker_no_proxy`: [`afkconvoy help worker-proxy`](help:worker-proxy).
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
@@ -1048,19 +1050,21 @@ enum Command {
     },
     /// Add a checkout to this host's checkout list, start the host runner where none runs, and answer the checkout's first tick
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To have a repo worked: after `config` answers and `plan` shows the frontier you expect. Run it again after the host runner was stopped or killed, or the host restarted: it starts every checkout on the list, each where its fleet instance left off. And once after an upgrade of afkconvoy (`brew upgrade afkconvoy`), in any checkout: it moves the host runner, and every checkout on the list, onto the new version.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo or naming one. It returns once that checkout's fleet instance has ended its first tick; the host runner ticks on, in the background, until it is stopped.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// The checkout list: checkouts.json in the cache directory, kept on this host and never pushed. A checkout goes on it once its fleet instance's first tick ended, with the `--instance`, `--host` and `--worker-no-proxy` its `run` named; one refused before its first tick is not left there. A `run` of a checkout on the list whose fleet instance does not run starts it with those, but for each that `run` names itself.
     ///
-    /// The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`). `afkconvoy doctor` says those in force, as `host.settings`.
+    /// The checkout's concurrency, with its entry: how many claims its fleet instance holds at work at once on this host. `--concurrency 6` says it — a whole number, at least 1 — and `--concurrency default` changes it back to the repo config's `concurrency`; a `run` that names none leaves it as it is. Until the checkout says one, its fleet instance goes by the repo config's, or 3 where that says none; once it says one, the checkout's wins. Unlike the `--instance`, `--host` and `--worker-no-proxy` it named, which hold from the start of its fleet instance, it is read at each tick, as the host settings are: a change holds at the next tick, and the fleet instance is never started again for it. Lowered below the claims held, it ends no worker: those claims are worked to the end — the tick's line counts those past it, as `holding 2/2 · 1 past the bound` — and no new one is taken until fewer are held. A checkout the list does not hold yet goes by it from its first tick, which puts it on the list with it. A host runner started again keeps it; `plan`, `doctor` and `checkouts` say the one in force and who says it, and `afkconvoy config` the repo's alone.
+    ///
+    /// The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`) and in which hours of its local time (`--host-sleep-hours`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOST_SLEEP_HOURS, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`, `--host-sleep-hours default`). `afkconvoy doctor` says those in force, as `host.settings`.
     ///
     /// The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open`, `exclusive` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
     ///
@@ -1079,14 +1083,15 @@ enum Command {
     ///
     /// Then everything a fleet instance does. It makes the startup probe — at every start, whatever probe passed before — takes every claim stamped with this host — on an issue, on a patrol's run, on the proposal of a precedent — removes the heartbeats that are dead and hold nothing (those of the instances it took from, this host's past the lease, anyone's older than a day) — then ticks: each tick rebuilds the working set from GitHub and the remote and makes every transition it calls for — claims and heartbeats on the remote, workers in orca worktrees, comments, labels and blocked-by edges on issues, status boards, the landing train's worker. Between ticks it sleeps; a worker's `wake` ends the sleep, and a tick that left the next one a worker to start is followed with no sleep.
     ///
-    /// Once every fleet on this host has been idle {const:HOST_IDLE_MINUTES} minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — unless the host settings keep it awake: `--no-host-sleep`, for every fleet on it, until a `run` says `--host-sleep`. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet on this host is a fleet instance of its one host runner, which holds how each stands, as each says it as every tick of its ends: whether it keeps the host awake, since when it has been idle or not, and when it last worked. No fleet instance asks another.
+    /// Once every fleet on this host has been idle {const:HOST_IDLE_MINUTES} minutes it puts the host to sleep (`pmset sleepnow`) — a host sleep — within the host's sleep hours, unless the host settings keep it awake: `--no-host-sleep`, for every fleet on it, until a `run` says `--host-sleep`. The sleep hours are {const:SLEEP_HOURS} of the host's local time, unless its host settings say others: `--host-sleep-hours 22:00-06:00`, until a `run` says `--host-sleep-hours default`, which changes them back. The fleet never wakes the host: one put to sleep within its sleep hours sleeps on past their end, until something else wakes it. Idle is holding no claim — on an issue, a patrol's run, a proposal — nothing on the landing train, and an empty frontier; an escalated issue and a patrol not yet due leave a fleet idle. Every fleet on this host is a fleet instance of its one host runner, which holds how each stands, as each says it as every tick of its ends: whether it keeps the host awake, since when it has been idle or not, and when it last worked. No fleet instance asks another.
     ///
     /// ADMISSION. A tick starts no new worker while its host is busy: its 1-minute load average past 200% of its cores, less than 10% of its memory free (what the kernel counts as available: `sysctl kern.memorystatus_level`, or MemAvailable in /proc/meminfo), or less than 1% of the disk under the checkout free (`df`). The issue stays on the frontier for the next tick, and so do a stale claim, a due patrol and a due proposal. Workers already running are left alone, and so are the landing train and the worker a declared verdict starts. The host says its own shares, each a whole percent, in its host settings: `--admit-load` (of its cores), `--admit-memory` and `--admit-disk` (free) — `--admit-load 400` lets the load reach four times the cores, and `--admit-disk 0` never holds for disk. A value that is no whole percent is refused, and `default` changes a share back. What cannot be read holds nothing back. `plan` and `doctor` say the thresholds in force and what the host reads.
     ///
     /// When admission has held back for one reason — load, memory or disk — at every tick for ten minutes in a row (`--admit-inspect-after`, in whole seconds, a host setting, says the host's own span), the fleet instance starts an inspection of the host: the stock consult, in a checkout of its own, given what was taken down as it started — admission's reading and shares; for disk, what each of this host's worktrees of every fleet holds, with its issue, its stage and whether a worker holds it, the landing train's among them, the fleet's caches and the largest directories of the whole volume under the home folder outside them (`du -x`, at most five minutes); for load or memory, the process trees of each worker and of the train, and the hottest processes outside them. Holding back for reasons that change starts none. It runs once an episode, which ends once admission has admitted for five minutes, and not where another fleet of the host inspected it in the same episode. It says what it found with `afkconvoy inspected`: reclaimable, fleet or not-its. For reclaimable it frees what can be rebuilt under the home folder — what git ignores in a checkout no process uses, a closed issue's worktree, a tool's cache — and names what cannot, never deleting it (`afkconvoy inspected --help`); for fleet it opens one issue in the repo, with the escalate label and the label fleet-outgrows-host, and no other while that one is open. What it found is a line of the log, and shown by the panel and `doctor` beside admission's reading.
     ///
-    /// A fleet instance idle {const:HOST_IDLE_MINUTES} minutes checks then, tick due or not, and again {const:HOST_IDLE_MINUTES} minutes after a check that kept the host awake. It puts the host to sleep only when all hold:
+    /// A fleet instance idle {const:HOST_IDLE_MINUTES} minutes checks then, tick due or not, whatever the hour, and again {const:HOST_IDLE_MINUTES} minutes after a check that kept the host awake — or, where that is outside the sleep hours, as they start. It puts the host to sleep only when all hold:
     ///
+    /// - the host's local time (`localtime_r`: TZ, else /etc/localtime) is within its sleep hours, the start included and the end not: with {const:SLEEP_HOURS}, 05:59 is and 06:00 is not;
     /// - it worked — held a claim, or had something on the landing train — since the host last woke (`sysctl kern.waketime`): a host woken, by hand or otherwise, stays awake until a fleet on it works again;
     /// - every fleet instance on the host, as the host runner holds how it stands, keeps the host awake none, and each has been idle {const:HOST_IDLE_MINUTES} minutes;
     /// - nobody touched the keyboard or mouse for ten minutes (HIDIdleTime, from `ioreg`);
@@ -1098,7 +1103,7 @@ enum Command {
     ///
     /// Each fleet instance also keeps a log on this host, its tick log, in a file under the cache directory (runs/; `afkconvoy help cache` says where it is and what moves it): one line when it starts, one as each tick starts — with why, and the command whose wake started it — and one as it ends — what `tick` answers for it — and one of each event that reached it: a wake heard during a tick, a check for host sleep, the host waking, being told to stop. Every command that changes fleet state writes a line of its own to the same file as it acts (its `--help` says so under "What it logs", and [`afkconvoy help tick-log`](help:tick-log) says what the line holds). It keeps every line of the last {const:LOG_KEPT_HOURS} hours, and never fewer than {const:LOG_KEPT_LEAST} lines nor more than {const:LOG_KEPT_MOST}. A line is written whole as it happens, so killing the host runner loses none, and none a command appends while the fleet instance cuts the file back is lost. Nothing reads the log to decide anything; `afkconvoy doctor` reads it to say what the last ticks did, which steps failed, and the wakes, starts, stops and host sleeps of late.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// Once its checkout's fleet instance has ended its first tick, with exit 0:
     ///
@@ -1108,7 +1113,9 @@ enum Command {
     ///  "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log", "started": true,
     ///                  "replaced": null},
     ///  "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl",
-    ///  "first_tick": "tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s",
+    ///  "first_tick": "tick 1: dispatched #12, #15 · holding 2/6 · frontier 4 · next in 30s",
+    ///  "concurrency": {"from": {"in_force": 3, "said_by": "config"},
+    ///                  "to": {"in_force": 6, "said_by": "checkout"}},
     ///  "settings": {"hot_cores": {"from": null, "to": 4.0}},
     ///  "warnings": []}
     /// ```
@@ -1117,6 +1124,7 @@ enum Command {
     /// - `added`: false when the checkout was on the list already. Where its fleet instance runs, the flags of this `run` that are its fleet instance's own change nothing, and the answer is that instance, with its own first tick.
     /// - `host_runner`: the one that answered — its pid, its version and its log — and whether this `run` started it. `replaced`: the host runner of an older release this `run` stopped to start it, as {"pid": 4100, "version": "0.5.13"}; null where it stopped none.
     /// - `tick_log` and `first_tick`: the fleet instance's tick log, and the line that ended its first tick. `<cache>` stands for the cache directory, whole in the answer.
+    /// - `concurrency`: what this `run` changed of its checkout's concurrency, as {from, to}, each the one in force before and after, as `plan` says it: {in_force, said_by} — said_by `checkout`, `config` (the repo config's `concurrency`) or `default`. null where it named none, or named the one in force.
     /// - `settings`: what this `run` changed of the host settings, each by its key — its flag's name, as `hot_cores` for `--hot-cores` — as {from, to}, in its flag's units; null is the default. {} where it named none, or named each as it was.
     /// - `warnings`: what its fleet instance warned of until its first tick ended — the startup probe's warnings among them — also on stderr; empty where this `run` waited on no start.
     ///
@@ -1124,7 +1132,7 @@ enum Command {
     ///
     /// ```
     /// start: run as tester-h1-1a2b3c4d on h1, its workers started with `claude`
-    /// start: puts this host to sleep once every fleet on it has been idle {const:HOST_IDLE_MINUTES} minutes (`--no-host-sleep` keeps it awake)
+    /// start: puts this host to sleep within its sleep hours, {const:SLEEP_HOURS}, once every fleet on it has been idle {const:HOST_IDLE_MINUTES} minutes (`--host-sleep-hours` says others, `--no-host-sleep` keeps it awake)
     /// start: took #4, #7 stamped with this host        only when a start took or lost claims
     /// start: took #4, the run of the patrol sweep stamped with this host
     /// start: took #4 stamped with this host · swept 1 dead heartbeat(s) that held nothing
@@ -1161,7 +1169,7 @@ enum Command {
     /// back: broken since 2026-10-24 09:12:00 UTC, for 75s
     /// ```
     ///
-    /// A tick's line names what it did — lost, escalated, released, left, settled, ended, advanced, unlocked, reclaimed, dispatched, skipped (a frontier issue found blocked just before its claim, with what blocks it), nudged, waiting on its own background work (with since when: `#7 (since 2026-10-20 23:03 UTC, 12m ago)`), continued, restarted, tended the train, abandoned the train — then, when admission held back a worker it would have started, which threshold did (`admission holds back new workers: the load 31.20 is past 28.00, 200% of its 14 cores`), then the claims held out of the concurrency, and the frontier left. The claims a fleet lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left alone`), and so are those whose worker declared a verdict not acted on yet (`holding 3/3 · 1 declared`), as are those a start took past the bound (`holding 3/3 · 1 past the bound`). A step that failed is in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as `tick N: FAILED: <why>`; the loop goes on either way. One cause that stopped several steps is said once: `FAILED 7 steps: <why>`.
+    /// A tick's line names what it did — lost, escalated, released, left, settled, ended, advanced, unlocked, reclaimed, dispatched, skipped (a frontier issue found blocked just before its claim, with what blocks it), nudged, waiting on its own background work (with since when: `#7 (since 2026-10-20 23:03 UTC, 12m ago)`), continued, restarted, tended the train, abandoned the train — then, when admission held back a worker it would have started, which threshold did (`admission holds back new workers: the load 31.20 is past 28.00, 200% of its 14 cores`), then the claims held out of the concurrency, and the frontier left. The claims a fleet lock has it leave alone take no slot and are counted apart (`holding 1/3 · 2 left alone`), and so are those whose worker declared a verdict not acted on yet (`holding 3/3 · 1 declared`), as are those past the bound — a start took them, or the checkout's concurrency was lowered under them (`holding 3/3 · 1 past the bound`). A step that failed is in the line as `FAILED <step> #<issue>: <why>`, and a tick that could not start as `tick N: FAILED: <why>`; the loop goes on either way. One cause that stopped several steps is said once: `FAILED 7 steps: <why>`.
     ///
     /// `advanced #12 → review`: the tick read a verdict that left #12 at `review`. Where a role performs that stage the same tick starts its worker, and says so: `dispatched #12`. An issue advanced to no stage — its workflow ended, or it was parked — is named alone.
     ///
@@ -1193,65 +1201,20 @@ enum Command {
     ///
     /// Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and its host settings do not keep it awake (`--no-host-sleep`), or this `run` says `--host-sleep` there; the host settings cannot be read or written; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; the host runner is of a newer release than this `run` (the error names both versions, and nothing was changed); the host runner did not say its version within 10 seconds; the host runner of an older release, told to stop, still held the host after 30 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; the checkout's fleet instance is stopping, told by `afkconvoy stop`; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - Stop the host runner with `afkconvoy stop --all`, or SIGTERM to its pid, `host_runner.pid` in any `run`'s answer: each fleet instance finishes the step it is in, makes none of the steps left in its tick, and ends — within a second when it sleeps — and the host runner exits once every one has, keeping the checkout list: the next `run` starts every checkout on it. No claim is released on the way out and no worker is stopped: the workers work on, and the next start on this host takes the claims back. Holding no claim, a fleet instance removes its heartbeat from the remote; holding one, it leaves it, and that next start removes it. A second signal ends the host runner at once, as SIGKILL does, with no goodbye: what that leaves, a later start on this host removes once it is past the lease. A patrol's run and a proposal it takes back are ended by its first tick once their worker is gone or has stopped, as any run of its own.
     /// - Ctrl-C while `run` waits ends that `run` alone: the host runner is in a process group of its own, and goes on with the checkout.
-    /// - Of a `run` whose checkout's fleet instance runs already, the flags that are that instance's own — `--instance`, `--host`, `--worker-no-proxy` — change nothing: `afkconvoy stop` it, and run again with those you want. `afkconvoy stop --help` says how to stop one checkout and how to stop them all. The host settings it names change all the same, for that instance and every other on the host.
+    /// - Of a `run` whose checkout's fleet instance runs already, the flags that are that instance's own — `--instance`, `--host`, `--worker-no-proxy` — change nothing: `afkconvoy stop` it, and run again with those you want. `afkconvoy stop --help` says how to stop one checkout and how to stop them all. The host settings it names change all the same, for that instance and every other on the host, and so does its checkout's `--concurrency`, for that instance alone, from its next tick.
+    /// - A checkout's concurrency is that checkout's, on this host: another host works the repo at its own, and the repo config's `concurrency` is what a checkout that says none goes by. Raising it for an afternoon, or lowering it while the host is needed for something else, is one `run`, and no commit.
     /// - Without `--instance` each start mints a new instance id, named for this host: the answer says it as `instance`, and `afkconvoy doctor` as `fleet.instance`, for `plan --instance` and the commands that make one transition by hand.
     /// - A host setting is the host's, not a `run`'s or a repo's: `--hot-cores 4` named in one checkout holds for every fleet instance on the host until a `run` names it again, and `--hot-cores default` changes it back. The variables that stand for the flags are read from the environment of a `run` and of nothing else — not of the host runner, nor of `tick`, `plan` or `doctor` — so one exported in your shell's rc files is named again by every `run` started from that shell.
     /// - The panel is served to this host only, and shows a tick, not this second: between two ticks it changes nothing but its countdown. It costs GitHub no read of its own.
     /// - Every worker launch command comes from the host kit: run `afkconvoy kit` to write it again. It is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/kit.json, kept on this host and never pushed. `--worker-command` is gone. On a host with no host kit, `run` writes one as `afkconvoy kit` does, at a terminal or not, asking nothing: it says on stderr where the file is, what it holds and what was left out, and goes on to its first tick. A harness absent from the kit has no implicit stock command. Harness selection still follows a switch, a stage or patrol, then the repo's config.
-    /// - Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. Nothing else of an unbound repo's worker launch command is touched.
+    /// - The fleet starts every worker launch command under `nice`, with a `TMPDIR` of the worktree's own, adding its harness's model flag where the worker runs a model — and, in a bound repo, what puts the worker in its role, under the guard: [`afkconvoy help worker-launch`](help:worker-launch) says, harness by harness, the line each worker is started with, what each part is for and what loads from where.
     /// - In a bound repo, before any worker is started, the command of every harness the fleet could be asked for is checked: the host kit's first, each harness of each role's range (`afkconvoy help roster`), and the stock consult's. One that cannot be started refuses the start, named with its harness and the range that calls for it, and no worker at all is started: no harness is ever started in another's place. So does a role whose range on this host is empty: the refusal names the role, what the roster allows it, what the host kit holds and what the range leaves out. A range leaves out each harness the role holds no limits for while it holds limits for another, so no worker runs a harness it holds no limits for; `plan` and `check` name each harness left out.
-    /// - A Claude Code worker of a bound repo starts in its role's directory, with the rest added to the worker launch command:
     ///
-    ///   ```
-    ///   cd <the role's copy> && export <the stage's facts> && <worker launch command>
-    ///     --add-dir <the issue's worktree> --add-dir <the team's copy>
-    ///     [--add-dir <the fleet's own, with yours>]
-    ///     --setting-sources project --settings <the fleet's> [--model <its model>]
-    ///   ```
-    ///
-    ///   The role's rules, skills and hooks load because it starts there. The repo's own rules load from the added worktree, and its hooks do not; the team rules load from the team's copy. Your own skills and rules load too, unless the team file says `host_user: false` (`afkconvoy help team`): the third directory added is the fleet's own (harness/claude-code-host-user under the cache directory), and holds links to your ~/.claude/skills and ~/.claude/CLAUDE.md and nothing else. A skill of the role's wins over one of yours of the same name. Nothing of your settings, hooks, MCP servers or plugins is loaded either way. The settings added hold the guard and orca's status report, as hooks, and the answer to the bypass warning. A command you give must take `--add-dir`, `--setting-sources`, `--settings` and `--model`.
-    ///
-    /// - The stage's facts are in the environment of every worker of a bound repo, and a role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE, AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL, AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's worker has AFKCONVOY_PATROL in place of the first three.
-    /// - A pi worker — of a role whose range runs it pi — starts in its role's directory like any other, with what pi does not load from there added:
-    ///
-    ///   ```
-    ///   cd <the role's copy> && export PI_CODING_AGENT_DIR=<the fleet's own>
-    ///     <the stage's facts> && <worker launch command> --approve --no-skills
-    ///     --skill <the role's copy>/.claude/skills [--skill <the fleet's own>/skills]
-    ///     --extension <the fleet's own>/afkconvoy.js [--model <its model>]
-    ///   ```
-    ///
-    ///   `--approve` answers on the line what pi would ask at its terminal, and has it load the role's own limits (`.pi/extensions/`). The role's skills are named, then yours, and pi looks for no other; of two skills of one name pi keeps the first, the role's. pi's user directory is the fleet's own, not yours (~/.pi/agent): it holds links to your logins and to the models you defined (auth.json, models.json), a link to the extension orca installed to hear of a pi session's state, your skills and rules (skills, AGENTS.override.md, AGENTS.md, CLAUDE.md), and nothing else of yours — no setting or other extension. Under a team file that says `host_user: false` it is another (harness/pi under the cache directory, not harness/pi-host-user), with none of your skills and rules, and yours are not named. The extension named is afkconvoy's own: it asks `afkconvoy guard` before every tool call, refusing one the guard refuses or cannot be asked of, and loads the rules of the issue's worktree (its AGENTS.md, or CLAUDE.md) and the team rules (the team's CLAUDE.md). A command you give for pi must take `--approve`, `--no-skills`, `--skill`, `--extension` and `--model`.
-    ///
-    /// - A Codex worker — of a stage or a patrol that says `harness: codex` — is the session you would have at a terminal, not `codex exec`: the fleet sends to a worker after it starts. It starts in its role's directory like any other:
-    ///
-    ///   ```
-    ///   cd <the role's copy> && export CODEX_HOME=<the fleet's own>
-    ///     <the stage's facts> && <worker launch command> --add-dir <the worktree>
-    ///     --dangerously-bypass-hook-trust
-    ///     --config 'projects={"<the role's copy>"={trust_level="trusted"}}'
-    ///     --config 'project_doc_fallback_filenames=["CLAUDE.md"]'
-    ///     --config 'project_root_markers=[]'
-    ///     [--config 'developer_instructions="<the repo's own rules, the team rules>"']
-    ///     --config 'hooks={PreToolUse=[<what asks afkconvoy guard, and orca's status
-    ///       report>], <each other event a session's state changes at>=[<the report>]}'
-    ///     --config features.memories=false
-    ///     --config skills.bundled.enabled=false
-    ///     [--config 'skills.config=[<each skill of yours the role's stands for, off>]']
-    ///     [--model <the stage's>]
-    ///   ```
-    ///
-    ///   `projects` and `--dangerously-bypass-hook-trust` answer on the line what Codex would ask at its terminal — whether it trusts the folder, and a review of its hooks — and have it load the role's own limits (`.codex/hooks.json`). The next two have it load its role's rules — the CLAUDE.md of the directory it starts in — and those of no directory above. Codex loads rules from no directory added to it, so `developer_instructions` says the other two to it, each as what it is and with its file: the repo's own rules — the worktree's AGENTS.md, or its CLAUDE.md where it holds none — and the team rules (the team's CLAUDE.md), as they stand when the worker starts. A repo and a team with none are told none. The hook named asks `afkconvoy guard` before every tool call: one the guard refuses, or cannot be asked of, is not made. It is on the line and in no file, so no worker starts without it. The report is the hook orca installed to hear of a Codex session's state (~/.orca/agent-hooks/codex-hook.sh), which orca names in your own hooks and a worker loads none of: it is given ten seconds, and refuses no call, whatever it does; where orca installed none, nothing is told, and a worker's state is read off its terminal. Codex's user directory is the fleet's own (harness/codex-host-user under the cache directory), not yours (~/.codex): it holds links to your login (auth.json), your skills (skills) and your rules (AGENTS.override.md, AGENTS.md), and nothing else of yours — no hook or configuration, so no provider you defined in config.toml. Under a team file that says `host_user: false` it is another (harness/codex), with your login alone. A login Codex keeps in a keyring is in no file, and is no worker's: the start refuses, and `doctor` says so. Its memories are off. Codex finds skills in `.agents/skills/` and `.codex/skills/` of the directory it starts in, and not in `.claude/skills/`, where a role's are: the role's copy a Codex worker starts in is Codex's own (<commit>-role+codex-<path>), and holds a link, `.agents/skills` to `../.claude/skills`, made once with the copy. The role's repo holds nothing for it; a role that holds either directory itself is left as it is, and a worker is shown the skills there. The last key leaves out the skills Codex carries. Codex shows both of two skills of one name, so a skill of yours named as one of the role's is turned off on the line, by the path of its file (`--config 'skills.config=[{path="<its SKILL.md>",enabled=false}]'`): the role's is the one a worker is shown. One thing of yours a Codex worker loads even under `host_user: false`: the skills of your home (~/.agents/skills). Codex finds them wherever its user directory is and has no way to be told to leave them out, and the fleet does not work around it — so on two hosts such a worker may be shown different skills besides its role's. Keep none there on a host whose Codex workers must be shown their role's alone. The stock command runs Codex in no sandbox: a worker is limited by the guard, and a host that wants a sandbox says a command of its own. A command you give for Codex must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
-    ///
-    /// - A worker's model is its harness's own name for it: pi's is `<provider>/<id>`. A worker on pi with none gets whichever model pi picks for itself. A provider whose key is in your login shell's environment is reached too, and a rules file in a directory above the fleet's copies (~/AGENTS.md) is one pi loads.
-    ///
-    /// A DeepSeek Harness worker (`harness: dsh`) runs interactive `dsh-tui`, with `dsh` on PATH too. The stock command is `dsh-tui`; a host may name the `dsh` command in its host kit's file, which `afkconvoy kit` keeps and which must accept leading `--patch`. It starts in its role's copy, with the stage facts and AFKCONVOY_HARNESS=dsh, DSH_HOME set to harness/dsh-host-user under the fleet's cache (harness/dsh with host_user: false), and the issue's worktree as the TUI's path argument. The fleet's DSH_HOME loads the stock base and TUI bundles, the role's own .dsh/cordis.patch.yml where present, and the fleet's --patch overlay last. Only credentials (.credentials.yaml), skills and rules (skills, AGENTS.md) are linked from your DSH_HOME (default ~/.dsh), beside the skills and AGENTS.md of DSH_AGENTS_HOME (default ~/.agents). The role's native skill provider ranks its canonical skills ahead of these user roots. Dependency resolution uses your installed dsh-tui dependencies; its manifest and patches, and your home patches, MCP servers and plugins, are never loaded or edited. A team or role may instead choose `dsh_profile: host-user` (independent of host_user): DSH_HOME stays the host user's (default ~/.dsh), DSH_AGENTS_HOME stays theirs (default ~/.agents), and dsh-tui loads their manifest, dependencies, plugins, MCP servers, theme, settings and both profile and home patches. This can differ across hosts and the profile may itself load user skills and rules even with host_user: false. The fleet writes no file there: its plugin stays in its cache and its --patch overlay is still last, after the role's limits, with required guard dependencies. User settings cannot disable it. The fleet's plugin supplies role, repo and team rules, role skills before yours, and the worker's model as written. It asks `afkconvoy guard` before every tool call and reports running/idle, including interruption, to orca. The TUI and agent loop require the guard plugin's loader service, so a missing or broken plugin starts neither. Ctrl+C interrupts the running turn and leaves the interactive session open.
-    ///
-    /// ##### Worker proxy bypass
+    /// ## Worker proxy bypass
     ///
     /// A start on this host reaches some hosts past the proxy with `--worker-no-proxy [HARNESS=]HOSTS`, never a key of the repo's config: [`afkconvoy help worker-proxy`](help:worker-proxy) says what each worker is given.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
@@ -1261,6 +1224,12 @@ enum Command {
         instance: Option<InstanceId>,
         #[arg(long)]
         host: Option<String>,
+        /// How many claims this checkout's fleet instance holds at work at once on this
+        /// host, from its next tick: the checkout's own, kept with it on the checkout list
+        /// and never pushed; `default` changes it back [default: the repo config's
+        /// `concurrency`]
+        #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
+        concurrency: Option<To<NonZeroUsize>>,
         #[command(flatten)]
         agent: AgentArgs,
         /// The panel's port, a host setting, and serve the panel — the fleet as a web page,
@@ -1272,10 +1241,21 @@ enum Command {
         #[arg(long, env = NO_HOST_SLEEP_ENV)]
         no_host_sleep: bool,
         /// Let the fleets on this host put it to sleep once every one has been idle ten
-        /// minutes, as they do by default: a host setting, for every fleet on it. Said, it
-        /// holds over `--no-host-sleep` and its variable
+        /// minutes, within its sleep hours, as they do by default: a host setting, for every
+        /// fleet on it. Said, it holds over `--no-host-sleep` and its variable
         #[arg(long)]
         host_sleep: bool,
+        /// The hours of this host's local time a fleet may put it to sleep in, from the first,
+        /// included, to the second, not — past midnight where the second comes first
+        /// (22:00-06:00); 00:00-24:00 is any hour: a host setting, for every fleet on it;
+        /// `default` changes them back [default: 00:00-06:00]
+        #[arg(
+            long,
+            env = HOST_SLEEP_HOURS_ENV,
+            value_name = "HH:MM-HH:MM",
+            value_parser = hours_or_default
+        )]
+        host_sleep_hours: Option<To<afkconvoy_core::host_sleep::Hours>>,
         /// Seconds every fleet on this host must have been idle before it is put to sleep
         #[arg(long, hide = true, default_value_t = IDLE_WAIT)]
         host_sleep_after: u64,
@@ -1332,15 +1312,15 @@ enum Command {
     },
     /// Take a checkout off this host's checkout list and stop its fleet instance, or with `--all` stop the host runner and keep the list
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To stop working one repo on this host and leave the others worked: `afkconvoy stop` in its checkout, or naming it. To stop every repo — to start every fleet instance again with flags of its own, say — `afkconvoy stop --all`: the next `run`, in any checkout, starts every checkout on the list again. An upgrade needs none: one `run` moves the host runner onto the new afkconvoy (`afkconvoy run --help`).
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout on the list or naming one; with `--all`, anywhere on this host.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// The checkout list: checkouts.json in the cache directory. `stop` takes the checkout off it; `--all` leaves it as it is.
     ///
@@ -1358,7 +1338,7 @@ enum Command {
     ///
     /// With no host runner running, `stop` takes the checkout off the list itself, and says so in that log; `--all` changes nothing.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// Once its fleet instance has stopped, with exit 0:
     ///
@@ -1386,7 +1366,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit: a second checkout of a repo on the list, naming the checkout to stop it from; the checkout list cannot be read or written; the host runner ended before it answered; its fleet instance did not stop within 10 minutes — it is off the list, and still finishing the step it is in; the host runner did not end within 30 seconds of answering `--all`. Each error a host runner gave says which, as `host_runner`.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - SIGTERM to the host runner's pid is `stop --all` but for the answer, and the line that says who told it. A second signal ends it at once, as SIGKILL does, with no goodbye.
     /// - `stop` of the last checkout on the list leaves the host runner running, with none: the next `run` hands it its checkout.
@@ -1401,25 +1381,26 @@ enum Command {
     },
     /// Say which checkouts this host works and how each stands
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To see every repo of this host at once: which checkouts its host runner works, whether each one's fleet instance runs, and whether it has work. A session that looks after every repo of the host asks this — and `afkconvoy doctor --all` for what is wrong with each — instead of keeping a list of its own: the checkout list is the one home of which checkouts there are.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or a session of theirs that looks after every repo of the host: anywhere on this host, since it is about no one checkout.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
-    /// The checkout list: checkouts.json in the cache directory (`afkconvoy help cache` says where it is). The host runner, asked on its socket which checkouts it holds a fleet instance of: where none runs, the list alone answers. Each checkout's tick log, for whether its fleet instance is broken and for its last tick. It writes nothing, asks neither GitHub nor the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like.
+    /// The checkout list: checkouts.json in the cache directory (`afkconvoy help cache` says where it is). The host runner, asked on its socket which checkouts it holds a fleet instance of: where none runs, the list alone answers. Each checkout's tick log, for whether its fleet instance is broken and for its last tick, and its config, for its concurrency. It writes nothing, asks neither GitHub nor the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// ```json
     /// {"host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log"},
     ///  "checkouts": [{"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj",
     ///   "instance": "me-h1-1a2b3c4d", "state": "running", "broken": null,
     ///   "ticked": 1767225600, "idle": false, "holding": 2, "frontier": 1,
+    ///   "concurrency": {"in_force": 6, "said_by": "checkout"},
     ///   "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl"}]}
     /// ```
     ///
@@ -1432,11 +1413,12 @@ enum Command {
     ///   - `instance`: its fleet instance id: the one running, null until its start is logged; else the last one its tick log names, null where it names none
     ///   - `ticked`: when that fleet instance's last tick ended, in epoch seconds; null with none
     ///   - `idle`, `holding`, `frontier`: as that tick ended: whether the fleet instance was idle — it held nothing, nothing of its was on the landing train, and its frontier was empty — the claims it held, and the frontier issues it left undispatched (`afkconvoy tick --help`). null with no tick, or one that failed whole; `idle` null too of a tick logged by an older release
+    ///   - `concurrency`: {in_force, said_by}: how many claims its fleet instance holds at work at once on this host, and who says it, as `afkconvoy plan` answers it: `checkout` (`afkconvoy run --concurrency`), `config` (the repo config's `concurrency`) or `default`. {error} where its config cannot be read, or it is no git checkout any more
     ///   - `tick_log`: the file its fleet instance logs its ticks in, as `run` answers it; null where it is no git checkout any more
     ///
     /// It exits 0 whatever the checkouts' states. Errors, as {"error": …} with a non-zero exit: the checkout list cannot be read; the host runner cannot say which checkouts it holds — it is of an older afkconvoy, which `afkconvoy run` in any checkout moves onto this one; it ended before it answered; or it answered nothing within 10 seconds.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `idle`, `holding` and `frontier` are of the last tick, not of now: those of a stopped or broken checkout are as its fleet instance last ticked, which `ticked` dates. `afkconvoy doctor`, in the checkout, reads GitHub as it is now.
     /// - A checkout `run` is adding is on no list until its first tick ends, and is not answered until then; one `stop` took off is not answered.
@@ -1449,7 +1431,7 @@ enum Command {
     HostRunner,
     /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To see the whole fleet at a glance, without a `run` to ask: every workflow as a line of its stages, the issues at work, queued and held back at each, the landing train, and what waits for a human. Save it and open it in a browser:
     ///
@@ -1466,17 +1448,17 @@ enum Command {
     ///
     /// and open the address it answers. Run it again whenever you want that address back.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo. `--open` reaches this host's fleet instance of the repo, through the host runner, from any checkout of it but a worker's worktree, and no other repo's.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It writes nothing, on GitHub or on the remote, and makes no startup probe. It makes the rebuild `plan` makes — the open issues and PRs, the claims and heartbeats, the landing train, and in a bound repo the team and every stage record — then asks orca after the worker of each claim of `--instance` on this host.
     ///
     /// With `--open` it reads nothing itself and takes no `--instance`: it speaks to the host runner, on its socket in the cache directory (host-runner.sock), naming its checkout, and has the fleet instance it holds of this repo serve the panel that fleet instance holds. That fleet instance goes on as it is — its claims, its workers and the tick it is in are untouched, and it answers whether it sleeps or ticks. A panel newly opened ends its sleep, as a `wake` does: the page is filled by the tick that follows, then by every tick after it. It is served to this host only.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// Not a JSON object: one HTML document on stdout, complete in itself, with no address in it that a browser would fetch. The same fleet state gives the same document.
     ///
@@ -1507,7 +1489,7 @@ enum Command {
     /// - the panel was not opened, and nothing changed: the panel cannot be served on port <port>: …: the port is taken, or not yours to take: name another, or none
     /// - the host runner did not answer …: ask again: one that opened it says so, with `opened` false
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - Without `--instance` nobody's claims are its own: a running fleet's claims show as "held by <instance>", with no worker's state. `takeover --list` shows the ids.
     /// - A worker's state is this host's orca's to say. A claim whose worker runs on another host shows "no worker" here.
@@ -1534,19 +1516,19 @@ enum Command {
     },
     /// Run one reconciliation pass and exit
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// For exactly one reconciliation pass that exits: to step a fleet by hand and read what each pass did, or where a long-lived process cannot be kept. `run` is this in a loop.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
-    /// What one tick of `run` does: the startup probe, the rebuild, then every transition the working set calls for — on the remote, on GitHub and in orca. It does not wait for the workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it makes no probe while one that passed on this host in the last hour stands, and says so on stderr (`afkconvoy plan --help`) — one that checked the worker launch commands this tick starts its workers with: a changed host kit is probed for. The flag's two forms, and what is checked of each harness's command: `afkconvoy run --help`.
+    /// What one tick of `run` does: the startup probe, the rebuild, then every transition the working set calls for — on the remote, on GitHub and in orca. It does not wait for the workers it starts, and keeps nothing on this host a later tick needs. Like `plan` it makes no probe while one that passed on this host in the last hour stands, and says so on stderr (`afkconvoy plan --help`) — one that checked the worker launch commands this tick starts its workers with: a changed host kit is probed for. What is checked of each harness's command: `afkconvoy run --help`; the line each harness's worker is started with: [`afkconvoy help worker-launch`](help:worker-launch).
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
     ///
@@ -1560,7 +1542,7 @@ enum Command {
     ///
     /// Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config, GitHub or the remote cannot be read; the host kit cannot be read or lacks a required harness; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; `--instance` is not an instance id ([a-z0-9][a-z0-9-]{0,39}).
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required: `run` mints an id, a tick has to be given one. Give every tick of one fleet the same id — a new id holds no claims, and sees the old id's as another instance's.
     /// - In a bound repo the tick that reads a verdict ends the claim its stage was performed under (`advance`) and, where the verdict leads to a stage a role performs, starts that stage's worker into the slot it freed, under a claim of its own (`dispatch`, on the same issue): a `pass` to the next stage, a `reject` to an earlier one, a ruling that runs a stage again. That worker goes ahead of everything else the tick takes a slot for. Only a fleet over its `concurrency` has no slot for it: the issue is then on the frontier of the tick after, ahead of the issues no stage has declared on yet.
@@ -1608,15 +1590,15 @@ enum Command {
     },
     /// Run the gate in this worktree and put a green run on record (a worker's command)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When the work is committed and before the PR joins the landing train, with `--train`; and again after every further commit. A worker's prompt names the exact command.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A worker, in its own worktree. The operator runs it only to find out why a worker's gate is red.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It runs the config's `gate_command` in this worktree, its log streaming to stderr, for no longer than the gate limit: the config's `gate_seconds` (default {const:GATE_SECONDS}). A run that reaches it is ended, with everything it started, and is red.
     ///
@@ -1624,7 +1606,7 @@ enum Command {
     ///
     /// After the first green run in a worktree it notes, in the worktree's own git dir, what git ignores there as the worktree's fresh build: what `run` judges its held disk by.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"status", "recorded", "detail", …}
     ///
@@ -1643,7 +1625,7 @@ enum Command {
     ///
     /// Errors: the config cannot be read; with `--train`, tracked files have uncommitted changes ("has uncommitted changes to tracked files"), or the remote has no base branch.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - A red gate is an answer, not an error: the exit is 0. Read `status` and `recorded`.
     /// - Green is not enough. An untracked or modified file — the gate's own artifacts included, unless `.gitignore` covers them — makes the run green with `recorded` false: it proves nothing about a commit.
@@ -1664,25 +1646,25 @@ enum Command {
     },
     /// Put this worktree's PR on the landing train (a worker's command), or land the train
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// `land --issue <n>`: once the PR is open and its gate run is green and on record, to join the PR to the landing train. A worker's prompt names the exact command.
     ///
     /// `land --train`: when the train's worker is told a PR joined, and again after each answer that says so, until the answer is `idle`.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// `--issue`: the worker that wrote the PR, in its own worktree — in a bound repo, the worker in the landing role of the issue's workflow, in the issue's worktree.
     ///
     /// `--train`: the train worker, in the train's worktree — never anybody else, anywhere else.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// `--issue` reads the open issues, the open PRs and the train. With a fleet lock standing it joins the PR of a lock issue only, and for any other changes nothing. Otherwise it pushes this branch when it is ahead of the remote's, then pushes one merge commit — the PR's head joined onto the train's tip — as the train's new tip. No gate runs, and nothing on GitHub changes. A PR that conflicts with the train gets the train's tip merged into this worktree, left in progress.
     ///
     /// `--train` puts this worktree on the train's tip, merges the base branch in when it moved, pushes that as the train's tip, and gates it — by the run on record for that tree, which it leaves as it is, else by a run made now, for no longer than the gate limit: the config's `gate_seconds` (default {const:GATE_SECONDS}), as for `afkconvoy gate`. That run is put on record with the seconds it took and the host (`--host`, else this machine's name). Green: it pushes the commit to the base branch as a fast-forward, closes the issue of every PR that landed, and deletes those PRs' branches once GitHub shows them merged. Red: it comments the failure on every PR on the train, and lands nothing. Either way it then measures this worktree: what git ignores in it, and the files git tracks; the first run here notes what it built.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// `--issue`: {"issue", "pr", "outcome", "detail", …}
     ///
@@ -1709,7 +1691,7 @@ enum Command {
     ///
     /// Errors: no open PR closes the issue; tracked files have uncommitted changes; the remote has no such branch; the train moved under the command too many times ("run this again"); for `--train`, untracked files in the worktree ("is not the commit that would land").
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--train` moves the branch checked out here onto the train's tip, with a hard reset. Run in a checkout of your own it takes that checkout's branch with it.
     /// - Joined is not landed. `--issue` ends at `joined`; the train worker gates and lands.
@@ -1739,7 +1721,7 @@ enum Command {
     },
     /// Declare the verdict that ends a stage, with the text it produced (a worker's command, and a human's for a stage nobody holds)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Once, as the last thing a stage does: it declares the verdict that ends the stage, with the text the stage produced. A worker's brief gives the line with `--issue` and `--stage` filled in; add the verdict and the text:
     ///
@@ -1765,13 +1747,13 @@ enum Command {
     /// afkconvoy verdict pass --issue 7 --stage sign-off --text "Approved."
     /// ```
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A worker, in its own worktree: it starts in its role's directory, so the line its brief gives changes to the worktree first. The fleet put the commits of its role and of its team, and the harness it is a session of, in its environment, and the command reads them from there.
     ///
     /// Or a human, in a checkout of the bound repo, with neither commit named and none in the environment: that is what makes the record a human's.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the claim on the issue off the remote and the issue's comments, and writes one comment on the issue: the stage record. The record opens with a marker that carries the stage, the verdict, the claim it was declared under, the commits of the role and of the team and the harness the worker ran on — and nothing of how it was started — and the text follows it. Nothing but this command writes that format.
     ///
@@ -1781,7 +1763,7 @@ enum Command {
     ///
     /// It moves nothing. Where the issue goes is read by the fleet off its records and its workflow at the next tick: see `afkconvoy show --help`.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "stage", "verdict", "claim", "declared", "woke"} {"issue", "stage", "verdict", "by": "human", "declared": true, "woke"} — a human's
     ///
@@ -1793,7 +1775,7 @@ enum Command {
     ///
     /// A human's is refused, with nothing written, when the issue "is claimed" — its stage is its worker's, and a worker's record names both commits; when it is at another stage, or has left its stages; when the verdict "cannot be declared" there; with `--blocked-by`; and when the issue carries no one flow label.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - One stage declares once under one claim. A second run changes nothing, whatever it says: the first record stands.
     /// - A record is a verdict only for the stage the claim was dispatched to. One that names another stage is written and counts for nothing: the worker is then treated as having declared no verdict.
@@ -1838,7 +1820,7 @@ enum Command {
     },
     /// Answer an escalated issue with a ruling: its stage runs again under it (a human's command, and a consult's for the stage that asked it)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When an issue of a bound repo was escalated and you have decided what it asked: the issue carries the team's escalate label in place of its flow label, and the comment above the label says why. Answer it with the ruling:
     ///
@@ -1858,13 +1840,13 @@ enum Command {
     ///
     /// The stage runs again under your ruling. What is not yours to rule on you let through to a human instead, with `afkconvoy verdict escalate` — your brief gives that line too.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or whichever human the issue was handed to: in a checkout of the bound repo, with no commit named and none in the environment.
     ///
     /// Or a consult, in the issue's worktree: the fleet put the commits of its role and of its team in its environment, and those are what make the ruling a consult's; the harness it is a session of is there too, and its record names it. No other worker runs it: a stage does not rule on itself.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the team the config names, the claims on the remote, and the issue's labels and comments. The workflow is the one the issue's flow label names; with the label swapped out, the one its escalation's comment says it left.
     ///
@@ -1874,7 +1856,7 @@ enum Command {
     ///
     /// The ruling is `--text`, or the contents of `--text-file`: one of the two, not empty.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "workflow", "stage", "ruled": true, "relabelled", "woke"} {"issue", "stage", "verdict": "ruling", "claim", "declared", "woke"} — a consult's, as `afkconvoy verdict` answers a worker
     ///
@@ -1884,7 +1866,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit, with nothing written: the issue "is claimed" — its escalation is still under way, or a worker is at it; it "is not escalated" — its records put it at a stage and it carries its flow label; it "cannot be ruled on" — it has left the stages of its workflow, or no flow label and no escalation says which workflow it follows; no text, or an empty one; the repo names no team; and every error of `afkconvoy check`. A consult's: `--stage` is missing, or given with no commits; the issue "is not claimed".
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - A ruling runs the same stage again. It does not decide the stage's verdict: the worker started under it does.
     /// - An issue escalated because its worker went silent, or its gate stayed red, is at the stage that worker was performing: a ruling starts that stage anew.
@@ -1920,7 +1902,7 @@ enum Command {
     },
     /// Send an issue to a named stage of its workflow (a human's command, and a consult's)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To put an issue of a bound repo at a stage of your choosing, whatever its records say: back to planning after a review that missed the point, past a stage you have done by hand, or out of an escalation to another stage than the one that asked.
     ///
@@ -1930,11 +1912,11 @@ enum Command {
     ///
     /// The issue is then at that stage, to be performed, with both rework counts started over. To answer an escalated issue where it stopped, `afkconvoy rule` is the command.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or whichever human steers the issue: in a checkout of the bound repo. Or a consult answering in a human's place, under its claim, as with `afkconvoy rule`; its send starts no count over. No other worker runs it: where an issue goes is its workflow's to say, or a human's.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the team the config names, the claims on the remote, and the issue's labels and comments. The workflow is the one the issue's flow label names; for an escalated issue, the one its escalation's comment says it left.
     ///
@@ -1942,7 +1924,7 @@ enum Command {
     ///
     /// The text is `--text`, or the contents of `--text-file`: one of the two, not empty. The worker started on the stage is shown it in its brief.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "workflow", "stage", "sent": true, "relabelled", "woke"}
     ///
@@ -1951,7 +1933,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit, with nothing written: the workflow "has no stage" of that name — the error lists the ones it has; the issue "is claimed" — a worker is at a stage of it; it "cannot be sent to a stage" — no flow label and no escalation says which workflow it follows; no text, or an empty one; the repo names no team; and every error of `afkconvoy check`.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It is refused while the issue is claimed: a claim is dispatched to one stage, and its worker would go on performing it. Wait for the stage to declare, or hand the claim to a human with `afkconvoy escalate` first.
     /// - It reopens nothing and closes nothing. An issue sent back from an ended workflow must be open to be worked.
@@ -1986,7 +1968,7 @@ enum Command {
     },
     /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When a worker has an issue the fleet is to work with no human labelling it: one a patrol opened, or one a stage split off its own. It is the intake a worker makes — a human takes an issue in by putting its flow label on, on GitHub.
     ///
@@ -2006,17 +1988,17 @@ enum Command {
     /// afkconvoy intake --train --issue 14 --workflow fix
     /// ```
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A worker, in its own worktree: it starts in its role's directory, so it changes to the worktree first, as the line its brief gives for `afkconvoy verdict` does. The fleet put its role and the issue it is on in its environment (AFKCONVOY_ROLE, AFKCONVOY_ISSUE), and the command reads them from there; `--role` and `--from` say them by hand. A patrol's worker is on no issue: it has its patrol's name there instead (AFKCONVOY_PATROL), which `--patrol` says by hand. The train worker has no role and is on no issue and no patrol: it says `--train`, in the train's worktree, and nothing else of who it is.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the config of the checkout, the team it names, the issue, and — to count — the comments of every open issue that carries a flow label. It writes on the issue, in this order: a blocked-by edge to each issue `--blocked-by` names that GitHub does not record yet; one comment, the intake record, whose marker carries the workflow, the role and the issue the worker was on — or the patrol it ran, or, of the train worker's, `by=train` and nothing else; then the workflow's flow label, `flow:<workflow>`. Nothing but this command writes that format. Then it wakes the fleet, as `afkconvoy wake` does: the issue is on the frontier at the next tick — or, with an open issue to wait for, once that has closed. The edges go first, so the issue is never on the frontier ahead of what blocks it.
     ///
     /// The limit. Before it writes anything it counts the open issues taken in by workers: those that carry a flow label and an intake record for it. With that count at the repo's `intake_limit` (see `afkconvoy config --help`) it refuses and writes nothing. The count is taken from the records each time and stored nowhere, so closing such an issue makes room. An issue a human labelled has no record: it is never counted, and nothing here refuses a human's label.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "workflow", "taken", "role", "from", "blocked_by", "open", "limit", "woke"}
     ///
@@ -2034,7 +2016,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit: the intake limit is reached — the error says the count and the limit; the team has no workflow of that name — the error lists the ones it has; the team has no such role, or no such patrol; the repo is unbound; the issue is closed, is a pull request, or already carries the flow label of another workflow; the role, or both the issue the worker is on and its patrol, is neither in the environment nor given, and `--train` is not given; `--train` with a role, an issue or a patrol, given or in the environment; both `--from` and `--patrol` are given; `--blocked-by` names the issue itself, a pull request, or an issue that cannot be read; the team has a fault; "is not in a git checkout".
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It is the only way a worker's intake is on the record. A flow label a worker puts on by itself would read as a human's and escape the limit: the guard refuses that, and an intake record written by hand (`afkconvoy guard --help`).
     /// - An issue a patrol's worker takes in counts against two limits: the repo's `intake_limit`, which refuses here, and the patrol's own `max_open`, which refuses nothing here — the fleet does not run the patrol again while that many are open.
@@ -2072,7 +2054,7 @@ enum Command {
     },
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When the fault is one every issue shares — the base branch is broken, so every gate is red whatever its PR holds — and one issue carries the fix. Raise the lock on that issue:
     ///
@@ -2082,17 +2064,17 @@ enum Command {
     ///
     /// From the next tick the fleet works lock issues only, until the last of them closes. For anything that is wrong with one issue alone, declare a verdict instead.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A worker, in its own worktree: a patrol that finds the base branch red, or a stage that finds it cannot be the only one to fail. The operator may run it too, in a checkout of the repo; a human may as well put the lock label on the issue on GitHub.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the issue and the config's `lock_label` (default fleet-lock). On an open issue that does not carry the label it writes one comment — the record of the role that raised the lock, read from `--role` or from the worker's environment (AFKCONVOY_ROLE); a worker of an unbound repo has none — and then puts the label on the issue. Then it wakes the fleet, as `afkconvoy wake` does.
     ///
     /// It claims nothing and starts nothing. The lock issue is worked as any issue is: in a bound repo once it carries a flow label, in an unbound one once it carries the ready label. Nothing here takes a lock off: closing the issue ends it — landing the PR that closes it does.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "label", "role", "raised", "locks", "woke"}
     ///
@@ -2105,7 +2087,7 @@ enum Command {
     ///
     /// Errors, as {"error": …} with a non-zero exit: the issue is closed; there is no such issue; the config cannot be read; "is not in a git checkout".
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - A lock stops everything else, on every host: no other issue is dispatched, no stale claim of another issue is taken, no issue is handed to a human, and no PR of another issue joins the landing train (`afkconvoy land` answers `locked`).
     /// - Workers already running are left alone, and nobody asks after them: what they declare — a verdict, a PR — is acted on once no lock stands. Their claims take no slot meanwhile, so a lock issue is started even by a fleet at its bound.
@@ -2125,7 +2107,7 @@ enum Command {
     },
     /// Have a patrol run now, past its interval and its daily bound: the next tick runs it
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When you want a patrol's run now rather than when its interval has passed — a review right after several landings, say — without editing the team's patrol file, which changes the schedule for every repo that runs it:
     ///
@@ -2135,11 +2117,11 @@ enum Command {
     ///
     /// The next tick of whichever host claims the run starts it, and this command wakes the `run` of this host so that tick starts at once.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, or any human, in a checkout of a bound repo whose config names the patrol under `patrols`. No worker is told to: a patrol's worker ends its run with `afkconvoy over`.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the team, the patrol's file, the remote's records of the patrol and what is open on GitHub — what `afkconvoy plan` reads of a patrol. Then it pushes one record to the remote, a ref of the fleet's, `asked/<name>`, saying when it asked and from which host, and wakes the `run` of this host (`afkconvoy wake --help`). It changes no config file, starts no worker and claims nothing itself.
     ///
@@ -2152,7 +2134,7 @@ enum Command {
     ///
     /// Until a tick starts the run, `afkconvoy plan` shows `asked` (normally `due`; new completions may hold it again): when the ask was made. The panel says a human asked for it.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"patrol", "asked", "ref", "woke"} — the ask is on the remote at `ref`, made at `asked` (epoch seconds); `woke` is whether a `run` on this host was told.
     ///
@@ -2166,7 +2148,7 @@ enum Command {
     ///
     /// Also: "is not in a git checkout"; the config, the team, the remote or GitHub cannot be read; the remote does not take the push.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It runs nothing itself: a `run` does, at its next tick. With no `run` on any host (`woke: false` here, and none elsewhere), the ask waits on the remote for the first tick of any of them.
     /// - An ask made while nothing held the patrol stands until a run answers it, whatever comes to hold the patrol meanwhile: a lock raised since holds it, and it runs once the lock has closed. `afkconvoy plan` shows it held, with `asked`.
@@ -2181,25 +2163,25 @@ enum Command {
     },
     /// Declare a patrol's run or a proposal's over: the next tick ends it (a worker's command)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Once, as the last command of a worker that is on no issue: a patrol's, when it has nothing more to open, and a proposal's, when its PR is open or there is nothing to propose. The worker's brief ends with the exact line, the run named in it.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A patrol's worker or a proposal's, in its own worktree: the checkout it was started in. Never a worker on an issue: its stage ends with a verdict (`afkconvoy verdict --help`).
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the claim on the run off the remote and pushes one record that names it — a ref of the fleet's, `over/<run>` — then wakes the `run` of this host (`afkconvoy wake --help`). The next tick finds the run declared over and ends it at once, as it would one whose worker is gone (`end_patrol`, `end_proposal`: `afkconvoy tick --help`): a patrol's checkout is still checked for a commit and a PR, a proposal's PR is still held against its ruling. The slot the run held is free from that tick on.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"over": true, "run", "ref", "woke"} — the record is on the remote; `woke` is whether a `run` on this host was told.
     ///
     /// Errors: no run is claimed under that name — it was ended already, or never started; the name is an issue's number; the worker is on an issue (AFKCONVOY_ISSUE is in the environment); the remote cannot be read or does not take the push.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It ends nothing itself: the fleet ends the run, at its next tick. A worker that goes on working after it is cut short.
     /// - A worker that never runs it loses nothing but time: the fleet ends the run once the worker is gone, or has been stopped for the grace period — five minutes in which the run holds a slot of `concurrency` no issue can be worked in.
@@ -2214,7 +2196,7 @@ enum Command {
     },
     /// Say what an inspection of a hot worker or of the host found: its `run` types it at the worker and leaves it on the issue, or keeps it beside admission's reading (an inspection's command)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Once, as the last command of an inspection. Its brief ends with the exact line. An inspection is of one of two kinds, and finds in words of its own.
     ///
@@ -2237,11 +2219,11 @@ enum Command {
     ///
     /// Every path is checked before any is freed: one that may not be is refused, saying why, and nothing of the line is freed.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A worker started as an inspection, in its own worktree: the checkout it was started in (`afkconvoy-inspection`). Run anywhere else it is refused, and so is a word of the other kind.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It keeps what was found in that checkout's own git dir — a second run says it again, and the last one stands — and wakes the `run` of this host (`afkconvoy wake --help`). That `run` ends the inspection at its next look, within 30 seconds, and removes its checkout, its terminal with it.
     ///
@@ -2249,13 +2231,13 @@ enum Command {
     ///
     /// Of the host, it keeps what was found in the cache every fleet of the host shares (host-inspection/; `afkconvoy help cache`), shown by the panel and `doctor` beside admission's reading, with what was freed and named. For `fleet` it opens one issue in the repo saying so — with the escalate label and the label fleet-outgrows-host — and none while one carrying that label is open.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"inspected": true, "found", "kind", "reclaimed", "freed", "named", "woke"} — what was found is kept; `kind` is worker or host; `reclaimed` and `named` are each [{path, bytes}] it freed and named, `freed` the bytes freed in all; `woke` is whether a `run` on this host was told.
     ///
     /// Errors: the text is empty; the checkout it is about is no inspection's; the word is not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim of another word than reclaimable; a path that may not be freed, or does not exist.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - An inspection is given {const:INSPECTION_MINUTES} minutes. One that has said nothing by then is ended: nothing is typed at the worker, and the comment, or the host's record, says it found nothing in time.
     /// - It types nothing itself, and opens no issue: the `run` does. An inspection that does as well does it twice.
@@ -2280,7 +2262,7 @@ enum Command {
     },
     /// Run a heavy command alone on this host, once no other `exclusive` command runs (a worker's command)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// For work you know to be heavy: a build, a test suite or a benchmark that takes most of the host's cores, memory or disk for minutes. You know it from an inspection that typed at you that the work really is that heavy, or from your role's rules that name the command. Put `afkconvoy exclusive --` in front of that command, every time you run it from then on:
     ///
@@ -2290,11 +2272,11 @@ enum Command {
     ///
     /// Not for everyday commands — `git`, a single test, a quick build: the queue makes each one wait for every heavy one before it, of every fleet on this host.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A worker, in its own worktree. Anyone else on the host may too: the queue is the host's, not a fleet's.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then: the commands run one after the other, in the order they asked. The queue is the host runner's (`afkconvoy run --help`), held in its process: `exclusive` asks it on its socket, naming its checkout, and stays on the line while it waits and while its command runs. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
@@ -2302,7 +2284,7 @@ enum Command {
     ///
     /// While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. The wait and the run together count toward the gate limit (`gate_seconds`), as any background work of a worker's does: one that has been in the queue longer than that is silent, and its issue is escalated.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
     ///
@@ -2312,7 +2294,7 @@ enum Command {
     ///
     /// It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the host runner cannot be asked — the cache directory is not known — or what it said cannot be read, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It may wait long: as long as every heavy command ahead of it runs. Run it as you would the gate — in the background, or with a time limit of the gate limit — not under a short tool time limit that kills it while it waits.
     /// - Killing it kills its place in the queue, not only its wait: run it again to wait from the end.
@@ -2328,11 +2310,11 @@ enum Command {
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Never by hand. It is the guard: the check made before each thing a worker of a bound repo does, refusing what no worker may do and what its stage may not. Read this to learn what a worker is refused, or why one was.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// Claude Code, as a hook: the fleet adds it to every worker of a bound repo as it starts it, whatever the role's repo holds, and Claude Code runs it before each tool call the worker makes. A call it refuses is not made.
     ///
@@ -2340,9 +2322,13 @@ enum Command {
     ///
     /// Codex, as a hook too, said on the line that starts a Codex worker and kept in no file: Codex runs it before each tool call. Codex makes a call whose hook fails in any way but one, so the hook turns every answer but an allowed call into that one: a call this command refuses, and one it could not be asked of, is not made.
     ///
+    /// DSH, through a plugin of afkconvoy's own, which the overlay on the line that starts a DSH worker loads last: it asks this command before every tool call. A DSH worker whose plugin is missing or broken does not start.
+    ///
+    /// What each harness's worker is started with, the guard among it: [`afkconvoy help worker-launch`](help:worker-launch).
+    ///
     /// A role's own limits are hooks in the role's repo — for pi, extensions there. They load because the worker starts there, run beside this one, and refuse in the same way.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It writes nothing. It reads two things:
     ///
@@ -2362,7 +2348,7 @@ enum Command {
     ///
     /// - committing and pushing (`git commit`, `merge`, `cherry-pick`, `revert`, `am`, `push`)
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// Unlike every other command, no JSON: it answers Claude Code the way a hook does.
     ///
@@ -2371,27 +2357,25 @@ enum Command {
     ///
     /// A call it cannot read, an environment that lacks one of the stage's facts, or one that names no harness there is, is refused with the reason: nothing is allowed unread.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
     /// - It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
     /// - What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a commit or a PR a patrol left is a failed run, reported to a human — see `afkconvoy tick --help`.
     /// - An unbound repo's workers have no guard: their worker launch command is opaque.
-    ///
-    /// DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a fleet-owned DSH_HOME. The --patch overlay loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
     #[command(next_help_heading = HOOK, verbatim_doc_comment)]
     Guard,
     /// Start a fresh worker on one issue
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To start a worker on one issue by hand. A tick does this on its own for every frontier issue it has a free slot for, and for every claim of its own left without a worker. Do it yourself when a plan shows an issue the fleet is not starting, or — with `--start fresh` — to throw away an attempt that went wrong and have the issue worked again. Run `recovery` first: it shows what this would continue from.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the worker is to run on.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// Before it claims an issue the instance does not hold, it reads the issue's blockers on GitHub once more: with any of them open nothing is claimed and no worker starts. A tick's rebuild can be minutes older than its dispatches, and a blocker added in between holds the issue back all the same.
     ///
@@ -2399,13 +2383,13 @@ enum Command {
     ///
     /// In a bound repo the issue's flow label names its workflow, and the worker performs the stage the issue's stage records put it at — the workflow's first while there are none — in the stage's role, with the verdicts declared so far, and the reason of a rejection, in its brief. The team's repo and each role's are asked for the commit at their head; one the fleet has no copy of yet is cloned and kept, read-only, under the cache directory (copies/<owner>/<repo>/<commit>; `afkconvoy help cache` says where that directory is and what moves it), once however many roles it holds. A role that is a subdirectory of its repo is copied out of that on its own (<commit>-role-<path>; <commit>-role+codex-<path>, with a link to the role's skills where Codex finds them, for a Codex worker), and so is the team's directory, without the directories of its roles and without a `.claude/` at its top (<commit>-team+rules-<path>): a worker is given its role's directory and, of the team's, the team rules (its `CLAUDE.md`) — nothing else above its role, and no neighbour's.
     ///
-    /// The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment (AFKCONVOY_ISSUE, _FLOW, _STAGE, _ROLE, _SKILL, _WRITES, _ROLE_COMMIT, _TEAM_COMMIT, _HARNESS), and starts the worker launch command with the worktree and the team's copy added as directories, the user's own settings left out, and its model when it has one — as Claude Code takes them; what a pi worker and a Codex worker are started with is in `afkconvoy run --help`. The worker's harness and model are its role's range's answer to the issue's casting (`afkconvoy help roster`), or this host's switch's.
+    /// The terminal is opened on the worktree as ever, and the line it runs changes to the role's copy, puts the stage's facts in the environment, and starts the worker launch command with what puts the worker in its role: [`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness. The worker's harness and model are its role's range's answer to the issue's casting (`afkconvoy help roster`), or this host's switch's.
     ///
     /// Where the stage declared `escalate` and names a consult, the worker is started as that consult instead: in the consult's role, on a brief that names the skill, the stage that asked and its reason, and the two lines it ends with — `afkconvoy rule`, or `afkconvoy verdict escalate` to let it through to a human. AFKCONVOY_CONSULT is `true` in its environment, the guard refuses its commits, and it runs its own role's range, not the stage's.
     ///
     /// Once the issue's last stage has passed to `land`, the worker is started in the workflow's landing role instead, on the join-only brief with that role's landing skill named in it: it gates the issue's open PR and joins the landing train. Its stage is `land`, and it declares no verdict.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "started": true, "claim", "tier", "action", "prompt", "reason", "worktree", "branch", "terminal"}
     ///
@@ -2422,15 +2406,13 @@ enum Command {
     ///
     /// Errors: the issue is closed; in a bound repo, the issue carries no flow label, more than one, or one that names no workflow of the team, it is at no stage a worker performs (the error says where it is), it passed to `land` and no open PR closes it, the team does not load (the error carries its `faults`) — none of which claims the issue; the instance's claim on it is one a stage already declared under; the worker launch command resolves to nothing; orca fails, or the worker is not ready in time. After a failed step the claim is still held: the instance's next tick finds a claim with no worker and continues it.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and it is the instance that holds the claim afterwards. Give it the id of the fleet that is to look after the worker.
     /// - `--start fresh` discards the previous attempt: it closes the issue's open PRs, deletes its branches on the remote and removes its worktree, unpushed work included.
     /// - It checks that the issue is open and, unless the instance holds it already, that no blocker of it is open — nothing else of the frontier: an issue without the ready label, or past the concurrency, is started all the same. A claim the instance holds is continued whatever blocks it.
     /// - A role in a subdirectory is not the directory a human opens in a checkout: a `CLAUDE.md` or a `.claude/` above it there is not in the worker's copy, nor above it — but for the `CLAUDE.md` of the team's own directory, the team rules, which every worker is given. `afkconvoy check` notes each role that has another above it.
     /// - It does not ask after a worker already there. On a claim whose worker is at work it starts another in the same worktree.
-    ///
-    /// DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a fleet-owned DSH_HOME. The --patch overlay loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
     #[command(next_help_heading = BY_HAND, verbatim_doc_comment)]
     Dispatch {
         #[command(flatten)]
@@ -2447,19 +2429,19 @@ enum Command {
     },
     /// Show what `dispatch` would continue an issue from, without acting
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Before `dispatch` on an issue that was worked before: it shows what `dispatch` would continue from, and so what `--start fresh` would throw away.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the worker ran on — a worktree counts only where it is.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the issue's comments and the open PRs on GitHub, the issue's branches on the remote, and its worktree through orca. It changes nothing.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "base", "worktree", "branch", "tier", "action", "prompt", "reason"}
     ///
@@ -2469,7 +2451,7 @@ enum Command {
     ///
     /// Errors: the config, GitHub or the remote cannot be read; the remote has no base branch.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It takes no `--instance` and looks at no claim: it answers for an issue nobody holds, and for one another instance holds.
     #[command(next_help_heading = BY_HAND, verbatim_doc_comment)]
@@ -2481,25 +2463,25 @@ enum Command {
     },
     /// Close one of my claims whose issue needed no change
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To close, by hand, a claim whose issue needed no change. A tick does this on its own for a worker that stopped with an `already-satisfied` verdict and no work on its branch. Do it yourself when a plan keeps showing such a claim under `mine` as `no_pr`.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the worker ran on.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It closes the issue on GitHub, writes the status board's last word, releases the claim on the remote, and removes the worktree.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "action": "closed", "released": true} {"issue", "released": true, "detail"} — no claim is held on the issue: nothing was done.
     ///
     /// Errors: the claim is another instance's ("is not this fleet's claim"); the worktree shows work, or there is no worktree on this host to show there is none ("is not closed as needing no change"). Nothing was changed.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claim.
     /// - It does not read the verdict. Any claim of the instance whose committed tree equals the base branch's current tree on the remote and has nothing uncommitted is closed, whatever commits the branch holds — one whose worker has only just started as well. A refusal names the differing files.
@@ -2514,19 +2496,19 @@ enum Command {
     },
     /// Hand one of my claims to a human
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To hand a claim to a human by hand. A tick does this on its own for every failure: an `escalate` verdict, a worker silent past its nudge, a blocker that cannot be parked on. Do it yourself when you can see a claim will not finish and the fleet has not given it up yet.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// On GitHub it comments `--reason` on the issue, swaps the config's `ready_label` for its `escalate_label`, and writes the status board's last word. In a bound repo it swaps the issue's flow label for the `escalate_label` of the team instead, and the comment records which workflow the issue left: `afkconvoy rule` puts that label back. On the remote it releases the claim. The PR and the branch are kept. The worktree is removed when its tree is clean and every commit of its branch is on the remote — pushed, or on the base branch: a later dispatch recreates it at the pushed tip. Otherwise it is kept, and the comment and the status board say what it holds that exists on this host only, the comment listing each commit the remote does not have by its subject. In orca it closes the terminal of the issue's worker: a worktree that is kept has no worker left in it.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "action": "escalated", "released": true, "worktree", "kept_because", "unpushed"} — worktree is "removed", "kept", or "none" when the issue has none on this host. A kept one says why: kept_because is "dirty", "unpushed" or "unread", and unpushed is how many commits only it holds (null when unread).
     ///
@@ -2534,7 +2516,7 @@ enum Command {
     ///
     /// Errors: the claim is another instance's ("is not this fleet's claim").
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claim.
     /// - It escalates only a claim. On an issue nobody holds it answers `released` with a `detail`, and has neither commented nor relabelled.
@@ -2554,19 +2536,19 @@ enum Command {
     },
     /// Leave one of my claims waiting on the issues its worker declared it blocked by
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To park a claim by hand. A tick does this on its own for a worker that stopped with a `blocked` verdict naming open issues the fleet can wait for. Do it yourself when a plan keeps showing such a claim under `mine` as `no_pr`.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the worker's latest verdict on the issue and where each issue it names stands. On GitHub it records each blocker as a blocked-by edge of the issue and writes the status board's last word. On the remote it releases the claim. Then the worktree: when its tree is clean and every commit of its branch is on the remote — pushed, or on the base branch — it is removed, and a later dispatch recreates it at the pushed tip. Otherwise it is kept, with the terminal of the issue's worker closed, and the status board says what it holds that exists on this host only.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "action": "parked", "blocked_by", "released": true, "worktree", "kept_because", "unpushed"} — blocked_by is the issues it waits on; worktree is "removed", "kept", or "none" when the issue has none on this host. A kept one says why: kept_because is "dirty" (something uncommitted), "unpushed" (commits the remote does not have) or "unread" (its commits could not be checked against the remote), and unpushed is how many commits only it holds (null when unread).
     ///
@@ -2574,7 +2556,7 @@ enum Command {
     ///
     /// Errors, each with nothing changed: the claim is another instance's; "is not parkable" — the latest verdict is not `blocked`, or every blocker it named is closed (dispatch the issue again instead), or a blocker cannot be waited for (escalate it instead: the error says why).
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claim.
     /// - It takes no blockers of yours: they are the ones the worker's verdict names.
@@ -2589,31 +2571,31 @@ enum Command {
     },
     /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To send a worker its nudge by hand. A tick does this on its own, once, for a worker that stopped with no PR and no verdict and stayed quiet for the grace period. Do it yourself when a tick is not running and such a worker sits idle.
     ///
-    /// ##### What counts as silent
+    /// ## What counts as silent
     ///
     /// A worker is silent when it stopped, declared nothing, showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — for the grace period (300s), and waits on no background work of its own. Silent, it is nudged once; silent a grace period past that nudge, it is escalated (a joining worker is restarted first, a train worker's train abandoned).
     ///
     /// A worker whose turn ended while a shell or a monitor it started in the background still runs — its gate, say — is waiting, not silent: its harness shows that work in the footer under its prompt (Claude Code's `1 shell, 1 monitor`), which the tick reads off its screen, and the tick's line says `waiting on its own background work #7 (since …)`. It is neither nudged nor escalated while it waits. Once that work ends, its silence is counted as ever: a nudge, then escalated past it. Waiting longer than the gate limit (`gate_seconds`) is a silence at once, nudged or not, and the escalation says it waited on its own background work past the limit.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the worker runs on.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It asks orca for the worker's state and reads the issue's comments for a verdict. It types one line at the worker's terminal and records the nudge in the worktree. Nothing on GitHub or the remote changes.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "action": "nudged", "terminal"}
     ///
     /// Errors, each with nothing sent: "has no stopped worker" — the instance holds no claim on the issue, or its worker is at work or gone; "is not nudged" — it was nudged already, showed a sign of life within the grace period, waits on background work of its own, or declared a verdict; the claim is another instance's; the worktree has no live terminal.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claim.
     /// - It is refused wherever a tick would not nudge: it cannot be used to hurry a worker.
@@ -2629,25 +2611,25 @@ enum Command {
     },
     /// Replace the silent worker of one of my claims whose PR is joining the train, once
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To replace a silent worker by hand. A tick does this on its own, once, for a claim whose PR is open and not on the landing train, and whose worker stopped, was nudged, and stayed silent. Do it yourself when a plan keeps showing such a claim under `mine` as `joining`.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the worker runs on.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It records the restart in the fleet's comment on the PR, then starts a new worker in the same worktree, briefed only to join the landing train — in a bound repo, in the landing role of the issue's workflow. The PR, the branch and the worktree are untouched.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"issue", "pr", "action": "restarted", "restarted", "terminal", "prompt"} — restarted is the time, in epoch seconds; prompt is the brief the new worker got.
     ///
     /// Errors, each with nothing changed: "has no stopped worker" — the instance holds no claim on the issue, its worker is at work or gone, or the issue has no open PR; "is not restarted" — the PR's join already had its restart, the worker was not nudged yet, or it showed a sign of life within the grace period; the claim is another instance's.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claim.
     /// - One restart per PR. A worker silent again after it is escalated by the next tick.
@@ -2665,7 +2647,7 @@ enum Command {
     },
     /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To move work onto another harness: a harness's login expired, its provider turned access off, or another agent should take the work over. One line does it all:
     ///
@@ -2675,11 +2657,11 @@ enum Command {
     ///
     /// It works on a worker that is busy, idle at its prompt, blocked from receiving input, or already gone. It needs no nudge first, no grace period and no PR.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the workers run on.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// The harness is this host's choice for the repo, kept in the repo's git dir on this host and never pushed: whoever else works the repo runs the harness they have, under their own accounts. From then on every worker this host starts for the repo — new issues, later stages, consults, patrols, the train worker, inspections — is of that harness, whatever the config's `harness` key, a stage, a patrol or an issue's casting names.
     ///
@@ -2699,7 +2681,7 @@ enum Command {
     ///
     /// The switch is recorded on the PR, in the fleet's comment that records its join: from which harness to which, by which instance, and when. It is no restart, no rework and no nudge: no breaker count moves, and a joining worker keeps its one restart.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// For ISSUE: {"issue", "from", "to", "worktree", "branch", "terminal", "pr", "stage", "chosen"} — from and to are the old and new harness; chosen is {"was", "now"}, this host's choice before and after (null: none, cleared).
     ///
@@ -2707,9 +2689,9 @@ enum Command {
     ///
     /// For --all, and with nothing named: {"harness" (null when cleared), "chosen", "switched": [each as above], "failed": [{"issue" or "patrol", "error"}]}.
     ///
-    /// Errors, each with nothing chosen and no worker ended: the harness chosen cannot be started here — missing, logged out, or its command not taking the flags its role needs — named with what is wrong; the instance holds no claim on the issue, or no run of the patrol; the claim is another instance's.
+    /// Errors, each with nothing chosen and no worker ended: the harness chosen cannot be started here — missing, logged out, or its command not taking the flags its role needs ([`afkconvoy help worker-launch`](help:worker-launch) names them) — named with what is wrong; the instance holds no claim on the issue, or no run of the patrol; the claim is another instance's.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claims.
     /// - The choice holds on this host until a switch chooses again or `--clear` forgets it: a change of the config's `harness` key or of an issue's casting labels moves nothing here while it stands.
@@ -2740,19 +2722,19 @@ enum Command {
     },
     /// Give up the landing train, its worker silent past a nudge, with nothing landed
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To give the landing train up by hand. A tick does this on its own when the train's worker stopped with the train not landed, was nudged, and stayed silent for a grace period more. Do it yourself when a tick is not running and the train stands still.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host the train worker runs on.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// On the remote it deletes the landing train — only while its tip is still the one its worker went silent on. It clears the train's worktree and keeps it. For each PR of the instance that was on the train it records the abandonment in the fleet's comment on the PR and tells the PR's worker — in a bound repo, the one in its workflow's landing role — to join the next train; a PR taken off an abandoned train before is escalated instead. Nothing has landed, and what an earlier train put on the base branch is not touched.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"action": "abandoned", "train", "issues", "escalated", "worktree"}
     ///
@@ -2763,7 +2745,7 @@ enum Command {
     ///
     /// Errors, each with nothing abandoned: "nothing is on the landing train"; "has no worktree on this host"; "is not abandoned" — its worker is at work, gone, not told of what the train holds now, not nudged yet, or showed a sign of life within the grace period; "moved while it was being abandoned" — a PR joined meanwhile, and the train was kept.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required. Only that instance's PRs are told to join again.
     /// - It is refused wherever a tick would not abandon: it cannot be used to clear a train whose worker is still at it.
@@ -2777,19 +2759,19 @@ enum Command {
     },
     /// Take another fleet instance's claims without waiting for the lease
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// When a fleet instance on another host is dead and its claims should not wait out the lease. `--list` first, to find its id and see whether its heartbeat is fresh; then `--from <id>`. For this host's own claims it is not needed: `run` takes them at its start. A claim is on an issue, on a patrol's run, or on the proposal of a precedent: both ways take all three.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo, on the host that is to carry the claims on.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// `--list` reads the claims and heartbeats on the remote, and changes nothing. `--from` re-stamps each of that instance's claims on the remote in the name of `--instance`, and refreshes that instance's heartbeat when it is due. Each push is refused if the claim moved since it was read. A claim taken is still the claim it was created as: a verdict declared under it before it was taken is read as its. It starts no worker and changes nothing on GitHub.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// `--list`: {"instances", "me", "now", "lease"}
     ///
@@ -2808,7 +2790,7 @@ enum Command {
     ///
     /// Errors: `--from` without `--instance`; neither `--list` nor `--from`; `--from` is `--instance` itself.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--from` an instance whose heartbeat is still fresh takes nothing until `--yes`: the answer is `confirm`, with exit 0. Add `--yes` only when you know that fleet is dead — a live one goes on working the issues it lost.
     /// - Taking starts nothing. The claims are continued by the next tick of `--instance`: follow it with `run --instance <id>` or `tick --instance <id>`, under the same id.
@@ -2835,19 +2817,19 @@ enum Command {
     },
     /// End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Once, as a worker's last command: after its PR is on the landing train, or its verdict is posted on the issue. A worker's prompt names the exact command. Every command that changes fleet state wakes the `run` as it ends, so after `land` or `verdict` this one is redundant, and harmless.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// A worker, in its own worktree — any worktree or checkout of the repo on the fleet's host reaches the same fleet instance.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It speaks to this host's runner, on its socket in the cache directory (host-runner.sock): one signal for the fleet instance it holds of this repo, naming its checkout, itself, and the issue the worker is on if its environment says one. It waits {const:WAKE_ANSWER_SECONDS} seconds at most for the answer. The signal ends that fleet instance's sleep, and no other's; it carries nothing else, and it writes nothing to GitHub: the tick it starts reads the outcome from GitHub itself.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"woke": true, "tick"} — no tick was in progress: tick `tick` starts now. The fleet instance's tick log says "tick N: started (woken by wake #12)" of it.
     ///
@@ -2857,7 +2839,7 @@ enum Command {
     ///
     /// It exits 0 with each of them. Errors: only "is not in a git checkout". Failing to wake anybody is not an error, and costs at most the {const:WAKE_ANSWER_SECONDS} seconds it waits.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It reports nothing. A worker's outcome is its PR on the train or its verdict comment: without one of them on GitHub, a wake only makes the fleet look sooner at a worker that stopped with nothing.
     /// - `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
@@ -2869,19 +2851,19 @@ enum Command {
     },
     /// List every claim and heartbeat on the remote
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// To see exactly what the remote holds: which instance claims which issue, and when each instance last beat. `plan` and `takeover --list` say what that means; this is the refs themselves, for repairing them.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the fleet's refs on the remote. It changes nothing, and does not read GitHub or the config.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"claims", "heartbeats"}
     ///
@@ -2890,7 +2872,7 @@ enum Command {
     ///
     /// Errors: the remote cannot be read; "is not in a git checkout".
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - It looks where this repo's last startup probe found the remote keeps the fleet's refs. In a clone no `plan`, `tick` or `run` was ever run in, it looks under refs/convoy/ — and finds nothing on a remote that keeps them as convoy-* branches.
     /// - It does not say whether a claim is live: compare its instance's heartbeat with the lease, or read `takeover --list`.
@@ -2901,25 +2883,25 @@ enum Command {
     },
     /// Claim one issue for a fleet instance
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Hardly ever: `dispatch` claims the issue it starts a worker on. Run it to hold an issue back from every fleet — a claim keeps the issue off the frontier — or to repair a claim that was released by mistake.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It creates the issue's claim on the remote in one atomic push, which succeeds for exactly one instance. Before it, it refreshes the instance's heartbeat when that is due. It does not read GitHub: the issue is not checked, and no worker is started.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"won": true, "issue", "ref", "sha", "instance"} {"won": false, "issue", "ref", "owner", "detail"} — the issue is claimed already. owner is that claim: {number, instance, host, ts, sha}.
     ///
     /// Errors: the push failed and it was not a lost race; the remote cannot be read.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required. A lost race is an answer with exit 0: read `won`.
     /// - A claim the instance holds already answers `won: false`, with itself as the owner.
@@ -2936,25 +2918,25 @@ enum Command {
     },
     /// Release a fleet instance's own claim on one issue
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Hardly ever: `close`, `escalate` and `park` release the claim they end, and a landed PR's claim is released by the tick. Run it to drop a claim made with `claim`, or one left behind by something that went wrong.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It deletes the issue's claim on the remote, only while it is still the claim that was read. It does not read or change GitHub, and touches no worker and no worktree.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"released": true, "issue", "ref"} — also when the issue had no claim: already gone counts as released.
     ///
     /// Errors: the claim is another instance's ("is not this fleet's claim"); it "moved since it was read" — somebody took it meanwhile, and it was left alone; the delete failed.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required, and must be the instance that holds the claim. To end another instance's claim, take it first: `takeover`.
     /// - It only unlocks. The issue keeps its labels, its worker keeps working, and — still open and ready — the issue is back on the frontier: a fleet dispatches it again.
@@ -2969,25 +2951,25 @@ enum Command {
     },
     /// Refresh a fleet instance's heartbeat, if it is due
     ///
-    /// ##### When to run it
+    /// ## When to run it
     ///
     /// Hardly ever: every tick refreshes its instance's heartbeat. Run it to keep the claims of an instance live while nothing ticks for it — claims made by hand, or a fleet stopped for a while whose claims no other host should take.
     ///
-    /// ##### Who runs it
+    /// ## Who runs it
     ///
     /// The operator, in a checkout of the repo.
     ///
-    /// ##### What it reads and writes
+    /// ## What it reads and writes
     ///
     /// It reads the instance's heartbeat on the remote and, when it is due — never written, or older than a third of the lease — writes it anew. Nothing on GitHub changes.
     ///
-    /// ##### What it answers
+    /// ## What it answers
     ///
     /// {"refreshed": true, "ts", "ref"} {"refreshed": false, "reason": "not due", "ts", "ref"} — ts is the heartbeat that stands, in epoch seconds.
     ///
     /// Errors: the remote cannot be read, or refuses the push.
     ///
-    /// ##### What trips you up
+    /// ## What trips you up
     ///
     /// - `--instance` is required.
     /// - It keeps a dead fleet's claims alive: while they are beaten for, no other host takes them as stale, and nobody works them.
@@ -2999,10 +2981,10 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
-    /// Print this message, the help of the given command, or a help topic
+    /// Print the index, the help of the given command, a help topic, or with `all` the whole manual
     #[command(next_help_heading = READER)]
     Help {
-        /// A command, or a topic: `--help` lists both
+        /// A command, a topic, or `all`: `--help` lists the commands and the topics
         name: Option<String>,
     },
 }
@@ -3296,15 +3278,16 @@ fn checkout_help(name: &str, positional: bool) -> String {
         (false, None) => refused.to_string(),
     };
     format!(
-        "##### Which checkout it is about\n\n{named}: a checkout of the repo, or any directory in \
+        "## Which checkout it is about\n\n{named}: a checkout of the repo, or any directory in \
          one, which names that checkout.{own} Naming none, it is about the checkout it is run in. \
          {worker}"
     )
 }
 
-/// The manual: `--help` answers it whole, and `help <topic>` one topic of
-/// it. Its text is the guide (`Cli`'s doc comment), each command's and each
-/// topic's, in the order given here: the way in first, the reference last.
+/// The manual: `--help` answers its index, `help all` it whole, and `help
+/// <topic>` one topic of it. Its text is the guide (`Cli`'s doc comment), each
+/// command's and each topic's, in the order given here: the way in first, the
+/// reference last.
 pub fn manual() -> agent_help::Help {
     use topic::*;
     let mut help = agent_help::Help::new(cli())
@@ -3319,6 +3302,7 @@ pub fn manual() -> agent_help::Help {
         .topic::<ExampleRun>()
         .topic::<Cache>()
         .topic::<TickLog>()
+        .topic::<WorkerLaunch>()
         .topic::<WorkerProxy>()
         .topic::<Humans>()
         .topic::<Troubleshooting>()
@@ -3343,6 +3327,7 @@ pub fn manual() -> agent_help::Help {
         .constant("BACK_TO_BACK", afkconvoy_core::tick::BACK_TO_BACK)
         .constant("INSPECTION_MINUTES", afkconvoy_core::inspection::TIME_LIMIT / 60)
         .constant("HOST_IDLE_MINUTES", afkconvoy_core::host_sleep::IDLE_WAIT / 60)
+        .constant("SLEEP_HOURS", afkconvoy_core::host_sleep::SLEEP_HOURS.to_string())
         .constant("BACKOFF_FIRST_MINUTES", afkconvoy_core::host_runner::BACKOFF_FIRST / 60)
         .constant("BACKOFF_MOST_MINUTES", afkconvoy_core::host_runner::BACKOFF_MOST / 60)
         .constant("OUTGROWN_TIMES", afkconvoy_core::train::OUTGROWN_TIMES)
@@ -3367,9 +3352,9 @@ pub fn manual() -> agent_help::Help {
     help
 }
 
-/// Whether `args` ask for the whole manual: `--help` before any command,
-/// where clap would answer with the root's help. `-h` is clap's own.
-fn asks_for_manual(args: &[OsString]) -> bool {
+/// Whether `args` ask for the index: `--help` before any command, where clap
+/// would answer with the root's help. `-h` is clap's own.
+fn asks_for_index(args: &[OsString]) -> bool {
     matches!(first_word(args), Some("--help"))
 }
 
@@ -3405,13 +3390,13 @@ fn asks_for_text(args: &[OsString]) -> Option<&str> {
     long.then(|| first_word(args)).flatten()
 }
 
-/// What `help` prints: the manual with no name, the topic called `name`, or
-/// the text of the command called that, as its `--help` prints it. `Err`:
-/// what it is refused with.
+/// What `help` prints: the index with no name, the whole manual for `all`,
+/// the topic called `name`, or the text of the command called that, as its
+/// `--help` prints it. `Err`: what it is refused with.
 fn help(name: Option<&str>) -> Result<String, String> {
     let manual = manual();
     let Some(name) = name else {
-        return manual.manual().map_err(|e| e.to_string());
+        return manual.index().map_err(|e| e.to_string());
     };
     let unknown = match manual.topic_help(name) {
         Ok(topic) => return Ok(topic),
@@ -3557,10 +3542,12 @@ fn start_of(
     let Command::Run {
         instance,
         host,
+        concurrency,
         agent,
         panel,
         no_host_sleep,
         host_sleep,
+        host_sleep_hours,
         host_sleep_after,
         hot_cores,
         hot_memory,
@@ -3591,6 +3578,7 @@ fn start_of(
             (true, false) => Some(true),
             (false, false) => None,
         },
+        host_sleep_hours,
         hot_cores,
         hot_memory,
         hot_written,
@@ -3608,7 +3596,7 @@ fn start_of(
     let panic_at = panic_at_tick;
     let knobs =
         instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now, panic_at };
-    Some((foreground, instance::Start { named, panel, knobs }, settings))
+    Some((foreground, instance::Start { named, concurrency, panel, knobs }, settings))
 }
 
 /// The start of a `run` that named nothing, in this process's environment:
@@ -3638,7 +3626,7 @@ pub(crate) fn unflagged_start() -> anyhow::Result<instance::Start> {
 /// with its exit code and a reason on stderr.
 pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let args: Vec<OsString> = args.into_iter().collect();
-    if asks_for_manual(&args) {
+    if asks_for_index(&args) {
         return match help(None) {
             Ok(text) => {
                 print!("{text}");
@@ -3975,6 +3963,7 @@ fn run(
                     )?;
                 }
             }
+            plan["concurrency"] = concurrency::json(&fleet.config);
             plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["worker_no_proxy"] = launches.proxy_json();
@@ -4314,7 +4303,7 @@ mod tests {
             let parsed =
                 Cli::try_parse_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
             let acts = parsed.unwrap_or_else(|e| panic!("{name}: {e}")).command.acting().is_some();
-            assert_eq!(acts, help.contains("\n##### What it logs\n"), "{name}");
+            assert_eq!(acts, help.contains("\n## What it logs\n"), "{name}");
             assert_eq!(acts, ACTS.contains(&name.as_str()), "{name}");
             listed.push(name);
         }
@@ -4427,5 +4416,16 @@ mod tests {
         assert_eq!((start.panel, named.panel), (None, Some(To::Default)));
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--hot-cores", "0"]).is_err());
         assert!(Cli::try_parse_from(["afkconvoy", "run", "--admit-load", "5%"]).is_err());
+        let night = afkconvoy_core::host_sleep::Hours::parse("22:00-06:00").unwrap();
+        let named = asked(&["--host-sleep-hours", "22:00-06:00"]).1;
+        assert_eq!(named.host_sleep_hours, Some(To::Value(night)));
+        let named = asked(&["--host-sleep-hours", "default"]).1;
+        assert_eq!(named.host_sleep_hours, Some(To::Default));
+        assert_eq!(asked(&[]).1.host_sleep_hours, None, "named none, it changes none");
+        // hours that cover nothing are refused, naming what they take
+        let line = ["afkconvoy", "run", "--host-sleep-hours", "06:00-06:00"];
+        let refused = Cli::try_parse_from(line).err().unwrap().to_string();
+        assert!(refused.contains("covers no time of the day"), "{refused}");
+        assert!(refused.contains("HH:MM-HH:MM"), "{refused}");
     }
 }

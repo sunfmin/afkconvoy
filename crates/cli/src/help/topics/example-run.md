@@ -50,7 +50,7 @@ is refused. A stage that writes nothing leaves no commit and pushes nothing; say
 what you found in the text of your verdict
 ```
 
-That is the fleet's guard, which a pi worker asks through the extension the fleet adds to it (`afkconvoy run --help`). It answered before the role's own limits were reached, so `limits.ts` refused nothing in this run: it is what refuses the same commit in a stage a workflow left unmarked. Its other limit was met and let the worker through — the reviewer read the `SKILL.md` of both skills its skill names before it declared `pass`.
+That is the fleet's guard, which a pi worker asks through the extension the fleet adds to it ([`afkconvoy help worker-launch`](help:worker-launch)). It answered before the role's own limits were reached, so `limits.ts` refused nothing in this run: it is what refuses the same commit in a stage a workflow left unmarked. Its other limit was met and let the worker through — the reviewer read the `SKILL.md` of both skills its skill names before it declared `pass`.
 
 ## Where to read on
 

@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::panic::AssertUnwindSafe;
@@ -48,6 +49,7 @@ use crate::checkout_list::{self, Entry, List};
 use crate::copies::cache;
 use crate::exclusive::Queue;
 use crate::git::Repo;
+use crate::host_settings::To;
 use crate::host_sleep::Standings;
 use crate::inspection::{Running, Turn};
 use crate::instance::{self, Named, Start};
@@ -57,7 +59,7 @@ use crate::runner_socket::{self, Reached, Reply, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line};
 use crate::wake::{self, Wakes};
-use crate::{VERSION, host_settings, kit, launch, probe};
+use crate::{VERSION, concurrency, host_settings, kit, launch, probe};
 
 /// The lock whose holder is the host runner, in the cache directory. It
 /// holds the holder's {pid, version, started}.
@@ -476,7 +478,7 @@ impl Runner {
     fn start_listed(self: &Arc<Self>, listed: Vec<Entry>) {
         let unflagged = crate::unflagged_start();
         let mut held = self.holding();
-        for Entry { checkout, named } in listed {
+        for Entry { checkout, named, .. } in listed {
             let start =
                 unflagged.as_ref().map_err(|error| anyhow!("{error:#}")).and_then(|start| {
                     let key = checkout_list::repo_of(&Repo::at(&checkout)?)?;
@@ -535,9 +537,11 @@ impl Runner {
     /// or the refusal of a checkout of a repo held from another, of one that
     /// is no checkout, or of one whose fleet instance ended before its first
     /// tick. A checkout whose fleet instance runs already is answered with
-    /// that instance, and `start` changes nothing; one on the list whose
-    /// fleet instance does not run, or is broken, starts now with what the
-    /// list kept of its `run`, and what `start` names laid over that.
+    /// that instance, and `start` changes nothing but its concurrency; one on
+    /// the list whose fleet instance does not run, or is broken, starts now
+    /// with what the list kept of its `run`, and what `start` names laid over
+    /// that. The concurrency `start` says is the checkout's from now on,
+    /// whichever it is (`said`).
     fn add(self: &Arc<Self>, checkout: &Path, start: Start) -> Result<Value> {
         if self.stop.told() {
             bail!(
@@ -550,11 +554,20 @@ impl Runner {
         let repo = Repo::at(checkout)?;
         let (root, key) = (repo.dir.clone(), checkout_list::repo_of(&repo)?);
         let tick_log = log::Log::of(&repo)?.file;
-        let (seen, added) = {
+        let (seen, added, concurrency) = {
             let mut held = self.holding();
             let listed = self.list.read()?.checkouts;
             let known = known(&listed, &held);
-            match on_list(&known, &root.display().to_string(), &key) {
+            let on_list = on_list(&known, &root.display().to_string(), &key);
+            // A new start asks nothing that a start of it before asked.
+            if matches!(on_list, OnList::No) {
+                concurrency::ask(&root, To::Default);
+            }
+            let said = match on_list {
+                OnList::Other(_) => Value::Null,
+                OnList::Itself | OnList::No => self.said(&repo, start.concurrency)?,
+            };
+            let (seen, added) = match on_list {
                 OnList::Other(first) => {
                     self.log.say(&format!(
                         "checkout refused: {}: {key} is on the checkout list as {first}",
@@ -596,7 +609,8 @@ impl Runner {
                     }
                 }
                 OnList::No => (self.start(&mut held, root.clone(), key.clone(), start, true), true),
-            }
+            };
+            (seen, added, said)
         };
         let mut stage = seen.stage();
         // Its probe's warnings are this `run`'s where it waited for its start.
@@ -612,6 +626,7 @@ impl Runner {
                 "instance": stage.instance,
                 "tick_log": tick_log,
                 "first_tick": first_tick,
+                "concurrency": concurrency,
                 "warnings": if waited { stage.warnings.clone() } else { vec![] },
             })),
             Came::Refused(refused) => Ok(refused.clone()),
@@ -625,6 +640,19 @@ impl Runner {
             ),
             Came::Starting => unreachable!("waited for above"),
         }
+    }
+
+    /// Has the checkout `repo` say `to` of its concurrency on this host
+    /// (`concurrency::say`) → what that changed of the concurrency its fleet
+    /// instance goes by, as {from, to}, each as `concurrency::json` says it;
+    /// null where `to` names none, or the one in force. Its config is read
+    /// before anything is said: one that cannot be read refuses it.
+    fn said(&self, repo: &Repo, to: Option<To<NonZeroUsize>>) -> Result<Value> {
+        let Some(to) = to else { return Ok(Value::Null) };
+        let was = concurrency::json(&concurrency::config_of(repo)?);
+        concurrency::say(&self.list, &repo.dir, to)?;
+        let now = concurrency::json(&concurrency::config_of(repo)?);
+        Ok(if was == now { Value::Null } else { json!({"from": was, "to": now}) })
     }
 
     /// Starts the fleet instance of the checkout `root`, of the repo `key`,
@@ -1089,13 +1117,18 @@ impl Heard {
                     false
                 }
                 None => {
-                    listed.checkouts.push(Entry { checkout: self.root.clone(), named });
+                    // With the concurrency its `run` asked, which this
+                    // process forgets once the list holds it.
+                    let concurrency = concurrency::asked_of(&self.root);
+                    let checkout = self.root.clone();
+                    listed.checkouts.push(Entry { checkout, named, concurrency });
                     true
                 }
             }
         });
         stage.came = match listed {
             Ok(added) => {
+                concurrency::forget(&self.root);
                 if added {
                     self.runner.log.say(&format!("checkout added: {at} ({})", self.key));
                 }
@@ -1414,9 +1447,14 @@ pub fn holds(repo: &Repo) -> bool {
 /// answers. It holds no other checkout and leaves the checkout list alone:
 /// a `run` or a `stop` while it holds the host is refused, and so is it,
 /// where another host runner holds the host. What it names of the host
-/// settings, `settings`, holds in this process alone, laid over the host's.
+/// settings, `settings`, holds in this process alone, laid over the host's;
+/// and what it says of its checkout's concurrency, where the list holds no
+/// entry of it.
 pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
     host_settings::lay_for_this_process(settings);
+    if let Some(to) = start.concurrency {
+        concurrency::ask(&checkout.dir, to);
+    }
     let dir = cache()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let Some((lock, _)) = took_host(&dir.join(LOCK))? else {
