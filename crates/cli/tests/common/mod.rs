@@ -498,8 +498,11 @@ impl World {
         read(&self.orca_file)
     }
 
-    /// Changes the stand-in orca's state in place.
+    /// Changes the stand-in orca's state under the same lock its calls hold:
+    /// a running host runner may be calling it while a test changes it.
     pub fn with_orca(&self, change: impl FnOnce(&mut Value)) {
+        let lock = std::fs::File::create(self.orca_file.with_extension("lock")).unwrap();
+        lock.lock().unwrap();
         let mut state = self.orca();
         change(&mut state);
         self.write_orca(&state);
