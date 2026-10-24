@@ -379,6 +379,12 @@ impl Tick {
         let answer = self.answer.as_ref()?;
         answer["held"].as_u64().zip(answer["frontier_remaining"].as_u64())
     }
+
+    /// Whether its fleet instance was idle as it ended; `None` of a tick that
+    /// failed whole, or that an afkconvoy which did not say it logged.
+    pub fn idle(&self) -> Option<bool> {
+        self.answer.as_ref()?["idle"].as_bool()
+    }
 }
 
 /// The log of the `run` of one repo on this host.

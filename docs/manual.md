@@ -114,6 +114,50 @@ Probing sends each model a real prompt: it spends a little of each login. A harn
 
 A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a model a harness now lists is added once it answers its probe, and one it no longer lists is dropped. The rest is kept as it is, unprobed: a harness that cannot be found or listed, or that stops answering, is kept, and a pause leaves it out, as above. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
 
+#### `afkconvoy checkouts`
+
+Say which checkouts this host works and how each stands
+
+##### When to run it
+
+To see every repo of this host at once: which checkouts its host runner works, whether each one's fleet instance runs, and whether it has work. A session that looks after every repo of the host asks this — and `afkconvoy doctor --all` for what is wrong with each — instead of keeping a list of its own: the checkout list is the one home of which checkouts there are.
+
+##### Who runs it
+
+The operator, or a session of theirs that looks after every repo of the host: anywhere on this host, since it is about no one checkout.
+
+##### What it reads and writes
+
+The checkout list: checkouts.json in the cache directory (`afkconvoy help cache` says where it is). The host runner, asked on its socket which checkouts it holds a fleet instance of: where none runs, the list alone answers. Each checkout's tick log, for the last tick of its fleet instance. It writes nothing, asks neither GitHub nor the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like.
+
+##### What it answers
+
+```json
+{"host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log"},
+ "checkouts": [{"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj",
+  "instance": "me-h1-1a2b3c4d", "state": "running", "ticked": 1767225600,
+  "idle": false, "holding": 2, "frontier": 1,
+  "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl"}]}
+```
+
+- `host_runner`: the one running — its pid, its version and its log — or null where none runs. `<cache>` stands for the cache directory, whole in the answer.
+- `checkouts`: each checkout on the list, in its order; [] with none:
+
+  - `checkout`: its root. `repo`: the repo its remote `origin` names, as `run` answers it; null where it is no git checkout any more
+  - `state`: `running` — the host runner holds its fleet instance; `broken` — a host runner runs and holds none: it could not start it, or its fleet instance ended, and the host runner's log says why; `stopped` — no host runner runs. `afkconvoy run` in the checkout starts a broken or stopped one
+  - `instance`: its fleet instance id: the one running, null until its start is logged; else the last one its tick log names, null where it names none
+  - `ticked`: when that fleet instance's last tick ended, in epoch seconds; null with none
+  - `idle`, `holding`, `frontier`: as that tick ended: whether the fleet instance was idle — it held nothing, nothing of its was on the landing train, and its frontier was empty — the claims it held, and the frontier issues it left undispatched (`afkconvoy tick --help`). null with no tick, or one that failed whole; `idle` null too of a tick logged by an older release
+  - `tick_log`: the file its fleet instance logs its ticks in, as `run` answers it; null where it is no git checkout any more
+
+It exits 0 whatever the checkouts' states. Errors, as {"error": …} with a non-zero exit: the checkout list cannot be read; the host runner cannot say which checkouts it holds — it is of an older afkconvoy, which `afkconvoy run` in any checkout moves onto this one; it ended before it answered; or it answered nothing within 10 seconds.
+
+##### What trips you up
+
+- `idle`, `holding` and `frontier` are of the last tick, not of now: those of a stopped or broken checkout are as its fleet instance last ticked, which `ticked` dates. `afkconvoy doctor`, in the checkout, reads GitHub as it is now.
+- A checkout `run` is adding is on no list until its first tick ends, and is not answered until then; one `stop` took off is not answered.
+- Why a checkout is broken, and since when, is the host runner's log's to say: `checkouts` names neither. Nor does it name a panel's address: `afkconvoy panel --open` in the checkout answers it.
+
 #### `afkconvoy config`
 
 Print the repo's config as JSON, defaults filled
@@ -264,13 +308,17 @@ Say what the fleet on this host is doing and what is wrong with it, each finding
 
 When something looks wrong, and before anything else: a fleet that seems stuck, an issue nobody works, a worker that sits there — or when you are asked "is it working?". Run it before you file a bug, too, and put its answer in the report. It is one command for what `scan`, `takeover --list`, `plan`, `show` and orca each say a part of, and it is the only one that says what is wrong.
 
+With `--all`, for every repo of this host at once: each checkout on the host's checkout list, as `doctor` in it answers. A session that looks after every repo of the host runs it, beside `afkconvoy checkouts`, and keeps no list of its own.
+
 ##### Who runs it
 
-The operator, in a checkout of the repo, on the host the fleet runs on. No `--instance` is needed: it finds the fleet instance of this host's `run` itself.
+The operator, in a checkout of the repo, on the host the fleet runs on. No `--instance` is needed: it finds the fleet instance of this host's `run` itself. With `--all`, anywhere on that host.
 
 ##### What it reads and writes
 
 It reads this host (the commands the fleet needs, in a login shell; orca), the log this host's `run` keeps of its ticks, the open issues, PRs and stage records on GitHub, the claims, heartbeats and recorded gate runs on the remote, and orca after the worker of each claim. It writes nothing on GitHub and nothing on the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like. It fixes nothing either: each finding names the command that does.
+
+With `--all` it reads the checkout list (checkouts.json in the cache directory) and the same of each checkout on it, all at once.
 
 ##### What it answers
 
@@ -314,6 +362,16 @@ A finding's `severity` is one of, most first:
 - `info`: Nothing is held up: said so that a surprise is explained.
 
 It exits 0 with no critical finding, and non-zero with one — printing the same object, not {"error"} — so that a script can gate on it. Errors: "is not in a git checkout". Whatever else cannot be read is itself a finding.
+
+With `--all`:
+
+{"host": {"host_kit", "exclusive", "inspection"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}]}
+
+- `host`: what of `host` is the host's alone, as above, said once
+- `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused
+- `checkouts`: each checkout on the list, in its order — [] with none — with the repo its remote `origin` names, null where it is no git checkout any more, and its `doctor`: what `doctor` answers in it — `waiting_on_human` among it — but for the host's, which are above. Each is asked as the fleet of the host its `run` named, unless `--host` names one. {"error", "see"} where it could not be asked
+
+It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
 
 The findings: a command the fleet needs is missing or logged out; orca cannot be asked, or does not know the checkout; the worker launch command of a harness the fleet could be asked for cannot start a worker — said with the harness and what calls for it; no `run` is alive and claims are held; the same step failed in each of the last three ticks; the team has a fault at its head; a fleet lock stands on an issue that cannot be worked (all critical) — a claim has no worker; a worker has been stopped for half an hour with its claim still at work; the frontier is not empty, slots are free and the last tick started nobody; a flow label names no workflow of the team; an issue has been at a stage longer than any before it took; an issue is one rework from a breaker; a patrol is failed or full; an issue has waited for a human for more than an hour, its `fix` being the line that answers it; the gate is slow — with the host, the gate limit and the 5 runs, each a commit and its seconds, as `afkconvoy plan` has them, and the issue open for it when there is one (all warning) — the role or the team a stage in flight started under has moved since; and the repo's config declares no gate limit, so the gate has the default's 3600 seconds before anything ends it: `fix` is the file and the key, `gate_seconds`; and a worktree on this host is kept with no claim on its issue — said with what it holds that the remote does not (uncommitted changes, commits only it has, or nothing), its `fix` the line that removes it, pushing first whatever only it holds (all info).
 
@@ -1008,12 +1066,13 @@ What one tick of `run` does: the startup probe, the rebuild, then every transiti
 
 ##### What it answers
 
-{"did", "errors", "held", "frontier_remaining", "locks"} — and "held_back_by" when admission held back a worker it would have started
+{"did", "errors", "held", "frontier_remaining", "idle", "locks"} — and "held_back_by" when admission held back a worker it would have started
 
 - `did`: each step taken: {do, issue, outcome}. do is settle, forget, tend_train, cut_train, judge, watch, advance, escalate, end_patrol, patrol, end_proposal, propose, unlock, reclaim, dispatch, slow_gate, board, stage_label or heartbeat; outcome is done, nudged, waiting, continued, restarted, abandoned, nothing, lost, blocked, gone or failed. A step whose worker waits on its own background work says since when it was first seen to (epoch seconds): {do, issue, outcome, waiting_since}. A step on a patrol has a null issue and names it: {do, issue, patrol, outcome}. A step on the proposal of a precedent names the issue that was ruled on. An `advance` that read a verdict and left the issue at a stage names it: {do, issue, outcome, stage} — `land` once the last stage passed to the landing train. A step that escalated its issue says why, in a few words: {do, issue, outcome, escalated}. A `dispatch` that found an open blocker says which: {do, issue, outcome: "blocked", blocked_by}
 - `errors`: each step that failed: {do, issue, error}, with `patrol` as in `did` — and `see`, where a help topic explains what refused it: the command that prints the topic. A claimed issue the rebuild could not read is {do: "read", issue, error}: the rest of the tick is made, with it taken for open
 - `held`: the claims the instance holds after the pass, a patrol's run and a proposal still going among them
 - `frontier_remaining`: the frontier issues it left undispatched
+- `idle`: whether the fleet instance is idle after the pass: it holds nothing, nothing of its is on the landing train, and its frontier is empty. `afkconvoy checkouts` answers it of each checkout's last tick
 - `locks`: the fleet locks that stood as it ran: the open issues carrying the lock label — none: []. `run` opens its line with them: "FLEET LOCK #7 stands: only it is worked"
 - `held_back_by`: each threshold of the host past which admission started no new worker, as the line says it: "the load 31.20 is past 28.00, 200% of its 14 cores". A slot was free and something waited for it; it stays on the frontier (`afkconvoy run --help`, ADMISSION)
 
