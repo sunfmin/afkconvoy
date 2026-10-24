@@ -315,7 +315,7 @@ fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
 /// Has each harness paused on the host that `kit` holds a model of that
 /// answered its probe `now` back.
 fn resume_answered(kit: &Kit, now: u64) -> Result<()> {
-    let pauses = crate::paused::Pauses::here()?;
+    let pauses = crate::paused::Pauses::of_host()?;
     for held in &kit.harnesses {
         if held.models.iter().any(|seen| seen.probed.is_some_and(|probed| probed.at == now)) {
             pauses.resume(held.harness)?;

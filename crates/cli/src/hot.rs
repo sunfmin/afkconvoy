@@ -16,7 +16,7 @@
 //! starts the worker's inspection (`crate::inspection`).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -50,12 +50,12 @@ pub struct Said {
     pub written: Option<u64>,
 }
 
-/// The limits on this host: its shares (`Limits::of_host`), but for what it
-/// says.
-pub fn limits(said: Said) -> Limits {
+/// The limits on this host for the fleet of the checkout `dir`: its shares
+/// (`Limits::of_host`) — of the disk `dir` is on — but for what it says.
+pub fn limits(said: Said, dir: &Path) -> Limits {
     let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get() as u64);
-    let shares =
-        Limits::of_host(cores, memory().unwrap_or(u64::MAX), free_disk().unwrap_or(u64::MAX));
+    let disk = free_disk(dir).unwrap_or(u64::MAX);
+    let shares = Limits::of_host(cores, memory().unwrap_or(u64::MAX), disk);
     Limits {
         millicores: said.millicores.unwrap_or(shares.millicores),
         resident: said.resident.unwrap_or(shares.resident),
@@ -63,10 +63,10 @@ pub fn limits(said: Said) -> Limits {
     }
 }
 
-/// The bytes free on the disk the current directory is on, as `df` says
-/// them; `None` where it cannot be read.
-fn free_disk() -> Option<u64> {
-    let out = Command::new("df").args(["-Pk", "."]).output().ok()?;
+/// The bytes free on the disk `dir` is on, as `df` says them; `None` where
+/// they cannot be read.
+fn free_disk(dir: &Path) -> Option<u64> {
+    let out = Command::new("df").arg("-Pk").arg(dir).output().ok()?;
     let out = String::from_utf8_lossy(&out.stdout).into_owned();
     let kib: u64 = out.lines().nth(1)?.split_whitespace().nth(3)?.parse().ok()?;
     Some(kib.saturating_mul(1024))

@@ -23,7 +23,7 @@ use crate::copies::Copies;
 use crate::dispatch::{Agent, Continuing};
 use crate::fleet::Fleet;
 use crate::gh::OpenIssues;
-use crate::git::REMOTE;
+use crate::git::{REMOTE, Repo};
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 use crate::team::{Kept, keep, unknown_patrols};
@@ -74,15 +74,15 @@ pub fn seen(fleet: &Fleet, read: &Flows, open: &OpenIssues) -> Result<Vec<Seen>>
 }
 
 /// `afkconvoy patrol-now <name>`: a human's ask for a run of the patrol `name`
-/// now, on `host` at `now`. It is recorded on the remote for the next tick of
+/// of the fleet of the checkout `repo` now, on `host` at `now`. It is recorded on the remote for the next tick of
 /// whichever host claims the run, past `every` and `max_runs_a_day`; the
 /// fleet is woken as the command ends (`crate::acting`). Refused, with
 /// nothing recorded, when what holds an asked run holds it: a fleet lock, the
 /// patrol's `max_open` or `max_landed_a_day`, a failed run nobody answered, a run still going.
 ///
 ///   {"patrol", "asked", "ref"}
-pub fn ask(name: &str, host: &str, now: u64) -> Result<Value> {
-    let (mut fleet, open) = crate::fleet::Fleet::read(now)?;
+pub fn ask(repo: &Repo, name: &str, host: &str, now: u64) -> Result<Value> {
+    let (mut fleet, open) = crate::fleet::Fleet::read(repo, now)?;
     let read = Flows::read(&fleet, &open.issues)?;
     let patrols = seen(&fleet, &read, &open.issues)?;
     let Some(patrol) = patrols.iter().find(|patrol| patrol.name == name) else {
@@ -306,7 +306,7 @@ pub(crate) fn switch(
         bail!("the run of the patrol {name:?} has no checkout on this host; nothing was switched");
     };
     let bound = fleet.config.bound.as_ref().ok_or_else(|| anyhow!("the repo is not bound"))?;
-    let kept = keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?;
+    let kept = keep(&fleet.gh, &Copies::of_host()?, &bound.team, &fleet.config.labels())?;
     let none = || See::Patrols.refusal(format!("the team has no patrol {name:?}"));
     let patrol = kept.team.patrol(name).ok_or_else(none)?;
     let cast = fleet.cast_in(kept.team.role_of(&patrol.work), &[])?;

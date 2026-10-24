@@ -95,7 +95,7 @@ pub fn flows(repo: &Repo) -> Result<Value> {
             "line": line(&config.ready_label),
             "keep_off": keep_off(&config, &config.escalate_label), "created": created}));
     };
-    let team = team::load(team::From::Config)?.team;
+    let team = team::load(team::From::Config, Some(repo))?.team;
     let open = open_taken_in(&team, &gh.open_issues()?);
     let flow_labels: Vec<String> =
         team.workflows.iter().map(|workflow| workflow.flow_label().to_string()).collect();

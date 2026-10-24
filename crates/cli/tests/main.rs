@@ -9,6 +9,7 @@ mod admission;
 mod board;
 mod casting;
 mod check;
+mod checkout;
 mod claims;
 mod codex;
 mod config;

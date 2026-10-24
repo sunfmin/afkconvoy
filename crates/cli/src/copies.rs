@@ -51,9 +51,10 @@ pub struct Copy {
 }
 
 impl Copies {
-    /// This user's copies: in their cache directory, outside every checkout —
-    /// a worker started in one finds no rules above it but its role's.
-    pub fn here() -> Result<Copies> {
+    /// This user's copies on this host, whichever repo a command is about: in
+    /// their cache directory, outside every checkout — a worker started in
+    /// one finds no rules above it but its role's.
+    pub fn of_host() -> Result<Copies> {
         Ok(Copies { root: cache()?.join("copies") })
     }
 

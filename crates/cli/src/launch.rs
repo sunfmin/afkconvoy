@@ -14,6 +14,7 @@ use afkconvoy_core::launch::{LaunchCommand, checked, first_word, of_harness};
 use anyhow::{Result, anyhow, bail};
 
 use crate::config;
+use crate::git::Repo;
 use crate::topic::{Explain, See};
 
 /// How long the login shell is given to answer.
@@ -68,9 +69,9 @@ impl Proposed {
 pub struct Launches {
     kit: Result<crate::kit::Kit, String>,
     bypass: afkconvoy_core::proxy::Lists,
-    /// The default harness of the repo here: the one the bare form names.
+    /// The default harness of the repo it is for: the one the bare form names.
     default: Harness,
-    /// Whether the repo here is bound: an unbound repo knows of no harness,
+    /// Whether that repo is bound: an unbound repo knows of no harness,
     /// and a fault of its one command names none.
     bound: bool,
     /// Whether this is a start that starts workers. One that starts none
@@ -81,9 +82,10 @@ pub struct Launches {
 }
 
 impl Launches {
-    /// Read the host kit for a start that may start workers.
-    pub fn new(starts: bool) -> Result<Launches> {
-        let mut launches = Self::foreseen();
+    /// Read the host kit for a start in the checkout `repo` that may start
+    /// workers.
+    pub fn new(repo: &Repo, starts: bool) -> Result<Launches> {
+        let mut launches = Self::foreseen(repo);
         if let Err(why) = &launches.kit {
             bail!("{why}");
         }
@@ -91,8 +93,10 @@ impl Launches {
         Ok(launches)
     }
 
-    pub fn foreseen() -> Launches {
-        let config = config::default_file().and_then(|file| config::load(&file)).ok();
+    /// Read the host kit for a command in the checkout `repo` that starts no
+    /// worker.
+    pub fn foreseen(repo: &Repo) -> Launches {
+        let config = config::load(&config::file_of(repo)).ok();
         let kit = crate::kit::load().map_err(|error| format!("{error:#}"));
         // The host kit's first is what a worker nothing casts runs.
         let first = kit.as_ref().ok().and_then(|kit| kit.first()).map(|first| first.harness);

@@ -202,12 +202,12 @@ fn read_castings(answer: &str) -> Vec<Casting> {
 /// why.
 ///
 ///   {"cast": [{issue, harness, model, why}], "uncast": [{issue, why}]}
-pub fn cast(now: u64) -> Result<Value> {
-    let (fleet, open) = Fleet::read(now)?;
+pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
+    let (fleet, open) = Fleet::read(repo, now)?;
     let (kit, paused) = crate::kit::running()?;
     let range = kit.range();
     let team = match fleet.config.bound {
-        Some(_) => Some(crate::team::load(crate::team::From::Config)?.team),
+        Some(_) => Some(crate::team::load(crate::team::From::Config, Some(repo))?.team),
         None => None,
     };
     // Each issue's stages' ranges, in a bound repo.

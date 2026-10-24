@@ -64,7 +64,7 @@ fn pauses(repo: &Repo) -> Result<crate::paused::Pauses> {
         return Ok(crate::paused::Pauses::at(repo.note("convoy-paused.json")?));
     }
     let _ = repo;
-    crate::paused::Pauses::here()
+    crate::paused::Pauses::of_host()
 }
 
 fn read(path: &Path) -> Result<Evidence> {

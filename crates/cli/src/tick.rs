@@ -130,13 +130,15 @@ pub struct Ticked {
     now: u64,
 }
 
-/// `afkconvoy tick`: one reconciliation pass, start to finish. It never waits
+/// `afkconvoy tick`: one reconciliation pass of the fleet of the checkout
+/// `repo`, start to finish. It never waits
 /// for the workers it started, and leaves nothing on this host a later tick
 /// needs: the next one rebuilds from GitHub and the remote. Told to `stop`, it
 /// finishes the step it is in and makes none of those left, which fail. What
 /// the tick `before` saw, when there was one, words its line and decides
 /// nothing.
 pub fn tick(
+    repo: &Repo,
     me: &Me,
     agent: &Agent,
     stop: &Stop,
@@ -148,11 +150,9 @@ pub fn tick(
     // The host kit is written again once a day, by one fleet of the host
     // (docs/adr/0020): a failure is a line of the log, and costs the tick
     // nothing.
-    if let Ok(repo) = Repo::here() {
-        let _ = crate::paused::probe(&repo, me.instance.as_str(), &me.host, me.now);
-        let _ = crate::kit::refresh(&repo, me.instance.as_str(), &me.host, me.now);
-    }
-    let (mut fleet, mut open) = Fleet::read(me.now)?;
+    let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
+    let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
+    let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
     // A roster entry that names no model the host kit holds is the team's to
     // correct: one issue is opened for it in the team's repo. One that cannot
@@ -168,7 +168,7 @@ pub fn tick(
     // rebuild says why of each issue.
     let put = crate::stage::put_to_consults(&fleet, &flows, &open.issues).unwrap_or_default();
     if !put.is_empty() {
-        (fleet, open) = Fleet::read(me.now)?;
+        (fleet, open) = Fleet::read(repo, me.now)?;
         (set, flows) = fleet.rebuild(&open, Some(&me.instance))?;
     }
     // A busy host starts no new worker this tick (docs/adr/0019).
@@ -958,9 +958,10 @@ fn rest(wakes: &Listener, stop: &Stop, sleep: Duration, (said, clock): (&Said, &
     Rested::Stopped
 }
 
-/// What a `run` told to stop says of its heartbeat as it goes (`goodbye`).
-fn stop_line(me: &Me) -> String {
-    match Repo::here().and_then(|repo| goodbye(&repo, me)) {
+/// What the `run` of the checkout `repo`, told to stop, says of its
+/// heartbeat as it goes (`goodbye`).
+fn stop_line(repo: &Repo, me: &Me) -> String {
+    match goodbye(repo, me) {
         Ok(true) => "holding no claim, it took its heartbeat with it".to_string(),
         Ok(false) => "it left its heartbeat with the claims it holds: the next start on this \
                       host takes them"
@@ -987,9 +988,10 @@ struct Said {
 }
 
 impl Said {
-    /// Opens the log and says in it that `me` started, with `agent`.
-    fn open(me: &Me, agent: &Agent) -> Said {
-        let log = Repo::here().and_then(|repo| Log::of(&repo));
+    /// Opens the log of the checkout `repo` and says in it that `me`
+    /// started, with `agent`.
+    fn open(repo: &Repo, me: &Me, agent: &Agent) -> Said {
+        let log = Log::of(repo);
         let instance = me.instance.as_str().to_string();
         let mut said =
             Said { log: log.ok(), instance, host: me.host.clone(), one: Mutex::default() };
@@ -1034,7 +1036,8 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
     false
 }
 
-/// `afkconvoy run`: tick after tick, sleeping in between — a sleep a worker's
+/// `afkconvoy run`: tick after tick of the fleet of the checkout `repo`,
+/// sleeping in between — a sleep a worker's
 /// `afkconvoy wake` ends early, and that is skipped after a tick that left the
 /// next one a worker to start (`Pass::follow_up_due`) or that failed on a read
 /// GitHub could not be reached for. Told to stop — SIGTERM, SIGINT — it
@@ -1055,6 +1058,7 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// host to sleep once every fleet on it has been idle long enough
 /// (`HostSleep`, docs/adr/0016).
 pub fn run(
+    repo: &Repo,
     me: &mut Me,
     agent: &Agent,
     pacing: &Pacing,
@@ -1062,7 +1066,7 @@ pub fn run(
     clock: impl Fn() -> u64 + Send + Sync + 'static,
 ) -> Result<Value> {
     let clock: Clock = Arc::new(clock);
-    let mut shown = Panel::empty(&Fleet::open(me.now)?, Some(me));
+    let mut shown = Panel::empty(&Fleet::open(repo, me.now)?, Some(me));
     let live = Live::new(panel::render(&shown));
     if let Some(port) = panel_port {
         println!("panel: {}", serve::address(live.open(port)?.0));
@@ -1074,21 +1078,20 @@ pub fn run(
     // What the last tick that rebuilt saw: the next one's line names what
     // changed outside this host since.
     let mut before: Option<Before> = None;
-    let repo = Repo::here()?;
-    let said = Arc::new(Said::open(me, agent));
+    let said = Arc::new(Said::open(repo, me, agent));
     let during: During = {
         let (said, clock) = (Arc::clone(&said), Arc::clone(&clock));
         Box::new(move |during, by| said.keep(clock(), log::What::WokenDuring { during, by }))
     };
-    let wakes = Listener::open(&repo, during);
+    let wakes = Listener::open(repo, during);
     let hot = Hot::default();
-    let mut inspector = Inspector::new(pacing.hot);
+    let mut inspector = Inspector::new(repo, pacing.hot);
     {
         let said = Arc::clone(&said);
         let keep = move |at, what| said.keep(at, what);
-        hot::watch(&repo, pacing.hot, pacing.second, Arc::clone(&clock), keep, Arc::clone(&hot));
+        hot::watch(repo, pacing.hot, pacing.second, Arc::clone(&clock), keep, Arc::clone(&hot));
     }
-    opening::listen(&repo, live.clone(), me.instance.as_str());
+    opening::listen(repo, live.clone(), me.instance.as_str());
     let stop = Stop::listen();
     let mut cause = Cause::Start;
     let mut by = None;
@@ -1104,14 +1107,14 @@ pub fn run(
         since: me.now,
         worked: None,
     };
-    let mut host = HostSleep::open(standing, Waker::of(&repo), pacing.host_sleep_after);
+    let mut host = HostSleep::open(standing, Waker::of(repo), pacing.host_sleep_after);
     loop {
         count += 1;
         said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });
         me.now = clock();
         // Once: a start takes every claim stamped with this host (docs/adr/0003).
         if !started {
-            match Fleet::open(me.now).and_then(|mut fleet| at_start(&mut fleet, me)) {
+            match Fleet::open(repo, me.now).and_then(|mut fleet| at_start(&mut fleet, me)) {
                 Ok(took) => {
                     started = true;
                     if let Some(line) = start_line(&took) {
@@ -1128,7 +1131,7 @@ pub fn run(
         let ticked = turn(
             || wakes.forget(count),
             || {
-                let (ticked, fleet) = tick(me, agent, &stop, before.as_ref())?;
+                let (ticked, fleet) = tick(repo, me, agent, &stop, before.as_ref())?;
                 let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },
@@ -1204,7 +1207,7 @@ pub fn run(
             due_now = check_host(&mut host, &said, &stop, &clock);
         }
         if stop.told() {
-            said.keep(clock(), log::What::Stop { line: stop_line(me) });
+            said.keep(clock(), log::What::Stop { line: stop_line(repo, me) });
             return Ok(json!({"stopped": true, "ticks": count, "instance": me.instance.as_str()}));
         }
     }

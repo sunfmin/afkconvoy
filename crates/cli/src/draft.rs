@@ -29,7 +29,10 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(540);
 ///    "added", "unsaid", "written"}
 pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
     let file = dir.join(TEAM_FILE);
-    let loaded = crate::team::load(From::Dir(dir, team))?;
+    // The labels are those of the checkout the team's working tree is in, where
+    // it is in one: the team's own repo is about no other.
+    let checkout = crate::git::Repo::at(&dir).ok();
+    let loaded = crate::team::load(From::Dir(dir, team), checkout.as_ref())?;
     let (kit, _) = crate::kit::running()?;
     let range = kit.range();
     let first = kit.first().context("the host kit holds no harness: run `afkconvoy kit`")?;

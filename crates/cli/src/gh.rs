@@ -68,8 +68,18 @@ pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
 pub const LABELS_JQ: &str = ".[].name";
 pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences";
 
+/// `gh`, run in `dir`: the checkout a command is about, or where none is at
+/// hand the host's temporary directory (`in_no_checkout`).
 pub struct GitHub {
     pub dir: PathBuf,
+}
+
+impl GitHub {
+    /// `gh` for the calls that each name their repo, where no checkout is at
+    /// hand: they need none, and are made in the host's temporary directory.
+    pub fn in_no_checkout() -> GitHub {
+        GitHub { dir: std::env::temp_dir() }
+    }
 }
 
 /// One issue, open or closed, as `GitHub::issue` reads it.

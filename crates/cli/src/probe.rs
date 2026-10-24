@@ -5,12 +5,15 @@
 //! probes at every start; `tick` and `plan` trust a note that still stands
 //! (`standing`) and probe only without one.
 
+use std::path::Path;
+
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::outlived;
 use afkconvoy_core::layout::{
     Answer, BaseCheck, GATE_KIND, PROBE_STANDS, answer, base_check, choose, no_base_branch,
     no_gate_records, probe_stands,
 };
+use afkconvoy_core::tools::Tool;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -69,23 +72,22 @@ impl Asked {
     }
 }
 
-/// The warnings of a startup probe that still stands for the repo this
-/// command was run in, said again; `None` when there is none, and one is to
+/// The warnings of a startup probe that still stands for the checkout
+/// `repo`, said again; `None` when there is none, and one is to
 /// be made. One stands for an hour (`probe_stands`) on the host that made it,
 /// while the config's base branch and team, the remote, and the noted ref
 /// layout are what it was asked about — and, for a command that starts
 /// workers, `launches` are the worker launch commands it checked. Says on stderr
 /// that no probe was made. Whatever keeps the note from being read or
 /// compared is the probe's to report: none stands.
-pub fn standing(now: u64, launches: &Launches) -> Option<Vec<String>> {
+pub fn standing(repo: &Repo, now: u64, launches: &Launches) -> Option<Vec<String>> {
     let read = || -> Result<(Passed, Asked)> {
-        let repo = Repo::here()?;
         let config = config::load(&repo.dir.join(config::FILE))?;
         let passed: Passed =
             serde_json::from_str(&std::fs::read_to_string(repo.note(PASSED_NOTE)?)?)?;
         // A command that starts no worker asks nothing of the launch commands.
         let launch = if launches.starts() { launches.key()? } else { passed.asked.launch };
-        Ok((passed, Asked::now(&repo, &config, launch)?))
+        Ok((passed, Asked::now(repo, &config, launch)?))
     };
     let (passed, asked) = read().ok()?;
     if !probe_stands(passed.at, now) || passed.asked != asked {
@@ -100,7 +102,24 @@ pub fn standing(now: u64, launches: &Launches) -> Option<Vec<String>> {
     Some(passed.warnings)
 }
 
-/// Checks this host and the repo this command was run in → what the human
+/// Why no checkout is found on a host with no git, which finds one: what a
+/// start's first check (`tools::check`) refuses it with in the directory
+/// `dir` — git, and every other command the fleet needs that this host lacks,
+/// each with the line that installs it, in one refusal. `None` where git is
+/// on the `PATH`.
+pub fn without_git(dir: &Path) -> Option<anyhow::Error> {
+    if tools::on_path(Tool::Git.name()) {
+        return None;
+    }
+    // A checkout git cannot be asked about: what the check asks of it — its
+    // remote, whether orca knows it — it answers as of none.
+    let unfound = Repo::new(dir.to_path_buf());
+    let checked = tools::check(&unfound, &Launches::foreseen(&unfound));
+    let refused = checked.err().unwrap_or_else(|| anyhow::anyhow!("git is not on the PATH"));
+    Some(See::Troubleshooting.refusal(format!("{refused:#}")))
+}
+
+/// Checks this host and the checkout `repo` → what the human
 /// should know before the fleet carries on. An error is a host or a repo the
 /// fleet cannot work. `launches` are the worker launch commands of the start.
 ///
@@ -113,14 +132,13 @@ pub fn standing(now: u64, launches: &Launches) -> Option<Vec<String>> {
 /// refs — noted for every later command (`Repo::layout`); whether it takes
 /// gate records, and the ones past their day are swept. A probe that passed is
 /// noted for `standing`.
-pub fn startup(now: u64, launches: &Launches) -> Result<Vec<String>> {
-    tools::check(launches).see(See::Troubleshooting)?;
-    let repo = Repo::here()?;
-    let config = config::load(&repo.dir.join(config::FILE)).see(See::Troubleshooting)?;
+pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>> {
+    tools::check(repo, launches).see(See::Troubleshooting)?;
+    let config = config::load(&config::file_of(repo)).see(See::Troubleshooting)?;
     // A bound repo's workers start in their roles, each on the harness its
     // stage names: every one's command must be there, and take that.
     if let Some(bound) = &config.bound {
-        role::probe(launches, bound, &config.labels()).see(See::Troubleshooting)?;
+        role::probe(repo, launches, bound, &config.labels()).see(See::Troubleshooting)?;
     }
     let branch = &config.base_branch;
     let mut warnings = vec![];
@@ -176,7 +194,7 @@ pub fn startup(now: u64, launches: &Launches) -> Result<Vec<String>> {
         // Soft: a ref that stays is litter the next start deletes.
         let _ = repo.try_git(&args);
     }
-    let passed = Passed { at: now, asked: Asked::now(&repo, &config, launches.key()?)?, warnings };
+    let passed = Passed { at: now, asked: Asked::now(repo, &config, launches.key()?)?, warnings };
     let note = repo.note(PASSED_NOTE)?;
     std::fs::write(&note, serde_json::to_string(&passed)?)
         .with_context(|| format!("cannot write {}", note.display()))?;

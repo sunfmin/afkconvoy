@@ -39,19 +39,12 @@ struct Fixed {
 }
 
 impl Repo {
-    /// The checkout the command was run in. git is asked once in a process:
-    /// every later call is a copy of the first one's answer.
-    pub fn here() -> Result<Repo> {
-        static HERE: OnceLock<Repo> = OnceLock::new();
-        if let Some(repo) = HERE.get() {
-            return Ok(repo.clone());
-        }
-        let repo = Repo::at(Path::new("."))?;
-        Ok(HERE.get_or_init(|| repo).clone())
-    }
-
-    /// The checkout that contains `dir`.
+    /// The checkout that contains `dir`, by its top directory: a directory
+    /// anywhere in a checkout names that checkout.
     pub fn at(dir: &Path) -> Result<Repo> {
+        if !dir.is_dir() {
+            bail!("{} is not a directory", dir.display());
+        }
         let ran = run(dir, &["rev-parse", "--show-toplevel"], &[])?;
         if !ran.ok {
             bail!("{} is not in a git checkout", dir.display());

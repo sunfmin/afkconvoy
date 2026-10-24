@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use crate::copies::{Copies, Copy};
 use crate::fleet::Fleet;
 use crate::gh::GitHub;
+use crate::git::Repo;
 use crate::launch::Launches;
 use crate::orca::{Under, Worktree};
 use crate::stage::records_of;
@@ -117,7 +118,7 @@ impl Staged {
     /// already is. An error is an issue no worker can be started on, or a
     /// team that does not load.
     pub fn enter(fleet: &Fleet, bound: &Bound, issue: u64, labels: &[String]) -> Result<Staged> {
-        let kept = keep(&fleet.gh, &Copies::here()?, &bound.team, &fleet.config.labels())?;
+        let kept = keep(&fleet.gh, &Copies::of_host()?, &bound.team, &fleet.config.labels())?;
         let (records, urls) = records_of(&fleet.gh, issue)?;
         let pr = closing_pr(&fleet.gh.open_prs()?, issue).map(|pr| pr.number);
         // A landing worker is at no stage: it may commit, to resolve a
@@ -179,7 +180,7 @@ impl Staged {
             None => (
                 stock::ROLE.to_string(),
                 stock::SKILL.to_string(),
-                Copies::here()?.stock()?,
+                Copies::of_host()?.stock()?,
                 kept.team.host_user,
                 kept.team.dsh_profile,
             ),
@@ -465,22 +466,22 @@ fn call(called: &mut Vec<(Harness, Vec<String>)>, harness: Harness, by: String) 
     }
 }
 
-/// The team a repo is `bound` to as it stands now, read against the repo's
-/// `labels`: `None` where it cannot be read or does not load — no worker is
-/// started under it, and each tick says why.
-pub fn current(bound: &Bound, labels: &RepoLabels) -> Option<Team> {
-    let gh = GitHub { dir: PathBuf::from(".") };
-    let kept = Copies::here().and_then(|copies| keep(&gh, &copies, &bound.team, labels));
+/// The team the repo of the checkout `repo` is `bound` to as it stands now,
+/// read against the repo's `labels`: `None` where it cannot be read or does
+/// not load — no worker is started under it, and each tick says why.
+pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> {
+    let gh = GitHub { dir: repo.dir.clone() };
+    let kept = Copies::of_host().and_then(|copies| keep(&gh, &copies, &bound.team, labels));
     kept.ok().map(|kept| kept.team)
 }
 
-/// Every harness the fleet of a repo bound to `team` could be asked for,
-/// each with what calls for it: the host kit's first, every harness of each
-/// role's range (`casting::range`), and the stock consult's, as the host kit
-/// names it. No team (`current`) calls for the first alone.
-pub fn called_for(team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
+/// Every harness the fleet of the checkout `repo`, bound to `team`, could be
+/// asked for, each with what calls for it: the host kit's first, every
+/// harness of each role's range (`casting::range`), and the stock consult's,
+/// as the host kit names it. No team (`current`) calls for the first alone.
+pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
     // A harness this host's switch chose is the one every worker starts on.
-    let chosen = crate::git::Repo::here().ok().and_then(|repo| crate::switch::chosen(&repo).ok());
+    let chosen = crate::switch::chosen(repo).ok();
     if let Some(chosen) = chosen.flatten() {
         return vec![(chosen, vec![crate::switch::CHOSEN_BY.to_string()])];
     }
@@ -554,14 +555,14 @@ impl Checked {
     }
 }
 
-/// Checks that every harness the fleet of a repo `bound` to a team could be
-/// asked for can be started on this host (`check`). An error names every
+/// Checks that every harness the fleet of the checkout `repo`, `bound` to a
+/// team, could be asked for can be started on this host (`check`). An error names every
 /// fault at once — a harness that is missing or holds no credentials with
 /// what calls for it and the line that fixes it: none is started in
 /// another's place, so a start that cannot start them all starts no worker.
-pub fn probe(launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
-    let team = current(bound, labels);
-    if let Some(why) = refusal(check(launches, &called_for(team.as_ref()))?) {
+pub fn probe(repo: &Repo, launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
+    let team = current(repo, bound, labels);
+    if let Some(why) = refusal(check(launches, &called_for(repo, team.as_ref()))?) {
         bail!(why);
     }
     // A role whose range holds nothing refuses no start: its stages wait

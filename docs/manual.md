@@ -128,7 +128,7 @@ The operator, in a checkout of the repo.
 
 ##### What it reads and writes
 
-It reads one file — docs/agents/afkconvoy.md of the checkout it is run in, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
+It reads one file — docs/agents/afkconvoy.md of the checkout it is about, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
 
 ##### The config file
 
@@ -178,6 +178,10 @@ Errors: the file cannot be read; it has no ```yaml block; `base_branch` or `gate
 DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on the DSH profile its team or role names: `dsh_profile: fleet` (default) or `host-user` (`afkconvoy help team`). The latter loads the host user's dsh-tui profile with its plugins, MCP servers, patches, theme and settings. Neither edits the user's DSH_HOME; both keep the role's limits.
 
 The --patch overlay, applied last on either profile, loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 #### `afkconvoy check`
 
@@ -247,6 +251,10 @@ Other errors, as {"error": …}: the repo's config names no team and no flag was
 - Only `check` holds a team to its harnesses, and a skill's file to its form: a tick loads the team and starts its workers without asking again.
 - Following `pass` alone from any stage must end. A loop back is made with `reject`, which the breakers count; a loop of passes nothing would ever stop.
 - A stage nothing leads to is reported only once every `pass` and `reject` names a stage: fix those first and run it again.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 #### `afkconvoy doctor`
 
@@ -320,6 +328,10 @@ Moved: the role's directory holds something else at the head of its repo than at
 ##### Worker proxy bypass
 
 `--worker-no-proxy [HARNESS=]HOSTS` shows what a start with those flags would give each harness, under `worker_no_proxy`: [`afkconvoy help worker-proxy`](help:worker-proxy).
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 #### `afkconvoy plan`
 
@@ -417,6 +429,10 @@ The probe's warnings go to stderr. Errors: a command the fleet needs is missing 
 ##### Worker proxy bypass
 
 `--worker-no-proxy [HARNESS=]HOSTS` shows what a start with those flags would give each harness, under `worker_no_proxy`: [`afkconvoy help worker-proxy`](help:worker-proxy).
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 #### `afkconvoy run`
 
@@ -582,6 +598,10 @@ A DeepSeek Harness worker (`harness: dsh`) runs interactive `dsh-tui`, with `dsh
 
 A start on this host reaches some hosts past the proxy with `--worker-no-proxy [HARNESS=]HOSTS`, never a key of the repo's config: [`afkconvoy help worker-proxy`](help:worker-proxy) says what each worker is given.
 
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 #### `afkconvoy panel`
 
 Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
@@ -605,7 +625,7 @@ and open the address it answers. Run it again whenever you want that address bac
 
 ##### Who runs it
 
-The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any of its worktrees, and no other repo's.
+The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any checkout of it but a worker's worktree, and no other repo's.
 
 ##### What it reads and writes
 
@@ -650,6 +670,10 @@ Its errors, as {"error": …} with a non-zero exit, none of which changes anythi
 - `--port` is `--open`'s, and `--open` takes neither `--instance` nor `--host`: the page is the running fleet instance's own.
 - The page a `run` serves is not this one made again and again: it is made from what each tick already read, and adds what that tick did. It costs GitHub nothing.
 
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 #### `afkconvoy cast`
 
 Cast every uncast issue that has a choice to make, in one session of the host kit's first
@@ -683,6 +707,10 @@ A casting a human put on is never changed: an issue with a `harness:` or a `mode
 A tick holds an issue that waits for a caster back while one runs, for ten minutes at most from its start, and starts no second one meanwhile; `plan` shows it as `caster` and the issue as "held for the caster". An issue the caster had and did not cast is dispatched uncast, on its range's first, and `plan` and the panel say so. A switch chooses whatever the casting: while one stands, nothing is held for a caster.
 
 Casting sends the host kit's first a real prompt: it spends some of its login.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 ##### What it logs
 
@@ -742,6 +770,10 @@ Errors, each with nothing chosen and no worker ended: the harness chosen cannot 
 - The choice holds on this host until a switch chooses again or `--clear` forgets it: a change of the config's `harness` key or of an issue's casting labels moves nothing here while it stands.
 - A claim whose stage has a verdict declared and not yet acted on is refused: the next tick acts on that verdict, and the worker it starts is of the chosen harness.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -787,6 +819,10 @@ Errors: `--from` without `--instance`; neither `--list` nor `--from`; `--from` i
 - Taking starts nothing. The claims are continued by the next tick of `--instance`: follow it with `run --instance <id>` or `tick --instance <id>`, under the same id.
 - A run taken is not continued: that tick ends it — its worker is on the host that died — and the patrol is due again by its interval, the ruling not proposed again.
 - `--list` is the way to learn a running fleet's instance id.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -843,6 +879,10 @@ Also: "is not in a git checkout"; the config, the team, the remote or GitHub can
 - An ask made while nothing held the patrol stands until a run answers it, whatever comes to hold the patrol meanwhile: a lock raised since holds it, and it runs once the lock has closed. `afkconvoy plan` shows it held, with `asked`.
 - Asking twice before the run asks once: one run answers both.
 - The schedule goes on from the run asked for: the next due run is `every` after its start, not after the last scheduled one.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -914,6 +954,10 @@ Errors: a command the fleet needs is missing or logged out, or orca is not runni
 - A role whose repo GitHub could not be reached for is no fault of the team, and stops only the step that would start a worker in it: an issue at a stage another role performs is advanced, started and labelled as ever.
 - It does not take the claims stamped with this host: only `run` does that, at its start. A tick takes another instance's claims only once they are stale.
 - Do not tick as an instance whose `run` is alive: both would act on the same claims.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -1006,6 +1050,41 @@ Errors, as {"error": …} with a non-zero exit: the directory is not empty; a te
 - After a failed `--repo` the directory is no longer empty. Create the repo yourself from it with the `gh` line above; do not run this again on it.
 - `--repo` commits as whoever git is set up for on this host, and creates the repo as whoever `gh` is logged in as. Every host of a fleet must be able to read it.
 
+#### `afkconvoy draft`
+
+Draft a team's roster from this host's host kit, into the team file of its working tree
+
+##### When to run it
+
+When a team has no roster yet, or the host kit has changed and its roster is to follow: a team's roster is drafted rather than written from nothing. Run it on a host whose host kit holds what the team's workers are to run (`afkconvoy kit`).
+
+##### Who runs it
+
+The operator, or whoever designs the team, in a checkout of it: the team's working tree. The fleet never runs it, and never changes a team's roster.
+
+##### What it reads and writes
+
+It reads the team's files from `--dir` — this directory unless it says another — as `afkconvoy check --dir` does, each role from GitHub, and this host's host kit without the harnesses paused on it. A role named as ./path is read from the repo `--team` names: give it for a team whose roles are in its own repo.
+
+1. It sends the host kit's first — its first harness on its first model, in the login shell a worker gets — one prompt: every harness and model of the host kit in order, and each role with the work the team asks of it and what it may run. It gives the model the host kit's good_at as given and waits up to nine minutes for one line for each role, saying how to cast an issue there. It asks no model to assess model abilities.
+2. It drafts the team file's `roster` (`afkconvoy help roster`): an entry for each role, its `run` every harness and model of the host kit in the host kit's order, each with the `good_at` from the host kit, and the role's `cast`. A harness the role holds no limits for, while it holds limits for another, is left out of its entry and named in a comment there, so that the draft passes `check` as written; a role left nothing is named in a comment alone.
+3. It writes the draft into the team file, team.md, in place of the `roster` there and everything under it, or at the end of its yaml block where it has none. Nothing else of the file changes, and nothing is committed.
+
+Where the team file holds a roster, it says on stderr each line the draft would take out (-) and put in (+), and writes only once the human at the terminal confirms, or with `--yes`. With no terminal and no `--yes` it writes nothing.
+
+##### What it answers
+
+{"path", "drafted_by", "roster", "replaces", "removed", "added", "unsaid", "written"}: `path` the team file, `drafted_by` the {harness, model} asked, `roster` the draft as written, `replaces` whether the team file held a roster, `removed` and `added` the lines the draft takes out and puts in, `unsaid` what the model said nothing of — each also a warning on stderr, to write in by hand — and `written` whether the team file was written. A roster the same as the draft is not written again.
+
+Errors: a team that does not load, with every fault, as `check` answers it; a host kit that cannot be read or holds no harness; a model that did not answer.
+
+##### What trips you up
+
+- Read the draft before committing it: model strengths come from the host kit's sourced research, and how to cast comes from the drafting model. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
+- A team file whose roster has a fault does not load: delete the roster, and draft again.
+- The draft is the host kit of the host it runs on. A harness another host holds and this one does not is not in it.
+- Drafting sends the host kit's first a real prompt: it spends some of its login.
+
 #### `afkconvoy show`
 
 Draw a team's workflows as graphs, or say where one issue is in its workflow
@@ -1085,40 +1164,9 @@ Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error
 - `blocked`, `already-satisfied` and `escalate` are not drawn: they mean the same at every stage. `afkconvoy rehearse` shows where each leads.
 - `--issue` reads the team as it stands now, not as it stood when a record was written: a workflow changed since can leave records that name no stage of it.
 
-#### `afkconvoy draft`
+##### Which checkout it is about
 
-Draft a team's roster from this host's host kit, into the team file of its working tree
-
-##### When to run it
-
-When a team has no roster yet, or the host kit has changed and its roster is to follow: a team's roster is drafted rather than written from nothing. Run it on a host whose host kit holds what the team's workers are to run (`afkconvoy kit`).
-
-##### Who runs it
-
-The operator, or whoever designs the team, in a checkout of it: the team's working tree. The fleet never runs it, and never changes a team's roster.
-
-##### What it reads and writes
-
-It reads the team's files from `--dir` — this directory unless it says another — as `afkconvoy check --dir` does, each role from GitHub, and this host's host kit without the harnesses paused on it. A role named as ./path is read from the repo `--team` names: give it for a team whose roles are in its own repo.
-
-1. It sends the host kit's first — its first harness on its first model, in the login shell a worker gets — one prompt: every harness and model of the host kit in order, and each role with the work the team asks of it and what it may run. It gives the model the host kit's good_at as given and waits up to nine minutes for one line for each role, saying how to cast an issue there. It asks no model to assess model abilities.
-2. It drafts the team file's `roster` (`afkconvoy help roster`): an entry for each role, its `run` every harness and model of the host kit in the host kit's order, each with the `good_at` from the host kit, and the role's `cast`. A harness the role holds no limits for, while it holds limits for another, is left out of its entry and named in a comment there, so that the draft passes `check` as written; a role left nothing is named in a comment alone.
-3. It writes the draft into the team file, team.md, in place of the `roster` there and everything under it, or at the end of its yaml block where it has none. Nothing else of the file changes, and nothing is committed.
-
-Where the team file holds a roster, it says on stderr each line the draft would take out (-) and put in (+), and writes only once the human at the terminal confirms, or with `--yes`. With no terminal and no `--yes` it writes nothing.
-
-##### What it answers
-
-{"path", "drafted_by", "roster", "replaces", "removed", "added", "unsaid", "written"}: `path` the team file, `drafted_by` the {harness, model} asked, `roster` the draft as written, `replaces` whether the team file held a roster, `removed` and `added` the lines the draft takes out and puts in, `unsaid` what the model said nothing of — each also a warning on stderr, to write in by hand — and `written` whether the team file was written. A roster the same as the draft is not written again.
-
-Errors: a team that does not load, with every fault, as `check` answers it; a host kit that cannot be read or holds no harness; a model that did not answer.
-
-##### What trips you up
-
-- Read the draft before committing it: model strengths come from the host kit's sourced research, and how to cast comes from the drafting model. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
-- A team file whose roster has a fault does not load: delete the roster, and draft again.
-- The draft is the host kit of the host it runs on. A harness another host holds and this one does not is not in it.
-- Drafting sends the host kit's first a real prompt: it spends some of its login.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 #### `afkconvoy rehearse`
 
@@ -1181,6 +1229,118 @@ Errors, as {"error": …} with a non-zero exit: a word that is none of the six; 
 - A count never passes its breaker. With `max_rework: 3` the fourth rework is the one refused: the step says `"breaker": "max_rework"` and `"rework": 3`.
 - Running again after `blocked` is no rework.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
+### Run by whoever sets an agent up
+
+#### `afkconvoy skill`
+
+Print the skill file that sends an agent of your own to `--help`: text, not JSON
+
+##### When to run it
+
+Once for each agent of your own that is to learn of afkconvoy: it prints the skill file to install into it. The file says when to reach for afkconvoy, and sends the agent to `afkconvoy --help`. It repeats nothing the help says, so it has nothing to go stale: a newer release asks for no newer file.
+
+Where to put it, for Claude Code — for a user, on every project of theirs:
+
+```
+mkdir -p ~/.claude/skills/afkconvoy
+afkconvoy skill > ~/.claude/skills/afkconvoy/SKILL.md
+```
+
+and for a project, from its root, committed for everybody who works in it:
+
+```
+mkdir -p .claude/skills/afkconvoy
+afkconvoy skill > .claude/skills/afkconvoy/SKILL.md
+```
+
+##### Who runs it
+
+Whoever sets an agent up: a human, or the agent a human is talking to. In any directory: it is asked nothing about a repo.
+
+##### What it reads and writes
+
+Nothing. The file is part of the binary, and it is printed: where it goes is yours to say, with a redirection as above.
+
+##### What it answers
+
+The file's text and no JSON object: a frontmatter of `name` and `description`, as a Claude Code skill needs, and under it the one instruction. It exits 0.
+
+Errors: none of its own.
+
+##### What trips you up
+
+- It installs nothing. Printed to a terminal, the file is nowhere an agent reads it.
+- A worker needs none of it: a worker is told what to run by its prompt and its role.
+- The directory is named as the skill is: `afkconvoy`, holding `SKILL.md`.
+
+### Run by a worker's hook
+
+#### `afkconvoy guard`
+
+Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
+
+##### When to run it
+
+Never by hand. It is the guard: the check made before each thing a worker of a bound repo does, refusing what no worker may do and what its stage may not. Read this to learn what a worker is refused, or why one was.
+
+##### Who runs it
+
+Claude Code, as a hook: the fleet adds it to every worker of a bound repo as it starts it, whatever the role's repo holds, and Claude Code runs it before each tool call the worker makes. A call it refuses is not made.
+
+pi, through an extension of afkconvoy's own, named on the line that starts a pi worker: pi hands it each tool call before making it, it asks this command, and a call this command does not allow — one it refuses, and one it could not be asked of — is not made. A pi worker whose extension is not there does not start.
+
+Codex, as a hook too, said on the line that starts a Codex worker and kept in no file: Codex runs it before each tool call. Codex makes a call whose hook fails in any way but one, so the hook turns every answer but an allowed call into that one: a call this command refuses, and one it could not be asked of, is not made.
+
+A role's own limits are hooks in the role's repo — for pi, extensions there. They load because the worker starts there, run beside this one, and refuse in the same way.
+
+##### What it reads and writes
+
+It writes nothing. It reads two things:
+
+Standard input: one tool call, as Claude Code describes it to a `PreToolUse` hook — a JSON object with `tool_name` and `tool_input`. Only a `Bash` call is judged, by the words of each simple command of its `tool_input.command`. pi's is described as pi describes it to an extension — `toolName` and `input` — and only a `bash` call is judged, the same way. Codex describes its own as Claude Code does, and a `Bash` call is judged; its `apply_patch` hands the text of a patch as `tool_input.command`, which is no shell line and is not judged as one. DSH describes a call with `name` and `arguments`: `bash` and `bash_persistent` are judged by `arguments.command`. What is refused is decided once, for all.
+
+The environment: the facts of the worker's stage, which the fleet put there when it started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL — and AFKCONVOY_HARNESS, the harness that asks: how the call is described is its own.
+
+Refused for every worker:
+
+- adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
+- writing a stage record by hand: only `afkconvoy verdict` writes one
+- writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
+- merging a PR (`gh pr merge`, or the merge endpoint through `gh api`)
+- pushing the base branch (`git push` with a refspec that lands on it, `--all`, `--mirror`)
+
+Refused besides in a stage its workflow marks `writes: false`, for every consult, and for a patrol's worker (AFKCONVOY_PATROL, in place of a stage's facts):
+
+- committing and pushing (`git commit`, `merge`, `cherry-pick`, `revert`, `am`, `push`)
+
+##### What it answers
+
+Unlike every other command, no JSON: it answers Claude Code the way a hook does.
+
+- exit 0, nothing printed: the call is allowed
+- exit 2, a line on stderr: the call is refused; the line is the reason, and Claude Code shows it to the worker — as pi does, given it by the extension, and Codex
+
+A call it cannot read, an environment that lacks one of the stage's facts, or one that names no harness there is, is refused with the reason: nothing is allowed unread.
+
+##### What trips you up
+
+- Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
+- It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
+- What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a commit or a PR a patrol left is a failed run, reported to a human — see `afkconvoy tick --help`.
+- An unbound repo's workers have no guard: their worker launch command is opaque.
+
+DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a fleet-owned DSH_HOME. The --patch overlay loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
+
+### Run by whoever reads this manual
+
+#### `afkconvoy help`
+
+Print this message, the help of the given command, or a help topic
+
 ### Run by whoever hands the fleet work
 
 #### `afkconvoy flows`
@@ -1242,49 +1402,9 @@ Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error
 - It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.
 - A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
 
-### Run by whoever sets an agent up
+##### Which checkout it is about
 
-#### `afkconvoy skill`
-
-Print the skill file that sends an agent of your own to `--help`: text, not JSON
-
-##### When to run it
-
-Once for each agent of your own that is to learn of afkconvoy: it prints the skill file to install into it. The file says when to reach for afkconvoy, and sends the agent to `afkconvoy --help`. It repeats nothing the help says, so it has nothing to go stale: a newer release asks for no newer file.
-
-Where to put it, for Claude Code — for a user, on every project of theirs:
-
-```
-mkdir -p ~/.claude/skills/afkconvoy
-afkconvoy skill > ~/.claude/skills/afkconvoy/SKILL.md
-```
-
-and for a project, from its root, committed for everybody who works in it:
-
-```
-mkdir -p .claude/skills/afkconvoy
-afkconvoy skill > .claude/skills/afkconvoy/SKILL.md
-```
-
-##### Who runs it
-
-Whoever sets an agent up: a human, or the agent a human is talking to. In any directory: it is asked nothing about a repo.
-
-##### What it reads and writes
-
-Nothing. The file is part of the binary, and it is printed: where it goes is yours to say, with a redirection as above.
-
-##### What it answers
-
-The file's text and no JSON object: a frontmatter of `name` and `description`, as a Claude Code skill needs, and under it the one instruction. It exits 0.
-
-Errors: none of its own.
-
-##### What trips you up
-
-- It installs nothing. Printed to a terminal, the file is nowhere an agent reads it.
-- A worker needs none of it: a worker is told what to run by its prompt and its role.
-- The directory is named as the skill is: `afkconvoy`, holding `SKILL.md`.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ### Run by a worker
 
@@ -1326,6 +1446,10 @@ It exits 127 when the command cannot be started, and 125, with one JSON object {
 - Killing it kills its place in the queue, not only its wait: run it again to wait from the end.
 - Only commands run through it wait for one another. A heavy command run without it runs beside the one that runs alone.
 - The gate, run by `afkconvoy gate`, does not go through the queue.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 #### `afkconvoy land`
 
@@ -1383,6 +1507,10 @@ Errors: no open PR closes the issue; tracked files have uncommitted changes; the
 - A `gate_red` may be the base branch's, not the train's: the train worker gates `origin/<base>` alone, in a clean checkout, and red the same way is a defect it records — on the open issue that already does, or on one it opens. In an unbound repo that one carries the ready label; in a bound repo, where only a flow label dispatches, it takes it in with `afkconvoy intake --train`: to the team's first workflow, unless another fits it clearly better. Then it goes on with the train.
 - `--issue` runs no gate. It joins whatever is committed: run `gate --train` first.
 - `--merged-timeout` and `--host` are read by `--train` only. How long the gate may run is no flag: it is `gate_seconds` in the config (`afkconvoy config --help`).
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 ##### What it logs
 
@@ -1457,6 +1585,10 @@ A human's is refused, with nothing written, when the issue "is claimed" — its 
 - With no commit named a record is a human's. A worker whose environment lost its commits is refused, as its issue is claimed.
 - A human's `already-satisfied` ends the workflow and closes nothing, and a human's `blocked` parks nothing: no claim is there to do either.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -1525,6 +1657,10 @@ Errors, as {"error": …} with a non-zero exit: the intake limit is reached — 
 - `--blocked-by` is read only as the issue is taken in. On one that follows the workflow already, nothing is written.
 - Two workers taking in at the same moment can both pass the count: the limit can be overshot by as many as ran at once.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -1575,6 +1711,10 @@ Errors, as {"error": …} with a non-zero exit: the issue is closed; there is no
 - A lock issue nothing makes dispatchable — no ready label, no flow label, an epic label, an open blocker — is worked by nobody, and the lock stands all the same. `afkconvoy plan` shows the lock under `locks` and the issue under `excluded`, with why.
 - It does not check that the base branch is broken. It is refused to nobody: the guard recognises the label being moved by hand, not this command.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -1606,6 +1746,10 @@ Errors: no run is claimed under that name — it was ended already, or never sta
 - It ends nothing itself: the fleet ends the run, at its next tick. A worker that goes on working after it is cut short.
 - A worker that never runs it loses nothing but time: the fleet ends the run once the worker is gone, or has been stopped for the grace period — five minutes in which the run holds a slot of `concurrency` no issue can be worked in.
 - The record names the claim it was read from: left behind, it says nothing of the next run of the same patrol.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 ##### What it logs
 
@@ -1654,13 +1798,17 @@ Of the host, it keeps what was found in the cache every fleet of the host shares
 
 {"inspected": true, "found", "kind", "reclaimed", "freed", "named", "woke"} — what was found is kept; `kind` is worker or host; `reclaimed` and `named` are each [{path, bytes}] it freed and named, `freed` the bytes freed in all; `woke` is whether a `run` on this host was told.
 
-Errors: the text is empty; the checkout it runs in is no inspection's; the word is not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim of another word than reclaimable; a path that may not be freed, or does not exist.
+Errors: the text is empty; the checkout it is about is no inspection's; the word is not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim of another word than reclaimable; a path that may not be freed, or does not exist.
 
 ##### What trips you up
 
 - An inspection is given 15 minutes. One that has said nothing by then is ended: nothing is typed at the worker, and the comment, or the host's record, says it found nothing in time.
 - It types nothing itself, and opens no issue: the `run` does. An inspection that does as well does it twice.
 - An inspection is held as a consult: it commits, pushes and changes the host never (`afkconvoy guard --help`). What a host inspection frees, `inspected` frees for it.
+
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 ##### What it logs
 
@@ -1714,6 +1862,10 @@ Errors: the config cannot be read; with `--train`, tracked files have uncommitte
 - A red run is the worker's own until it shows otherwise: the commit `merged` names, gated alone in a clean checkout of it (this command, without `--train`), red the same way. Then the defect is outside its issue, and its prompt says how it records it: on the open issue that already does, or on one it opens — with the ready label, or through `afkconvoy intake` in a bound repo — and parks its issue on that one.
 - A conflict is resolved by committing the merge, then running this again. A resolved merge left uncommitted is refused.
 
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -1750,67 +1902,13 @@ It exits 0 with each of them. Errors: only "is not in a git checkout". Failing t
 - `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
 - It reaches a `run` only, on this host only. A fleet driven by `tick` hears nothing.
 
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
-
-### Run by a worker's hook
-
-#### `afkconvoy guard`
-
-Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
-
-##### When to run it
-
-Never by hand. It is the guard: the check made before each thing a worker of a bound repo does, refusing what no worker may do and what its stage may not. Read this to learn what a worker is refused, or why one was.
-
-##### Who runs it
-
-Claude Code, as a hook: the fleet adds it to every worker of a bound repo as it starts it, whatever the role's repo holds, and Claude Code runs it before each tool call the worker makes. A call it refuses is not made.
-
-pi, through an extension of afkconvoy's own, named on the line that starts a pi worker: pi hands it each tool call before making it, it asks this command, and a call this command does not allow — one it refuses, and one it could not be asked of — is not made. A pi worker whose extension is not there does not start.
-
-Codex, as a hook too, said on the line that starts a Codex worker and kept in no file: Codex runs it before each tool call. Codex makes a call whose hook fails in any way but one, so the hook turns every answer but an allowed call into that one: a call this command refuses, and one it could not be asked of, is not made.
-
-A role's own limits are hooks in the role's repo — for pi, extensions there. They load because the worker starts there, run beside this one, and refuse in the same way.
-
-##### What it reads and writes
-
-It writes nothing. It reads two things:
-
-Standard input: one tool call, as Claude Code describes it to a `PreToolUse` hook — a JSON object with `tool_name` and `tool_input`. Only a `Bash` call is judged, by the words of each simple command of its `tool_input.command`. pi's is described as pi describes it to an extension — `toolName` and `input` — and only a `bash` call is judged, the same way. Codex describes its own as Claude Code does, and a `Bash` call is judged; its `apply_patch` hands the text of a patch as `tool_input.command`, which is no shell line and is not judged as one. DSH describes a call with `name` and `arguments`: `bash` and `bash_persistent` are judged by `arguments.command`. What is refused is decided once, for all.
-
-The environment: the facts of the worker's stage, which the fleet put there when it started the worker — AFKCONVOY_STAGE, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL — and AFKCONVOY_HARNESS, the harness that asks: how the call is described is its own.
-
-Refused for every worker:
-
-- adding or removing a flow label, a `stage:` label, the escalate label or the lock label (`gh issue edit --add-label`, `--remove-label`, `gh issue create --label`, and any write of an issue's labels through `gh api`)
-- writing a stage record by hand: only `afkconvoy verdict` writes one
-- writing an intake record by hand: only `afkconvoy intake` writes one, and it is what puts a flow label on for a worker
-- merging a PR (`gh pr merge`, or the merge endpoint through `gh api`)
-- pushing the base branch (`git push` with a refspec that lands on it, `--all`, `--mirror`)
-
-Refused besides in a stage its workflow marks `writes: false`, for every consult, and for a patrol's worker (AFKCONVOY_PATROL, in place of a stage's facts):
-
-- committing and pushing (`git commit`, `merge`, `cherry-pick`, `revert`, `am`, `push`)
-
-##### What it answers
-
-Unlike every other command, no JSON: it answers Claude Code the way a hook does.
-
-- exit 0, nothing printed: the call is allowed
-- exit 2, a line on stderr: the call is refused; the line is the reason, and Claude Code shows it to the worker — as pi does, given it by the extension, and Codex
-
-A call it cannot read, an environment that lacks one of the stage's facts, or one that names no harness there is, is refused with the reason: nothing is allowed unread.
-
-##### What trips you up
-
-- Heredoc bodies and quoted arguments are data, not commands: a report may name `rm` or `git worktree remove`, and a read-only `gh` call may search for stage or intake records with `--jq` or `--template`. Sending a handwritten record through a writing `gh` call is still refused, including through a heredoc. The argument after `sh -c` or `bash -c` is executable shell text and is judged as commands.
-- It recognises commands. The same act wrapped in a script, hidden in a variable or in a substitution inside quotes gets past it: it stops a worker that errs, not one that means to get by.
-- What it misses is checked after the stage: a commit left on the branch by a stage marked `writes: false`, or by a consult, is a failure, and the issue escalates; a commit or a PR a patrol left is a failed run, reported to a human — see `afkconvoy tick --help`.
-- An unbound repo's workers have no guard: their worker launch command is opaque.
-
-DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a fleet-owned DSH_HOME. The --patch overlay loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
 
 ### One transition by hand
 
@@ -1843,6 +1941,10 @@ Errors: the config, GitHub or the remote cannot be read; the remote has no base 
 ##### What trips you up
 
 - It takes no `--instance` and looks at no claim: it answers for an issue nobody holds, and for one another instance holds.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 #### `afkconvoy dispatch`
 
@@ -1897,6 +1999,10 @@ Errors: the issue is closed; in a bound repo, the issue carries no flow label, m
 
 DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a fleet-owned DSH_HOME. The --patch overlay loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -1927,6 +2033,10 @@ Errors: the claim is another instance's ("is not this fleet's claim"); the workt
 
 - `--instance` is required, and must be the instance that holds the claim.
 - It does not read the verdict. Any claim of the instance whose committed tree equals the base branch's current tree on the remote and has nothing uncommitted is closed, whatever commits the branch holds — one whose worker has only just started as well. A refusal names the differing files.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -1963,6 +2073,10 @@ Errors: the claim is another instance's ("is not this fleet's claim").
 - Cut short, run it again with the same reason: it goes on from the step it stopped at, and still posts one comment.
 - It stops no worker: one still at work goes on, on an issue the fleet gave up.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -1995,6 +2109,10 @@ Errors, each with nothing changed: the claim is another instance's; "is not park
 
 - `--instance` is required, and must be the instance that holds the claim.
 - It takes no blockers of yours: they are the ones the worker's verdict names.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -2034,6 +2152,10 @@ Errors, each with nothing sent: "has no stopped worker" — the instance holds n
 - It is refused wherever a tick would not nudge: it cannot be used to hurry a worker.
 - One nudge per worker. A worker silent again after it is escalated by the next tick.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -2065,6 +2187,10 @@ Errors, each with nothing changed: "has no stopped worker" — the instance hold
 - `--instance` is required, and must be the instance that holds the claim.
 - One restart per PR. A worker silent again after it is escalated by the next tick.
 - It is not `dispatch`: for a claim with no PR, continue it with `dispatch`.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -2103,6 +2229,10 @@ Errors, each with nothing abandoned: "nothing is on the landing train"; "has no 
 - It is refused wherever a tick would not abandon: it cannot be used to clear a train whose worker is still at it.
 - It takes no `--issue`: a repo has one landing train.
 
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -2139,6 +2269,10 @@ Errors: the remote cannot be read; "is not in a git checkout".
 - It looks where this repo's last startup probe found the remote keeps the fleet's refs. In a clone no `plan`, `tick` or `run` was ever run in, it looks under refs/convoy/ — and finds nothing on a remote that keeps them as convoy-* branches.
 - It does not say whether a claim is live: compare its instance's heartbeat with the lease, or read `takeover --list`.
 
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 #### `afkconvoy claim`
 
 Claim one issue for a fleet instance
@@ -2167,6 +2301,10 @@ Errors: the push failed and it was not a lost race; the remote cannot be read.
 - A claim the instance holds already answers `won: false`, with itself as the owner.
 - A claim is live only while its instance's heartbeat is within the lease. Under an id nothing beats for, another fleet takes it as stale once the lease runs out.
 - Claimed as a running fleet's instance, it is a claim with no worker: that fleet's next tick starts a worker on it.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -2198,6 +2336,10 @@ Errors: the claim is another instance's ("is not this fleet's claim"); it "moved
 
 - `--instance` is required, and must be the instance that holds the claim. To end another instance's claim, take it first: `takeover`.
 - It only unlocks. The issue keeps its labels, its worker keeps working, and — still open and ready — the issue is back on the frontier: a fleet dispatches it again.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
 
 ##### What it logs
 
@@ -2231,15 +2373,13 @@ Errors: the remote cannot be read, or refuses the push.
 - It keeps a dead fleet's claims alive: while they are beaten for, no other host takes them as stale, and nobody works them.
 - One beat lasts one lease. Kept up by hand, it has to be run again before that.
 
+##### Which checkout it is about
+
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
-
-### Run by whoever reads this manual
-
-#### `afkconvoy help`
-
-Print this message, the help of the given command, or a help topic
 
 ### Run by a human an issue waits for
 
@@ -2303,6 +2443,10 @@ Errors, as {"error": …} with a non-zero exit, with nothing written: the issue 
 - A human's ruling starts both rework counts over. A consult's does not. On an `escalate` it is one more of the issue's rework in total, and one that would pass `max_rework` goes to a human instead; on anything else it counts nothing, and the same hand-off again goes to a human.
 - A consult writes no code. The guard refuses its commits and pushes, and a commit it left on the branch all the same is a failure: the issue escalates, whatever it ruled.
 
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
+
 ##### What it logs
 
 As it acts it appends one line to the tick log of this host for this repo, then wakes this host's `run` for this repo; its answer says whether it woke one, as "woke": [`afkconvoy help tick-log`](help:tick-log).
@@ -2348,6 +2492,10 @@ Errors, as {"error": …} with a non-zero exit, with nothing written: the workfl
 - It reopens nothing and closes nothing. An issue sent back from an ended workflow must be open to be worked.
 - The stage is named as its workflow's file names it. `afkconvoy show` draws them.
 - Run twice, it leaves two records; the issue is at the stage either way.
+
+##### Which checkout it is about
+
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker runs it in its own worktree.
 
 ##### What it logs
 

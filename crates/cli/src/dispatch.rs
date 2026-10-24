@@ -188,7 +188,7 @@ fn start(
         }
     };
     // No worker is started on a harness paused on this host.
-    if let Some(pause) = crate::paused::Pauses::here()?.of(harness)? {
+    if let Some(pause) = crate::paused::Pauses::of_host()?.of(harness)? {
         return Err(crate::paused::Held::of(&pause, fleet.now).into());
     }
     let launch = agent.command(harness)?;

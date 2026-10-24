@@ -195,29 +195,31 @@ fn canonical(dir: &Path) -> String {
     std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()).to_string_lossy().into_owned()
 }
 
-/// `afkconvoy exclusive -- <command>`: runs `command` once no other
-/// `exclusive` command runs on this host, waiting its turn until then → its
-/// exit status. What it prints is the command's; the queue's own words go to
-/// stderr and to the tick log of this repo. It fails before the command runs
-/// with one JSON object and exit 125, and with 127 for a command that cannot be
-/// started.
-pub fn exclusive(command: &[OsString], now: impl Fn() -> u64) -> ExitCode {
+/// `afkconvoy exclusive -- <command>`: runs `command` in the directory `dir`
+/// once no other `exclusive` command runs on this host, waiting its turn
+/// until then → its exit status. `checkout` is the checkout `dir` is in,
+/// where it is in one: its ticket names it, and its tick log is where the
+/// queue's own words go, as well as to stderr. What it prints is the
+/// command's. It fails before the command runs with one JSON object and exit
+/// 125, and with 127 for a command that cannot be started.
+pub fn exclusive(
+    command: &[OsString],
+    dir: &Path,
+    checkout: Option<Repo>,
+    now: impl Fn() -> u64,
+) -> ExitCode {
     let shown: Vec<String> =
         command.iter().map(|word| word.to_string_lossy().into_owned()).collect();
-    let dir = match Repo::here() {
-        Ok(repo) => repo.dir,
-        Err(_) => std::env::current_dir().unwrap_or_default(),
-    };
     let ticket = Ticket {
         number: 0,
         pid: std::process::id(),
         command: shown.join(" "),
-        dir: canonical(&dir),
+        dir: canonical(checkout.as_ref().map_or(dir, |repo| &repo.dir)),
         issue: std::env::var(ISSUE_ENV).ok().and_then(|issue| issue.parse().ok()),
         asked: now(),
         ran: None,
     };
-    let acting = Acting::new("exclusive").on_own_issue();
+    let acting = Acting::new("exclusive").on_own_issue().in_checkout(checkout);
     let queue = match Queue::of_host() {
         Ok(queue) => queue,
         Err(error) => return failed(&format!("{error:#}")),
@@ -239,7 +241,7 @@ pub fn exclusive(command: &[OsString], now: impl Fn() -> u64) -> ExitCode {
         return failed(&format!("{error:#}"));
     }
     acting.say(started, runs_line(&held.ticket, started));
-    let status = Command::new(&command[0]).args(&command[1..]).status();
+    let status = Command::new(&command[0]).args(&command[1..]).current_dir(dir).status();
     let ticket = held.ticket.clone();
     // Its place is free the moment the command ends.
     drop(held);
@@ -267,8 +269,9 @@ fn ended(status: ExitStatus) -> (u8, String) {
     }
 }
 
-/// A failure of the queue's own, before the command ran.
-fn failed(message: &str) -> ExitCode {
+/// A failure before the command ran: of the queue's own, or of where it
+/// would run.
+pub fn failed(message: &str) -> ExitCode {
     println!("{}", json!({ "error": format!("exclusive: {message}; the command did not run") }));
     ExitCode::from(125)
 }

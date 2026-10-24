@@ -29,6 +29,7 @@ pub mod admission;
 pub mod advance;
 pub mod board;
 pub mod caster;
+pub mod checkout;
 pub mod claim_status;
 pub mod claims;
 pub mod config;
@@ -295,7 +296,10 @@ enum Command {
     ///
     /// Casting sends the host kit's first a real prompt: it spends some of its login.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
-    Cast,
+    Cast {
+        #[command(flatten)]
+        at: At,
+    },
     /// Print the repo's config as JSON, defaults filled
     ///
     /// ##### When to run it
@@ -308,7 +312,7 @@ enum Command {
     ///
     /// ##### What it reads and writes
     ///
-    /// It reads one file — {const:CONFIG_FILE} of the checkout it is run in, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
+    /// It reads one file — {const:CONFIG_FILE} of the checkout it is about, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
     ///
     /// ##### The config file
     ///
@@ -362,6 +366,8 @@ enum Command {
     Config {
         #[arg(long, help = format!("The config file [default: {} of this checkout]", config::FILE))]
         file: Option<PathBuf>,
+        #[command(flatten)]
+        at: At,
     },
     /// Read a team and its workflows: what was read, or every fault
     ///
@@ -433,6 +439,8 @@ enum Command {
     Check {
         #[command(flatten)]
         team: TeamArgs,
+        #[command(flatten)]
+        at: At,
     },
     /// Write the skeleton of a team with its roles, or of one role, or a whole example team, and create its repo on GitHub if asked
     ///
@@ -597,7 +605,10 @@ enum Command {
     /// - It answers the team as pushed to its default branch. A workflow added in a checkout of the team is not answered, and its label not created, until it is pushed.
     /// - A label of a workflow the team no longer has is left on the repo: this command creates labels and removes none.
     #[command(next_help_heading = HANDS_WORK, verbatim_doc_comment)]
-    Flows,
+    Flows {
+        #[command(flatten)]
+        at: At,
+    },
     /// Print the skill file that sends an agent of your own to `--help`: text, not JSON
     ///
     /// ##### When to run it
@@ -727,6 +738,8 @@ enum Command {
         issue: Option<u64>,
         #[command(flatten)]
         team: TeamArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Draft a team's roster from this host's host kit, into the team file of its working tree
     ///
@@ -841,6 +854,8 @@ enum Command {
         declared: Vec<Declared>,
         #[command(flatten)]
         team: TeamArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Say what the fleet on this host is doing and what is wrong with it, each finding with its fix
     ///
@@ -917,6 +932,8 @@ enum Command {
         /// The host whose fleet is asked after [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: At,
     },
     /// Show what a tick would act on, and change nothing
     ///
@@ -1013,6 +1030,8 @@ enum Command {
         /// The fleet instance whose claims are its own [default: nobody's]
         #[arg(long, value_parser = InstanceId::parse)]
         instance: Option<InstanceId>,
+        #[command(flatten)]
+        at: At,
     },
     /// Run the fleet: tick after tick, until stopped
     ///
@@ -1213,6 +1232,8 @@ enum Command {
         /// Milliseconds one second of sleep takes
         #[arg(long, hide = true, default_value_t = 1000)]
         second_ms: u64,
+        #[command(flatten)]
+        at: At,
     },
     /// Print the panel — the fleet as a web page — as one rebuild shows it now, or open a `run`'s live one
     ///
@@ -1235,7 +1256,7 @@ enum Command {
     ///
     /// ##### Who runs it
     ///
-    /// The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any of its worktrees, and no other repo's.
+    /// The operator, in a checkout of the repo. `--open` reaches this host's `run` for the repo from any checkout of it but a worker's worktree, and no other repo's.
     ///
     /// ##### What it reads and writes
     ///
@@ -1293,6 +1314,8 @@ enum Command {
         /// With --open: the port of this host to serve it on [default: any free one]
         #[arg(long, value_name = "PORT", requires = "open")]
         port: Option<u16>,
+        #[command(flatten)]
+        at: At,
     },
     /// Run one reconciliation pass and exit
     ///
@@ -1364,6 +1387,8 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+        #[command(flatten)]
+        at: At,
     },
     /// Run the gate in this worktree and put a green run on record (a worker's command)
     ///
@@ -1418,6 +1443,8 @@ enum Command {
         /// The host a green run is recorded as made on [default: this machine's name]
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: At,
     },
     /// Put this worktree's PR on the landing train (a worker's command), or land the train
     ///
@@ -1491,6 +1518,8 @@ enum Command {
         /// machine's name]
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Declare the verdict that ends a stage, with the text it produced (a worker's command, and a human's for a stage nobody holds)
     ///
@@ -1588,6 +1617,8 @@ enum Command {
         /// The worker is the stage's consult, letting its `escalate` through [a human is none]
         #[arg(long, env = CONSULT_ENV)]
         consult: bool,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Answer an escalated issue with a ruling: its stage runs again under it (a human's command, and a consult's for the stage that asked it)
     ///
@@ -1668,6 +1699,8 @@ enum Command {
         /// The model a worker ran, where it was started on one [a human names none]
         #[arg(long, env = MODEL_ENV, requires = "role_commit")]
         model: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Send an issue to a named stage of its workflow (a human's command, and a consult's)
     ///
@@ -1732,6 +1765,8 @@ enum Command {
         /// The worker is the stage's consult [a human is none]
         #[arg(long, env = CONSULT_ENV)]
         consult: bool,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Take an issue in to a workflow: its flow label, on the record (a worker's command)
     ///
@@ -1816,6 +1851,8 @@ enum Command {
         /// The issues it is to wait for, as numbers separated by commas
         #[arg(long, value_delimiter = ',')]
         blocked_by: Vec<u64>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Raise a fleet lock on an issue: the fleet works lock issues only until it closes (a worker's command)
     ///
@@ -1867,6 +1904,8 @@ enum Command {
         /// The role that raises it [default: the one this worker was started in, if any]
         #[arg(long, env = ROLE_ENV)]
         role: Option<String>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Have a patrol run now, past its interval and its daily bound: the next tick runs it
     ///
@@ -1921,6 +1960,8 @@ enum Command {
     PatrolNow {
         /// The patrol, as the repo's config names it under `patrols`
         name: String,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Declare a patrol's run or a proposal's over: the next tick ends it (a worker's command)
     ///
@@ -1952,6 +1993,8 @@ enum Command {
         /// The run, as its brief names it
         #[arg(long)]
         run: String,
+        #[command(flatten)]
+        at: At,
     },
     /// Say what an inspection of a hot worker or of the host found: its `run` types it at the worker and leaves it on the issue, or keeps it beside admission's reading (an inspection's command)
     ///
@@ -1994,7 +2037,7 @@ enum Command {
     ///
     /// {"inspected": true, "found", "kind", "reclaimed", "freed", "named", "woke"} — what was found is kept; `kind` is worker or host; `reclaimed` and `named` are each [{path, bytes}] it freed and named, `freed` the bytes freed in all; `woke` is whether a `run` on this host was told.
     ///
-    /// Errors: the text is empty; the checkout it runs in is no inspection's; the word is not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim of another word than reclaimable; a path that may not be freed, or does not exist.
+    /// Errors: the text is empty; the checkout it is about is no inspection's; the word is not one its kind finds; --reclaim or --name of a worker's inspection, or --reclaim of another word than reclaimable; a path that may not be freed, or does not exist.
     ///
     /// ##### What trips you up
     ///
@@ -2016,6 +2059,8 @@ enum Command {
         /// Of the host: a path to name for a human, which is never deleted
         #[arg(long, value_name = "PATH")]
         name: Vec<PathBuf>,
+        #[command(flatten)]
+        at: At,
     },
     /// Run a heavy command alone on this host, once no other `exclusive` command runs (a worker's command)
     ///
@@ -2058,6 +2103,8 @@ enum Command {
         /// The command and its arguments, after `--`
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<OsString>,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Allow or refuse the tool call described on stdin (a worker's hook, added at launch)
     ///
@@ -2175,6 +2222,8 @@ enum Command {
         /// Where to start from: what survives, or — discarding it — the base branch
         #[arg(long, value_enum, default_value = "auto")]
         start: dispatch::StartFrom,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Show what `dispatch` would continue an issue from, without acting
     ///
@@ -2207,6 +2256,8 @@ enum Command {
     Recovery {
         #[command(flatten)]
         issue: IssueArg,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Close one of my claims whose issue needed no change
     ///
@@ -2238,6 +2289,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Hand one of my claims to a human
     ///
@@ -2276,6 +2329,8 @@ enum Command {
         /// Why: what a human needs to act on it in one reply
         #[arg(long)]
         reason: String,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Leave one of my claims waiting on the issues its worker declared it blocked by
     ///
@@ -2309,6 +2364,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Tell the worker of one of my claims, stopped with no PR and no verdict, to carry on
     ///
@@ -2347,6 +2404,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Replace the silent worker of one of my claims whose PR is joining the train, once
     ///
@@ -2381,6 +2440,8 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
     ///
@@ -2454,6 +2515,8 @@ enum Command {
         who: Who,
         #[command(flatten)]
         agent: AgentArgs,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Give up the landing train, its worker silent past a nudge, with nothing landed
     ///
@@ -2489,6 +2552,8 @@ enum Command {
     Abandon {
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: At,
     },
     /// Take another fleet instance's claims without waiting for the lease
     ///
@@ -2545,6 +2610,8 @@ enum Command {
         instance: Option<InstanceId>,
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        at: At,
     },
     /// End the sleep of this host's `run` for this repo: its next tick starts now (a worker's command)
     ///
@@ -2576,7 +2643,10 @@ enum Command {
     /// - `woke: false` needs no second `wake`: the fleet finds the outcome at its next tick anyway.
     /// - It reaches a `run` only, on this host only. A fleet driven by `tick` hears nothing.
     #[command(next_help_heading = WORKER, verbatim_doc_comment)]
-    Wake,
+    Wake {
+        #[command(flatten)]
+        at: At,
+    },
     /// List every claim and heartbeat on the remote
     ///
     /// ##### When to run it
@@ -2605,7 +2675,10 @@ enum Command {
     /// - It looks where this repo's last startup probe found the remote keeps the fleet's refs. In a clone no `plan`, `tick` or `run` was ever run in, it looks under refs/convoy/ — and finds nothing on a remote that keeps them as convoy-* branches.
     /// - It does not say whether a claim is live: compare its instance's heartbeat with the lease, or read `takeover --list`.
     #[command(next_help_heading = PLUMBING, verbatim_doc_comment)]
-    Scan,
+    Scan {
+        #[command(flatten)]
+        at: At,
+    },
     /// Claim one issue for a fleet instance
     ///
     /// ##### When to run it
@@ -2638,6 +2711,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Release a fleet instance's own claim on one issue
     ///
@@ -2669,6 +2744,8 @@ enum Command {
         issue: IssueArg,
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: AtFlag,
     },
     /// Refresh a fleet instance's heartbeat, if it is due
     ///
@@ -2699,6 +2776,8 @@ enum Command {
     Heartbeat {
         #[command(flatten)]
         who: Who,
+        #[command(flatten)]
+        at: At,
     },
     /// Print this message, the help of the given command, or a help topic
     #[command(next_help_heading = READER)]
@@ -2728,6 +2807,28 @@ impl IssueArg {
     }
 }
 
+/// The checkout a command is about, named after it: for a command with no
+/// argument of its own after it (`AtFlag` for one with).
+#[derive(clap::Args)]
+struct At {
+    /// The checkout it is about, or a directory in it [default: the one it is run in]
+    #[arg(value_name = "CHECKOUT")]
+    checkout: Option<PathBuf>,
+}
+
+/// The checkout a command is about, named with `-C`: for a command whose
+/// arguments after it are its own.
+#[derive(clap::Args)]
+struct AtFlag {
+    /// The checkout it is about, or a directory in it [default: the one it is run in]
+    #[arg(short = 'C', value_name = "CHECKOUT")]
+    checkout: Option<PathBuf>,
+}
+
+/// The id of the argument of `At` and of `AtFlag`: a command that has it is
+/// about one repo, and one that has neither is about none.
+const CHECKOUT_ARG: &str = "checkout";
+
 /// The team a command reads.
 #[derive(clap::Args)]
 struct TeamArgs {
@@ -2742,6 +2843,18 @@ struct TeamArgs {
 }
 
 impl TeamArgs {
+    /// Where the team they name is read from, with the checkout to read it
+    /// for: `checkout`, which names the team where they name none — and must
+    /// then be had — and otherwise gives its labels where it is had.
+    fn read(self, checkout: anyhow::Result<Repo>) -> anyhow::Result<(team::From, Option<Repo>)> {
+        let from = self.from();
+        let checkout = match from {
+            team::From::Config => Some(checkout?),
+            _ => checkout.ok(),
+        };
+        Ok((from, checkout))
+    }
+
     fn from(self) -> team::From {
         match (self.team, self.dir) {
             (of, Some(dir)) => team::From::Dir(dir, of),
@@ -2860,17 +2973,77 @@ const ACTS: [&str; 25] = [
     "tick",
 ];
 
-/// The command line as parsed: `Cli`, each command that acts with what it logs
-/// added to its text.
+/// The commands a worker runs in its own worktree, as its brief, a stage's
+/// consult's, the caster's and an inspection's give them: the only commands
+/// a worker's worktree is not refused for (`checkout::resolve`).
+const IN_ITS_WORKTREE: [&str; 15] = [
+    "cast",
+    "doctor",
+    "plan",
+    "show",
+    "gate",
+    "land",
+    "verdict",
+    "rule",
+    "send",
+    "intake",
+    "lock",
+    "over",
+    "inspected",
+    "exclusive",
+    "wake",
+];
+
+/// The command line as parsed: `Cli`, each command about one repo with how it
+/// takes its checkout added to its text, and each command that acts with what
+/// it logs.
 fn cli() -> clap::Command {
     let mut cli = Cli::command();
+    let about: Vec<(String, String)> = cli
+        .get_subcommands()
+        .filter_map(|command| {
+            let arg = command.get_arguments().find(|arg| arg.get_id() == CHECKOUT_ARG)?;
+            let name = command.get_name();
+            Some((name.to_string(), checkout_help(name, arg.is_positional())))
+        })
+        .collect();
+    for (name, said) in about {
+        cli = cli.mut_subcommand(name, |command| added(command, &said));
+    }
     for name in ACTS {
-        cli = cli.mut_subcommand(name, |command| {
-            let text = command.get_long_about().map(ToString::to_string).unwrap_or_default();
-            command.long_about(format!("{}\n\n{}", text.trim_end(), acting::HELP))
-        });
+        cli = cli.mut_subcommand(name, |command| added(command, acting::HELP));
     }
     cli
+}
+
+/// `command` with `said` added to the end of its text.
+fn added(command: clap::Command, said: &str) -> clap::Command {
+    let text = command.get_long_about().map(ToString::to_string).unwrap_or_default();
+    command.long_about(format!("{}\n\n{said}", text.trim_end()))
+}
+
+/// What the manual adds to the text of the command `name`, about one repo:
+/// how it is told the checkout — after it, or with `-C` where what follows it
+/// is its own (`positional`) — and whether a worker's worktree is one.
+fn checkout_help(name: &str, positional: bool) -> String {
+    let (named, own) = match positional {
+        true => ("Name it after the command, as `[CHECKOUT]`", ""),
+        false => (
+            "Name it with `-C <CHECKOUT>`",
+            " What follows the command is its own: the checkout is not among it.",
+        ),
+    };
+    let worker = match IN_ITS_WORKTREE.contains(&name) {
+        true => "A worker runs it in its own worktree.",
+        false => {
+            "A worker's worktree is refused as its checkout: only a worker's own commands are run there."
+        }
+    };
+    format!(
+        "##### Which checkout it is about\n\n{named}: a checkout of the repo, or any directory in \
+         one, which names that checkout.{own} Naming none, it is about the checkout it is run in. \
+         {worker}"
+    )
 }
 
 /// The manual: `--help` answers it whole, and `help <topic>` one topic of
@@ -3067,11 +3240,11 @@ fn removed_worker_command(_: &str) -> Result<String, String> {
 }
 
 impl AgentArgs {
-    /// Reads this host's host kit (`Launches::new`), with no probe:
+    /// Reads this host's host kit for the checkout `repo` (`Launches::new`), with no probe:
     /// the one worker a command started this way starts is refused where its
     /// harness's command resolves to nothing (`Agent::command`).
-    fn agent(self) -> anyhow::Result<Agent> {
-        let launches = Launches::new(true)?.with_no_proxy(&self.proxy.worker_no_proxy)?;
+    fn agent(self, repo: &Repo) -> anyhow::Result<Agent> {
+        let launches = Launches::new(repo, true)?.with_no_proxy(&self.proxy.worker_no_proxy)?;
         Ok(Agent { launches, ready_timeout: self.ready_timeout })
     }
 
@@ -3080,15 +3253,15 @@ impl AgentArgs {
     /// to check: for every harness the fleet could be asked for, before any
     /// worker is started. A start that is `trusting` makes none while one
     /// that checked these commands stands (`probe::standing`).
-    fn start(self, now: u64, trusting: bool) -> anyhow::Result<Agent> {
-        let agent = self.agent()?;
+    fn start(self, repo: &Repo, now: u64, trusting: bool) -> anyhow::Result<Agent> {
+        let agent = self.agent(repo)?;
         // The default harness's is settled whatever stands: a human is
         // asked, where one must be, before anything else is.
         agent.launches.key()?;
-        let stands = if trusting { probe::standing(now, &agent.launches) } else { None };
+        let stands = if trusting { probe::standing(repo, now, &agent.launches) } else { None };
         let warnings = match stands {
             Some(warnings) => warnings,
-            None => probe::startup(now, &agent.launches)?,
+            None => probe::startup(repo, now, &agent.launches)?,
         };
         probe::announce(&warnings);
         Ok(agent)
@@ -3112,10 +3285,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             Err(error) => fail(1, &error),
         };
     }
-    let parsed =
-        cli().try_get_matches_from(&args).and_then(|matches| Cli::from_arg_matches(&matches));
-    let cli = match parsed {
-        Ok(cli) => cli,
+    let parsed = cli()
+        .try_get_matches_from(&args)
+        .and_then(|matches| Ok((Cli::from_arg_matches(&matches)?, matches)));
+    let (cli, matches) = match parsed {
+        Ok(parsed) => parsed,
         // A command's `--help` is its text in the manual.
         Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => {
             let text = asks_for_text(&args).and_then(|name| help(Some(name)).ok());
@@ -3134,9 +3308,6 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     if matches!(cli.command, Command::Guard) {
         return guard::guard();
     }
-    if let Command::Exclusive { command } = &cli.command {
-        return exclusive::exclusive(command, || cli.now.unwrap_or_else(clock));
-    }
     if let Command::Help { name } = &cli.command {
         return match help(name.as_deref()) {
             Ok(text) => {
@@ -3146,15 +3317,46 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             Err(error) => fail(2, &error),
         };
     }
-    let acting = cli.command.acting();
-    let now = || cli.now.unwrap_or_else(clock);
-    if let Some(acting) = &acting {
-        acting.start(now());
+    // The checkout the command is about, found once, here, and handed to all
+    // it does. One about no repo is about none.
+    let about = matches.subcommand().filter(|(name, _)| {
+        Cli::command()
+            .find_subcommand(name)
+            .is_some_and(|command| command.get_arguments().any(|arg| arg.get_id() == CHECKOUT_ARG))
+    });
+    let named = about.and_then(|(_, command)| command.get_one::<PathBuf>(CHECKOUT_ARG));
+    let checkout = match about {
+        Some((name, _)) => {
+            checkout::resolve(named.map(PathBuf::as_path), IN_ITS_WORKTREE.contains(&name))
+        }
+        None => Err(anyhow::anyhow!("this command is about no repo")),
+    };
+    // Run anywhere, in a checkout or not: the queue is the host's.
+    if let Command::Exclusive { command, .. } = &cli.command {
+        return match checkout::dir(named.map(PathBuf::as_path)) {
+            Ok(dir) => {
+                exclusive::exclusive(command, &dir, checkout.ok(), || cli.now.unwrap_or_else(clock))
+            }
+            Err(error) => exclusive::failed(&format!("{error:#}")),
+        };
     }
-    let ran = run(cli.command, cli.now);
-    let ran = match &acting {
-        Some(acting) => acting.end(now(), ran),
-        None => ran,
+    // A checkout named is one the command is about, whether it needs one or
+    // not: where it cannot be had, the command is refused before it starts.
+    let ran = match checkout {
+        Err(error) if named.is_some() => Err(error),
+        checkout => {
+            let in_it = checkout.as_ref().ok().cloned();
+            let acting = cli.command.acting().map(|acting| acting.in_checkout(in_it));
+            let now = || cli.now.unwrap_or_else(clock);
+            if let Some(acting) = &acting {
+                acting.start(now());
+            }
+            let ran = run(cli.command, checkout, cli.now);
+            match &acting {
+                Some(acting) => acting.end(now(), ran),
+                None => ran,
+            }
+        }
     };
     match ran {
         Ok(Value::String(drawing)) => {
@@ -3205,10 +3407,10 @@ impl Command {
         let as_who = |name, who: &Who| Acting::new(name).as_instance(who.instance.as_str());
         Some(match self {
             Command::Dispatch { issue, who, .. } => of("dispatch", issue, Some(who)),
-            Command::Close { issue, who } => of("close", issue, Some(who)),
+            Command::Close { issue, who, .. } => of("close", issue, Some(who)),
             Command::Escalate { issue, who, .. } => of("escalate", issue, Some(who)),
-            Command::Park { issue, who } => of("park", issue, Some(who)),
-            Command::Nudge { issue, who } => of("nudge", issue, Some(who)),
+            Command::Park { issue, who, .. } => of("park", issue, Some(who)),
+            Command::Nudge { issue, who, .. } => of("nudge", issue, Some(who)),
             Command::Restart { issue, who, .. } => of("restart", issue, Some(who)),
             Command::Switch { issue, patrol, all, who, .. } => {
                 let acting = Acting::new("switch").as_instance(who.instance.as_str());
@@ -3219,7 +3421,7 @@ impl Command {
                     (None, None, false) => acting,
                 }
             }
-            Command::Abandon { who } => as_who("abandon", who),
+            Command::Abandon { who, .. } => as_who("abandon", who),
             Command::Takeover { list: true, .. } => return None,
             Command::Takeover { from, instance, .. } => {
                 let acting = Acting::new("takeover");
@@ -3232,30 +3434,32 @@ impl Command {
                     None => acting,
                 }
             }
-            Command::Claim { issue, who } => of("claim", issue, Some(who)),
-            Command::Release { issue, who } => of("release", issue, Some(who)),
-            Command::Heartbeat { who } => as_who("heartbeat", who),
+            Command::Claim { issue, who, .. } => of("claim", issue, Some(who)),
+            Command::Release { issue, who, .. } => of("release", issue, Some(who)),
+            Command::Heartbeat { who, .. } => as_who("heartbeat", who),
             Command::Rule { issue, .. } => of("rule", issue, None),
             Command::Send { issue, .. } => of("send", issue, None),
             Command::Land { number, issue, .. } => Acting::new("land").on_issue(issue.or(*number)),
             Command::Verdict { issue, .. } => of("verdict", issue, None),
             Command::Intake { issue, .. } => of("intake", issue, None),
             Command::Lock { issue, .. } => of("lock", issue, None),
-            Command::PatrolNow { name } => Acting::new("patrol-now").on(name.trim().to_string()),
-            Command::Over { run } => Acting::new("over").on(format!("run {}", run.trim())),
+            Command::PatrolNow { name, .. } => {
+                Acting::new("patrol-now").on(name.trim().to_string())
+            }
+            Command::Over { run, .. } => Acting::new("over").on(format!("run {}", run.trim())),
             Command::Inspected { .. } => match std::env::var(INSPECTION_ENV) {
                 Ok(worker) => Acting::new("inspected").on(worker),
                 Err(_) => Acting::new("inspected"),
             },
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
-            Command::Wake => Acting::new("wake").on_own_issue(),
-            Command::Cast => Acting::new("cast"),
+            Command::Wake { .. } => Acting::new("wake").on_own_issue(),
+            Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
             Command::Kit
             | Command::Config { .. }
             | Command::Check { .. }
             | Command::Scaffold { .. }
-            | Command::Flows
+            | Command::Flows { .. }
             | Command::Skill
             | Command::Show { .. }
             | Command::Draft { .. }
@@ -3267,60 +3471,81 @@ impl Command {
             | Command::Guard
             | Command::Exclusive { .. }
             | Command::Recovery { .. }
-            | Command::Scan
+            | Command::Scan { .. }
             | Command::Help { .. } => return None,
         })
     }
 }
 
-fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
+/// Runs `command` about the checkout `checkout`, found where it started: an
+/// error where it is about none, or the one it would be about could not be had
+/// — which a command that needs none passes over.
+fn run(
+    command: Command,
+    checkout: anyhow::Result<Repo>,
+    fixed_now: Option<u64>,
+) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
         Command::Kit => kit::write(now),
-        Command::Cast => caster::cast(now),
-        Command::Config { file } => {
+        Command::Cast { .. } => caster::cast(&checkout?, now),
+        Command::Config { file, .. } => {
             let file = match file {
                 Some(file) => file,
-                None => config::default_file()?,
+                None => config::file_of(&checkout?),
             };
             Ok(serde_json::to_value(config::load(&file)?)?)
         }
-        Command::Check { team } => team::check(team.from()),
+        Command::Check { team, .. } => {
+            let (from, checkout) = team.read(checkout)?;
+            team::check(from, checkout.as_ref())
+        }
         Command::Scaffold { what, dir, role, example, repo, public } => {
             let create = repo.map(|repo| scaffold::Create { repo, public });
             // The parser took the name for one there is an example of.
             let example = example.as_deref().and_then(scaffold::example);
             scaffold::scaffold(what, &dir, &role, example, create.as_ref())
         }
-        Command::Flows => flows::flows(&Repo::here()?),
+        Command::Flows { .. } => flows::flows(&checkout?),
         Command::Skill => Ok(Value::String(SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),
-        Command::Show { workflow, issue, team } => {
-            let loaded = team::load(team.from())?;
+        Command::Show { workflow, issue, team, .. } => {
             // A workflow is not named by a number: one given is an issue's.
             let numbered = workflow.as_deref().and_then(|named| named.parse().ok());
             match issue.or(numbered) {
+                // An issue is of the checkout's repo, whichever team reads it.
                 Some(issue) => {
-                    let gh = gh::GitHub { dir: Repo::here()?.dir };
+                    let repo = checkout?;
+                    let loaded = team::load(team.from(), Some(&repo))?;
+                    let gh = gh::GitHub { dir: repo.dir.clone() };
                     stage::show_issue(&gh, &loaded.team, issue)
                 }
-                None => Ok(Value::String(workflow::show(&loaded, workflow.as_deref())?)),
+                None => {
+                    let (from, checkout) = team.read(checkout)?;
+                    let loaded = team::load(from, checkout.as_ref())?;
+                    Ok(Value::String(workflow::show(&loaded, workflow.as_deref())?))
+                }
             }
         }
-        Command::Rehearse { workflow, declared, team } => {
-            workflow::rehearse(&team::load(team.from())?, &workflow, &declared)
+        Command::Rehearse { workflow, declared, team, .. } => {
+            let (from, checkout) = team.read(checkout)?;
+            workflow::rehearse(&team::load(from, checkout.as_ref())?, &workflow, &declared)
         }
-        Command::Doctor { host, proxy } => {
-            doctor::doctor_with_proxy(now, &host.unwrap_or_else(this_host), &proxy.worker_no_proxy)
-        }
-        Command::Plan { instance, proxy } => {
-            let launches = Launches::foreseen().with_no_proxy(&proxy.worker_no_proxy)?;
-            let warnings = match probe::standing(now, &launches) {
+        Command::Doctor { host, proxy, .. } => doctor::doctor_with_proxy(
+            &checkout?,
+            now,
+            &host.unwrap_or_else(this_host),
+            &proxy.worker_no_proxy,
+        ),
+        Command::Plan { instance, proxy, .. } => {
+            let repo = checkout?;
+            let launches = Launches::foreseen(&repo).with_no_proxy(&proxy.worker_no_proxy)?;
+            let warnings = match probe::standing(&repo, now, &launches) {
                 Some(warnings) => warnings,
-                None => probe::startup(now, &launches)?,
+                None => probe::startup(&repo, now, &launches)?,
             };
             probe::announce(&warnings);
-            let (mut fleet, open) = Fleet::read(now)?;
+            let (mut fleet, open) = Fleet::read(&repo, now)?;
             let (mut set, flows) = fleet.rebuild(&open, instance.as_ref())?;
             let admission = admission::Admission::read(&fleet.repo.dir)?;
             set.held_back = admission.holds();
@@ -3373,6 +3598,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             hot_written,
             ticks,
             second_ms,
+            ..
         } => {
             if !no_host_sleep && !cfg!(target_os = "macos") {
                 anyhow::bail!(
@@ -3384,38 +3610,42 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             let salt = clock() as u32 ^ std::process::id();
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
+            let repo = checkout?;
             let second = Duration::from_millis(second_ms);
-            let hot = hot::limits(hot::Said {
+            let said = hot::Said {
                 millicores: hot_cores,
                 resident: hot_memory.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
                 written: hot_written.map(|thousandths| thousandths.saturating_mul(1 << 30) / 1000),
-            });
+            };
+            let hot = hot::limits(said, &repo.dir);
             let pacing = Pacing { ticks, second, no_host_sleep, host_sleep_after, hot };
             kit::ensure(now)?;
-            let agent = agent.start(now, false)?;
-            tick::run(&mut me, &agent, &pacing, panel, move || fixed_now.unwrap_or_else(clock))
+            let agent = agent.start(&repo, now, false)?;
+            let clock = move || fixed_now.unwrap_or_else(clock);
+            tick::run(&repo, &mut me, &agent, &pacing, panel, clock)
         }
-        Command::Panel { open: true, port, .. } => opening::open(&Repo::here()?, port),
+        Command::Panel { open: true, port, .. } => opening::open(&checkout?, port),
         Command::Panel { instance, host, .. } => {
-            let (mut fleet, open) = Fleet::read(now)?;
+            let (mut fleet, open) = Fleet::read(&checkout?, now)?;
             let host = host.unwrap_or_else(this_host);
             let me = instance.map(|instance| Me { instance, host, now });
             let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
             let shown = panel::read(&fleet, me.as_ref(), &set, &flows, &[]);
             Ok(Value::String(panel::render(&shown)))
         }
-        Command::Tick { who, agent } => {
-            let agent = agent.start(now, true)?;
-            Ok(tick::tick(&who.me(now), &agent, &stop::Stop::never(), None)?.0.json())
+        Command::Tick { who, agent, .. } => {
+            let repo = checkout?;
+            let agent = agent.start(&repo, now, true)?;
+            Ok(tick::tick(&repo, &who.me(now), &agent, &stop::Stop::never(), None)?.0.json())
         }
-        Command::Gate { train, host } => {
-            let repo = Repo::here()?;
+        Command::Gate { train, host, .. } => {
+            let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let host = host.unwrap_or_else(this_host);
             gate::gate(&repo, &config, train, &host, now)
         }
         Command::Land { number, issue, merged_timeout, host, .. } => {
-            let repo = Repo::here()?;
+            let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
             match issue.or(number) {
@@ -3438,6 +3668,7 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             harness,
             model,
             consult,
+            ..
         } => {
             let declaring = stage::Declaring {
                 issue: issue.number(),
@@ -3448,9 +3679,10 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 ran: ran(role_commit, team_commit, harness, model),
                 consult,
             };
-            stage::verdict(&Repo::here()?, declaring)
+            stage::verdict(&checkout?, declaring)
         }
-        Command::Rule { issue, text, stage, role_commit, team_commit, harness, model } => {
+        Command::Rule { issue, text, stage, role_commit, team_commit, harness, model, .. } => {
+            let repo = checkout?;
             let issue = issue.number();
             // With the commits it ran under, the ruling is a consult's: a
             // stage record under its claim, as a verdict is.
@@ -3471,14 +3703,25 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                     ran: Some(ran),
                     consult: true,
                 };
-                return stage::verdict(&Repo::here()?, declaring);
+                return stage::verdict(&repo, declaring);
             }
-            let team = team::load(team::From::Config)?.team;
-            steer::rule(&Repo::here()?, &team, issue, text.read()?)
+            let team = team::load(team::From::Config, Some(&repo))?.team;
+            steer::rule(&repo, &team, issue, text.read()?)
         }
-        Command::Send { issue, stage, text, role_commit, team_commit, harness, model, consult } => {
+        Command::Send {
+            issue,
+            stage,
+            text,
+            role_commit,
+            team_commit,
+            harness,
+            model,
+            consult,
+            ..
+        } => {
+            let repo = checkout?;
             let issue = issue.number();
-            let team = team::load(team::From::Config)?.team;
+            let team = team::load(team::From::Config, Some(&repo))?.team;
             // With the commits it ran under, the sending is a consult's: a
             // stage record under its claim, as its ruling is.
             if let Some(ran) = ran(role_commit, team_commit, harness, model) {
@@ -3488,18 +3731,11 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                          stage declares its verdict, and the workflow says where it leads"
                     );
                 }
-                return stage::consult_send(
-                    &Repo::here()?,
-                    &team,
-                    issue,
-                    &stage,
-                    text.read()?,
-                    ran,
-                );
+                return stage::consult_send(&repo, &team, issue, &stage, text.read()?, ran);
             }
-            steer::send(&Repo::here()?, &team, issue, &stage, text.read()?)
+            steer::send(&repo, &team, issue, &stage, text.read()?)
         }
-        Command::Intake { issue, workflow, role, from, patrol, train, blocked_by } => {
+        Command::Intake { issue, workflow, role, from, patrol, train, blocked_by, .. } => {
             use afkconvoy_core::intake::{By, On};
             let on = match (from, patrol) {
                 (Some(issue), _) => Some(On::Issue(issue)),
@@ -3523,27 +3759,27 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                 ),
             };
             let taking = intake::Taking { issue: issue.number(), workflow, by, blocked_by };
-            intake::intake(&Repo::here()?, taking)
+            intake::intake(&checkout?, taking)
         }
-        Command::Lock { issue, role } => {
-            let repo = Repo::here()?;
+        Command::Lock { issue, role, .. } => {
+            let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
             let gh = gh::GitHub { dir: repo.dir.clone() };
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
             lock::lock(&config, &gh, issue.number(), role)
         }
-        Command::PatrolNow { name } => patrol::ask(name.trim(), &this_host(), now),
-        Command::Over { run } => {
+        Command::PatrolNow { name, .. } => patrol::ask(&checkout?, name.trim(), &this_host(), now),
+        Command::Over { run, .. } => {
             if let Ok(issue) = std::env::var(ISSUE_ENV) {
                 anyhow::bail!(
                     "this worker is on issue #{issue} ({ISSUE_ENV}), whose stage ends with \
                      `afkconvoy verdict`: only a patrol's run and a proposal's are declared over"
                 );
             }
-            claims::declare_over(&Repo::here()?, run.trim())
+            claims::declare_over(&checkout?, run.trim())
         }
-        Command::Inspected { found, text, reclaim, name } => {
-            inspection::inspected(found, &text.read()?, &reclaim, &name)
+        Command::Inspected { found, text, reclaim, name, .. } => {
+            inspection::inspected(&checkout?, found, &text.read()?, &reclaim, &name)
         }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
@@ -3551,42 +3787,54 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             anyhow::bail!("exclusive answers with its command's exit code")
         }
         Command::Help { .. } => anyhow::bail!("help answers with Markdown"),
-        Command::Dispatch { issue, who, agent, start } => dispatch::dispatch(
-            &mut Fleet::open(now)?,
-            &who.me(now),
-            &agent.agent()?,
-            issue.number(),
-            start,
-        ),
-        Command::Recovery { issue } => recovery::recovery(&Fleet::open(now)?, issue.number()),
-        Command::Close { issue, who } => {
-            judge::close(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        Command::Dispatch { issue, who, agent, start, .. } => {
+            let repo = checkout?;
+            let agent = agent.agent(&repo)?;
+            dispatch::dispatch(
+                &mut Fleet::open(&repo, now)?,
+                &who.me(now),
+                &agent,
+                issue.number(),
+                start,
+            )
         }
-        Command::Escalate { issue, who, reason } => {
-            judge::escalate(&mut Fleet::open(now)?, &who.me(now), issue.number(), &reason)
+        Command::Recovery { issue, .. } => {
+            recovery::recovery(&Fleet::open(&checkout?, now)?, issue.number())
         }
-        Command::Park { issue, who } => {
-            park::park(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        Command::Close { issue, who, .. } => {
+            judge::close(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())
         }
-        Command::Nudge { issue, who } => {
-            judge::nudge(&mut Fleet::open(now)?, &who.me(now), issue.number())
+        Command::Escalate { issue, who, reason, .. } => {
+            let mut fleet = Fleet::open(&checkout?, now)?;
+            judge::escalate(&mut fleet, &who.me(now), issue.number(), &reason)
         }
-        Command::Restart { issue, who, agent } => {
-            watch::restart(&mut Fleet::open(now)?, &who.me(now), &agent.agent()?, issue.number())
+        Command::Park { issue, who, .. } => {
+            park::park(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())
         }
-        Command::Switch { harness, clear: _, issue, patrol, all, who, agent } => {
+        Command::Nudge { issue, who, .. } => {
+            judge::nudge(&mut Fleet::open(&checkout?, now)?, &who.me(now), issue.number())
+        }
+        Command::Restart { issue, who, agent, .. } => {
+            let repo = checkout?;
+            let agent = agent.agent(&repo)?;
+            watch::restart(&mut Fleet::open(&repo, now)?, &who.me(now), &agent, issue.number())
+        }
+        Command::Switch { harness, clear: _, issue, patrol, all, who, agent, .. } => {
             let which = match (issue, patrol, all) {
                 (Some(issue), _, _) => switch::Which::Issue(issue),
                 (None, Some(patrol), _) => switch::Which::Patrol(patrol.trim().to_string()),
                 (None, None, true) => switch::Which::All,
                 (None, None, false) => switch::Which::Nothing,
             };
-            let mut fleet = Fleet::open(now)?;
-            switch::switch(&mut fleet, &who.me(now), &agent.agent()?, harness, which)
+            let repo = checkout?;
+            let agent = agent.agent(&repo)?;
+            switch::switch(&mut Fleet::open(&repo, now)?, &who.me(now), &agent, harness, which)
         }
-        Command::Abandon { who } => abandon::abandon_by_hand(&mut Fleet::open(now)?, &who.me(now)),
-        Command::Takeover { list, from, yes, instance, host } => {
-            let mut fleet = Fleet::open(now)?;
+        Command::Abandon { who, .. } => {
+            abandon::abandon_by_hand(&mut Fleet::open(&checkout?, now)?, &who.me(now))
+        }
+        Command::Takeover { list, from, yes, instance, host, .. } => {
+            let mut fleet = Fleet::open(&checkout?, now)?;
             let me =
                 instance.map(|instance| Me { instance, host: host.unwrap_or_else(this_host), now });
             match (list, from, me) {
@@ -3599,18 +3847,18 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
             }
         }
         // `Acting::end` sends it, as it does for every command that acts.
-        Command::Wake => Ok(json!({})),
-        Command::Scan => Ok(Scan::read(&Repo::here()?)?.json()),
-        Command::Claim { issue, who } => {
-            let repo = Repo::here()?;
+        Command::Wake { .. } => Ok(json!({})),
+        Command::Scan { .. } => Ok(Scan::read(&checkout?)?.json()),
+        Command::Claim { issue, who, .. } => {
+            let repo = checkout?;
             claims::take(&repo, &mut Scan::read(&repo)?, &who.me(now), issue.number(), Take::Fresh)
         }
-        Command::Release { issue, who } => {
-            let repo = Repo::here()?;
+        Command::Release { issue, who, .. } => {
+            let repo = checkout?;
             claims::release(&repo, &mut Scan::read(&repo)?, &who.instance, issue.number())
         }
-        Command::Heartbeat { who } => {
-            let repo = Repo::here()?;
+        Command::Heartbeat { who, .. } => {
+            let repo = checkout?;
             claims::beat(&repo, &mut Scan::read(&repo)?, &who.me(now))
         }
     }
@@ -3709,5 +3957,25 @@ mod tests {
             "takeover from b-h2-2"
         );
         assert_eq!(named(&["land", "--train"]), "land");
+    }
+
+    /// The commands a worker's worktree is taken for are commands about one
+    /// repo, and among them every one the manual says a worker runs.
+    #[test]
+    fn a_workers_worktree_is_taken_for_every_command_a_worker_runs() {
+        let cli = Cli::command();
+        let about = |command: &clap::Command| {
+            command.get_arguments().any(|arg| arg.get_id() == CHECKOUT_ARG)
+        };
+        for name in IN_ITS_WORKTREE {
+            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
+            assert!(about(command), "`{name}` is about no repo");
+        }
+        let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
+        let workers: Vec<&str> = workers.map(clap::Command::get_name).collect();
+        assert!(workers.len() >= 9, "{workers:?}");
+        for name in workers {
+            assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
+        }
     }
 }

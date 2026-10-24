@@ -56,8 +56,8 @@ pub struct Pauses {
 }
 
 impl Pauses {
-    /// This host's.
-    pub fn here() -> Result<Pauses> {
+    /// This host's, whichever repo a command is about.
+    pub fn of_host() -> Result<Pauses> {
         Ok(Pauses { file: crate::copies::cache()?.join("paused.json") })
     }
 
@@ -170,7 +170,7 @@ pub struct Probed {
 /// back in the host kit, or still paused. A `tick` of `instance` on `host`
 /// does it before anything else.
 pub fn probe(repo: &crate::git::Repo, instance: &str, host: &str, now: u64) -> Result<()> {
-    let pauses = Pauses::here()?;
+    let pauses = Pauses::of_host()?;
     if !pauses.read()?.iter().any(|pause| pause.due(now)) {
         return Ok(());
     }
@@ -220,7 +220,7 @@ pub fn findings(now: u64) -> Vec<crate::doctor::Finding> {
 
 /// This host's paused harnesses; none where they cannot be read.
 pub fn read() -> Vec<Paused> {
-    Pauses::here().and_then(|pauses| pauses.read()).unwrap_or_default()
+    Pauses::of_host().and_then(|pauses| pauses.read()).unwrap_or_default()
 }
 
 #[cfg(test)]

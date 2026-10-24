@@ -32,11 +32,18 @@ pub struct Acting {
     /// Whether it says the start of what it does, as well as its end: one
     /// that runs as long as the gate does.
     pub says_start: bool,
+    /// The checkout it acts in: whose tick log it writes to, and whose `run`
+    /// it wakes. `None`: it was run in no checkout, and does neither.
+    pub checkout: Option<Repo>,
 }
 
 impl Acting {
     pub fn new(command: &'static str) -> Acting {
-        Acting { command, on: None, instance: None, says_start: false }
+        Acting { command, on: None, instance: None, says_start: false, checkout: None }
+    }
+
+    pub fn in_checkout(self, checkout: Option<Repo>) -> Acting {
+        Acting { checkout, ..self }
     }
 
     pub fn on_issue(self, issue: Option<u64>) -> Acting {
@@ -91,7 +98,7 @@ impl Acting {
             Ok(answer) => self.log(now, outcome(self.command, answer), false),
             Err(error) => self.log(now, format!("{error:#}"), true),
         }
-        let woke = Repo::here().and_then(|repo| wake::wake(&repo, &self.named()));
+        let woke = self.in_one().and_then(|repo| wake::wake(repo, &self.named()));
         let woke =
             woke.unwrap_or_else(|error| json!({"woke": false, "detail": format!("{error:#}")}));
         let mut answer = ended?;
@@ -115,9 +122,14 @@ impl Acting {
         let instance = self.instance.clone().unwrap_or_default();
         let entry = Entry { at: now, instance, host: crate::this_host(), what };
         // Soft: a command that cannot log acts all the same.
-        if let Err(error) = Repo::here().and_then(|repo| Log::of(&repo)?.append(&entry)) {
+        if let Err(error) = self.in_one().and_then(|repo| Log::of(repo)?.append(&entry)) {
             eprintln!("warning: this command left no line in the tick log: {error:#}");
         }
+    }
+
+    /// The checkout it acts in; an error where it was run in none.
+    fn in_one(&self) -> anyhow::Result<&Repo> {
+        self.checkout.as_ref().ok_or_else(|| anyhow::anyhow!("it was run in no checkout"))
     }
 }
 

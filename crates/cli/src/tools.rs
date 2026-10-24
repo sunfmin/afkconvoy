@@ -1,8 +1,9 @@
 //! Finds the commands a fleet cannot work without (`afkconvoy_core::tools`):
 //! `git`, `gh` and `orca` on this process's `PATH`, which runs them, a
 //! harness and every login in a login shell, which is where a worker runs; and of an orca
-//! that is there, whether it is running and knows this checkout. It only
-//! looks: nothing is installed, started or added and nobody is logged in.
+//! that is there, whether it is running and knows the checkout a command is
+//! about. It only looks: nothing is installed, started or added and nobody is
+//! logged in.
 
 use std::os::unix::fs::PermissionsExt;
 
@@ -25,12 +26,12 @@ pub struct Looked {
     pub orca_unasked: Option<String>,
 }
 
-/// Looks for every command a start needs, asks each whether it is logged in,
-/// and orca whether it is running and knows this checkout. `launch` is the
-/// worker launch command, when the start knows it.
-pub fn look(launch: Option<&Proposed>) -> Looked {
-    // No git, no checkout, a remote that is a path: `gh` is asked about no host.
-    let remote = Repo::here().and_then(|repo| repo.try_git(&["remote", "get-url", REMOTE]));
+/// Looks for every command a start in the checkout `repo` needs, asks each
+/// whether it is logged in, and orca whether it is running and knows `repo`.
+/// `launch` is the worker launch command, when the start knows it.
+pub fn look(repo: &Repo, launch: Option<&Proposed>) -> Looked {
+    // No git, a remote that is a path: `gh` is asked about no host.
+    let remote = repo.try_git(&["remote", "get-url", REMOTE]);
     let remote = remote.ok().filter(|ran| ran.ok).map(|ran| ran.stdout);
     let host = remote.as_deref().and_then(remote_host);
 
@@ -39,7 +40,7 @@ pub fn look(launch: Option<&Proposed>) -> Looked {
     for tool in ALWAYS {
         let state = match tool.login_question(host) {
             _ if !on_path(tool.name()) => Found::Missing,
-            None if tool == Tool::Orca => orca::found().unwrap_or_else(|error| {
+            None if tool == Tool::Orca => orca::found(repo).unwrap_or_else(|error| {
                 orca_unasked = Some(format!("{error:#}"));
                 Found::NotRunning
             }),
@@ -77,16 +78,16 @@ fn asked(tool: Tool, question: &str) -> Found {
     if tool.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
 }
 
-/// Checks that this host has every command a start needs, each logged in, and
-/// that orca is running and knows this checkout.
+/// Checks that this host has every command a start in the checkout `repo`
+/// needs, each logged in, and that orca is running and knows `repo`.
 /// Of `launches`, the default harness's worker launch command is checked
 /// here, and its harness looked for, when the start knows it: every other
 /// harness's is `role::probe`'s, which reads the team that calls for them. An error names every fault at
 /// once, each with the line a human runs to fix it.
-pub fn check(launches: &Launches) -> Result<()> {
+pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
     let default = launches.default();
     let launch = launches.of(default)?;
-    let looked = look(launch);
+    let looked = look(repo, launch);
     if let Some(why) = looked.orca_unasked {
         bail!(why);
     }
@@ -100,7 +101,7 @@ pub fn check(launches: &Launches) -> Result<()> {
 }
 
 /// Whether a directory of this process's `PATH` holds a program by this name.
-fn on_path(name: &str) -> bool {
+pub fn on_path(name: &str) -> bool {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path).any(|dir| {
         std::fs::metadata(dir.join(name))
