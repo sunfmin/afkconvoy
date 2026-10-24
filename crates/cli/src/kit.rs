@@ -918,7 +918,13 @@ mod tests {
                 );
                 asked.iter().map(|(_, _, id)| Answer::Answered(1.0, Some(id.clone()))).collect()
             };
-            let host = Host { found: &found, listed: &listing, probe: &probe, now: 77 };
+            let host = Host {
+                research: &|_, _| bail!("fake research unavailable"),
+                found: &found,
+                listed: &listing,
+                probe: &probe,
+                now: 77,
+            };
             // compose calls the probe even with no models to ask.
             let silent = |_: &[Asked]| vec![];
             let success = matches!(mode, "list" | "key");
