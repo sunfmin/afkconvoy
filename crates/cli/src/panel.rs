@@ -612,8 +612,9 @@ pub fn read(
 /// list holds none, with the host as it is at `now`. Each is seen as the
 /// fleet instance `instance` of `host` — where none is named, as the one its
 /// tick log on this host names last: the one the host runner holds, or
-/// held. A rebuild that fails is an error of a checkout alone, and of the
-/// list is said in that checkout's part, the others shown.
+/// held — with the workers hot and the break its tick log has. A rebuild
+/// that fails is an error of a checkout alone, and of the list is said in
+/// that checkout's part, the others shown.
 pub fn printed(
     checkout: Result<Repo>,
     named: bool,
@@ -623,17 +624,27 @@ pub fn printed(
 ) -> Result<Page> {
     let mut listed = if named { vec![] } else { checkout_list::List::of_host()?.read()?.checkouts };
     listed.sort_by(|one, other| one.checkout.cmp(&other.checkout));
+    let runs = host_runner::runs();
     let checkouts = match listed.is_empty() {
-        true => vec![rebuilt(&checkout?, instance, host, now)?],
+        true => {
+            let repo = checkout?;
+            let entries = logged(&repo);
+            let part = Part::Shown(Box::new(rebuilt(&repo, &entries, instance, host, now)?));
+            let broken = broken_in(&entries, host, runs);
+            vec![Checkout { dir: repo.dir, part, broken }]
+        }
         false => listed
             .into_iter()
             .map(|entry| {
-                let rebuilt =
-                    Repo::at(&entry.checkout).and_then(|repo| rebuilt(&repo, instance, host, now));
-                rebuilt.unwrap_or_else(|error| {
-                    let part = Part::Unread(format!("{error:#}"));
-                    Checkout { dir: entry.checkout, part, broken: None }
-                })
+                let repo = Repo::at(&entry.checkout);
+                let entries = repo.as_ref().map(logged).unwrap_or_default();
+                let part = repo.and_then(|repo| rebuilt(&repo, &entries, instance, host, now));
+                let part = part.map_or_else(
+                    |error| Part::Unread(format!("{error:#}")),
+                    |panel| Part::Shown(Box::new(panel)),
+                );
+                let broken = broken_in(&entries, host, runs);
+                Checkout { dir: entry.checkout, part, broken }
             })
             .collect(),
     };
@@ -641,26 +652,41 @@ pub fn printed(
     Ok(Page { host: Host::read(&dir, now), live: false, checkouts })
 }
 
-/// The checkout `repo` as one rebuild shows it, seen as `instance` of `host`
-/// or, where none is named, as the fleet instance its tick log names last;
-/// with the workers and the break that log has.
-fn rebuilt(repo: &Repo, instance: Option<&InstanceId>, host: &str, now: u64) -> Result<Checkout> {
-    let entries = Log::of(repo).ok().and_then(|log| log.read()).unwrap_or_default();
-    let (logged, ..) = doctor::read_log(&entries, host);
+/// What the tick log of `repo` on this host holds; nothing where it cannot
+/// be read.
+fn logged(repo: &Repo) -> Vec<crate::log::Entry> {
+    Log::of(repo).ok().and_then(|log| log.read()).unwrap_or_default()
+}
+
+/// The break of the fleet instance of `host` its tick log `entries` hold,
+/// where it is broken; `runs`: whether a host runner runs to start it again.
+fn broken_in(entries: &[crate::log::Entry], host: &str, runs: bool) -> Option<Broken> {
+    let broken = doctor::read_broken(entries, host, runs)?;
+    Some(Broken { why: broken.why, since: broken.since, next: broken.next })
+}
+
+/// The part of `repo` one rebuild shows, seen as `instance` of `host` or,
+/// where none is named, as the fleet instance its tick log `entries` name
+/// last; with the workers hot those entries have.
+fn rebuilt(
+    repo: &Repo,
+    entries: &[crate::log::Entry],
+    instance: Option<&InstanceId>,
+    host: &str,
+    now: u64,
+) -> Result<Panel> {
+    let (logged, ..) = doctor::read_log(entries, host);
     let logged = logged.and_then(|logged| InstanceId::parse(&logged).ok());
     let instance = instance.cloned().or(logged);
     let me = instance.map(|instance| Me { instance, host: host.to_string(), now });
     let (mut fleet, open) = Fleet::read(repo, now)?;
     let (set, flows) = fleet.rebuild(&open, me.as_ref().map(|me| &me.instance))?;
     let mut panel = read(&fleet, me.as_ref(), &set, &flows, &[]);
-    panel.hot = doctor::read_hot(&entries, host)
+    panel.hot = doctor::read_hot(entries, host)
         .into_iter()
         .map(|hot| Hot { worker: hot.worker, since: hot.since, why: hot.why, held: hot.held })
         .collect();
-    let broken = doctor::read_broken(&entries, host, host_runner::runs());
-    let broken =
-        broken.map(|broken| Broken { why: broken.why, since: broken.since, next: broken.next });
-    Ok(Checkout { dir: repo.dir.clone(), part: Part::Shown(Box::new(panel)), broken })
+    Ok(panel)
 }
 
 const STYLE: &str = include_str!("panel.css");
@@ -1057,7 +1083,7 @@ fn admission(out: &mut String, host: &Host) {
         ),
         holds => writeln!(
             out,
-            "<p class=\"lock\" data-admits=\"false\"><b>Admission holds back new workers</b>: {}. \
+            "<p class=\"holds\" data-admits=\"false\"><b>Admission holds back new workers</b>: {}. \
              It read {read}</p>",
             esc(&holds.join("; ")),
         ),
@@ -1082,7 +1108,7 @@ fn kit(out: &mut String, host: &Host) {
         Err(error) => {
             let _ = writeln!(
                 out,
-                "<p class=\"lock\" data-kit><b>The host kit cannot be read</b>: {}</p>",
+                "<p class=\"holds\" data-kit><b>The host kit cannot be read</b>: {}</p>",
                 esc(error)
             );
             return;

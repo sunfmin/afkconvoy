@@ -1,19 +1,17 @@
 //! The panel, rendered: the real `afkconvoy panel` over the stand-in GitHub
 //! and orca, its markup asserted on and its picture written beside it — and
-//! the page `run --panel` serves, fetched from a running fleet, as is the one
-//! `panel --open` has a fleet that is already running serve.
+//! the page the host runner serves from its start, fetched as its fleet
+//! instances tick, at the address `panel --open` answers.
 
 use crate::common;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Child, Stdio};
-use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use common::{Rendered, World, bookkeeping, card, carded, git, write};
-use serde_json::json;
+use common::{Rendered, World, card, carded, git, write};
+use serde_json::{Value, json};
 
 const NOW: u64 = 10_000;
 const DESK: (u32, u32) = (1440, 1000);
@@ -164,8 +162,9 @@ fn a_fleet_with_nothing_to_do_says_so_at_every_stage() {
     assert!(page.part("section", "train").contains("No PR is on the train."));
     assert!(page.part("dl", "gauges").contains("Claims held</dt><dd>0 <small>of 2"));
     assert!(!page.html.contains("class=\"off\"") && !page.html.contains("class=\"lock\""));
-    // no `run` made it: it says what it is, and how to get one kept fresh
-    assert!(page.html.contains("<code>afkconvoy run --panel</code>"));
+    // no host runner made it: it says what it is, and where the live one is
+    assert!(page.html.contains("one rebuild of each checkout, read just now"));
+    assert!(page.html.contains("<code>afkconvoy panel --open</code> says where"));
 }
 
 #[test]
@@ -301,123 +300,30 @@ fn get(port: u16, path: &str) -> String {
     answer
 }
 
-#[test]
-fn a_running_fleet_serves_its_panel_and_brings_it_up_to_date_after_each_tick() {
-    let world = World::new();
-    world.issue(3, &["ready-for-agent"]);
-    let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
-    let mut run = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(args)
-        .args(["--panel", "0", "--second-ms", "20"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(run.stdout.take().unwrap());
-    let mut line = String::new();
-    lines.read_line(&mut line).unwrap();
-    let port: u16 = line
-        .trim()
-        .strip_prefix("panel: http://127.0.0.1:")
-        .and_then(|rest| rest.strip_suffix('/'))
-        .unwrap_or_else(|| panic!("the first line names the panel: {line:?}"))
-        .parse()
-        .unwrap();
+/// A `run` of the first repo on the host `h1`, its sleeps short: handed to
+/// the host runner, detached, which the world kills as it ends.
+const RUN: [&str; 5] = ["run", "--host", "h1", "--second-ms", "100"];
 
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut page = get(port, "/");
-    while !page.contains("<b>Tick 1</b>") {
-        assert!(Instant::now() < deadline, "no tick was ever shown: {page}");
-        std::thread::sleep(Duration::from_millis(50));
-        page = get(port, "/");
-    }
-    let _ = run.kill();
-    let _ = run.wait();
-
-    // the tick that started the worker shows the issue at work, and says so
-    let page = Rendered { html: page, png: None };
-    let work = page.node("work");
-    assert_eq!(carded(work, "at-work"), [3], "{work}");
-    assert_eq!(carded(work, "queued"), [0u64; 0]);
-    assert_eq!(card(work, 3), "#3 issue 3 started this tick");
-    assert!(page.html.contains("<span class=\"did\">dispatched #3 · holding 1/2 · frontier 0"));
-    assert!(page.html.contains("Claims held</dt><dd>1 <small>of 2"));
-}
-
-/// How long anything a running fleet should do is waited for. Its sleep
-/// between two ticks is far longer, so "within this" means "without it".
+/// How long anything the host runner should do is waited for.
 const SOON: Duration = Duration::from_secs(30);
 
-/// A `run` as alpha with a real sleep between its ticks, 90 seconds at the
-/// least, until it is dropped. Its stdout comes line by line.
-struct Running {
-    child: Child,
-    lines: Receiver<String>,
+/// The port of the panel's address `panel`: `http://127.0.0.1:<port>/`.
+fn port_in(panel: &Value) -> u16 {
+    let address = panel.as_str().unwrap_or_else(|| panic!("no address: {panel}"));
+    let port = address.strip_prefix("http://127.0.0.1:").and_then(|rest| rest.strip_suffix('/'));
+    port.unwrap_or_else(|| panic!("{address}")).parse().unwrap()
 }
 
-fn run(world: &World, more: &[&str]) -> Running {
-    let mut child = world
-        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
-        .args(["run", "--foreground", "--instance", "alpha", "--host", "h1"])
-        .args(more)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let out = child.stdout.take().unwrap();
-    let (send, lines) = channel();
-    std::thread::spawn(move || {
-        // What it prints whatever it does is none of these tests'.
-        let lines = BufReader::new(out).lines().map_while(Result::ok);
-        for line in lines.filter(|line| !bookkeeping(line)) {
-            if send.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    Running { child, lines }
-}
-
-impl Running {
-    /// The next line `run` prints, which comes soon.
-    fn line(&self) -> String {
-        self.lines.recv_timeout(SOON).expect("a line of the run")
-    }
-
-    fn sleeps(&mut self) {
-        assert_eq!(self.lines.recv_timeout(Duration::from_millis(300)).ok(), None, "it sleeps");
-        assert!(self.child.try_wait().unwrap().is_none(), "the run ended");
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// `afkconvoy panel --open` in `dir`, which succeeds → its answer.
-fn open(world: &World, dir: &Path, more: &[&str]) -> serde_json::Value {
-    world.afk_in(dir, &[&["panel", "--open"], more].concat()).ok()
-}
-
-/// The page at `port` once it shows the tick `count`.
-fn page_of_tick(port: u16, count: u64) -> Rendered {
+/// The page served on `port` once it holds `said`.
+fn page_with(port: u16, said: &str) -> Rendered {
     let deadline = Instant::now() + SOON;
     let mut page = get(port, "/");
-    while !page.contains(&format!("<b>Tick {count}</b>")) {
-        assert!(Instant::now() < deadline, "tick {count} was never shown: {page}");
+    while !page.contains(said) {
+        assert!(Instant::now() < deadline, "{said:?} was never shown: {page}");
         std::thread::sleep(Duration::from_millis(50));
         page = get(port, "/");
     }
     Rendered { html: page, png: None }
-}
-
-fn port_of(answer: &serde_json::Value) -> u16 {
-    let port = answer["port"].as_u64().unwrap() as u16;
-    assert_eq!(answer["panel"], format!("http://127.0.0.1:{port}/"), "{answer}");
-    port
 }
 
 /// A port of this host nothing listens on.
@@ -425,53 +331,61 @@ fn free_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
 }
 
+/// What `afkconvoy panel` prints, run in `dir` with `args`.
+fn printed(world: &World, dir: &Path, args: &[&str]) -> Rendered {
+    let program = env!("CARGO_BIN_EXE_afkconvoy");
+    let out = world.command(program, dir).arg("panel").args(args).output().unwrap();
+    let html = String::from_utf8(out.stdout).unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && html.starts_with("<!doctype html>"), "{html}{stderr}");
+    Rendered { html, png: None }
+}
+
+/// The parts of the repos on `page`, by the checkout each is of.
+fn checkouts(page: &Rendered) -> Vec<String> {
+    let parts = page.html.split("<section class=\"repo\" id=\"checkout-").skip(1);
+    let checkout = |part: &str| {
+        let at = part.split("data-checkout=\"").nth(1).unwrap();
+        at.split('"').next().unwrap().to_string()
+    };
+    parts.map(checkout).collect()
+}
+
 #[test]
-fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
+fn the_host_runner_serves_one_page_of_every_checkout_from_its_start_and_after_every_tick() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    let mut running = run(&world, &[]);
-    let first = running.line();
-    assert!(first.starts_with("tick 1: dispatched #3"), "no panel is named: {first}");
-    assert!(first.ends_with("next in 90s"), "{first}");
-    running.sleeps();
+    let port = free_port();
+    world.say_host_settings(json!({"panel": port}));
+    let first = world.afk(&RUN).ok();
+    let address = format!("http://127.0.0.1:{port}/");
+    // served from its start, on the port the host settings say, and said so
+    assert_eq!(first["host_runner"]["panel"], address, "{first}");
+    let log = world.runner_log();
+    assert!(log.contains(&format!("panel: {address}")), "{log:#?}");
+    let page = page_with(port, "<b>Tick 1</b>");
+    assert_eq!(carded(page.node("work"), "at-work"), [3], "{}", page.html);
+    assert!(page.html.contains("dispatched #3 · holding 1/2 · frontier 0"), "{}", page.html);
+    assert!(page.html.contains("Claims held</dt><dd>1 <small>of 2"), "{}", page.html);
 
-    // asked from a worker's worktree, it is refused: that is the worker's
-    let worktree = world.orca()["worktrees"][0]["path"].as_str().unwrap().to_string();
-    let refused = world.afk_in(Path::new(&worktree), &["panel", "--open"]).error();
-    assert!(refused.contains("is a worker's worktree"), "{refused}");
-    // asked from another worktree of the repo, a human's: the repo's fleet
-    // instance is what is reached
-    let own = world.root.join("own-worktree");
-    git(&world.clone, &["worktree", "add", "-q", "-b", "own", own.to_str().unwrap()]);
-    let answer = open(&world, &own, &[]);
-    assert_eq!(answer["opened"], true, "{answer}");
-    assert_eq!(answer["instance"], "alpha", "{answer}");
-    let port = port_of(&answer);
-    assert_eq!(running.line(), format!("panel: http://127.0.0.1:{port}/"));
-    // every key of the answer is one the help names, as is each way it fails
-    let help = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
-    let help = { help }.args(["panel", "--help"]).output().unwrap().stdout;
-    let help = String::from_utf8(help).unwrap();
-    for key in answer.as_object().unwrap().keys() {
-        assert!(help.contains(&format!("\n- `{key}`: ")), "`panel --help` never names {key:?}");
-    }
-    for said in [
-        "afkconvoy panel --open --port 7070",
-        "no afkconvoy run is running for this repo on this host",
-        "the panel cannot be served on port <port>",
-        "did not answer",
-    ] {
-        assert!(help.contains(said), "`panel --help` never says {said:?}");
-    }
+    // a second checkout is on the same page: the host once, then each repo,
+    // in the order of their roots, each named in the row at the top
+    let clone2 = world.second_repo();
+    let second = world.afk_in(&clone2, &RUN).ok();
+    assert_eq!(second["host_runner"]["panel"], address, "{second}");
+    assert_eq!(second["host_runner"]["pid"], first["host_runner"]["pid"]);
+    let page = page_with(port, "id=\"checkout-2\"");
+    assert_eq!(checkouts(&page), [world.clone.display().to_string(), clone2.display().to_string()]);
+    assert_eq!(page.html.matches("<header class=\"top host\">").count(), 1);
+    assert!(page.html.find("class=\"human\"").unwrap() < page.html.find("<nav").unwrap());
+    let row = page.part("nav", "checkouts");
+    assert!(row.contains("<a href=\"#checkout-1\">"), "{row}");
+    assert!(row.contains("<b>at work</b> · holding 1/2 · frontier 0"), "{row}");
+    assert!(row.contains("<a href=\"#checkout-2\">"), "{row}");
+    assert!(row.contains("<b>idle</b> · holding 0/"), "{row}");
 
-    // the sleep ends for it, and the tick that follows fills the page
-    let second = running.line();
-    assert!(second.starts_with("tick 2: nothing to do · holding 1/2"), "{second}");
-    let page = page_of_tick(port, 2);
-    assert_eq!(carded(page.node("work"), "at-work"), [3]);
-    assert!(page.html.contains("Fleet instance <b>alpha</b> on h1"), "{}", page.html);
-
-    // an open page is told of the next tick, which shows what that one read
+    // an open page is told of every tick of any fleet instance, and the page
+    // it then reads shows what that tick read
     let mut events = TcpStream::connect(("127.0.0.1", port)).unwrap();
     events.set_read_timeout(Some(SOON)).unwrap();
     write!(events, "GET /events HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
@@ -485,143 +399,141 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
     while !told.contains("event: tick\n") {
         assert_ne!(events.read_line(&mut told).unwrap(), 0, "the events ended: {told}");
     }
-    let third = running.line();
-    assert!(third.starts_with("tick 3: dispatched #9"), "{third}");
-    assert_eq!(carded(page_of_tick(port, 3).node("work"), "at-work"), [3, 9]);
+    let page = page_with(port, "data-issue=\"9\"");
+    assert_eq!(carded(page.node("work"), "at-work"), [3, 9], "{}", page.html);
 
-    // asked again, from anywhere and for any port, it is where it was
-    let again = open(&world, &world.clone, &[]);
-    assert_eq!((again["opened"].clone(), port_of(&again)), (json!(false), port), "{again}");
-    let other = free_port().to_string();
-    // …or from outside it, naming the checkout
-    let clone = world.clone.to_str().unwrap();
-    let moved = world.afk_in(&world.root, &["panel", clone, "--open", "--port", &other]).ok();
-    assert_eq!((moved["opened"].clone(), port_of(&moved)), (json!(false), port), "{moved}");
-    assert!(TcpStream::connect(("127.0.0.1", free_port())).is_err());
-    assert!(TcpStream::connect(("127.0.0.1", other.parse::<u16>().unwrap())).is_err());
-
-    // …and the fleet instance is the one it was: no tick more, no claim moved
-    running.sleeps();
-    assert_eq!(world.claims(), [(3, "alpha".to_string()), (9, "alpha".to_string())]);
-    assert_eq!(world.open_terminals().len(), 2, "its workers run on");
-}
-
-#[test]
-fn a_panel_opened_with_no_port_named_is_on_the_port_the_host_settings_say() {
-    // the port a `run --panel` said for the host: free, it is the panel's
-    let world = World::new();
-    world.issue(3, &["ready-for-agent"]);
-    let running = run(&world, &[]);
-    running.line();
-    let said = free_port();
-    world.say_host_settings(json!({"panel": said}));
-    assert_eq!(port_of(&open(&world, &world.clone, &[])), said);
-
-    // taken by something else, any free port will do
-    let world = World::new();
-    world.issue(3, &["ready-for-agent"]);
-    let running = run(&world, &[]);
-    running.line();
-    let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let said = taken.local_addr().unwrap().port();
-    world.say_host_settings(json!({"panel": said}));
-    let opened = open(&world, &world.clone, &[]);
-    assert_ne!(port_of(&opened), said, "{opened}");
-    assert!(get(port_of(&opened), "/").starts_with("HTTP/1.1 200 OK"), "served there");
-}
-
-#[test]
-fn a_panel_asked_for_during_a_tick_is_opened_at_once_and_the_tick_goes_on() {
-    let world = World::new();
-    world.issue(7, &["ready-for-agent"]);
-    // every GitHub call takes a while, so the first tick does
-    world.with_gh(|gh| gh["slow_ms"] = json!(150));
-    let running = run(&world, &[]);
-    let deadline = Instant::now() + SOON;
-    while !world.gh()["calls"].to_string().contains("graphql") {
-        assert!(Instant::now() < deadline, "the first tick never read");
-        std::thread::sleep(Duration::from_millis(5));
+    // `panel --open` answers where, from anywhere, and starts nothing
+    for dir in [&world.root, &clone2, &world.clone] {
+        let answer = world.afk_in(dir, &["panel", "--open"]).ok();
+        assert_eq!(answer["panel"], address, "{answer}");
+        assert_eq!(answer["host_runner"]["pid"], first["host_runner"]["pid"], "{answer}");
     }
-
-    let answer = open(&world, &world.clone, &[]);
-    assert_eq!(answer["opened"], true, "{answer}");
-    let port = port_of(&answer);
-    // answered while the tick still runs: the address comes before its line
-    assert_eq!(running.line(), format!("panel: http://127.0.0.1:{port}/"));
-    assert!(get(port, "/").starts_with("HTTP/1.1 200 OK"), "it is served before any tick ends");
-    // its opening wakes the run, to fill the page at once
-    assert_eq!(running.line(), "woken during tick 1: tick 2 follows");
-    let first = running.line();
-    assert!(first.starts_with("tick 1: dispatched #7 · holding 1/2"), "it was not cut: {first}");
-
-    // the tick that follows is the first made for the page, and comes with no sleep
-    let second = running.line();
-    assert!(second.starts_with("tick 2: "), "{second}");
-    assert_eq!(carded(page_of_tick(port, 2).node("work"), "at-work"), [7]);
-}
-
-#[test]
-fn a_panel_served_from_the_start_is_the_one_found() {
-    let world = World::new();
-    let running = run(&world, &["--panel", "0"]);
-    let named = running.line();
-    assert!(running.line().starts_with("tick 1: nothing to do"));
-
-    let other = free_port().to_string();
-    let found = open(&world, &world.clone, &["--port", &other]);
-    assert_eq!(found["opened"], false, "{found}");
-    assert_eq!(named, format!("panel: {}", found["panel"].as_str().unwrap()));
-    assert!(page_of_tick(port_of(&found), 1).html.contains("nothing to do"));
-    assert_eq!(running.lines.recv_timeout(Duration::from_millis(300)).ok(), None, "no tick more");
-}
-
-#[test]
-fn a_panel_that_cannot_be_opened_says_why_and_the_fleet_works_on() {
-    let world = World::new();
-    world.issue(3, &["ready-for-agent"]);
-    let quiet = World::new();
-    let refs = quiet.remote(&["for-each-ref"]);
-
-    // no fleet instance runs for either repo
-    for repo in [&world, &quiet] {
-        let error = repo.afk(&["panel", "--open"]).error();
-        assert!(error.starts_with("no afkconvoy run is running for this repo on this host"));
-        assert!(error.contains("`afkconvoy run`"), "{error}");
-        assert!(!repo.clone.join(".git/convoy-panel.sock").exists(), "it left nothing");
+    let pid = first["host_runner"]["pid"].as_u64().map(|pid| pid as u32);
+    assert_eq!(world.host_runner(), pid, "the host runner it asked runs on");
+    // every key of the answer is one the help names, as is each way it fails
+    let answer = world.afk(&["panel", "--open"]).ok();
+    let help = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+    let help = { help }.args(["panel", "--help"]).output().unwrap().stdout;
+    let help = String::from_utf8(help).unwrap();
+    for key in answer.as_object().unwrap().keys() {
+        assert!(help.contains(&format!("\n- `{key}`: ")), "`panel --help` never names {key:?}");
     }
+    for said in ["no host runner runs on this host", "did not answer within 10 seconds"] {
+        assert!(help.contains(said), "`panel --help` never says {said:?}");
+    }
+    assert!(help.contains("the host runner serves no panel"), "{help}");
+}
 
-    let mut running = run(&world, &[]);
-    assert!(running.line().starts_with("tick 1: dispatched #3"));
-    // …and one that runs for another repo is not this repo's
-    let error = quiet.afk(&["panel", "--open"]).error();
-    assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");
-    assert_eq!(quiet.remote(&["for-each-ref"]), refs);
-    assert_eq!(quiet.gh_calls(), [] as [Vec<String>; 0]);
-
-    // a port something else has
+#[test]
+fn a_panel_port_that_is_taken_is_served_around_and_run_panel_sets_the_next_host_runner_s() {
+    let world = World::new();
     let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = taken.local_addr().unwrap().port().to_string();
-    let error = world.afk(&["panel", "--open", "--port", &port]).error();
-    assert!(error.starts_with("the panel was not opened, and the run works on as it was"));
-    assert!(error.contains(&format!("the panel cannot be served on port {port}")), "{error}");
-    running.sleeps();
-    assert_eq!(world.claims(), [(3, "alpha".to_string())]);
+    let port = taken.local_addr().unwrap().port();
+    world.say_host_settings(json!({"panel": port}));
+    let first = world.afk(&RUN).ok();
+    // any free port will do, and the log says why it is that one
+    let panel = first["host_runner"]["panel"].clone();
+    assert_ne!(port_in(&panel), port, "{first}");
+    let line = format!("panel: {}, port {port} being taken", panel.as_str().unwrap());
+    assert!(world.runner_log().contains(&line), "{:#?}", world.runner_log());
+    assert!(page_with(port_in(&panel), "<b>Tick 1</b>").html.contains("nothing to do"));
+    assert_eq!(world.afk(&["panel", "--open"]).ok()["panel"], panel);
 
-    // a port that is none is refused before anything is asked
-    let none = world.afk(&["panel", "--open", "--port", "70000"]);
-    assert_eq!(none.code, 2, "{none:?}");
-    let alone = world.afk(&["panel", "--port", "7070"]);
-    assert_eq!(alone.code, 2, "--port is --open's: {alone:?}");
-    running.sleeps();
+    // `run --panel` sets the host setting: the host runner that runs stays
+    // where it is, and the next serves on the port set
+    let other = free_port();
+    let set = world.afk(&[&RUN[..], &["--panel", &other.to_string()]].concat()).ok();
+    assert_eq!(set["settings"], json!({"panel": {"from": port, "to": other}}), "{set}");
+    assert_eq!(set["host_runner"]["panel"], panel, "{set}");
+    let address = format!("http://127.0.0.1:{other}/");
+    for _ in 0..2 {
+        // …and one started again takes it back: the one before let it go
+        world.afk(&["stop", "--all"]).ok();
+        let next = world.afk(&RUN).ok();
+        assert_eq!(next["host_runner"]["panel"], address, "{next}");
+        assert!(page_with(other, "<b>Tick 1</b>").html.contains("nothing to do"));
+    }
+}
 
-    // what was refused opened nothing: it is opened now, on a port that is free
-    let answer = open(&world, &world.clone, &[]);
-    assert_eq!(answer["opened"], true, "{answer}");
-    assert_eq!(running.line(), format!("panel: {}", answer["panel"].as_str().unwrap()));
-    assert!(running.line().starts_with("tick 2: "));
+#[test]
+fn with_no_port_said_the_panel_is_on_7070_or_any_free_port_where_that_is_taken() {
+    let world = World::new();
+    let answer = world.afk(&RUN).ok();
+    let panel = answer["host_runner"]["panel"].as_str().unwrap().to_string();
+    let log = world.runner_log();
+    let said = log.iter().find(|line| line.starts_with("panel: ")).unwrap();
+    match panel.as_str() {
+        "http://127.0.0.1:7070/" => assert_eq!(said, "panel: http://127.0.0.1:7070/"),
+        // another host runner of this host, or something else, has it
+        _ => assert_eq!(*said, format!("panel: {panel}, port 7070 being taken")),
+    }
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(doctor["host"]["settings"]["in_force"]["panel"], 7070, "{doctor}");
+    assert_eq!(doctor["host"]["settings"]["said"]["panel"], Value::Null, "{doctor}");
+}
 
-    // the run over, its socket is nobody's
-    drop(running);
+#[test]
+fn panel_open_with_no_host_runner_says_so_and_starts_nothing() {
+    let world = World::new();
     let error = world.afk(&["panel", "--open"]).error();
-    assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");
+    assert!(error.starts_with("no host runner runs on this host, so no panel is served"));
+    assert!(error.contains("`afkconvoy run`") && error.contains("`afkconvoy panel`"), "{error}");
+    assert_eq!(world.host_runner(), None, "none was started");
+    assert!(world.runner_log().is_empty(), "{:#?}", world.runner_log());
+    // it takes no port, no checkout and no instance: the page is the host runner's
+    let clone = world.clone.display().to_string();
+    for refused in [&["--port", "7070"][..], &[&clone], &["--instance", "alpha"]] {
+        let refused = world.afk(&[&["panel", "--open"][..], refused].concat());
+        assert_eq!(refused.code, 2, "{refused:?}");
+    }
+    assert_eq!(world.host_runner(), None);
+}
+
+/// Has the remote lose the base branch the config names: a start of the
+/// fleet instance of the first repo fails its startup probe.
+fn base_branch_gone(world: &World) {
+    let config = "```yaml\nbase_branch: release\ngate_command: ./gate.sh\n```\n";
+    common::commit(&world.clone, "docs/agents/afkconvoy.md", config);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+}
+
+#[test]
+fn a_broken_fleet_instance_waits_with_a_human_on_the_page_served_and_the_page_printed() {
+    let world = World::new();
+    world.afk(&RUN).ok();
+    let clone2 = world.second_repo();
+    // an issue of the second repo waits for a human: parked for evidence
+    let gh2 = world.root.join("gh2.json");
+    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&gh2).unwrap()).unwrap();
+    let parked = json!({"number": 4, "title": "Pick a name", "labels": ["convoy:parked"],
+        "state": "open"});
+    state["issues"].as_array_mut().unwrap().push(parked);
+    std::fs::write(&gh2, state.to_string()).unwrap();
+    world.afk_in(&clone2, &RUN).ok();
+    world.kill_host_runner("KILL");
+    base_branch_gone(&world);
+    // started again from the list, the first is broken; the second works on
+    let other = world.afk_in(&clone2, &["run"]).ok();
+    let page = page_with(port_in(&other["host_runner"]["panel"]), "data-broken=");
+    let clone = world.clone.display().to_string();
+    for page in [page, printed(&world, &world.root, &["--host", "h1"])] {
+        let human = page.part("section", "human");
+        let broken = human.split(&format!("data-broken=\"{clone}\"")).nth(1);
+        let broken = broken.unwrap_or_else(|| panic!("{human}")).split("</li>").next().unwrap();
+        assert!(broken.contains("its fleet instance is broken"), "{broken}");
+        assert!(broken.contains("the remote has no branch"), "why: {broken}");
+        assert!(broken.contains("· tried again in "), "{broken}");
+        assert!(broken.contains(&format!("<code>afkconvoy run {clone}</code>")), "{broken}");
+        // each issue that waits for a human, in every repo, is labelled with it
+        assert_eq!(carded(human, "asked"), [4], "{human}");
+        assert!(human.contains("<span class=\"repo\">"), "{human}");
+        let row = page.part("nav", "checkouts");
+        assert!(row.contains("<b class=\"broken\">broken</b>"), "{row}");
+        assert_eq!(checkouts(&page), [clone.clone(), clone2.display().to_string()]);
+    }
+
+    // a checkout named is printed alone
+    let alone = printed(&world, &world.root, &["--host", "h1", clone2.to_str().unwrap()]);
+    assert_eq!(checkouts(&alone), [clone2.display().to_string()]);
+    assert!(!alone.html.contains("data-broken="), "{}", alone.html);
 }

@@ -1215,14 +1215,16 @@ pub fn run(
         let busy = inspector.busy(&hot_now, clock());
         let sleep = if busy { sleep.min(INSPECTING_EVERY) } else { sleep };
         let (bound, answer, error) = logged;
-        let tick = log::Tick { count, sleep, line: line.clone(), bound, answer, error };
-        said.keep(clock(), log::What::Tick(tick));
+        // Shown before its line is kept: whoever that line answers finds it on the page.
         if let Some(show) = &show {
             // A tick that failed leaves its part as the last one found it.
+            let line = line.clone();
             shown.tick = Some(panel::Tick { count, line, ended: clock(), sleep });
             shown.hot = hot_now.iter().map(panel::Hot::from).collect();
             show(shown.clone());
         }
+        let tick = log::Tick { count, sleep, line, bound, answer, error };
+        said.keep(clock(), log::What::Tick(tick));
         if pacing.panic_at == Some(count) {
             panic!("told to panic as tick {count} ended (--panic-at-tick)");
         }
