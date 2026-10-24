@@ -92,6 +92,7 @@ fn run_adds_its_checkout_and_answers_once_its_first_tick_ended() {
     assert_eq!(answer["repo"], json!(world.bare), "a remote that is a path is its directory");
     assert_eq!((&answer["added"], &answer["host_runner"]["started"]), (&json!(true), &json!(true)));
     assert_eq!(answer["host_runner"]["version"], afkconvoy::VERSION);
+    assert_eq!(answer["host_runner"]["replaced"], Value::Null, "none ran: {answer}");
     assert!(answer["instance"].as_str().unwrap().starts_with("h1-"), "{answer}");
     assert_eq!(answer["warnings"], json!([]));
 
@@ -186,6 +187,8 @@ fn a_run_beside_a_host_runner_hands_its_checkout_to_it() {
     let second = world.afk_in(&clone2, &RUN).ok();
     assert_eq!(second["host_runner"]["pid"], first["host_runner"]["pid"], "{second}");
     assert_eq!(second["host_runner"]["started"], false, "{second}");
+    // of the same version: no upgrade
+    assert_eq!(second["host_runner"]["replaced"], Value::Null, "{second}");
     assert_eq!(second["added"], true, "{second}");
     assert_eq!(second["checkout"], json!(clone2));
     assert_eq!(second["repo"], json!(world.root.join("remote2.git")));
@@ -353,6 +356,9 @@ fn a_host_runner_started_again_starts_every_checkout_on_the_list() {
     let took = format!("{}: start: took #7 stamped with this host", shown(&world.clone));
     assert!(log.iter().any(|line| line.starts_with(&took)), "{log:#?}");
     assert!(log.iter().any(|line| line.ends_with(", 2 checkouts on the list")), "{log:#?}");
+    // one of the same version before it is no upgrade
+    assert!(!log.iter().any(|line| line.starts_with("host runner upgraded")), "{log:#?}");
+    assert_eq!(again["host_runner"]["replaced"], Value::Null, "{again}");
     // it took its own host's claims (docs/adr/0003)
     assert_eq!(world.claims(), [(7, instance.to_string())]);
     // and the other checkout on the list was started too
@@ -424,4 +430,74 @@ fn sigterm_stops_every_fleet_instance_and_keeps_the_list() {
     assert!(!world.cache().join("afkconvoy/host-runner.sock").exists(), "its socket goes");
     assert_eq!(world.host_runner(), None);
     assert_eq!(world.checkout_list(), before);
+}
+
+#[test]
+fn a_newer_afkconvoy_moves_the_host_runner_onto_itself_on_the_same_list() {
+    let world = World::new();
+    // what a host runner of an older afkconvoy holds: a checkout of another
+    // repo on the list, and what the list keeps beside its checkouts
+    let clone2 = world.second_repo();
+    let second = world.afk_in(&clone2, &RUN).ok();
+    world.kill_host_runner("TERM");
+    let mut list = world.checkout_list();
+    list["settings"] = json!({"kept": "as it is"});
+    let file = world.cache().join("afkconvoy/checkouts.json");
+    std::fs::write(file, list.to_string()).unwrap();
+    let mut older = world.host_runner_of("0.0.1");
+    let old = older.id();
+
+    let answer = world.afk(&RUN).ok();
+    let host_runner = &answer["host_runner"];
+    assert_eq!(host_runner["replaced"], json!({"pid": old, "version": "0.0.1"}), "{answer}");
+    assert_eq!(host_runner["version"], afkconvoy::VERSION, "{answer}");
+    assert_eq!(host_runner["started"], true, "{answer}");
+    let new = host_runner["pid"].as_u64().unwrap();
+    assert_ne!(new, u64::from(old));
+    // the older one was told to stop as SIGTERM tells it, and ended
+    assert!(older.wait().unwrap().success());
+    assert_eq!(world.host_runner(), Some(new as u32));
+
+    // the newer one works the same list, every checkout on it
+    assert_eq!(answer["added"], true, "{answer}");
+    assert_eq!(listed(&world), [shown(&clone2), shown(&world.clone)]);
+    assert_eq!(world.checkout_list()["settings"], list["settings"]);
+    let starts = tick_log(&second).iter().filter(|line| kind(line) == "start").count();
+    assert_eq!(starts, 2, "{:#?}", tick_log(&second));
+
+    // and its log says what the answer says
+    let log = world.runner_log();
+    let upgraded = format!(
+        "host runner upgraded: from afkconvoy 0.0.1 (pid {old}) to afkconvoy {} (pid {new})",
+        afkconvoy::VERSION
+    );
+    let started = format!("host runner started: afkconvoy {}, pid {new}, ", afkconvoy::VERSION);
+    let at = |line: &str| log.iter().position(|said| said.starts_with(line));
+    let (started, upgraded) = (at(&started), at(&upgraded));
+    assert!(upgraded.is_some() && upgraded == started.map(|started| started + 1), "{log:#?}");
+}
+
+#[test]
+fn a_run_older_than_the_host_runner_changes_nothing_and_says_so() {
+    let world = World::new();
+    let mut newer = world.host_runner_of("999.0.0");
+
+    let refused = world.afk(&RUN);
+    assert_eq!(refused.code, 1, "{}", refused.json);
+    let error = refused.error();
+    let said = format!(
+        "this afkconvoy, {}, is older than the host runner's, 999.0.0 (pid {}), so it changed \
+         nothing",
+        afkconvoy::VERSION,
+        newer.id()
+    );
+    assert!(error.starts_with(&said), "{error}");
+    // the newer one holds the host as before, and nothing was listed or started
+    assert!(newer.try_wait().unwrap().is_none(), "the newer host runner works on");
+    assert_eq!(world.host_runner(), Some(newer.id()));
+    assert_eq!(world.checkout_list(), json!({"checkouts": []}));
+    assert_eq!(world.runner_log(), [] as [String; 0]);
+    assert!(!world.cache().join("afkconvoy/runs").exists(), "no tick log");
+    newer.kill().unwrap();
+    newer.wait().unwrap();
 }

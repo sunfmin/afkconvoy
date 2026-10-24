@@ -859,6 +859,27 @@ impl World {
         matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock))
     }
 
+    /// Starts a host runner of the afkconvoy `version` on this world's host
+    /// (the `fake_host_runner` stand-in), and waits until it holds the host
+    /// and listens → its process, which the world kills as it ends.
+    pub fn host_runner_of(&self, version: &str) -> Child {
+        let built = Path::new(env!("CARGO_BIN_EXE_afkconvoy")).parent().unwrap().join("examples");
+        let mut child = self
+            .command(built.join("fake_host_runner"), &self.root)
+            .arg(version)
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        let socket = self.cache().join("afkconvoy/host-runner.sock");
+        let until = Instant::now() + Duration::from_secs(30);
+        while self.host_runner() != Some(child.id()) || !socket.exists() {
+            assert!(child.try_wait().unwrap().is_none(), "the host runner of {version} ended");
+            assert!(Instant::now() < until, "the host runner of {version} did not start");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child
+    }
+
     /// Sends this world's host runner `signal` (`TERM`, `KILL`) and waits up
     /// to 30 seconds for it to let the host go.
     pub fn kill_host_runner(&self, signal: &str) {
