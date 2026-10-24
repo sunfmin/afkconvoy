@@ -828,6 +828,16 @@ impl World {
             .map_or(json!({"checkouts": []}), |bytes| serde_json::from_slice(&bytes).unwrap())
     }
 
+    /// Has this world's host say `settings`, as a `run` that named them would
+    /// have it: its host settings, kept beside the checkout list.
+    pub fn say_host_settings(&self, settings: Value) {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut list = self.checkout_list();
+        list["settings"] = settings;
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, list.to_string()).unwrap();
+    }
+
     /// Every line of the host runner's log, the stamp of each taken off.
     pub fn runner_log(&self) -> Vec<String> {
         let file = self.cache().join("afkconvoy/host-runner.log");

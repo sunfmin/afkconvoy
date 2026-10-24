@@ -38,7 +38,7 @@ use crate::log::{self, What};
 use crate::runner_socket::{self, Reached, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line};
-use crate::{VERSION, kit, launch};
+use crate::{VERSION, host_settings, kit, launch};
 
 /// The lock whose holder is the host runner, in the cache directory. It
 /// holds the holder's {pid, version, started}.
@@ -748,13 +748,20 @@ impl Heard {
     }
 }
 
-/// `afkconvoy run`: hands the checkout `checkout` to this host's runner,
-/// starting one detached where none answers, and waits for its fleet
-/// instance's first tick → the host runner's answer, `host_runner.started`
-/// saying whether this `run` started it, and `host_runner.replaced` which
-/// host runner of an older release it stopped first (`moved`). A refusal the
-/// host runner answered is `Answered`, printed as it is.
-pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
+/// `afkconvoy run`: has the host say what `settings` names of its host
+/// settings, hands the checkout `checkout` to this host's runner, starting
+/// one detached where none answers, and waits for its fleet instance's first
+/// tick → the host runner's answer, `host_runner.started` saying whether this
+/// `run` started it, `host_runner.replaced` which host runner of an older
+/// release it stopped first (`moved`), and `settings` what it changed of the
+/// host settings. A refusal the host runner answered is `Answered`, printed
+/// as it is.
+pub fn run(
+    checkout: &Repo,
+    start: Start,
+    settings: &host_settings::Named,
+    now: u64,
+) -> Result<Value> {
     let (log, lock) = (log_path()?, cache()?.join(LOCK));
     let pid = || holder_of(&lock).map(|pid| format!(" (pid {pid})")).unwrap_or_default();
     // Before anything changes: which afkconvoy the host runner is.
@@ -770,6 +777,9 @@ pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
     };
     // A first start writes the host kit here, saying so to whoever ran `run`.
     kit::ensure(now)?;
+    // Before the checkout is handed over: its fleet instance starts under
+    // them, and every other on the host reads them as it goes.
+    let changed = host_settings::change(&List::of_host()?, settings)?;
     let add = Request::Add { checkout: checkout.dir.clone(), start: Box::new(start) };
     let (reached, started) = match runner_socket::ask(&add, FIRST_TICK_WITHIN)? {
         Reached::Nobody => (started_and_asked(&add)?, true),
@@ -795,6 +805,7 @@ pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
         about.insert("started".into(), json!(started));
         about.insert("replaced".into(), json!(replaced));
     }
+    answer["settings"] = Value::Object(changed);
     if answer.get("error").is_some() {
         return Err(Answered(answer).into());
     }

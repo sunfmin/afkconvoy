@@ -14,19 +14,19 @@ use crate::claims::Me;
 use crate::git::Repo;
 use crate::stop::Stop;
 use crate::tick::{self, Echo, Holder, Line, Pacing};
-use crate::{hot, kit, probe};
+use crate::{host_settings, kit, probe};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
-/// again starts it the same way; what it named of the host, which holds for
-/// this start; and the knobs that exist for the tests.
+/// again starts it the same way; the port its panel is served on from this
+/// start; and the knobs that exist for the tests. What it named of the host
+/// is the host settings' (`host_settings`), which the instance reads as it
+/// goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Start {
     pub named: Named,
     /// `--panel`: served from this start; `panel --open` opens it later.
     pub panel: Option<u16>,
-    pub no_host_sleep: bool,
-    pub hot: hot::Said,
     pub knobs: Knobs,
 }
 
@@ -82,14 +82,15 @@ pub struct Knobs {
 
 /// Holds the fleet instance of `checkout` as `start` asks, until it is told
 /// to stop or has made `start.knobs.ticks` → what its loop answers.
-/// Everything before its first tick may refuse it: a host it cannot put to
-/// sleep, the host kit, the startup probe, the panel's port. Its startup
-/// probe's warnings are said as `Line::Warning`.
+/// Everything before its first tick may refuse it: host settings that
+/// cannot be read, or that have a host put to sleep that cannot be, the host
+/// kit, the startup probe, the panel's port. Its startup probe's warnings are
+/// said as `Line::Warning`.
 pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
-    if !start.no_host_sleep && !cfg!(target_os = "macos") {
+    if !host_settings::of_host()?.no_host_sleep && !cfg!(target_os = "macos") {
         bail!(
             "this host is not macOS, the one a fleet can put to sleep once every fleet on it is \
-             idle: start it with `--no-host-sleep`, which keeps it awake"
+             idle: run `afkconvoy run --no-host-sleep`, which keeps it awake, a host setting"
         );
     }
     let (named, knobs) = (&start.named, &start.knobs);
@@ -109,9 +110,7 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     let pacing = Pacing {
         ticks: knobs.ticks,
         second: Duration::from_millis(knobs.second_ms),
-        no_host_sleep: start.no_host_sleep,
         host_sleep_after: knobs.host_sleep_after,
-        hot: hot::limits(start.hot, &checkout.dir),
     };
     kit::ensure(now)?;
     let worker_no_proxy = &named.worker_no_proxy;
@@ -124,9 +123,11 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
 }
 
 /// `run --foreground`: holds it in this process, printing every line as `run`
-/// printed it, until SIGTERM or SIGINT. The checkout list and any host runner
-/// are left alone.
-pub fn foreground(checkout: &Repo, start: &Start) -> Result<Value> {
+/// printed it, until SIGTERM or SIGINT. The checkout list's file and any host
+/// runner are left alone: what it names of the host settings, `settings`,
+/// holds in this process alone, laid over the host's.
+pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
+    host_settings::lay_for_this_process(settings);
     let stop = Stop::listen();
     let echo: Echo = Arc::new(|line| match line {
         Line::Kept(entry) => println!("{}", entry.said()),

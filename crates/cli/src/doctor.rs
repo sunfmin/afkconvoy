@@ -1487,6 +1487,10 @@ pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) ->
     // Beside admission's reading: what the last host inspection found of it.
     host["admission"]["inspected"] = crate::inspection::last_on_host()
         .map_or(Value::Null, |last| crate::inspection::last_json(&last));
+    host["settings"] = match crate::checkout_list::List::of_host() {
+        Ok(list) => crate::host_settings::json(&list, &repo.dir),
+        Err(error) => json!({"error": format!("{error:#}")}),
+    };
     let mut answer = json!({
         "host": host,
         "fleet": fleet_json(&run),
