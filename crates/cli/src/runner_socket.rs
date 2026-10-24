@@ -1,5 +1,8 @@
-//! The host runner's socket: how `run` and `stop` reach the host runner of
-//! their host (docs/adr/0023). It is a file in the cache directory, so every
+//! The host runner's socket: the one socket of a host, on which every command
+//! that speaks to a running fleet reaches the host runner of its host —
+//! `run` (its version check among it), `stop`, `wake`, `panel --open`, and
+//! `doctor` asking whether a fleet instance runs — each question naming its
+//! checkout (docs/adr/0023). It is a file in the cache directory, so every
 //! afkconvoy that shares the cache directory reaches the same one. One line of
 //! JSON crosses it each way, the question and its answer, and then the
 //! connection closes.
@@ -16,7 +19,6 @@ use serde_json::{Value, json};
 
 use crate::copies::cache;
 use crate::instance::Start;
-use crate::wake::reached;
 
 /// The socket's name in the cache directory.
 pub const SOCKET: &str = "host-runner.sock";
@@ -25,8 +27,10 @@ pub const SOCKET: &str = "host-runner.sock";
 /// question is one line, written at once.
 const ASKED_WITHIN: Duration = Duration::from_secs(10);
 
-/// What `run` and `stop` ask the host runner: one line of JSON, tagged by its
-/// `op`.
+/// What a command asks the host runner: one line of JSON, tagged by its
+/// `op`. Each question about one repo names a checkout of it — its root, or
+/// any worktree of it, a worker's among them — and is answered for the fleet
+/// instance of that repo the host runner holds.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -44,6 +48,56 @@ pub enum Request {
     /// Stop every fleet instance, and then the host runner, keeping the
     /// checkout list: answered once every fleet instance has stopped.
     StopAll,
+    /// End the sleep of the fleet instance of `checkout`'s repo, naming `by`
+    /// — what woke it, `park #46` — where it names anything: answered at once
+    /// with what it will do of it (`wake::Wakes::hear`).
+    Wake {
+        checkout: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+    },
+    /// Have the fleet instance of `checkout`'s repo serve its panel on `port`,
+    /// or any free one for 0: answered with where (`opening::Opener::open`).
+    Panel { checkout: PathBuf, port: u16 },
+    /// Whether it holds a fleet instance of `checkout`'s repo: answered as
+    /// `holds`.
+    Holds { checkout: PathBuf },
+}
+
+/// The longest path a socket's address holds, with room to spare: 104 bytes
+/// on macOS and 108 on Linux, the last of them a NUL.
+pub(crate) const ADDRESS_HOLDS: usize = 100;
+
+/// Runs `with` on a path that reaches the socket `name` in `dir` and fits in
+/// a socket's address (some hundred bytes; a cache directory may be any
+/// length): the whole path where it fits, else one through a link to `dir`
+/// made for the call — `convoy-<unique()>` in the temp dir, or /tmp where
+/// even that is too long — and removed after it. Nothing of the process
+/// moves, so any thread may call it while others work.
+pub(crate) fn reached<T>(
+    dir: &Path,
+    name: &str,
+    with: impl FnOnce(&Path) -> std::io::Result<T>,
+) -> Result<T> {
+    let whole = dir.join(name);
+    if whole.as_os_str().len() <= ADDRESS_HOLDS {
+        return Ok(with(&whole)?);
+    }
+    // A link is read from where it is: it names the directory whole.
+    let dir =
+        std::path::absolute(dir).with_context(|| format!("cannot reach {}", dir.display()))?;
+    let linked = format!("convoy-{}", crate::unique());
+    let mut link = std::env::temp_dir().join(&linked);
+    if link.join(name).as_os_str().len() > ADDRESS_HOLDS {
+        link = Path::new("/tmp").join(&linked);
+    }
+    std::os::unix::fs::symlink(&dir, &link)
+        .with_context(|| format!("cannot link {} to {}", link.display(), dir.display()))?;
+    // A bind or a connect follows the link once: a socket bound through it is
+    // in `dir`, and outlives it.
+    let made = with(&link.join(name));
+    let _ = std::fs::remove_file(&link);
+    Ok(made?)
 }
 
 /// The questions the host runner took and has not answered yet.
@@ -162,10 +216,12 @@ pub enum Reached {
 }
 
 /// Asks the host runner `request`, waiting `within` at most for its answer.
-/// No socket, or one nobody accepts on, is `Nobody`, and the socket is left
-/// where it is: a host runner between its bind and its first accept takes a
-/// question too, and answers it once it accepts. Errors: the cache directory
-/// is not known; the question cannot be written; the answer is no JSON.
+/// No socket, or one nobody listens on, is `Nobody`; one nobody listens on
+/// is removed, unless a host runner holds the host — one between its bind
+/// and its listen refuses an asker too, and is let be. A host runner between
+/// its listen and its first accept takes a question, and answers it once it
+/// accepts. Errors: the cache directory is not known; the question cannot be
+/// written; the answer is no JSON.
 pub fn ask(request: &Request, within: Duration) -> Result<Reached> {
     ask_in(&cache()?, request, within)
 }
@@ -176,6 +232,10 @@ fn ask_in(dir: &Path, request: &Request, within: Duration) -> Result<Reached> {
         Ok(stream) => stream,
         Err(error) => {
             let kind = error.downcast_ref::<std::io::Error>().map(std::io::Error::kind);
+            if kind == Some(ErrorKind::ConnectionRefused) && !crate::host_runner::held_in(dir) {
+                // What a host runner that ended with no goodbye left.
+                let _ = std::fs::remove_file(dir.join(SOCKET));
+            }
             if matches!(kind, Some(ErrorKind::NotFound | ErrorKind::ConnectionRefused)) {
                 return Ok(Reached::Nobody);
             }
@@ -210,7 +270,66 @@ fn ask_in(dir: &Path, request: &Request, within: Duration) -> Result<Reached> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
+
+    #[test]
+    fn a_socket_is_reached_by_its_whole_path_or_through_a_link_and_is_made_in_its_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let deep = root.path().join("d".repeat(120)).join("e".repeat(120));
+        for dir in [root.path().to_path_buf(), deep] {
+            std::fs::create_dir_all(&dir).unwrap();
+            let _listener = reached(&dir, "alpha.sock", |path| UnixListener::bind(path)).unwrap();
+            assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
+            assert!(reached(&dir, "alpha.sock", |path| UnixStream::connect(path)).is_ok());
+        }
+    }
+
+    #[test]
+    fn threads_reach_sockets_too_deep_for_an_address_at_once_and_nothing_moves() {
+        let root = tempfile::tempdir().unwrap();
+        let back = std::env::current_dir().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        // The working directory, read the whole time the threads work.
+        let watched = {
+            let (done, back) = (Arc::clone(&done), back.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    assert_eq!(std::env::current_dir().unwrap(), back);
+                }
+            })
+        };
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let dir = root.path().join(format!("{n}-{}", "d".repeat(120)));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::thread::spawn(move || {
+                    let listener =
+                        reached(&dir, "alpha.sock", |path| UnixListener::bind(path)).unwrap();
+                    assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
+                    reached(&dir, "alpha.sock", |path| UnixStream::connect(path)).unwrap();
+                    listener.accept().unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        watched.join().expect("the working directory never moved");
+        assert_eq!(std::env::current_dir().unwrap(), back);
+        // Every link made for a call is gone after it.
+        let ours = format!("convoy-{}-", std::process::id());
+        for dir in [std::env::temp_dir(), PathBuf::from("/tmp")] {
+            let entries = std::fs::read_dir(&dir).unwrap().flatten();
+            let left: Vec<_> = entries
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with(&ours))
+                .collect();
+            assert!(left.is_empty(), "{left:?} in {}", dir.display());
+        }
+    }
 
     #[test]
     fn a_request_crosses_as_one_line_tagged_by_its_op() {
@@ -233,6 +352,15 @@ mod tests {
         assert_eq!(stop, r#"{"op":"stop","checkout":"/w"}"#);
         assert_eq!(serde_json::to_string(&Request::StopAll).unwrap(), r#"{"op":"stop_all"}"#);
         assert_eq!(serde_json::to_string(&Request::Version).unwrap(), r#"{"op":"version"}"#);
+        let woke = Request::Wake { checkout: "/w".into(), by: Some("park #46".into()) };
+        let woke = serde_json::to_string(&woke).unwrap();
+        assert_eq!(woke, r#"{"op":"wake","checkout":"/w","by":"park #46"}"#);
+        let unnamed = serde_json::to_string(&Request::Wake { checkout: "/w".into(), by: None });
+        assert_eq!(unnamed.unwrap(), r#"{"op":"wake","checkout":"/w"}"#, "naming nothing");
+        let panel = serde_json::to_string(&Request::Panel { checkout: "/w".into(), port: 0 });
+        assert_eq!(panel.unwrap(), r#"{"op":"panel","checkout":"/w","port":0}"#);
+        let holds = serde_json::to_string(&Request::Holds { checkout: "/w".into() });
+        assert_eq!(holds.unwrap(), r#"{"op":"holds","checkout":"/w"}"#);
     }
 
     #[test]
@@ -264,9 +392,11 @@ mod tests {
             let (asker, runner) = UnixStream::pair().unwrap();
             writeln!(&asker, "{line}").unwrap();
             let checkout = |request: Request| match request {
-                Request::Add { checkout, .. } | Request::Stop { checkout } => {
-                    json!({"checkout": checkout})
-                }
+                Request::Add { checkout, .. }
+                | Request::Stop { checkout }
+                | Request::Wake { checkout, .. }
+                | Request::Panel { checkout, .. }
+                | Request::Holds { checkout } => json!({"checkout": checkout}),
                 Request::Version | Request::StopAll => json!({}),
             };
             answered(runner, &about, &checkout).unwrap();
@@ -278,7 +408,7 @@ mod tests {
         let added = ask(&format!(r#"{{"op":"add","checkout":"/w",{start}}}"#));
         assert_eq!(added, json!({"checkout": "/w", "host_runner": about}));
         assert_eq!(ask(r#"{"op":"version"}"#), json!({"host_runner": about}));
-        let unread = ask(r#"{"op":"wake","checkout":"/w"}"#);
+        let unread = ask(r#"{"op":"dance","checkout":"/w"}"#);
         let error = unread["error"].as_str().unwrap();
         assert!(error.starts_with("this host runner (afkconvoy "), "{error}");
         assert!(error.ends_with("it is another version than the afkconvoy that asked"), "{error}");
@@ -297,10 +427,18 @@ mod tests {
         let within = Duration::from_millis(200);
         let asked = |dir: &Path| ask_in(dir, &add, within).unwrap();
         assert!(matches!(asked(dir.path()), Reached::Nobody), "no socket");
-        // a host runner that ended left its socket: nobody accepts on it
+        // a host runner that ended left its socket: nobody listens on it
         drop(reached(dir.path(), SOCKET, |path| UnixListener::bind(path)).unwrap());
-        assert!(matches!(asked(dir.path()), Reached::Nobody), "a socket nobody accepts on");
-        assert!(dir.path().join(SOCKET).exists(), "and it is left where it is");
+        assert!(matches!(asked(dir.path()), Reached::Nobody), "a socket nobody listens on");
+        assert!(!dir.path().join(SOCKET).exists(), "is removed by whoever finds it");
+
+        // …unless a host runner holds the host: it may be about to listen
+        let lock = std::fs::File::create(dir.path().join(crate::host_runner::LOCK)).unwrap();
+        lock.lock().unwrap();
+        drop(reached(dir.path(), SOCKET, |path| UnixListener::bind(path)).unwrap());
+        assert!(matches!(asked(dir.path()), Reached::Nobody));
+        assert!(dir.path().join(SOCKET).exists(), "it is let be");
+        drop(lock);
 
         let _ = std::fs::remove_file(dir.path().join(SOCKET));
         let listener = reached(dir.path(), SOCKET, |path| UnixListener::bind(path)).unwrap();

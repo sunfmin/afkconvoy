@@ -3837,7 +3837,7 @@ fn run(
         Command::Run { .. } => {
             let Some((foreground, start)) = start_of(command, fixed_now) else { unreachable!() };
             match foreground {
-                true => instance::foreground(&checkout?, &start),
+                true => host_runner::foreground(&checkout?, &start),
                 false => host_runner::run(&checkout?, start, now),
             }
         }

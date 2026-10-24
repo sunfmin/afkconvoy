@@ -33,6 +33,7 @@ use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
 use crate::git::{REMOTE, Repo};
+use crate::host_runner;
 use crate::judge::leaving;
 use crate::launch::Launches;
 use crate::log::{Entry, Failed, Log, Tick, What, by_cause};
@@ -43,7 +44,6 @@ use crate::stage::Stood;
 use crate::team::{self, Refused};
 use crate::tools;
 use crate::topic::See;
-use crate::wake::listening;
 
 /// How many ticks in a row a step fails in before it is a finding.
 const FAILED_TICKS: usize = 3;
@@ -1444,7 +1444,7 @@ pub fn doctor_with_proxy(repo: &Repo, now: u64, host: &str, proxy: &[String]) ->
     let entries = log.as_ref().and_then(Log::read);
     let (instance, _started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
     let mut run = Run {
-        alive: listening(repo),
+        alive: host_runner::holds(repo),
         instance,
         host: host.to_string(),
         heartbeat_age: None,

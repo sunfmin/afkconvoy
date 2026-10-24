@@ -1,20 +1,14 @@
-//! The wake: a signal every command that changes fleet state sends its host's
-//! `run` as it ends — a worker's once its outcome is on GitHub — ending the
-//! sleep between ticks early. It names the command, for the `run` to log, and
-//! carries no state — the tick it opens reads GitHub like any other — so a wake that is
-//! lost costs only the wait it would have saved. The `run` that hears one
-//! answers it (`Answer`): which tick it starts, or which it follows.
+//! The wake: a signal every command that changes fleet state sends its repo's
+//! fleet instance on its host as it ends — a worker's once its outcome is on
+//! GitHub — ending the sleep between ticks early. It names the command, for
+//! the fleet instance to log, and carries no state — the tick it opens reads
+//! GitHub like any other — so a wake that is lost costs only the wait it
+//! would have saved. The fleet instance that hears one answers it
+//! (`Answer`): which tick it starts, or which it follows.
 
 use flux_rs::attrs::*;
 
-/// The name the `run` of a repo listens under, in the repo's git dir: one per
-/// repo on a host, shared by every worktree.
-pub const SOCKET: &str = "convoy-wake.sock";
-
-/// What a wake the `run` sends itself carries: nothing.
-pub const SIGNAL: &[u8] = &[];
-
-/// What a `run` answers a wake as it hears it.
+/// What a fleet instance answers a wake as it hears it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Answer {
     /// No tick was in progress: tick `n` starts now.
@@ -30,25 +24,6 @@ impl Answer {
         match ticking {
             Some(n) => Answer::Follows(n),
             None => Answer::Starts(last.saturating_add(1)),
-        }
-    }
-
-    /// What crosses the socket back.
-    pub fn said(self) -> String {
-        match self {
-            Answer::Starts(n) => format!("tick {n}"),
-            Answer::Follows(n) => format!("after_tick {n}"),
-        }
-    }
-
-    /// The answer `said` wrote, if `bytes` are one.
-    pub fn read(bytes: &[u8]) -> Option<Answer> {
-        let (key, n) = std::str::from_utf8(bytes).ok()?.split_once(' ')?;
-        let n = n.parse().ok()?;
-        match key {
-            "tick" => Some(Answer::Starts(n)),
-            "after_tick" => Some(Answer::Follows(n)),
-            _ => None,
         }
     }
 }
@@ -133,20 +108,10 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_names_the_tick_it_starts_or_follows_and_reads_back() {
+    fn an_answer_names_the_tick_it_starts_or_follows() {
         assert_eq!(Answer::of(None, 0), Answer::Starts(1));
         assert_eq!(Answer::of(None, 4), Answer::Starts(5));
         assert_eq!(Answer::of(Some(4), 4), Answer::Follows(4));
-        for answer in [Answer::Starts(1), Answer::Follows(u64::MAX)] {
-            assert_eq!(Answer::read(answer.said().as_bytes()), Some(answer));
-        }
-        for junk in [&b""[..], b"tick", b"tick x", b"next 3", &[0xff, b' ', b'1']] {
-            assert_eq!(Answer::read(junk), None);
-        }
-    }
-
-    #[test]
-    fn a_wake_carries_nothing() {
-        assert!(SIGNAL.is_empty());
+        assert_eq!(Answer::of(None, u64::MAX), Answer::Starts(u64::MAX));
     }
 }
