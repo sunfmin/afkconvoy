@@ -17,6 +17,16 @@ pub const BASE: &str = "main";
 pub const CONFIG: &str =
     "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\nconcurrency: 2\n```\n";
 
+/// The code blocks of `language` the manual shows at `at` — a command as
+/// `` `afkconvoy config` ``, a topic as `` topic `example` `` — each as its
+/// reader sees it: a test runs what the help shows, so the two cannot drift.
+pub fn shown(at: &str, language: &str) -> Vec<String> {
+    let blocks = agent_help::code_blocks(&afkconvoy::manual(), language).into_iter();
+    let blocks: Vec<String> = blocks.filter(|block| block.at == at).map(|b| b.code).collect();
+    assert!(!blocks.is_empty(), "{at} shows no {language} block");
+    blocks
+}
+
 pub struct World {
     _root: TempDir,
     pub root: PathBuf,

@@ -3623,7 +3623,7 @@ mod tests {
     /// every placeholder and every link to a topic names one there is.
     #[test]
     fn the_manual_is_whole() {
-        agent_help::check(&manual()).unwrap();
+        agent_help::check(&manual()).unwrap_or_else(|faults| panic!("{faults}"));
     }
 
     /// The commands that act are those whose `--help` says what they log, and
