@@ -1,0 +1,16 @@
+What every command that acts does as it ends, whoever runs it: the line it adds to the tick log, and the `run` it wakes. A command's own `--help` says, under "What it logs", that it is one.
+
+## The line it logs
+
+As it acts it appends one line to the tick log of this host for this repo — the command, what it acted on, who ran it (a worker or the operator) and how it came out, or that it failed — whether a `run` is there or not:
+
+```
+park #46 (operator): blocked by #99
+verdict #121 (worker): FAILED: issue #121 is closed
+```
+
+## The `run` it wakes
+
+Then it wakes this host's `run` for this repo, which logs `woken by park #46` and starts its next tick, or follows the one in progress with it; it waits {const:WAKE_ANSWER_SECONDS} seconds at most for the `run` to answer. Its answer says whether it woke one, as "woke". With no `run` listening it does nothing more.
+
+Both are soft: a command acts the same whether either can be done, and with no `run` listening its line is in the log all the same.
