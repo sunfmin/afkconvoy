@@ -285,16 +285,17 @@ It reads this host (the commands the fleet needs, in a login shell; orca), the l
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
 
-  - `severity`:
-
-    - `critical`: the fleet does not work until it is fixed
-    - `warning`: one issue or one patrol is held up, or about to be
-    - `info`: nothing is held up: said so that a surprise is explained
-
+  - `severity`: how much it matters, one of those below
   - `what`: the fault, in a sentence
   - `evidence`: what was read that says so
   - `fix`: one command line to run as it is — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit
   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
+
+A finding's `severity` is one of, most first:
+
+- `critical`: The fleet does not work, or will not, until it is fixed.
+- `warning`: One issue or one patrol is held up, or is about to be.
+- `info`: Nothing is held up: said so that a surprise is explained.
 
 It exits 0 with no critical finding, and non-zero with one — printing the same object, not {"error"} — so that a script can gate on it. Errors: "is not in a git checkout". Whatever else cannot be read is itself a finding.
 
@@ -345,7 +346,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
   {running_since, due, held, to_cast} — when the one that runs was started (null: none runs), whether a tick starts one now, the frontier's issues held back for it, and every issue a caster started now is given. An uncast issue with a choice to make waits for one, for ten minutes at most from its start: `afkconvoy cast --help`
 - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, since, answer} — why in a few words, since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
 - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
-- `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is no_pr, joining, joined, landed or closed — in a bound repo at_stage, whatever PR is open, until a landing worker holds the claim: then joining, joined, landed or closed, as in an unbound repo
+- `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
 - `peer_live`: other instances' claims within the lease — never touched
 - `stale`: other instances' claims past the lease, on open issues — a tick takes them
 - `stale_closed`: the same on closed issues — a tick deletes them (each of the three: {number, instance, sha})
@@ -377,6 +378,16 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
   - `peer_running`: a live peer started its worker
   - `stale_run`: it is claimed by a peer presumed dead: a tick ends it
 - `slow_gate`: while the gate is slow: {gate_seconds, host, runs, issue}. On `host`, the last 5 landings on the base branch that have a recorded run of the config's `gate_command` with a time all took more than 80% of the gate limit, `gate_seconds`. runs are those 5, newest first: {commit, seconds}. issue is the open issue that says so — the lowest open one carrying the label `slow-gate` — or null: a tick opens one (`afkconvoy tick --help`)
+
+A claim's `status`, under `mine`, is one of:
+
+- `no_pr`: No open PR closes the issue: its worker is still at it, or stopped.
+- `joining`: An open PR closes it, and that PR is not on the landing train yet. In a bound repo, only under a landing worker's claim.
+- `joined`: Its open PR is on the landing train, at the head the PR has now.
+- `landed`: The landing train put its work on the base branch, and the landing was cut short before the issue was closed: a tick closes it, then settles the claim.
+- `closed`: The issue is closed: a tick settles the claim and releases it.
+- `gone`: GitHub says the issue was deleted, or transferred to another repo: nothing is left to settle, and the claim is let go.
+- `at_stage`: In a bound repo, a claim on an open issue that is not a landing worker's, whatever PR is open: it was dispatched to a stage, and what that stage declares ends it.
 
 The probe's warnings go to stderr. Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run; `claude` is among them when no custom provider is set, as `run` would then start its workers with it); the repo fails the startup probe (the remote has no base branch, its protection refuses the fleet's push, or the remote takes none of the fleet's refs); the config cannot be read; GitHub or the remote cannot be read.
 
