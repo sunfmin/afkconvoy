@@ -457,7 +457,8 @@ fn a_fleet_running_without_its_panel_opens_it_when_asked_and_keeps_it_fresh() {
     }
     for said in [
         "afkconvoy panel --open --port 7070",
-        "no afkconvoy run is running for this repo on this host",
+        "no host runner runs on this host",
+        "holds no fleet instance of",
         "the panel cannot be served on port <port>",
         "did not answer",
     ] {
@@ -579,30 +580,33 @@ fn a_panel_served_from_the_start_is_the_one_found() {
 fn a_panel_that_cannot_be_opened_says_why_and_the_fleet_works_on() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    let quiet = World::new();
-    let refs = quiet.remote(&["for-each-ref"]);
+    let socket = world.cache().join("afkconvoy/host-runner.sock");
 
-    // no fleet instance runs for either repo
-    for repo in [&world, &quiet] {
-        let error = repo.afk(&["panel", "--open"]).error();
-        assert!(error.starts_with("no afkconvoy run is running for this repo on this host"));
-        assert!(error.contains("`afkconvoy run`"), "{error}");
-        assert!(!repo.clone.join(".git/convoy-panel.sock").exists(), "it left nothing");
-    }
+    // no host runner runs on this host
+    let error = world.afk(&["panel", "--open"]).error();
+    assert!(error.starts_with("no host runner runs on this host"), "{error}");
+    assert!(error.contains("`afkconvoy run`"), "{error}");
+    assert!(!socket.exists(), "it left nothing");
+    assert!(!world.clone.join(".git/convoy-panel.sock").exists(), "no socket of the repo's");
 
     let mut running = run(&world, &[]);
     assert!(running.line().starts_with("tick 1: dispatched #3"));
-    // …and one that runs for another repo is not this repo's
-    let error = quiet.afk(&["panel", "--open"]).error();
-    assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");
-    assert_eq!(quiet.remote(&["for-each-ref"]), refs);
-    assert_eq!(quiet.gh_calls(), [] as [Vec<String>; 0]);
+    // …and the one that runs holds no fleet instance of another repo
+    let clone2 = world.second_repo();
+    let remote2 = world.root.join("remote2.git");
+    let refs = git(&remote2, &["for-each-ref"]);
+    let error = world.afk_in(&clone2, &["panel", "--open"]).error();
+    assert!(error.starts_with("the panel was not opened, and nothing changed"), "{error}");
+    let held = format!("holds no fleet instance of {}", remote2.display());
+    assert!(error.contains(&held), "{error}");
+    assert_eq!(git(&remote2, &["for-each-ref"]), refs);
+    assert_eq!(world.gh2()["calls"], json!([]));
 
     // a port something else has
     let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = taken.local_addr().unwrap().port().to_string();
     let error = world.afk(&["panel", "--open", "--port", &port]).error();
-    assert!(error.starts_with("the panel was not opened, and the run works on as it was"));
+    assert!(error.starts_with("the panel was not opened, and nothing changed"), "{error}");
     assert!(error.contains(&format!("the panel cannot be served on port {port}")), "{error}");
     running.sleeps();
     assert_eq!(world.claims(), [(3, "alpha".to_string())]);
@@ -620,8 +624,11 @@ fn a_panel_that_cannot_be_opened_says_why_and_the_fleet_works_on() {
     assert_eq!(running.line(), format!("panel: {}", answer["panel"].as_str().unwrap()));
     assert!(running.line().starts_with("tick 2: "));
 
-    // the run over, its socket is nobody's
+    // the run over with no goodbye, the socket it left is nobody's: whoever
+    // finds it removes it
     drop(running);
+    assert!(socket.exists(), "a run killed leaves its socket");
     let error = world.afk(&["panel", "--open"]).error();
-    assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");
+    assert!(error.starts_with("no host runner runs on this host"), "{error}");
+    assert!(!socket.exists(), "removed by the one that found it");
 }

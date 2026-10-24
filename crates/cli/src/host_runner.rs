@@ -6,15 +6,23 @@
 //! fleet instances it holds, as `checkouts` asks after them.
 //!
 //! The host runner is whoever holds the lock `host-runner.lock` in the cache
-//! directory, so there is one for each cache directory, by construction. It
-//! never ticks: each fleet instance it holds ticks on a thread of its own, on
-//! its own time, and keeps its own tick log as before. What it keeps itself
-//! is its log, `host-runner.log`: one line for each thing that happened to
-//! it — its start and its stop, the older host runner it replaced, a
-//! checkout added, refused or removed, a fleet instance started, broken, back
-//! or ended, a panic — and the lines a fleet instance says that no tick log
-//! holds. A fleet instance that breaks harms no other: its thread holds it
-//! again after a backoff, and it stays on the list.
+//! directory, so there is one for each cache directory, by construction, and
+//! one socket (`runner_socket`): every command that speaks to a running fleet
+//! asks it there, naming its checkout, and it answers for the fleet instance
+//! of that checkout's repo — a wake, the opening of its panel — with no
+//! socket of the instance's own. It never ticks: each fleet instance it
+//! holds ticks on a thread of its own, on its own time, and keeps its own
+//! tick log as before. What it keeps itself is its log, `host-runner.log`:
+//! one line for each thing that happened to it — its start and its stop, the
+//! older host runner it replaced, a checkout added, refused or removed, a
+//! fleet instance started, broken, back or ended, a panic — and the lines a
+//! fleet instance says that no tick log holds. A fleet instance that breaks
+//! harms no other: its thread holds it again after a backoff, and it stays on
+//! the list.
+//!
+//! `run --foreground` holds the host the same way — its lock and its socket —
+//! with one fleet instance, its own checkout's, in the process that ran it,
+//! and leaves the checkout list alone (`foreground`).
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -37,16 +45,19 @@ use serde_json::{Value, json};
 use crate::checkout_list::{self, Entry, List};
 use crate::copies::cache;
 use crate::git::Repo;
+use crate::host_sleep::Peers;
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
+use crate::opening::Opener;
 use crate::runner_socket::{self, Reached, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line};
-use crate::{VERSION, host_settings, kit, launch};
+use crate::wake::{self, Wakes};
+use crate::{VERSION, host_settings, kit, launch, probe};
 
 /// The lock whose holder is the host runner, in the cache directory. It
 /// holds the holder's {pid, version, started}.
-const LOCK: &str = "host-runner.lock";
+pub(crate) const LOCK: &str = "host-runner.lock";
 
 /// The host runner's log, in the cache directory: its stdout and stderr.
 const LOG: &str = "host-runner.log";
@@ -71,6 +82,10 @@ const STOPPED_WITHIN: Duration = Duration::from_secs(10 * 60);
 /// answer whoever asked it before it ends.
 const ANSWERED_WITHIN: Duration = Duration::from_secs(10);
 
+/// How long `doctor` waits for the host runner to say whether it holds a
+/// fleet instance: it answers at once, whatever its fleet instances are doing.
+const HOLDS_WITHIN: Duration = Duration::from_secs(3);
+
 /// How often the host runner looks whether its lock file is still there.
 const WATCHED_EVERY: Duration = Duration::from_millis(250);
 
@@ -86,6 +101,8 @@ struct Runner {
     stop: Stop,
     /// Every fleet instance this host runner holds, by checkout root.
     held: Mutex<BTreeMap<PathBuf, Held>>,
+    /// Its fleet instances, as host sleep asks them.
+    peers: Peers,
 }
 
 /// One checkout's fleet instance, from its start until its thread ends.
@@ -96,6 +113,67 @@ struct Held {
     /// The stop of its start now, which `stop` tells: the thread of a broken
     /// one puts here that of each start of it again (`rested`).
     stop: Stop,
+    reach: Reach,
+}
+
+/// What reaches one fleet instance through the host runner's socket: the
+/// wakes heard for it, and the opening of its panel. A clone is the same.
+#[derive(Clone, Default)]
+struct Reach {
+    wakes: Wakes,
+    opener: Opener,
+}
+
+/// How a host runner holds the fleet instance of one repo, as a question
+/// about it finds it.
+enum HeldAs {
+    /// It runs, reached so.
+    Running(Reach),
+    /// It broke, and waits to be started again (`Came::Broken`).
+    Broken,
+    /// It holds none.
+    Nothing,
+}
+
+/// Answers `request`, a question about the fleet instance of the repo its
+/// checkout is of — a wake, the opening of its panel, whether one runs — for
+/// the one `held` finds of that repo: any worktree of it names it as well as
+/// its checkout. One of a repo no fleet instance of runs is refused, saying
+/// how to have one run.
+fn about_instance(request: &Request, held: impl FnOnce(&str) -> HeldAs) -> Result<Value> {
+    let checkout = match request {
+        Request::Wake { checkout, .. }
+        | Request::Panel { checkout, .. }
+        | Request::Holds { checkout } => checkout,
+        Request::Version
+        | Request::Add { .. }
+        | Request::Stop { .. }
+        | Request::StopAll
+        | Request::Checkouts => {
+            bail!("{request:?} is no question about one fleet instance")
+        }
+    };
+    let key = checkout_list::repo_of(&Repo::at(checkout)?)?;
+    match (request, held(&key)) {
+        (Request::Holds { .. }, held_as) => {
+            Ok(json!({"holds": matches!(held_as, HeldAs::Running(_))}))
+        }
+        (Request::Wake { by, .. }, HeldAs::Running(reach)) => {
+            Ok(wake::answer_json(reach.wakes.hear(by.clone())))
+        }
+        (Request::Panel { port, .. }, HeldAs::Running(reach)) => reach.opener.open(*port),
+        (_, HeldAs::Broken) => bail!(
+            "the fleet instance of {key} is broken, and waits to be started again: `afkconvoy \
+             doctor` says why, and `afkconvoy run {}` starts it again now",
+            checkout.display()
+        ),
+        _ => bail!(
+            "this host runner (pid {}) holds no fleet instance of {key}: `afkconvoy run {}` adds \
+             it",
+            std::process::id(),
+            checkout.display()
+        ),
+    }
 }
 
 /// How far a fleet instance has come, for whoever waits on it.
@@ -250,7 +328,8 @@ pub fn serve() -> Result<Value> {
             before["pid"]
         ));
     }
-    let runner = Arc::new(Runner { list, log, stop: stop.clone(), held: Mutex::default() });
+    let peers = Peers::default();
+    let runner = Arc::new(Runner { list, log, stop: stop.clone(), held: Mutex::default(), peers });
     runner.start_listed(listed.checkouts);
     let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG)});
     let answerer = Arc::clone(&runner);
@@ -361,12 +440,21 @@ impl Runner {
 
     /// Answers one question asked on the socket.
     fn answer(self: &Arc<Self>, request: Request) -> Value {
+        let held = |key: &str| {
+            let holding = self.holding();
+            match holding.values().find(|held| held.repo == key) {
+                Some(held) if matches!(held.seen.stage().came, Came::Broken) => HeldAs::Broken,
+                Some(held) => HeldAs::Running(held.reach.clone()),
+                None => HeldAs::Nothing,
+            }
+        };
         let answered = match request {
             Request::Version => Ok(json!({})),
             Request::Add { checkout, start } => self.add(&checkout, *start),
             Request::Stop { checkout } => self.stop_checkout(&checkout),
             Request::StopAll => self.stop_all(),
             Request::Checkouts => Ok(self.checkouts()),
+            about => about_instance(&about, held),
         };
         answered.unwrap_or_else(|error| crate::error_json(&error))
     }
@@ -494,19 +582,24 @@ impl Runner {
     ) -> Arc<Seen> {
         let seen = Arc::new(Seen::default());
         seen.stage().asked = asked;
-        let stop = self.stop.instance();
-        let holding = Held { repo: key.clone(), seen: Arc::clone(&seen), stop: stop.clone() };
+        let (stop, reach) = (self.stop.instance(), Reach::default());
+        let holding = Held {
+            repo: key.clone(),
+            seen: Arc::clone(&seen),
+            stop: stop.clone(),
+            reach: reach.clone(),
+        };
         held.insert(root.clone(), holding);
         let (runner, holding) = (Arc::clone(self), Arc::clone(&seen));
-        std::thread::spawn(move || runner.hold(&root, &key, start, &holding, stop));
+        std::thread::spawn(move || runner.hold(&root, &key, start, &holding, stop, reach));
         seen
     }
 
     /// Holds the fleet instance of the checkout `root`, of the repo `key`, on
-    /// this thread, as `start` asks and `stop` tells, until it ends
-    /// (`ended`). One that breaks is held again after a backoff that grows at
-    /// each break in a row (`backoff`), or as soon as a `run` asks for it;
-    /// every other fleet instance goes on meanwhile.
+    /// this thread, as `start` asks and `stop` tells, reached by `reach`,
+    /// until it ends (`ended`). One that breaks is held again after a backoff
+    /// that grows at each break in a row (`backoff`), or as soon as a `run`
+    /// asks for it; every other fleet instance goes on meanwhile.
     fn hold(
         self: Arc<Self>,
         root: &Path,
@@ -514,6 +607,7 @@ impl Runner {
         mut start: Start,
         seen: &Arc<Seen>,
         mut stop: Stop,
+        mut reach: Reach,
     ) {
         // What it waited before its last start, where it broke before it.
         let mut waited = None;
@@ -531,7 +625,9 @@ impl Runner {
             });
             let echo: Echo = Arc::new(move |line| heard.line(line));
             let held = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let holder = Holder { stop: stop.clone(), echo };
+                let Reach { wakes, opener } = reach.clone();
+                let peers = self.peers.clone();
+                let holder = Holder { stop: stop.clone(), echo, wakes, opener, peers };
                 Repo::at(root).and_then(|repo| instance::hold(&repo, &start, holder))
             }));
             let held = held.unwrap_or_else(|panic| {
@@ -561,11 +657,11 @@ impl Runner {
             let entry = log::Entry { at: now, instance: broke_as.clone(), host, what };
             self.said_of(root, &entry, &said);
             let until = Instant::now() + Duration::from_millis(wait.saturating_mul(second));
-            let Some((anew, again)) = self.rested(root, seen, until) else {
+            let Some((anew, reached, again)) = self.rested(root, seen, until) else {
                 self.let_go(root, seen, &start, broke_as);
                 return;
             };
-            stop = anew;
+            (stop, reach) = (anew, reached);
             if let Some(again) = again {
                 start = again;
             }
@@ -574,10 +670,16 @@ impl Runner {
 
     /// Rests the thread of the broken fleet instance of `root` until its
     /// backoff is over, at `until`, or a `run` asks for it → the stop of its
-    /// next start, kept where `stop` finds it, and what that `run` asked;
-    /// `None` where `stop` took its checkout off the list, or the host runner
-    /// was told to stop, first.
-    fn rested(&self, root: &Path, seen: &Seen, until: Instant) -> Option<(Stop, Option<Start>)> {
+    /// next start, kept where `stop` finds it, how that start is reached, kept
+    /// where a question about it finds it, and what that `run` asked; `None`
+    /// where `stop` took its checkout off the list, or the host runner was
+    /// told to stop, first.
+    fn rested(
+        &self,
+        root: &Path,
+        seen: &Seen,
+        until: Instant,
+    ) -> Option<(Stop, Reach, Option<Start>)> {
         let again = {
             let mut stage = seen.stage();
             loop {
@@ -604,8 +706,8 @@ impl Runner {
         if seen.stage().removed || self.stop.told() {
             return None;
         }
-        held.stop = self.stop.instance();
-        Some((held.stop.clone(), again))
+        (held.stop, held.reach) = (self.stop.instance(), Reach::default());
+        Some((held.stop.clone(), held.reach.clone(), again))
     }
 
     /// Lets go of the broken fleet instance of `root`, `broke_as` as it last
@@ -1179,9 +1281,17 @@ fn answered_stop(reached: Reached, waited_for: &str) -> Result<Value> {
 /// as it is → `None`. One of an older release is stopped as SIGTERM stops
 /// it — each fleet instance finishes the step it is in, and the checkout list
 /// is kept — and waited for until it lets the host go → its {pid, version}.
-/// One of a newer release refuses this `run`, which changes nothing.
+/// One of a newer release refuses this `run`, which changes nothing, and so
+/// does a fleet instance held in the foreground, whatever its release.
 fn moved(about: &Value) -> Result<Option<Value>> {
     let (theirs, pid) = (about["version"].as_str().unwrap_or_default(), &about["pid"]);
+    if about["foreground"] == true {
+        bail!(
+            "this host's runner is a fleet instance held in the foreground (`run --foreground`, \
+             pid {pid}), which takes no other checkout, so this run changed nothing: run again \
+             once it has ended"
+        );
+    }
     match found(VERSION, theirs) {
         Found::Same => Ok(None),
         Found::Newer => bail!(
@@ -1220,6 +1330,93 @@ pub fn runs() -> bool {
 fn held(file: &Path) -> bool {
     let Ok(lock) = File::open(file) else { return false };
     matches!(lock.try_lock(), Err(TryLockError::WouldBlock))
+}
+
+/// Whether a host runner holds the host whose cache directory is `dir`.
+pub(crate) fn held_in(dir: &Path) -> bool {
+    held(&dir.join(LOCK))
+}
+
+/// Whether this host's runner holds a fleet instance of the repo the
+/// checkout `repo` is of: the one sign on this host that one is alive. Soft:
+/// a host runner that cannot be asked, or does not answer, holds none.
+pub fn holds(repo: &Repo) -> bool {
+    let asked = Request::Holds { checkout: repo.dir.clone() };
+    match runner_socket::ask(&asked, HOLDS_WITHIN) {
+        Ok(Reached::Answer(answer)) => answer["holds"] == true,
+        _ => false,
+    }
+}
+
+/// `run --foreground`: holds the fleet instance of the checkout `checkout`
+/// in this process as `start` asks, as the host runner of this host — its
+/// lock and its socket, on which every command reaches it as it reaches any
+/// host runner — printing every line as `run` printed it, until SIGTERM or
+/// SIGINT, or until it has made `start.knobs.ticks` → what its loop
+/// answers. It holds no other checkout and leaves the checkout list alone:
+/// a `run` or a `stop` while it holds the host is refused, and so is it,
+/// where another host runner holds the host. What it names of the host
+/// settings, `settings`, holds in this process alone, laid over the host's.
+pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
+    host_settings::lay_for_this_process(settings);
+    let dir = cache()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
+    let Some((lock, _)) = took_host(&dir.join(LOCK))? else {
+        let holder = holder_of(&dir.join(LOCK));
+        let said = holder.map_or("another".to_string(), |pid| format!("pid {pid}"));
+        bail!(
+            "a host runner ({said}) holds this host, and a fleet instance held in the foreground \
+             is held only where none does: `afkconvoy stop --all` stops it"
+        );
+    };
+    let stop = Stop::listen();
+    let (pid, root, reach) = (std::process::id(), checkout.dir.clone(), Reach::default());
+    let key = checkout_list::repo_of(checkout).ok();
+    // Its fleet instance's id, once its start is logged.
+    let instance: Arc<Mutex<Option<String>>> = Arc::default();
+    let (held, named) = (reach.clone(), Arc::clone(&instance));
+    let about = json!({"pid": pid, "version": VERSION, "foreground": true});
+    let answering = runner_socket::serve(runner_socket::listen()?, about, move |request| {
+        let answered = match request {
+            Request::Version => Ok(json!({})),
+            Request::Checkouts => {
+                let instance = named.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                Ok(json!({"held": [{"checkout": root, "instance": *instance}]}))
+            }
+            Request::Add { .. } | Request::Stop { .. } | Request::StopAll => Err(anyhow!(
+                "this host's runner is a fleet instance held in the foreground (`run \
+                 --foreground`, pid {pid}), of {}: it takes no other checkout, and stops on \
+                 SIGTERM or Ctrl-C alone",
+                root.display()
+            )),
+            about => {
+                let mine = |repo: &str| key.as_deref() == Some(repo);
+                about_instance(&about, |repo| match mine(repo) {
+                    true => HeldAs::Running(held.clone()),
+                    false => HeldAs::Nothing,
+                })
+            }
+        };
+        answered.unwrap_or_else(|error| crate::error_json(&error))
+    });
+    let echo: Echo = Arc::new(move |line| match line {
+        Line::Kept(entry) => {
+            let mut named = instance.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            named.get_or_insert_with(|| entry.instance.clone());
+            println!("{}", entry.said());
+        }
+        Line::Said(text) => println!("{text}"),
+        Line::Warning(warning) => probe::announce(&[warning.to_string()]),
+    });
+    let Reach { wakes, opener } = reach;
+    let holder = Holder { stop: stop.instance(), echo, wakes, opener, peers: Peers::default() };
+    let held = instance::hold(checkout, start, holder);
+    // It holds the host no more: a `run` from now on starts a host runner,
+    // which waits for the lock.
+    let _ = std::fs::remove_file(dir.join(runner_socket::SOCKET));
+    answering.settled(ANSWERED_WITHIN);
+    drop(lock);
+    held
 }
 
 /// Waits, `within` at most, for whoever holds the lock in `file` to let it

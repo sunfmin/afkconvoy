@@ -115,10 +115,12 @@ fn with_no_run_to_wake_a_wake_succeeds_and_does_nothing() {
     let answer = wake(&world, &world.clone);
     assert_eq!(answer["woke"], false);
     let detail = answer["detail"].as_str().unwrap();
-    assert!(detail.contains("no afkconvoy run is listening"), "{detail}");
-    assert!(detail.contains("`afkconvoy run`"), "with the fix: {detail}");
+    assert!(detail.starts_with("no host runner runs on this host"), "{detail}");
+    let fix = format!("`afkconvoy run {}`", world.clone.display());
+    assert!(detail.contains(&fix), "with the fix: {detail}");
 
-    assert!(!world.clone.join(".git/convoy-wake.sock").exists(), "it left nothing");
+    assert!(!world.cache().join("afkconvoy/host-runner.sock").exists(), "it left nothing");
+    assert!(!world.clone.join(".git/convoy-wake.sock").exists(), "no socket of the repo's");
     assert_eq!(world.remote(&["for-each-ref"]), refs);
     assert_eq!(git(&world.clone, &["status", "--porcelain", "--ignored"]), status);
     assert_eq!(world.gh_calls(), [] as [Vec<String>; 0]);
@@ -129,11 +131,14 @@ fn with_no_run_to_wake_a_wake_succeeds_and_does_nothing() {
 #[test]
 fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
     let world = World::new();
-    // something listens where a run would, and answers nothing: named from
-    // inside the git dir, as a run names it, whose path may be too long for a
-    // socket's. Each test is a process of its own under nextest.
-    std::env::set_current_dir(world.clone.join(".git")).unwrap();
-    let mute = std::os::unix::net::UnixDatagram::bind("convoy-wake.sock").unwrap();
+    // something listens where the host runner would, and answers nothing:
+    // named from inside the cache directory, as the host runner names it,
+    // whose path may be too long for a socket's. Each test is a process of
+    // its own under nextest.
+    let cache = world.cache().join("afkconvoy");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::env::set_current_dir(&cache).unwrap();
+    let mute = std::os::unix::net::UnixListener::bind("host-runner.sock").unwrap();
 
     let started = Instant::now();
     let answer = wake(&world, &world.clone);
@@ -143,8 +148,12 @@ fn a_run_that_does_not_answer_costs_the_wake_its_wait_and_no_more() {
     assert!(detail.contains("did not answer within 3s"), "{detail}");
     assert!(detail.contains("`afkconvoy doctor`"), "with the fix: {detail}");
     assert!(took >= Duration::from_secs(3) && took < Duration::from_secs(10), "{took:?}");
-    // it was sent all the same
-    assert!(mute.recv(&mut [0; 1]).is_ok());
+    // it was asked all the same, naming the checkout
+    let (asked, _) = mute.accept().unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(asked), &mut line).unwrap();
+    let asked: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(asked, json!({"op": "wake", "checkout": world.clone, "by": "wake"}), "{line}");
 }
 
 #[test]
@@ -202,4 +211,30 @@ fn the_worker_brief_and_the_join_brief_carry_the_wake_line() {
     assert!(joining.contains("Your ONLY job is to get that PR on the train"), "{joining}");
     assert!(joining.contains(&line), "{joining}");
     assert!(!joining.contains("your comment is posted"), "a joiner posts no verdict");
+}
+
+/// What the tick log `answer` names said, line by line.
+fn tick_log(answer: &serde_json::Value) -> Vec<String> {
+    let text = std::fs::read_to_string(answer["tick_log"].as_str().unwrap()).unwrap();
+    let entry = |line: &str| serde_json::from_str::<afkconvoy::log::Entry>(line).unwrap().said();
+    text.lines().map(entry).collect()
+}
+
+#[test]
+fn a_wake_ends_the_sleep_of_its_checkouts_fleet_instance_alone() {
+    let world = World::new();
+    // one host runner holds both, each asleep for 90 seconds at the least
+    let first = world.afk(&["run", "--host", "h1"]).ok();
+    let clone2 = world.second_repo();
+    let second = world.afk_in(&clone2, &["run", "--host", "h1"]).ok();
+    assert_eq!(second["host_runner"]["pid"], first["host_runner"]["pid"], "{second}");
+
+    let started = Instant::now();
+    assert_eq!(wake(&world, &clone2), json!({"woke": true, "tick": 2}));
+    let woken = "tick 2: started (woken by wake)".to_string();
+    until("the second tick of the woken", || tick_log(&second).contains(&woken));
+    assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+    std::thread::sleep(Duration::from_millis(500));
+    let other = tick_log(&first);
+    assert!(!other.iter().any(|line| line.starts_with("tick 2:")), "{other:#?}");
 }
