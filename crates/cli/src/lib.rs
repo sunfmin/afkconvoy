@@ -29,6 +29,7 @@ pub mod admission;
 pub mod advance;
 pub mod board;
 pub mod caster;
+pub mod claim_status;
 pub mod claims;
 pub mod config;
 pub mod copies;
@@ -298,7 +299,7 @@ enum Command {
     ///
     /// ##### What it reads and writes
     ///
-    /// It reads one file — docs/agents/afkconvoy.md of the checkout it is run in, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
+    /// It reads one file — {const:CONFIG_FILE} of the checkout it is run in, or `--file` — and of that file only the first ```yaml block. It writes nothing, and reads neither GitHub nor the remote.
     ///
     /// ##### The config file
     ///
@@ -350,8 +351,7 @@ enum Command {
     /// The --patch overlay, applied last on either profile, loads the guard and orca state plugin; the role's directory, skills, rules, stage model and issue's worktree are supplied as described in `afkconvoy run --help`.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Config {
-        /// The config file [default: docs/agents/afkconvoy.md of this checkout]
-        #[arg(long)]
+        #[arg(long, help = format!("The config file [default: {} of this checkout]", config::FILE))]
         file: Option<PathBuf>,
     },
     /// Read a team and its workflows: what was read, or every fault
@@ -396,7 +396,7 @@ enum Command {
     ///
     /// A team with a fault: {"error", "faults"} and exit 1. `faults` holds every fault of the team, not the first: each {"file", "key", "problem", "see"}. `key` is a path from the top of the file's yaml, counting from 0 — `stages[1].on.reject` — and empty when the fault is the file itself. `see` is the command that prints the help topic describing that file, to run as it is: `afkconvoy help workflows` for a workflow's, `afkconvoy help patrols` for a patrol's, and `afkconvoy help team` for the team file — a role is named there, and that topic says what its directory holds — and for the config's keys that bind the repo. A fault in a file no topic describes has no `see`.
     ///
-    /// A fault is one of: an unknown key, or one written twice; a wrong type; a duplicate stage name; a stage named `land`, `done` or `human`; a `pass` or `reject` that names no stage; a `reject` to its own or a later stage; a stage no path from the first reaches; a stage whose passes never come to `land` or `done`; a `pass: land` with no `land:`, or a `land:` no pass leads to; a role the team file does not name; a role named as none of owner/repo, owner/repo/path and ./path; a role's path with a `..`, or an absolute one; a role whose repo cannot be read, or whose path is no directory at its head; a role's directory that is the team's or contains it, or is inside the team's `workflows/` or `patrols/`; a role's directory that contains another role's or is inside one — two names for one directory are none; a symlink in a role in a subdirectory that leaves the role's directory; a file in a role's directory that a harness would load in place of `CLAUDE.md`, its rules under every harness — pi `AGENTS.override.md`, `AGENTS.md` or `AGENTS.MD`, Codex `AGENTS.override.md` or `AGENTS.md` — the fault naming the file and each harness that would load it, whatever harnesses the role may run; a role's limits that cannot be read; a skill its role's directory does not hold; a missing `by`, `do` or `on`; a `harness` or a `model` in a stage or a patrol, which name none any more — the fault says the line to delete and the roster entry to write in its place; in the `roster`, an entry for a name that is no role of the team, a `run` that is missing or empty, a `harness` that names no harness, or an allowance written twice; a flow label two workflows take, or one that is the team's escalate label, the repo's lock label or an epic label — under `label`, or the file where it is the `flow:<name>` it names none in place of; a patrol file whose name is not a patrol's; an `every` that is no duration; a missing `every` or `max_open`; and — in the config, docs/agents/afkconvoy.md, under `patrols` — a name the team has no patrol for.
+    /// A fault is one of: an unknown key, or one written twice; a wrong type; a duplicate stage name; a stage named `land`, `done` or `human`; a `pass` or `reject` that names no stage; a `reject` to its own or a later stage; a stage no path from the first reaches; a stage whose passes never come to `land` or `done`; a `pass: land` with no `land:`, or a `land:` no pass leads to; a role the team file does not name; a role named as none of owner/repo, owner/repo/path and ./path; a role's path with a `..`, or an absolute one; a role whose repo cannot be read, or whose path is no directory at its head; a role's directory that is the team's or contains it, or is inside the team's `workflows/` or `patrols/`; a role's directory that contains another role's or is inside one — two names for one directory are none; a symlink in a role in a subdirectory that leaves the role's directory; a file in a role's directory that a harness would load in place of `CLAUDE.md`, its rules under every harness — pi `AGENTS.override.md`, `AGENTS.md` or `AGENTS.MD`, Codex `AGENTS.override.md` or `AGENTS.md` — the fault naming the file and each harness that would load it, whatever harnesses the role may run; a role's limits that cannot be read; a skill its role's directory does not hold; a missing `by`, `do` or `on`; a `harness` or a `model` in a stage or a patrol, which name none any more — the fault says the line to delete and the roster entry to write in its place; in the `roster`, an entry for a name that is no role of the team, a `run` that is missing or empty, a `harness` that names no harness, or an allowance written twice; a flow label two workflows take, or one that is the team's escalate label, the repo's lock label or an epic label — under `label`, or the file where it is the `flow:<name>` it names none in place of; a patrol file whose name is not a patrol's; an `every` that is no duration; a missing `every` or `max_open`; and — in the config, {const:CONFIG_FILE}, under `patrols` — a name the team has no patrol for.
     ///
     /// A team that loads is then held to its harnesses, and these are faults too, each with its file and key, all at once:
     ///
@@ -875,16 +875,15 @@ enum Command {
     /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it. null when the issues could not be read
     /// - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
     ///
-    ///   - `severity`:
-    ///
-    ///     - `critical`: the fleet does not work until it is fixed
-    ///     - `warning`: one issue or one patrol is held up, or about to be
-    ///     - `info`: nothing is held up: said so that a surprise is explained
-    ///
+    ///   - `severity`: how much it matters, one of those below
     ///   - `what`: the fault, in a sentence
     ///   - `evidence`: what was read that says so
     ///   - `fix`: one command line to run as it is — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit
     ///   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
+    ///
+    /// A finding's `severity` is one of, most first:
+    ///
+    /// {table:severity}
     ///
     /// It exits 0 with no critical finding, and non-zero with one — printing the same object, not {"error"} — so that a script can gate on it. Errors: "is not in a git checkout". Whatever else cannot be read is itself a finding.
     ///
@@ -940,7 +939,7 @@ enum Command {
     ///   {running_since, due, held, to_cast} — when the one that runs was started (null: none runs), whether a tick starts one now, the frontier's issues held back for it, and every issue a caster started now is given. An uncast issue with a choice to make waits for one, for ten minutes at most from its start: `afkconvoy cast --help`
     /// - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, since, answer} — why in a few words, since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
     /// - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
-    /// - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is no_pr, joining, joined, landed or closed — in a bound repo at_stage, whatever PR is open, until a landing worker holds the claim: then joining, joined, landed or closed, as in an unbound repo
+    /// - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
     /// - `peer_live`: other instances' claims within the lease — never touched
     /// - `stale`: other instances' claims past the lease, on open issues — a tick takes them
     /// - `stale_closed`: the same on closed issues — a tick deletes them (each of the three: {number, instance, sha})
@@ -971,7 +970,11 @@ enum Command {
     ///   - `running`: its worker, started by `--instance`, may still be at it
     ///   - `peer_running`: a live peer started its worker
     ///   - `stale_run`: it is claimed by a peer presumed dead: a tick ends it
-    /// - `slow_gate`: while the gate is slow: {gate_seconds, host, runs, issue}. On `host`, the last {const:SLOW_GATE_LANDINGS} landings on the base branch that have a recorded run of the config's `gate_command` with a time all took more than {const:SLOW_GATE_PERCENT}% of the gate limit, `gate_seconds`. runs are those 5, newest first: {commit, seconds}. issue is the open issue that says so — the lowest open one carrying the label `slow-gate` — or null: a tick opens one (`afkconvoy tick --help`)
+    /// - `slow_gate`: while the gate is slow: {gate_seconds, host, runs, issue}. On `host`, the last {const:SLOW_GATE_LANDINGS} landings on the base branch that have a recorded run of the config's `gate_command` with a time all took more than {const:SLOW_GATE_PERCENT}% of the gate limit, `gate_seconds`. runs are those {const:SLOW_GATE_LANDINGS}, newest first: {commit, seconds}. issue is the open issue that says so — the lowest open one carrying the label `slow-gate` — or null: a tick opens one (`afkconvoy tick --help`)
+    ///
+    /// A claim's `status`, under `mine`, is one of:
+    ///
+    /// {table:claim_status}
     ///
     /// The probe's warnings go to stderr. Errors: a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run; `claude` is among them when no custom provider is set, as `run` would then start its workers with it); the repo fails the startup probe (the remote has no base branch, its protection refuses the fleet's push, or the remote takes none of the fleet's refs); the config cannot be read; GitHub or the remote cannot be read.
     ///
@@ -2876,6 +2879,8 @@ pub fn manual() -> agent_help::Help {
         .topic::<Humans>()
         .topic::<Troubleshooting>()
         .topic::<Glossary>()
+        .table::<doctor::Severity>("severity")
+        .table::<claim_status::ClaimStatus>("claim_status")
         .constant("CONFIG_FILE", config::FILE)
         .constant("TEAM_FILE", afkconvoy_core::team::TEAM_FILE)
         .constant("ESCALATE_LABEL", afkconvoy_core::config::ESCALATE_LABEL)
