@@ -7,6 +7,7 @@
 //! next. Changes take the lock beside it, which keeps out a change made by
 //! another thread of the same process as well as by another process.
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::checkouts;
@@ -35,13 +36,17 @@ pub struct Listed {
     rest: Map<String, Value>,
 }
 
-/// One checkout on the list: its root, and what the `run` that started it
-/// named for its fleet instance alone.
+/// One checkout on the list: its root, what the `run` that started it named
+/// for its fleet instance alone, and the concurrency it says on this host
+/// (`concurrency`), which its fleet instance reads at each tick.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub checkout: PathBuf,
     #[serde(default, skip_serializing_if = "Named::is_empty")]
     pub named: Named,
+    /// `--concurrency`: none, and the repo config's holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<NonZeroUsize>,
 }
 
 /// A host's checkout list: its file, and the lock beside it.
@@ -147,7 +152,7 @@ mod tests {
     use super::*;
 
     fn entry(checkout: &str) -> Entry {
-        Entry { checkout: PathBuf::from(checkout), named: Named::default() }
+        Entry { checkout: PathBuf::from(checkout), named: Named::default(), concurrency: None }
     }
 
     #[test]
@@ -170,8 +175,10 @@ mod tests {
             "checkouts": [{"checkout": "/a"}]}"#;
         std::fs::write(list.file(), kept).unwrap();
         let named = Named { host: Some("h1".into()), ..Named::default() };
+        let concurrency = NonZeroUsize::new(6);
         let added = list.change(|listed| {
-            listed.checkouts.push(Entry { checkout: PathBuf::from("/b"), named: named.clone() });
+            let checkout = PathBuf::from("/b");
+            listed.checkouts.push(Entry { checkout, named: named.clone(), concurrency });
             listed.checkouts.len()
         });
         assert_eq!(added.unwrap(), 2);
@@ -183,12 +190,16 @@ mod tests {
         assert_eq!(text["checkouts"][0], serde_json::json!({"checkout": "/a"}), "{text}");
         assert_eq!(
             text["checkouts"][1],
-            serde_json::json!({"checkout": "/b", "named": {"host": "h1"}})
+            serde_json::json!({"checkout": "/b", "named": {"host": "h1"}, "concurrency": 6})
         );
         assert_eq!(
             list.read().unwrap().checkouts,
-            [entry("/a"), Entry { checkout: "/b".into(), named }]
+            [entry("/a"), Entry { checkout: "/b".into(), named, concurrency }]
         );
+        // a concurrency of no slot is none: the list cannot be read
+        std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "concurrency": 0}]}"#)
+            .unwrap();
+        assert!(list.read().is_err());
         // nothing is left beside it
         let left: Vec<_> =
             std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name()).collect();
