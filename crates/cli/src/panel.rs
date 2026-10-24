@@ -29,9 +29,9 @@ use anyhow::Result;
 use crate::admission::Admission;
 use crate::checkout_list;
 use crate::claims::Me;
-use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::git::Repo;
+use crate::host_runner::SharedNow;
 use crate::hot::{HotNow, held_said};
 use crate::inspection::{Last, Running};
 use crate::kit::Kit;
@@ -276,16 +276,16 @@ pub struct Host {
 
 impl Host {
     /// The host as it is at `now`, read soft: what cannot be read is said
-    /// so, or shows nothing. Admission reads the disk under `dir`.
-    pub fn read(dir: &Path, now: u64) -> Host {
+    /// so, or shows nothing. Admission reads the disk under `dir`; `shared`
+    /// is what its host runner holds for its fleets.
+    pub fn read(dir: &Path, now: u64, shared: SharedNow) -> Host {
         Host {
             name: crate::this_host(),
             now,
             admission: Admission::read(dir).map_err(|error| format!("{error:#}")),
-            inspection: inspection::on_host(),
+            inspection: shared.inspection,
             host_inspected: inspection::last_on_host(),
-            // Soft: a queue that cannot be read shows nothing.
-            exclusive: Queue::of_host().and_then(|queue| queue.standing()).unwrap_or_default(),
+            exclusive: shared.exclusive,
             sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             paused: crate::paused::read(),
@@ -651,7 +651,9 @@ pub fn printed(
             .collect(),
     };
     let dir = checkouts.first().map_or_else(|| PathBuf::from("/"), |first| first.dir.clone());
-    Ok(Page { host: Host::read(&dir, now), live: false, checkouts })
+    // Soft: what the host runner holds for its fleets, where it cannot be read, shows nothing.
+    let shared = host_runner::shared().ok().flatten().unwrap_or_default();
+    Ok(Page { host: Host::read(&dir, now, shared), live: false, checkouts })
 }
 
 /// What the tick log of `repo` on this host holds; nothing where it cannot

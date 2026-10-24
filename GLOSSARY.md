@@ -65,7 +65,7 @@ A fleet instance with nothing to do now: it holds no claim — on an issue, a pa
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
-A fleet instance putting its host to sleep: the host's local time is within its sleep hours, every fleet instance on the host has been idle for ten minutes, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and the host settings do not keep it awake. A host woken stays awake until some instance on it has worked again. The fleet never wakes a host: one put to sleep within its sleep hours sleeps on past their end.
+A fleet instance putting its host to sleep: the host's local time is within its sleep hours, every fleet instance on the host has been idle for ten minutes, as its host runner holds how each stands, each has ticked once more and found nothing, no one has used the host's keyboard or mouse for ten minutes, the one that puts it to sleep has worked since the host last woke, and the host settings do not keep it awake. A host woken stays awake until some instance on it has worked again. The fleet never wakes a host: one put to sleep within its sleep hours sleeps on past their end.
 _Avoid_: sleep (the wait between ticks), hibernate, suspend, shutdown
 
 **Sleep hours**:
@@ -227,7 +227,7 @@ A worker in the role of the consult of a hot worker's stage — the stock consul
 _Avoid_: investigation, diagnosis
 
 **Exclusive queue**:
-The queue of the commands run through `afkconvoy exclusive` on one host, shared by every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A command whose process dies leaves it. A worker with a command in it is busy, not silent, for no longer than the gate limit.
+The queue of the commands run through `afkconvoy exclusive` on one host, held by its host runner for every fleet on it whatever its repo: one runs at a time, in the order they asked, and the rest wait. A command whose process dies leaves it; one waiting as its host runner is replaced waits in the next one's, from when it asked. A worker with a command in it is busy, not silent, for no longer than the gate limit.
 _Avoid_: mutex, semaphore, heavy lock (the fleet lock is another thing)
 
 **Nudge**:

@@ -547,23 +547,39 @@ fn close_is_refused_over_work_and_closes_a_branch_with_none() {
     assert_eq!(world.pushes(), ["refs/convoy/claim/7"]);
 }
 
-/// Puts a command of the worker's in the host's `exclusive` queue, asked at
-/// `asked`: held for as long as this test runs.
-fn queued(world: &World, asked: u64) {
-    let queue = afkconvoy::exclusive::Queue::at(world.cache().join("afkconvoy").join("exclusive"));
-    let dir = std::fs::canonicalize(worktree(world)).unwrap();
-    let ticket = afkconvoy_core::exclusive::Ticket {
-        number: 0,
-        pid: std::process::id(),
-        command: "cargo test --workspace".into(),
-        dir: dir.join("crates").display().to_string(),
-        issue: Some(7),
-        asked,
-        ran: None,
-    };
-    let (held, _) = queue.join(ticket).unwrap();
-    // Held for the rest of the test, as a live `exclusive` process holds its own.
-    std::mem::forget(held);
+/// A command of the worker's run in its worktree as `exclusive`, asked at
+/// `asked`, placed in the queue of a host runner held for it (`host_held`)
+/// and running there for as long as this lives.
+struct Queued {
+    command: std::process::Child,
+    _host_runner: common::Running,
+}
+
+impl Drop for Queued {
+    fn drop(&mut self) {
+        let _ = self.command.kill();
+        let _ = self.command.wait();
+    }
+}
+
+fn queued(world: &World, asked: u64) -> Queued {
+    let host_runner = world.host_held();
+    let ran = world.root.join("queued-ran");
+    let script = format!("touch {}; sleep 600", ran.display());
+    let command = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &worktree(world))
+        .env("AFKCONVOY_ISSUE", "7")
+        .args(["--now", &asked.to_string(), "exclusive", "--", "sh", "-c", &script])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !ran.exists() {
+        assert!(std::time::Instant::now() < until, "the queued command never ran");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Queued { command, _host_runner: host_runner }
 }
 
 #[test]
@@ -571,7 +587,7 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
     show(&world, &["Running the heavy tests alone.", "❯ "]);
-    queued(&world, 1250);
+    let _queued = queued(&world, 1250);
 
     // past grace, its screen showing nothing running: it waits in the queue
     let ticked = tick(&world, 1300);

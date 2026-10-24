@@ -8,6 +8,7 @@ use crate::common;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use common::{Rendered, World, card, carded, git, write};
@@ -504,6 +505,56 @@ fn a_fleet_instance_held_in_the_foreground_serves_the_panel_as_a_host_runner_doe
     let page = page_with(port_in(&answer["panel"]), "<b>Tick 1</b>");
     assert_eq!(checkouts(&page), [world.clone.display().to_string()]);
     assert_eq!(carded(page.node("work"), "at-work"), [3], "{}", page.html);
+}
+
+#[test]
+fn the_exclusive_queue_its_host_runner_holds_is_on_the_page_printed_and_the_page_served() {
+    let world = World::new();
+    let running = world.running(&["--instance", "alpha", "--host", "h1"]);
+    running.line(SOON).expect("the first tick");
+    let exclusive = |script: &str| {
+        let afkconvoy = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
+        { afkconvoy }
+            .env("CACHE", world.cache())
+            .env("AFKCONVOY_ISSUE", "12")
+            .args(["exclusive", "--", "sh", "-c", script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let printed_with = |said: &str| {
+        let deadline = Instant::now() + SOON;
+        let mut page = printed(&world, &world.clone, &[]);
+        while !page.html.contains(said) {
+            assert!(Instant::now() < deadline, "{said:?} was never printed: {}", page.html);
+            std::thread::sleep(Duration::from_millis(50));
+            page = printed(&world, &world.clone, &[]);
+        }
+        page
+    };
+    let alone = exclusive("until [ -e \"$CACHE/done\" ]; do sleep 0.05; done");
+    printed_with("runs alone");
+    let after = exclusive("true");
+
+    // printed: `panel` asks the host runner on its socket
+    let page = printed_with("waits behind 1");
+    assert!(page.html.contains("<h2>Run alone on this host</h2>"), "{}", page.html);
+    assert!(page.html.contains("runs alone, for "), "{}", page.html);
+    assert!(page.html.contains(" · #12 in "), "{}", page.html);
+
+    // served: the page the next tick makes reads it where it is held
+    world.afk(&["wake"]).ok();
+    let answer = world.afk_in(&world.root, &["panel", "--open"]).ok();
+    let page = page_with(port_in(&answer["panel"]), "waits behind 1");
+    assert!(page.html.contains("<h2>Run alone on this host</h2>"), "{}", page.html);
+
+    write(&world.cache(), "done", "");
+    for command in [alone, after] {
+        assert!(command.wait_with_output().unwrap().status.success());
+    }
+    let page = printed(&world, &world.clone, &[]);
+    assert!(!page.html.contains("Run alone on this host"), "the queue is empty: {}", page.html);
 }
 
 /// Has the remote lose the base branch the config names: a start of the

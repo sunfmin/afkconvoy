@@ -1,24 +1,17 @@
 //! Host sleep: a fleet instance putting its host to sleep once every fleet
 //! instance on it is idle, within the host's sleep hours (docs/adr/0016).
-//! What keeps the host awake is decided here, from what each instance
-//! answered, how long the keyboard and mouse have gone untouched, when the
-//! host last woke and its local time; asking the instances, reading the host
+//! What keeps the host awake is decided here, from how each instance stands,
+//! how long the keyboard and mouse have gone untouched, when the host last
+//! woke and its local time; holding how the instances stand, reading the host
 //! and putting it to sleep are the effect layer's.
 
 use flux_rs::attrs::*;
-use serde::{Deserialize, Serialize};
 
 /// How long, in seconds, every instance must have been idle — and the
 /// keyboard and mouse untouched — before the host is put to sleep: ten
 /// minutes. It is also how long a check that kept the host awake waits before
 /// the next.
 pub const IDLE_WAIT: u64 = 600;
-
-/// How long, in seconds, an instance is given to answer.
-pub const ANSWERS_WITHIN: u64 = 2;
-
-/// How long, in seconds, an instance asked to tick first is given to answer.
-pub const TICKS_WITHIN: u64 = 120;
 
 /// The minutes of a day.
 pub const DAY: u32 = 24 * 60;
@@ -115,15 +108,12 @@ fn time(said: &str) -> Option<u32> {
     }
 }
 
-/// What a fleet instance answers when another on its host asks after it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// How a fleet instance stands, as its host runner holds it for host sleep:
+/// what it said after its last tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Standing {
     pub instance: String,
-    /// The repo it works, as `owner/repo` or its checkout's path.
-    pub repo: String,
-    /// The afkconvoy it was built from.
-    pub version: String,
-    /// Whether it was told `--no-host-sleep`.
+    /// Whether the host settings kept the host awake as it last said.
     pub no_host_sleep: bool,
     /// Whether it is idle now.
     pub idle: bool,
@@ -147,16 +137,6 @@ pub fn worked(held: usize, on_train: bool) -> bool {
     held > 0 || on_train
 }
 
-/// One instance of the host, as asking it came out.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Asked {
-    Answered(Standing),
-    /// It was asked, and did not answer in time.
-    Silent {
-        instance: String,
-    },
-}
-
 /// One thing that keeps the host awake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Awake {
@@ -176,9 +156,9 @@ pub enum Awake {
     Touched {
         untouched: u64,
     },
-    Silent {
-        instance: String,
-    },
+    /// The instance deciding was woken while it waited for the others to
+    /// tick: something changed for its fleet.
+    Woken,
     /// It was told `--no-host-sleep`.
     Told {
         instance: String,
@@ -209,7 +189,9 @@ impl Awake {
             Awake::Touched { untouched } => {
                 format!("the keyboard or mouse was used {untouched}s ago")
             }
-            Awake::Silent { instance } => format!("{instance} did not answer in time"),
+            Awake::Woken => {
+                "this instance was woken while it waited for the others to tick".to_string()
+            }
             Awake::Told { instance } => format!("{instance} was told --no-host-sleep"),
             Awake::Busy { instance } => format!("{instance} is not idle"),
             Awake::NotLongIdle { instance, idle_for } => {
@@ -233,15 +215,15 @@ pub struct Host {
 }
 
 /// What keeps the host awake at `now`, for an instance that last worked at
-/// `worked`, given `host`, its sleep hours `hours`, and what every instance on
-/// it — itself included — answered, each having to have been idle `wait`
+/// `worked`, given `host`, its sleep hours `hours`, and how every instance on
+/// it — itself included — stands, each having to have been idle `wait`
 /// seconds and the keyboard and mouse untouched `IDLE_WAIT`: nothing, and the
 /// host is put to sleep.
 pub fn awake(
     worked: Option<u64>,
     host: &Host,
     hours: &Hours,
-    asked: &[Asked],
+    standings: &[Standing],
     now: u64,
     wait: u64,
 ) -> Vec<Awake> {
@@ -261,14 +243,7 @@ pub fn awake(
         Some(untouched) if untouched < IDLE_WAIT => awake.push(Awake::Touched { untouched }),
         Some(_) => {}
     }
-    for one in asked {
-        let standing = match one {
-            Asked::Answered(standing) => standing,
-            Asked::Silent { instance } => {
-                awake.push(Awake::Silent { instance: instance.clone() });
-                continue;
-            }
-        };
+    for standing in standings {
         let instance = standing.instance.clone();
         let idle_for = now.saturating_sub(standing.since);
         if standing.no_host_sleep {
@@ -338,15 +313,7 @@ mod tests {
     use super::*;
 
     fn standing(instance: &str, idle: bool, since: u64) -> Standing {
-        Standing {
-            instance: instance.into(),
-            repo: "o/r".into(),
-            version: "0.4.3".into(),
-            no_host_sleep: false,
-            idle,
-            since,
-            worked: Some(100),
-        }
+        Standing { instance: instance.into(), no_host_sleep: false, idle, since, worked: Some(100) }
     }
 
     const HOST: Host = Host { woke: Some(50), untouched: Some(900), local: Some(3600) };
@@ -363,11 +330,8 @@ mod tests {
 
     #[test]
     fn every_instance_long_idle_and_the_host_untouched_puts_it_to_sleep() {
-        let asked = [
-            Asked::Answered(standing("alpha", true, 1000)),
-            Asked::Answered(standing("beta", true, 1000)),
-        ];
-        assert_eq!(awake(Some(100), &HOST, &SLEEP_HOURS, &asked, 1600, IDLE_WAIT), []);
+        let standings = [standing("alpha", true, 1000), standing("beta", true, 1000)];
+        assert_eq!(awake(Some(100), &HOST, &SLEEP_HOURS, &standings, 1600, IDLE_WAIT), []);
         assert_eq!(
             awake(Some(100), &HOST, &SLEEP_HOURS, &[], 1600, IDLE_WAIT),
             [],
@@ -379,14 +343,9 @@ mod tests {
     fn each_thing_that_keeps_the_host_awake_is_said() {
         let mut told = standing("gamma", true, 0);
         told.no_host_sleep = true;
-        let asked = [
-            Asked::Answered(standing("alpha", false, 1500)),
-            Asked::Answered(standing("beta", true, 1200)),
-            Asked::Answered(told),
-            Asked::Silent { instance: "delta".into() },
-        ];
+        let standings = [standing("alpha", false, 1500), standing("beta", true, 1200), told];
         let host = Host { woke: Some(50), untouched: Some(30), local: Some(at(12, 0)) };
-        let said: Vec<String> = awake(Some(100), &host, &SLEEP_HOURS, &asked, 1600, IDLE_WAIT)
+        let said: Vec<String> = awake(Some(100), &host, &SLEEP_HOURS, &standings, 1600, IDLE_WAIT)
             .iter()
             .map(Awake::said)
             .collect();
@@ -398,8 +357,11 @@ mod tests {
                 "alpha is not idle",
                 "beta has been idle 400s only",
                 "gamma was told --no-host-sleep",
-                "delta did not answer in time",
             ]
+        );
+        assert_eq!(
+            Awake::Woken.said(),
+            "this instance was woken while it waited for the others to tick"
         );
     }
 

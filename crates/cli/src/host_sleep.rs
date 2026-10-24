@@ -1,69 +1,137 @@
-//! Host sleep's effect half (docs/adr/0016): the asking of every other fleet
-//! instance of the host runner how it stands, the reading of the host — when
-//! it last woke, how long its keyboard and mouse have gone untouched, its
-//! local time — and `pmset sleepnow`. What keeps the host awake is the core's to decide
-//! (`afkconvoy_core::host_sleep::awake`).
+//! Host sleep's effect half (docs/adr/0016): how every fleet instance of the
+//! host runner stands, held by the host runner itself (docs/adr/0023); the
+//! reading of the host — when it last woke, how long its keyboard and mouse
+//! have gone untouched, its local time — and `pmset sleepnow`. What keeps the host awake is
+//! the core's to decide (`afkconvoy_core::host_sleep::awake`).
 //!
-//! Every fleet instance of a host is held by its one host runner
-//! (docs/adr/0023), so the instances it asks are those of its own process
-//! (`Peers`): each is asked how it stands, or to tick first and then say
-//! so, and answers with its `Standing`.
+//! Each fleet instance says how it stands as each of its ticks ends
+//! (`HostSleep::ticked`), and a check reads how every one stands from there:
+//! none is asked. One check is made on the host at a time. Before it puts the
+//! host to sleep, it wakes every other instance to tick once more, ticks once
+//! more itself, and waits until each has ended a tick it began after it was
+//! woken — or has ended — to find each still idle.
 
+use std::collections::BTreeMap;
 use std::process::Command;
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::Duration;
 
-use afkconvoy_core::host_sleep::{
-    ANSWERS_WITHIN, Asked, Awake, Host, Hours, SLEEP_HOURS, Standing, TICKS_WITHIN, awake, check_at,
-};
+use afkconvoy_core::host_sleep::{Awake, Host, Hours, SLEEP_HOURS, Standing, awake, check_at};
 use anyhow::{Context, Result, bail};
 
 use crate::host_settings;
 use crate::stop::Stop;
-use crate::wake::Waker;
+use crate::wake::{Waker, Wakes};
 
-/// What an instance answers, and the askers waiting for its next tick.
-struct Shared {
-    standing: Standing,
-    waiting: Vec<Sender<Standing>>,
-}
+/// How often a check waiting for the others' ticks looks whether its `run`
+/// was told to stop, or woken.
+const LOOKS_EVERY: Duration = Duration::from_millis(250);
 
-/// The fleet instances of one host runner, as host sleep asks them: each from
-/// its `HostSleep::open` until that is dropped. A clone is the same.
+/// How every fleet instance of one host runner stands, as host sleep reads
+/// it: each from its `HostSleep::open` until that is dropped, and which of
+/// them makes the check underway. A clone is the same.
 #[derive(Clone, Default)]
-pub struct Peers {
-    open: Arc<Mutex<Vec<Peer>>>,
+pub struct Standings {
+    held: Arc<(Mutex<Held>, Condvar)>,
 }
 
-/// One fleet instance among its peers: how it stands, and how it is woken to
-/// tick.
-#[derive(Clone)]
-struct Peer {
-    shared: Arc<Mutex<Shared>>,
+#[derive(Default)]
+struct Held {
+    /// Each fleet instance, by the key it opened with.
+    each: BTreeMap<u64, One>,
+    /// The key the next instance to open takes.
+    next: u64,
+    /// The instance whose check is underway: one at a time.
+    checking: Option<u64>,
+}
+
+/// One fleet instance, as it last said it stands.
+struct One {
+    standing: Standing,
+    /// How many ticks it began, and how many it ended.
+    began: u64,
+    ended: u64,
+    /// How it is woken to tick.
     waker: Waker,
 }
 
-impl Peers {
-    fn open(&self) -> MutexGuard<'_, Vec<Peer>> {
-        self.open.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+impl Standings {
+    fn held(&self) -> MutexGuard<'_, Held> {
+        self.held.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
-}
 
-/// What to ask a peer.
-#[derive(Clone, Copy)]
-enum Question {
-    /// How it stands.
-    Standing,
-    /// To tick first, and then say how it stands.
-    Tick,
+    /// How every instance stands now.
+    fn every(held: &Held) -> Vec<Standing> {
+        held.each.values().map(|one| one.standing.clone()).collect()
+    }
+
+    /// Changes the instance `key` as `change` says, and tells a check that
+    /// waits for it.
+    fn change(&self, key: u64, change: impl FnOnce(&mut One)) {
+        if let Some(one) = self.held().each.get_mut(&key) {
+            change(one);
+        }
+        self.held.1.notify_all();
+    }
+
+    /// Wakes every instance but `key` to tick → each, by its key, with the
+    /// ticks it had begun as it was woken.
+    fn wake_others(&self, key: u64) -> Vec<(u64, u64)> {
+        let others: Vec<(u64, u64, Waker)> = self
+            .held()
+            .each
+            .iter()
+            .filter(|(other, _)| **other != key)
+            .map(|(other, one)| (*other, one.began, one.waker.clone()))
+            .collect();
+        // Outside the lock: a wake may be said in the woken one's log.
+        let woken = |(other, began, waker): (u64, u64, Waker)| {
+            waker.wake();
+            (other, began)
+        };
+        others.into_iter().map(woken).collect()
+    }
+
+    /// Waits until each of `asked` — an instance by its key, with the ticks
+    /// it had begun as it was woken — has ended a tick it began since, or has
+    /// ended, and no longer once `given_up` → how every instance stands then;
+    /// `None` where it gave up first.
+    fn ticked_since(
+        &self,
+        asked: &[(u64, u64)],
+        given_up: impl Fn() -> bool,
+    ) -> Option<Vec<Standing>> {
+        let mut held = self.held();
+        loop {
+            let waits = |(key, began): &(u64, u64)| {
+                held.each.get(key).is_some_and(|one| one.ended <= *began)
+            };
+            if !asked.iter().any(waits) {
+                return Some(Standings::every(&held));
+            }
+            if given_up() {
+                return None;
+            }
+            let waited = self.held.1.wait_timeout(held, LOOKS_EVERY);
+            held = waited.map_or_else(|poisoned| poisoned.into_inner().0, |(held, _)| held);
+        }
+    }
+
+    /// Lets the check of the instance `key` go, if it makes it: another may
+    /// check from now on.
+    fn let_go(&self, key: u64) {
+        let mut held = self.held();
+        if held.checking == Some(key) {
+            held.checking = None;
+        }
+    }
 }
 
 /// One check, as far as it got.
 pub enum Checked {
-    /// Nothing keeps the host awake so far: every instance is asked to tick
-    /// first, this one too — the next tick is now, and the check ends after it.
+    /// Nothing keeps the host awake so far: every other instance is woken to
+    /// tick once more, and this one ticks too — the next tick is now, and the
+    /// check ends after it.
     TickNow,
     /// The host stays awake, for these.
     Awake(Vec<Awake>),
@@ -76,125 +144,145 @@ pub enum Checked {
     Stopped,
 }
 
-/// A fleet instance's part in host sleep: its peers ask it from `open` until
-/// it is dropped, which takes it from among them.
+/// A fleet instance's part in host sleep: it stands among the others from
+/// `open` until it is dropped, which takes it from among them.
 pub struct HostSleep {
-    peers: Peers,
-    shared: Arc<Mutex<Shared>>,
+    standings: Standings,
+    key: u64,
+    /// Its own wakes: one heard while a check waits ends the check.
+    wakes: Wakes,
     /// How long, in seconds, every instance must have been idle.
     wait: u64,
     /// When this instance last checked.
     checked: Option<u64>,
-    /// The other instances asked to tick first, while a check waits for this
-    /// one's own tick.
-    asking: Option<Vec<Asking>>,
-}
-
-/// One instance asked, its answer to come.
-struct Asking {
-    instance: String,
-    answer: JoinHandle<Option<Standing>>,
+    /// The other instances woken to tick once more, each by its key with the
+    /// ticks it had begun then, while a check waits for this one's own tick.
+    asked: Option<Vec<(u64, u64)>>,
 }
 
 impl HostSleep {
-    /// Joins `peers` as `standing` says this instance is, woken by `waker`
-    /// when one asks it to tick, and puts the host to sleep within its sleep
-    /// hours unless the host settings keep it awake, as they say at each
-    /// check. Called before the first tick.
-    pub fn open(standing: Standing, waker: Waker, peers: &Peers, wait: u64) -> HostSleep {
-        let shared = Arc::new(Mutex::new(Shared { standing, waiting: vec![] }));
-        peers.open().push(Peer { shared: Arc::clone(&shared), waker });
-        HostSleep { peers: peers.clone(), shared, wait, checked: None, asking: None }
+    /// Stands among `standings` as `standing` says this instance is, woken by
+    /// `wakes` when a check has it tick once more, and puts the host to sleep
+    /// within its sleep hours unless the host settings keep it awake, as they
+    /// say at each check. Called before the first tick.
+    pub fn open(standing: Standing, wakes: &Wakes, standings: &Standings, wait: u64) -> HostSleep {
+        let key = {
+            let mut held = standings.held();
+            let key = held.next;
+            held.next += 1;
+            let one = One { standing, began: 0, ended: 0, waker: wakes.waker() };
+            held.each.insert(key, one);
+            key
+        };
+        HostSleep {
+            standings: standings.clone(),
+            key,
+            wakes: wakes.clone(),
+            wait,
+            checked: None,
+            asked: None,
+        }
+    }
+
+    /// Says that this instance begins a tick.
+    pub fn begins(&self) {
+        self.standings.change(self.key, |one| one.began += 1);
     }
 
     /// Says how this instance stands after a tick at `now`: idle or not, and
     /// whether it worked — `None` of a tick that failed whole, which is not
-    /// idle. Every asker waiting for a tick is answered.
+    /// idle. A check that waits for its tick is told.
     pub fn ticked(&self, now: u64, idle: Option<(bool, bool)>) {
         let kept_awake = host_settings::kept_awake();
-        let mut shared = self.shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let (idle, worked) = idle.unwrap_or((false, false));
-        let standing = &mut shared.standing;
-        standing.no_host_sleep = kept_awake;
-        if standing.idle != idle {
-            standing.since = now;
-        }
-        standing.idle = idle;
-        if worked {
-            standing.worked = Some(now);
-        }
-        let standing = standing.clone();
-        for asker in std::mem::take(&mut shared.waiting) {
-            let _ = asker.send(standing.clone());
-        }
+        self.standings.change(self.key, |one| {
+            let standing = &mut one.standing;
+            standing.no_host_sleep = kept_awake;
+            if standing.idle != idle {
+                standing.since = now;
+            }
+            standing.idle = idle;
+            if worked {
+                standing.worked = Some(now);
+            }
+            one.ended += 1;
+        });
     }
 
     /// How this instance stands now, with what the host settings say of
-    /// host sleep read again — whether they keep the host awake is what it is
-    /// answered as from then on — and the host's sleep hours.
-    fn standing(&self) -> (Standing, Hours) {
+    /// host sleep read again — whether they keep the host awake is how it
+    /// stands from then on — and the host's sleep hours.
+    fn standing(&self) -> Option<(Standing, Hours)> {
         let host_sleep = host_settings::host_sleep();
-        let mut shared = self.shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        shared.standing.no_host_sleep = host_sleep.is_none();
-        (shared.standing.clone(), host_sleep.unwrap_or(SLEEP_HOURS))
+        let mut held = self.standings.held();
+        let one = held.each.get_mut(&self.key)?;
+        one.standing.no_host_sleep = host_sleep.is_none();
+        Some((one.standing.clone(), host_sleep.unwrap_or(SLEEP_HOURS)))
     }
 
-    /// When this instance checks next; `None`: it does not, not being idle or
-    /// the host settings keeping the host awake. A check underway is due now.
+    /// When this instance checks next; `None`: it does not, not being idle,
+    /// the host settings keeping the host awake, or another instance's check
+    /// being underway. A check of its own underway is due now.
     pub fn due(&self) -> Option<u64> {
-        let (standing, hours) = self.standing();
-        let idle_since = standing.idle.then_some(standing.since);
-        match self.asking {
-            Some(_) => Some(0),
-            None if standing.no_host_sleep => None,
-            None => check_at(idle_since, self.checked, self.wait, &hours, local),
+        if self.asked.is_some() {
+            return Some(0);
         }
+        let (standing, hours) = self.standing()?;
+        if standing.no_host_sleep || self.standings.held().checking.is_some() {
+            return None;
+        }
+        let idle_since = standing.idle.then_some(standing.since);
+        check_at(idle_since, self.checked, self.wait, &hours, local)
     }
 
-    /// Checks at `now`, if a check is due → how far it got. A check asks
-    /// every instance how it stands; if nothing keeps the host awake, it has
-    /// each — this one too — tick first (`Checked::TickNow`), and ends with the
+    /// Checks at `now`, if a check is due → how far it got. A check reads how
+    /// every instance stands; if nothing keeps the host awake, it has each —
+    /// this one too — tick once more (`Checked::TickNow`), and ends with the
     /// call after this instance's tick, by putting the host to sleep or not.
-    /// A `run` told to stop (`stop`) while a check waits is not held up by it,
-    /// and does not put the host to sleep.
+    /// A `run` told to stop (`stop`) while a check waits is not held up by
+    /// it, and does not put the host to sleep.
     pub fn check(&mut self, now: u64, clock: impl Fn() -> u64, stop: &Stop) -> Option<Checked> {
-        if let Some(asking) = self.asking.take() {
-            return Some(self.end(asking, clock, stop));
+        if let Some(asked) = self.asked.take() {
+            let checked = self.end(&asked, clock, stop);
+            self.standings.let_go(self.key);
+            return Some(checked);
         }
         if self.due().is_none_or(|due| due > now) {
             return None;
         }
+        let hours = self.standing().map_or(SLEEP_HOURS, |(_, hours)| hours);
+        let (worked, every) = {
+            let mut held = self.standings.held();
+            if held.checking.is_some() {
+                return None;
+            }
+            held.checking = Some(self.key);
+            let worked = held.each.get(&self.key).and_then(|one| one.standing.worked);
+            (worked, Standings::every(&held))
+        };
         self.checked = Some(now);
-        let (standing, hours) = self.standing();
-        let mut asked = vec![Asked::Answered(standing.clone())];
-        let answers = Duration::from_secs(ANSWERS_WITHIN);
-        asked.extend(wait_for(self.ask(Question::Standing), answers, || {}, || stop.told()));
-        if stop.told() {
-            return Some(Checked::Stopped);
-        }
-        let awake = awake(standing.worked, &read_host(now), &hours, &asked, now, self.wait);
+        let awake = awake(worked, &read_host(now), &hours, &every, now, self.wait);
         if !awake.is_empty() {
+            self.standings.let_go(self.key);
             return Some(Checked::Awake(awake));
         }
-        self.asking = Some(self.ask(Question::Tick));
+        self.asked = Some(self.standings.wake_others(self.key));
         Some(Checked::TickNow)
     }
 
-    /// Ends a check after this instance ticked: waits for the others it asked
-    /// to tick, answering any that asks it meanwhile with how it stands now.
-    fn end(&mut self, asking: Vec<Asking>, clock: impl Fn() -> u64, stop: &Stop) -> Checked {
-        let answering = || self.ticked_again();
-        let ticks = Duration::from_secs(TICKS_WITHIN);
-        let others = wait_for(asking, ticks, answering, || stop.told());
+    /// Ends a check after this instance ticked: waits until every other
+    /// instance it woke, `asked`, ticked once more or ended — no longer once
+    /// this one is told to stop or woken — and reads how each stands then.
+    fn end(&mut self, asked: &[(u64, u64)], clock: impl Fn() -> u64, stop: &Stop) -> Checked {
+        let every = self.standings.ticked_since(asked, || stop.told() || self.wakes.heard());
+        let now = clock();
+        self.checked = Some(now);
         if stop.told() {
             return Checked::Stopped;
         }
-        let now = clock();
-        self.checked = Some(now);
-        let (standing, hours) = self.standing();
-        let mut asked = vec![Asked::Answered(standing.clone())];
-        asked.extend(others);
-        let awake = awake(standing.worked, &read_host(now), &hours, &asked, now, self.wait);
+        let Some(every) = every else { return Checked::Awake(vec![Awake::Woken]) };
+        let Some((standing, hours)) = self.standing() else { return Checked::Stopped };
+        let awake = awake(standing.worked, &read_host(now), &hours, &every, now, self.wait);
         if !awake.is_empty() {
             return Checked::Awake(awake);
         }
@@ -203,87 +291,19 @@ impl HostSleep {
             Err(error) => Checked::Failed(format!("{error:#}")),
         }
     }
-
-    /// Answers every asker waiting for a tick with how this instance stands:
-    /// it ticked within the check it is making.
-    fn ticked_again(&self) {
-        let mut shared = self.shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let standing = shared.standing.clone();
-        for asker in std::mem::take(&mut shared.waiting) {
-            let _ = asker.send(standing.clone());
-        }
-    }
-
-    /// Asks every other instance among its peers `question`, each in a
-    /// thread of its own.
-    fn ask(&self, question: Question) -> Vec<Asking> {
-        let others: Vec<Peer> = self
-            .peers
-            .open()
-            .iter()
-            .filter(|peer| !Arc::ptr_eq(&peer.shared, &self.shared))
-            .cloned()
-            .collect();
-        let asked = |peer: Peer| {
-            let instance = lock(&peer.shared).standing.instance.clone();
-            let answer = std::thread::spawn(move || answer(&peer, question));
-            Asking { instance, answer }
-        };
-        others.into_iter().map(asked).collect()
-    }
 }
 
 impl Drop for HostSleep {
     fn drop(&mut self) {
-        self.peers.open().retain(|peer| !Arc::ptr_eq(&peer.shared, &self.shared));
-    }
-}
-
-fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
-    shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// What `peer` answers `question`: how it stands; asked to tick first, how
-/// it stands once it ticked, or nothing where it did not within
-/// `TICKS_WITHIN`.
-fn answer(peer: &Peer, question: Question) -> Option<Standing> {
-    match question {
-        Question::Standing => Some(lock(&peer.shared).standing.clone()),
-        Question::Tick => {
-            let (send, ticked): (Sender<Standing>, Receiver<Standing>) = channel();
-            lock(&peer.shared).waiting.push(send);
-            peer.waker.wake();
-            ticked.recv_timeout(Duration::from_secs(TICKS_WITHIN)).ok()
+        let mut held = self.standings.held();
+        if held.checking == Some(self.key) {
+            held.checking = None;
         }
+        held.each.remove(&self.key);
+        drop(held);
+        // A check that waits for it waits no more.
+        self.standings.held.1.notify_all();
     }
-}
-
-/// Waits up to `within` for every one of `asking` to answer, calling `meanwhile`
-/// as it waits, and no longer once `given_up` → each as asking it came out:
-/// one that has not answered by then is silent.
-fn wait_for(
-    asking: Vec<Asking>,
-    within: Duration,
-    meanwhile: impl Fn(),
-    given_up: impl Fn() -> bool,
-) -> Vec<Asked> {
-    let started = Instant::now();
-    while started.elapsed() < within
-        && !given_up()
-        && asking.iter().any(|one| !one.answer.is_finished())
-    {
-        meanwhile();
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    meanwhile();
-    let came_out = |one: Asking| match one.answer.is_finished() {
-        true => match one.answer.join().ok().flatten() {
-            Some(standing) => Asked::Answered(standing),
-            None => Asked::Silent { instance: one.instance },
-        },
-        false => Asked::Silent { instance: one.instance },
-    };
-    asking.into_iter().map(came_out).collect()
 }
 
 /// What a check at `now` reads of the host.
@@ -364,13 +384,10 @@ fn sleep_now() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wake::Wakes;
 
     fn standing(instance: &str) -> Standing {
         Standing {
             instance: instance.into(),
-            repo: "o/r".into(),
-            version: crate::VERSION.into(),
             no_host_sleep: false,
             idle: true,
             since: 0,
@@ -378,39 +395,88 @@ mod tests {
         }
     }
 
-    /// Each one asked, and what it answered: its instance, where it did.
-    fn answers(asking: Vec<Asking>) -> Vec<(String, Option<String>)> {
-        let answered = |one: Asking| {
-            let answer = one.answer.join().unwrap();
-            (one.instance, answer.map(|standing| standing.instance))
-        };
-        asking.into_iter().map(answered).collect()
+    fn instances(every: &[Standing]) -> Vec<&str> {
+        every.iter().map(|standing| standing.instance.as_str()).collect()
     }
 
     #[test]
-    fn an_instance_asks_its_peers_alone_and_one_asked_to_tick_is_woken_and_answers_once_it_ticked()
-    {
-        let peers = Peers::default();
+    fn how_each_instance_stands_is_held_for_every_other_and_one_drops_out_as_it_ends() {
+        let standings = Standings::default();
         let (alpha_wakes, beta_wakes) = (Wakes::default(), Wakes::default());
-        let alpha = HostSleep::open(standing("alpha"), alpha_wakes.waker(), &peers, 0);
-        let beta = HostSleep::open(standing("beta"), beta_wakes.waker(), &peers, 0);
-        let other =
-            HostSleep::open(standing("gamma"), Wakes::default().waker(), &Peers::default(), 0);
-        let beta_answered = vec![("beta".to_string(), Some("beta".to_string()))];
-        assert_eq!(answers(alpha.ask(Question::Standing)), beta_answered, "not itself");
-        assert!(alpha_wakes.rest(Duration::ZERO).is_none(), "asked how it stands, none ticks");
-        assert!(beta_wakes.rest(Duration::ZERO).is_none());
-        assert!(answers(other.ask(Question::Standing)).is_empty(), "another runner's are not");
+        let alpha = HostSleep::open(standing("alpha"), &alpha_wakes, &standings, 0);
+        let beta = HostSleep::open(standing("beta"), &beta_wakes, &standings, 0);
+        let other = Standings::default();
+        let _gamma = HostSleep::open(standing("gamma"), &Wakes::default(), &other, 0);
+        let every = || Standings::every(&standings.held());
+        assert_eq!(instances(&every()), ["alpha", "beta"], "another runner's are not among them");
 
-        // asked to tick: woken, and answered once it ticked, as it stands then
-        let asking = alpha.ask(Question::Tick);
-        assert!(beta_wakes.rest(Duration::from_secs(5)).is_some(), "beta is woken");
         beta.ticked(100, Some((false, true)));
-        let answer = asking.into_iter().next().unwrap().answer.join().unwrap().unwrap();
-        assert_eq!((answer.idle, answer.since, answer.worked), (false, 100, Some(100)));
-
+        let beta_now = every()[1].clone();
+        assert_eq!((beta_now.idle, beta_now.since, beta_now.worked), (false, 100, Some(100)));
         drop(beta);
-        assert!(answers(alpha.ask(Question::Standing)).is_empty(), "one dropped is asked no more");
+        assert_eq!(instances(&every()), ["alpha"]);
+        drop(alpha);
+        assert!(every().is_empty());
+        assert!(beta_wakes.rest(Duration::ZERO).is_none(), "nobody was woken");
+    }
+
+    #[test]
+    fn a_check_wakes_the_others_and_waits_until_each_ended_a_tick_begun_after_or_ended() {
+        let standings = Standings::default();
+        let (beta_wakes, gamma_wakes) = (Wakes::default(), Wakes::default());
+        let alpha = HostSleep::open(standing("alpha"), &Wakes::default(), &standings, 0);
+        let beta = HostSleep::open(standing("beta"), &beta_wakes, &standings, 0);
+        let gamma = HostSleep::open(standing("gamma"), &gamma_wakes, &standings, 0);
+        // beta is in the middle of a tick as it is woken: that tick is not the one
+        beta.begins();
+        let asked = standings.wake_others(alpha.key);
+        assert_eq!(asked, [(beta.key, 1), (gamma.key, 0)]);
+        assert!(
+            beta_wakes.rest(Duration::ZERO).is_some() && gamma_wakes.rest(Duration::ZERO).is_some()
+        );
+        let waited = {
+            let standings = standings.clone();
+            let asked = asked.clone();
+            std::thread::spawn(move || standings.ticked_since(&asked, || false))
+        };
+        beta.ticked(10, Some((true, false)));
+        gamma.begins();
+        gamma.ticked(11, Some((true, false)));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!waited.is_finished(), "beta's tick began before it was woken");
+        beta.begins();
+        beta.ticked(12, Some((false, false)));
+        let every = waited.join().unwrap().expect("each ticked");
+        assert!(!every[1].idle, "as beta stands after its tick: {every:?}");
+
+        // one that ends is waited for no more, and one given up waits no longer
+        let asked = standings.wake_others(alpha.key);
+        let waited = {
+            let standings = standings.clone();
+            std::thread::spawn(move || standings.ticked_since(&asked, || false))
+        };
+        drop(beta);
+        gamma.begins();
+        gamma.ticked(13, Some((true, false)));
+        assert_eq!(instances(&waited.join().unwrap().unwrap()), ["alpha", "gamma"]);
+        let asked = standings.wake_others(alpha.key);
+        assert_eq!(standings.ticked_since(&asked, || true), None);
+    }
+
+    #[test]
+    fn one_check_is_underway_on_the_host_at_a_time() {
+        let standings = Standings::default();
+        let alpha = HostSleep::open(standing("alpha"), &Wakes::default(), &standings, 0);
+        let beta = HostSleep::open(standing("beta"), &Wakes::default(), &standings, 0);
+        alpha.ticked(0, Some((true, false)));
+        beta.ticked(0, Some((true, false)));
+        assert_eq!(beta.due(), Some(0));
+        standings.held().checking = Some(alpha.key);
+        assert_eq!(beta.due(), None, "alpha's check is underway");
+        standings.let_go(beta.key);
+        assert_eq!(beta.due(), None, "only alpha lets its own check go");
+        drop(alpha);
+        assert_eq!(beta.due(), Some(0), "nor holds it once it ended");
     }
 
     #[test]
