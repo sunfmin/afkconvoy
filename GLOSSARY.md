@@ -11,7 +11,7 @@ One repo's fleet in its host's host runner, and everything it owns: the workers 
 _Avoid_: launcher, coordinator, node, process (the host runner is the process)
 
 **Host runner**:
-A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way.
+A host's one long-running process of the fleet, holding a fleet instance for each checkout on its host's checkout list. `run` starts it in the background where none runs, and adds its checkout to it either way. `stop` takes one checkout off its list, and `stop --all`, or SIGTERM, stops it and keeps the list.
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
