@@ -675,6 +675,19 @@ impl World {
         log.lines().map(str::to_string).collect()
     }
 
+    /// The directory the stand-in login shell was started in, each time it
+    /// was, in order.
+    pub fn shell_asked_in(&self) -> Vec<String> {
+        let log = std::fs::read_to_string(self.root.join("shell-asked-in")).unwrap_or_default();
+        log.lines().map(str::to_string).collect()
+    }
+
+    /// The directory the stand-in orca was run from, each time it was, in
+    /// order: real orca takes the worktree a call names none of from there.
+    pub fn orca_run_from(&self) -> Vec<String> {
+        serde_json::from_value(self.orca()["from"].clone()).unwrap_or_default()
+    }
+
     /// Has the remote turn down every push of a ref whose name starts with
     /// `prefix`, as a server's rule would.
     pub fn remote_rejects(&self, prefix: &str) {
@@ -722,6 +735,7 @@ impl Drop for World {
 const SHELL: &str = r#"#!/bin/sh
 root=${0%/*}/..
 echo "$2" >> "$root/shell-asked"
+pwd -P >> "$root/shell-asked-in"
 case "$2" in
   *"You are the caster of a fleet"*)
     # A caster's prompt: answered with what `caster-answer` holds.
@@ -1001,6 +1015,32 @@ pub fn git(cwd: &Path, args: &[&str]) -> String {
     let out = Command::new("git").current_dir(cwd).args(args).envs(GIT_ENV).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// The commands `brief` gives a worker that refuse a worker's worktree as
+/// their checkout, as each one's help says: of every word after `afkconvoy `
+/// in it that is a command. A worker runs each in its worktree, so none
+/// should.
+pub fn refusing_a_workers_worktree(brief: &str) -> Vec<String> {
+    let word = |after: &str| {
+        let end = after.find(|c: char| !(c.is_ascii_lowercase() || c == '-'));
+        after[..end.unwrap_or(after.len())].to_string()
+    };
+    let named = brief.split("afkconvoy ").skip(1).map(word);
+    let mut named: Vec<String> = named.filter(|name| !name.is_empty()).collect();
+    named.sort();
+    named.dedup();
+    named.retain(|name| {
+        let help = Command::new(env!("CARGO_BIN_EXE_afkconvoy")).args([name, "--help"]).output();
+        let help = help.unwrap();
+        // A word that is no command answers no help.
+        let text = String::from_utf8_lossy(&help.stdout);
+        let said = text.split_once("##### Which checkout it is about").map(|(_, said)| said);
+        let said = said.map(|said| said.split("\n##### ").next().unwrap_or_default());
+        help.status.success()
+            && said.is_some_and(|said| said.contains("A worker's worktree is refused"))
+    });
+    named
 }
 
 fn read(file: &Path) -> Value {

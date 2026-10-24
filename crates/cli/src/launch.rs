@@ -5,6 +5,7 @@
 use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,8 @@ pub struct Proposed {
     command: String,
     /// `type`'s answer about the first word; `None` when it found nothing.
     resolution: Option<String>,
+    /// Where its login shell was asked (`Launches::dir`).
+    dir: PathBuf,
 }
 
 impl Proposed {
@@ -46,11 +49,17 @@ impl Proposed {
         self.resolution.is_some()
     }
 
+    /// Where its login shell was asked, and is asked again about it: the
+    /// checkout of the start it is for.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// What the login shell prints when the command is asked which flags it
     /// takes, as its harness asks (`Harness::flags_question`); `None` when
     /// that failed.
     pub fn flags(&self) -> Option<String> {
-        login_shell(&self.harness.flags_question(&self.command))
+        login_shell(&self.dir, &self.harness.flags_question(&self.command))
     }
 
     /// Why it cannot start a worker, when it cannot.
@@ -78,6 +87,11 @@ pub struct Launches {
     /// (`plan`, `doctor`) asks no human, and a command only a human could
     /// say is unknown to it.
     starts: bool,
+    /// The checkout of that repo the start is in, where the login shell is
+    /// asked: a worker's shell starts in a worktree of it, with the files
+    /// that set up a toolchain for the repo there too, and nothing is asked
+    /// in the directory the process happens to run in.
+    dir: PathBuf,
     proposed: Vec<(Harness, OnceCell<Option<Proposed>>)>,
 }
 
@@ -106,6 +120,7 @@ impl Launches {
             default: first.unwrap_or(Harness::DEFAULT),
             bound: config.is_some_and(|config| config.bound.is_some()),
             starts: false,
+            dir: repo.dir.clone(),
             proposed: Harness::ALL.map(|harness| (harness, OnceCell::new())).into(),
         }
     }
@@ -127,9 +142,8 @@ impl Launches {
     pub fn proxy_json(&self) -> serde_json::Value {
         // A login rc file may print anything before the answer. Frame the
         // two values so those lines cannot become proxy bypass hosts.
-        let inherited =
-            login_shell("printf 'AFKCONVOY_PROXY\\000%s\\000%s' \"${no_proxy-}\" \"${NO_PROXY-}\"")
-                .unwrap_or_default();
+        let asked = "printf 'AFKCONVOY_PROXY\\000%s\\000%s' \"${no_proxy-}\" \"${NO_PROXY-}\"";
+        let inherited = login_shell(&self.dir, asked).unwrap_or_default();
         let values = inherited.split_once("AFKCONVOY_PROXY\0").map_or("", |(_, values)| values);
         let (lower, upper) = values.split_once('\0').unwrap_or(("", ""));
         serde_json::Value::Array(Harness::ALL.into_iter().map(|harness| {
@@ -175,9 +189,11 @@ impl Launches {
             harness.key()
         ))?;
         let resolution = first_word(&command)
-            .and_then(|word| login_shell(&format!("type -- '{}'", word.replace('\'', "'\\''"))))
+            .and_then(|word| {
+                login_shell(&self.dir, &format!("type -- '{}'", word.replace('\'', "'\\''")))
+            })
             .filter(|answer| !answer.trim().is_empty());
-        Ok(Some(Proposed { harness, command, resolution }))
+        Ok(Some(Proposed { harness, command, resolution, dir: self.dir.clone() }))
     }
 
     /// The command every worker of `harness` is started with, checked to
@@ -354,27 +370,34 @@ fn found_under(dir: &std::path::Path, ends: &str) -> Option<std::path::PathBuf> 
     None
 }
 
-/// Runs `script` in the user's interactive login shell → what it printed.
-/// `None` when it failed, timed out, or exited non-zero: `type` prints "not
-/// found" and exits 1, so its output alone proves nothing.
-fn login_shell(script: &str) -> Option<String> {
-    let (succeeded, printed) = ask_login_shell(script)?;
+/// Runs `script` in the user's interactive login shell, started in `dir` →
+/// what it printed. `None` when it failed, timed out, or exited non-zero:
+/// `type` prints "not found" and exits 1, so its output alone proves nothing.
+fn login_shell(dir: &Path, script: &str) -> Option<String> {
+    let (succeeded, printed) = ask_login_shell(dir, script)?;
     succeeded.then_some(printed)
 }
 
 /// Runs `script` in the user's interactive login shell — where aliases and
 /// rc-defined functions exist, and what orca gives a worker: it inherits
-/// nothing from the shell the fleet was started in → whether it exited zero,
-/// and what it printed. `None` when it could not run or timed out.
-pub fn ask_login_shell(script: &str) -> Option<(bool, String)> {
-    ask_login_shell_within(script, SHELL_TIMEOUT)
+/// nothing from the shell the fleet was started in — started in `dir`, a
+/// checkout of the repo it is asked for, as a worker's is started in a
+/// worktree of it → whether it exited zero, and what it printed. `None` when
+/// it could not run or timed out.
+pub fn ask_login_shell(dir: &Path, script: &str) -> Option<(bool, String)> {
+    ask_login_shell_within(dir, script, SHELL_TIMEOUT)
 }
 
 /// `ask_login_shell`, given `timeout` to answer.
-pub(crate) fn ask_login_shell_within(script: &str, timeout: Duration) -> Option<(bool, String)> {
+pub(crate) fn ask_login_shell_within(
+    dir: &Path,
+    script: &str,
+    timeout: Duration,
+) -> Option<(bool, String)> {
     let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty());
     let mut child = Command::new(shell.as_deref().unwrap_or("/bin/zsh"))
         .args(["-lic", script])
+        .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

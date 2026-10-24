@@ -181,7 +181,7 @@ The --patch overlay, applied last on either profile, loads the guard and orca st
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. It only reads: a worker's worktree is one too.
 
 #### `afkconvoy check`
 
@@ -254,7 +254,7 @@ Other errors, as {"error": …}: the repo's config names no team and no flag was
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. It only reads: a worker's worktree is one too.
 
 #### `afkconvoy doctor`
 
@@ -600,7 +600,7 @@ A start on this host reaches some hosts past the proxy with `--worker-no-proxy [
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 #### `afkconvoy panel`
 
@@ -672,7 +672,7 @@ Its errors, as {"error": …} with a non-zero exit, none of which changes anythi
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. Without `--open` it only reads, and a worker's worktree is one too. With `--open`, it is not: only a worker's own commands, and those that only read, are run there.
 
 #### `afkconvoy cast`
 
@@ -772,7 +772,7 @@ Errors, each with nothing chosen and no worker ended: the harness chosen cannot 
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -822,7 +822,7 @@ Errors: `--from` without `--instance`; neither `--list` nor `--from`; `--from` i
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. Without `--from` it only reads, and a worker's worktree is one too. With `--from`, it is not: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -882,7 +882,7 @@ Also: "is not in a git checkout"; the config, the team, the remote or GitHub can
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -957,7 +957,7 @@ Errors: a command the fleet needs is missing or logged out, or orca is not runni
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -1231,7 +1231,7 @@ Errors, as {"error": …} with a non-zero exit: a word that is none of the six; 
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. It only reads: a worker's worktree is one too.
 
 ### Run by whoever sets an agent up
 
@@ -1404,7 +1404,7 @@ Errors, as {"error": …} with a non-zero exit: the team has a fault — {"error
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ### Run by a worker
 
@@ -1428,7 +1428,7 @@ A worker, in its own worktree. Anyone else on the host may too: the queue is the
 
 ##### What it reads and writes
 
-It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then: the commands run one after the other, in the order they asked. The queue is a directory of the fleet's cache (`afkconvoy help cache`), holding one file for each command waiting or running. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next.
+It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then: the commands run one after the other, in the order they asked. The queue is a directory of the fleet's cache (`afkconvoy help cache`), holding one file for each command waiting or running. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
 
 It writes three lines to the tick log of this host for this repo: as it starts to wait, when another command is ahead of it; as its command runs; and as it ends, with its exit status. `doctor` and the panel show what runs alone and what waits.
 
@@ -1438,7 +1438,7 @@ While it waits or runs, the fleet counts the worker busy, not silent: it is not 
 
 Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
 
-It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the queue cannot be reached: the command did not run.
+It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the queue cannot be reached, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
 
 ##### What trips you up
 
@@ -1944,7 +1944,7 @@ Errors: the config, GitHub or the remote cannot be read; the remote has no base 
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. It only reads: a worker's worktree is one too.
 
 #### `afkconvoy dispatch`
 
@@ -2001,7 +2001,7 @@ DeepSeek Harness (`dsh`) workers run interactive dsh-tui, with dsh on PATH, on a
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2036,7 +2036,7 @@ Errors: the claim is another instance's ("is not this fleet's claim"); the workt
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2075,7 +2075,7 @@ Errors: the claim is another instance's ("is not this fleet's claim").
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2112,7 +2112,7 @@ Errors, each with nothing changed: the claim is another instance's; "is not park
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2154,7 +2154,7 @@ Errors, each with nothing sent: "has no stopped worker" — the instance holds n
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2190,7 +2190,7 @@ Errors, each with nothing changed: "has no stopped worker" — the instance hold
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2231,7 +2231,7 @@ Errors, each with nothing abandoned: "nothing is on the landing train"; "has no 
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2271,7 +2271,7 @@ Errors: the remote cannot be read; "is not in a git checkout".
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. It only reads: a worker's worktree is one too.
 
 #### `afkconvoy claim`
 
@@ -2304,7 +2304,7 @@ Errors: the push failed and it was not a lost race; the remote cannot be read.
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2339,7 +2339,7 @@ Errors: the claim is another instance's ("is not this fleet's claim"); it "moved
 
 ##### Which checkout it is about
 
-Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it with `-C <CHECKOUT>`: a checkout of the repo, or any directory in one, which names that checkout. What follows the command is its own: the checkout is not among it. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 
@@ -2375,7 +2375,7 @@ Errors: the remote cannot be read, or refuses the push.
 
 ##### Which checkout it is about
 
-Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands are run there.
+Name it after the command, as `[CHECKOUT]`: a checkout of the repo, or any directory in one, which names that checkout. Naming none, it is about the checkout it is run in. A worker's worktree is refused as its checkout: only a worker's own commands, and those that only read, are run there.
 
 ##### What it logs
 

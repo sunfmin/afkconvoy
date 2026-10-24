@@ -235,6 +235,8 @@ fn an_escalate_starts_the_consult_its_stage_names_with_the_history_and_the_reaso
     ] {
         assert!(told.contains(said), "{said}\n{told}");
     }
+    // Each command it is given is run in its worktree.
+    assert_eq!(common::refusing_a_workers_worktree(&told), [] as [String; 0]);
 
     // A second tick over an unchanged world does nothing.
     assert_eq!(did(&tick(&world, 1270)), [] as [&str; 0]);

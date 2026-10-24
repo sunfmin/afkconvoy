@@ -32,7 +32,7 @@ pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
     // The labels are those of the checkout the team's working tree is in, where
     // it is in one: the team's own repo is about no other.
     let checkout = crate::git::Repo::at(&dir).ok();
-    let loaded = crate::team::load(From::Dir(dir, team), checkout.as_ref())?;
+    let loaded = crate::team::load(From::Dir(dir.clone(), team), checkout.as_ref())?;
     let (kit, _) = crate::kit::running()?;
     let range = kit.range();
     let first = kit.first().context("the host kit holds no harness: run `afkconvoy kit`")?;
@@ -55,8 +55,9 @@ pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
         strengths
     );
     let question = first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt);
-    let Some((true, answer)) = crate::launch::ask_login_shell_within(&question, ANSWER_TIMEOUT)
-    else {
+    // Asked in the team's working tree, which is what it drafts for.
+    let asked = crate::launch::ask_login_shell_within(&dir, &question, ANSWER_TIMEOUT);
+    let Some((true, answer)) = asked else {
         bail!("the host kit's first, `{}`, did not answer the draft", first.harness.key());
     };
     let guidance = read_answer(&answer);

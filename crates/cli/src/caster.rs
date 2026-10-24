@@ -257,8 +257,8 @@ pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
     let kept = crate::kept::keep(first.harness, false)?.display().to_string();
     let prompt = caster_prompt(&issues, &offered(&kit, team.as_ref(), &offers), &how);
     let question = first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt);
-    let Some((true, answer)) = crate::launch::ask_login_shell_within(&question, ANSWER_TIMEOUT)
-    else {
+    let asked = crate::launch::ask_login_shell_within(&repo.dir, &question, ANSWER_TIMEOUT);
+    let Some((true, answer)) = asked else {
         bail!("the host kit's first, `{}`, did not answer the caster", first.harness.key());
     };
     let castings = read_castings(&answer);

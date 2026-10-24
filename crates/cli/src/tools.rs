@@ -6,6 +6,7 @@
 //! logged in.
 
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 use afkconvoy_core::tools::{ALWAYS, Found, Tool, refusal, remote_host};
 use anyhow::{Result, bail};
@@ -45,7 +46,7 @@ pub fn look(repo: &Repo, launch: Option<&Proposed>) -> Looked {
                 Found::NotRunning
             }),
             None => Found::Ready,
-            Some(question) => asked(tool, &question),
+            Some(question) => asked(&repo.dir, tool, &question),
         };
         found.push((tool, state));
     }
@@ -55,16 +56,17 @@ pub fn look(repo: &Repo, launch: Option<&Proposed>) -> Looked {
 
 /// What this host has of the harness `launch` starts, when it runs that
 /// harness by its own name (`Tool::of`): there where a worker is started,
-/// and logged in there. `None`: a wrapper, which is asked nothing.
+/// and logged in there — asked in the checkout `launch` is for. `None`: a
+/// wrapper, which is asked nothing.
 pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
     let tool = Tool::of(launch.harness(), launch.as_str())?;
     let state = match tool.login_question(None) {
         _ if !launch.resolves() => Found::Missing,
         None => Found::Ready,
-        Some(question) => asked(tool, &question),
+        Some(question) => asked(launch.dir(), tool, &question),
     };
     if tool == Tool::DshTui && state == Found::Ready {
-        let (ok, _) = ask_login_shell("command -v dsh").unwrap_or_default();
+        let (ok, _) = ask_login_shell(launch.dir(), "command -v dsh").unwrap_or_default();
         if !ok {
             return Some((Tool::Dsh, Found::Missing));
         }
@@ -72,9 +74,10 @@ pub fn harness(launch: &Proposed) -> Option<(Tool, Found)> {
     Some((tool, state))
 }
 
-/// What `tool` is found to be by its answer to `question`, in a login shell.
-fn asked(tool: Tool, question: &str) -> Found {
-    let (succeeded, printed) = ask_login_shell(question).unwrap_or_default();
+/// What `tool` is found to be by its answer to `question`, in a login shell
+/// started in `dir`.
+fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
+    let (succeeded, printed) = ask_login_shell(dir, question).unwrap_or_default();
     if tool.logged_in(succeeded, &printed) { Found::Ready } else { Found::LoggedOut }
 }
 
@@ -83,10 +86,13 @@ fn asked(tool: Tool, question: &str) -> Found {
 /// Of `launches`, the default harness's worker launch command is checked
 /// here, and its harness looked for, when the start knows it: every other
 /// harness's is `role::probe`'s, which reads the team that calls for them. An error names every fault at
-/// once, each with the line a human runs to fix it.
+/// once, each with the line a human runs to fix it — and a host kit that
+/// cannot be read only once no command is missing: a host with no git or no
+/// orca has no host kit yet either, and is told first what to install.
 pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
     let default = launches.default();
-    let launch = launches.of(default)?;
+    let read = launches.of(default);
+    let launch = read.as_ref().ok().copied().flatten();
     let looked = look(repo, launch);
     if let Some(why) = looked.orca_unasked {
         bail!(why);
@@ -94,10 +100,10 @@ pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
     let fault = launch.and_then(Proposed::fault);
     let fault =
         fault.map(|fault| launches.said(&fault, default, &[crate::role::BY_FIRST.to_string()]));
-    match refusal(&looked.found, looked.host.as_deref(), fault.as_deref()) {
-        Some(why) => bail!(why),
-        None => Ok(()),
+    if let Some(why) = refusal(&looked.found, looked.host.as_deref(), fault.as_deref()) {
+        bail!(why);
     }
+    read.map(|_| ())
 }
 
 /// Whether a directory of this process's `PATH` holds a program by this name.

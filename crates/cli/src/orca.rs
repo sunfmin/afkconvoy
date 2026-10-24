@@ -105,6 +105,7 @@ impl Asked {
         let out = Command::new("orca")
             .args(args)
             .arg("--json")
+            .current_dir(asked_from())
             .output()
             .with_context(|| format!("orca {what} could not run"))?;
         Ok(Asked {
@@ -134,6 +135,16 @@ impl Asked {
     }
 }
 
+/// Where orca is run from: the host user's home, or the root on a host with
+/// none. What orca takes from where it is run — the worktree a call names
+/// none of, which a question's terminal is opened in — is then never the
+/// directory afkconvoy happens to run in, which no command is about
+/// (docs/adr/0023).
+fn asked_from() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    home.filter(|home| home.is_dir()).unwrap_or_else(|| PathBuf::from("/"))
+}
+
 /// What a question's terminal is titled, where orca shows it.
 const QUESTION_TITLE: &str = "afkconvoy question";
 /// How many lines of a question's terminal are read: more than any question
@@ -147,9 +158,11 @@ const QUESTION_POLL: Duration = Duration::from_millis(200);
 /// `timeout` to answer, and closes that terminal whatever came of it →
 /// whether it exited zero, and what it printed (`question::answer`); `None`
 /// when it did not answer in time. An error: orca made no terminal for it, or
-/// could not read it. The terminal is opened where orca chooses: what is
-/// asked is of the host — its login shell, its harnesses and their models —
-/// and of no one repo, whichever a command is about.
+/// could not read it. What is asked is of the host — its login shell, its
+/// harnesses and their models, what it keeps for each — and of no one repo,
+/// whichever a command is about: the terminal is opened where orca chooses,
+/// as it is from the host user's home (`asked_from`), and never where the
+/// command happens to run.
 pub fn ask(script: &str, timeout: Duration) -> Result<Option<(bool, String)>> {
     ask_through(&orca, script, timeout)
 }

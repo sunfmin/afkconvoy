@@ -2080,7 +2080,7 @@ enum Command {
     ///
     /// ##### What it reads and writes
     ///
-    /// It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then: the commands run one after the other, in the order they asked. The queue is a directory of the fleet's cache (`afkconvoy help cache`), holding one file for each command waiting or running. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next.
+    /// It runs the command once no other `exclusive` command runs on this host — whatever its repo, whatever its fleet — and waits in a queue until then: the commands run one after the other, in the order they asked. The queue is a directory of the fleet's cache (`afkconvoy help cache`), holding one file for each command waiting or running. A process that leaves it — its command ended, or it was killed while waiting or running — frees its place for the next. The command runs in the directory `exclusive` is run in, or with `-C <dir>` in that one, as named: a checkout of the repo or a directory in one, and not that checkout's top.
     ///
     /// It writes three lines to the tick log of this host for this repo: as it starts to wait, when another command is ahead of it; as its command runs; and as it ends, with its exit status. `doctor` and the panel show what runs alone and what waits.
     ///
@@ -2090,7 +2090,7 @@ enum Command {
     ///
     /// Unlike every other command, no JSON of its own: what the command prints is printed, and it exits with the command's exit status — 128 and the signal for a command a signal ended. While it waits it says so on stderr, in one line beginning `[afkconvoy] exclusive:`.
     ///
-    /// It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the queue cannot be reached: the command did not run.
+    /// It exits 127 when the command cannot be started, and 125, with one JSON object {"error"} on stdout, when the queue cannot be reached, or `-C` names no directory of a checkout: the command did not run, and nothing waited.
     ///
     /// ##### What trips you up
     ///
@@ -2974,8 +2974,9 @@ const ACTS: [&str; 25] = [
 ];
 
 /// The commands a worker runs in its own worktree, as its brief, a stage's
-/// consult's, the caster's and an inspection's give them: the only commands
-/// a worker's worktree is not refused for (`checkout::resolve`).
+/// consult's, the caster's and an inspection's give them: with those that
+/// only read (`ONLY_READ`), the only commands a worker's worktree is taken
+/// for (`checkout::resolve`).
 const IN_ITS_WORKTREE: [&str; 15] = [
     "cast",
     "doctor",
@@ -2993,6 +2994,35 @@ const IN_ITS_WORKTREE: [&str; 15] = [
     "exclusive",
     "wake",
 ];
+
+/// The commands about one repo that only read — each but with the flag
+/// beside it, which makes it act: they change nothing on GitHub, on the
+/// remote, in the checkout or of a `run`. A worker's worktree is taken for
+/// each, as for a worker's own commands: a consult's brief lets it run any
+/// command that only reads, and what one reads from a worker's branch acts
+/// for nobody.
+const ONLY_READ: [(&str, Option<&str>); 7] = [
+    ("config", None),
+    ("check", None),
+    ("rehearse", None),
+    ("recovery", None),
+    ("scan", None),
+    ("panel", Some("open")),
+    ("takeover", Some("from")),
+];
+
+/// Whether the command `name`, as `given`, only reads (`ONLY_READ`): it is
+/// one of them, and is not given the flag that makes it act.
+fn only_reads(name: &str, given: &clap::ArgMatches) -> bool {
+    let acts =
+        |flag: &str| given.value_source(flag) == Some(clap::parser::ValueSource::CommandLine);
+    ONLY_READ.iter().any(|(reads, with)| *reads == name && !with.is_some_and(acts))
+}
+
+/// The commands that start the fleet's work: each checks this host before
+/// anything else (`probe::startup`), and is refused on a host with no git
+/// naming every command it lacks (`checkout::started`).
+const STARTS: [&str; 3] = ["run", "tick", "plan"];
 
 /// The command line as parsed: `Cli`, each command about one repo with how it
 /// takes its checkout added to its text, and each command that acts with what
@@ -3033,11 +3063,17 @@ fn checkout_help(name: &str, positional: bool) -> String {
             " What follows the command is its own: the checkout is not among it.",
         ),
     };
-    let worker = match IN_ITS_WORKTREE.contains(&name) {
-        true => "A worker runs it in its own worktree.",
-        false => {
-            "A worker's worktree is refused as its checkout: only a worker's own commands are run there."
-        }
+    let refused = "A worker's worktree is refused as its checkout: only a worker's own commands, \
+                   and those that only read, are run there.";
+    let reads = ONLY_READ.iter().find(|(reads, _)| *reads == name).map(|(_, with)| with);
+    let worker = match (IN_ITS_WORKTREE.contains(&name), reads) {
+        (true, _) => "A worker runs it in its own worktree.".to_string(),
+        (false, Some(None)) => "It only reads: a worker's worktree is one too.".to_string(),
+        (false, Some(Some(flag))) => format!(
+            "Without `--{flag}` it only reads, and a worker's worktree is one too. With `--{flag}`, \
+             it is not: only a worker's own commands, and those that only read, are run there."
+        ),
+        (false, None) => refused.to_string(),
     };
     format!(
         "##### Which checkout it is about\n\n{named}: a checkout of the repo, or any directory in \
@@ -3325,19 +3361,26 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             .is_some_and(|command| command.get_arguments().any(|arg| arg.get_id() == CHECKOUT_ARG))
     });
     let named = about.and_then(|(_, command)| command.get_one::<PathBuf>(CHECKOUT_ARG));
+    let named = named.map(PathBuf::as_path);
     let checkout = match about {
-        Some((name, _)) => {
-            checkout::resolve(named.map(PathBuf::as_path), IN_ITS_WORKTREE.contains(&name))
+        Some((name, given)) => {
+            let taken = IN_ITS_WORKTREE.contains(&name) || only_reads(name, given);
+            match STARTS.contains(&name) {
+                true => checkout::started(named, taken),
+                false => checkout::resolve(named, taken),
+            }
         }
         None => Err(anyhow::anyhow!("this command is about no repo")),
     };
-    // Run anywhere, in a checkout or not: the queue is the host's.
+    // Run anywhere, in a checkout or not: the queue is the host's. A
+    // directory named is refused before it waits where it is no checkout's.
     if let Command::Exclusive { command, .. } = &cli.command {
-        return match checkout::dir(named.map(PathBuf::as_path)) {
-            Ok(dir) => {
+        return match (checkout, checkout::dir(named)) {
+            (Err(error), _) if named.is_some() => exclusive::failed(&format!("{error:#}")),
+            (checkout, Ok(dir)) => {
                 exclusive::exclusive(command, &dir, checkout.ok(), || cli.now.unwrap_or_else(clock))
             }
-            Err(error) => exclusive::failed(&format!("{error:#}")),
+            (_, Err(error)) => exclusive::failed(&format!("{error:#}")),
         };
     }
     // A checkout named is one the command is about, whether it needs one or
@@ -3977,5 +4020,39 @@ mod tests {
         for name in workers {
             assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
         }
+        // Those that only read are about one repo and no worker's own, and
+        // the flag that makes one act is one of its own: one with none acts
+        // never.
+        for (name, with) in ONLY_READ {
+            let command = cli.find_subcommand(name).unwrap_or_else(|| panic!("no `{name}`"));
+            assert!(about(command), "`{name}` is about no repo");
+            assert!(!IN_ITS_WORKTREE.contains(&name), "`{name}` is a worker's own");
+            match with {
+                Some(flag) => assert!(command.get_arguments().any(|arg| arg.get_id() == flag)),
+                None => assert!(!ACTS.contains(&name), "`{name}` acts"),
+            }
+        }
+        for name in STARTS {
+            assert!(cli.find_subcommand(name).is_some_and(about), "`{name}` is about no repo");
+        }
+    }
+
+    /// A command that only reads but for a flag is taken in a worker's
+    /// worktree without that flag, and not with it.
+    #[test]
+    fn a_command_that_only_reads_but_for_a_flag_reads_only_without_it() {
+        let reads = |line: &[&str]| {
+            let matches = cli()
+                .try_get_matches_from(std::iter::once("afkconvoy").chain(line.iter().copied()));
+            let matches = matches.unwrap();
+            let (name, given) = matches.subcommand().unwrap();
+            only_reads(name, given)
+        };
+        assert!(reads(&["takeover", "--list"]));
+        assert!(!reads(&["takeover", "--from", "b-h2-2", "--instance", "a-h1-1"]));
+        assert!(reads(&["panel"]));
+        assert!(!reads(&["panel", "--open"]));
+        assert!(reads(&["scan"]));
+        assert!(!reads(&["claim", "7", "--instance", "a-h1-1"]));
     }
 }
