@@ -34,6 +34,7 @@ use crate::exclusive::Queue;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
 use crate::git::{REMOTE, Repo};
+use crate::host_runner;
 use crate::judge::leaving;
 use crate::launch::Launches;
 use crate::log::{self, Entry, Failed, Log, Tick, What, by_cause};
@@ -44,7 +45,6 @@ use crate::stage::Stood;
 use crate::team::{self, Refused};
 use crate::tools;
 use crate::topic::See;
-use crate::wake::listening;
 
 /// How many ticks in a row a step fails in before it is a finding.
 const FAILED_TICKS: usize = 3;
@@ -241,7 +241,8 @@ pub struct Heartbeats {
 /// The `run` of this host for this repo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Run {
-    /// Whether one listens for wakes: it is alive.
+    /// Whether this host's runner holds a fleet instance of this repo: it is
+    /// alive.
     pub alive: bool,
     /// Its fleet instance: the one its log names, else the one the claims
     /// stamped with this host name. `None`: this host never ran one.
@@ -590,7 +591,7 @@ fn run_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
             run.host,
             numbered(&issues)
         ),
-        format!("nothing listens for wakes in this repo's git dir; {beat}"),
+        format!("this host's runner holds no fleet instance of this repo; {beat}"),
         "afkconvoy run".to_string(),
     )]
 }
@@ -1544,7 +1545,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
     let entries = log.as_ref().and_then(Log::read);
     let (instance, _started_with, ticks) = read_log(entries.as_deref().unwrap_or_default(), host);
     let mut run = Run {
-        alive: listening(repo),
+        alive: host_runner::holds(repo),
         instance,
         host: host.to_string(),
         heartbeat_age: None,

@@ -1,9 +1,8 @@
 //! A fleet instance from its start to its end: what `run` asks for one, and
-//! holding one — alone in this process (`run --foreground`) or in the host
-//! runner beside the others (docs/adr/0023).
+//! holding one, in the host runner beside the others or alone in the process
+//! of `run --foreground` (docs/adr/0023).
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::time::Duration;
 
 use afkconvoy_core::claims::InstanceId;
@@ -14,9 +13,8 @@ use serde_json::Value;
 use crate::claims::Me;
 use crate::git::Repo;
 use crate::host_settings::To;
-use crate::stop::Stop;
-use crate::tick::{self, Echo, Holder, Line, Pacing};
-use crate::{concurrency, host_settings, kit, probe};
+use crate::tick::{self, Holder, Line, Pacing};
+use crate::{host_settings, kit};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
@@ -130,25 +128,6 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
         (holder.echo)(Line::Warning(warning));
     }
     tick::run(checkout, &mut me, &agent, &pacing, start.panel, clock, holder)
-}
-
-/// `run --foreground`: holds it in this process, printing every line as `run`
-/// printed it, until SIGTERM or SIGINT. The checkout list's file and any host
-/// runner are left alone: what it names of the host settings, `settings`,
-/// holds in this process alone, laid over the host's; and what it says of
-/// its checkout's concurrency, where the list holds no entry of it.
-pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
-    host_settings::lay_for_this_process(settings);
-    if let Some(to) = start.concurrency {
-        concurrency::ask(&checkout.dir, to);
-    }
-    let stop = Stop::listen();
-    let echo: Echo = Arc::new(|line| match line {
-        Line::Kept(entry) => println!("{}", entry.said()),
-        Line::Said(text) => println!("{text}"),
-        Line::Warning(warning) => probe::announce(&[warning.to_string()]),
-    });
-    hold(checkout, start, Holder { stop: stop.instance(), echo })
 }
 
 #[cfg(test)]
