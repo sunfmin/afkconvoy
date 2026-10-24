@@ -902,6 +902,129 @@ mod tests {
         Ok(Cast { harness, model: model.map(str::to_string), why })
     }
 
+    fn opus() -> Model {
+        Model {
+            id: "claude-opus-5-5".into(),
+            names: vec!["opus".into(), "default".into(), "Opus 5.5".into()],
+        }
+    }
+
+    #[test]
+    fn a_model_is_matched_by_its_id_or_any_of_its_names_whatever_the_case() {
+        let claude = Held { harness: Harness::ClaudeCode, models: vec![opus(), "haiku".into()] };
+        for name in ["opus", "Opus 5.5", "claude-opus-5-5", "DEFAULT", " opus "] {
+            assert_eq!(claude.model(name), Ok(&opus()), "{name}");
+        }
+        // The provider prefix may be left off where that leaves one match.
+        let pi = Held {
+            harness: Harness::Pi,
+            models: vec!["openai-codex/gpt-6-sol".into(), "a/fast".into(), "b/fast".into()],
+        };
+        assert_eq!(pi.model("gpt-6-sol").map(|m| m.id.as_str()), Ok("openai-codex/gpt-6-sol"));
+        assert_eq!(pi.model("A/FAST").map(|m| m.id.as_str()), Ok("a/fast"));
+        // A name with two matches matches neither, and says which two.
+        let two = pi.model("fast").unwrap_err();
+        assert_eq!(two, Unmatched::Two("a/fast".into(), "b/fast".into()));
+        assert_eq!(
+            two.said("fast", Harness::Pi),
+            "`fast` names two models of pi, `a/fast` and `b/fast`, and so neither: name one by \
+             its id"
+        );
+        // One that matches nothing says the nearest names.
+        let none = claude.model("opuss").unwrap_err();
+        assert_eq!(none, Unmatched::None(vec!["opus".into(), "Opus 5.5".into(), "haiku".into()]));
+        assert!(
+            none.said("opuss", Harness::ClaudeCode)
+                .ends_with("nearest names: `opus`, `Opus 5.5`, `haiku`")
+        );
+        let empty = Held { harness: Harness::Codex, models: vec![] };
+        assert_eq!(empty.model("x"), Err(Unmatched::None(vec![])));
+    }
+
+    #[test]
+    fn a_casting_names_its_model_by_any_name_and_runs_its_id() {
+        let range = vec![
+            Held { harness: Harness::ClaudeCode, models: vec![opus()] },
+            Held { harness: Harness::Pi, models: vec!["openai-codex/gpt-6-sol".into()] },
+        ];
+        let cast = |names: &[&str]| cast(&labels(names), &range, None);
+        for name in ["model:opus", "model:Opus 5.5", "model:claude-opus-5-5"] {
+            assert_eq!(
+                cast(&["harness:claude-code", name]),
+                ran(Harness::ClaudeCode, Some("claude-opus-5-5"), Why::Casting)
+            );
+        }
+        assert_eq!(
+            cast(&["harness:pi", "model:gpt-6-sol"]),
+            ran(Harness::Pi, Some("openai-codex/gpt-6-sol"), Why::Casting)
+        );
+        assert_eq!(
+            cast_within(&labels(&["harness:claude-code", "model:OPUS"]), &range, None),
+            ran(Harness::ClaudeCode, Some("claude-opus-5-5"), Why::Casting)
+        );
+        // A caster's casting is labelled with the id.
+        let casting = Casting {
+            issue: 7,
+            harness: "claude-code".into(),
+            model: Some("Opus 5.5".into()),
+            why: "hard".into(),
+        };
+        assert_eq!(
+            casting.labels(&range),
+            Ok(labels(&["harness:claude-code", "model:claude-opus-5-5"]))
+        );
+        // A label that matches nothing says the nearest names.
+        let said = cast(&["harness:claude-code", "model:opuss"]).unwrap_err();
+        assert!(said.contains("the nearest names: `opus`"), "{said}");
+        let ranges = vec![("build (dev)".to_string(), range.clone())];
+        let none = held_by_none(&labels(&["harness:claude-code", "model:opuss"]), &ranges, None);
+        assert!(none.unwrap().contains("the nearest names: `opus`"));
+    }
+
+    #[test]
+    fn a_caster_s_casting_that_names_nothing_held_is_cast_again_and_a_human_s_is_not() {
+        let range = range();
+        let cast = labels(&["ready", "harness:pi", "model:gone/x"]);
+        let said = caster_comment(&labels(&["harness:pi", "model:gone/x"]), "small");
+        assert!(names_nothing(&cast, &range));
+        assert!(!names_nothing(&labels(&["harness:pi", "model:C/D"]), &range));
+        assert!(!names_nothing(&labels(&["ready"]), &range));
+        assert!(to_recast(&cast, [said.as_str()], false, &[], &range));
+        assert!(!to_recast(&cast, [said.as_str()], true, &[], &range), "a worker started on it");
+        assert!(!to_recast(&cast, ["please run it on pi"], false, &[], &range));
+    }
+
+    #[test]
+    fn a_roster_entry_is_cut_by_any_name_and_one_that_names_nothing_is_said() {
+        let team = crate::team::tests::rostered(
+            "  dev: { run: [{ harness: claude-code, model: Opus 5.5 }, { harness: pi, model: \
+             fast }, { harness: dsh, model: x }] }\n  reviewer: { run: [{ harness: \
+             claude-code, model: opuss }] }\n",
+        )
+        .unwrap();
+        let kit = vec![
+            Held { harness: Harness::ClaudeCode, models: vec![opus()] },
+            Held { harness: Harness::Pi, models: vec!["a/fast".into(), "b/fast".into()] },
+        ];
+        assert_eq!(super::range(&team.roles[0], &kit), [kit[0].clone()]);
+        let unmatched = unmatched_entries(&team, &kit);
+        let said: Vec<(&str, &str)> =
+            unmatched.iter().map(|entry| (entry.role.as_str(), entry.model.as_str())).collect();
+        // A harness the host kit does not hold is no name's fault.
+        assert_eq!(said, [("dev", "fast"), ("reviewer", "opuss")]);
+        assert!(unmatched[0].said.contains("`a/fast` and `b/fast`"), "{}", unmatched[0].said);
+        let line = unmatched[1].line();
+        assert!(
+            line.starts_with(
+                "the roster entry `{ harness: claude-code, model: opuss }` of the role \
+                 `reviewer` matches nothing: `opuss` names no model the host kit holds for \
+                 claude-code; the nearest names: `opus`"
+            ),
+            "{line}"
+        );
+        assert!(line.ends_with("the host kit holds claude-code (claude-opus-5-5)"), "{line}");
+    }
+
     #[test]
     fn a_casting_the_host_kit_holds_is_run() {
         let range = range();

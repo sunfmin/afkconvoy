@@ -171,18 +171,44 @@ const SHOWN: &str = "\"displayName\":\"";
 /// by its name: what its menu shows it as. A terminal's line breaks are
 /// taken out, and the spaces a display name holds kept.
 pub(super) fn shown(answer: &str) -> Vec<(String, String)> {
-    let listed = models(answer).unwrap_or_default();
     let joined: String = answer.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+    let Some((_, list)) = joined.split_once("\"models\":") else { return vec![] };
+    // Each model is an object one level into the list, whichever order its
+    // keys are in; a bracket inside a string is none.
     let mut shown = vec![];
-    for each in joined.split(NAMED).skip(1) {
-        let Some((name, rest)) = each.split_once('"') else { continue };
-        let Some((_, after)) = rest.split_once(SHOWN) else { continue };
-        let Some((display, _)) = after.split_once('"') else { continue };
-        if listed.iter().any(|listed| listed == name)
-            && !display.is_empty()
-            && !shown.iter().any(|(had, _): &(String, String)| had == name)
-        {
-            shown.push((name.to_string(), display.to_string()));
+    let (mut depth, mut quoted, mut escaped, mut opened) = (0_usize, false, false, 0);
+    for (at, character) in list.char_indices() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            '[' | '{' => {
+                depth = depth.saturating_add(1);
+                if depth == 2 {
+                    opened = at;
+                }
+            }
+            ']' | '}' => {
+                if depth == 2 {
+                    let model = &list[opened..at];
+                    let value = |key: &str| {
+                        let (_, after) = model.split_once(key)?;
+                        after.split_once('"').map(|(value, _)| value.to_string())
+                    };
+                    if let (Some(name), Some(display)) = (value(NAMED), value(SHOWN))
+                        && !name.is_empty()
+                        && !display.is_empty()
+                    {
+                        shown.push((name, display));
+                    }
+                }
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
         }
     }
     shown
@@ -682,6 +708,15 @@ mod tests {
         let nested = r#"{"models":[{"value":"a","x":{"value":"no"},"d":"\"value\":\"no\""},
             {"d":"]}","value":"b"}],"after":{"value":"no"}}"#;
         assert_eq!(Harness::ClaudeCode.models(nested).unwrap(), ["a", "b"]);
+    }
+
+    #[test]
+    fn the_names_claude_code_shows_its_models_by_are_read_whatever_their_keys_order() {
+        let shown = Harness::ClaudeCode.shown(INITIALIZED);
+        assert_eq!(shown[1], ("opus".to_string(), "Opus 5.5".to_string()));
+        assert_eq!(shown.len(), Harness::ClaudeCode.models(INITIALIZED).unwrap().len());
+        let reordered = r#"{"models":[{"displayName":"Opus 5.5","value":"opus"},{"value":"x"}]}"#;
+        assert_eq!(Harness::ClaudeCode.shown(reordered), [("opus".into(), "Opus 5.5".into())]);
     }
 
     #[test]

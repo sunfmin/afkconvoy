@@ -368,3 +368,65 @@ fn a_missing_required_harness_refuses_the_entire_start() {
     assert_ne!(doctor.code, 0, "{}", doctor.json);
     assert!(doctor.json["findings"].to_string().contains("host kit"));
 }
+
+#[test]
+fn kit_holds_the_names_that_answered_as_one_model_once_by_its_id() {
+    let world = backlog();
+    world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+    world.with_kit(|kit| {
+        kit["harnesses"][1]["models"] = json!([{"model": "gpt-6-sol", "good_at": "hard work"}]);
+    });
+    // Claude Code lists `default` and `opus`, which it shows as `Opus 5.5`.
+    let initialized = json!({"type": "control_response", "response": {"subtype": "success",
+        "response": {"models": [{"value": "default", "displayName": "Default (recommended)"},
+            {"value": "opus", "displayName": "Opus 5.5"}]}}});
+    std::fs::write(world.root.join("shell-claude-models"), initialized.to_string()).unwrap();
+    world.shell_models(&["openai-codex/gpt-6-sol"]);
+    world.shell_server_models(&["gpt-6-sol"]);
+    world.shell_knows("dsh-tui", None);
+    // Each probe says which model answered in its harness's own way: Claude
+    // Code's JSON, pi's events, and the session file Codex's thread names.
+    let claude = r#"{"result":"OK","modelUsage":{"claude-opus-5-5":{"outputTokens":4}}}"#;
+    world.probes_answer_as(&[
+        ("default", claude, None),
+        ("opus", claude, None),
+        (
+            "openai-codex/gpt-6-sol",
+            r#"{"type":"message_end","message":{"role":"assistant","provider":"openai-codex","model":"gpt-6-sol"}}"#,
+            None,
+        ),
+        (
+            "gpt-6-sol",
+            r#"{"type":"thread.started","thread_id":"t-gpt-6-sol"}"#,
+            Some(r#"{"type":"turn_context","payload":{"cwd":"/","model":"gpt-6-sol"}}"#),
+        ),
+    ]);
+    let written = world.afk(&["kit"]);
+    assert_eq!(written.json["written"], true, "{}", written.stderr);
+    let kit = kit_unprobed(&world);
+    let models = |harness: &str| {
+        let held = kit["harnesses"].as_array().unwrap().iter().find(|h| h["harness"] == harness);
+        held.map(|held| held["models"].clone()).unwrap_or_default()
+    };
+    assert_eq!(
+        models("claude-code"),
+        json!([{"model": "claude-opus-5-5",
+            "names": ["default", "opus", "Default (recommended)", "Opus 5.5"]}])
+    );
+    // One model on two harnesses is held once on each, with one `good_at`.
+    assert_eq!(models("codex"), json!([{"model": "gpt-6-sol", "good_at": "hard work"}]));
+    assert_eq!(models("pi"), json!([{"model": "openai-codex/gpt-6-sol", "good_at": "hard work"}]));
+    // The session file the probe kept is gone.
+    let sessions = written_anywhere(&world.cache(), "turn_context", &[]);
+    assert_eq!(sessions, [] as [String; 0]);
+    // A worker is started on the id, whatever name its issue's label gives.
+    world.issue(8, &["ready-for-agent", "harness:claude-code", "model:Opus 5.5"]);
+    world.issue(9, &["ready-for-agent", "harness:pi", "model:GPT-6-SOL"]);
+    let planned = world.afk(&["plan", "--now", "1000"]).ok();
+    let cast = |number: u64| {
+        let frontier = planned["frontier"].as_array().unwrap();
+        frontier.iter().find(|issue| issue["number"] == number).unwrap()["cast"].clone()
+    };
+    assert_eq!(cast(8)["model"], "claude-opus-5-5", "{planned}");
+    assert_eq!(cast(9)["model"], "openai-codex/gpt-6-sol", "{planned}");
+}

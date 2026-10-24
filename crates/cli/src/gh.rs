@@ -679,6 +679,56 @@ impl GitHub {
         Ok(rows.into_iter().map(|row| (row.number, row.head_ref_name)).collect())
     }
 
+    /// The open issues of another repo, `repo`: the number and the body of
+    /// each.
+    pub fn open_issues_of(&self, repo: &RepoName) -> Result<Vec<(u64, String)>> {
+        #[derive(Deserialize)]
+        struct Row {
+            number: u64,
+            #[serde(default)]
+            body: String,
+        }
+        let out = self.read(&[
+            "issue",
+            "list",
+            "--repo",
+            repo.as_str(),
+            "--state",
+            "open",
+            "--limit",
+            "1000",
+            "--json",
+            "number,body",
+        ])?;
+        let rows: Vec<Row> =
+            serde_json::from_str(&out).context("gh issue list: unexpected answer")?;
+        Ok(rows.into_iter().map(|row| (row.number, row.body)).collect())
+    }
+
+    /// Opens an issue in another repo, `repo`, carrying `label`.
+    pub fn open_issue_of(
+        &self,
+        repo: &RepoName,
+        title: &str,
+        body: &str,
+        label: &str,
+    ) -> Result<()> {
+        let args = ["issue", "create", "--repo", repo.as_str(), "--title", title, "--body", body];
+        self.gh(&[&args[..], &["--label", label]].concat())?;
+        Ok(())
+    }
+
+    /// The file at `path` on the default branch of another repo, `repo`;
+    /// `None` where it has none there.
+    pub fn file_of(&self, repo: &RepoName, path: &str) -> Result<Option<String>> {
+        let endpoint = format!("repos/{}/contents/{path}", repo.as_str());
+        match self.call(&["api", "-H", "Accept: application/vnd.github.raw", &endpoint])? {
+            Ok(text) => Ok(Some(text)),
+            Err((_, said)) if said.contains("404") => Ok(None),
+            Err((call, said)) => bail!("{call} failed: {said}"),
+        }
+    }
+
     /// What PR `number` of another repo, `repo`, changes, as `git diff`
     /// writes it.
     pub fn pr_diff_of(&self, repo: &RepoName, number: u64) -> Result<String> {

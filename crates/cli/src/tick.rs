@@ -150,6 +150,15 @@ pub fn tick(
     }
     let (mut fleet, mut open) = Fleet::read(me.now)?;
     let (mut set, mut flows) = fleet.rebuild(&open, Some(&me.instance))?;
+    // A roster entry that names no model the host kit holds is the team's to
+    // correct: one issue is opened for it in the team's repo. One that cannot
+    // be opened costs the tick nothing; the next tries again.
+    if let (Some(bound), Ok(team), Ok(kit)) =
+        (&fleet.config.bound, flows.team(), crate::kit::load())
+    {
+        let unmatched = afkconvoy_core::casting::unmatched_entries(team, &kit.range());
+        let _ = crate::roster_issue::open(&fleet.gh, &bound.team.repo, &unmatched);
+    }
     // What no consult saw goes to one first (docs/adr/0018), and is read
     // again as the fleet's. A team that does not load puts nothing: the
     // rebuild says why of each issue.

@@ -70,6 +70,7 @@ pub mod probe;
 pub mod reclaim;
 pub mod recovery;
 pub mod role;
+pub mod roster_issue;
 pub mod scaffold;
 pub mod serve;
 pub mod settle;
@@ -3322,6 +3323,9 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                         .map(|role| json!({"role": role.name, "left_out": team::left_out_json(role, &kit)}))
                         .collect();
                     plan["left_out"] = Value::Array(left_out);
+                    // Each roster entry that names no model the host kit holds.
+                    let unmatched = afkconvoy_core::casting::unmatched_entries(team, &kit);
+                    plan["unmatched"] = serde_json::to_value(&unmatched)?;
                 }
             }
             plan["admission"] = admission.json();

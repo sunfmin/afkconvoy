@@ -29,6 +29,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `longer than any stage before it took`: Nothing is wrong yet: an issue has been at one stage for long. `fix` shows it.
 - `is one rework from a breaker`: The next `reject` escalates the issue. Nothing to do yet: [`afkconvoy help humans`](help:humans).
 - `is paused on this host`: It refused every prompt: no worker starts on it till an hourly probe answers.
+- `names no model the host kit holds`: A team's roster names a model by a name that matches no model the host kit holds for its harness, by its id or any other name; `evidence` gives the nearest names. The fleet never changes a roster: a tick opens one issue for it in the team's repo, which the team's own fleet works. `fix` is the file and key to correct.
 - `does not run: its last run failed`: The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
 - `` have reached its `max_open` ``: A patrol is not run while that many of its issues are open. Close some, or raise it.
 - `has waited for a human for`: Nothing in the fleet moves that issue. `fix` answers it: [`afkconvoy help humans`](help:humans).
