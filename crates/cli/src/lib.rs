@@ -3322,6 +3322,21 @@ fn run(command: Command, fixed_now: Option<u64>) -> anyhow::Result<Value> {
                         .map(|role| json!({"role": role.name, "left_out": team::left_out_json(role, &kit)}))
                         .collect();
                     plan["left_out"] = Value::Array(left_out);
+                    // A roster entry that matches nothing, and a role that
+                    // can run nothing safely: said, never refusing the plan.
+                    let named = |each: Vec<(String, String)>| -> Vec<Value> {
+                        each.into_iter()
+                            .map(|(role, why)| json!({"role": role, "why": why}))
+                            .collect()
+                    };
+                    let unmatched = named(afkconvoy_core::casting::unmatched_entries(team, &kit));
+                    if !unmatched.is_empty() {
+                        plan["unmatched"] = Value::Array(unmatched);
+                    }
+                    let nothing_safe = named(afkconvoy_core::casting::range_faults(team, &kit));
+                    if !nothing_safe.is_empty() {
+                        plan["nothing_safe"] = Value::Array(nothing_safe);
+                    }
                 }
             }
             plan["admission"] = admission.json();
