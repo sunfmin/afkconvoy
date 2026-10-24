@@ -60,8 +60,8 @@ const STAGE_LONG: u64 = 900;
 /// What the answer says of a host whose `run` left no log.
 const NO_LOG: &str = "no log";
 
-/// How much a finding matters, most first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// How much a finding matters, most first: `doctor --help` lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, agent_help::Help)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// The fleet does not work, or will not, until it is fixed.
