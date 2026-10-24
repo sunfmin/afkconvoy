@@ -82,7 +82,7 @@ When a harness is installed or removed, a login changes, or its models are to be
 
 ##### Who runs it
 
-The operator or a machine, on the host that starts the workers: it asks nothing, at a terminal or not, and does the same whoever runs it.
+The operator, or a machine in their place, on the host that starts the workers: it asks nothing, at a terminal or not, and does the same whoever runs it.
 
 ##### What it reads and writes
 
@@ -91,7 +91,7 @@ The host kit is $XDG_CONFIG_HOME/afkconvoy/kit.json, or $HOME/.config/afkconvoy/
 1. Harnesses. Each known harness whose program `type` finds in an orca terminal — the login shell orca starts, which is the shell a worker gets, with its rc files, PATH and logins — on the command the host kit holds for it, or else its stock worker launch command.
 2. Models. Each harness found is asked for the models its own login runs, in an orca terminal. Claude Code is asked through its command with an `initialize` request and no prompt; Codex through its command with `debug models`, its server's list; pi through its command with `--list-models`; DSH through `dsh headless`, which lists the models of each provider route it holds a credential for, and stops before its task is sent. The fleet reads no credential itself.
 3. Probes. Every model listed is sent a one-line prompt in an orca terminal of its own, at most 60 seconds each, eight at a time; the terminal is closed once it answers or its time is up. DSH's prompt goes through `dsh headless`, on the model named. Only those that answered are kept, with when and how long each took. A harness none answered for is left out.
-4. Order. The harnesses the host kit held keep their order, and new ones follow in the order afkconvoy knows them: claude-code, pi, codex, dsh. Each harness's models are in the order it lists them (Claude Code's `default` first). The first harness and its first model are the host kit's first.
+4. Order. The harnesses the host kit held keep their order, and new ones follow in this fixed order: claude-code, pi, codex, dsh. Each harness's models are in the order it lists them (Claude Code's `default` first). The first harness and its first model are the host kit's first.
 5. Stock consult. The harness and model the host kit names for it, while it still holds them; otherwise none is named, and it runs the host kit's first. Name one by writing `"stock_consult": {"harness": …, "model": …}` in the file.
 6. What each model is good at. Write `"good_at": "<a few words>"` beside a model in the file by hand: a caster is told it (`afkconvoy cast --help`). Writing the kit again keeps it.
 
@@ -3303,7 +3303,7 @@ A team's list, for each of its roles, of the harnesses and models that role's wo
 _Avoid_: harness config, model table, routing rules
 
 **Host kit**:
-The harnesses and models one host can start now — each harness's worker launch command, each model it was seen to answer with, in order of preference, and the harness and model of its stock consult. `afkconvoy kit` — or `run`, on a host with none — writes it with no human: it finds each harness installed in the shell a worker gets, asks it for its models, sends each a one-line prompt, and keeps those that answered, with how long they took and when; the harnesses it held keep their order, new ones follow in the order afkconvoy knows them, and each one's models are in the order it lists them. Its **first** is its first harness on that harness's first model, which the stock consult runs where the host kit names none for it. Kept on that host and never pushed; a harness paused on the host is left out of it until it works again.
+The harnesses and models one host can start now — each harness's worker launch command, each model it was seen to answer with, in order of preference, and the harness and model of its stock consult. `afkconvoy kit` — or `run`, on a host with none — writes it with no human: it finds each harness installed in the shell a worker gets, asks it for its models, sends each a one-line prompt, and keeps those that answered, with how long they took and when; the harnesses it held keep their order, new ones follow in a fixed order of harnesses, and each one's models are in the order it lists them. Its **first** is its first harness on that harness's first model, which the stock consult runs where the host kit names none for it. Kept on that host and never pushed; a harness paused on the host is left out of it until it works again.
 _Avoid_: roster (the team's), host config, inventory
 
 **Casting**:
