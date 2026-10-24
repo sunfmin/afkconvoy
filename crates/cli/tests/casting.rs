@@ -387,14 +387,13 @@ fn each_paused_harness_is_probed_every_hour_and_one_that_answers_is_back() {
 fn a_caster_s_casting_naming_no_held_model_is_cast_again_with_ids_and_a_human_s_stays() {
     let world = cast(&["harness:claude-code", "model:sonnet"]);
     world.comment(7, "Cast `harness:claude-code` and `model:sonnet`: A small fix.");
-    // A human's label naming nothing is left as it is, and plan says the
-    // nearest names.
+    // A human's label naming nothing stays and runs the default.
     world.issue(8, &["ready-for-agent", "harness:claude-code", "model:opuss"]);
     let planned = world.afk(&PLAN).ok();
     assert_eq!(planned["caster"]["to_cast"], json!([7]), "{planned}");
-    let eight = planned["excluded"].as_array().unwrap().iter().find(|e| e["number"] == 8);
-    let reason = eight.unwrap()["reason"].as_str().unwrap();
-    assert!(reason.contains("the nearest names: `opus`"), "{reason}");
+    let eight = planned["frontier"].as_array().unwrap().iter().find(|e| e["number"] == 8).unwrap();
+    assert_eq!(eight["cast"]["why"], "unmatched");
+    assert_eq!(eight["cast"]["unmatched"], "`model:opuss`");
 
     // The caster answers with a name; the label names the model's id.
     world.with_kit(|kit| {
