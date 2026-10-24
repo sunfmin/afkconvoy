@@ -50,8 +50,9 @@ fn hold(world: &World, dir: &Path, args: &[&str]) -> Value {
 }
 
 /// Another fleet on the host, beta, of the world's second repo, which the
-/// host runner holds beside alpha: told `--no-host-sleep` when `told`, with
-/// these issues ready on its repo → what its `run` answered.
+/// host runner holds beside alpha: its `run` told `--no-host-sleep`, which
+/// the host then says, when `told`; with these issues ready on its repo →
+/// what its `run` answered.
 fn beta(world: &World, told: bool, issues: &[u64]) -> Value {
     let clone2 = world.second_repo();
     with_gh2(world, |gh| {
@@ -180,14 +181,16 @@ fn an_instance_idle_less_than_ten_minutes_makes_no_check() {
 }
 
 #[test]
-fn a_fleet_told_no_host_sleep_keeps_the_host_awake_for_every_fleet_on_it() {
+fn a_run_told_no_host_sleep_keeps_the_host_awake_for_every_fleet_on_it() {
     let world = worked();
+    // beta's `run` says it of the host: alpha, which says nothing, checks never
     beta(&world, true, &[]);
-    alpha(&world, &["--ticks", "2"]);
+    let alpha = alpha(&world, &["--ticks", "2"]);
     ended(&world);
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
-    let checked = last_check(&world);
-    assert_eq!(checked["kept_awake_by"][0], "beta was told --no-host-sleep", "{checked}");
+    assert_eq!(last_check(&world), Value::Null);
+    let lines = tick_log(&alpha);
+    assert!(!lines.iter().any(|line| line.starts_with("host sleep:")), "{lines:#?}");
 }
 
 #[test]

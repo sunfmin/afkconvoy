@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::evidence::{self, Taken};
 use crate::git::Repo;
+use crate::host_settings;
 use crate::log::What;
 use crate::measure;
 use crate::orca::{Source, TMP_DIR, Worktree};
@@ -42,8 +43,8 @@ const LISTED_FOR: u32 = 6;
 /// the last five minutes'.
 const RESIDENT_KEPT: usize = 30;
 
-/// What the host says of the limits, where it says any: `--hot-cores`,
-/// `--hot-memory` and `--hot-written`.
+/// What the host says of the limits, where it says any: its host settings
+/// `--hot-cores`, `--hot-memory` and `--hot-written`, in bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Said {
     pub millicores: Option<u64>,
@@ -135,16 +136,14 @@ pub struct HotNow {
     pub branch: String,
     #[serde(skip)]
     pub issue: Option<u64>,
+    /// Why it turned hot, in words, under the limits in force as it did.
+    #[serde(skip)]
+    pub why: String,
 }
 
 impl HotNow {
     pub fn worktree(&self) -> Worktree {
         Worktree::at(self.path.clone(), self.branch.clone())
-    }
-
-    /// Why it turned hot, in words, under `limits`.
-    pub fn why(&self, limits: &Limits) -> String {
-        why_said(self.episode.why, limits)
     }
 }
 
@@ -336,6 +335,9 @@ fn held(path: &std::path::Path) -> Option<Built> {
 
 /// What the sampler keeps between samples.
 struct Sampler {
+    /// What the host settings said of the limits at the last sample, and the
+    /// limits that came to on this host.
+    said: Said,
     limits: Limits,
     /// The worktrees of the workers, as orca last listed them, each with its
     /// worker's name and issue.
@@ -444,6 +446,7 @@ impl Sampler {
                 path: watched.worktree.path.clone(),
                 branch: watched.worktree.branch.clone(),
                 issue: watched.issue,
+                why: why_said(episode.why, &self.limits),
             })
         });
         hot.collect()
@@ -511,14 +514,12 @@ pub trait Hears: Send + Sync {
 /// Watches every worker of the checkout `repo` is of, on a thread of its own,
 /// until `stop` is told: a sample every `SAMPLE_EVERY` seconds of `second`
 /// each, timed by `clock` — the run's — and `hears` told of each turn
-/// (`Sampler::sample`). `hot` is kept as the workers hot now. What shows a
-/// worker that turned hot is taken down on a thread of its own, and the
-/// fleet instance woken by `waker` once it is. A second that takes no time
-/// samples nothing.
-#[allow(clippy::too_many_arguments)]
+/// (`Sampler::sample`), under the limits the host settings say as it takes
+/// it. `hot` is kept as the workers hot now. What shows a worker that turned
+/// hot is taken down on a thread of its own, and the fleet instance woken by
+/// `waker` once it is. A second that takes no time samples nothing.
 pub fn watch(
     repo: &Repo,
-    limits: Limits,
     second: Duration,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     hears: Arc<dyn Hears>,
@@ -531,7 +532,14 @@ pub fn watch(
     }
     let repo = Repo::new(repo.dir.clone());
     let every = second * SAMPLE_EVERY as u32;
-    let mut sampler = Sampler { limits, listed: vec![], samples: 0, watched: BTreeMap::new() };
+    let said = host_settings::of_host().map(|settings| settings.hot()).unwrap_or_default();
+    let mut sampler = Sampler {
+        said,
+        limits: limits(said, &repo.dir),
+        listed: vec![],
+        samples: 0,
+        watched: BTreeMap::new(),
+    };
     std::thread::spawn(move || {
         let started = (clock(), Instant::now());
         let mut source = None;
@@ -552,6 +560,13 @@ pub fn watch(
             let at = started.0 + elapsed / (second.as_millis() as u64).max(1);
             let wall_ms = before.elapsed().as_millis() as u64;
             before = Instant::now();
+            // Settings that cannot be read leave the limits as they were.
+            if let Ok(settings) = host_settings::of_host()
+                && settings.hot() != sampler.said
+            {
+                sampler.said = settings.hot();
+                sampler.limits = limits(sampler.said, &repo.dir);
+            }
             let (turned, to_take) = sampler.sample(source, at, SAMPLE_EVERY, wall_ms);
             for turned in turned {
                 hears.turned(at, turned);

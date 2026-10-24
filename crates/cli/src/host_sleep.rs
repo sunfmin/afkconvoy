@@ -20,6 +20,7 @@ use afkconvoy_core::host_sleep::{
 };
 use anyhow::{Context, Result, bail};
 
+use crate::host_settings;
 use crate::stop::Stop;
 use crate::wake::Waker;
 
@@ -80,8 +81,6 @@ pub enum Checked {
 pub struct HostSleep {
     peers: Peers,
     shared: Arc<Mutex<Shared>>,
-    /// Whether this instance puts the host to sleep: not told `--no-host-sleep`.
-    on: bool,
     /// How long, in seconds, every instance must have been idle.
     wait: u64,
     /// When this instance last checked.
@@ -99,22 +98,24 @@ struct Asking {
 
 impl HostSleep {
     /// Joins `peers` as `standing` says this instance is, woken by `waker`
-    /// when one asks it to tick, and puts the host to sleep unless
-    /// `standing` was told `--no-host-sleep`. Called before the first tick.
+    /// when one asks it to tick, and puts the host to sleep unless the host
+    /// settings keep it awake, as they say at each check. Called before the
+    /// first tick.
     pub fn open(standing: Standing, waker: Waker, peers: &Peers, wait: u64) -> HostSleep {
-        let on = !standing.no_host_sleep;
         let shared = Arc::new(Mutex::new(Shared { standing, waiting: vec![] }));
         peers.open().push(Peer { shared: Arc::clone(&shared), waker });
-        HostSleep { peers: peers.clone(), shared, on, wait, checked: None, asking: None }
+        HostSleep { peers: peers.clone(), shared, wait, checked: None, asking: None }
     }
 
     /// Says how this instance stands after a tick at `now`: idle or not, and
     /// whether it worked — `None` of a tick that failed whole, which is not
     /// idle. Every asker waiting for a tick is answered.
     pub fn ticked(&self, now: u64, idle: Option<(bool, bool)>) {
+        let kept_awake = host_settings::kept_awake();
         let mut shared = self.shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let (idle, worked) = idle.unwrap_or((false, false));
         let standing = &mut shared.standing;
+        standing.no_host_sleep = kept_awake;
         if standing.idle != idle {
             standing.since = now;
         }
@@ -128,20 +129,23 @@ impl HostSleep {
         }
     }
 
+    /// How this instance stands now, with whether the host settings keep
+    /// the host awake read again: what it is answered as from then on.
     fn standing(&self) -> Standing {
-        self.shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).standing.clone()
+        let kept_awake = host_settings::kept_awake();
+        let mut shared = self.shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        shared.standing.no_host_sleep = kept_awake;
+        shared.standing.clone()
     }
 
     /// When this instance checks next; `None`: it does not, not being idle or
-    /// having been told `--no-host-sleep`. A check underway is due now.
+    /// the host settings keeping the host awake. A check underway is due now.
     pub fn due(&self) -> Option<u64> {
         let standing = self.standing();
         match self.asking {
             Some(_) => Some(0),
-            None if self.on => {
-                check_at(standing.idle.then_some(standing.since), self.checked, self.wait)
-            }
-            None => None,
+            None if standing.no_host_sleep => None,
+            None => check_at(standing.idle.then_some(standing.since), self.checked, self.wait),
         }
     }
 

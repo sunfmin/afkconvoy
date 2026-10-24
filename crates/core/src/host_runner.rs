@@ -1,6 +1,35 @@
 //! What a `run` does with the host runner it finds, by the release each is
 //! of: a newer afkconvoy moves the host runner onto itself, and an older one
-//! changes nothing (docs/adr/0023).
+//! changes nothing; and how long a broken fleet instance waits before the host
+//! runner starts it again (docs/adr/0023).
+
+use flux_rs::attrs::*;
+
+/// How long a fleet instance that broke for the first time waits before the
+/// host runner starts it again, in seconds: a minute.
+pub const BACKOFF_FIRST: u64 = 60;
+
+/// The longest a broken fleet instance waits before it is started again, in
+/// seconds: half an hour. One that ran this long since its last start broke
+/// anew, and waits `BACKOFF_FIRST`.
+pub const BACKOFF_MOST: u64 = 1800;
+
+/// How long a fleet instance that broke waits before the host runner starts
+/// it again, in seconds, having waited `waited` before its last start —
+/// `None` where it had not broken — and run `up` seconds since that start:
+/// twice what it waited, within `BACKOFF_FIRST` and `BACKOFF_MOST`. One that
+/// had not broken, or ran `BACKOFF_MOST` or longer, waits `BACKOFF_FIRST`: a
+/// minute, then 2, 4, 8, 16 and 30 minutes for each break in a row.
+#[spec(fn(waited: Option<u64>, up: u64) -> u64{wait: BACKOFF_FIRST <= wait && wait <= BACKOFF_MOST})]
+pub fn backoff(waited: Option<u64>, up: u64) -> u64 {
+    match waited {
+        Some(waited) if up < BACKOFF_MOST => {
+            let doubled = if waited > BACKOFF_MOST / 2 { BACKOFF_MOST } else { 2 * waited };
+            if doubled < BACKOFF_FIRST { BACKOFF_FIRST } else { doubled }
+        }
+        _ => BACKOFF_FIRST,
+    }
+}
 
 /// The host runner a `run` found, against the `run`'s own release.
 #[derive(Debug, PartialEq, Eq)]
@@ -36,7 +65,43 @@ fn release(version: &str) -> Option<Vec<u64>> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    #[test]
+    fn a_fleet_instance_that_breaks_in_a_row_waits_twice_as_long_up_to_half_an_hour() {
+        let mut waited = None;
+        let mut waits = vec![];
+        for _ in 0..8 {
+            let wait = backoff(waited, 5);
+            waits.push(wait / 60);
+            waited = Some(wait);
+        }
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
+    }
+
+    #[test]
+    fn one_that_ran_half_an_hour_before_it_broke_broke_anew() {
+        assert_eq!(backoff(Some(BACKOFF_MOST), BACKOFF_MOST), BACKOFF_FIRST);
+        assert_eq!(backoff(Some(BACKOFF_MOST), BACKOFF_MOST - 1), BACKOFF_MOST);
+        assert_eq!(backoff(Some(480), 86_400), BACKOFF_FIRST);
+        assert_eq!(backoff(None, 0), BACKOFF_FIRST, "its first break");
+    }
+
+    proptest! {
+        #[test]
+        fn a_wait_is_within_its_bounds_and_never_shorter_than_the_one_before_in_a_row(
+            waited in proptest::option::of(any::<u64>()),
+            up in any::<u64>(),
+        ) {
+            let wait = backoff(waited, up);
+            prop_assert!((BACKOFF_FIRST..=BACKOFF_MOST).contains(&wait));
+            if let Some(waited) = waited.filter(|_| up < BACKOFF_MOST) {
+                prop_assert!(wait >= waited.min(BACKOFF_MOST));
+            }
+        }
+    }
 
     #[test]
     fn a_host_runner_of_an_older_release_is_older_and_of_a_newer_newer() {

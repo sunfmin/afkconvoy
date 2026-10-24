@@ -12,19 +12,19 @@ use serde_json::Value;
 use crate::claims::Me;
 use crate::git::Repo;
 use crate::tick::{self, Holder, Line, Pacing};
-use crate::{hot, kit};
+use crate::{host_settings, kit};
 
 /// How `run` asks for its checkout's fleet instance: what it named for that
 /// instance alone, kept on the checkout list so that a host runner started
-/// again starts it the same way; what it named of the host, which holds for
-/// this start; and the knobs that exist for the tests.
+/// again starts it the same way; the port its panel is served on from this
+/// start; and the knobs that exist for the tests. What it named of the host
+/// is the host settings' (`host_settings`), which the instance reads as it
+/// goes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Start {
     pub named: Named,
     /// `--panel`: served from this start; `panel --open` opens it later.
     pub panel: Option<u16>,
-    pub no_host_sleep: bool,
-    pub hot: hot::Said,
     pub knobs: Knobs,
 }
 
@@ -76,18 +76,22 @@ pub struct Knobs {
     pub ready_timeout: u64,
     /// The epoch seconds its clock reads, fixed: the global `--now`.
     pub now: Option<u64>,
+    /// Panic as this tick ends, at every start: it breaks.
+    #[serde(default)]
+    pub panic_at: Option<u64>,
 }
 
 /// Holds the fleet instance of `checkout` as `start` asks, until it is told
 /// to stop or has made `start.knobs.ticks` → what its loop answers.
-/// Everything before its first tick may refuse it: a host it cannot put to
-/// sleep, the host kit, the startup probe, the panel's port. Its startup
-/// probe's warnings are said as `Line::Warning`.
+/// Everything before its first tick may refuse it: host settings that
+/// cannot be read, or that have a host put to sleep that cannot be, the host
+/// kit, the startup probe, the panel's port. Its startup probe's warnings are
+/// said as `Line::Warning`.
 pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
-    if !start.no_host_sleep && !cfg!(target_os = "macos") {
+    if !host_settings::of_host()?.no_host_sleep && !cfg!(target_os = "macos") {
         bail!(
             "this host is not macOS, the one a fleet can put to sleep once every fleet on it is \
-             idle: start it with `--no-host-sleep`, which keeps it awake"
+             idle: run `afkconvoy run --no-host-sleep`, which keeps it awake, a host setting"
         );
     }
     let (named, knobs) = (&start.named, &start.knobs);
@@ -107,9 +111,8 @@ pub fn hold(checkout: &Repo, start: &Start, holder: Holder) -> Result<Value> {
     let pacing = Pacing {
         ticks: knobs.ticks,
         second: Duration::from_millis(knobs.second_ms),
-        no_host_sleep: start.no_host_sleep,
         host_sleep_after: knobs.host_sleep_after,
-        hot: hot::limits(start.hot, &checkout.dir),
+        panic_at: knobs.panic_at,
     };
     kit::ensure(now)?;
     let worker_no_proxy = &named.worker_no_proxy;

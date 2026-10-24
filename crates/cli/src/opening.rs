@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::git::Repo;
+use crate::host_settings;
 use crate::runner_socket::{self, Reached, Request};
 use crate::serve::{self, Live};
 use crate::wake::Waker;
@@ -76,12 +77,25 @@ fn opened(live: &Live, instance: &str, port: u16) -> Result<(Value, bool)> {
 }
 
 /// `afkconvoy panel --open`: has the fleet instance of the repo `repo` is a
-/// checkout of, which this host's runner holds, serve its panel — on `port`,
-/// or any free one — and says where. One that serves it already says the
-/// address it has, whatever `port` asks. Nothing else of that fleet instance
-/// changes, and a refusal changes nothing.
+/// checkout of, which this host's runner holds, serve its panel — on `port`;
+/// where none is named, on the panel's port of the host settings, or any free
+/// one where they say none or it is taken — and says where. One that serves
+/// it already says the address it has, whatever `port` asks. Nothing else of
+/// that fleet instance changes, and a refusal changes nothing.
 pub fn open(repo: &Repo, port: Option<u16>) -> Result<Value> {
-    let asked = Request::Panel { checkout: repo.dir.clone(), port: port.unwrap_or(0) };
+    if let Some(port) = port {
+        return ask(repo, port);
+    }
+    match host_settings::of_host()?.panel {
+        Some(port) => ask(repo, port).or_else(|_| ask(repo, 0)),
+        None => ask(repo, 0),
+    }
+}
+
+/// Asks the host runner to have the fleet instance of `repo` serve its panel
+/// on `port`, or any free one for 0.
+fn ask(repo: &Repo, port: u16) -> Result<Value> {
+    let asked = Request::Panel { checkout: repo.dir.clone(), port };
     answered(runner_socket::ask(&asked, ANSWERS_WITHIN)?)
 }
 

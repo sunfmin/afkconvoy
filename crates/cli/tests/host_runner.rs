@@ -108,9 +108,12 @@ fn run_adds_its_checkout_and_answers_once_its_first_tick_ended() {
     assert_eq!(entry.said(), first_tick);
     assert_eq!(entry.instance, answer["instance"].as_str().unwrap());
 
-    // on the list, with what its `run` named for it alone
+    // on the list, with what its `run` named for it alone; beside it, the
+    // host setting its environment named, which its answer says it changed
     let list = world.checkout_list();
-    assert_eq!(list, json!({"checkouts": [{"checkout": world.clone, "named": {"host": "h1"}}]}));
+    assert_eq!(list["checkouts"], json!([{"checkout": world.clone, "named": {"host": "h1"}}]));
+    assert_eq!(list["settings"]["no_host_sleep"], true, "AFKCONVOY_NO_HOST_SLEEP=true");
+    assert_eq!(answer["settings"], json!({"no_host_sleep": {"from": false, "to": true}}));
     let log = world.runner_log();
     let pid = &answer["host_runner"]["pid"];
     let started = format!(
@@ -390,7 +393,7 @@ fn a_run_of_a_listed_checkout_the_host_runner_could_not_start_starts_it_as_its_r
     assert!(instance.starts_with("h1-"), "{again}");
     assert_eq!(world.claims(), [(7, instance.to_string())]);
     let list = world.checkout_list();
-    assert_eq!(list, json!({"checkouts": [{"checkout": world.clone, "named": {"host": "h1"}}]}));
+    assert_eq!(list["checkouts"], json!([{"checkout": world.clone, "named": {"host": "h1"}}]));
 }
 
 #[test]
@@ -430,6 +433,86 @@ fn sigterm_stops_every_fleet_instance_and_keeps_the_list() {
     assert!(!world.cache().join("afkconvoy/host-runner.sock").exists(), "its socket goes");
     assert_eq!(world.host_runner(), None);
     assert_eq!(world.checkout_list(), before);
+}
+
+/// A load no host of any number of cores is under, as the stand-in `sysctl`
+/// says it.
+const PAST_ANY: &str = "100000.00";
+
+/// Waits up to 30 seconds for a tick of the fleet instance `answer` names
+/// whose line holds `said` → that line.
+fn ticked(answer: &Value, said: &str) -> String {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let lines = tick_log(answer).into_iter().filter(|line| kind(line) == "tick");
+        let entries = lines.map(|line| serde_json::from_value::<Entry>(line).unwrap().said());
+        if let Some(line) = entries.into_iter().find(|line| line.contains(said)) {
+            return line;
+        }
+        assert!(Instant::now() < until, "no tick says {said:?}: {:#?}", tick_log(answer));
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn a_host_setting_a_run_names_holds_for_every_fleet_instance_at_once() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    world.busy(PAST_ANY);
+    let first = world.afk(&RUN).ok();
+    let held = first["first_tick"].as_str().unwrap();
+    assert!(held.contains("admission holds back new workers"), "{first}");
+
+    // a `run` of another repo names a share: the first repo's fleet
+    // instance, never started again, admits at a tick of its own
+    let clone2 = world.second_repo();
+    let second = world.afk_in(&clone2, &[&RUN[..], &["--admit-load", "100000000"]].concat()).ok();
+    assert_eq!(second["settings"], json!({"admit_load": {"from": null, "to": 100000000}}));
+    assert_eq!(second["host_runner"]["pid"], first["host_runner"]["pid"]);
+    assert!(ticked(&first, "dispatched #7").contains("holding 1/"));
+    assert_eq!(world.claims(), [(7, first["instance"].as_str().unwrap().to_string())]);
+
+    // naming it as it is changes nothing, and `default` changes it back
+    let again = world.afk(&[&RUN[..], &["--admit-load", "100000000"]].concat()).ok();
+    assert_eq!(again["settings"], json!({}));
+    let back = world.afk(&[&RUN[..], &["--admit-load", "default"]].concat()).ok();
+    assert_eq!(back["settings"], json!({"admit_load": {"from": 100000000, "to": null}}));
+    assert_eq!(world.checkout_list()["settings"]["admit_load"], Value::Null);
+}
+
+#[test]
+fn the_host_settings_outlive_the_host_runner_and_doctor_says_those_in_force() {
+    let world = World::new();
+    let named = ["--hot-cores", "2.5", "--hot-memory", "8", "--admit-disk", "0"];
+    let first = world.afk(&[&RUN[..], &named[..]].concat()).ok();
+    let changed = &first["settings"];
+    assert_eq!(changed["hot_cores"], json!({"from": null, "to": 2.5}), "{first}");
+    assert_eq!(changed["hot_memory"], json!({"from": null, "to": 8.0}), "{first}");
+    assert_eq!(changed["admit_disk"], json!({"from": null, "to": 0}), "{first}");
+    world.kill_host_runner("KILL");
+
+    // a host runner started again keeps them, and a `run` that names none
+    // changes none
+    let again = world.afk(&["run"]).ok();
+    assert_eq!(again["host_runner"]["started"], true, "{again}");
+    assert_eq!(again["settings"], json!({}), "{again}");
+    let settings = &world.afk(&["doctor", "--host", "h1"]).json["host"]["settings"];
+    assert_eq!(settings["file"], json!(world.cache().join("afkconvoy/checkouts.json")));
+    let (said, in_force) = (&settings["said"], &settings["in_force"]);
+    assert_eq!((&said["hot_cores"], &in_force["hot_cores"]), (&json!(2.5), &json!(2.5)));
+    assert_eq!((&said["admit_disk"], &in_force["admit_disk"]), (&json!(0), &json!(0)));
+    assert_eq!(in_force["hot_memory"], 8.0);
+    // what it says none of, its default worked out for this host
+    assert_eq!((&said["admit_load"], &in_force["admit_load"]), (&Value::Null, &json!(200)));
+    assert_eq!(said["hot_written"], Value::Null);
+    assert!(in_force["hot_written"].as_f64().unwrap() >= 1.0, "{settings}");
+    assert_eq!(in_force["no_host_sleep"], true, "{settings}");
+
+    // the flag holds over the variable that stands for the other
+    if cfg!(target_os = "macos") {
+        let woken = world.afk(&["run", "--host-sleep"]).ok();
+        assert_eq!(woken["settings"], json!({"no_host_sleep": {"from": true, "to": false}}));
+    }
 }
 
 #[test]
@@ -586,7 +669,7 @@ fn a_newer_afkconvoy_moves_the_host_runner_onto_itself_on_the_same_list() {
     let second = world.afk_in(&clone2, &RUN).ok();
     world.kill_host_runner("TERM");
     let mut list = world.checkout_list();
-    list["settings"] = json!({"kept": "as it is"});
+    list["settings"]["kept"] = json!("as it is");
     let file = world.cache().join("afkconvoy/checkouts.json");
     std::fs::write(file, list.to_string()).unwrap();
     let mut older = world.host_runner_of("0.0.1");
@@ -645,4 +728,182 @@ fn a_run_older_than_the_host_runner_changes_nothing_and_says_so() {
     assert!(!world.cache().join("afkconvoy/runs").exists(), "no tick log");
     newer.kill().unwrap();
     newer.wait().unwrap();
+}
+
+/// Waits up to 30 seconds for the host runner's log to hold `count` lines
+/// that start with `start` → the first `count` of them.
+fn logged_times(world: &World, start: &str, count: usize) -> Vec<String> {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let log = world.runner_log();
+        let lines: Vec<String> = log.into_iter().filter(|line| line.starts_with(start)).collect();
+        if lines.len() >= count {
+            return lines[..count].to_vec();
+        }
+        assert!(Instant::now() < until, "not {count} {start:?} in {:#?}", world.runner_log());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The lines of a tick log of one kind, each as it is kept.
+fn of_kind(lines: &[Value], of: &str) -> Vec<Value> {
+    lines.iter().filter(|line| kind(line) == of).cloned().collect()
+}
+
+#[test]
+fn a_fleet_instance_that_panics_breaks_alone_and_is_started_again_after_a_backoff_that_grows() {
+    let world = World::new();
+    let clone2 = world.second_repo();
+    let other = world.afk_in(&clone2, &RUN).ok();
+    // its first tick answers this `run`, and each start of it panics as its
+    // second tick ends
+    let panics = ["run", "--host", "h1", "--second-ms", "10", "--panic-at-tick", "2"];
+    let first = world.afk(&panics).ok();
+    let pid = &first["host_runner"]["pid"];
+    assert_eq!(pid, &other["host_runner"]["pid"], "one host runner holds both");
+    let clone = shown(&world.clone);
+
+    // broken, with why and since when, and back again — then broken again
+    // soon after, waiting twice as long
+    let why = "it panicked: told to panic as tick 2 ended (--panic-at-tick)";
+    let breaks =
+        logged_times(&world, &format!("fleet instance broken: {clone}: {why} · since "), 2);
+    assert!(breaks[0].ends_with(" UTC, in 60s"), "{breaks:#?}");
+    assert!(breaks[1].ends_with(" UTC, in 120s"), "{breaks:#?}");
+    let back = logged_times(&world, &format!("fleet instance back: {clone}: "), 1);
+    assert!(back[0].contains(", broken since "), "{back:#?}");
+    let log = world.runner_log();
+    let at = |line: &str| log.iter().position(|said| said == line).unwrap();
+    assert!(at(&breaks[0]) < at(&back[0]) && at(&back[0]) < at(&breaks[1]), "{log:#?}");
+    // the panic is a line of the host runner's log of its own, stamped
+    let panicked = log.iter().find(|line| line.starts_with("panicked at "));
+    let panicked = panicked.unwrap_or_else(|| panic!("{log:#?}"));
+    assert!(panicked.ends_with("told to panic as tick 2 ended (--panic-at-tick)"), "{panicked}");
+    each_line_stamped(&world);
+
+    // its tick log says so too: the instance that broke, and the one back
+    let lines = tick_log(&first);
+    let broken = of_kind(&lines, "broken");
+    assert!(broken.len() >= 2, "{lines:#?}");
+    assert_eq!(broken[0]["instance"], first["instance"], "the one that broke");
+    assert_eq!(broken[0]["broken"]["why"], why);
+    let (since, next) = (&broken[0]["broken"]["since"], &broken[0]["broken"]["next"]);
+    assert_eq!(next.as_u64().unwrap() - since.as_u64().unwrap(), 60, "{lines:#?}");
+    let back = of_kind(&lines, "back");
+    assert_eq!(back[0]["back"]["since"], *since, "{lines:#?}");
+    assert_ne!(back[0]["instance"], first["instance"], "a start mints its own: {lines:#?}");
+    assert!(of_kind(&lines, "start").len() >= 2, "started again: {lines:#?}");
+
+    // the host runner and the other fleet instance went on, the list as it was
+    assert!(alive(pid));
+    assert_eq!(world.host_runner(), pid.as_u64().map(|pid| pid as u32));
+    assert_eq!(listed(&world), [shown(&clone2), clone.clone()]);
+    let ticked = |answer: &Value| of_kind(&tick_log(answer), "tick").len();
+    let before = ticked(&other);
+    let until = Instant::now() + Duration::from_secs(30);
+    while ticked(&other) == before {
+        assert!(Instant::now() < until, "the other ticks on: {:#?}", tick_log(&other));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let others = tick_log(&other);
+    assert_eq!(of_kind(&others, "start").len(), 1, "never broken: {others:#?}");
+    assert_eq!(of_kind(&others, "broken"), [] as [Value; 0]);
+    assert!(others.iter().all(|line| line["instance"] == other["instance"]), "{others:#?}");
+}
+
+#[test]
+fn a_listed_checkout_whose_probe_no_longer_passes_is_broken_and_doctor_says_when_it_is_tried() {
+    let world = World::new();
+    let first = world.afk(&RUN).ok();
+    let clone2 = world.second_repo();
+    world.afk_in(&clone2, &RUN).ok();
+    world.kill_host_runner("KILL");
+    base_branch_gone(&world);
+
+    // the other checkout's `run` starts a host runner, which starts every
+    // checkout on the list: this one is broken, and tried again in a minute
+    let other = world.afk_in(&clone2, &["run"]).ok();
+    let clone = shown(&world.clone);
+    let line = logged(&world, &format!("fleet instance broken: {clone}: "));
+    let why = afkconvoy_core::layout::no_base_branch("release");
+    assert!(line.contains(&why) && line.ends_with(" UTC, in 60s"), "{line}");
+    assert_eq!(listed(&world), [clone.clone(), shown(&clone2)], "it stays on the list");
+    assert!(alive(&other["host_runner"]["pid"]));
+    let lines = tick_log(&first);
+    let broken = of_kind(&lines, "broken");
+    assert_eq!(broken.len(), 1, "{lines:#?}");
+    assert!(broken[0]["broken"]["why"].as_str().unwrap().contains(&why), "{lines:#?}");
+
+    // `doctor` of that checkout says it is broken, why, and when it is tried
+    let doctor = world.afk(&["doctor", "--host", "h1"]);
+    assert_eq!(doctor.code, 1, "a critical finding: {}", doctor.json);
+    let read = &doctor.json["fleet"]["broken"];
+    assert_eq!(read["since"], broken[0]["broken"]["since"], "{read}");
+    assert_eq!(read["next"], broken[0]["broken"]["next"], "{read}");
+    assert!(read["why"].as_str().unwrap().contains(&why), "{read}");
+    let findings = doctor.json["findings"].as_array().unwrap();
+    let found = findings.iter().find(|finding| {
+        finding["what"]
+            .as_str()
+            .unwrap()
+            .starts_with("the fleet instance of this checkout is broken: ")
+    });
+    let found = found.unwrap_or_else(|| panic!("{findings:#?}"));
+    assert_eq!(found["severity"], "critical");
+    assert!(found["what"].as_str().unwrap().contains(&why), "{found}");
+    let evidence = found["evidence"].as_str().unwrap();
+    assert!(evidence.contains("; the host runner starts it again at "), "{evidence}");
+    assert_eq!(found["fix"], "afkconvoy run");
+    let alive_or_not = findings
+        .iter()
+        .any(|finding| finding["what"].as_str().unwrap().starts_with("no `afkconvoy run`"));
+    assert!(!alive_or_not, "said as broken, not as dead: {findings:#?}");
+    // a wake reaches it no more than `panel --open` does: each is told why
+    let woke = world.afk(&["wake"]).ok();
+    assert_eq!(woke["woke"], false, "{woke}");
+    let detail = woke["detail"].as_str().unwrap();
+    assert!(detail.contains("is broken, and waits to be started again"), "{detail}");
+    let panel = world.afk(&["panel", "--open"]).error();
+    assert!(panel.contains("is broken, and waits to be started again"), "{panel}");
+
+    // put right, a `run` there starts it at once, and it is back
+    commit(&world.clone, "docs/agents/afkconvoy.md", common::CONFIG);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    let again = world.afk(&["run"]).ok();
+    assert_eq!(again["added"], false, "{again}");
+    assert_eq!(again["host_runner"]["pid"], other["host_runner"]["pid"], "{again}");
+    let instance = again["instance"].as_str().unwrap();
+    logged(&world, &format!("fleet instance back: {clone}: {instance}, broken since "));
+    assert_eq!(of_kind(&tick_log(&first), "back").len(), 1);
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(doctor["fleet"]["broken"], Value::Null, "{doctor}");
+}
+
+#[test]
+fn stop_takes_a_broken_checkout_off_the_list_at_once_and_it_is_broken_no_more() {
+    let world = World::new();
+    let first = world.afk(&RUN).ok();
+    let clone2 = world.second_repo();
+    world.afk_in(&clone2, &RUN).ok();
+    world.kill_host_runner("KILL");
+    base_branch_gone(&world);
+    let other = world.afk_in(&clone2, &["run"]).ok();
+    let clone = shown(&world.clone);
+    logged(&world, &format!("fleet instance broken: {clone}: "));
+
+    // it answers without waiting out the minute its backoff has left
+    let asked = Instant::now();
+    let stopped = world.afk(&["stop"]).ok();
+    assert!(asked.elapsed() < Duration::from_secs(30), "{:?}", asked.elapsed());
+    assert_eq!(stopped["removed"], true, "{stopped}");
+    let why = "it was broken, and `afkconvoy stop` took its checkout off the list";
+    assert_eq!(stopped["stop"], format!("stop: {why}"), "{stopped}");
+    assert_eq!(listed(&world), [shown(&clone2)]);
+    logged(&world, &format!("fleet instance ended: {clone}: {why}"));
+    assert_eq!(kind(tick_log(&first).last().unwrap()), "stop");
+    assert!(alive(&other["host_runner"]["pid"]));
+
+    // what is off the list is no longer said to be broken
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(doctor["fleet"]["broken"], Value::Null, "{doctor}");
 }
