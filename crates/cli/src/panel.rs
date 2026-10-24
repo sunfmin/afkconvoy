@@ -144,6 +144,9 @@ pub struct Panel {
     /// The harnesses paused on this host, since when and why: no worker is
     /// started on one until a probe finds it working.
     pub paused: Vec<afkconvoy_core::casting::Paused>,
+    /// Each role no worker of which can be started on this host, with why
+    /// (`casting::nothing_safe`): its stages wait while it lasts.
+    pub nothing_safe: Vec<(String, String)>,
 }
 
 /// What a panel is made from: one rebuild, and the pass made over it.
@@ -256,6 +259,7 @@ impl Panel {
             host_inspected: None,
             caster: None,
             paused: crate::paused::read(),
+            nothing_safe: vec![],
         }
     }
 
@@ -455,6 +459,10 @@ pub fn read(
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     // Soft: a queue that cannot be read shows nothing.
     panel.exclusive = Queue::of_host().and_then(|queue| queue.standing()).unwrap_or_default();
+    // Soft too: a team or a host kit that cannot be read names no role.
+    if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
+        panel.nothing_safe = afkconvoy_core::casting::range_faults(team, &kit.range());
+    }
     panel
 }
 
@@ -748,6 +756,15 @@ pub fn render(panel: &Panel) -> String {
         );
     }
 
+    for (role, why) in &panel.nothing_safe {
+        let _ = writeln!(
+            out,
+            "<p class=\"lock\" data-nothing-safe=\"{}\"><b>{}</b></p>",
+            esc(role),
+            esc(why),
+        );
+    }
+
     if !panel.hot.is_empty() {
         let hot: Vec<String> = panel
             .hot
@@ -946,6 +963,23 @@ mod tests {
         assert!(page.contains("subscription &lt;disabled&gt;"), "{page}");
     }
 
+    #[test]
+    fn a_role_that_can_run_nothing_safely_is_named() {
+        let mut panel = page_of(1000);
+        panel.nothing_safe = vec![(
+            "lead".into(),
+            "lead has no harness on this host it holds limits for: <x>".into(),
+        )];
+        let page = render(&panel);
+        assert!(
+            page.contains(
+                "data-nothing-safe=\"lead\"><b>lead has no harness on this host it holds limits \
+                 for: &lt;x&gt;</b>"
+            ),
+            "{page}"
+        );
+    }
+
     fn page_of(now: u64) -> Panel {
         Panel {
             repo: "r".into(),
@@ -968,6 +1002,7 @@ mod tests {
             host_inspected: None,
             caster: None,
             paused: vec![],
+            nothing_safe: vec![],
         }
     }
 
@@ -994,6 +1029,7 @@ mod tests {
             host_inspected: None,
             caster: None,
             paused: vec![],
+            nothing_safe: vec![],
         };
         let page = render(&panel);
         assert!(page.contains("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more"));

@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use afkconvoy_core::casting;
 use afkconvoy_core::claims::{InstanceId, claim_ref};
 use afkconvoy_core::config::Config;
 use afkconvoy_core::exclusive::Ticket;
@@ -141,6 +142,8 @@ kinds! {
     HarnessPaused: Warning, "is paused on this host";
     TeamUnread: Critical, "the team this repo names cannot be read";
     TeamFaulty: Critical, "has a fault at its head";
+    NothingSafe: Warning, "has no harness on this host it holds limits for";
+    RosterUnmatched: Warning, "matches nothing in the host kit";
     LockUnworked: Critical, "stands and cannot be worked";
     StateUnread: Critical, "the fleet's state cannot be read";
     NoWorker: Warning, "has no worker";
@@ -329,6 +332,12 @@ pub enum TeamRead {
     Loaded {
         /// The flow label of each workflow it has.
         flow_labels: Vec<String>,
+        /// Each role no worker of which can be started on this host, with
+        /// why (`casting::nothing_safe`).
+        nothing_safe: Vec<(String, String)>,
+        /// Each role whose roster entry matches nothing in the host kit, with
+        /// what it allows and the host kit holds (`casting::unmatched_entries`).
+        unmatched: Vec<(String, String)>,
     },
     Faulty {
         name: String,
@@ -901,7 +910,32 @@ fn on_gone_finding(on: &OnGone) -> Finding {
 /// The team, or a role of it, has a fault at its head.
 fn team_findings(team: &TeamRead) -> Vec<Finding> {
     match team {
-        TeamRead::Unbound | TeamRead::Loaded { .. } => vec![],
+        TeamRead::Unbound => vec![],
+        TeamRead::Loaded { nothing_safe, unmatched, .. } => {
+            let mut found = vec![];
+            for (role, why) in nothing_safe {
+                found.push(finding(
+                    Kind::NothingSafe,
+                    format!(
+                        "{role} has no harness on this host it holds limits for: its stages wait"
+                    ),
+                    why.clone(),
+                    "afkconvoy kit".to_string(),
+                ));
+            }
+            for (role, said) in unmatched {
+                found.push(finding(
+                    Kind::RosterUnmatched,
+                    format!(
+                        "the roster's entry for the role `{role}` matches nothing in the host \
+                         kit: it is not followed"
+                    ),
+                    said.clone(),
+                    format!("afkconvoy kit, or the team's roster: roster.{role}"),
+                ));
+            }
+            found
+        }
         TeamRead::Unread(why) => vec![finding(
             Kind::TeamUnread,
             "the team this repo names cannot be read: no stage can be started".to_string(),
@@ -1077,7 +1111,16 @@ fn read_team(bound: bool) -> (TeamRead, Option<team::Loaded>) {
         Ok(loaded) => {
             let workflows = loaded.team.workflows.iter();
             let flow_labels = workflows.map(|workflow| workflow.flow_label().to_string()).collect();
-            (TeamRead::Loaded { flow_labels }, Some(loaded))
+            // A host kit that cannot be read is a finding of its own.
+            let kit = crate::kit::running().map(|(kit, _)| kit.range());
+            let (nothing_safe, unmatched) = match &kit {
+                Ok(kit) => (
+                    casting::range_faults(&loaded.team, kit),
+                    casting::unmatched_entries(&loaded.team, kit),
+                ),
+                Err(_) => (vec![], vec![]),
+            };
+            (TeamRead::Loaded { flow_labels, nothing_safe, unmatched }, Some(loaded))
         }
         Err(error) => {
             let read = match error.downcast::<Refused>() {
@@ -1525,7 +1568,26 @@ mod tests {
     }
 
     fn team() -> TeamRead {
-        TeamRead::Loaded { flow_labels: vec!["flow:feature".into()] }
+        TeamRead::Loaded {
+            flow_labels: vec!["flow:feature".into()],
+            nothing_safe: vec![],
+            unmatched: vec![],
+        }
+    }
+
+    #[test]
+    fn a_role_that_can_run_nothing_safely_and_an_unmatched_roster_entry_are_named() {
+        let team = TeamRead::Loaded {
+            flow_labels: vec![],
+            nothing_safe: vec![("lead".into(), "lead has no harness …".into())],
+            unmatched: vec![("dev".into(), "the roster's entry …".into())],
+        };
+        let found = team_findings(&team);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].what.starts_with("lead has no harness on this host it holds limits for"));
+        assert_eq!(found[0].severity, Kind::NothingSafe.severity());
+        assert!(found[1].what.contains("`dev` matches nothing in the host kit"));
+        assert_eq!(found[1].fix, "afkconvoy kit, or the team's roster: roster.dev");
     }
 
     /// A claim at work on `issue`, its worker busy in its worktree.

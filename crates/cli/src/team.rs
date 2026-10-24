@@ -730,6 +730,13 @@ pub fn left_out_json(role: &team::Role, kit: &[casting::Held]) -> Value {
     Value::Array(casting::left_out(role, kit).into_iter().map(each).collect())
 }
 
+/// What `team` says of the role `name`'s roster entry where it matches
+/// nothing in the host kit `kit` (`casting::unmatched_entries`).
+fn unmatched_of(team: &Team, name: &str, kit: &[casting::Held]) -> Option<String> {
+    let each = casting::unmatched_entries(team, kit).into_iter();
+    each.filter(|(role, _)| role == name).map(|(_, said)| said).next()
+}
+
 /// A role's range on this host, as `check` and `show` answer it: each
 /// harness with its models, in order.
 fn range_json(range: &[casting::Held]) -> Value {
@@ -750,7 +757,9 @@ fn answer(loaded: &Loaded) -> Value {
                 "above": role.above, "limits": role.limits,
                 "roster": role.roster.as_ref().map(roster_entry),
                 "range": kit.as_ref().map(|kit| range_json(&casting::range(role, kit))),
-                "left_out": kit.as_ref().map(|kit| left_out_json(role, kit))})
+                "left_out": kit.as_ref().map(|kit| left_out_json(role, kit)),
+                "unmatched": kit.as_ref().and_then(|kit| unmatched_of(team, &role.name, kit)),
+                "nothing_safe": kit.as_ref().and_then(|kit| casting::nothing_safe(role, kit))})
         })
         .collect();
     json!({

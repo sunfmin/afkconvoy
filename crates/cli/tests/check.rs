@@ -101,11 +101,11 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
              "roster": {"cast": "Hard work on opus.", "run": [
                  {"harness": "claude-code", "model": "opus", "good_at": "hard work"},
                  {"harness": "claude-code", "model": null, "good_at": null}]},
-             "range": [{"harness": "claude-code", "models": ["opus", "sonnet"]}], "left_out": []},
+             "range": [{"harness": "claude-code", "models": ["opus", "sonnet"]}], "left_out": [], "unmatched": null, "nothing_safe": null},
             {"name": "reviewer", "repo": "acme/reviewer", "path": "",
              "commit": head(&world, "acme/reviewer"), "host_user": true, "dsh_profile": "fleet", "skills": ["review", "rule"], "above": [],
              "limits": [], "roster": null,
-             "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}], "left_out": []},
+             "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}], "left_out": [], "unmatched": null, "nothing_safe": null},
         ])
     );
     assert_eq!(
@@ -357,9 +357,11 @@ fn a_roster_entry_names_harnesses_and_models_its_role_may_run_and_nothing_else()
         read["roles"][0]["roster"],
         json!({"cast": null, "run": [{"harness": "pi", "model": "openai/gpt-5.5", "good_at": null}]})
     );
-    // The host kit holds no pi: the role's range on this host is empty, and
-    // `run` refuses it (`afkconvoy run --help`). `check` says what it is.
-    assert_eq!(read["roles"][0]["range"], json!([]));
+    // The host kit holds no pi: the entry matches nothing, and the role
+    // ranges over the host kit whole. `check` names the entry.
+    assert_eq!(read["roles"][0]["range"], json!([{"harness": "claude-code", "models": []}]));
+    let unmatched = read["roles"][0]["unmatched"].as_str().unwrap();
+    assert!(unmatched.contains("allows it pi (openai/gpt-5.5), none of which"), "{unmatched}");
     assert_eq!(read["roles"][1]["range"], json!([{"harness": "claude-code", "models": []}]));
 
     let world = bound(&[
@@ -539,7 +541,7 @@ fn a_team_and_its_roles_in_one_repo_are_read_from_one_clone_of_it() {
         json!([{"name": "fellow", "repo": "acme/hospital", "path": "roles/fellow",
             "commit": commit, "host_user": true, "dsh_profile": "fleet", "skills": ["treat"], "above": [],
             "limits": [], "roster": null, "range": [{"harness": "claude-code", "models": []}],
-            "left_out": []}])
+            "left_out": [], "unmatched": null, "nothing_safe": null}])
     );
     // The team's commit is its roles': the repo was read once.
     assert_eq!(read["commit"], commit);
@@ -571,7 +573,7 @@ fn a_role_is_named_by_repo_by_repo_and_path_and_twice_over() {
     let role = |name: &str, repo: &str, path: &str, skill: &str| {
         json!({"name": name, "repo": repo, "path": path, "commit": head(&world, repo),
             "host_user": true, "dsh_profile": "fleet", "skills": [skill], "above": [], "limits": [],
-            "roster": null, "range": [{"harness": "claude-code", "models": []}], "left_out": []})
+            "roster": null, "range": [{"harness": "claude-code", "models": []}], "left_out": [], "unmatched": null, "nothing_safe": null})
     };
     assert_eq!(
         read["roles"],

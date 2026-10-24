@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use afkconvoy_core::casting::{self, Cast};
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
@@ -163,13 +164,14 @@ fn start(
     // Before the claim too: an issue whose harness cannot be started here is
     // never locked. An unbound repo's stock consult runs what the host kit
     // names for it, and its other workers their issue's casting: one the
-    // host kit does not hold is not dispatched, but a claim already held —
-    // its landing — runs the host kit's first.
-    let (harness, model) = match (&staged, &consult) {
-        (Some(staged), _) => (staged.harness(), None),
+    // host kit does not hold runs its first, and the issue is told once
+    // (`casting::unmatched_comment`); a claim already held on a paused
+    // harness — its landing — runs the host kit's first.
+    let (harness, model, unmatched) = match (&staged, &consult) {
+        (Some(staged), _) => (staged.harness(), None, staged.unmatched().cloned()),
         (None, Some(_)) => {
             let stock = fleet.stock_consult()?;
-            (stock.harness, stock.model)
+            (stock.harness, stock.model.clone(), stock.unmatched.clone().map(|name| (name, stock)))
         }
         (None, None) => {
             // A caster's casting to a paused harness is cast again: until it
@@ -177,12 +179,12 @@ fn start(
             let recast = !held && fleet.recast(number, &issue.labels)?;
             let cast = match fleet.cast(&issue.labels, recast) {
                 Ok(Ok(cast)) => cast,
-                Ok(Err(_)) if held => fleet.first()?,
                 Err(error) if held && error.is::<crate::paused::Held>() => fleet.first()?,
-                Ok(Err(why)) => bail!("issue #{number} is not dispatched: {why}"),
+                Ok(Err(why)) => bail!("{why}: run `afkconvoy kit`"),
                 Err(error) => return Err(error),
             };
-            (cast.harness, cast.model)
+            let unmatched = cast.unmatched.clone().map(|name| (name, cast.clone()));
+            (cast.harness, cast.model, unmatched)
         }
     };
     // No worker is started on a harness paused on this host.
@@ -330,7 +332,26 @@ fn start(
     if let Some(discarded) = discarded {
         started["discarded"] = discarded;
     }
+    if let Some((name, ran)) = &unmatched {
+        started["unmatched"] = json!(name);
+        // The worker runs: a comment that cannot be written costs only itself.
+        if let Err(error) = tell_unmatched(fleet, number, name, ran) {
+            started["unmatched_untold"] = json!(format!("{error:#}"));
+        }
+    }
     Ok(started)
+}
+
+/// Tells issue `number` that `name`, a name it was given, matches nothing
+/// held, and that the worker runs `ran` instead — once: not where a comment
+/// already says it (`casting::unmatched_told`).
+fn tell_unmatched(fleet: &Fleet, number: u64, name: &str, ran: &Cast) -> Result<()> {
+    let comments = fleet.gh.comments(number)?;
+    if casting::unmatched_told(comments.iter().map(|c| c.body.as_str()), name) {
+        return Ok(());
+    }
+    let holds = casting::holds(&crate::kit::running()?.0.range());
+    fleet.gh.comment(number, &casting::unmatched_comment(name, ran, &holds))
 }
 
 /// Adds to the brief in `worktree` what of the work of the worker before is

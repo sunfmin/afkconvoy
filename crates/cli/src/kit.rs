@@ -125,10 +125,21 @@ impl Kit {
         }
     }
 
-    /// What the stock consult runs: the harness and model named for it, or
-    /// the host kit's first.
+    /// What the stock consult runs: the harness and model named for it,
+    /// where the host kit holds them, or the host kit's first — a name that
+    /// matches nothing held is not followed (`stock_unmatched` says it).
     pub fn stock_consult(&self) -> Option<Named> {
-        self.stock_consult.clone().or_else(|| self.first())
+        self.stock_consult
+            .clone()
+            .filter(|_| self.stock_unmatched().is_none())
+            .or_else(|| self.first())
+    }
+
+    /// Why the harness or model named for the stock consult matches nothing
+    /// the host kit holds, when it does: the stock consult then runs the host
+    /// kit's first.
+    pub fn stock_unmatched(&self) -> Option<String> {
+        self.stock_fault()
     }
 
     /// Why this is no host kit, when it is not.
@@ -139,6 +150,12 @@ impl Kit {
                 return Some(format!("it holds the harness `{}` twice", held.harness.key()));
             }
         }
+        None
+    }
+
+    /// Why what this host kit names for the stock consult is not held by it,
+    /// when it is not: what `afkconvoy kit` refuses to write.
+    fn stock_fault(&self) -> Option<String> {
         let named = self.stock_consult.as_ref()?;
         let Some(held) = self.held(named.harness) else {
             return Some(format!(
@@ -216,6 +233,7 @@ pub fn show(now: u64) -> Value {
                     "harness": named.harness,
                     "model": named.model,
                     "named": running.stock_consult.is_some(),
+                    "unmatched": running.stock_unmatched(),
                 })),
                 "paused": paused_said,
             })
@@ -440,7 +458,7 @@ fn compose(current: &Kit, host: &Host) -> (Kit, Vec<LeftOut>) {
 
     let mut kit = Kit { harnesses, stock_consult: None };
     kit.stock_consult = current.stock_consult.clone().filter(|named| {
-        Kit { stock_consult: Some(named.clone()), ..kit.clone() }.fault().is_none()
+        Kit { stock_consult: Some(named.clone()), ..kit.clone() }.stock_fault().is_none()
     });
     (kit, left_out)
 }
@@ -660,13 +678,20 @@ mod tests {
             stock_consult: None,
         };
         let first = Named { harness: Harness::Pi, model: Some("a/b".into()) };
-        assert_eq!(kit.stock_consult(), Some(first));
+        assert_eq!(kit.stock_consult(), Some(first.clone()));
         let named = Named { harness: Harness::Codex, model: None };
         kit.stock_consult = Some(named.clone());
         assert_eq!(kit.fault(), None);
         assert_eq!(kit.stock_consult(), Some(named));
+        // One the host kit does not hold: the host kit's first, and said.
         kit.stock_consult = Some(Named { harness: Harness::Dsh, model: None });
-        assert!(kit.fault().unwrap().contains("does not hold"));
+        assert_eq!(kit.fault(), None);
+        assert!(kit.stock_fault().unwrap().contains("does not hold"));
+        assert!(kit.stock_unmatched().unwrap().contains("`dsh`"));
+        assert_eq!(kit.stock_consult(), Some(first.clone()));
+        kit.stock_consult = Some(Named { harness: Harness::Pi, model: Some("x/y".into()) });
+        assert!(kit.stock_unmatched().unwrap().contains("`x/y`"));
+        assert_eq!(kit.stock_consult(), Some(first));
         assert_eq!(Kit::default().stock_consult(), None);
     }
 

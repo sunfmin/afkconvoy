@@ -76,30 +76,45 @@ fn an_issue_with_no_casting_and_no_choice_to_make_runs_the_host_kit_s_first() {
 }
 
 #[test]
-fn a_casting_the_host_kit_does_not_hold_is_not_dispatched_and_plan_says_why() {
-    for (labels, said) in [
-        (
-            &["harness:pi", "model:a/none"][..],
-            "`model:a/none` names a model the host kit holds for no `pi`",
-        ),
-        (
-            &["harness:codex", "model:gpt-x"][..],
-            "`model:gpt-x` names a model the host kit holds for no `codex`",
-        ),
-        (&["model:opus"][..], "`model:opus` names a model of no harness"),
+fn a_casting_the_host_kit_does_not_hold_runs_its_first_and_the_issue_is_told_once() {
+    for (labels, name) in [
+        (&["harness:pi", "model:a/none"][..], "`model:a/none`"),
+        (&["harness:codex", "model:gpt-x"][..], "`model:gpt-x`"),
+        (&["harness:nope"][..], "`harness:nope`"),
+        (&["model:opus"][..], "`model:opus`"),
     ] {
         let world = cast(labels);
         let planned = world.afk(&PLAN).ok();
-        assert_eq!(planned["frontier"], json!([]), "{labels:?}");
-        let excluded = &planned["excluded"][0];
-        assert_eq!(excluded["number"], 7);
-        let reason = excluded["reason"].as_str().unwrap();
-        assert!(reason.starts_with("not dispatched: ") && reason.contains(said), "{reason}");
-        // A casting it does not hold is told with what it holds.
-        let holds = "it holds: claude-code (opus, haiku); pi (a/fast, a/slow); codex (no model)";
-        assert_eq!(reason.contains(holds), labels[0].starts_with("harness:"), "{reason}");
+        assert_eq!(planned["excluded"], json!([]), "{labels:?}");
+        assert_eq!(
+            planned["frontier"][0]["cast"],
+            json!({"harness": "claude-code", "model": "opus", "why": "unmatched", "unmatched": name}),
+            "{labels:?}"
+        );
         world.afk(&TICK).ok();
-        assert_eq!(started(&world), [] as [String; 0], "{labels:?}");
+        let started = started(&world);
+        assert_eq!(started.len(), 1, "{labels:?}");
+        assert!(started[0].ends_with("--model 'opus'"), "{started:?}");
+        let told = |world: &World| -> Vec<String> {
+            let comments = world.comments(7);
+            comments
+                .into_iter()
+                .filter(|body| body.starts_with("<!--convoy:unmatched-->"))
+                .collect()
+        };
+        let said = told(&world);
+        assert_eq!(said.len(), 1, "{said:?}");
+        for part in [
+            &format!("{name} matches nothing this host holds"),
+            "this worker runs `claude-code` on `opus` instead",
+            "The host kit holds claude-code (opus, haiku); pi (a/fast, a/slow)",
+        ] {
+            assert!(said[0].contains(part), "{part}\n{}", said[0]);
+        }
+        // The label is never taken off, and the next tick tells nothing again.
+        assert!(world.labels(7).iter().any(|label| label == labels[0]), "{labels:?}");
+        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1100"]).ok();
+        assert_eq!(told(&world).len(), 1, "{labels:?}");
     }
 }
 
