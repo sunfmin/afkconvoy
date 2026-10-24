@@ -365,3 +365,35 @@ fn each_paused_harness_is_probed_every_hour_and_one_that_answers_is_back() {
     assert_eq!(world.paused(), json!([]), "it answered");
     assert_eq!(started(&world), [Harness::Pi.with_model(Harness::Pi.stock(), "a/slow")]);
 }
+
+#[test]
+fn a_caster_s_casting_naming_no_held_model_is_cast_again_with_ids_and_a_human_s_stays() {
+    let world = cast(&["harness:claude-code", "model:sonnet"]);
+    world.comment(7, "Cast `harness:claude-code` and `model:sonnet`: A small fix.");
+    // A human's label naming nothing is left as it is, and plan says the
+    // nearest names.
+    world.issue(8, &["ready-for-agent", "harness:claude-code", "model:opuss"]);
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["caster"]["to_cast"], json!([7]), "{planned}");
+    let eight = planned["excluded"].as_array().unwrap().iter().find(|e| e["number"] == 8);
+    let reason = eight.unwrap()["reason"].as_str().unwrap();
+    assert!(reason.contains("the nearest names: `opus`"), "{reason}");
+
+    // The caster answers with a name; the label names the model's id.
+    world.with_kit(|kit| {
+        kit["harnesses"][0]["models"][0] = json!({"model": "claude-opus-5-5", "names": ["opus"]});
+    });
+    world.caster_answers(
+        "{\"issue\": 7, \"harness\": \"claude-code\", \"model\": \"OPUS\", \"why\": \"Hard.\"}\n",
+    );
+    let answered = world.afk(&["cast", "--now", "1100"]).ok();
+    assert_eq!(answered["cast"][0]["model"], "claude-opus-5-5", "{answered}");
+    assert_eq!(
+        world.labels(7),
+        ["ready-for-agent", "harness:claude-code", "model:claude-opus-5-5"]
+    );
+    let said = world.comments(7).last().unwrap().clone();
+    assert!(said.starts_with("Cast `harness:claude-code` and `model:claude-opus-5-5`: Hard."));
+    assert!(said.contains("Cast again, in place of `harness:claude-code` and `model:sonnet`: its label `model:sonnet`"), "{said}");
+    assert_eq!(world.labels(8), ["ready-for-agent", "harness:claude-code", "model:opuss"]);
+}
