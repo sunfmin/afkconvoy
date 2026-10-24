@@ -1,7 +1,8 @@
 use crate::common;
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use common::{World, bookkeeping};
 use serde_json::{Value, json};
@@ -21,11 +22,18 @@ fn worked() -> World {
 /// fleet on it has been idle no time at all → the lines it printed, but for
 /// those it prints whatever it does (`bookkeeping`).
 fn run(world: &World, ticks: &str) -> Vec<String> {
+    run_with(world, ticks, |_| {})
+}
+
+/// The same, with what `more` adds to its command.
+fn run_with(world: &World, ticks: &str, more: impl Fn(&mut Command)) -> Vec<String> {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
     let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
     let pacing = ["--second-ms", "0", "--ticks", ticks, "--host-sleep-after", "0"];
-    let out = command.args(args).args(pacing).output().unwrap();
+    command.args(args).args(pacing);
+    more(&mut command);
+    let out = command.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
     stdout.lines().filter(|line| !bookkeeping(line)).map(str::to_string).collect()
@@ -106,8 +114,9 @@ fn a_fleet_that_worked_puts_its_host_to_sleep_once_every_fleet_on_it_is_idle() {
     let lines = run(&world, "2");
     assert_eq!(
         lines[0],
-        "start: puts this host to sleep once every fleet on it has been idle 0s \
-         (`--no-host-sleep` keeps it awake)"
+        "start: puts this host to sleep within its sleep hours, 00:00-24:00, once every fleet on \
+         it has been idle 0s (`--host-sleep-hours default` changes them back to 00:00-06:00, \
+         `--no-host-sleep` keeps it awake)"
     );
     let slept: Vec<&String> = lines.iter().filter(|line| line.starts_with("host sleep:")).collect();
     assert_eq!(slept.len(), 1, "{lines:?}");
@@ -168,16 +177,69 @@ fn an_instance_idle_less_than_ten_minutes_makes_no_check() {
     let mut command = world.command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone);
     world.host_sleeps(&mut command);
     let args = ["run", "--foreground", "--instance", "alpha", "--host", "h1"];
-    let out = command.args(args).args(["--second-ms", "0", "--ticks", "3"]).output().unwrap();
+    let pacing = ["--second-ms", "0", "--ticks", "3", "--host-sleep-hours", "default"];
+    let out = command.args(args).args(pacing).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{stdout}");
-    let host_sleep = "start: puts this host to sleep once every fleet on it has been idle ten \
-                      minutes (`--no-host-sleep` keeps it awake)";
+    let host_sleep = "start: puts this host to sleep within its sleep hours, 00:00-06:00, once \
+                      every fleet on it has been idle ten minutes (`--host-sleep-hours` says \
+                      others, `--no-host-sleep` keeps it awake)";
     let lines: Vec<&str> = stdout.lines().filter(|line| !bookkeeping(line)).collect();
     assert_eq!(lines[0], host_sleep, "{stdout}");
     assert!(!stdout.contains("host sleep:"), "{stdout}");
     assert_eq!(world.pmset_calls(), Vec::<String>::new());
     assert_eq!(last_check(&world), Value::Null);
+}
+
+/// The sleep hours that start `from` minutes after now and last `long`, in
+/// the time zone `ahead` hours ahead of UTC, as `--host-sleep-hours` says them.
+fn hours(ahead: u64, from: u64, long: u64) -> String {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let local = (now / 60 + ahead * 60) % 1440;
+    let said = |minute: u64| format!("{:02}:{:02}", minute % 1440 / 60, minute % 60);
+    format!("{}-{}", said(local + from), said(local + from + long))
+}
+
+#[test]
+fn a_check_outside_the_sleep_hours_keeps_the_host_awake_and_says_them() {
+    let world = worked();
+    // in two hours, for an hour, in the host's local time
+    let outside = hours(9, 120, 60);
+    let lines = run_with(&world, "2", |command| {
+        command.env("TZ", "JST-9").args(["--host-sleep-hours", &outside]);
+    });
+    assert_eq!(world.pmset_calls(), Vec::<String>::new());
+    let said = format!("the host's local time is outside its sleep hours, {outside}");
+    let kept = format!("host sleep: kept awake: {said}");
+    assert!(lines.contains(&kept), "{lines:?}");
+    let start = format!("start: puts this host to sleep within its sleep hours, {outside}, ");
+    assert!(lines[0].starts_with(&start), "{lines:?}");
+    let checked = last_check(&world);
+    assert_eq!(checked["slept"], false, "{checked}");
+    assert_eq!(checked["kept_awake_by"], json!([said]), "{checked}");
+    // the next check is as they start: none more in this run
+    let checks = lines.iter().filter(|line| line.starts_with("host sleep:")).count();
+    assert_eq!(checks, 1, "{lines:?}");
+}
+
+#[test]
+fn the_sleep_hours_are_of_the_host_s_local_time() {
+    // from an hour ago to an hour on in UTC+9, which UTC is nine hours behind
+    let within = hours(9, 1440 - 60, 120);
+    let world = worked();
+    run_with(&world, "2", |command| {
+        command.env("TZ", "JST-9").args(["--host-sleep-hours", &within]);
+    });
+    assert_eq!(world.pmset_calls(), ["sleepnow"]);
+    assert_eq!(last_check(&world)["slept"], true);
+
+    let world = worked();
+    run_with(&world, "2", |command| {
+        command.env("TZ", "UTC0").args(["--host-sleep-hours", &within]);
+    });
+    assert_eq!(world.pmset_calls(), Vec::<String>::new());
+    let said = format!("the host's local time is outside its sleep hours, {within}");
+    assert_eq!(last_check(&world)["kept_awake_by"][0], said);
 }
 
 #[test]
