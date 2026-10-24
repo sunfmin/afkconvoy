@@ -100,11 +100,13 @@ pub fn range(role: &Role, kit: &[Held]) -> Vec<Held> {
 /// its range leaves out: one the role holds no limits for, while it holds
 /// limits for another (`team::unlimited`).
 pub fn left_out(role: &Role, kit: &[Held]) -> Vec<Harness> {
-    let cut = cut(role.roster.as_ref(), kit);
-    cut.iter()
-        .filter(|held| crate::team::unlimited(role, held.harness).is_some())
-        .map(|held| held.harness)
-        .collect()
+    let mut left = vec![];
+    for held in cut(role.roster.as_ref(), kit) {
+        if crate::team::unlimited(role, held.harness).is_some() {
+            left.push(held.harness);
+        }
+    }
+    left
 }
 
 /// Why a range leaves out `harness`, as a human is told it.
