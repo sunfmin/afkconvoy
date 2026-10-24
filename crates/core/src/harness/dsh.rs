@@ -66,6 +66,23 @@ pub(super) fn prompt_question(kept: &str, model: Option<&str>, prompt: &str) -> 
         .own()
 }
 
+/// What the probe's plugin prints before the model each request is sent
+/// to, on a line of its own (`dsh/probe.mjs`): DSH's headless answer says no
+/// other.
+const ANSWERED: &str = "AFKCONVOY_DSH_ANSWERED";
+
+/// The model that answered `prompt_question`, by `answer`: the last request's.
+pub(super) fn answered_as(answer: &str) -> Option<String> {
+    let mut answered = None;
+    for line in answer.lines() {
+        let mut words = line.split_whitespace();
+        if let (Some(ANSWERED), Some(model), None) = (words.next(), words.next(), words.next()) {
+            answered = Some(model.to_string());
+        }
+    }
+    answered
+}
+
 /// The overlay DSH's headless profile is booted with to say its models,
 /// kept: it loads the plugin that prints them (`dsh/models.mjs`).
 const MODELS_PATCH: &str = "models.patch.yml";

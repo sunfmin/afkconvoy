@@ -335,7 +335,7 @@ fn start(
     if let Some((name, ran)) = &unmatched {
         started["unmatched"] = json!(name);
         // The worker runs: a comment that cannot be written costs only itself.
-        if let Err(error) = tell_unmatched(fleet, number, name, ran) {
+        if let Err(error) = tell_unmatched(fleet, number, name, ran, &issue.labels) {
             started["unmatched_untold"] = json!(format!("{error:#}"));
         }
     }
@@ -345,12 +345,22 @@ fn start(
 /// Tells issue `number` that `name`, a name it was given, matches nothing
 /// held, and that the worker runs `ran` instead — once: not where a comment
 /// already says it (`casting::unmatched_told`).
-fn tell_unmatched(fleet: &Fleet, number: u64, name: &str, ran: &Cast) -> Result<()> {
+fn tell_unmatched(
+    fleet: &Fleet,
+    number: u64,
+    name: &str,
+    ran: &Cast,
+    labels: &[String],
+) -> Result<()> {
     let comments = fleet.gh.comments(number)?;
     if casting::unmatched_told(comments.iter().map(|c| c.body.as_str()), name) {
         return Ok(());
     }
-    let holds = casting::holds(&crate::kit::running()?.0.range());
+    let kit = crate::kit::running()?.0.range();
+    let mut holds = casting::holds(&kit);
+    if let Some(unheld) = casting::unheld(labels, &kit) {
+        holds.push_str(&format!(". {}", unheld.why));
+    }
     fleet.gh.comment(number, &casting::unmatched_comment(name, ran, &holds))
 }
 

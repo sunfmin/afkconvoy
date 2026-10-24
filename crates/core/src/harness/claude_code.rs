@@ -135,6 +135,85 @@ pub(super) fn models(answer: &str) -> Option<Vec<String>> {
     if listed.is_empty() { None } else { Some(listed) }
 }
 
+/// What Claude Code's probe adds: its answer as one JSON object, whose
+/// `modelUsage` is keyed by the model that answered.
+const AS_JSON: &str = " --output-format json";
+
+/// What comes before the first model's id in that answer, with no
+/// whitespace.
+const USAGE: &str = "\"modelUsage\":{\"";
+
+/// The line that probes `model` with `prompt` through `command`, as
+/// `prompt_question` sends it, answering in JSON (`answered_as`).
+pub(super) fn probe_question(command: &str, model: Option<&str>, prompt: &str) -> String {
+    let line = Line::new().launch(command);
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(" --print ").word(prompt).fixed(AS_JSON).done()
+}
+
+/// The model that answered `probe_question`, by `answer`: the first key of
+/// its `modelUsage`, whatever a terminal broke its lines at.
+pub(super) fn answered_as(answer: &str) -> Option<String> {
+    let dense: String = answer.split_whitespace().collect();
+    let (_, after) = dense.split_once(USAGE)?;
+    let (id, _) = after.split_once('"')?;
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// What comes before a model's display name in Claude Code's answer to
+/// `INITIALIZE`.
+const SHOWN: &str = "\"displayName\":\"";
+
+/// The display name of each model Claude Code lists in `answer` (`models`),
+/// by its name: what its menu shows it as. A terminal's line breaks are
+/// taken out, and the spaces a display name holds kept.
+pub(super) fn shown(answer: &str) -> Vec<(String, String)> {
+    let joined: String = answer.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+    let Some((_, list)) = joined.split_once("\"models\":") else { return vec![] };
+    // Each model is an object one level into the list, whichever order its
+    // keys are in; a bracket inside a string is none.
+    let mut shown = vec![];
+    let (mut depth, mut quoted, mut escaped, mut opened) = (0_usize, false, false, 0);
+    for (at, character) in list.char_indices() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            '[' | '{' => {
+                depth = depth.saturating_add(1);
+                if depth == 2 {
+                    opened = at;
+                }
+            }
+            ']' | '}' => {
+                if depth == 2 {
+                    let model = &list[opened..at];
+                    let value = |key: &str| {
+                        let (_, after) = model.split_once(key)?;
+                        after.split_once('"').map(|(value, _)| value.to_string())
+                    };
+                    if let (Some(name), Some(display)) = (value(NAMED), value(SHOWN))
+                        && !name.is_empty()
+                        && !display.is_empty()
+                    {
+                        shown.push((name, display));
+                    }
+                }
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    shown
+}
+
 /// The settings a worker loads: those of the directory it starts in — its
 /// role's — and nothing of the host user's: no hook, no MCP server, no
 /// permission of theirs.
@@ -629,6 +708,15 @@ mod tests {
         let nested = r#"{"models":[{"value":"a","x":{"value":"no"},"d":"\"value\":\"no\""},
             {"d":"]}","value":"b"}],"after":{"value":"no"}}"#;
         assert_eq!(Harness::ClaudeCode.models(nested).unwrap(), ["a", "b"]);
+    }
+
+    #[test]
+    fn the_names_claude_code_shows_its_models_by_are_read_whatever_their_keys_order() {
+        let shown = Harness::ClaudeCode.shown(INITIALIZED);
+        assert_eq!(shown[1], ("opus".to_string(), "Opus 5.5".to_string()));
+        assert_eq!(shown.len(), Harness::ClaudeCode.models(INITIALIZED).unwrap().len());
+        let reordered = r#"{"models":[{"displayName":"Opus 5.5","value":"opus"},{"value":"x"}]}"#;
+        assert_eq!(Harness::ClaudeCode.shown(reordered), [("opus".into(), "Opus 5.5".into())]);
     }
 
     #[test]

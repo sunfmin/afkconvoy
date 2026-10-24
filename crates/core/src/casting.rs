@@ -11,15 +11,150 @@ use crate::team::{Entry, Performer, Role, Team, Workflow};
 
 /// What the label that names an issue's harness starts with.
 pub const HARNESS_LABEL: &str = "harness:";
-/// What the label that names its model starts with: the model is its
-/// harness's own name for it.
+/// What the label that names its model starts with: the model is any of its
+/// names on its harness (`Held::model`); the fleet writes its id.
 pub const MODEL_LABEL: &str = "model:";
 
 /// One harness of a range, with the models it holds, in order of preference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     pub harness: Harness,
-    pub models: Vec<String>,
+    pub models: Vec<Model>,
+}
+
+/// One model a harness holds: its id — the model its probe answered as,
+/// which a worker is started on — and the other names it goes by on that
+/// harness, each of which answered as it, its display names among them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Model {
+    pub id: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+}
+
+/// A model known by its id alone.
+impl From<&str> for Model {
+    fn from(id: &str) -> Model {
+        Model { id: id.to_string(), names: vec![] }
+    }
+}
+
+impl Model {
+    /// Its id, then its other names.
+    pub fn every_name(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.id.as_str()).chain(self.names.iter().map(String::as_str))
+    }
+}
+
+/// Why a name matched no one model of a harness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unmatched {
+    /// It matched these two, and so neither.
+    Two(String, String),
+    /// It matched none; these are the nearest names the harness holds.
+    None(Vec<String>),
+}
+
+impl Unmatched {
+    /// What a human is told of `name`, a model of `harness`.
+    pub fn said(&self, name: &str, harness: Harness) -> String {
+        match self {
+            Unmatched::Two(one, two) => format!(
+                "`{name}` names two models of {}, `{one}` and `{two}`, and so neither: name \
+                 one by its id",
+                harness.key()
+            ),
+            Unmatched::None(nearest) if nearest.is_empty() => {
+                format!("`{name}` names no model the host kit holds for {}", harness.key())
+            }
+            Unmatched::None(nearest) => format!(
+                "`{name}` names no model the host kit holds for {}; the nearest names: {}",
+                harness.key(),
+                nearest.iter().map(|name| format!("`{name}`")).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    }
+}
+
+/// How many nearest names a name that matched nothing is told of.
+const NEAREST: usize = 3;
+
+impl Held {
+    /// The model `name` names here: the one whose id or other name it is,
+    /// whatever the case — else, with the provider prefix left off, the one
+    /// whose id or name is `<provider>/<name>`. A name that matches two
+    /// matches neither.
+    pub fn model(&self, name: &str) -> Result<&Model, Unmatched> {
+        let name = name.trim();
+        // Whole names take precedence over names without a provider prefix.
+        for unprefixed in [false, true] {
+            let mut first: Option<&Model> = None;
+            for model in &self.models {
+                let matches = model.every_name().any(|held| {
+                    if unprefixed {
+                        !name.contains('/')
+                            && held
+                                .split_once('/')
+                                .is_some_and(|(_, rest)| rest.eq_ignore_ascii_case(name))
+                    } else {
+                        held.eq_ignore_ascii_case(name)
+                    }
+                });
+                if matches {
+                    if let Some(one) = first {
+                        return Err(Unmatched::Two(one.id.clone(), model.id.clone()));
+                    }
+                    first = Some(model);
+                }
+            }
+            if let Some(model) = first {
+                return Ok(model);
+            }
+        }
+        Err(Unmatched::None(self.nearest(name)))
+    }
+
+    /// The names it holds nearest `name`, nearest first: by how few letters
+    /// are to be changed, whatever the case.
+    fn nearest(&self, name: &str) -> Vec<String> {
+        let name = name.to_lowercase();
+        let mut every: Vec<(usize, &str)> = self
+            .models
+            .iter()
+            .flat_map(Model::every_name)
+            .map(|held| (distance(&name, &held.to_lowercase()), held))
+            .collect();
+        every.sort_by_key(|(distance, _)| *distance);
+        let mut nearest: Vec<String> = vec![];
+        for (_, held) in every {
+            if nearest.len() < NEAREST && !nearest.iter().any(|had| had == held) {
+                nearest.push(held.to_string());
+            }
+        }
+        nearest
+    }
+
+    /// Its models' ids, in order.
+    pub fn ids(&self) -> Vec<&str> {
+        self.models.iter().map(|model| model.id.as_str()).collect()
+    }
+}
+
+/// How many letters are to be added, taken away or changed to make `one`
+/// `two`.
+fn distance(one: &str, two: &str) -> usize {
+    let two: Vec<char> = two.chars().collect();
+    let mut row: Vec<usize> = (0..=two.len()).collect();
+    for (i, a) in one.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, b) in two.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(a != *b)).min(above + 1).min(row[j] + 1);
+            diagonal = above;
+        }
+    }
+    row.last().copied().unwrap_or(0)
 }
 
 /// What a worker runs, and why.
@@ -162,17 +297,20 @@ holds; it holds {}: the role ranges over the host kit whole, less what it holds 
 
 /// A roster `entry` cut to the host kit `kit`, in the roster's order, each
 /// harness once, with the models of it the entry allows and the host kit
-/// holds — a harness the entry allows on any model, with every model the
-/// host kit holds for it. What the host kit does not hold is cut.
+/// holds — by any of its names (`Held::model`) — and a harness the entry
+/// allows on any model, with every model the host kit holds for it. What
+/// the host kit does not hold is cut.
 fn cut_entry(entry: &Entry, kit: &[Held]) -> Vec<Held> {
     let mut range: Vec<Held> = vec![];
     for allowed in &entry.run {
         let Some(held) = kit.iter().find(|held| held.harness == allowed.harness) else {
             continue;
         };
-        let models: Vec<String> = match &allowed.model {
-            Some(model) if held.models.contains(model) => vec![model.clone()],
-            Some(_) => continue,
+        let models: Vec<Model> = match &allowed.model {
+            Some(model) => match held.model(model) {
+                Ok(model) => vec![model.clone()],
+                Err(_) => continue,
+            },
             None => held.models.clone(),
         };
         match range.iter_mut().find(|had| had.harness == allowed.harness) {
@@ -187,6 +325,61 @@ fn cut_entry(entry: &Entry, kit: &[Held]) -> Vec<Held> {
         }
     }
     range
+}
+
+/// One model a roster entry names that matches no model the host kit holds
+/// for its harness (`Held::model`): what `check`, `plan` and `doctor` name,
+/// and what a tick opens an issue for in the team's repo. A harness the host
+/// kit does not hold is no name's fault, and none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnmatchedModel {
+    pub role: String,
+    pub harness: Harness,
+    pub model: String,
+    /// What the host kit holds for the harness (`holds`).
+    pub holds: String,
+    /// Why it matched nothing (`Unmatched::said`).
+    pub said: String,
+}
+
+impl UnmatchedModel {
+    /// The line that names it to a human.
+    pub fn line(&self) -> String {
+        format!(
+            "the roster entry `{{ harness: {}, model: {} }}` of the role `{}` matches nothing: \
+             {}; the host kit holds {}",
+            self.harness.key(),
+            self.model,
+            self.role,
+            self.said,
+            self.holds
+        )
+    }
+}
+
+/// Each model `team`'s roster names that matches no model the host kit
+/// `kit` holds for its harness, role by role in the roster's order.
+pub fn unmatched_models(team: &Team, kit: &[Held]) -> Vec<UnmatchedModel> {
+    let mut unmatched = vec![];
+    for role in &team.roles {
+        let Some(entry) = &role.roster else { continue };
+        for allowed in &entry.run {
+            let Some(model) = &allowed.model else { continue };
+            let Some(held) = kit.iter().find(|held| held.harness == allowed.harness) else {
+                continue;
+            };
+            if let Err(why) = held.model(model) {
+                unmatched.push(UnmatchedModel {
+                    role: role.name.clone(),
+                    harness: allowed.harness,
+                    model: model.clone(),
+                    holds: holds(std::slice::from_ref(held)),
+                    said: why.said(model, allowed.harness),
+                });
+            }
+        }
+    }
+    unmatched
 }
 
 /// The range of each stage of `workflow`, one of `team`'s, that a role
@@ -267,17 +460,38 @@ pub fn holds(range: &[Held]) -> String {
         .iter()
         .map(|held| match held.models.as_slice() {
             [] => format!("{} (no model)", held.harness.key()),
-            models => format!("{} ({})", held.harness.key(), models.join(", ")),
+            _ => format!("{} ({})", held.harness.key(), held.ids().join(", ")),
         })
         .collect();
     each.join("; ")
 }
 
-/// Whether `range` holds the casting `harness` on `model`.
-fn holds_cast(range: &[Held], harness: Harness, model: Option<&String>) -> bool {
-    range.iter().any(|held| {
-        held.harness == harness && model.is_none_or(|model| held.models.contains(model))
-    })
+/// The casting `harness` on `model` as `range` holds it: its harness, and
+/// the id of the model `model` names there (`Held::model`). `None` where it
+/// holds no such harness, or no model of it by that name.
+fn held_cast(range: &[Held], harness: Harness, model: Option<&String>) -> Option<Option<String>> {
+    let held = range.iter().find(|held| held.harness == harness)?;
+    match model {
+        Some(model) => held.model(model).ok().map(|model| Some(model.id.clone())),
+        None => Some(None),
+    }
+}
+
+/// Why no harness of `ranges` holds a model named `model` of `harness`, with
+/// the nearest names they hold for it: what is said of a label that names
+/// nothing.
+fn nearest_in(ranges: &[&[Held]], harness: Harness, model: &str) -> Option<String> {
+    let mut every = Held { harness, models: vec![] };
+    for range in ranges {
+        for held in range.iter().filter(|held| held.harness == harness) {
+            for each in &held.models {
+                if !every.models.contains(each) {
+                    every.models.push(each.clone());
+                }
+            }
+        }
+    }
+    every.model(model).err().map(|why| why.said(model, harness))
 }
 
 /// Whether `range` holds `harness`, on any model.
@@ -302,7 +516,8 @@ fn switch_named(chosen: Harness) -> String {
 /// `range`'s first, run for `why`.
 fn first_of(range: &[Held], why: Why, unmatched: Option<String>) -> Option<Cast> {
     let first = range.first()?;
-    Some(Cast { harness: first.harness, model: first.models.first().cloned(), why, unmatched })
+    let model = first.models.first().map(|model| model.id.clone());
+    Some(Cast { harness: first.harness, model, why, unmatched })
 }
 
 /// What a worker runs under a switch to `chosen`, the casting being `named`:
@@ -315,11 +530,13 @@ fn switched(
 ) -> Cast {
     // The model of another harness is not this one's.
     let model = match named {
-        Ok(Some((harness, model))) if *harness == chosen => model.clone(),
+        Ok(Some((harness, Some(model)))) if *harness == chosen => {
+            held_cast(range, chosen, Some(model)).flatten()
+        }
         _ => range
             .first()
             .filter(|held| held.harness == chosen)
-            .and_then(|held| held.models.first().cloned()),
+            .and_then(|held| held.models.first().map(|model| model.id.clone())),
     };
     Cast { harness: chosen, model, why: Why::Switch, unmatched: None }
 }
@@ -353,10 +570,10 @@ pub fn cast_within(
     }
     match named {
         Ok(None) => Ok(first(Why::RangeFirst, None)?),
-        Ok(Some((harness, model))) if holds_cast(range, harness, model.as_ref()) => {
-            Ok(Cast { harness, model, why: Why::Casting, unmatched: None })
-        }
-        Ok(Some(_)) => Ok(first(Why::Outside, None)?),
+        Ok(Some((harness, model))) => match held_cast(range, harness, model.as_ref()) {
+            Some(model) => Ok(Cast { harness, model, why: Why::Casting, unmatched: None }),
+            None => Ok(first(Why::Outside, None)?),
+        },
         Err(unheld) => Ok(first(Why::Unmatched, Some(unheld.name))?),
     }
 }
@@ -394,7 +611,7 @@ pub fn held_by_none(
         Ok(None) => return None,
         Err(unheld) => return Some(unheld),
     };
-    if ranges.iter().any(|(_, range)| holds_cast(range, harness, model.as_ref())) {
+    if ranges.iter().any(|(_, range)| held_cast(range, harness, model.as_ref()).is_some()) {
         return None;
     }
     let mut named = format!("{HARNESS_LABEL}{}", harness.key());
@@ -403,6 +620,11 @@ pub fn held_by_none(
     }
     let each: Vec<String> =
         ranges.iter().map(|(by, range)| format!("{by}: {}", holds(range))).collect();
+    let all: Vec<&[Held]> = ranges.iter().map(|(_, range)| range.as_slice()).collect();
+    let nearest = model
+        .as_deref()
+        .and_then(|model| nearest_in(&all, harness, model))
+        .map_or(String::new(), |said| format!(" ({said})"));
     // The label that matched nothing: the model's, where a range holds the
     // harness.
     let name = match &model {
@@ -412,7 +634,7 @@ pub fn held_by_none(
         _ => format!("`{HARNESS_LABEL}{}`", harness.key()),
     };
     let why = format!(
-        "its casting `{named}` is held by no range of its workflow's stages: {}",
+        "its casting `{named}` is held by no range of its workflow's stages{nearest}: {}",
         each.join(" · ")
     );
     Some(Unheld { name, why })
@@ -593,15 +815,25 @@ pub fn by_caster<'a>(labels: &[String], bodies: impl IntoIterator<Item = &'a str
     bodies.into_iter().any(|body| body.starts_with(&head))
 }
 
+/// Whether the casting `labels` carry names what `kit` does not hold: a
+/// harness it holds none of, or a model it holds by no such name.
+pub fn names_nothing(labels: &[String], kit: &[Held]) -> bool {
+    !uncast(labels) && held_casting(labels, kit).is_err()
+}
+
 /// Whether an issue labelled `labels` is to be cast again: a caster cast it
-/// to a harness that is now `paused`, and no worker has `started` on it.
+/// to a harness that is now `paused`, or to what the host kit `kit` holds
+/// nothing by (`names_nothing`), and no worker has `started` on it.
 pub fn to_recast<'a>(
     labels: &[String],
     bodies: impl IntoIterator<Item = &'a str>,
     started: bool,
     paused: &[Paused],
+    kit: &[Held],
 ) -> bool {
-    !started && paused_of(labels, paused).is_some() && by_caster(labels, bodies)
+    !started
+        && (paused_of(labels, paused).is_some() || names_nothing(labels, kit))
+        && by_caster(labels, bodies)
 }
 
 /// What a caster puts on one issue: its `harness:` label, and its `model:`
@@ -621,7 +853,11 @@ impl Casting {
     pub fn labels(&self, range: &[Held]) -> Result<Vec<String>, String> {
         let mut labels = vec![format!("{HARNESS_LABEL}{}", self.harness)];
         labels.extend(self.model.iter().map(|model| format!("{MODEL_LABEL}{model}")));
-        held_casting(&labels, range).map_err(|unheld| unheld.why)?;
+        // Whatever name it answered with, the label names the model's id.
+        let held = held_casting(&labels, range).map_err(|unheld| unheld.why)?;
+        labels.truncate(1);
+        labels
+            .extend(held.and_then(|(_, model)| model).map(|model| format!("{MODEL_LABEL}{model}")));
         if self.why.trim().is_empty() {
             return Err("it says nothing of why".to_string());
         }
@@ -754,17 +990,22 @@ fn held_casting(
         );
         return Err(Unheld { name, why });
     };
-    if let Some(model) = &model
-        && !held.models.contains(model)
-    {
-        let name = format!("`{MODEL_LABEL}{model}`");
-        let why = format!(
-            "its label {name} names a model the host kit holds for no `{}`; it holds: {}",
-            harness.key(),
-            holds(range)
-        );
-        return Err(Unheld { name, why });
-    }
+    // Whatever name it was given, it is cast on the model's id.
+    let model = match &model {
+        Some(model) => match held.model(model) {
+            Ok(held) => Some(held.id.clone()),
+            Err(unmatched) => {
+                let name = format!("`{MODEL_LABEL}{model}`");
+                let why = format!(
+                    "its label {name}: {}; it holds: {}",
+                    unmatched.said(model, harness),
+                    holds(range)
+                );
+                return Err(Unheld { name, why });
+            }
+        },
+        None => None,
+    };
     Ok(Some((harness, model)))
 }
 
@@ -850,6 +1091,129 @@ mod tests {
         Ok(Cast { harness, model, why: Why::Unmatched, unmatched: Some(name.to_string()) })
     }
 
+    fn opus() -> Model {
+        Model {
+            id: "claude-opus-5-5".into(),
+            names: vec!["opus".into(), "default".into(), "Opus 5.5".into()],
+        }
+    }
+
+    #[test]
+    fn a_model_is_matched_by_its_id_or_any_of_its_names_whatever_the_case() {
+        let claude = Held { harness: Harness::ClaudeCode, models: vec![opus(), "haiku".into()] };
+        for name in ["opus", "Opus 5.5", "claude-opus-5-5", "DEFAULT", " opus "] {
+            assert_eq!(claude.model(name), Ok(&opus()), "{name}");
+        }
+        // The provider prefix may be left off where that leaves one match.
+        let pi = Held {
+            harness: Harness::Pi,
+            models: vec!["openai-codex/gpt-6-sol".into(), "a/fast".into(), "b/fast".into()],
+        };
+        assert_eq!(pi.model("gpt-6-sol").map(|m| m.id.as_str()), Ok("openai-codex/gpt-6-sol"));
+        assert_eq!(pi.model("A/FAST").map(|m| m.id.as_str()), Ok("a/fast"));
+        // A name with two matches matches neither, and says which two.
+        let two = pi.model("fast").unwrap_err();
+        assert_eq!(two, Unmatched::Two("a/fast".into(), "b/fast".into()));
+        assert_eq!(
+            two.said("fast", Harness::Pi),
+            "`fast` names two models of pi, `a/fast` and `b/fast`, and so neither: name one by \
+             its id"
+        );
+        // One that matches nothing says the nearest names.
+        let none = claude.model("opuss").unwrap_err();
+        assert_eq!(none, Unmatched::None(vec!["opus".into(), "Opus 5.5".into(), "haiku".into()]));
+        assert!(
+            none.said("opuss", Harness::ClaudeCode)
+                .ends_with("nearest names: `opus`, `Opus 5.5`, `haiku`")
+        );
+        let empty = Held { harness: Harness::Codex, models: vec![] };
+        assert_eq!(empty.model("x"), Err(Unmatched::None(vec![])));
+    }
+
+    #[test]
+    fn a_casting_names_its_model_by_any_name_and_runs_its_id() {
+        let range = vec![
+            Held { harness: Harness::ClaudeCode, models: vec![opus()] },
+            Held { harness: Harness::Pi, models: vec!["openai-codex/gpt-6-sol".into()] },
+        ];
+        let cast = |names: &[&str]| cast(&labels(names), &range, None);
+        for name in ["model:opus", "model:Opus 5.5", "model:claude-opus-5-5"] {
+            assert_eq!(
+                cast(&["harness:claude-code", name]),
+                ran(Harness::ClaudeCode, Some("claude-opus-5-5"), Why::Casting)
+            );
+        }
+        assert_eq!(
+            cast(&["harness:pi", "model:gpt-6-sol"]),
+            ran(Harness::Pi, Some("openai-codex/gpt-6-sol"), Why::Casting)
+        );
+        assert_eq!(
+            cast_within(&labels(&["harness:claude-code", "model:OPUS"]), &range, &range, None),
+            ran(Harness::ClaudeCode, Some("claude-opus-5-5"), Why::Casting)
+        );
+        // A caster's casting is labelled with the id.
+        let casting = Casting {
+            issue: 7,
+            harness: "claude-code".into(),
+            model: Some("Opus 5.5".into()),
+            why: "hard".into(),
+        };
+        assert_eq!(
+            casting.labels(&range),
+            Ok(labels(&["harness:claude-code", "model:claude-opus-5-5"]))
+        );
+        // A label that matches nothing says the nearest names.
+        let said = unheld(&labels(&["harness:claude-code", "model:opuss"]), &range).unwrap().why;
+        assert!(said.contains("the nearest names: `opus`"), "{said}");
+        let ranges = vec![("build (dev)".to_string(), range.clone())];
+        let none = held_by_none(&labels(&["harness:claude-code", "model:opuss"]), &ranges, None);
+        assert!(none.unwrap().why.contains("the nearest names: `opus`"));
+    }
+
+    #[test]
+    fn a_caster_s_casting_that_names_nothing_held_is_cast_again_and_a_human_s_is_not() {
+        let range = range();
+        let cast = labels(&["ready", "harness:pi", "model:gone/x"]);
+        let said = caster_comment(&labels(&["harness:pi", "model:gone/x"]), "small");
+        assert!(names_nothing(&cast, &range));
+        assert!(!names_nothing(&labels(&["harness:pi", "model:C/D"]), &range));
+        assert!(!names_nothing(&labels(&["ready"]), &range));
+        assert!(to_recast(&cast, [said.as_str()], false, &[], &range));
+        assert!(!to_recast(&cast, [said.as_str()], true, &[], &range), "a worker started on it");
+        assert!(!to_recast(&cast, ["please run it on pi"], false, &[], &range));
+    }
+
+    #[test]
+    fn a_roster_entry_is_cut_by_any_name_and_one_that_names_nothing_is_said() {
+        let team = crate::team::tests::rostered(
+            "  dev: { run: [{ harness: claude-code, model: Opus 5.5 }, { harness: pi, model: \
+             fast }, { harness: dsh, model: x }] }\n  reviewer: { run: [{ harness: \
+             claude-code, model: opuss }] }\n",
+        )
+        .unwrap();
+        let kit = vec![
+            Held { harness: Harness::ClaudeCode, models: vec![opus()] },
+            Held { harness: Harness::Pi, models: vec!["a/fast".into(), "b/fast".into()] },
+        ];
+        assert_eq!(super::range(&team.roles[0], &kit), [kit[0].clone()]);
+        let unmatched = unmatched_models(&team, &kit);
+        let said: Vec<(&str, &str)> =
+            unmatched.iter().map(|entry| (entry.role.as_str(), entry.model.as_str())).collect();
+        // A harness the host kit does not hold is no name's fault.
+        assert_eq!(said, [("dev", "fast"), ("reviewer", "opuss")]);
+        assert!(unmatched[0].said.contains("`a/fast` and `b/fast`"), "{}", unmatched[0].said);
+        let line = unmatched[1].line();
+        assert!(
+            line.starts_with(
+                "the roster entry `{ harness: claude-code, model: opuss }` of the role \
+                 `reviewer` matches nothing: `opuss` names no model the host kit holds for \
+                 claude-code; the nearest names: `opus`"
+            ),
+            "{line}"
+        );
+        assert!(line.ends_with("the host kit holds claude-code (claude-opus-5-5)"), "{line}");
+    }
+
     #[test]
     fn a_casting_the_host_kit_holds_is_run() {
         let range = range();
@@ -908,8 +1272,8 @@ mod tests {
         assert_eq!(
             refused(&["harness:codex", "model:a/b"]),
             format!(
-                "its label `model:a/b` names a model the host kit holds for no `codex`; it holds: \
-                 {holds}"
+                "its label `model:a/b`: `a/b` names no model the host kit holds for codex; the \
+                 nearest names: `gpt-x`; it holds: {holds}"
             )
         );
         assert!(refused(&["harness:claude-code", "model:opus"]).contains("`model:opus`"));
@@ -946,7 +1310,7 @@ mod tests {
     fn a_range_of_more_than_one_harness_and_model_leaves_a_choice_to_make() {
         assert!(choice(&range()));
         let one = |models: &[&str]| {
-            let models = models.iter().map(|model| model.to_string()).collect();
+            let models = models.iter().map(|model| Model::from(*model)).collect();
             vec![Held { harness: Harness::Pi, models }]
         };
         assert!(!choice(&one(&["a/b"])));
@@ -1019,13 +1383,16 @@ mod tests {
         let cast = labels(&["ready", "harness:pi", "model:a/b"]);
         let said = caster_comment(&labels(&["harness:pi", "model:a/b"]), "small ");
         assert_eq!(said, "Cast `harness:pi` and `model:a/b`: small");
-        assert!(to_recast(&cast, [said.as_str()], false, &paused));
-        assert!(!to_recast(&cast, [said.as_str()], true, &paused), "a worker started on it");
+        assert!(to_recast(&cast, [said.as_str()], false, &paused, &range()));
+        assert!(
+            !to_recast(&cast, [said.as_str()], true, &paused, &range()),
+            "a worker started on it"
+        );
         // A human's casting is never cast again.
-        assert!(!to_recast(&cast, ["Cast it to pi, please"], false, &paused));
+        assert!(!to_recast(&cast, ["Cast it to pi, please"], false, &paused, &range()));
         // Nor one to a harness that is not paused.
         let codex = labels(&["harness:codex"]);
-        assert!(!to_recast(&codex, ["Cast `harness:codex`: big"], false, &paused));
+        assert!(!to_recast(&codex, ["Cast `harness:codex`: big"], false, &paused, &range()));
         assert_eq!(paused_of(&cast, &paused), Some(&paused[0]));
         assert_eq!(without_casting(&cast), labels(&["ready"]));
     }
@@ -1078,7 +1445,7 @@ mod tests {
         let kit = range();
         let held = |harness, models: &[&str]| Held {
             harness,
-            models: models.iter().map(|model| model.to_string()).collect(),
+            models: models.iter().map(|model| Model::from(*model)).collect(),
         };
         // None named: the host kit whole.
         assert_eq!(super::cut(None, &kit), kit);

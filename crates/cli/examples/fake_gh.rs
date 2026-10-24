@@ -63,6 +63,46 @@ fn main() {
             let head = fake::git(&["-C", from, "rev-parse", "HEAD"]);
             st.finish(&head, 0, "")
         }
+        ["api", "-H", _, endpoint] if endpoint.contains("/contents/") => {
+            // A file of another repo: its working tree's, as its default branch.
+            let (name, path) =
+                endpoint.trim_start_matches("repos/").split_once("/contents/").unwrap();
+            let file = st.doc["repos"][name].as_str().map(|from| format!("{from}/{path}"));
+            match file.and_then(|file| std::fs::read_to_string(file).ok()) {
+                Some(text) => st.finish(&text, 0, ""),
+                None => st.finish("", 1, "gh: Not Found (HTTP 404)\n"),
+            }
+        }
+        ["issue", "list", ..] if other.is_some() => {
+            // The issues of another repo, kept under `other_issues`.
+            let repo = other.unwrap();
+            let rows: Vec<Value> = st.doc["other_issues"][&repo]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|row| is_open(row))
+                .map(|row| json!({"number": row["number"], "body": row["body"]}))
+                .collect();
+            st.finish(&Value::from(rows).to_string(), 0, "")
+        }
+        ["issue", "create", ..] if other.is_some() => {
+            let repo = other.unwrap();
+            let (title, body) = (st.opt("--title").unwrap_or(""), st.opt("--body").unwrap_or(""));
+            let issue = json!({"title": title, "body": body, "labels": st.opts("--label"),
+                "state": "open"});
+            if !st.doc["other_issues"].is_object() {
+                st.doc["other_issues"] = json!({});
+            }
+            if !st.doc["other_issues"][&repo].is_array() {
+                st.doc["other_issues"][&repo] = json!([]);
+            }
+            let rows = st.doc["other_issues"][&repo].as_array_mut().unwrap();
+            let number = rows.len() + 1;
+            let mut issue = issue;
+            issue["number"] = json!(number);
+            rows.push(issue);
+            st.finish(&format!("https://gh/{repo}/issues/{number}"), 0, "")
+        }
         ["api", "graphql", ..] => open_issues(&st),
         ["api", ..] => api(&mut st),
         ["issue", "create", ..] => issue_create(&mut st),

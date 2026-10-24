@@ -140,6 +140,7 @@ kinds! {
     StepFailed: Critical, "failed in each of the last";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
+    RosterModelUnmatched: Warning, "names no model the host kit holds";
     TeamUnread: Critical, "the team this repo names cannot be read";
     TeamFaulty: Critical, "has a fault at its head";
     NothingSafe: Warning, "has no harness on this host it holds limits for";
@@ -335,6 +336,7 @@ pub enum TeamRead {
         /// Each role no worker of which can be started on this host, with
         /// why (`casting::nothing_safe`).
         nothing_safe: Vec<(String, String)>,
+        unmatched_models: Vec<casting::UnmatchedModel>,
         /// Each role whose roster entry matches nothing in the host kit, with
         /// what it allows and the host kit holds (`casting::unmatched_entries`).
         unmatched: Vec<(String, String)>,
@@ -911,8 +913,9 @@ fn on_gone_finding(on: &OnGone) -> Finding {
 fn team_findings(team: &TeamRead) -> Vec<Finding> {
     match team {
         TeamRead::Unbound => vec![],
-        TeamRead::Loaded { nothing_safe, unmatched, .. } => {
+        TeamRead::Loaded { nothing_safe, unmatched, unmatched_models, .. } => {
             let mut found = vec![];
+            found.extend(unmatched_models.iter().map(unmatched_finding));
             for (role, why) in nothing_safe {
                 found.push(finding(
                     Kind::NothingSafe,
@@ -956,6 +959,23 @@ fn team_findings(team: &TeamRead) -> Vec<Finding> {
             })
             .collect(),
     }
+}
+
+/// A roster entry that names a model the host kit holds by no name: its role
+/// runs no worker on it here. The team's own fleet is to correct it: a tick
+/// opens an issue for it in the team's repo (`roster_issue`).
+fn unmatched_finding(entry: &casting::UnmatchedModel) -> Finding {
+    finding(
+        Kind::RosterModelUnmatched,
+        format!(
+            "the role `{}` has a roster entry that names no model the host kit holds: {} on {}",
+            entry.role,
+            entry.model,
+            entry.harness.key()
+        ),
+        entry.line(),
+        format!("{}: roster", afkconvoy_core::team::TEAM_FILE),
+    )
 }
 
 /// A config that declares no gate limit: the gate has the default's hour, and
@@ -1120,7 +1140,18 @@ fn read_team(bound: bool) -> (TeamRead, Option<team::Loaded>) {
                 ),
                 Err(_) => (vec![], vec![]),
             };
-            (TeamRead::Loaded { flow_labels, nothing_safe, unmatched }, Some(loaded))
+            (
+                TeamRead::Loaded {
+                    flow_labels,
+                    nothing_safe,
+                    unmatched,
+                    unmatched_models: kit
+                        .as_ref()
+                        .map(|kit| casting::unmatched_models(&loaded.team, kit))
+                        .unwrap_or_default(),
+                },
+                Some(loaded),
+            )
         }
         Err(error) => {
             let read = match error.downcast::<Refused>() {
@@ -1571,6 +1602,7 @@ mod tests {
         TeamRead::Loaded {
             flow_labels: vec!["flow:feature".into()],
             nothing_safe: vec![],
+            unmatched_models: vec![],
             unmatched: vec![],
         }
     }
@@ -1580,6 +1612,7 @@ mod tests {
         let team = TeamRead::Loaded {
             flow_labels: vec![],
             nothing_safe: vec![("lead".into(), "lead has no harness …".into())],
+            unmatched_models: vec![],
             unmatched: vec![("dev".into(), "the roster's entry …".into())],
         };
         let found = team_findings(&team);

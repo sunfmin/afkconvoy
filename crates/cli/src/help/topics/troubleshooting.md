@@ -29,6 +29,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `longer than any stage before it took`: Nothing is wrong yet: an issue has been at one stage for long. `fix` shows it.
 - `is one rework from a breaker`: The next `reject` escalates the issue. Nothing to do yet: [`afkconvoy help humans`](help:humans).
 - `is paused on this host`: It refused every prompt: no worker starts on it till an hourly probe answers.
+- `names no model the host kit holds`: A team's roster names a model by a name that matches no model the host kit holds for its harness, by its id or any other name; `evidence` gives the nearest names. The fleet never changes a roster: a tick opens one issue for it in the team's repo, which the team's own fleet works. `fix` is the file and key to correct.
 - `has no harness on this host it holds limits for`: A role holds limits for no harness the host kit holds, so no worker of it starts and its stages wait; the rest go on. They go on by themselves once the host kit holds one: `afkconvoy kit`, or write the role's limits for one it holds.
 - `matches nothing in the host kit`: A role's roster entry names only harnesses or models this host lacks, so the role runs the host kit whole, less what it holds no limits for. Add one with `afkconvoy kit`, or change the roster.
 - `does not run: its last run failed`: The issue that reports a patrol's failed run is open. Look, then close it: `fix`.

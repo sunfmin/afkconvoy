@@ -48,7 +48,7 @@ fn each(range: &[Held]) -> Vec<String> {
         if held.models.is_empty() {
             each.push(held.harness.key().to_string());
         }
-        for model in &held.models {
+        for model in held.ids() {
             each.push(format!("{} {model}", held.harness.key()));
         }
     }
@@ -170,7 +170,7 @@ pub fn draft(team: &Team, range: &[Held], strengths: &[Strength], guidance: &[Gu
             if held.models.is_empty() {
                 draft.push_str(&allowance(key, None, good_at(strengths, key, None)));
             }
-            for model in &held.models {
+            for model in held.ids() {
                 let good = good_at(strengths, key, Some(model));
                 draft.push_str(&allowance(key, Some(model), good));
             }
@@ -202,7 +202,7 @@ pub fn unsaid(
         if held.models.is_empty() && good_at(strengths, key, None).is_none() {
             unsaid.push(format!("what {key} is good at"));
         }
-        for model in &held.models {
+        for model in held.ids() {
             if good_at(strengths, key, Some(model)).is_none() {
                 unsaid.push(format!("what {key} {model} is good at"));
             }

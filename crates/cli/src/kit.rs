@@ -42,8 +42,14 @@ pub struct Held {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Seen {
-    /// Its harness's own name for it.
+    /// Its id: the model its probe answered as, by its harness's own name
+    /// for it, which a worker is started on.
     pub model: String,
+    /// The other names it goes by on its harness, in the order listed: each
+    /// name its harness lists that answered as it, and the name its harness
+    /// shows it by. Any of them matches it (`casting::Held::model`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
     /// Its last probe, which it answered. `None` of a model a host kit
     /// written before every harness was probed holds as the human named it.
     #[serde(default)]
@@ -52,6 +58,13 @@ pub struct Seen {
     /// caster is told of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub good_at: Option<String>,
+}
+
+impl Seen {
+    /// It as a range holds it: its id and its other names.
+    pub fn as_model(&self) -> afkconvoy_core::casting::Model {
+        afkconvoy_core::casting::Model { id: self.model.clone(), names: self.names.clone() }
+    }
 }
 
 /// A probe a model answered.
@@ -106,7 +119,7 @@ impl Kit {
     pub fn range(&self) -> Vec<afkconvoy_core::casting::Held> {
         let held = |held: &Held| afkconvoy_core::casting::Held {
             harness: held.harness,
-            models: held.models.iter().map(|seen| seen.model.clone()).collect(),
+            models: held.models.iter().map(Seen::as_model).collect(),
         };
         self.harnesses.iter().map(held).collect()
     }
@@ -127,19 +140,29 @@ impl Kit {
         }
     }
 
-    /// What the stock consult runs: the harness and model named for it,
-    /// where the host kit holds them, or the host kit's first — a name that
-    /// matches nothing held is not followed (`stock_unmatched` says it).
+    /// What the stock consult runs: the harness and model named for it — the
+    /// id of the model that name matches (`casting::Held::model`) — or the
+    /// host kit's first.
     pub fn stock_consult(&self) -> Option<Named> {
-        self.stock_consult
-            .clone()
-            .filter(|_| self.stock_unmatched().is_none())
-            .or_else(|| self.first())
+        let Some(named) = self.stock_consult.clone().filter(|_| self.stock_unmatched().is_none())
+        else {
+            return self.first();
+        };
+        let model = named.model.as_deref().map(|model| match self.matched(named.harness, model) {
+            Ok(id) => id,
+            Err(_) => model.to_string(),
+        });
+        Some(Named { harness: named.harness, model })
     }
 
-    /// Why the harness or model named for the stock consult matches nothing
-    /// the host kit holds, when it does: the stock consult then runs the host
-    /// kit's first.
+    /// The id of the model of `harness` that `name` names here
+    /// (`casting::Held::model`); why it names none.
+    fn matched(&self, harness: Harness, name: &str) -> Result<String, String> {
+        let held = self.range().into_iter().find(|held| held.harness == harness);
+        let held = held.ok_or_else(|| format!("it holds no `{}`", harness.key()))?;
+        held.model(name).map(|model| model.id.clone()).map_err(|why| why.said(name, harness))
+    }
+
     pub fn stock_unmatched(&self) -> Option<String> {
         self.stock_fault()
     }
@@ -159,19 +182,15 @@ impl Kit {
     /// when it is not: what `afkconvoy kit` refuses to write.
     fn stock_fault(&self) -> Option<String> {
         let named = self.stock_consult.as_ref()?;
-        let Some(held) = self.held(named.harness) else {
+        if self.held(named.harness).is_none() {
             return Some(format!(
                 "its stock consult runs the harness `{}`, which it does not hold",
                 named.harness.key()
             ));
-        };
-        match &named.model {
-            Some(model) if !held.models.iter().any(|seen| &seen.model == model) => Some(format!(
-                "its stock consult runs the model `{model}`, which it holds for no `{}`",
-                named.harness.key()
-            )),
-            _ => None,
         }
+        let model = named.model.as_deref()?;
+        let why = self.matched(named.harness, model).err()?;
+        Some(format!("its stock consult runs the model `{model}`: {why}"))
     }
 }
 
@@ -477,14 +496,15 @@ fn probe_all(asked: &[Asked]) -> Vec<Answer> {
 }
 
 /// A model to probe: its harness, that harness's worker launch command, and
-/// the model.
+/// the name it is listed by.
 type Asked = (Harness, String, String);
 
 /// What a model said to its probe.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Answer {
-    /// It answered, in this many seconds.
-    Answered(f64),
+    /// It answered, in this many seconds, as the model of this id, where its
+    /// answer says which (`Harness::answered_as`).
+    Answered(f64, Option<String>),
     /// It said nothing within the time limit, or failed.
     Silent,
     /// It was never asked, for this reason: no terminal could be made for its
@@ -492,8 +512,16 @@ pub enum Answer {
     Unasked(String),
 }
 
+/// One model a harness lists: the name it lists it by, and the name it
+/// shows it by, where it shows one (`Harness::shown`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Listed {
+    pub name: String,
+    pub shown: Option<String>,
+}
+
 /// The models a harness offers through a command; why it offers none.
-type Listing = dyn Fn(Harness, &str) -> Result<Vec<String>, String> + Sync;
+type Listing = dyn Fn(Harness, &str) -> Result<Vec<Listed>, String> + Sync;
 
 /// What the host kit is written from: this host, as an orca terminal finds it.
 pub struct Host<'a> {
@@ -560,17 +588,21 @@ impl LeftOut {
 ///
 /// - each known harness whose program `host` finds, on the command `current`
 ///   holds for it or its stock one;
-/// - each with the models it lists, each probed, of which only those that
-///   answered are kept, with when and how fast; a harness none answered for
-///   is left out;
+/// - each with the models it lists, each name probed, of which only those
+///   that answered are kept, with when and how fast; a harness none answered
+///   for is left out;
+/// - the names of one harness that answered as the same model held once, by
+///   that model's id, with the others and the names the harness shows them
+///   by as its names — a name its probe says nothing of being its own id;
 /// - the harnesses `current` holds in its order, then new ones in the order
 ///   afkconvoy knows them; each one's models in the order it lists them;
 /// - the stock consult `current` names while it still holds it, else none:
-///   the host kit's first; and the `good_at` written beside a model kept.
+///   the host kit's first; and the `good_at` written beside a model kept —
+///   of the same model on another harness where none is written beside it
+///   on its own, the provider prefix left off.
 ///
-/// Written as a refresh (`Writing::Refresh`), what `current` holds is taken
-/// as it is but a model its harness no longer lists: only a model it did not
-/// hold is probed, and a harness that cannot be found or listed is kept.
+/// A refresh keeps listed ids and probes new names and aliases again, so
+/// an alias that moves is held under the model it now answers as.
 fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) {
     let mut order: Vec<Harness> = current.harnesses.iter().map(|held| held.harness).collect();
     push_new(&mut order, Harness::ALL);
@@ -579,7 +611,7 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
     };
     // Each harness is looked for and asked for its models side by side.
     let (found, listing) = (host.found, host.listed);
-    let listed: Vec<(Harness, String, Result<Vec<String>, String>)> = std::thread::scope(|scope| {
+    let listed: Vec<(Harness, String, Result<Vec<Listed>, String>)> = std::thread::scope(|scope| {
         let asking: Vec<_> = order
             .iter()
             .map(|&harness| {
@@ -609,6 +641,8 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
     let mut left_out = vec![];
     let mut harnesses: Vec<Held> = vec![];
     let mut asked: Vec<Asked> = vec![];
+    let mut shown: Vec<(Harness, String, String)> = vec![];
+    let mut names: Vec<(Harness, String)> = vec![];
     // Each harness's models in the order it lists them.
     let mut lists: Vec<(Harness, Vec<String>)> = vec![];
     let refresh = writing == Writing::Refresh;
@@ -625,46 +659,97 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
             }
         };
         let mut models: Vec<String> = vec![];
-        push_new(&mut models, listed);
-        let held = current.held(harness).into_iter().flat_map(|held| &held.models);
-        let (kept, gone): (Vec<&Seen>, Vec<&Seen>) =
-            held.partition(|seen| models.contains(&seen.model));
-        for seen in gone {
-            left_out.push(LeftOut::of(harness, Some(&seen.model), "no longer listed"));
+        for each in listed {
+            if let Some(display) = each.shown {
+                shown.push((harness, each.name.clone(), display));
+            }
+            push_new(&mut models, [each.name]);
         }
-        let kept: Vec<Seen> = if refresh { kept.into_iter().cloned().collect() } else { vec![] };
-        let new = models.iter().filter(|model| !kept.iter().any(|seen| &seen.model == *model));
-        asked.extend(new.map(|model| (harness, command.clone(), model.clone())));
+        names.extend(models.iter().map(|model| (harness, model.clone())));
+        let kept: Vec<Seen> = if refresh {
+            current
+                .held(harness)
+                .into_iter()
+                .flat_map(|held| &held.models)
+                .filter(|seen| models.contains(&seen.model))
+                .cloned()
+                .map(|mut seen| {
+                    seen.names.clear();
+                    seen
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        // Only literal ids are kept without a probe. Listed aliases may move.
+        let new = models.iter().filter(|name| !kept.iter().any(|seen| &seen.model == *name));
+        asked.extend(new.map(|name| (harness, command.clone(), name.clone())));
         harnesses.push(Held { harness, command, models: kept });
         lists.push((harness, models));
     }
 
     let answers = (host.probe)(&asked);
-    for ((harness, _, model), answer) in asked.into_iter().zip(answers) {
-        let seconds = match answer {
-            Answer::Answered(seconds) => seconds,
+    for ((harness, _, name), answer) in asked.into_iter().zip(answers) {
+        let (seconds, answered_as) = match answer {
+            Answer::Answered(seconds, answered_as) => (seconds, answered_as),
             Answer::Silent => {
-                left_out.push(LeftOut::of(harness, Some(&model), "silent to its probe"));
+                left_out.push(LeftOut::of(harness, Some(&name), "silent to its probe"));
                 continue;
             }
             Answer::Unasked(why) => {
                 let why = format!("silent to its probe: it could not be asked: {why}");
-                left_out.push(LeftOut::of(harness, Some(&model), why));
+                left_out.push(LeftOut::of(harness, Some(&name), why));
                 continue;
             }
         };
-        let good_at = current
-            .held(harness)
-            .and_then(|held| held.models.iter().find(|seen| seen.model == model))
-            .and_then(|seen| seen.good_at.clone());
-        let probed = Some(Probed { at: host.now, seconds });
-        if let Some(held) = harnesses.iter_mut().find(|held| held.harness == harness) {
-            held.models.push(Seen { model, probed, good_at });
+        let Some(held) = harnesses.iter_mut().find(|held| held.harness == harness) else {
+            continue;
+        };
+        let id = answered_as.unwrap_or_else(|| name.clone());
+        let seen = match held.models.iter().position(|seen| seen.model == id) {
+            Some(at) => &mut held.models[at],
+            None => {
+                let probed = Some(Probed { at: host.now, seconds });
+                held.models.push(Seen { model: id.clone(), names: vec![], probed, good_at: None });
+                held.models.last_mut().expect("just pushed")
+            }
+        };
+        if name != id && !seen.names.contains(&name) {
+            seen.names.push(name);
+        }
+    }
+    for held in &mut harnesses {
+        for seen in &mut held.models {
+            let display: Vec<String> = shown
+                .iter()
+                .filter(|(harness, named, _)| {
+                    *harness == held.harness && (named == &seen.model || seen.names.contains(named))
+                })
+                .map(|(_, _, display)| display.clone())
+                .collect();
+            for display in display {
+                push_new(&mut seen.names, [display]);
+            }
+            seen.names.retain(|name| name != &seen.model);
+            seen.good_at = good_at(current, held.harness, seen);
+        }
+    }
+    // A model held before that is neither listed nor answered as now is gone.
+    for before in &current.harnesses {
+        let now = harnesses.iter().find(|held| held.harness == before.harness);
+        let Some(now) = now else { continue };
+        for seen in &before.models {
+            let listed = names.iter().any(|(h, name)| *h == before.harness && name == &seen.model);
+            if !listed && !now.models.iter().any(|kept| kept.model == seen.model) {
+                left_out.push(LeftOut::of(before.harness, Some(&seen.model), "no longer listed"));
+            }
         }
     }
     for (harness, listed) in &lists {
         if let Some(held) = harnesses.iter_mut().find(|held| held.harness == *harness) {
-            held.models.sort_by_key(|seen| listed.iter().position(|model| *model == seen.model));
+            held.models.sort_by_key(|seen| {
+                listed.iter().position(|model| *model == seen.model || seen.names.contains(model))
+            });
         }
     }
     harnesses.retain(|held| {
@@ -680,6 +765,27 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
         Kit { stock_consult: Some(named.clone()), ..kit.clone() }.stock_fault().is_none()
     });
     (kit, left_out)
+}
+
+/// What `current` says the model `seen` of `harness` is good at: as written
+/// beside it there — under its id, or one of its names — else beside the
+/// same model on another harness, its id the same with the provider prefix
+/// left off. One model has one `good_at`.
+fn good_at(current: &Kit, harness: Harness, seen: &Seen) -> Option<String> {
+    let bare = |id: &str| id.rsplit('/').next().unwrap_or(id).to_lowercase();
+    let models = |of: Harness| {
+        current.held(of).into_iter().flat_map(|held| held.models.iter()).map(move |m| (of, m))
+    };
+    let all = current.harnesses.iter().flat_map(|held| models(held.harness));
+    let own = models(harness).find(|(_, before)| {
+        before.good_at.is_some()
+            && (before.model == seen.model || seen.names.contains(&before.model))
+    });
+    let own = own.and_then(|(_, before)| before.good_at.clone());
+    own.or_else(|| {
+        let mut same = all.filter(|(_, before)| bare(&before.model) == bare(&seen.model));
+        same.find_map(|(_, before)| before.good_at.clone())
+    })
 }
 
 /// Adds to `into` each of `items` it does not hold yet.
@@ -727,11 +833,16 @@ fn named_said(named: &Named) -> String {
 mod tests {
     use super::*;
 
+    fn listed(name: &str, shown: Option<&str>) -> Listed {
+        Listed { name: name.into(), shown: shown.map(str::to_string) }
+    }
+
     fn held(harness: Harness, command: &str, models: &[&str]) -> Held {
         let models = models
             .iter()
             .map(|model| Seen {
                 model: model.to_string(),
+                names: vec![],
                 probed: Some(Probed { at: 1, seconds: 1.0 }),
                 good_at: None,
             })
@@ -740,9 +851,12 @@ mod tests {
     }
 
     /// A host with Claude Code, Codex and pi installed, DSH not; Claude Code
-    /// lists `default opus sonnet`, Codex `gpt-a gpt-b`, pi fails to list;
-    /// every model answers its probe in two seconds but `bad`, which is
-    /// silent, and `gpt-b`, which no terminal could be made for.
+    /// lists `default opus sonnet`, shown as `Default`, `Opus 5.5` and `Sonnet
+    /// 5.5`, of which `default` and `opus` answer as `claude-opus-5-5` and
+    /// `sonnet` as `claude-sonnet-5-5`; Codex lists `gpt-a gpt-b`, and says
+    /// nothing of what answered; pi fails to list; every model answers its
+    /// probe in two seconds but `bad`, which is silent, and `gpt-b`, which no
+    /// terminal could be made for.
     fn composed(current: &Kit) -> (Kit, Vec<LeftOut>, Vec<Asked>) {
         composed_as(current, Writing::Whole)
     }
@@ -754,10 +868,15 @@ mod tests {
             _ => Ok(()),
         };
         let listed = |harness: Harness, command: &str| match harness {
-            Harness::ClaudeCode => Ok(vec!["default".into(), "opus".into(), "sonnet".into()]),
-            Harness::Codex => {
-                Ok(vec!["gpt-a".into(), "bad".into(), "gpt-b".into(), "gpt-a".into()])
-            }
+            Harness::ClaudeCode => Ok(vec![
+                listed("default", Some("Default")),
+                listed("opus", Some("Opus 5.5")),
+                listed("sonnet", Some("Sonnet 5.5")),
+            ]),
+            Harness::Codex => Ok(["gpt-a", "bad", "gpt-b", "gpt-a"]
+                .into_iter()
+                .map(|name| listed(name, None))
+                .collect()),
             _ => Err(format!("it listed none: {command} --list-models")),
         };
         let probe = |asked: &[Asked]| {
@@ -767,7 +886,9 @@ mod tests {
                 .map(|(_, _, model)| match model.as_str() {
                     "bad" => Answer::Silent,
                     "gpt-b" => Answer::Unasked("orca made no terminal".into()),
-                    _ => Answer::Answered(2.0),
+                    "default" | "opus" => Answer::Answered(2.0, Some("claude-opus-5-5".into())),
+                    "sonnet" => Answer::Answered(2.0, Some("claude-sonnet-5-5".into())),
+                    _ => Answer::Answered(2.0, None),
                 })
                 .collect()
         };
@@ -795,11 +916,26 @@ mod tests {
                 (
                     Harness::ClaudeCode,
                     Harness::ClaudeCode.stock(),
-                    vec!["default", "opus", "sonnet"]
+                    vec!["claude-opus-5-5", "claude-sonnet-5-5"]
                 ),
                 (Harness::Codex, Harness::Codex.stock(), vec!["gpt-a"]),
             ]
         );
+        // The names that answered as one model are held once, by its id, with
+        // the names its harness shows them by; one whose probe says nothing
+        // of what answered is its own id.
+        let names = |held: &Held| -> Vec<Vec<String>> {
+            held.models.iter().map(|seen| seen.names.clone()).collect()
+        };
+        assert_eq!(
+            names(&kit.harnesses[0]),
+            [vec!["default", "opus", "Default", "Opus 5.5"], vec!["sonnet", "Sonnet 5.5"]]
+        );
+        assert_eq!(names(&kit.harnesses[1]), [Vec::<String>::new()]);
+        let range = kit.range();
+        for name in ["opus", "DEFAULT", "Opus 5.5", "claude-opus-5-5"] {
+            assert_eq!(range[0].model(name).map(|model| model.id.as_str()), Ok("claude-opus-5-5"));
+        }
         // Every model kept was probed and answered, and is held with when.
         assert_eq!(probed.len(), 6, "{probed:?}");
         for seen in kit.harnesses.iter().flat_map(|held| &held.models) {
@@ -840,12 +976,17 @@ mod tests {
             summary(&kit),
             [
                 (Harness::Codex, "mycodex --yolo", vec!["gpt-a"]),
-                (Harness::ClaudeCode, "old", vec!["default", "opus", "sonnet"]),
+                (Harness::ClaudeCode, "old", vec!["claude-opus-5-5", "claude-sonnet-5-5"]),
             ]
         );
         assert!(probed.iter().all(|(h, c, _)| *h != Harness::Codex || c == "mycodex --yolo"));
-        assert_eq!(kit.harnesses[1].models[1].good_at.as_deref(), Some("hard work"));
+        // What was written of `opus` is the model it answers as.
+        assert_eq!(kit.harnesses[1].models[0].good_at.as_deref(), Some("hard work"));
+        assert_eq!(kit.harnesses[1].models[1].good_at, None);
+        // A stock consult named by a name runs the model's id.
         assert_eq!(kit.stock_consult, current.stock_consult);
+        let stock = Named { harness: Harness::ClaudeCode, model: Some("claude-opus-5-5".into()) };
+        assert_eq!(kit.stock_consult(), Some(stock));
         // A model gone from its harness's list is left out, and said so.
         assert!(
             left_out
@@ -872,7 +1013,7 @@ mod tests {
         let host = Host {
             found: &|_| Ok(()),
             listed: &|harness, _| match harness {
-                Harness::Codex => Ok(vec!["bad".into()]),
+                Harness::Codex => Ok(vec![listed("bad", None)]),
                 _ => Err("it failed".into()),
             },
             probe: &probe,
@@ -894,7 +1035,7 @@ mod tests {
     #[test]
     fn a_refresh_adds_a_model_newly_listed_that_answers_drops_one_no_longer_listed_and_keeps_the_rest()
      {
-        let mut claude = held(Harness::ClaudeCode, "claude", &["opus", "gone"]);
+        let mut claude = held(Harness::ClaudeCode, "claude", &["claude-opus-5-5", "gone"]);
         claude.models[0].good_at = Some("hard work".into());
         let current = Kit {
             harnesses: vec![
@@ -911,7 +1052,7 @@ mod tests {
         assert_eq!(
             summary(&kit),
             [
-                (Harness::ClaudeCode, "claude", vec!["default", "opus", "sonnet"]),
+                (Harness::ClaudeCode, "claude", vec!["claude-opus-5-5", "claude-sonnet-5-5"]),
                 (Harness::Codex, "codex", vec!["gpt-a"]),
                 (Harness::Pi, "pi", vec!["a/b"]),
                 (Harness::Dsh, "dsh", vec!["d"]),
@@ -921,10 +1062,10 @@ mod tests {
         assert_eq!(kit.harnesses[3], current.harnesses[3]);
         // Only a model it did not hold is probed; one held keeps its probe.
         let asked: Vec<&str> = probed.iter().map(|(_, _, model)| model.as_str()).collect();
-        assert_eq!(asked, ["default", "sonnet", "bad", "gpt-b"]);
+        assert_eq!(asked, ["default", "opus", "sonnet", "bad", "gpt-b"]);
         let claude = &kit.harnesses[0].models;
         assert_eq!(claude[0].probed, Some(Probed { at: 77, seconds: 2.0 }));
-        assert_eq!(claude[1], current.harnesses[0].models[0]);
+        assert_eq!(claude[0].good_at, current.harnesses[0].models[0].good_at);
         assert!(
             left_out
                 .iter()
@@ -934,20 +1075,44 @@ mod tests {
         assert_eq!(
             changed,
             Changed {
-                added: vec!["claude-code default".into(), "claude-code sonnet".into()],
+                added: vec!["claude-code claude-sonnet-5-5".into()],
                 dropped: vec!["claude-code gone".into()],
             }
         );
         assert_eq!(
             changed.said(),
-            "the host kit was written again: added claude-code default, claude-code sonnet; \
+            "the host kit was written again: added claude-code claude-sonnet-5-5; \
              dropped claude-code gone"
         );
         // Refreshed again with nothing changed, it is the same.
         let (again, _, probed) = composed_as(&kit, Writing::Refresh);
         assert_eq!(again, kit);
         assert!(Changed::between(&kit, &again).is_empty());
-        assert_eq!(probed.len(), 2, "only the two silent ones are asked again: {probed:?}");
+        assert_eq!(probed.len(), 5, "aliases and the two silent ones are asked again: {probed:?}");
+    }
+
+    #[test]
+    fn a_refresh_follows_an_alias_that_moves_and_keeps_a_still_listed_id() {
+        let mut claude = held(Harness::ClaudeCode, "claude", &["old-id"]);
+        claude.models[0].names = vec!["opus".into()];
+        let current = Kit { harnesses: vec![claude], stock_consult: None };
+        let found =
+            |harness| if harness == Harness::ClaudeCode { Ok(()) } else { Err("absent".into()) };
+        let listed =
+            |_: Harness, _: &str| Ok(vec![listed("opus", Some("Opus")), listed("old-id", None)]);
+        let probe = |asked: &[Asked]| {
+            assert_eq!(
+                asked.iter().map(|(_, _, name)| name.as_str()).collect::<Vec<_>>(),
+                ["opus"]
+            );
+            vec![Answer::Answered(1.0, Some("new-id".into()))]
+        };
+        let host = Host { found: &found, listed: &listed, probe: &probe, now: 100 };
+        let (kit, _) = compose(&current, &host, Writing::Refresh);
+        assert_eq!(kit.matched(Harness::ClaudeCode, "opus").unwrap(), "new-id");
+        assert_eq!(kit.matched(Harness::ClaudeCode, "Opus").unwrap(), "new-id");
+        assert_eq!(kit.matched(Harness::ClaudeCode, "old-id").unwrap(), "old-id");
+        assert_eq!(kit.harnesses[0].models.len(), 2);
     }
 
     #[test]
@@ -970,10 +1135,10 @@ mod tests {
         store(&file, &current, 1000).unwrap();
         assert_eq!(written(&file), Some(1000));
         let probes = std::sync::atomic::AtomicUsize::new(0);
-        let listed = |_: Harness, _: &str| Ok(vec!["a/b".to_string(), "c/d".to_string()]);
+        let listed = |_: Harness, _: &str| Ok(vec![listed("a/b", None), listed("c/d", None)]);
         let probe = |asked: &[Asked]| {
             probes.fetch_add(asked.len(), std::sync::atomic::Ordering::SeqCst);
-            asked.iter().map(|_| Answer::Answered(1.0)).collect()
+            asked.iter().map(|_| Answer::Answered(1.0, None)).collect()
         };
         let found = |harness: Harness| match harness {
             Harness::Pi => Ok(()),

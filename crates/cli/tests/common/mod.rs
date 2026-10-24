@@ -155,6 +155,18 @@ impl World {
         std::fs::write(self.root.join("probes-answer"), "").unwrap();
     }
 
+    /// Has the probe of each model listed by `name` print `said`, which says
+    /// which model answered — with, where Codex's names the thread `t-<name>`,
+    /// the session file `session` written for it under its user directory.
+    pub fn probes_answer_as(&self, answers: &[(&str, &str, Option<&str>)]) {
+        let lines: Vec<String> = answers
+            .iter()
+            .map(|(name, said, session)| format!("{name}\t{said}\t{}", session.unwrap_or("")))
+            .collect();
+        std::fs::write(self.root.join("probes-answered-as"), lines.join("\n") + "\n").unwrap();
+        self.probes_answer();
+    }
+
     /// Where this host keeps the harnesses paused on it.
     pub fn paused_path(&self) -> PathBuf {
         self.cache().join("afkconvoy/paused.json")
@@ -722,8 +734,24 @@ case "$2" in
     if [ -f "$root/drafter-answer" ]; then cat "$root/drafter-answer"; exit 0; fi
     exit 1 ;;
   *"Reply with the single word OK."*)
-    # A model's probe: answered once `probes-answer` is there.
-    if [ -f "$root/probes-answer" ]; then echo OK; exit 0; fi
+    # A model's probe: answered once `probes-answer` is there — as
+    # `probes-answered-as` says, where it names the model, with the session
+    # file it says of it written under CODEX_HOME.
+    if [ -f "$root/probes-answer" ]; then
+      if [ -f "$root/probes-answered-as" ]; then
+        home=$(printf '%s' "$2" | sed -n "s/^export CODEX_HOME='\\([^']*\\)'.*/\\1/p")
+        while IFS='	' read -r name said session; do
+          case "$2" in *"--model '$name'"*)
+            if [ -n "$session" ]; then
+              mkdir -p "$home/sessions/2026"
+              printf '%s\n' "$session" > "$home/sessions/2026/rollout-t-$name.jsonl"
+            fi
+            echo "$said"; exit 0 ;;
+          esac
+        done < "$root/probes-answered-as"
+      fi
+      echo OK; exit 0
+    fi
     exit 1 ;;
   *'"subtype":"initialize"'*)
     # Claude Code asked for its models: answered with `shell-claude-models`.

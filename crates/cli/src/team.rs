@@ -740,7 +740,7 @@ fn unmatched_of(team: &Team, name: &str, kit: &[casting::Held]) -> Option<String
 /// A role's range on this host, as `check` and `show` answer it: each
 /// harness with its models, in order.
 fn range_json(range: &[casting::Held]) -> Value {
-    let each = |held: &casting::Held| json!({"harness": held.harness, "models": held.models});
+    let each = |held: &casting::Held| json!({"harness": held.harness, "models": held.ids()});
     Value::Array(range.iter().map(each).collect())
 }
 
@@ -772,6 +772,8 @@ fn answer(loaded: &Loaded) -> Value {
         "host_user": team.host_user, "dsh_profile": team.dsh_profile.key(),
         "split": team.split,
         "roles": roles,
+        // Each model the roster names that the host kit holds by no name.
+        "unmatched_models": kit.as_ref().map(|kit| casting::unmatched_models(team, kit)),
         "workflows": team.workflows.iter().map(|w| workflow(loaded, w)).collect::<Vec<_>>(),
         "patrols": team.patrols.iter().map(|p| patrol(loaded, p)).collect::<Vec<_>>(),
         "precedents": team.precedents.as_ref().map(|precedents| {

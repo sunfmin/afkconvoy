@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::gate::key;
-use afkconvoy_core::harness::Harness;
+use afkconvoy_core::harness::{AnsweredAs, Harness};
 use afkconvoy_core::launch::{LaunchCommand, checked, first_word, of_harness};
 use anyhow::{Result, anyhow, bail};
 
@@ -257,14 +257,21 @@ pub fn found(harness: Harness) -> Result<(), String> {
 /// host keeps for it: those its own login runs. An error says why it listed
 /// none — the question failed, timed out, or answered with no model — and
 /// the question.
-pub fn models(harness: Harness, command: &str) -> Result<Vec<String>, String> {
+pub fn models(harness: Harness, command: &str) -> Result<Vec<crate::kit::Listed>, String> {
     // The logins are in the directory kept with the host user's skills and
     // rules as they are in the one kept without.
     let kept = crate::kept::keep(harness, false).map_err(|error| format!("{error:#}"))?;
     let question = harness.models_question(command, &kept.display().to_string());
     let why = match crate::orca::ask(&question, SHELL_TIMEOUT) {
         Ok(Some((true, printed))) => match harness.models(&printed) {
-            Some(listed) => return Ok(listed),
+            Some(listed) => {
+                let shown = harness.shown(&printed);
+                let shown_as = |name: &str| {
+                    shown.iter().find(|(listed, _)| listed == name).map(|(_, shown)| shown.clone())
+                };
+                let each = |name: String| crate::kit::Listed { shown: shown_as(&name), name };
+                return Ok(listed.into_iter().map(each).collect());
+            }
             None => "it listed none",
         },
         Ok(Some((false, _))) => "it failed",
@@ -280,26 +287,62 @@ const PROBE_PROMPT: &str = "Reply with the single word OK.";
 /// How long a model is given to answer its probe.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Sends `model` of `harness` the one-line probe (`Harness::prompt_question`)
+/// Sends `model` of `harness` the one-line probe (`Harness::probe_question`)
 /// through the worker launch command `command`, with what this host keeps for
 /// it, in an orca terminal — the shell a worker gets (`orca::ask`) → whether
-/// it answered within the time limit, and how fast; why it could not be asked,
-/// when it could not.
+/// it answered within the time limit, how fast, and which model answered
+/// (`answered_as`); why it could not be asked, when it could not.
 pub fn probe(harness: Harness, command: &str, model: Option<&str>) -> crate::kit::Answer {
     use crate::kit::Answer;
     let kept = match crate::kept::keep(harness, false) {
-        Ok(kept) => kept.display().to_string(),
+        Ok(kept) => kept,
         Err(error) => return Answer::Unasked(format!("{error:#}")),
     };
-    let question = harness.prompt_question(command, &kept, model, PROBE_PROMPT);
+    let question =
+        harness.probe_question(command, &kept.display().to_string(), model, PROBE_PROMPT);
     let started = Instant::now();
     match crate::orca::ask(&question, PROBE_TIMEOUT) {
         Ok(Some((true, printed))) if !printed.trim().is_empty() => {
-            Answer::Answered(started.elapsed().as_secs_f64())
+            let seconds = started.elapsed().as_secs_f64();
+            Answer::Answered(seconds, answered_as(harness, &printed, &kept))
         }
         Ok(_) => Answer::Silent,
         Err(error) => Answer::Unasked(format!("{error:#}")),
     }
+}
+
+/// Which model answered a probe of `harness` that printed `printed`
+/// (`Harness::answered_as`): from the session file it names, under `kept`,
+/// where it names one — which is then deleted. `None`: nothing says.
+fn answered_as(harness: Harness, printed: &str, kept: &std::path::Path) -> Option<String> {
+    match harness.answered_as(printed) {
+        AnsweredAs::Said(id) => Some(id),
+        AnsweredAs::Unsaid => None,
+        AnsweredAs::InSession { under, ends } => {
+            let session = found_under(&kept.join(under), &ends)?;
+            let answered = std::fs::read_to_string(&session)
+                .ok()
+                .and_then(|text| harness.answered_in_session(&text));
+            let _ = std::fs::remove_file(&session);
+            answered
+        }
+    }
+}
+
+/// The file under `dir`, at any depth, whose name ends with `ends`.
+fn found_under(dir: &std::path::Path, ends: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = found_under(&path, ends) {
+                return Some(found);
+            }
+        } else if path.file_name().and_then(|name| name.to_str()).is_some_and(|n| n.ends_with(ends))
+        {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Runs `script` in the user's interactive login shell → what it printed.

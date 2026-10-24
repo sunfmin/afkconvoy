@@ -402,3 +402,68 @@ fn a_team_s_roster_is_drafted_from_the_host_kit_into_its_working_tree_and_commit
         (&json!(false), &json!([]), &json!([]))
     );
 }
+
+/// `dev` names Claude Code's opus by its display name and pi's a/fast without
+/// its provider; `reviewer` names a model the host kit holds by no name.
+const NAMED: &str = "```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\nroster:\n  \
+                     dev:\n    run:\n      - { harness: claude-code, model: Opus 5.5 }\n      \
+                     - { harness: pi, model: fast }\n  reviewer: { run: [{ harness: \
+                     claude-code, model: opuss }, { harness: claude-code, model: haiku }] }\n```\n";
+
+#[test]
+fn a_roster_names_a_model_by_any_name_and_one_naming_nothing_is_said_and_opened_once_in_the_team_s_repo()
+ {
+    let world = bound(NAMED);
+    world.with_kit(|kit| {
+        let claude = &mut kit["harnesses"][0];
+        claude["models"][0] = json!({"model": "claude-opus-5-5", "names": ["opus", "Opus 5.5"]});
+    });
+    world.issue(7, &["flow:feature", "harness:claude-code", "model:opus"]);
+    // `check` gives each range by ids, and names the entry that matches nothing.
+    let checked = world.afk(&["check"]).ok();
+    let team = &checked;
+    let dev = team["roles"].as_array().unwrap().iter().find(|r| r["name"] == "dev").unwrap();
+    assert_eq!(
+        dev["range"],
+        json!([{"harness": "claude-code", "models": ["claude-opus-5-5"]},
+            {"harness": "pi", "models": ["a/fast"]}]),
+        "{checked}"
+    );
+    let unmatched = &team["unmatched_models"];
+    assert_eq!(unmatched.as_array().unwrap().len(), 1, "{checked}");
+    assert_eq!(
+        (&unmatched[0]["role"], &unmatched[0]["model"]),
+        (&json!("reviewer"), &json!("opuss"))
+    );
+    assert!(unmatched[0]["said"].as_str().unwrap().contains("the nearest names: `opus`"));
+    // `plan` names it, and casts by any name, running the id.
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["unmatched_models"][0]["model"], "opuss", "{planned}");
+    assert_eq!(
+        said(&planned, 7),
+        json!({"harness": "claude-code", "model": "claude-opus-5-5", "why": "casting"})
+    );
+    // A tick opens one issue in the team's repo, with its ready label; the
+    // next opens none while it is open.
+    world.afk(&TICK).ok();
+    world.afk(&TICK).ok();
+    let gh = world.gh();
+    let opened = gh["other_issues"]["acme/team"].as_array().unwrap();
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(opened[0]["labels"], json!(["ready-for-agent"]));
+    let body = opened[0]["body"].as_str().unwrap();
+    for named in
+        ["`reviewer`", "opuss", "the nearest names: `opus`", "claude-code (claude-opus-5-5, haiku)"]
+    {
+        assert!(body.contains(named), "{named}: {body}");
+    }
+    // `doctor` names it too.
+    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
+    let found = doctor["findings"].as_array().unwrap();
+    assert!(
+        found
+            .iter()
+            .any(|f| f["what"].as_str().unwrap().contains("names no model the host kit holds")),
+        "{doctor}"
+    );
+}

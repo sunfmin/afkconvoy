@@ -200,15 +200,17 @@ impl Fleet {
     }
 
     /// Whether issue `number`, labelled `labels`, is to be cast again: a
-    /// caster cast it to a harness paused on this host, and no worker has
-    /// started on it (`casting::to_recast`). Its comments are read only
-    /// where its casting names a paused harness.
+    /// caster cast it to a harness paused on this host, or to what the host
+    /// kit holds nothing by, and no worker has started on it
+    /// (`casting::to_recast`). Its comments are read only where its casting
+    /// names one of those.
     pub fn recast(&self, number: u64, labels: &[String]) -> Result<bool> {
-        let paused = crate::paused::read();
-        if casting::paused_of(labels, &paused).is_none() {
+        let (kit, paused) = crate::kit::running()?;
+        let kit = kit.range();
+        if casting::paused_of(labels, &paused).is_none() && !casting::names_nothing(labels, &kit) {
             return Ok(false);
         }
-        Ok(crate::caster::recast(labels, &self.gh.comments(number)?, &paused))
+        Ok(crate::caster::recast(labels, &self.gh.comments(number)?, &paused, &kit))
     }
 
     /// What a worker nothing casts runs — the proposal of a precedent, and
@@ -347,7 +349,7 @@ impl Fleet {
             let Some(issue) = issues.iter().find(|issue| issue.number == number) else {
                 return vec![];
             };
-            match crate::caster::recast(&issue.labels, open.comments(number), &paused) {
+            match crate::caster::recast(&issue.labels, open.comments(number), &paused, &range) {
                 true => casting::without_casting(&issue.labels),
                 false => issue.labels.clone(),
             }
@@ -363,7 +365,7 @@ impl Fleet {
             running_since: caster.as_ref().filter(|c| c.running(self.now)).map(|c| c.since),
             due: false,
             held: vec![],
-            to_cast: crate::caster::to_cast(&self.config, open, &paused),
+            to_cast: crate::caster::to_cast(&self.config, open, &paused, &range),
         };
         let frontier = std::mem::take(&mut set.frontier);
         for mut issue in frontier {
@@ -452,7 +454,7 @@ impl Fleet {
             let Some(issue) = issues.iter().find(|issue| issue.number == number) else {
                 return vec![];
             };
-            match crate::caster::recast(&issue.labels, open.comments(number), &paused) {
+            match crate::caster::recast(&issue.labels, open.comments(number), &paused, &kit) {
                 true => casting::without_casting(&issue.labels),
                 false => issue.labels.clone(),
             }

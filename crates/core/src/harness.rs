@@ -55,6 +55,20 @@ pub enum Held<D> {
     Entries(usize),
 }
 
+/// Where a probe's answer says which model answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnsweredAs {
+    /// The answer says it: this id.
+    Said(String),
+    /// The answer names the session it was kept in: the file under `under`,
+    /// in what the host keeps for the harness, whose name ends `ends`. That
+    /// session file says it (`Harness::answered_in_session`), and is the
+    /// probe's to delete.
+    InSession { under: &'static str, ends: String },
+    /// It says none.
+    Unsaid,
+}
+
 /// A harness the fleet can start a worker of a bound repo on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Harness {
@@ -274,6 +288,55 @@ impl Harness {
         }
     }
 
+    /// The shell line that probes `model` with the one-line `prompt`, as
+    /// `prompt_question` sends it, asked to answer in a form that says which
+    /// model answered (`answered_as` reads it).
+    pub fn probe_question(
+        self,
+        command: &str,
+        kept: &str,
+        model: Option<&str>,
+        prompt: &str,
+    ) -> String {
+        match self {
+            Harness::ClaudeCode => claude_code::probe_question(command, model, prompt),
+            Harness::Pi => pi::probe_question(command, kept, model, prompt),
+            Harness::Codex => codex::probe_question(command, kept, model, prompt),
+            Harness::Dsh => dsh::prompt_question(kept, model, prompt),
+        }
+    }
+
+    /// Which model answered a probe, given what the worker's shell printed
+    /// for `probe_question`: its harness's own id for it.
+    pub fn answered_as(self, answer: &str) -> AnsweredAs {
+        let said = match self {
+            Harness::ClaudeCode => claude_code::answered_as(answer),
+            Harness::Pi => pi::answered_as(answer),
+            Harness::Codex => return codex::answered_as(answer),
+            Harness::Dsh => dsh::answered_as(answer),
+        };
+        said.map_or(AnsweredAs::Unsaid, AnsweredAs::Said)
+    }
+
+    /// Which model answered, given the session file `AnsweredAs::InSession`
+    /// names. `None`: it says none.
+    pub fn answered_in_session(self, session: &str) -> Option<String> {
+        match self {
+            Harness::Codex => codex::answered_in_session(session),
+            Harness::ClaudeCode | Harness::Pi | Harness::Dsh => None,
+        }
+    }
+
+    /// The display name of each model it lists in `answer`, what it printed
+    /// for `models_question`, by the name its `models` gives it: a name a
+    /// human knows it by too. Only Claude Code says them.
+    pub fn shown(self, answer: &str) -> Vec<(String, String)> {
+        match self {
+            Harness::ClaudeCode => claude_code::shown(answer),
+            Harness::Pi | Harness::Codex | Harness::Dsh => vec![],
+        }
+    }
+
     /// The worker launch command `command` of an unbound repo, started on
     /// `model`: its model flag added after it. A harness that takes a model
     /// on no flag of its command (DSH) is started as written.
@@ -477,6 +540,53 @@ mod tests {
             Harness::Dsh.prompt_question("dsh-tui", "/k", None, "Say OK."),
             "dsh headless --patch '/k/probe.patch.yml' 'Say OK.'"
         );
+    }
+
+    #[test]
+    fn a_probe_asks_for_an_answer_that_says_which_model_answered() {
+        let asked =
+            |harness: Harness| harness.probe_question("agent -x", "/k", Some("m 1"), "Say OK.");
+        assert_eq!(
+            asked(Harness::ClaudeCode),
+            "agent -x --model 'm 1' --print 'Say OK.' --output-format json"
+        );
+        assert_eq!(
+            asked(Harness::Pi),
+            "export PI_CODING_AGENT_DIR='/k' && agent -x --model 'm 1' --mode json --print 'Say OK.'"
+        );
+        assert_eq!(
+            asked(Harness::Codex),
+            "export CODEX_HOME='/k' && agent -x exec --skip-git-repo-check --json --model 'm 1' \
+             'Say OK.'"
+        );
+        assert_eq!(
+            asked(Harness::Dsh),
+            Harness::Dsh.prompt_question("x", "/k", Some("m 1"), "Say OK.")
+        );
+    }
+
+    #[test]
+    fn each_harness_says_which_model_answered_its_probe_in_its_own_way() {
+        // As measured on a host, each broken by a terminal where it may be.
+        let claude = "{\"result\":\"OK\",\"usage\":{\"input_tokens\":2},\"modelUsage\":{\"claude-op\nus-5-5\":{\"outputTokens\":4}}}";
+        assert_eq!(
+            Harness::ClaudeCode.answered_as(claude),
+            AnsweredAs::Said("claude-opus-5-5".into())
+        );
+        let pi = "{\"type\":\"session\",\"id\":\"x\"}\n{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"api\":\"openai-codex-responses\",\"provider\":\"openai-codex\",\"model\":\"gpt-6-sol\",\"usage\":{}}}";
+        assert_eq!(Harness::Pi.answered_as(pi), AnsweredAs::Said("openai-codex/gpt-6-sol".into()));
+        let codex = "Reading additional input from stdin...\n{\"type\":\"thread.started\",\"thread_id\":\"01a16c81-722f\"}\n{\"type\":\"turn.started\"}";
+        assert_eq!(
+            Harness::Codex.answered_as(codex),
+            AnsweredAs::InSession { under: "sessions", ends: "01a16c81-722f.jsonl".into() }
+        );
+        let session = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"x\"}}\n{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"t\",\"cwd\":\"/\",\"model\":\"gpt-6-sol\"}}";
+        assert_eq!(Harness::Codex.answered_in_session(session), Some("gpt-6-sol".into()));
+        let dsh = "AFKCONVOY_DSH_ANSWERED deepseek-v4-pro\nOK\n";
+        assert_eq!(Harness::Dsh.answered_as(dsh), AnsweredAs::Said("deepseek-v4-pro".into()));
+        for harness in Harness::ALL {
+            assert_eq!(harness.answered_as("OK\n"), AnsweredAs::Unsaid, "{}", harness.key());
+        }
     }
 
     #[test]
