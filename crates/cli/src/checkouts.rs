@@ -4,12 +4,11 @@
 //! it, from the host runner where one runs, and from each checkout's tick
 //! log. Nothing is written, and neither GitHub nor the remote is asked.
 
-use std::path::Path;
-
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::checkout_list::{self, List};
+use crate::checkout_list::{self, Entry, List};
+use crate::doctor::read_broken;
 use crate::git::Repo;
 use crate::host_runner::{self, Holding};
 use crate::log::{Log, What};
@@ -18,43 +17,48 @@ use crate::log::{Log, What};
 /// {pid, version, log}, null where none runs; and each checkout on this
 /// host's checkout list, in its order, as `standing` says it. The host
 /// runner is asked first: a checkout `stop` takes off the list meanwhile is
-/// left out, not shown broken.
+/// left out, not shown stopped.
 pub fn checkouts() -> Result<Value> {
     let holding = host_runner::holding()?;
     let listed = List::of_host()?.read()?.checkouts;
     let checkouts: Vec<Value> =
-        listed.iter().map(|entry| standing(&entry.checkout, holding.as_ref())).collect();
+        listed.iter().map(|entry| standing(entry, holding.as_ref())).collect();
     Ok(json!({
         "host_runner": holding.map(|holding| holding.about),
         "checkouts": checkouts,
     }))
 }
 
-/// How the checkout `root` stands, as `holding` — what the host runner
-/// said it holds, `None` where none runs — and its tick log have it →
-/// {checkout, repo, instance, state, idle, holding, frontier, ticked,
-/// tick_log}.
+/// How the checkout `listed` names stands, as `holding` — what the host
+/// runner said it holds, `None` where none runs — and its tick log have it →
+/// {checkout, repo, instance, state, broken, idle, holding, frontier,
+/// ticked, tick_log}.
 ///
-/// Its state is `running` where the host runner holds its fleet instance,
-/// `broken` where a host runner runs and holds none — it could not start
-/// it, or its fleet instance ended — and `stopped` where none runs. Its
-/// instance is the one that runs, null until its start is logged; else the
-/// last one its tick log names. That instance's last tick says when it
-/// ended, `ticked`, and whether it was idle, the claims it held and the
-/// frontier it left as it did: null with no tick, and the three where it
-/// failed whole. Its repo and its tick log are null where the checkout is
-/// no git checkout any more.
-fn standing(root: &Path, holding: Option<&Holding>) -> Value {
+/// Its state is `broken` where its tick log says its fleet instance is, as
+/// `doctor` reads it (`read_broken`) of the host its `run` named; else
+/// `running` where the host runner holds its fleet instance; else
+/// `stopped`. Its instance is the one that runs, null until its start is
+/// logged; else the last one its tick log names. That instance's last tick
+/// says when it ended, `ticked`, and whether it was idle, the claims it held
+/// and the frontier it left as it did: null with no tick, and the three
+/// where it failed whole. Its repo and its tick log are null where the
+/// checkout is no git checkout any more.
+fn standing(listed: &Entry, holding: Option<&Holding>) -> Value {
+    let root = &listed.checkout;
     let repo = Repo::at(root).ok();
     let key = repo.as_ref().and_then(|repo| checkout_list::repo_of(repo).ok());
     let tick_log = repo.as_ref().and_then(|repo| Log::of(repo).ok());
     let entries = tick_log.as_ref().and_then(Log::read).unwrap_or_default();
-    let (state, running) = match holding.map(|holding| holding.instances.get(root)) {
-        None => ("stopped", None),
-        Some(Some(instance)) => ("running", Some(instance.clone())),
-        Some(None) => ("broken", None),
+    let host = listed.named.host.clone().unwrap_or_else(crate::this_host);
+    let broken = read_broken(&entries, &host, holding.is_some());
+    // What the host runner holds of it: its instance, `None` until logged.
+    let held = holding.and_then(|holding| holding.instances.get(root));
+    let state = match (&broken, held) {
+        (Some(_), _) => "broken",
+        (None, Some(_)) => "running",
+        (None, None) => "stopped",
     };
-    let instance = running.unwrap_or_else(|| {
+    let instance = held.cloned().flatten().or_else(|| {
         let of_run = entries.iter().rev().find(|entry| entry.of_run());
         of_run.map(|entry| entry.instance.clone())
     });
@@ -70,6 +74,7 @@ fn standing(root: &Path, holding: Option<&Holding>) -> Value {
         "repo": key,
         "instance": instance,
         "state": state,
+        "broken": broken,
         "idle": last.and_then(|(_, tick)| tick.idle()),
         "holding": stood.map(|(held, _)| held),
         "frontier": stood.map(|(_, frontier)| frontier),

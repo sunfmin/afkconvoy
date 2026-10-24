@@ -858,6 +858,8 @@ pub struct Pacing {
     /// How long, in seconds, every fleet on this host must have been idle
     /// before it is put to sleep [default: `IDLE_WAIT`].
     pub host_sleep_after: u64,
+    /// Panic as this tick ends, its line kept: the tests' broken instance.
+    pub panic_at: Option<u64>,
 }
 
 /// What a `run` says at its start of host sleep, when the host settings have
@@ -1231,6 +1233,9 @@ pub fn run(
             shown.inspection = inspection::on_host();
             shown.host_inspected = inspection::last_on_host();
             live.show(panel::render(&shown));
+        }
+        if pacing.panic_at == Some(count) {
+            panic!("told to panic as tick {count} ended (--panic-at-tick)");
         }
         let mut due_now = check_host(&mut host, &said, &stop, &clock);
         if pacing.ticks.is_some_and(|ticks| count >= ticks) {

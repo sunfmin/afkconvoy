@@ -4,9 +4,9 @@
 //! a list of its own (docs/adr/0023).
 
 use crate::common;
+use crate::host_runner::{base_branch_gone, logged};
 
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::Path;
 
 use common::World;
@@ -106,29 +106,43 @@ fn checkouts_answers_each_checkout_on_the_list_as_the_host_runner_holds_it() {
 }
 
 #[test]
-fn a_listed_checkout_the_host_runner_holds_no_fleet_instance_of_is_broken() {
+fn a_broken_checkout_says_why_since_when_and_when_it_is_tried_again_as_doctor_does() {
     let world = World::new();
     let first = world.afk(&RUN).ok();
-    world.kill_host_runner("KILL");
-    // the next host runner cannot start the checkout on its list by itself:
-    // its login shell sets a flag of `run` to what `run` refuses
-    let profile = std::fs::OpenOptions::new().append(true).open(world.home().join(".profile"));
-    writeln!(profile.unwrap(), "export AFKCONVOY_HOT_CORES=bogus").unwrap();
     let clone2 = world.second_repo();
-    let second = world.afk_in(&clone2, &RUN).ok();
-    let log = world.runner_log();
-    let not_started = format!("fleet instance not started: {}: ", world.clone.display());
-    assert!(log.iter().any(|line| line.starts_with(&not_started)), "{log:#?}");
+    world.afk_in(&clone2, &RUN).ok();
+    world.kill_host_runner("KILL");
+    base_branch_gone(&world);
+    // the other checkout's `run` starts a host runner, which starts every
+    // checkout on the list: this one's probe no longer passes
+    let other = world.afk_in(&clone2, &["run"]).ok();
+    logged(&world, &format!("fleet instance broken: {}: ", world.clone.display()));
 
     let answer = world.afk(&["checkouts"]).ok();
-    assert_eq!(answer["host_runner"]["pid"], second["host_runner"]["pid"], "{answer}");
+    assert_eq!(answer["host_runner"]["pid"], other["host_runner"]["pid"], "{answer}");
     let broken = row(&answer, &world.clone);
     assert_eq!(broken["state"], "broken", "{answer}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(broken["broken"], doctor["fleet"]["broken"], "as `doctor` says it: {answer}");
+    let why = afkconvoy_core::layout::no_base_branch("release");
+    assert!(broken["broken"]["why"].as_str().unwrap().contains(&why), "{answer}");
+    assert!(broken["broken"]["next"].is_u64(), "the host runner tries it again: {answer}");
     // the fleet instance that last ran it, as it last ticked
     assert_eq!(broken["instance"], first["instance"], "{answer}");
     assert_eq!(broken["tick_log"], first["tick_log"], "{answer}");
     assert_eq!((&broken["idle"], &broken["holding"]), (&json!(true), &json!(0)), "{answer}");
-    assert_eq!(row(&answer, &clone2)["state"], "running", "{answer}");
+    let running = row(&answer, &clone2);
+    assert_eq!((&running["state"], &running["broken"]), (&json!("running"), &Value::Null));
+
+    // with no host runner to start it again, from the list alone: broken
+    // still, since when it was, with nothing to try it again
+    world.afk(&["stop", "--all"]).ok();
+    let stopped = world.afk(&["checkouts"]).ok();
+    let still = row(&stopped, &world.clone);
+    assert_eq!(still["state"], "broken", "{stopped}");
+    assert_eq!(still["broken"]["since"], broken["broken"]["since"], "{stopped}");
+    assert_eq!(still["broken"]["next"], Value::Null, "{stopped}");
+    assert_eq!(row(&stopped, &clone2)["state"], "stopped", "{stopped}");
 }
 
 #[test]
