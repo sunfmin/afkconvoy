@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::fs::{OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
 
 use afkconvoy_core::harness::Harness;
@@ -275,8 +276,12 @@ pub fn show(now: u64) -> Value {
 }
 
 /// Writes the host kit for `run` where this host has none (`write`), saying
-/// so on stderr; then reads it.
+/// so on stderr; then reads it. One thread of this process at a time, from
+/// the check to the write: fleet instances started at once on a host with no
+/// host kit write it once.
 pub fn ensure(now: u64) -> Result<()> {
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _writing = WRITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if !path()?.exists() {
         write(now)?;
     }
@@ -305,7 +310,7 @@ pub fn write(now: u64) -> Result<Value> {
 fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
     let parent = file.parent().context("the host kit needs a parent directory")?;
     std::fs::create_dir_all(parent)?;
-    let temporary = file.with_extension(format!("{}.tmp", std::process::id()));
+    let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
     std::fs::write(&temporary, serde_json::to_vec_pretty(kit)?)?;
     stamp(&temporary, now)?;
     std::fs::rename(&temporary, file)?;

@@ -32,6 +32,7 @@ use crate::git::Repo;
 use crate::log::What;
 use crate::measure;
 use crate::orca::{Source, TMP_DIR, Worktree};
+use crate::stop::Stop;
 use crate::wake::Waker;
 
 /// How many samples go by before the worktrees are asked of orca again, and
@@ -499,8 +500,8 @@ fn cooled(worker: String, episode: &Episode, gone: bool) -> What {
 }
 
 /// Watches every worker of the checkout `repo` is of, on a thread of its own,
-/// for as long as the process lives: a sample every `SAMPLE_EVERY` seconds of
-/// `second` each, timed by `clock` — the run's — and `keep` said of each turn
+/// until `stop` is told: a sample every `SAMPLE_EVERY` seconds of `second`
+/// each, timed by `clock` — the run's — and `keep` said of each turn
 /// (`Sampler::sample`). `hot` is kept as the workers hot now. What shows a
 /// worker that turned hot is taken down on a thread of its own, and the `run`
 /// woken once it is. A second that takes no time samples nothing.
@@ -511,6 +512,7 @@ pub fn watch(
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     keep: impl Fn(u64, What) + Send + 'static,
     hot: Hot,
+    stop: Stop,
 ) {
     if second.is_zero() {
         return;
@@ -524,6 +526,11 @@ pub fn watch(
         let mut before = Instant::now();
         loop {
             std::thread::sleep(every);
+            // The fleet instance it watches for ended, and a start of it
+            // again watches for itself.
+            if stop.told() {
+                return;
+            }
             if source.is_none() {
                 source = Source::of(&repo).ok();
             }

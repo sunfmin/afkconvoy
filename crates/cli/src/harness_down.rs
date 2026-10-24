@@ -75,7 +75,7 @@ fn read(path: &Path) -> Result<Evidence> {
     }
 }
 fn keep(path: &Path, evidence: &Evidence) -> Result<()> {
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    let temporary = path.with_extension(format!("{}.tmp", crate::unique()));
     std::fs::write(&temporary, serde_json::to_vec(evidence)?)?;
     Ok(std::fs::rename(temporary, path)?)
 }

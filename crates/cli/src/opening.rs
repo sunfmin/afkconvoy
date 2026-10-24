@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::git::Repo;
 use crate::serve::{self, Live};
-use crate::wake::{Waker, home, named_inside};
+use crate::wake::{Waker, home, reached};
 
 /// The name the `run` of a repo is asked under, in the repo's git dir.
 const SOCKET: &str = "convoy-panel.sock";
@@ -33,10 +33,10 @@ const ANSWERS_WITHIN: Duration = Duration::from_secs(10);
 pub fn listen(repo: &Repo, live: Live, instance: &str) {
     let waker = Waker::of(repo);
     let listener = home(repo).and_then(|dir| {
-        named_inside(&dir, SOCKET, |name| {
+        reached(&dir, SOCKET, |path| {
             // What a `run` that ended left: nobody listens on it any more.
-            let _ = std::fs::remove_file(name);
-            UnixListener::bind(name)
+            let _ = std::fs::remove_file(path);
+            UnixListener::bind(path)
         })
     });
     let listener = match listener {
@@ -105,7 +105,7 @@ pub fn open(repo: &Repo, port: Option<u16>) -> Result<Value> {
 }
 
 fn ask(dir: &Path, port: u16) -> Result<Value> {
-    let mut stream = match named_inside(dir, SOCKET, |name| UnixStream::connect(name)) {
+    let mut stream = match reached(dir, SOCKET, |path| UnixStream::connect(path)) {
         Ok(stream) => stream,
         Err(error) => {
             let kind = error.downcast_ref::<std::io::Error>().map(std::io::Error::kind);
@@ -139,10 +139,10 @@ fn ask(dir: &Path, port: u16) -> Result<Value> {
 mod tests {
     use super::*;
 
-    /// Listens where a `run` would in `dir`, named from inside it as a `run`
-    /// names it: a temporary directory's path may be too long for a socket's.
+    /// Listens where a `run` would in `dir`, reached as a `run` reaches it: a
+    /// temporary directory's path may be too long for a socket's.
     fn bind(dir: &Path) -> UnixListener {
-        named_inside(dir, SOCKET, |name| UnixListener::bind(name)).unwrap()
+        reached(dir, SOCKET, |path| UnixListener::bind(path)).unwrap()
     }
 
     /// A git dir with something other than a `run` listening in it, which
@@ -175,7 +175,6 @@ mod tests {
 
     #[test]
     fn an_asker_says_what_went_wrong_whoever_is_at_the_socket() {
-        let _cwd = crate::wake::tests::CWD.lock().unwrap();
         let nobody = tempfile::tempdir().unwrap();
         let error = format!("{:#}", ask(nobody.path(), 0).err().unwrap());
         assert!(error.starts_with("no afkconvoy run is running for this repo"), "{error}");

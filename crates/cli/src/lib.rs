@@ -4,6 +4,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use afkconvoy_core::claims::InstanceId;
@@ -3435,6 +3436,14 @@ fn clock() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
 
+/// A name no other thread of this process makes: the pid and a counter. A
+/// file or a directory named with it is one thread's own, however many fleet
+/// instances work in the process.
+pub(crate) fn unique() -> String {
+    static MADE: AtomicU64 = AtomicU64::new(0);
+    format!("{}-{}", std::process::id(), MADE.fetch_add(1, Ordering::Relaxed))
+}
+
 impl Command {
     /// What it says of itself as it acts (`acting`), if it changes fleet
     /// state: writes to GitHub — issues, comments, labels, blocked-by edges —
@@ -3650,10 +3659,12 @@ fn run(
                 );
             }
             let host = host.unwrap_or_else(this_host);
-            let salt = clock() as u32 ^ std::process::id();
+            let repo = checkout?;
+            // Two checkouts started in one second by one process mint two ids.
+            let checkout_key = afkconvoy_core::gate::key(&repo.dir.to_string_lossy()) as u32;
+            let salt = clock() as u32 ^ std::process::id() ^ checkout_key;
             let instance = instance.unwrap_or_else(|| InstanceId::mint(&host, salt));
             let mut me = Me { instance, host, now };
-            let repo = checkout?;
             let second = Duration::from_millis(second_ms);
             let said = hot::Said {
                 millicores: hot_cores,
@@ -4054,5 +4065,17 @@ mod tests {
         assert!(!reads(&["panel", "--open"]));
         assert!(reads(&["scan"]));
         assert!(!reads(&["claim", "7", "--instance", "a-h1-1"]));
+    }
+
+    #[test]
+    fn no_two_threads_make_one_name() {
+        let threads: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| (0..100).map(|_| unique()).collect::<Vec<_>>()))
+            .collect();
+        let made: Vec<String> = threads.into_iter().flat_map(|t| t.join().unwrap()).collect();
+        let distinct: std::collections::BTreeSet<&String> = made.iter().collect();
+        assert_eq!(distinct.len(), 800, "{made:?}");
+        let pid = format!("{}-", std::process::id());
+        assert!(made.iter().all(|name| name.starts_with(&pid)), "{made:?}");
     }
 }

@@ -153,7 +153,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
     }
 
     // The probe's own name: two starts probing at once never meet on one ref.
-    let token = format!("{now}-{}", std::process::id());
+    let token = format!("{now}-{}", crate::unique());
     let commit = repo.record_commit(PROBE_RECORD)?;
     let push = |refname: &str| match repo.try_git(&[
         "push",

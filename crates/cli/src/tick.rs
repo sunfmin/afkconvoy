@@ -1086,13 +1086,14 @@ pub fn run(
     let wakes = Listener::open(repo, during);
     let hot = Hot::default();
     let mut inspector = Inspector::new(repo, pacing.hot);
+    let stop = Stop::listen();
     {
         let said = Arc::clone(&said);
         let keep = move |at, what| said.keep(at, what);
-        hot::watch(repo, pacing.hot, pacing.second, Arc::clone(&clock), keep, Arc::clone(&hot));
+        let (second, clock, hot) = (pacing.second, Arc::clone(&clock), Arc::clone(&hot));
+        hot::watch(repo, pacing.hot, second, clock, keep, hot, stop.clone());
     }
     opening::listen(repo, live.clone(), me.instance.as_str());
-    let stop = Stop::listen();
     let mut cause = Cause::Start;
     let mut by = None;
     if let Some(line) = host_sleep_line(pacing) {

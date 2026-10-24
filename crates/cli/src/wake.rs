@@ -25,25 +25,39 @@ pub(crate) fn home(repo: &Repo) -> Result<PathBuf> {
     Ok(repo.common_dir()?.to_path_buf())
 }
 
-/// Runs `with` on the socket's name with `dir` as the working directory, and
-/// goes back: a socket's path may only be some hundred bytes long, a git
-/// dir's any length, so the socket is only ever named from inside its
-/// directory.
-fn inside<T>(dir: &Path, with: impl FnOnce(&str) -> std::io::Result<T>) -> Result<T> {
-    named_inside(dir, SOCKET, with)
-}
+/// The longest path a socket's address holds, with room to spare: 104 bytes
+/// on macOS and 108 on Linux, the last of them a NUL.
+const ADDRESS_HOLDS: usize = 100;
 
-/// The same, for a socket called `name`. It moves the whole process: only a
-/// process with one thread at work calls it — a `run` before its first tick.
-pub(crate) fn named_inside<T>(
+/// Runs `with` on a path that reaches the socket `name` in `dir` and fits in
+/// a socket's address (some hundred bytes; a git dir or a cache directory may
+/// be any length): the whole path where it fits, else one through a link to
+/// `dir` made for the call — `convoy-<unique()>` in the temp dir, or /tmp
+/// where even that is too long — and removed after it. Nothing of the process
+/// moves, so any thread may call it while others work.
+pub(crate) fn reached<T>(
     dir: &Path,
     name: &str,
-    with: impl FnOnce(&str) -> std::io::Result<T>,
+    with: impl FnOnce(&Path) -> std::io::Result<T>,
 ) -> Result<T> {
-    let back = std::env::current_dir().context("this process has no working directory")?;
-    std::env::set_current_dir(dir).with_context(|| format!("cannot enter {}", dir.display()))?;
-    let made = with(name);
-    std::env::set_current_dir(&back).with_context(|| format!("cannot go back to {back:?}"))?;
+    let whole = dir.join(name);
+    if whole.as_os_str().len() <= ADDRESS_HOLDS {
+        return Ok(with(&whole)?);
+    }
+    // A link is read from where it is: it names the directory whole.
+    let dir =
+        std::path::absolute(dir).with_context(|| format!("cannot reach {}", dir.display()))?;
+    let linked = format!("convoy-{}", crate::unique());
+    let mut link = std::env::temp_dir().join(&linked);
+    if link.join(name).as_os_str().len() > ADDRESS_HOLDS {
+        link = Path::new("/tmp").join(&linked);
+    }
+    std::os::unix::fs::symlink(&dir, &link)
+        .with_context(|| format!("cannot link {} to {}", link.display(), dir.display()))?;
+    // A bind or a connect follows the link once: a socket bound through it is
+    // in `dir`, and outlives it.
+    let made = with(&link.join(name));
+    let _ = std::fs::remove_file(&link);
     Ok(made?)
 }
 
@@ -112,10 +126,10 @@ impl Listener {
     }
 
     fn at(dir: &Path, during: During) -> Result<Listener> {
-        let socket = inside(dir, |name| {
+        let socket = reached(dir, SOCKET, |path| {
             // What a `run` that ended left: nobody listens on it any more.
-            let _ = std::fs::remove_file(name);
-            UnixDatagram::bind(name)
+            let _ = std::fs::remove_file(path);
+            UnixDatagram::bind(path)
         })?;
         socket.set_read_timeout(Some(HEARS_WITHIN))?;
         let heard = Arc::new(Heard { state: Mutex::default(), rung: Condvar::new() });
@@ -228,13 +242,13 @@ pub struct Waker {
 impl Waker {
     /// `None` where this run cannot be woken (`Listener::open` said so).
     pub fn of(repo: &Repo) -> Option<Waker> {
-        let connected = |name: &str| {
+        let connected = |path: &Path| {
             let socket = UnixDatagram::unbound()?;
-            socket.connect(name)?;
+            socket.connect(path)?;
             socket.set_nonblocking(true)?;
             Ok(socket)
         };
-        let socket = home(repo).and_then(|dir| inside(&dir, connected)).ok()?;
+        let socket = home(repo).and_then(|dir| reached(&dir, SOCKET, connected)).ok()?;
         Some(Waker { socket })
     }
 
@@ -248,9 +262,9 @@ impl Waker {
 /// the one sign on this host that one is alive. Nothing is sent, so it is not
 /// woken.
 pub fn listening(repo: &Repo) -> bool {
-    let reached =
-        home(repo).and_then(|dir| inside(&dir, |name| UnixDatagram::unbound()?.connect(name)));
-    reached.is_ok()
+    let connected = home(repo)
+        .and_then(|dir| reached(&dir, SOCKET, |path| UnixDatagram::unbound()?.connect(path)));
+    connected.is_ok()
 }
 
 /// How long a wake waits for the `run`'s answer.
@@ -265,10 +279,10 @@ struct Reply {
 
 impl Reply {
     fn bind() -> std::io::Result<Reply> {
-        let name = format!("convoy-wake-{}.sock", std::process::id());
+        let name = format!("convoy-wake-{}.sock", crate::unique());
         let mut path = std::env::temp_dir().join(&name);
         // A socket's path may only be some hundred bytes long.
-        if path.as_os_str().len() > 100 {
+        if path.as_os_str().len() > ADDRESS_HOLDS {
             path = Path::new("/tmp").join(&name);
         }
         let _ = std::fs::remove_file(&path);
@@ -292,14 +306,14 @@ impl Drop for Reply {
 /// an error: the fleet finds the outcome at its next tick anyway.
 pub fn wake(repo: &Repo, by: &str) -> Result<Value> {
     let reply = Reply::bind();
-    let sent = inside(&home(repo)?, |name| {
+    let sent = reached(&home(repo)?, SOCKET, |path| {
         let socket = match &reply {
             Ok(reply) => reply.socket.try_clone()?,
             Err(_) => UnixDatagram::unbound()?,
         };
         socket.set_nonblocking(true)?;
         let by = by.as_bytes();
-        socket.send_to(&by[..by.len().min(NAMED_UP_TO)], name)
+        socket.send_to(&by[..by.len().min(NAMED_UP_TO)], path)
     });
     if let Err(error) = sent {
         let nobody = error.downcast_ref::<std::io::Error>().is_some_and(|error| {
@@ -345,13 +359,12 @@ pub fn wake(repo: &Repo, by: &str) -> Result<Value> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Instant;
 
     use super::*;
-
-    /// Tests share one working directory, and `inside` moves it.
-    pub(crate) static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn listen(dir: &Path) -> Listener {
         Listener::at(dir, Box::new(|_, _| {})).unwrap()
@@ -362,13 +375,13 @@ pub(crate) mod tests {
     }
 
     fn send_named(dir: &Path, by: &str) -> bool {
-        let sent = inside(dir, |name| UnixDatagram::unbound()?.send_to(by.as_bytes(), name));
+        let sent =
+            reached(dir, SOCKET, |path| UnixDatagram::unbound()?.send_to(by.as_bytes(), path));
         sent.is_ok()
     }
 
     #[test]
     fn a_wake_ends_the_rest_and_one_before_it_ends_it_at_once() {
-        let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let listener = listen(dir.path());
         // one that arrived during the tick
@@ -385,7 +398,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_first_wake_heard_during_a_tick_is_told_as_it_is_heard() {
-        let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let (told, during) = std::sync::mpsc::channel();
         let listener =
@@ -411,7 +423,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_wake_says_what_sent_it_and_the_first_that_named_one_is_kept() {
-        let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let (told, during) = std::sync::mpsc::channel();
         let listener =
@@ -437,7 +448,6 @@ pub(crate) mod tests {
 
     #[test]
     fn forgotten_wakes_end_no_rest_however_many_there_were() {
-        let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let listener = listen(dir.path());
         for _ in 0..3 {
@@ -458,10 +468,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_socket_nobody_listens_on_takes_no_wake() {
-        let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let listening =
-            |dir: &Path| inside(dir, |name| UnixDatagram::unbound()?.connect(name)).is_ok();
+        let listening = |dir: &Path| {
+            reached(dir, SOCKET, |path| UnixDatagram::unbound()?.connect(path)).is_ok()
+        };
         assert!(!send(dir.path()), "no run ever listened here");
         assert!(!listening(dir.path()));
         let listener = listen(dir.path());
@@ -478,7 +488,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_git_dir_of_any_depth_can_be_listened_in() {
-        let _cwd = CWD.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let deep = dir.path().join("d".repeat(120)).join("e".repeat(120));
         std::fs::create_dir_all(&deep).unwrap();
@@ -487,5 +496,62 @@ pub(crate) mod tests {
         assert_eq!(std::env::current_dir().unwrap(), back, "the working directory is left alone");
         assert!(send(&deep));
         assert!(listener.rest(Duration::from_secs(5)).is_some());
+    }
+
+    #[test]
+    fn a_socket_is_reached_by_its_whole_path_or_through_a_link_and_is_made_in_its_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let deep = root.path().join("d".repeat(120)).join("e".repeat(120));
+        for dir in [root.path().to_path_buf(), deep] {
+            std::fs::create_dir_all(&dir).unwrap();
+            let _listener = reached(&dir, "alpha.sock", |path| UnixListener::bind(path)).unwrap();
+            assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
+            assert!(reached(&dir, "alpha.sock", |path| UnixStream::connect(path)).is_ok());
+        }
+    }
+
+    #[test]
+    fn threads_reach_sockets_too_deep_for_an_address_at_once_and_nothing_moves() {
+        let root = tempfile::tempdir().unwrap();
+        let back = std::env::current_dir().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        // The working directory, read the whole time the threads work.
+        let watched = {
+            let (done, back) = (Arc::clone(&done), back.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    assert_eq!(std::env::current_dir().unwrap(), back);
+                }
+            })
+        };
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let dir = root.path().join(format!("{n}-{}", "d".repeat(120)));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::thread::spawn(move || {
+                    let listener =
+                        reached(&dir, "alpha.sock", |path| UnixListener::bind(path)).unwrap();
+                    assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
+                    reached(&dir, "alpha.sock", |path| UnixStream::connect(path)).unwrap();
+                    listener.accept().unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        done.store(true, Ordering::Relaxed);
+        watched.join().expect("the working directory never moved");
+        assert_eq!(std::env::current_dir().unwrap(), back);
+        // Every link made for a call is gone after it.
+        let ours = format!("convoy-{}-", std::process::id());
+        for dir in [std::env::temp_dir(), PathBuf::from("/tmp")] {
+            let entries = std::fs::read_dir(&dir).unwrap().flatten();
+            let left: Vec<_> = entries
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with(&ours))
+                .collect();
+            assert!(left.is_empty(), "{left:?} in {}", dir.display());
+        }
     }
 }

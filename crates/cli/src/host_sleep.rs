@@ -11,7 +11,7 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -25,23 +25,10 @@ use anyhow::{Context, Result, bail};
 
 use crate::copies::cache;
 use crate::stop::Stop;
-use crate::wake::{Waker, named_inside};
+use crate::wake::{Waker, reached};
 
 /// How a socket is named: for its instance, with this after it.
 const SUFFIX: &str = ".sock";
-
-/// Runs `with` on the socket `name` in `dir`: by its whole path where that
-/// fits in a socket's address — under the cache directory of a home it does —
-/// and else named from inside `dir` (`named_inside`), which moves the whole
-/// process while it is named.
-fn at<T>(dir: &Path, name: &str, with: impl Fn(&Path) -> std::io::Result<T>) -> Result<T> {
-    match with(&dir.join(name)) {
-        Err(error) if error.kind() == ErrorKind::InvalidInput => {
-            named_inside(dir, name, |name| with(Path::new(name)))
-        }
-        made => Ok(made?),
-    }
-}
 
 /// The directory every instance on this host listens in.
 fn home() -> Result<PathBuf> {
@@ -108,7 +95,7 @@ impl HostSleep {
         let listener = home().and_then(|dir| {
             std::fs::create_dir_all(&dir)
                 .with_context(|| format!("cannot make {}", dir.display()))?;
-            at(&dir, &name, |path| {
+            reached(&dir, &name, |path| {
                 // What a `run` of the same instance that ended left.
                 let _ = std::fs::remove_file(path);
                 UnixListener::bind(path)
@@ -243,7 +230,7 @@ impl HostSleep {
                 continue;
             }
             let instance = instance.to_string();
-            let connected = at(&self.dir, &name, |path| match UnixStream::connect(path) {
+            let connected = reached(&self.dir, &name, |path| match UnixStream::connect(path) {
                 Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
                     // What a `run` killed with no goodbye left.
                     let _ = std::fs::remove_file(path);
@@ -393,25 +380,6 @@ fn sleep_now() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_socket_is_reached_by_its_whole_path_and_from_inside_a_directory_too_deep_for_it() {
-        let _cwd = crate::wake::tests::CWD.lock().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let back = std::env::current_dir().unwrap();
-        let deep = root.path().join("d".repeat(120)).join("e".repeat(120));
-        for dir in [root.path().to_path_buf(), deep] {
-            std::fs::create_dir_all(&dir).unwrap();
-            let _listener = at(&dir, "alpha.sock", |path| UnixListener::bind(path)).unwrap();
-            assert!(dir.join("alpha.sock").exists(), "{}", dir.display());
-            assert!(at(&dir, "alpha.sock", |path| UnixStream::connect(path)).is_ok());
-            assert_eq!(
-                std::env::current_dir().unwrap(),
-                back,
-                "the working directory is left alone"
-            );
-        }
-    }
 
     #[test]
     fn the_host_is_read_as_sysctl_and_ioreg_say_it() {

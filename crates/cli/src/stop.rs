@@ -8,6 +8,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 /// Whether this process was told to stop.
+#[derive(Clone)]
 pub struct Stop {
     told: Arc<AtomicBool>,
 }

@@ -79,7 +79,7 @@ impl Pauses {
         if let Some(parent) = self.file.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let temporary = self.file.with_extension(format!("{}.tmp", std::process::id()));
+        let temporary = self.file.with_extension(format!("{}.tmp", crate::unique()));
         std::fs::write(&temporary, serde_json::to_vec_pretty(paused)?)?;
         Ok(std::fs::rename(temporary, &self.file)?)
     }
