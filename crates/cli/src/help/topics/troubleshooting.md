@@ -39,6 +39,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
 - `is claimed but GitHub has it no more`: Deleted or transferred: its fleet's next tick releases it. `fix` is for one stopped.
 - `the gate is slow`: On one host, the last {const:SLOW_GATE_LANDINGS} landings with a recorded gate run all took more than {const:SLOW_GATE_PERCENT}% of the gate limit. A tick opens one issue for the fleet to make the gate faster: `fix` shows it. Raising `gate_seconds` is no fix, nor is deleting or skipping tests.
+- `which nothing reads any more`: The repo config names `concurrency`, and a checkout's concurrency is said on its host instead (`afkconvoy run --help`): this checkout's fleet instance holds its own, or {const:CONCURRENCY} where it says none, whatever the config names. `fix` is the `run` that keeps the config's number on this host, then deleting the key; where the checkout says its own, the deletion alone. Run that line on each host that works the repo before the deletion reaches it, or that host holds {const:CONCURRENCY}.
 
 ## What `doctor` finds — info: nothing is held up
 

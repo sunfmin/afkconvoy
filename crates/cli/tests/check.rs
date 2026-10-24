@@ -466,7 +466,7 @@ fn a_bound_repos_config_answers_its_three_keys_more_and_refuses_a_harness() {
     assert_eq!(bound["lock_label"], "fleet-lock", "a key every repo has");
     assert_eq!(bound["intake_limit"], 50);
     assert_eq!(bound["harness"], Value::Null, "a team's roster says what its workers run");
-    assert_eq!(bound["concurrency"], 3, "the keys every repo has are read as before");
+    assert_eq!(bound["escalate_label"], "ready-for-human", "the keys every repo has are read");
     let set = config("team: acme/team\npatrols: [triage]\nlock_label: stop\nintake_limit: 9").ok();
     assert_eq!(set["patrols"], json!(["triage"]));
     assert_eq!((&set["lock_label"], &set["intake_limit"]), (&json!("stop"), &json!(9)));

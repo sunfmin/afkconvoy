@@ -7,11 +7,11 @@
 //! fleet, often. `findings` is the half that judges what was read, and asks
 //! nothing. Nothing here fixes anything: the fleet's own commands do.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use afkconvoy_core::casting;
 use afkconvoy_core::claims::{InstanceId, claim_ref};
-use afkconvoy_core::config::Config;
+use afkconvoy_core::config::{Config, SaidBy};
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
@@ -164,6 +164,7 @@ kinds! {
     NotOurs: Warning, "is held off by a PR not the fleet's";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
+    RetiredConcurrency: Warning, "which nothing reads any more";
     Moved: Info, "moved since the stage";
     KeptWorktree: Info, "is kept with no claim";
     NoGateLimit: Info, "declares no gate limit";
@@ -443,7 +444,11 @@ pub struct Unclaimed {
 pub struct Seen<'a> {
     pub now: u64,
     pub host: &'a Host,
-    /// The repo's config; `None` where it cannot be read.
+    /// The checkout `doctor` is asked in.
+    pub checkout: &'a Path,
+    /// The repo's config, with the concurrency the checkout says on this
+    /// host laid over it (`concurrency::config_of`); `None` where it cannot
+    /// be read.
     pub config: Option<&'a Config>,
     pub run: &'a Run,
     /// The fleet's state, or why it could not be read.
@@ -1055,10 +1060,40 @@ fn config_finding(config: &Config) -> Option<Finding> {
     ))
 }
 
+/// A repo config that still names a `concurrency`, which nothing reads any
+/// more (docs/adr/0025): the fleet instance of `checkout` goes by its own on
+/// this host, or the default. Where it says none of its own, the line that
+/// keeps the config's on this host comes before deleting the key.
+fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Finding> {
+    let named = config.retired_concurrency?;
+    let in_force = config.concurrency();
+    let delete = format!("delete `concurrency` from {}", config::FILE);
+    let (said, fix) = match config.concurrency_said_by() {
+        SaidBy::Checkout => (
+            format!("this checkout says {in_force} on this host"),
+            format!("{}: concurrency", config::FILE),
+        ),
+        SaidBy::Default => (
+            format!("this checkout says none on this host, so the default, {in_force}, holds"),
+            format!("afkconvoy run {} --concurrency {named}, then {delete}", checkout.display()),
+        ),
+    };
+    Some(finding(
+        Kind::RetiredConcurrency,
+        format!(
+            "this repo's config names `concurrency: {named}`, which nothing reads any more: this \
+             checkout's fleet instance holds up to {in_force} claims at work at once on this host"
+        ),
+        format!("{} names `concurrency: {named}`; {said}", config::FILE),
+        fix,
+    ))
+}
+
 /// Everything that is wrong in what `seen` holds, most severe first.
 pub fn findings(seen: &Seen) -> Vec<Finding> {
     let mut found = host_findings(seen.host);
     found.extend(seen.config.and_then(config_finding));
+    found.extend(seen.config.and_then(|config| retired_concurrency_finding(seen.checkout, config)));
     found.extend(log_findings(seen.run));
     found.extend(broken_finding(seen.run));
     match seen.state {
@@ -1561,12 +1596,13 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         // A log only commands wrote to is no `run`'s.
         ticks: entries.filter(|entries| entries.iter().any(Entry::of_run)).map(|_| ticks),
     };
-    let config = config::load(&repo.dir.join(config::FILE));
+    let config = crate::concurrency::config_of(repo);
     let seen_host = read_host(repo, config.as_ref().ok());
     let state = read_state(repo, now, &mut run).map_err(|error| format!("{error:#}"));
     let seen = Seen {
         now,
         host: &seen_host,
+        checkout: &repo.dir,
         config: config.as_ref().ok(),
         run: &run,
         state: state.as_ref().map_err(String::as_str),
@@ -1882,7 +1918,9 @@ mod tests {
     }
 
     fn found(host: &Host, run: &Run, state: &State) -> Vec<Finding> {
-        let found = findings(&Seen { now: NOW, host, config: None, run, state: Ok(state) });
+        let checkout = Path::new("/repos/widgets");
+        let found =
+            findings(&Seen { now: NOW, host, checkout, config: None, run, state: Ok(state) });
         for finding in &found {
             // Never prose alone: one line to run, or a file and the key in it.
             let fix = &finding.fix;
@@ -2378,6 +2416,7 @@ mod tests {
             let seen = Seen {
                 now: NOW,
                 host: &host,
+                checkout: Path::new("/repos/widgets"),
                 config: config.as_ref().ok(),
                 run: &run,
                 state: Ok(&state),
@@ -2396,11 +2435,57 @@ mod tests {
     }
 
     #[test]
+    fn a_config_that_names_a_concurrency_is_said_with_the_line_that_keeps_it_on_the_host() {
+        // the config as `yaml` has it, with the concurrency its checkout
+        // says on this host laid over it: none at 0
+        let found = |yaml: &str, own: usize| {
+            let config = config::parse(&format!(
+                "```yaml\nbase_branch: main\ngate_command: make\ngate_seconds: 600\n{yaml}```\n"
+            ));
+            let config = config.unwrap().laid(own);
+            let (host, run, state) = (host(), run(vec![]), state());
+            let checkout = Path::new("/repos/widgets");
+            let config = Some(&config);
+            findings(&Seen {
+                now: NOW,
+                host: &host,
+                checkout,
+                config,
+                run: &run,
+                state: Ok(&state),
+            })
+        };
+        // the checkout says none: the default holds, and the line that keeps
+        // the config's on this host comes before deleting the key
+        let named = found("concurrency: 5\n", 0);
+        let what = "this repo's config names `concurrency: 5`, which nothing reads any more: this \
+                    checkout's fleet instance holds up to 3 claims";
+        assert_eq!(
+            fixes(&named, what),
+            ["afkconvoy run /repos/widgets --concurrency 5, then delete `concurrency` from \
+                 docs/agents/afkconvoy.md"]
+        );
+        assert_eq!((named.len(), named[0].severity), (1, Severity::Warning));
+        assert!(
+            named[0].evidence.contains("says none on this host, so the default, 3"),
+            "{named:?}"
+        );
+        // the checkout says its own: the key is all there is left to delete
+        let own = found("concurrency: 5\n", 6);
+        assert_eq!(fixes(&own, "holds up to 6 claims"), ["docs/agents/afkconvoy.md: concurrency"]);
+        assert!(own[0].evidence.contains("this checkout says 6 on this host"), "{own:?}");
+        // the key deleted: nothing, whatever the checkout says
+        assert_eq!(found("", 6), []);
+        assert_eq!(found("", 0), []);
+    }
+
+    #[test]
     fn state_that_cannot_be_read_is_critical_and_findings_come_most_severe_first() {
         let why = "gh issue list failed: HTTP 401";
         let found = findings(&Seen {
             now: NOW,
             host: &host(),
+            checkout: Path::new("/repos/widgets"),
             config: None,
             run: &run(vec![]),
             state: Err(why),

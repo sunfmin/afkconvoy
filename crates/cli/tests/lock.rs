@@ -72,6 +72,7 @@ fn with_a_lock_standing_the_frontier_is_the_lock_issues_and_plan_says_which() {
 #[test]
 fn running_workers_are_left_alone_and_what_they_declared_is_acted_on_once_the_lock_ends() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     world.issue(3, &["ready-for-agent"]);
     world.issue(5, &["ready-for-agent"]);
     world.issue(9, &["ready-for-agent"]);
@@ -248,8 +249,7 @@ fn bound() -> World {
     ];
     world.repo("acme/reviewer", &reviewer);
     world.repo("acme/team", &[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
-    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
-                  concurrency: 3\n```\n";
+    let config = "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n```\n";
     write(&world.clone, "docs/agents/afkconvoy.md", config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
@@ -443,7 +443,7 @@ fn the_line_of_a_tick_shows_the_claims_a_lock_leaves_alone_apart_from_the_bound(
     write(
         &world.clone,
         "docs/agents/afkconvoy.md",
-        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nconcurrency: 3\n```\n",
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\n```\n",
     );
     world.issue(3, &["ready-for-agent"]);
     world.issue(5, &["ready-for-agent"]);

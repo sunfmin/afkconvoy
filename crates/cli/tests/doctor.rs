@@ -63,6 +63,7 @@ fn a_config_with_no_gate_seconds_is_a_finding_and_one_that_sets_it_is_none() {
 #[test]
 fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     world.issue(3, &["ready-for-agent"]);
     world.issue(5, &["bug"]);
     run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
@@ -221,6 +222,7 @@ fn the_instance_is_found_from_the_claims_stamped_with_this_host_where_there_is_n
 #[test]
 fn run_logs_a_line_as_it_starts_one_as_each_tick_starts_and_ends_and_prints_each() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     world.issue(3, &["ready-for-agent"]);
     world.with_orca(|orca| orca["create_fails"] = json!([3]));
     let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];

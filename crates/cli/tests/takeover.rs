@@ -49,6 +49,7 @@ fn takeover(world: &World, more: &[&str]) -> common::Answer {
 #[test]
 fn a_tick_reclaims_stale_claims_into_its_free_slots_ahead_of_the_frontier() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     for issue in [2, 3, 4, 5, 6, 8] {
         world.issue(issue, &["ready-for-agent"]);
     }
@@ -152,6 +153,7 @@ fn a_reclaimed_claim_is_continued_from_what_its_worker_pushed() {
 #[test]
 fn a_start_takes_every_claim_stamped_with_its_host_whatever_the_heartbeat() {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     for issue in [2, 3, 5, 7, 9] {
         world.issue(issue, &["ready-for-agent"]);
     }

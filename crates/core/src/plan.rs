@@ -681,10 +681,10 @@ mod tests {
         Config::new(Settings {
             base_branch: Some("main".into()),
             gate_command: Some("true".into()),
-            concurrency: Some(concurrency),
             ..Settings::default()
         })
         .unwrap()
+        .laid(concurrency)
     }
 
     fn issue(number: u64, labels: &[&str]) -> Issue {

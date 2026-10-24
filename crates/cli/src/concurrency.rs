@@ -4,7 +4,8 @@
 //! that names it, and read as each tick opens the fleet — as the host
 //! settings are read as they are used — so a change holds at the next tick
 //! and no fleet instance is started again for it. Until its checkout says
-//! one, the repo config's `concurrency` holds, or the default.
+//! one, the default holds: the repo config's `concurrency` is read no more
+//! (docs/adr/0025).
 //!
 //! A checkout the list holds no entry of yet — its first tick has not ended,
 //! or a `run --foreground` holds it — goes by what its `run` asked, kept in
@@ -43,7 +44,7 @@ pub fn claims_or_default(said: &str) -> Result<To<NonZeroUsize>, String> {
 }
 
 /// The repo config of the checkout `repo` as its fleet instance goes by it
-/// on this host: with the checkout's own concurrency laid over the repo's
+/// on this host: with the checkout's own concurrency laid over the default
 /// (`own`). A config or a checkout list that cannot be read is an error
 /// naming it.
 pub fn config_of(repo: &Repo) -> Result<Config> {
@@ -100,8 +101,8 @@ pub fn forget(root: &Path) {
 }
 
 /// The concurrency `config` goes by, as `plan`, `doctor` and `checkouts` say
-/// it: {in_force, said_by} — said by the checkout, the repo's `config`, or
-/// nobody, the `default`.
+/// it: {in_force, said_by} — said by the checkout, or by nobody, the
+/// `default`.
 pub fn json(config: &Config) -> Value {
     json!({"in_force": config.concurrency(), "said_by": config.concurrency_said_by()})
 }
@@ -144,7 +145,7 @@ mod tests {
         let (listed, starting) = (dir.path().join("listed"), dir.path().join("starting"));
         let entry = Entry { checkout: listed.clone(), named: Named::default(), concurrency: None };
         list.change(|kept| kept.checkouts.push(entry)).unwrap();
-        assert_eq!(own(&list, &listed).unwrap(), None, "none said: the repo's holds");
+        assert_eq!(own(&list, &listed).unwrap(), None, "none said: the default holds");
 
         // the one on the list says it with its entry, which holds over what
         // a `run` asked in this process

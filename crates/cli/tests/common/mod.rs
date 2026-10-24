@@ -15,7 +15,7 @@ pub const BASE: &str = "main";
 
 /// The config every world starts with, committed on the base branch.
 pub const CONFIG: &str =
-    "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\nconcurrency: 2\n```\n";
+    "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n```\n";
 
 /// The code blocks of `language` the manual shows at `at` — a command as
 /// `` `afkconvoy config` ``, a topic as `` topic `example` `` — each as its
@@ -305,7 +305,7 @@ impl World {
 
     /// Commits a config of the gate's keys as `yaml` has them, and pushes it.
     pub fn set_gate_config(&self, yaml: &str) {
-        let config = format!("```yaml\nbase_branch: main\n{yaml}\nconcurrency: 2\n```\n");
+        let config = format!("```yaml\nbase_branch: main\n{yaml}\n```\n");
         std::fs::write(self.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
         git(&self.clone, &["commit", "-q", "-am", "set the gate"]);
         git(&self.clone, &["push", "-q", "origin", BASE]);
@@ -837,6 +837,21 @@ impl World {
         let file = self.cache().join("afkconvoy/checkouts.json");
         let mut list = self.checkout_list();
         list["settings"] = settings;
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, list.to_string()).unwrap();
+    }
+
+    /// Has `checkout` say `claims` of its concurrency on this world's host,
+    /// as a `run` that named `--concurrency` keeps it: with its entry on the
+    /// checkout list, which it puts there where the list holds none of it.
+    pub fn say_concurrency(&self, checkout: &Path, claims: u64) {
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
+            Some(entry) => entry["concurrency"] = json!(claims),
+            None => entries.push(json!({"checkout": checkout, "concurrency": claims})),
+        }
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, list.to_string()).unwrap();
     }

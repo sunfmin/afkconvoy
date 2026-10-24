@@ -139,6 +139,7 @@ fn a_silent_joining_worker_is_nudged_restarted_once_nudged_and_then_escalated() 
 #[test]
 fn the_loop_says_which_worker_it_restarted_and_which_claim_it_escalated() {
     let world = joining();
+    world.say_concurrency(&world.clone, 2);
     tick(&world, 1090);
     let run = |now: &str| {
         let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];

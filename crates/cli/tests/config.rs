@@ -14,22 +14,23 @@ fn write_config(world: &World, yaml: &str) {
 #[test]
 fn config_prints_every_key_with_defaults_filled() {
     let world = World::new();
-    write_config(&world, "base_branch: main\ngate_command: make test\nconcurrency: 5");
+    write_config(&world, "base_branch: main\ngate_command: make test");
     let config = world.afk(&["config"]).ok();
-    assert_eq!(
-        config,
-        serde_json::json!({
-            "base_branch": "main",
-            "gate_command": "make test",
-            "gate_seconds": 3600,
-            "ready_label": "ready-for-agent",
-            "epic_labels": ["epic", "prd"],
-            "concurrency": 5,
-            "escalate_label": "ready-for-human",
-            "lock_label": "fleet-lock",
-            "escalate_to": "consult",
-        })
-    );
+    let every = serde_json::json!({
+        "base_branch": "main",
+        "gate_command": "make test",
+        "gate_seconds": 3600,
+        "ready_label": "ready-for-agent",
+        "epic_labels": ["epic", "prd"],
+        "escalate_label": "ready-for-human",
+        "lock_label": "fleet-lock",
+        "escalate_to": "consult",
+    });
+    assert_eq!(config, every);
+    // A concurrency is its checkout's, said on its host: one the config
+    // still names is read, and changes nothing.
+    write_config(&world, "base_branch: main\ngate_command: make test\nconcurrency: 5");
+    assert_eq!(world.afk(&["config"]).ok(), every);
 }
 
 #[test]

@@ -28,9 +28,11 @@ fn did(ticked: &Value) -> Vec<String> {
         .collect()
 }
 
-/// A world with workers dispatched on `issues` at 1000.
+/// A world whose fleet holds two claims at once, with workers dispatched on
+/// `issues` at 1000.
 fn fleet(issues: &[u64]) -> World {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     world.set_gate("true");
     for &n in issues {
         world.issue(n, &["ready-for-agent"]);

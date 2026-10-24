@@ -88,6 +88,7 @@ fn dispatch(world: &World, more: &[&str]) -> common::Answer {
 #[test]
 fn a_claim_whose_worker_died_is_continued_in_the_worktree_still_here() {
     let world = fleet();
+    world.say_concurrency(&world.clone, 2);
     // the slots are full, and an issue waits on the frontier
     world.issue(8, &["ready-for-agent"]);
     world.issue(9, &["ready-for-agent"]);

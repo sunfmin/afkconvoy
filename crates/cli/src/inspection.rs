@@ -21,7 +21,7 @@
 //! inspection of the host only while no fleet instance has a hot worker
 //! waiting for one. The turn goes with the inspection that holds it — ended,
 //! or dropped with a fleet instance that ends. An inspection takes no slot of
-//! the `concurrency`.
+//! the concurrency.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;

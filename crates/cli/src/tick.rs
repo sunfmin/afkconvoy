@@ -106,7 +106,7 @@ pub struct Ticked {
     /// What this tick saw as it ended, but for its count: the next one's
     /// `before`.
     saw: Before,
-    /// The config's `concurrency`.
+    /// The concurrency in force (`concurrency::config_of`).
     concurrency: usize,
     /// The claims the pass could hold as it ended (`Pass::bound`).
     bound: usize,

@@ -42,12 +42,13 @@ fn bound(patrols: &str) -> World {
         ],
     );
     let config = format!(
-        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nconcurrency: 2\nteam: \
-         acme/team\npatrols: {patrols}\n```\n"
+        "```yaml\nbase_branch: main\ngate_command: ./gate.sh\nteam: acme/team\n\
+         patrols: {patrols}\n```\n"
     );
     write(&world.clone, "docs/agents/afkconvoy.md", &config);
     git(&world.clone, &["commit", "-q", "-am", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
+    world.say_concurrency(&world.clone, 2);
     world
 }
 

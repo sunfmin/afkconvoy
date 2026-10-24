@@ -28,6 +28,7 @@ fn did(ticked: &Value) -> Vec<String> {
 /// `more` ready on the frontier.
 fn full(more: &[u64]) -> World {
     let world = World::new();
+    world.say_concurrency(&world.clone, 2);
     for issue in [7, 8].iter().chain(more) {
         world.issue(*issue, &["ready-for-agent"]);
     }
