@@ -24,7 +24,7 @@ use crate::hot;
 /// What a host says; each it leaves unsaid (`None`) is the default. Its keys,
 /// and the units of their values, are those of the flag of `run` that names
 /// each: `hot_cores` is `--hot-cores`, in cores.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// `--no-host-sleep`: no fleet on the host puts it to sleep.
@@ -52,6 +52,9 @@ pub struct Settings {
     pub admit_inspect_after: Option<u64>,
     /// `--panel`: the port the panel is served on.
     pub panel: Option<u16>,
+    /// What another afkconvoy says beside them, kept as it is.
+    #[serde(flatten)]
+    rest: Map<String, Value>,
 }
 
 /// What a `run` named of the host settings; each it left unnamed is `None`.
@@ -243,8 +246,8 @@ pub fn change(list: &List, named: &Named) -> Result<Map<String, Value>> {
         );
     }
     list.change(|listed| {
-        let was = listed.settings;
-        listed.settings = was.with(named);
+        let was = listed.settings.clone();
+        listed.settings = was.clone().with(named);
         was.changes(&listed.settings)
     })
 }
@@ -329,7 +332,7 @@ mod tests {
             panel: Some(7070),
             ..Settings::default()
         };
-        assert_eq!(kept.with(&Named::default()), kept, "naming nothing keeps it all");
+        assert_eq!(kept.clone().with(&Named::default()), kept, "naming nothing keeps it all");
         let named = Named {
             no_host_sleep: Some(false),
             hot_cores: Some(To::Default),
@@ -337,7 +340,7 @@ mod tests {
             admit_load: Some(To::Value(400)),
             ..Named::default()
         };
-        let now = kept.with(&named);
+        let now = kept.clone().with(&named);
         assert_eq!(
             now,
             Settings {
@@ -369,7 +372,7 @@ mod tests {
             admit_disk: Some(0),
             ..Settings::default()
         };
-        let said = serde_json::to_value(settings).unwrap();
+        let said = serde_json::to_value(&settings).unwrap();
         assert_eq!(said["hot_cores"], json!(2.5));
         assert_eq!(said["hot_written"], json!(20.0));
         assert_eq!(said["admit_disk"], json!(0));
@@ -379,6 +382,12 @@ mod tests {
         assert_eq!(serde_json::from_str::<Settings>("{}").unwrap(), Settings::default());
         let wrong = serde_json::from_str::<Settings>(r#"{"hot_cores": -1}"#).unwrap_err();
         assert!(wrong.to_string().contains("not a number above zero"), "{wrong}");
+        // what another afkconvoy says beside them is kept as it is
+        let other = json!({"hot_cores": 2.5, "said_by_another": {"a": 1}});
+        let read = serde_json::from_value::<Settings>(other).unwrap();
+        assert_eq!(read.hot_cores, Some(2500));
+        let written = serde_json::to_value(read.with(&Named::default())).unwrap();
+        assert_eq!(written["said_by_another"], json!({"a": 1}));
         // the limits the sampler takes, in bytes
         let hot = Settings { hot_memory: Some(8000), ..settings }.hot();
         assert_eq!((hot.millicores, hot.resident), (Some(2500), Some(8 << 30)));

@@ -181,6 +181,7 @@ fn df(said: &str) -> Option<Disk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_settings::To;
 
     #[test]
     fn the_host_is_read_as_sysctl_proc_and_df_say_it() {
@@ -223,12 +224,12 @@ mod tests {
         let unsaid = Admission::of(&host_settings::Settings::default(), reading);
         assert_eq!((unsaid.shares, unsaid.span), (SHARES, SPAN));
         assert!(unsaid.said.is_empty());
-        let settings = host_settings::Settings {
-            admit_load: Some(400),
-            admit_memory: Some(0),
-            admit_inspect_after: Some(900),
-            ..host_settings::Settings::default()
-        };
+        let settings = host_settings::Settings::default().with(&host_settings::Named {
+            admit_load: Some(To::Value(400)),
+            admit_memory: Some(To::Value(0)),
+            admit_inspect_after: Some(To::Value(900)),
+            ..host_settings::Named::default()
+        });
         let said = Admission::of(&settings, reading);
         assert_eq!(said.shares, Shares { load: 400, memory: 0, disk: SHARES.disk });
         assert_eq!(said.span, 900);

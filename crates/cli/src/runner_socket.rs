@@ -1,13 +1,14 @@
-//! The host runner's socket: how `run` reaches the host runner of its host
-//! (docs/adr/0023). It is a file in the cache directory, so every afkconvoy
-//! that shares the cache directory reaches the same one. One line of JSON
-//! crosses it each way, the question and its answer, and then the connection
-//! closes.
+//! The host runner's socket: how `run` and `stop` reach the host runner of
+//! their host (docs/adr/0023). It is a file in the cache directory, so every
+//! afkconvoy that shares the cache directory reaches the same one. One line of
+//! JSON crosses it each way, the question and its answer, and then the
+//! connection closes.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -24,14 +25,62 @@ pub const SOCKET: &str = "host-runner.sock";
 /// question is one line, written at once.
 const ASKED_WITHIN: Duration = Duration::from_secs(10);
 
-/// What `run` asks the host runner: one line of JSON, tagged by its `op`.
+/// What `run` and `stop` ask the host runner: one line of JSON, tagged by its
+/// `op`.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// Its version: answered with nothing but `host_runner`, as every answer
+    /// is. One of an afkconvoy that cannot read the question says the same,
+    /// beside its error.
+    Version,
     /// Put `checkout` on the checkout list and start its fleet instance as
     /// `start` asks: answered once its first tick ended, or once it was
     /// refused before that.
-    Add { checkout: PathBuf, start: Start },
+    Add { checkout: PathBuf, start: Box<Start> },
+    /// Take `checkout` off the checkout list and stop its fleet instance:
+    /// answered once it has stopped.
+    Stop { checkout: PathBuf },
+    /// Stop every fleet instance, and then the host runner, keeping the
+    /// checkout list: answered once every fleet instance has stopped.
+    StopAll,
+}
+
+/// The questions the host runner took and has not answered yet.
+#[derive(Clone, Default)]
+pub struct Answering {
+    taken: Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl Answering {
+    /// Waits, `within` at most, until every question taken is answered: the
+    /// host runner ends only once whoever asked it was told.
+    pub fn settled(&self, within: Duration) {
+        let (taken, changed) = &*self.taken;
+        let until = Instant::now() + within;
+        let mut now = taken.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *now > 0 {
+            let Some(left) = until.checked_duration_since(Instant::now()) else { return };
+            now = changed.wait_timeout(now, left).map_or_else(|p| p.into_inner().0, |w| w.0);
+        }
+    }
+
+    /// Counts one question taken until the guard it answers is dropped.
+    fn took(&self) -> Taken {
+        *self.taken.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+        Taken(self.clone())
+    }
+}
+
+/// One question taken, counted until it is dropped.
+struct Taken(Answering);
+
+impl Drop for Taken {
+    fn drop(&mut self) {
+        let (taken, changed) = &*self.0.taken;
+        *taken.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) -= 1;
+        changed.notify_all();
+    }
 }
 
 /// Binds the socket, over whatever a host runner that ended left: a socket
@@ -47,25 +96,31 @@ pub fn listen() -> Result<UnixListener> {
 }
 
 /// Answers each asker on `listener`, from now on, each on a thread of its
-/// own: one waiting for a first tick holds up no other. Every answer gets
-/// `about` as its `host_runner`, an error and a question it cannot read
-/// included, so whoever asked can tell which afkconvoy answered. A question
-/// not read within `ASKED_WITHIN` is dropped.
+/// own: one waiting for a first tick holds up no other → the questions taken
+/// and not answered yet. Every answer gets `about` as its `host_runner`, an
+/// error and a question it cannot read included, so whoever asked can tell
+/// which afkconvoy answered. A question not read within `ASKED_WITHIN` is
+/// dropped.
 pub fn serve(
     listener: UnixListener,
     about: Value,
     answer: impl Fn(Request) -> Value + Send + Sync + 'static,
-) {
-    let answer = std::sync::Arc::new(answer);
+) -> Answering {
+    let answer = Arc::new(answer);
+    let answering = Answering::default();
+    let taking = answering.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let (about, answer) = (about.clone(), std::sync::Arc::clone(&answer));
+            let (about, answer) = (about.clone(), Arc::clone(&answer));
+            let taken = taking.took();
             std::thread::spawn(move || {
                 // Whatever goes wrong with one asker is its own loss.
                 let _ = answered(stream, &about, answer.as_ref());
+                drop(taken);
             });
         }
     });
+    answering
 }
 
 /// Reads one question from `stream` and writes its answer back.
@@ -166,12 +221,40 @@ mod tests {
                 "ready_timeout": 120, "now": null}
         }))
         .unwrap();
-        let add = Request::Add { checkout: "/w".into(), start };
+        let add = Request::Add { checkout: "/w".into(), start: Box::new(start) };
         let line = serde_json::to_string(&add).unwrap();
         assert!(line.starts_with(r#"{"op":"add","checkout":"/w","start":{"named":{"host":"h1"}"#));
         assert!(!line.contains('\n'));
-        let Request::Add { checkout, .. } = serde_json::from_str(&line).unwrap();
+        let Ok(Request::Add { checkout, .. }) = serde_json::from_str(&line) else {
+            panic!("{line}")
+        };
         assert_eq!(checkout, PathBuf::from("/w"));
+        let stop = serde_json::to_string(&Request::Stop { checkout: "/w".into() }).unwrap();
+        assert_eq!(stop, r#"{"op":"stop","checkout":"/w"}"#);
+        assert_eq!(serde_json::to_string(&Request::StopAll).unwrap(), r#"{"op":"stop_all"}"#);
+        assert_eq!(serde_json::to_string(&Request::Version).unwrap(), r#"{"op":"version"}"#);
+    }
+
+    #[test]
+    fn settled_waits_for_every_question_taken_and_no_longer_than_it_is_given() {
+        let answering = Answering::default();
+        let started = Instant::now();
+        answering.settled(Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1), "none taken: at once");
+
+        let taken = answering.took();
+        let started = Instant::now();
+        answering.settled(Duration::from_millis(200));
+        assert!(started.elapsed() >= Duration::from_millis(200), "one taken: until it is given");
+
+        let answered = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(taken);
+        });
+        let started = Instant::now();
+        answering.settled(Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(4), "once it is answered");
+        answered.join().unwrap();
     }
 
     #[test]
@@ -180,9 +263,11 @@ mod tests {
         let ask = |line: &str| {
             let (asker, runner) = UnixStream::pair().unwrap();
             writeln!(&asker, "{line}").unwrap();
-            let checkout = |request: Request| {
-                let Request::Add { checkout, .. } = request;
-                json!({"checkout": checkout})
+            let checkout = |request: Request| match request {
+                Request::Add { checkout, .. } | Request::Stop { checkout } => {
+                    json!({"checkout": checkout})
+                }
+                Request::Version | Request::StopAll => json!({}),
             };
             answered(runner, &about, &checkout).unwrap();
             let mut answer = String::new();
@@ -192,6 +277,7 @@ mod tests {
         let start = r#""start":{"named":{},"panel":null,"no_host_sleep":true,"hot":{"millicores":null,"resident":null,"written":null},"knobs":{"ticks":null,"second_ms":1000,"host_sleep_after":600,"ready_timeout":120,"now":null}}"#;
         let added = ask(&format!(r#"{{"op":"add","checkout":"/w",{start}}}"#));
         assert_eq!(added, json!({"checkout": "/w", "host_runner": about}));
+        assert_eq!(ask(r#"{"op":"version"}"#), json!({"host_runner": about}));
         let unread = ask(r#"{"op":"wake","checkout":"/w"}"#);
         let error = unread["error"].as_str().unwrap();
         assert!(error.starts_with("this host runner (afkconvoy "), "{error}");
