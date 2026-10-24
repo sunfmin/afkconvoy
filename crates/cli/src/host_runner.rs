@@ -1,15 +1,16 @@
 //! The host runner: the one process of the fleet on a host, holding a fleet
 //! instance for each checkout on the host's checkout list (docs/adr/0023);
-//! and `run`, which hands it a checkout, starting it where none runs.
+//! and `run`, which hands it a checkout, starting it where none runs, and
+//! moving it onto its own afkconvoy where it is of an older release.
 //!
 //! The host runner is whoever holds the lock `host-runner.lock` in the cache
 //! directory, so there is one for each cache directory, by construction. It
 //! never ticks: each fleet instance it holds ticks on a thread of its own, on
 //! its own time, and keeps its own tick log as before. What it keeps itself
 //! is its log, `host-runner.log`: one line for each thing that happened to
-//! it — its start and its stop, a checkout added, refused or removed, a fleet
-//! instance started or ended — and the lines a fleet instance says that no
-//! tick log holds.
+//! it — its start and its stop, the older host runner it replaced, a
+//! checkout added, refused or removed, a fleet instance started or ended —
+//! and the lines a fleet instance says that no tick log holds.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -24,6 +25,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::checkouts::{OnList, on_list};
+use afkconvoy_core::host_runner::{Found, found};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -51,6 +53,10 @@ const UP_WITHIN: Duration = Duration::from_secs(30);
 /// How long `run` waits for its checkout's first tick: a first start may
 /// write the host kit and make the startup probe before it.
 const FIRST_TICK_WITHIN: Duration = Duration::from_secs(30 * 60);
+
+/// How long `run` waits for the host runner to say its version:
+/// it answers at once, whatever its fleet instances are doing.
+const SAID_WITHIN: Duration = Duration::from_secs(10);
 
 /// How often the host runner looks whether its lock file is still there.
 const WATCHED_EVERY: Duration = Duration::from_millis(250);
@@ -166,7 +172,7 @@ pub fn serve() -> Result<Value> {
     let dir = cache()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let log = RunnerLog::default();
-    let Some(lock) = took_host(&dir.join(LOCK))? else {
+    let Some((lock, before)) = took_host(&dir.join(LOCK))? else {
         let holder = holder_of(&dir.join(LOCK));
         let said = holder.map_or("another".to_string(), |pid| format!("pid {pid}"));
         log.say(&format!("host runner not started: {said} holds this host"));
@@ -183,6 +189,14 @@ pub fn serve() -> Result<Value> {
         "host runner started: afkconvoy {VERSION}, pid {pid}, {} checkouts on the list",
         listed.checkouts.len()
     ));
+    let older = before["version"].as_str().filter(|was| found(VERSION, was) == Found::Older);
+    if let Some(older) = older {
+        log.say(&format!(
+            "host runner upgraded: from afkconvoy {older} (pid {}) to afkconvoy {VERSION} (pid \
+             {pid})",
+            before["pid"]
+        ));
+    }
     let runner = Arc::new(Runner { list, log, stop: stop.clone(), held: Mutex::default() });
     runner.start_listed(listed.checkouts);
     let about = json!({"pid": pid, "version": VERSION, "log": dir.join(LOG)});
@@ -216,9 +230,10 @@ pub fn serve() -> Result<Value> {
 
 /// Takes the lock in `file`, waiting `UP_WITHIN` for a host runner that
 /// holds it to let it go, and writes this process into it → the lock, held
-/// until it is dropped or the process ends; `None` where it was held all the
-/// while.
-fn took_host(file: &Path) -> Result<Option<File>> {
+/// until it is dropped or the process ends, with what the host runner before
+/// wrote into it — {pid, version, started}, or null where none did; `None`
+/// where it was held all the while.
+fn took_host(file: &Path) -> Result<Option<(File, Value)>> {
     let cannot = || format!("cannot take the host runner's lock {}", file.display());
     let lock = OpenOptions::new()
         .read(true)
@@ -238,11 +253,14 @@ fn took_host(file: &Path) -> Result<Option<File>> {
             Err(TryLockError::Error(error)) => return Err(error).with_context(cannot),
         }
     }
+    let before = std::fs::read_to_string(file).ok();
+    let before = before.and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let before = before.unwrap_or_default();
     let holder = json!({"pid": std::process::id(), "version": VERSION, "started": crate::clock()});
     lock.set_len(0)
         .and_then(|()| (&lock).write_all(holder.to_string().as_bytes()))
         .with_context(cannot)?;
-    Ok(Some(lock))
+    Ok(Some((lock, before)))
 }
 
 /// The pid the lock in `file` says holds it, read without taking it.
@@ -289,7 +307,8 @@ impl Runner {
     /// Answers one question asked on the socket.
     fn answer(self: &Arc<Self>, request: Request) -> Value {
         let answered = match request {
-            Request::Add { checkout, start } => self.add(&checkout, start),
+            Request::Version => Ok(json!({})),
+            Request::Add { checkout, start } => self.add(&checkout, *start),
         };
         answered.unwrap_or_else(|error| crate::error_json(&error))
     }
@@ -557,24 +576,36 @@ impl Heard {
 /// `afkconvoy run`: hands the checkout `checkout` to this host's runner,
 /// starting one detached where none answers, and waits for its fleet
 /// instance's first tick → the host runner's answer, `host_runner.started`
-/// saying whether this `run` started it. A refusal the host runner answered
-/// is `Answered`, printed as it is.
+/// saying whether this `run` started it, and `host_runner.replaced` which
+/// host runner of an older release it stopped first (`moved`). A refusal the
+/// host runner answered is `Answered`, printed as it is.
 pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
+    let (log, lock) = (log_path()?, cache()?.join(LOCK));
+    let pid = || holder_of(&lock).map(|pid| format!(" (pid {pid})")).unwrap_or_default();
+    // Before anything changes: which afkconvoy the host runner is.
+    let replaced = match runner_socket::ask(&Request::Version, SAID_WITHIN)? {
+        Reached::Answer(said) => moved(&said["host_runner"])?,
+        Reached::Nobody | Reached::Closed => None,
+        Reached::Unanswered => bail!(
+            "the host runner{} did not say its version within {}s: its log, {}, says why",
+            pid(),
+            SAID_WITHIN.as_secs(),
+            log.display()
+        ),
+    };
     // A first start writes the host kit here, saying so to whoever ran `run`.
     kit::ensure(now)?;
-    let add = Request::Add { checkout: checkout.dir.clone(), start };
+    let add = Request::Add { checkout: checkout.dir.clone(), start: Box::new(start) };
     let (reached, started) = match runner_socket::ask(&add, FIRST_TICK_WITHIN)? {
         Reached::Nobody => (started_and_asked(&add)?, true),
         reached => (reached, false),
     };
-    let log = log_path()?;
-    let pid = holder_of(&cache()?.join(LOCK)).map(|pid| format!(" (pid {pid})"));
     let mut answer = match reached {
         Reached::Answer(answer) => answer,
         Reached::Nobody => bail!("no host runner answered: its log, {}, says why", log.display()),
         Reached::Closed => bail!(
             "the host runner{} ended before it answered: its log, {}, says why",
-            pid.unwrap_or_default(),
+            pid(),
             log.display()
         ),
         Reached::Unanswered => bail!(
@@ -587,6 +618,7 @@ pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
     };
     if let Some(about) = answer.get_mut("host_runner").and_then(Value::as_object_mut) {
         about.insert("started".into(), json!(started));
+        about.insert("replaced".into(), json!(replaced));
     }
     if answer.get("error").is_some() {
         return Err(Answered(answer).into());
@@ -596,6 +628,54 @@ pub fn run(checkout: &Repo, start: Start, now: u64) -> Result<Value> {
         eprintln!("warning: {warning}");
     }
     Ok(answer)
+}
+
+/// What `run` does with the host runner that said it is `about` — its pid
+/// and version — before it hands it anything (docs/adr/0023) → the host
+/// runner it replaced, if it did. One of this afkconvoy's release is left
+/// as it is → `None`. One of an older release is stopped as SIGTERM stops
+/// it — each fleet instance finishes the step it is in, and the checkout list
+/// is kept — and waited for until it lets the host go → its {pid, version}.
+/// One of a newer release refuses this `run`, which changes nothing.
+fn moved(about: &Value) -> Result<Option<Value>> {
+    let (theirs, pid) = (about["version"].as_str().unwrap_or_default(), &about["pid"]);
+    match found(VERSION, theirs) {
+        Found::Same => Ok(None),
+        Found::Newer => bail!(
+            "this afkconvoy, {VERSION}, is older than the host runner's, {theirs} (pid {pid}), so \
+             it changed nothing: run the newer afkconvoy — `which -a afkconvoy` lists each on your \
+             PATH"
+        ),
+        Found::Older => {
+            let Some(pid) = pid.as_u64() else {
+                bail!("the host runner of afkconvoy {theirs} gave no pid, and cannot be stopped")
+            };
+            let told = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+            told.context("`kill` could not be run to stop the host runner")?;
+            // However `kill` ended: one already gone has let the host go.
+            let (lock, until) = (cache()?.join(LOCK), Instant::now() + UP_WITHIN);
+            while held(&lock) {
+                if Instant::now() >= until {
+                    bail!(
+                        "the host runner of afkconvoy {theirs} (pid {pid}) was told to stop, to \
+                         make way for this afkconvoy, {VERSION}, and still holds the host after \
+                         {}s: its log, {}, says how far it is. Run again once it has stopped",
+                        UP_WITHIN.as_secs(),
+                        log_path()?.display()
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(Some(json!({"pid": pid, "version": theirs})))
+        }
+    }
+}
+
+/// Whether a process holds the lock in `file`: one nobody holds is taken
+/// and let go at once.
+fn held(file: &Path) -> bool {
+    let Ok(lock) = File::open(file) else { return false };
+    matches!(lock.try_lock(), Err(TryLockError::WouldBlock))
 }
 
 /// Starts a host runner and asks it `add` once it answers, until
@@ -734,12 +814,22 @@ mod tests {
     fn a_lock_is_taken_by_one_and_says_who_holds_it() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(LOCK);
-        let held = took_host(&file).unwrap().expect("nobody held it");
+        assert!(!held(&file), "no lock file");
+        let (lock, before) = took_host(&file).unwrap().expect("nobody held it");
+        assert_eq!(before, Value::Null, "nobody held it before");
         assert_eq!(holder_of(&file), Some(u64::from(std::process::id())));
+        assert!(held(&file), "held while kept");
         let other = OpenOptions::new().write(true).open(&file).unwrap();
         assert!(matches!(other.try_lock(), Err(TryLockError::WouldBlock)), "held while kept");
-        drop(held);
-        assert!(other.try_lock().is_ok(), "let go when dropped");
+        drop(lock);
+        assert!(!held(&file), "let go when dropped");
+        assert!(other.try_lock().is_ok(), "and asking took nothing");
+        drop(other);
+
+        // the next to take it is told who held it before
+        let (_lock, before) = took_host(&file).unwrap().expect("nobody holds it");
+        assert_eq!(before["pid"], std::process::id());
+        assert_eq!(before["version"], VERSION);
     }
 
     #[test]

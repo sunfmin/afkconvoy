@@ -28,10 +28,14 @@ const ASKED_WITHIN: Duration = Duration::from_secs(10);
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// Its version: answered with nothing but `host_runner`, as every answer
+    /// is. One of an afkconvoy that cannot read the question says the same,
+    /// beside its error.
+    Version,
     /// Put `checkout` on the checkout list and start its fleet instance as
     /// `start` asks: answered once its first tick ended, or once it was
     /// refused before that.
-    Add { checkout: PathBuf, start: Start },
+    Add { checkout: PathBuf, start: Box<Start> },
 }
 
 /// Binds the socket, over whatever a host runner that ended left: a socket
@@ -166,12 +170,13 @@ mod tests {
                 "ready_timeout": 120, "now": null}
         }))
         .unwrap();
-        let add = Request::Add { checkout: "/w".into(), start };
+        let add = Request::Add { checkout: "/w".into(), start: Box::new(start) };
         let line = serde_json::to_string(&add).unwrap();
         assert!(line.starts_with(r#"{"op":"add","checkout":"/w","start":{"named":{"host":"h1"}"#));
         assert!(!line.contains('\n'));
-        let Request::Add { checkout, .. } = serde_json::from_str(&line).unwrap();
+        let Ok(Request::Add { checkout, .. }) = serde_json::from_str(&line) else { panic!() };
         assert_eq!(checkout, PathBuf::from("/w"));
+        assert_eq!(serde_json::to_string(&Request::Version).unwrap(), r#"{"op":"version"}"#);
     }
 
     #[test]
@@ -180,9 +185,9 @@ mod tests {
         let ask = |line: &str| {
             let (asker, runner) = UnixStream::pair().unwrap();
             writeln!(&asker, "{line}").unwrap();
-            let checkout = |request: Request| {
-                let Request::Add { checkout, .. } = request;
-                json!({"checkout": checkout})
+            let checkout = |request: Request| match request {
+                Request::Add { checkout, .. } => json!({"checkout": checkout}),
+                Request::Version => json!({}),
             };
             answered(runner, &about, &checkout).unwrap();
             let mut answer = String::new();
@@ -192,6 +197,7 @@ mod tests {
         let start = r#""start":{"named":{},"panel":null,"no_host_sleep":true,"hot":{"millicores":null,"resident":null,"written":null},"knobs":{"ticks":null,"second_ms":1000,"host_sleep_after":600,"ready_timeout":120,"now":null}}"#;
         let added = ask(&format!(r#"{{"op":"add","checkout":"/w",{start}}}"#));
         assert_eq!(added, json!({"checkout": "/w", "host_runner": about}));
+        assert_eq!(ask(r#"{"op":"version"}"#), json!({"host_runner": about}));
         let unread = ask(r#"{"op":"wake","checkout":"/w"}"#);
         let error = unread["error"].as_str().unwrap();
         assert!(error.starts_with("this host runner (afkconvoy "), "{error}");

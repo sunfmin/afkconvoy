@@ -440,7 +440,7 @@ Add a checkout to this host's checkout list, start the host runner where none ru
 
 ##### When to run it
 
-To have a repo worked: after `config` answers and `plan` shows the frontier you expect. Run it again after the host runner was stopped or killed, or the host restarted: it starts every checkout on the list, each where its fleet instance left off.
+To have a repo worked: after `config` answers and `plan` shows the frontier you expect. Run it again after the host runner was stopped or killed, or the host restarted: it starts every checkout on the list, each where its fleet instance left off. And once after an upgrade of afkconvoy (`brew upgrade afkconvoy`), in any checkout: it moves the host runner, and every checkout on the list, onto the new version.
 
 ##### Who runs it
 
@@ -452,7 +452,9 @@ The checkout list: checkouts.json in the cache directory, kept on this host and 
 
 The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on a socket in the cache directory (host-runner.sock), and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, and with `--no-host-sleep` and `--hot-*` as the login shell's environment says; a checkout whose fleet instance cannot start stays on the list, and its log says why.
 
-The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as each fleet instance starts and ends, as a checkout is added, refused or removed, and each line a fleet instance says outside its tick log, after its checkout: its warnings, the `start:` lines after its first, and the `panel:` line.
+Before anything else, `run` asks the host runner for its version. One of an older release than this `run`'s — after `brew upgrade afkconvoy` — is stopped as SIGTERM stops it: each fleet instance finishes the step it is in, and the checkout list is kept. Once it has let the host go, `run` starts a host runner of its own version, which starts every checkout on the same list, and then adds its own. One of a newer release refuses this `run`, which changes nothing. A build past a release (`afkconvoy --version` says `0.6.0+11.g9f58035`) is of that release, and one of the same release as the host runner's is handed the checkout as ever.
+
+The host runner's log: host-runner.log in the cache directory, moved aside to host-runner.log.1 once past a MiB. One line, stamped in UTC, as it starts and as it stops, as it replaces a host runner of an older release (`host runner upgraded: from afkconvoy 0.5.13 (pid 4100) to afkconvoy 0.6.0 (pid 4242)`), as each fleet instance starts and ends, as a checkout is added, refused or removed, and each line a fleet instance says outside its tick log, after its checkout: its warnings, the `start:` lines after its first, and the `panel:` line.
 
 Two kinds of checkout are refused, with an error and nothing on the list: one whose fleet instance is refused before its first tick — it fails the startup probe, say — which is taken off the list when it was on it; and a second checkout of a repo already on the list, a clone or a worktree of it: a host runs one fleet instance per repo, and the error names the checkout to run it from.
 
@@ -484,7 +486,8 @@ Once its checkout's fleet instance has ended its first tick, with exit 0:
 ```json
 {"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj", "added": true,
  "instance": "me-h1-1a2b3c4d",
- "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log", "started": true},
+ "host_runner": {"pid": 4242, "version": "0.6.0", "log": "<cache>/host-runner.log", "started": true,
+                 "replaced": null},
  "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl",
  "first_tick": "tick 1: dispatched #12, #15 · holding 2/3 · frontier 4 · next in 30s",
  "warnings": []}
@@ -492,7 +495,7 @@ Once its checkout's fleet instance has ended its first tick, with exit 0:
 
 - `repo`: the repo the checkout is of, as its remote `origin` names it.
 - `added`: false when the checkout was on the list already. Where its fleet instance runs, the flags of this `run` change nothing, and the answer is that instance, with its own first tick.
-- `host_runner`: the one that answered — its pid, its version and its log — and whether this `run` started it.
+- `host_runner`: the one that answered — its pid, its version and its log — and whether this `run` started it. `replaced`: the host runner of an older release this `run` stopped to start it, as {"pid": 4100, "version": "0.5.13"}; null where it stopped none.
 - `tick_log` and `first_tick`: the fleet instance's tick log, and the line that ended its first tick. `<cache>` stands for the cache directory, whole in the answer.
 - `warnings`: what its fleet instance warned of until its first tick ended — the startup probe's warnings among them — also on stderr; empty where this `run` waited on no start.
 
@@ -560,7 +563,7 @@ With `--panel <port>` its checkout's fleet instance serves the panel on that por
 
 Started without it — and started again by the host runner, which keeps no `--panel` — a fleet instance serves the same page once `afkconvoy panel --open` asks it to, from any worktree of the repo on this host — while it sleeps or in the middle of a tick, which goes on — and then logs that line, wherever its ticks have got to. `panel --open` answers the address again later, of a panel opened either way.
 
-Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
+Errors, before the first tick, as {"error": …} with a non-zero exit: the host is not macOS and it was not told `--no-host-sleep`; the panel's port is taken; a command the fleet needs is missing or logged out, or orca is not running or does not know this checkout (the error names each, with the line to run); the repo fails the startup probe; the config cannot be read; the host kit cannot be read; the worker launch command of a harness the fleet could be asked for resolves to nothing, or — in a bound repo — does not take the flags that start a worker in its role; another checkout of the repo is on the checkout list; the checkout has no remote `origin`; the login shell did not answer within 20 seconds; the host runner is of a newer release than this `run` (the error names both versions, and nothing was changed); the host runner did not say its version within 10 seconds; the host runner of an older release, told to stop, still held the host after 30 seconds; no host runner answered within 35 seconds; the host runner ended before it answered, or is stopping; no first tick within 30 minutes; the checkout list cannot be written. Each error a host runner gave says which, as `host_runner`.
 
 ##### What trips you up
 
