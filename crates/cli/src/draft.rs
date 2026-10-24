@@ -56,7 +56,7 @@ pub fn draft(dir: PathBuf, team: Option<RepoDir>, yes: bool) -> Result<Value> {
     else {
         bail!("the host kit's first, `{}`, did not answer the draft", first.harness.key());
     };
-    let (_, guidance) = read_answer(&answer);
+    let guidance = read_answer(&answer);
     let roster = afkconvoy_core::roster::draft(&loaded.team, &range, &strengths, &guidance);
     let unsaid = unsaid(&loaded.team, &range, &strengths, &guidance);
     for said in &unsaid {
@@ -118,20 +118,13 @@ fn confirmed(out: &mut impl Write) -> Result<bool> {
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
-/// What the drafting model answered: one JSON object a line, whatever it
-/// printed around them — a model's strength, or a role's guidance. The first
-/// said of each stands where the draft is made (`roster::draft`).
-fn read_answer(answer: &str) -> (Vec<Strength>, Vec<Guidance>) {
-    let (mut strengths, mut guidance) = (vec![], vec![]);
-    for line in answer.lines() {
-        let line = line.trim().trim_matches('`').trim();
-        if let Ok(strength) = serde_json::from_str::<Strength>(line) {
-            strengths.push(strength);
-        } else if let Ok(said) = serde_json::from_str::<Guidance>(line) {
-            guidance.push(said);
-        }
-    }
-    (strengths, guidance)
+/// Reads only role guidance. Model abilities always come from the host kit,
+/// even if a drafting model volunteers its own assessment.
+fn read_answer(answer: &str) -> Vec<Guidance> {
+    answer
+        .lines()
+        .filter_map(|line| serde_json::from_str(line.trim().trim_matches('`').trim()).ok())
+        .collect()
 }
 
 /// Whether `line` of a yaml block is its top-level `roster` key.
@@ -245,13 +238,11 @@ mod tests {
     }
 
     #[test]
-    fn a_model_s_answer_is_read_a_strength_or_a_guidance_a_line() {
+    fn only_role_guidance_is_read_from_the_drafting_answer() {
         let answer = "Here:\n```\n{\"harness\": \"pi\", \"model\": \"a/b\", \"good_at\": \"x\"}\n\
                       {\"harness\": \"dsh\", \"good_at\": \"y\"}\nnoise\n{\"role\": \"dev\", \
                       \"cast\": \"z\"}\n```";
-        let (strengths, guidance) = read_answer(answer);
-        assert_eq!(strengths.len(), 2);
-        assert_eq!(strengths[1].model, None);
+        let guidance = read_answer(answer);
         assert_eq!(guidance, [Guidance { role: "dev".into(), cast: "z".into() }]);
     }
 }

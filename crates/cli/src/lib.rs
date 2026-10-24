@@ -756,7 +756,7 @@ enum Command {
     ///
     /// ##### What trips you up
     ///
-    /// - Read the draft before committing it: what a model is good at, and how to cast, are a model's words. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
+    /// - Read the draft before committing it: model strengths come from the host kit's sourced research, and how to cast comes from the drafting model. Edit them, take out what a role is not to run, and order what is left as the team prefers — `afkconvoy check --dir` then says whether the team loads.
     /// - A team file whose roster has a fault does not load: delete the roster, and draft again.
     /// - The draft is the host kit of the host it runs on. A harness another host holds and this one does not is not in it.
     /// - Drafting sends the host kit's first a real prompt: it spends some of its login.

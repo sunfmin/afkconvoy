@@ -511,6 +511,7 @@ fn kit_research_is_written_from_a_fake_session_and_is_not_repeated() {
     let source = json!({"url":"https://vendor.example/card", "date":"2026-10-24"});
     std::fs::write(world.root.join("research-answer"), json!({
         "harness_order":["claude-code","pi"],
+        "model_order":[{"harness":"claude-code","models":["opus","default"]},{"harness":"pi","models":["openai/gpt-5.5"]}],
         "models":[
             {"harness":"claude-code","model":"opus","good_at":"wide refactors; costly","sources":[source]},
             {"harness":"claude-code","model":"default","good_at":"small fixes","sources":[source]},

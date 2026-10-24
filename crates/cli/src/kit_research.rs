@@ -27,7 +27,15 @@ fn identity(id: &str) -> String {
 #[serde(deny_unknown_fields)]
 struct Answer {
     harness_order: Vec<String>,
+    model_order: Vec<ModelOrder>,
     models: Vec<Finding>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelOrder {
+    harness: String,
+    models: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -100,11 +108,13 @@ pub fn research(
          Research only these new identities (one entry per identity): {}.\n\
          Context: every kept model, under all its names and harness display names: {}.\n\
          Answer with exactly one JSON object, no fences: {{\"harness_order\":[\"pi\",...],\
+         \"model_order\":[{{\"harness\":\"pi\",\"models\":[\"kept id\",...]}}],\
          \"models\":[{{\"harness\":\"pi\",\"model\":\"id from targets\",\"good_at\":\
          \"a few words: strengths and weaknesses for long refactors, small fixes, review, speed, cost\",\
          \"sources\":[{{\"url\":\"https://...\",\"date\":\"YYYY-MM-DD\"}}]}}]}}. \
          Include every kept harness exactly once in preference order for a coding fleet. \
-         Include each target exactly once, in model preference order. If evidence is unavailable, \
+         Include model_order for every kept harness, each kept id exactly once, using held \
+         research for old identities. Include each target exactly once. If evidence is unavailable, \
          omit that model. Existing models need no research. Today is epoch second {now}.",
         json!(targets),
         json!(kit.harnesses),
@@ -120,6 +130,12 @@ pub fn research(
         }
     };
     let sourced: Vec<_> = answer.models.iter().filter(|finding| valid(finding)).collect();
+    if sourced.is_empty() {
+        eprintln!(
+            "afkconvoy: host kit research has no dated source URL; keeping fixed order and not researched"
+        );
+        return;
+    }
     for held in &mut kit.harnesses {
         for model in &mut held.models {
             if !new.contains(&identity(&model.model)) {
@@ -139,33 +155,30 @@ pub fn research(
                 );
             }
         }
-        // Sort only researched slots: omitted and unsourced models never move.
+        // An unsourced new model stays in its fixed slot. Old research can be
+        // ranked with the new research without paying to research it again.
         let mut ranked: Vec<Seen> = held
             .models
             .iter()
-            .filter(|m| new.contains(&identity(&m.model)) && m.researched_at == Some(now))
+            .filter(|m| old.contains(&identity(&m.model)) || m.researched_at == Some(now))
             .cloned()
             .collect();
-        ranked
-            .sort_by_key(|m| sourced.iter().position(|f| identity(&f.model) == identity(&m.model)));
+        let order = answer
+            .model_order
+            .iter()
+            .find(|o| o.harness == held.harness.key())
+            .expect("checked harness order");
+        ranked.sort_by_key(|m| order.models.iter().position(|id| id == &m.model));
         let mut ranked = ranked.into_iter();
         for model in &mut held.models {
-            if new.contains(&identity(&model.model)) && model.researched_at == Some(now) {
+            if old.contains(&identity(&model.model)) || model.researched_at == Some(now) {
                 *model = ranked.next().expect("one replacement per researched slot");
             }
         }
     }
-    // A harness without a sourced finding stays in its fixed place too.
-    let eligible = |h: &crate::kit::Held| {
-        h.models.iter().any(|m| new.contains(&identity(&m.model)) && m.researched_at == Some(now))
-    };
-    let mut ranked: Vec<_> = kit.harnesses.iter().filter(|h| eligible(h)).cloned().collect();
-    ranked.sort_by_key(|h| answer.harness_order.iter().position(|key| key == h.harness.key()));
-    let mut ranked = ranked.into_iter();
-    for held in &mut kit.harnesses {
-        if eligible(held) {
-            *held = ranked.next().expect("one replacement per researched harness");
-        }
+    if !sourced.is_empty() {
+        kit.harnesses
+            .sort_by_key(|h| answer.harness_order.iter().position(|key| key == h.harness.key()));
     }
 }
 
@@ -195,6 +208,25 @@ fn checked(text: &str, kit: &Kit, targets: &[serde_json::Value]) -> Result<Answe
     if order != held || order.len() != answer.harness_order.len() {
         bail!("research harness order must name every kept harness exactly once");
     }
+    let mut ordered = BTreeSet::new();
+    for order in &answer.model_order {
+        if !ordered.insert(order.harness.as_str()) {
+            bail!("duplicate harness in model order");
+        }
+        let h = kit
+            .harnesses
+            .iter()
+            .find(|h| h.harness.key() == order.harness)
+            .context("model order names a harness not kept")?;
+        let ids: BTreeSet<_> = h.models.iter().map(|m| m.model.as_str()).collect();
+        let named: BTreeSet<_> = order.models.iter().map(String::as_str).collect();
+        if ids != named || named.len() != order.models.len() {
+            bail!("model order must name each kept model exactly once");
+        }
+    }
+    if ordered != held {
+        bail!("model order must name each kept harness exactly once");
+    }
     let mut seen = BTreeSet::new();
     for model in &answer.models {
         if !targets.iter().any(|t| t["harness"] == model.harness && t["model"] == model.model) {
@@ -218,7 +250,7 @@ mod tests {
     }
     fn answer() -> serde_json::Value {
         let finding = |h, m| json!({"harness":h,"model":m,"good_at":"review; costly", "sources":[{"url":"https://vendor.example/card","date":"2026-10-24"}]});
-        json!({"harness_order":["pi","claude-code"],"models":[finding("pi","other"),finding("claude-code","deep"),finding("claude-code","fast")]})
+        json!({"harness_order":["pi","claude-code"],"model_order":[{"harness":"pi","models":["other"]},{"harness":"claude-code","models":["deep","fast"]}],"models":[finding("pi","other"),finding("claude-code","deep"),finding("claude-code","fast")]})
     }
     #[test]
     fn a_sourced_answer_sets_research_and_preference_order() {
@@ -309,7 +341,7 @@ mod tests {
                 serde_json::from_str::<serde_json::Value>(targets).unwrap(),
                 json!([{"harness":"claude-code", "model":"new-generation"}])
             );
-            Ok(json!({"harness_order":["pi","claude-code"],"models":[{"harness":"claude-code","model":"new-generation","good_at":"small fixes","sources":[{"url":"https://vendor.example/new","date":"2026-10-24"}]}]}).to_string())
+            Ok(json!({"harness_order":["claude-code","pi"],"model_order":[{"harness":"claude-code","models":["new-generation","deep"]},{"harness":"pi","models":["other","provider/fast"]}],"models":[{"harness":"claude-code","model":"new-generation","good_at":"small fixes","sources":[{"url":"https://vendor.example/new","date":"2026-10-24"}]}]}).to_string())
         });
         assert_eq!(after.harnesses[0].models[0].good_at.as_deref(), Some("small fixes"));
         assert_eq!(after.harnesses[0].models[1], before.harnesses[0].models[1]);
