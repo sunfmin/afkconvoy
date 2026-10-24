@@ -1,5 +1,5 @@
 //! Host settings: what a host says for every fleet instance on it — whether
-//! it may be put to sleep, the limits past which a worker is hot, the shares
+//! it may be put to sleep and in which hours, the limits past which a worker is hot, the shares
 //! admission holds back at, the panel's port (docs/adr/0023). They are kept
 //! in the checkout list's file, beside the checkouts, and changed by any
 //! `run` that names one: that `run` writes them, and every fleet instance
@@ -15,6 +15,7 @@ use std::sync::OnceLock;
 
 use afkconvoy_core::admission::SHARES;
 use afkconvoy_core::host_inspection::SPAN;
+use afkconvoy_core::host_sleep::{Hours, SLEEP_HOURS};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -30,6 +31,10 @@ use crate::hot;
 pub struct Settings {
     /// `--no-host-sleep`: no fleet on the host puts it to sleep.
     pub no_host_sleep: bool,
+    /// `--host-sleep-hours`: the hours of its local time a fleet may put the
+    /// host to sleep in, as said: `22:00-06:00`.
+    #[serde(with = "hours")]
+    pub host_sleep_hours: Option<Hours>,
     /// `--hot-cores`, in thousandths of a core.
     #[serde(with = "thousandths")]
     pub hot_cores: Option<u64>,
@@ -68,6 +73,7 @@ pub const PANEL_PORT: u16 = 7070;
 pub struct Named {
     /// `--no-host-sleep` (true) or `--host-sleep` (false).
     pub no_host_sleep: Option<bool>,
+    pub host_sleep_hours: Option<To<Hours>>,
     pub hot_cores: Option<To<u64>>,
     pub hot_memory: Option<To<u64>>,
     pub hot_written: Option<To<u64>>,
@@ -114,6 +120,11 @@ pub fn thousandths_or_default(said: &str) -> Result<To<u64>, String> {
     })
 }
 
+/// `--host-sleep-hours` as said: `HH:MM-HH:MM`, or `default`.
+pub fn hours_or_default(said: &str) -> Result<To<Hours>, String> {
+    To::parse(said, |said| Hours::parse(said).map_err(|why| format!("{why}; or `default`")))
+}
+
 /// `--admit-*` as said: a whole number, or `default`.
 pub fn whole_or_default(said: &str) -> Result<To<u64>, String> {
     To::parse(said, |said| {
@@ -144,6 +155,7 @@ impl Settings {
         if let Some(no_host_sleep) = named.no_host_sleep {
             self.no_host_sleep = no_host_sleep;
         }
+        lay(&mut self.host_sleep_hours, named.host_sleep_hours);
         lay(&mut self.hot_cores, named.hot_cores);
         lay(&mut self.hot_memory, named.hot_memory);
         lay(&mut self.hot_written, named.hot_written);
@@ -180,6 +192,11 @@ impl Settings {
         self.panel.unwrap_or(PANEL_PORT)
     }
 
+    /// The sleep hours it says, else the default.
+    pub fn sleep_hours(&self) -> Hours {
+        self.host_sleep_hours.unwrap_or(SLEEP_HOURS)
+    }
+
     /// The hot limits it says, as the sampler takes them.
     pub fn hot(&self) -> hot::Said {
         let bytes = |thousandths: u64| thousandths.saturating_mul(1 << 30) / 1000;
@@ -198,6 +215,7 @@ impl Settings {
         let gib = |bytes: u64| (bytes as u128 * 1000 / (1 << 30)) as f64 / 1000.0;
         let in_force = json!({
             "no_host_sleep": self.no_host_sleep,
+            "host_sleep_hours": self.sleep_hours().to_string(),
             "hot_cores": limits.millicores as f64 / 1000.0,
             "hot_memory": gib(limits.resident),
             "hot_written": gib(limits.written),
@@ -235,10 +253,17 @@ pub fn of_host() -> Result<Settings> {
     })
 }
 
+/// What this host's settings say of host sleep now: the sleep hours a fleet
+/// may put it to sleep in; `None` where they keep it awake, or cannot be read.
+pub fn host_sleep() -> Option<Hours> {
+    let settings = of_host().ok().filter(|settings| !settings.no_host_sleep)?;
+    Some(settings.sleep_hours())
+}
+
 /// Whether no fleet may put this host to sleep now: its settings say so, or
 /// cannot be read.
 pub fn kept_awake() -> bool {
-    of_host().map_or(true, |settings| settings.no_host_sleep)
+    host_sleep().is_none()
 }
 
 /// Has the host say what `named` names, in `list` → what changed, as
@@ -280,6 +305,7 @@ pub fn json(list: &List, dir: &Path) -> Value {
 /// The variables of a `run`'s environment that name a host setting as its
 /// flag does, where the flag is not given.
 pub const NO_HOST_SLEEP_ENV: &str = "AFKCONVOY_NO_HOST_SLEEP";
+pub const HOST_SLEEP_HOURS_ENV: &str = "AFKCONVOY_HOST_SLEEP_HOURS";
 pub const HOT_CORES_ENV: &str = "AFKCONVOY_HOT_CORES";
 pub const HOT_MEMORY_ENV: &str = "AFKCONVOY_HOT_MEMORY";
 pub const HOT_WRITTEN_ENV: &str = "AFKCONVOY_HOT_WRITTEN";
@@ -287,6 +313,26 @@ pub const ADMIT_LOAD_ENV: &str = "AFKCONVOY_ADMIT_LOAD";
 pub const ADMIT_MEMORY_ENV: &str = "AFKCONVOY_ADMIT_MEMORY";
 pub const ADMIT_DISK_ENV: &str = "AFKCONVOY_ADMIT_DISK";
 pub const ADMIT_INSPECT_AFTER_ENV: &str = "AFKCONVOY_ADMIT_INSPECT_AFTER";
+
+/// Sleep hours as the file keeps them: as they are said, `22:00-06:00`.
+mod hours {
+    use afkconvoy_core::host_sleep::Hours;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(said: &Option<Hours>, to: S) -> Result<S::Ok, S::Error> {
+        match said {
+            Some(hours) => to.collect_str(hours),
+            None => to.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Option<Hours>, D::Error> {
+        match Option::<String>::deserialize(from)? {
+            None => Ok(None),
+            Some(said) => Hours::parse(&said).map(Some).map_err(D::Error::custom),
+        }
+    }
+}
 
 /// A number of cores or GiB as the file keeps it — the number, whole or not
 /// — and as a setting holds it, in thousandths of it.
@@ -328,6 +374,13 @@ mod tests {
         assert_eq!(whole_or_default("0"), Ok(To::Value(0)), "0 is a share: never hold for disk");
         assert_eq!(whole_or_default("default"), Ok(To::Default));
         assert!(whole_or_default("5%").is_err() && whole_or_default("1.5").is_err());
+        let night = Hours::parse("22:00-06:00").unwrap();
+        assert_eq!(hours_or_default("22:00-06:00"), Ok(To::Value(night)));
+        assert_eq!(hours_or_default("default"), Ok(To::Default));
+        for wrong in ["06:00-06:00", "6pm-6am", ""] {
+            let error = hours_or_default(wrong).unwrap_err();
+            assert!(error.contains("HH:MM-HH:MM") && error.contains("`default`"), "{error}");
+        }
         assert_eq!(port_or_default("7070"), Ok(To::Value(7070)));
         assert_eq!(port_or_default("default"), Ok(To::Default));
         assert!(port_or_default("70000").is_err());
@@ -387,7 +440,17 @@ mod tests {
         assert_eq!(said["hot_written"], json!(20.0));
         assert_eq!(said["admit_disk"], json!(0));
         assert_eq!(said["hot_memory"], Value::Null);
+        assert_eq!(said["host_sleep_hours"], Value::Null);
         assert_eq!(serde_json::from_value::<Settings>(said).unwrap(), settings);
+        // sleep hours as they are said; hours that cover nothing are refused
+        let night = Settings { host_sleep_hours: Hours::parse("22:00-06:00").ok(), ..settings };
+        let said = serde_json::to_value(&night).unwrap();
+        assert_eq!(said["host_sleep_hours"], json!("22:00-06:00"));
+        assert_eq!(serde_json::from_value::<Settings>(said).unwrap(), night);
+        let wrong = r#"{"host_sleep_hours": "06:00-06:00"}"#;
+        let wrong = serde_json::from_str::<Settings>(wrong).unwrap_err();
+        assert!(wrong.to_string().contains("covers no time of the day"), "{wrong}");
+        let settings = Settings { host_sleep_hours: None, ..night };
         // what it leaves out is the default; a number no limit can be is refused
         assert_eq!(serde_json::from_str::<Settings>("{}").unwrap(), Settings::default());
         let wrong = serde_json::from_str::<Settings>(r#"{"hot_cores": -1}"#).unwrap_err();
@@ -420,6 +483,16 @@ mod tests {
         assert_eq!(answered["in_force"]["admit_load"], 400);
         assert_eq!(answered["in_force"]["admit_memory"], SHARES.memory);
         assert_eq!(answered["in_force"]["admit_inspect_after"], SPAN);
+        assert_eq!(answered["in_force"]["host_sleep_hours"], "00:00-06:00");
+        // the sleep hours, changed from what to what, and back
+        let night = Hours::parse("22:00-06:00").unwrap();
+        let named = Named { host_sleep_hours: Some(To::Value(night)), ..Named::default() };
+        let changed = Value::Object(change(&list, &named).unwrap());
+        assert_eq!(changed, json!({"host_sleep_hours": {"from": null, "to": "22:00-06:00"}}));
+        assert_eq!(json(&list, dir.path())["in_force"]["host_sleep_hours"], "22:00-06:00");
+        let named = Named { host_sleep_hours: Some(To::Default), ..Named::default() };
+        let changed = Value::Object(change(&list, &named).unwrap());
+        assert_eq!(changed, json!({"host_sleep_hours": {"from": "22:00-06:00", "to": null}}));
         assert!(answered["in_force"]["hot_cores"].as_f64().unwrap() >= 1.0);
     }
 }

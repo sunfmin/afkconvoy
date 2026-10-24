@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use afkconvoy_core::claims::InstanceId;
 use afkconvoy_core::exclusive::Ticket;
+use afkconvoy_core::host_sleep::Hours;
 use afkconvoy_core::patrol::{self, Standing};
 use afkconvoy_core::plan::{Excluded, Status, WorkingSet};
 use afkconvoy_core::position::Position;
@@ -263,8 +264,9 @@ pub struct Host {
     /// The host's `exclusive` queue, whatever its repo: the first runs alone,
     /// and the rest wait their turn, next first.
     pub exclusive: Vec<Ticket>,
-    /// Whether its host settings keep it awake: no fleet puts it to sleep.
-    pub kept_awake: bool,
+    /// The hours of its local time a fleet may put it to sleep in; `None`
+    /// where its host settings keep it awake.
+    pub sleep_hours: Option<Hours>,
     /// Its host kit, every harness in it; why it cannot be read.
     pub kit: Result<Kit, String>,
     /// The harnesses paused on this host, since when and why: no worker is
@@ -284,7 +286,7 @@ impl Host {
             host_inspected: inspection::last_on_host(),
             // Soft: a queue that cannot be read shows nothing.
             exclusive: Queue::of_host().and_then(|queue| queue.standing()).unwrap_or_default(),
-            kept_awake: host_settings::kept_awake(),
+            sleep_hours: host_settings::host_sleep(),
             kit: crate::kit::load().map_err(|error| format!("{error:#}")),
             paused: crate::paused::read(),
         }
@@ -1026,13 +1028,13 @@ fn host_part(out: &mut String, page: &Page) {
         out.push_str("</ul></section>\n");
     }
 
-    let sleep = match host.kept_awake {
-        true => {
+    let sleep = match host.sleep_hours {
+        None => {
             "none: its host settings keep it awake, and <code>afkconvoy run --host-sleep</code> \
                  lets the fleets on it put it to sleep"
                 .to_string()
         }
-        false => {
+        Some(hours) => {
             let busy: Vec<String> = page
                 .checkouts
                 .iter()
@@ -1044,15 +1046,16 @@ fn host_part(out: &mut String, page: &Page) {
                 busy => format!("not idle now: {}", busy.join(", ")),
             };
             format!(
-                "once every fleet instance on it has been idle for ten minutes and nobody has used \
-                 its keyboard or mouse for ten minutes — {now}"
+                "within its sleep hours, {hours} of its local time, once every fleet instance on it \
+                 has been idle for ten minutes and nobody has used its keyboard or mouse for ten \
+                 minutes — {now}"
             )
         }
     };
     let _ = writeln!(
         out,
         "<p class=\"sleep\" data-kept-awake=\"{}\"><b>Host sleep</b>: {sleep}.</p>",
-        host.kept_awake,
+        host.sleep_hours.is_none(),
     );
 
     kit(out, host);
@@ -1413,6 +1416,7 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
 #[cfg(test)]
 mod tests {
     use afkconvoy_core::admission::{Disk, Reading, SHARES};
+    use afkconvoy_core::host_sleep::SLEEP_HOURS;
 
     use super::*;
 
@@ -1454,7 +1458,7 @@ mod tests {
             inspection: None,
             host_inspected: None,
             exclusive: vec![],
-            kept_awake: false,
+            sleep_hours: Some(SLEEP_HOURS),
             kit: Ok(Kit::default()),
             paused: vec![],
         }
@@ -1529,11 +1533,12 @@ mod tests {
     fn nothing_waiting_for_a_human_is_said_so_and_no_checkout_on_the_list_too() {
         let html = render(&page_of(host_of(1000), vec![part_of("acme", 1000)]));
         assert!(html.contains("<p class=\"none\">Nothing waits for a human.</p>"), "{html}");
+        assert!(html.contains("within its sleep hours, 00:00-06:00 of its local time"), "{html}");
         assert!(html.contains("every fleet instance on it is idle now"), "{html}");
         let html = render(&page_of(host_of(1000), vec![]));
         assert!(html.contains("No checkout is on this host's checkout list"), "{html}");
         let mut host = host_of(1000);
-        host.kept_awake = true;
+        host.sleep_hours = None;
         host.admission = Err("sysctl: <none>".into());
         let html = render(&page_of(host, vec![]));
         assert!(html.contains("data-kept-awake=\"true\"><b>Host sleep</b>: none"), "{html}");
