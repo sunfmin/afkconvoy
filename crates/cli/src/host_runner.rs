@@ -38,8 +38,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::checkouts::{OnList, on_list};
+use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::host_runner::{Found, backoff, found};
 use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::checkout_list::{self, Entry, List};
@@ -47,7 +49,7 @@ use crate::copies::cache;
 use crate::exclusive::Queue;
 use crate::git::Repo;
 use crate::host_sleep::Standings;
-use crate::inspection::Turn;
+use crate::inspection::{Running, Turn};
 use crate::instance::{self, Named, Start};
 use crate::log::{self, What};
 use crate::opening::Opener;
@@ -119,22 +121,33 @@ pub struct Shared {
 }
 
 impl Shared {
-    /// What `shared` is answered: {"exclusive": [ticket], in the order the
-    /// queue runs, "inspection": the one running, or null}.
+    /// What `shared` is answered.
     fn said(&self) -> Value {
-        json!({"exclusive": self.queue.standing(), "inspection": self.turn.running()})
+        let now = SharedNow { exclusive: self.queue.standing(), inspection: self.turn.running() };
+        serde_json::to_value(now).unwrap_or_default()
     }
+}
+
+/// What the host's fleets share, as their host runner says it on its socket.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SharedNow {
+    /// The exclusive queue, in the order it runs.
+    pub exclusive: Vec<Ticket>,
+    /// The inspection running on the host; `None`: none.
+    pub inspection: Option<Running>,
 }
 
 /// What the host's fleets share, as its host runner says it (`Shared`);
 /// `None`: no host runner listens. Errors: the one there did not answer
 /// within `SAID_WITHIN`, or answered an error — an older one, that holds none
 /// of it, among them.
-pub fn shared() -> Result<Option<Value>> {
+pub fn shared() -> Result<Option<SharedNow>> {
     match runner_socket::ask(&Request::Shared, SAID_WITHIN)? {
         Reached::Answer(answer) => match answer.get("error") {
             Some(error) => bail!("the host runner says: {}", error.as_str().unwrap_or_default()),
-            None => Ok(Some(answer)),
+            None => serde_json::from_value(answer)
+                .map(Some)
+                .context("what the host runner says its fleets share cannot be read"),
         },
         Reached::Nobody => Ok(None),
         Reached::Closed => bail!("the host runner ended as it was asked what its fleets share"),

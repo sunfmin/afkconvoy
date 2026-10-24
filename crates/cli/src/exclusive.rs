@@ -20,7 +20,7 @@ use afkconvoy_core::exclusive::{
     waits_line,
 };
 use afkconvoy_core::role::ISSUE_ENV;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::json;
 
 use crate::acting::Acting;
@@ -117,9 +117,7 @@ impl Queue {
 /// runs; empty where no host runner runs. Errors: the host runner could not
 /// be asked, or said no queue it holds.
 pub fn standing() -> Result<Vec<Ticket>> {
-    let Some(shared) = crate::host_runner::shared()? else { return Ok(vec![]) };
-    serde_json::from_value(shared["exclusive"].clone())
-        .context("the host runner's exclusive queue cannot be read")
+    Ok(crate::host_runner::shared()?.map(|shared| shared.exclusive).unwrap_or_default())
 }
 
 /// Since when the worker in the worktree `dir` has waited in this host's

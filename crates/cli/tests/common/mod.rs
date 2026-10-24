@@ -1144,8 +1144,13 @@ impl World {
     /// Starts `run` with `args`, its workers started with `agent`, and goes
     /// on while it runs.
     pub fn running(&self, args: &[&str]) -> Running {
+        self.running_in(&self.clone, args)
+    }
+
+    /// `running`, of the checkout `dir`.
+    pub fn running_in(&self, dir: &Path, args: &[&str]) -> Running {
         let mut child = self
-            .command(env!("CARGO_BIN_EXE_afkconvoy"), &self.clone)
+            .command(env!("CARGO_BIN_EXE_afkconvoy"), dir)
             .args(["run", "--foreground"])
             .args(args)
             .stdout(Stdio::piped())
@@ -1162,6 +1167,31 @@ impl World {
             }
         });
         Running { child, lines }
+    }
+}
+
+impl World {
+    /// Holds this world's host with a host runner — a fleet of its second
+    /// repo (`second_repo`), beta of h2, held in the foreground, which holds
+    /// nothing of the world's own repo — and waits until it listens → its
+    /// `run`, which ends as it is dropped. The second repo is made the first
+    /// time.
+    pub fn host_held(&self) -> Running {
+        let clone2 = self.root.join("clone2");
+        if !clone2.exists() {
+            self.second_repo();
+        }
+        let running = self.running_in(&clone2, &["--instance", "beta", "--host", "h2"]);
+        let socket = self.cache().join("afkconvoy/host-runner.sock");
+        let until = Instant::now() + Duration::from_secs(30);
+        while self.host_runner() != Some(running.child.id()) || !socket.exists() {
+            assert!(
+                Instant::now() < until,
+                "the host runner held in the foreground never listened"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        running
     }
 }
 

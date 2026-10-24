@@ -179,8 +179,7 @@ impl Drop for Place {
 /// The inspection running on this host now, across its fleets, as its host
 /// runner says it; none where none runs, or no host runner can say.
 pub fn on_host() -> Option<Running> {
-    let shared = crate::host_runner::shared().ok().flatten()?;
-    serde_json::from_value(shared["inspection"].clone()).ok()
+    crate::host_runner::shared().ok().flatten()?.inspection
 }
 
 /// `running`, as `doctor` and the panel show it.
@@ -1018,5 +1017,41 @@ mod tests {
         );
         let again: Running = serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
         assert_eq!(again, host);
+    }
+
+    #[test]
+    fn one_inspection_holds_the_turn_and_a_hot_worker_waiting_goes_before_the_host() {
+        let worker = Running {
+            repo: "/src/widgets".into(),
+            worker: "#7".into(),
+            issue: Some(7),
+            by: "stock-consult".into(),
+            since: 700,
+            held_back_by: None,
+        };
+        let host = Running {
+            worker: THE_HOST.into(),
+            issue: None,
+            held_back_by: Some(Reason::Load),
+            ..worker.clone()
+        };
+        let turn = Turn::default();
+        let (alpha, beta) = (turn.place(), turn.place());
+        let taken = turn.take(worker.clone()).expect("free");
+        assert_eq!(turn.running(), Some(worker.clone()));
+        assert!(turn.take(host.clone()).is_none(), "one at a time, of either kind");
+        drop(taken);
+        assert_eq!(turn.running(), None);
+
+        // a hot worker of beta's waits: the host waits behind it
+        beta.waits(true);
+        assert!(!turn.free(true) && turn.free(false));
+        assert!(turn.take(host.clone()).is_none());
+        alpha.waits(false);
+        assert!(turn.take(host.clone()).is_none(), "another's place says nothing of beta's");
+        drop(beta);
+        let taken = turn.take(host.clone()).expect("no hot worker waits once its place is gone");
+        assert_eq!(turn.running(), Some(host));
+        drop(taken);
     }
 }
