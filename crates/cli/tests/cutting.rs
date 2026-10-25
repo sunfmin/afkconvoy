@@ -246,6 +246,55 @@ fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out()
 }
 
 #[test]
+fn a_patch_that_holds_a_pr_labelled_for_a_minor_version_is_tagged_nothing() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    // While it ran, a PR labelled for a minor version landed before its own.
+    land(&world, "Add a gadget (#9)");
+    world.with_gh(|gh| {
+        let pr = json!({"number": 9, "title": "Add a gadget", "headRefName": "nine",
+            "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]});
+        gh["prs"].as_array_mut().unwrap().push(pr);
+    });
+    land(&world, "widgets 0.1.1");
+    let landed = git(&world.clone, &["rev-parse", "HEAD"]).trim().to_string();
+    let mut record = record(&checkout);
+    record["pr"] = json!(8);
+    record["landed"] = json!(landed);
+    std::fs::write(record_file(&checkout), record.to_string()).unwrap();
+
+    let failed = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "tag", "{failed}");
+    assert!(failed["why"].as_str().unwrap().contains("#9, labelled `release:minor`"), "{failed}");
+    assert!(world.remote(&["tag", "--list", "v0.1.1"]).trim().is_empty(), "tagged nothing");
+}
+
+/// A start that fails once it holds the claim gives it back: the checkout a
+/// failed cut left is not read as the new one's.
+#[test]
+fn a_start_that_fails_after_its_claim_gives_it_back() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    workers_leave(&world);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let failed = failures(&world);
+    world.close_issue(failed[0].0);
+
+    // The checkout the failed cut left cannot be removed.
+    world.with_orca(|orca| orca["rm_fails"] = json!(true));
+    let ticked = cut(&tick_as(&world, "alpha", 10_200));
+    assert!(ticked[0].starts_with("cut failed: "), "{ticked:?}");
+    assert!(!claimed(&world), "the claim was given back");
+    assert_eq!(standing(&world, "alpha", 10_300), "due");
+    assert!(failures(&world).is_empty(), "the failed cut is not said again");
+
+    world.with_orca(|orca| orca["rm_fails"] = json!(false));
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_300)), ["cut done"]);
+    assert!(failures(&world).is_empty());
+}
+
+#[test]
 fn cut_is_refused_outside_a_cut_s_checkout() {
     let world = cutting();
     let refused = world.afk(&["cut"]).error();

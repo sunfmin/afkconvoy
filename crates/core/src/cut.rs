@@ -545,6 +545,13 @@ pub fn failure_report(
          it once the version is cut, or once you have looked and want the fleet to cut again \
          from the start.\n"
     ));
+    if failure.step == Step::Publish {
+        said.push_str(&format!(
+            "\nIts tag is pushed: closed with no line run, v{} stays tagged and is never \
+             published, and the next cut is of the version after it, once more lands.\n",
+            record.version
+        ));
+    }
     said
 }
 
@@ -803,6 +810,11 @@ mod tests {
         assert!(said.contains("failed at its step `publish`: exited 1"), "{said}");
         assert!(said.contains("cd '/w/cut' && afkconvoy cut --from publish"), "{said}");
         assert!(said.contains("No cut starts while this issue is open"), "{said}");
+        // Its tag is pushed: closed, the version stays unpublished.
+        assert!(said.contains("v0.5.17 stays tagged and is never published"), "{said}");
+        let failure = Failure { step: Step::Gate, why: "red".into() };
+        let said = failure_report(&record(), &failure, "h1", "/w/cut", "x");
+        assert!(!said.contains("Its tag is pushed"), "{said}");
     }
 
     #[test]

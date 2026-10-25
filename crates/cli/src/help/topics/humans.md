@@ -59,7 +59,7 @@ A run of a patrol that failed opens an issue of its own, under the escalate labe
 A cut that failed at a step, ran out of time or was ended from outside opens an issue of its own, under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. Its checkout is kept on the host that cut. No cut starts while that issue is open.
 
 - `cd <its checkout> && afkconvoy cut --from <step>`: Once what failed it is fixed — the line the issue gives. It takes that step and the ones after it, and closes the issue once it took the last. `afkconvoy cut --help`.
-- `gh issue close <n>`: Once you have looked and want the fleet to cut again from the start: the next tick that ends idle does, its kept checkout removed first. A PR of the failed cut still open is yours to close.
+- `gh issue close <n>`: Once you have looked and want the fleet to cut again from the start: the next tick that ends idle does, its kept checkout removed first. A PR of the failed cut still open is yours to close. A cut that failed at `publish` has pushed its tag: closed with no line run, that version stays unpublished, and the next cut is of the version after it, once more lands.
 
 ## A fleet lock
 

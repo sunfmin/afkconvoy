@@ -2348,7 +2348,7 @@ enum Command {
     /// 2. `pr` — pushes the commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`, and opens its PR.
     /// 3. `gate` — gates it, the landing train merged in (`afkconvoy gate --train`): green, and on record.
     /// 4. `land` — joins its PR to the landing train on no issue, as an inspection's change joins it: its join commit says `By a cut on <host>`. It waits for the train to land it, looking every 30 seconds, and joins it again whenever it is off the train and not landed — a train given up joins it again by itself where it can. A fleet lock standing, or a conflict with the train, fails it.
-    /// 5. `tag` — tags the commit that landed it `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit.
+    /// 5. `tag` — tags the commit that landed it `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit; where it is a patch and one of them, landed while it ran, is labelled `{const:CUT_MINOR_LABEL}`, it fails before it tags: the cut that starts once its issue is closed picks the next minor.
     /// 6. `publish` — with the tag checked out, runs the `publish` lines.
     ///
     /// It merges nothing outside the landing train and pushes nothing to the base branch: its own branch, the train's line through `land`, and the tag.

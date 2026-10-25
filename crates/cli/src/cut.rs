@@ -8,6 +8,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use afkconvoy_core::casting::Cast;
 use afkconvoy_core::config::Config;
 use afkconvoy_core::cut::{
     self, CHECKOUT, CLAIM_KEY, Failure, MINOR_LABEL, Record, Row, Seen, Standing, Step, Tag, Took,
@@ -122,9 +123,9 @@ fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
 /// environment, as a caster is. A checkout an earlier cut left is removed
 /// first. `Lost` when a peer claimed it, or nothing is left to cut.
 ///
-/// A step that fails after the claim is an error with the claim still held:
-/// a later tick finds no checkout of it, or one whose terminal is gone, and
-/// ends it.
+/// A step that fails after the claim gives the claim back and is an error:
+/// held, a later tick would read the record a cut before it left in the
+/// checkout as this one's, and say that cut's end again.
 pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {
     if fleet.config.cut.is_none() {
         return Ok(Outcome::Nothing);
@@ -134,11 +135,23 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {
     let Some(claim) = take_run(&fleet.repo, &mut fleet.scan, me, CLAIM_KEY)? else {
         return Ok(Outcome::Lost);
     };
+    let started = started(fleet, me, agent, &first);
+    if !matches!(started, Ok(Some(_)))
+        && let Err(kept) = drop_run(&fleet.repo, &mut fleet.scan, &claim)
+    {
+        let failed = started.err().map(|error| format!("{error:#}; ")).unwrap_or_default();
+        bail!("{failed}its claim could not be given back: {kept:#}");
+    }
+    let Some(record) = started? else { return Ok(Outcome::Lost) };
+    fleet.cut_said.push(What::CutStarted { version: record.version.clone(), said: record.line() });
+    Ok(Outcome::Done)
+}
+
+/// What `start` does once it holds the claim → the cut's record, its
+/// checkout cut and its terminal started; `None` where nothing is left to cut.
+fn started(fleet: &Fleet, me: &Me, agent: &Agent, first: &Cast) -> Result<Option<Record>> {
     let base = fleet.base_tip()?;
-    let Some(record) = pick(fleet, &base, me.now)? else {
-        drop_run(&fleet.repo, &mut fleet.scan, &claim)?;
-        return Ok(Outcome::Lost);
-    };
+    let Some(record) = pick(fleet, &base, me.now)? else { return Ok(None) };
     let source = Source::of(&fleet.repo)?;
     if let Some(left) = Worktree::named(&source, CHECKOUT)? {
         left.remove()?;
@@ -148,8 +161,7 @@ pub fn start(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> {
     let path = checkout.path.display().to_string();
     let command = crate::own_command_in(&path).fixed(" cut; exit").own();
     agent.start(&checkout, first.harness, &command, me.now)?;
-    fleet.cut_said.push(What::CutStarted { version: record.version.clone(), said: record.line() });
-    Ok(Outcome::Done)
+    Ok(Some(record))
 }
 
 /// Ends the cut `row` once it is over: a peer's presumed dead is only
@@ -532,7 +544,9 @@ impl Cutting<'_> {
     }
 
     /// Tags the commit that landed it `v<version>` and pushes the tag; the
-    /// PRs it holds are read again, up to that commit, its own left out.
+    /// PRs it holds are read again, up to that commit, its own left out. A
+    /// patch that holds a PR labelled `MINOR_LABEL` — one that landed while
+    /// it ran — is tagged nothing: cut again, the version is the next minor.
     fn tag(&self, record: &mut Record) -> Result<()> {
         let landed =
             record.landed.clone().ok_or_else(|| anyhow!("nothing says where it landed"))?;
@@ -541,6 +555,16 @@ impl Cutting<'_> {
         let mut prs = prs_past(self.repo, &from, &landed)?;
         prs.retain(|pr| Some(*pr) != record.pr);
         record.prs = prs;
+        if !record.minor && !record.prs.is_empty() {
+            let labelled = self.gh.merged_prs_labelled(MINOR_LABEL)?;
+            if let Some(pr) = record.prs.iter().find(|pr| labelled.contains(pr)) {
+                bail!(
+                    "#{pr}, labelled `{MINOR_LABEL}`, landed while the cut ran, and {tag} is a \
+                     patch: close this issue, and the next tick that ends idle cuts again from \
+                     the start, the next minor"
+                );
+            }
+        }
         let here =
             self.repo.try_git(&["rev-parse", "-q", "--verify", &format!("{tag}^{{commit}}")])?;
         if !here.ok {

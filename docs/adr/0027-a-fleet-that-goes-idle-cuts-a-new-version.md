@@ -34,7 +34,7 @@ It merges nothing outside the landing train and pushes nothing to the base branc
 
 ## Failure
 
-A cut that failed at a step, ran out of time, or whose terminal is gone with nothing said opens one issue under the escalate label, `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — `afkconvoy cut --from <step>`, in its checkout, which is kept. No cut starts while that issue is open, as no patrol runs while its failed run's is (ADR-0008). Going on from the step closes it; closing it by hand has the fleet cut again from the start.
+A cut that failed at a step, ran out of time, or whose terminal is gone with nothing said opens one issue under the escalate label, `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there — `afkconvoy cut --from <step>`, in its checkout, which is kept. No cut starts while that issue is open, as no patrol runs while its failed run's is (ADR-0008). Going on from the step closes it; closing it by hand has the fleet cut again from the start — but for a cut that failed at `publish`, whose tag is pushed: that version stays unpublished, and the next cut is of the version after it. A PR labelled `release:minor` that lands while a cut runs fails it at `tag`, before the tag: the version it set is a patch, and the cut that starts once the issue is closed picks the minor.
 
 Its time: two gate limits — its own gate and the train's — and an hour beside, three hours at the default `gate_seconds`. A cut out of time at `land` leaves its PR on the train, which may still land it; the next cut finds the version set by lines that change nothing, finds that landing past the tag, and tags it.
 
