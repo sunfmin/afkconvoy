@@ -328,6 +328,7 @@ impl Staged {
         if let Some(pr) = self.joins {
             let fields = WorkerFields {
                 number: self.issue,
+                tracker: &fleet.gh.tracker,
                 title,
                 branch: &worktree.branch,
                 worktree: &path,

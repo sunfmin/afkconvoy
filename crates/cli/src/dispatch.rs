@@ -14,9 +14,7 @@ use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
 use afkconvoy_core::stock;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::escalated_at;
-use afkconvoy_core::worker::{
-    DispatchStep, branch_comment, dispatch_steps, recorded_branches, worktree_name,
-};
+use afkconvoy_core::worker::{DispatchStep, branch_comment, dispatch_steps, recorded_branches};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -457,6 +455,7 @@ fn brief_with(
     let path = worktree.path.display().to_string();
     let fields = WorkerFields {
         number,
+        tracker: &fleet.gh.tracker,
         title,
         branch: &worktree.branch,
         worktree: &path,
@@ -490,14 +489,15 @@ pub(crate) fn write_join_brief(
 }
 
 /// Has orca cut a worktree for issue `number` at the tip the remote has for
-/// `branch`.
+/// `branch`, named for the fleet's tracker (`Tracker::worktree_name`).
 fn cut_at(fleet: &Fleet, issue: &IssueRead, number: u64, branch: &str) -> Result<Worktree> {
     let sha = fleet
         .repo
         .fetched(&format!("refs/heads/{branch}"))?
         .ok_or_else(|| anyhow!("the remote has no branch {branch:?}"))?;
     let source = Source::of(&fleet.repo)?;
-    Worktree::cut(&source, &worktree_name(number, &issue.title), &sha, Some(number))
+    let name = fleet.gh.tracker.worktree_name(number, &issue.title);
+    Worktree::cut(&source, &name, &sha, Some(number))
 }
 
 /// Throws the previous attempt at issue `number` away, for a fresh start by
