@@ -276,6 +276,21 @@ fn carry_out(
     step: TickStep,
     blocked: &mut Vec<(u64, Vec<u64>)>,
 ) -> Result<Outcome> {
+    // A terminal left by an incomplete dispatch is no worker to judge for
+    // silence. Continue the same claim before health holds or the nudge
+    // ladder can mistake its shell for a harness.
+    let retry = match step {
+        TickStep::Judge { issue, start: true }
+        | TickStep::Watch { issue }
+        | TickStep::Advance { issue } => Some(issue),
+        _ => None,
+    };
+    if let Some(issue) = retry
+        && crate::dispatch::incomplete(fleet, issue)?
+    {
+        dispatch(fleet, me, agent, issue, StartFrom::Auto)?;
+        return Ok(Outcome::Continued);
+    }
     // A shared harness outage is no worker's silence. Keep the claim and
     // progress, including its one nudge, until its pending prompt can probe.
     let issue = match step {

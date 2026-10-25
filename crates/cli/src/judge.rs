@@ -491,6 +491,7 @@ pub(crate) fn nudge_worker(
     let Some(terminal) = worktree.terminal()? else {
         bail!("no live terminal in {} to take the nudge", worktree.path.display());
     };
+    worktree.ready_for_nudge(&terminal)?;
     let brief = worktree.brief()?.display().to_string();
     afkconvoy_core::stopped::nudge(unnudged, |step| match step {
         NudgeStep::Tell => worktree.tell_at(&terminal, &line(&brief), now),

@@ -16,6 +16,7 @@ use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::escalated_at;
 use afkconvoy_core::worker::{DispatchStep, branch_comment, dispatch_steps, recorded_branches};
 use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::claims::{Me, Take, take};
@@ -27,6 +28,51 @@ use crate::launch::Launches;
 use crate::orca::{Source, Worktree};
 use crate::recovery::{Survey, own_heads, survey};
 use crate::role::Staged;
+
+/// A dispatch is incomplete until its worker has taken the brief. Keep it
+/// under the claim, including across a tick or host runner that ends during
+/// startup. A later claim must never inherit an earlier one's failed start.
+#[derive(Deserialize, Serialize)]
+struct Starting {
+    claim: String,
+    error: String,
+}
+
+fn starting_file(fleet: &Fleet, number: u64) -> Result<PathBuf> {
+    fleet.repo.note(&format!("convoy-dispatch-{number}.json"))
+}
+
+fn starting(fleet: &Fleet, number: u64) -> Result<Option<Starting>> {
+    let file = starting_file(fleet, number)?;
+    let bytes = match std::fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", file.display())),
+    };
+    let kept: Starting = serde_json::from_slice(&bytes)
+        .with_context(|| format!("cannot read {}", file.display()))?;
+    Ok(fleet.scan.claim_of(number).filter(|claim| claim.id == kept.claim).map(|_| kept))
+}
+
+/// The claim has no worker yet, even if orca still holds its terminal.
+pub(crate) fn incomplete(fleet: &Fleet, number: u64) -> Result<bool> {
+    Ok(starting(fleet, number)?.is_some())
+}
+
+fn keep_starting(fleet: &Fleet, number: u64, error: &str) -> Result<()> {
+    let Some(claim) = fleet.scan.claim_of(number) else { return Ok(()) };
+    let kept = Starting { claim: claim.id.clone(), error: error.to_string() };
+    std::fs::write(starting_file(fleet, number)?, serde_json::to_vec(&kept)?)?;
+    Ok(())
+}
+
+fn forget_starting(fleet: &Fleet, number: u64) -> Result<()> {
+    match std::fs::remove_file(starting_file(fleet, number)?) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
 
 /// How a worker is started on this machine.
 pub struct Agent {
@@ -151,8 +197,20 @@ pub(crate) fn dispatch_continuing(
     from: StartFrom,
     continuing: Option<&Continuing>,
 ) -> Result<Value> {
+    let previous = starting(fleet, number)?;
     let started = start(fleet, me, agent, number, from, continuing);
-    let Some(how) = started.as_ref().err().and_then(gone).cloned() else { return started };
+    let Some(how) = started.as_ref().err().and_then(gone).cloned() else {
+        return match started {
+            Ok(started) => {
+                if started["started"] == true {
+                    forget_starting(fleet, number)?;
+                }
+                Ok(started)
+            }
+            Err(error) if error.is::<crate::paused::Held>() => Err(error),
+            Err(error) => start_failed(fleet, me, number, previous, error),
+        };
+    };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
     let released = held && forget(fleet, me, number)? == Outcome::Done;
     if held && !released {
@@ -163,7 +221,40 @@ pub(crate) fn dispatch_continuing(
         fleet.forgotten.push((how.clone(), false));
     }
     let said = if how.deleted { "deleted" } else { "transferred" };
+    forget_starting(fleet, number)?;
     Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
+}
+
+/// One failed start keeps the claim for continuation; another hands it on
+/// with the startup errors, never with a judgment of worker silence.
+fn start_failed(
+    fleet: &mut Fleet,
+    me: &Me,
+    number: u64,
+    previous: Option<Starting>,
+    error: anyhow::Error,
+) -> Result<Value> {
+    let Some(claim) =
+        fleet.scan.claim_of(number).filter(|claim| claim.is_held_by(&me.instance)).cloned()
+    else {
+        return Err(error);
+    };
+    let failed = format!("{error:#}");
+    keep_starting(fleet, number, &failed)?;
+    let Some(previous) = previous else { return Err(error) };
+    let why = crate::judge::Handed::new(
+        "its worker start failed again",
+        format!(
+            "The worker start failed again before it could take its brief.\n\n\
+             Previous start: {}\n\nFailed start: {failed}",
+            previous.error
+        ),
+    );
+    let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
+    let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
+    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    forget_starting(fleet, number)?;
+    Err(error.context("worker start failed again; the claim was escalated"))
 }
 
 /// What the brief of a worker that continues one ended mid-way says of it.
@@ -260,6 +351,10 @@ fn start(
     let mut terminal: Option<String> = None;
     let mut discarded = None;
     let undecided = || anyhow!("a dispatch step ran before the one that feeds it");
+    let interrupted = "dispatch ended before the worker took its brief";
+    if held {
+        keep_starting(fleet, number, interrupted)?;
+    }
     for step in dispatch_steps(held, by_hand) {
         match step {
             DispatchStep::Claim => {
@@ -276,6 +371,7 @@ fn start(
                     return Ok(json!({"issue": number, "started": false, "claim": "lost",
                         "owner": claim["owner"]}));
                 }
+                keep_starting(fleet, number, interrupted)?;
                 if let Some(staged) = &staged {
                     staged.refuse_spent(fleet.scan.claim_of(number))?;
                 }
