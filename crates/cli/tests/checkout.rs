@@ -107,9 +107,8 @@ fn show_points_a_positional_checkout_to_c() {
             assert!(error.starts_with("error: "), "{error}");
             assert!(error.contains("Usage: afkconvoy show"), "{error}");
             let quoted = format!("'{}'", named.replace('\'', "'\\''"));
-            let line = format!(
-                "show names its checkout with -C: afkconvoy show -C {quoted} --issue 11"
-            );
+            let line =
+                format!("show names its checkout with -C: afkconvoy show -C {quoted} --issue 11");
             assert!(error.lines().any(|said| said == line), "{args:?}: {error}");
         }
     }

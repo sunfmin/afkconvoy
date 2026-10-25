@@ -3756,6 +3756,50 @@ pub(crate) fn unflagged_start() -> anyhow::Result<instance::Start> {
     start.context("a `run` asks for a start")
 }
 
+/// A workflow is not named by a number: one given to `show` is an issue's.
+fn shown_issue(workflow: Option<&str>, issue: Option<u64>) -> Option<u64> {
+    issue.or_else(|| workflow.and_then(|named| named.parse().ok()))
+}
+
+/// A copyable correction when naming an existing directory with `-C` makes
+/// an otherwise refused `show` valid. Reparse with the real argument schema:
+/// a directory that is a flag's value, or another fault, is no checkout hint.
+fn show_checkout_hint(args: &[OsString]) -> Option<String> {
+    for (index, arg) in args.iter().enumerate().skip(1) {
+        if !PathBuf::from(arg).is_dir() {
+            continue;
+        }
+        let mut corrected = args.to_vec();
+        corrected.insert(index, OsString::from("-C"));
+        let Ok(Cli { command: Command::Show { workflow, issue, team, at }, now }) =
+            Cli::try_parse_from(corrected)
+        else {
+            continue;
+        };
+        let checkout = at.checkout?;
+        let mut line = Line::new().fixed("afkconvoy show -C ").word(&checkout.to_string_lossy());
+        match shown_issue(workflow.as_deref(), issue) {
+            Some(issue) => line = line.fixed(" --issue ").number(issue),
+            None => {
+                if let Some(workflow) = workflow {
+                    line = line.fixed(" ").word(&workflow);
+                }
+            }
+        }
+        if let Some(dir) = team.dir {
+            line = line.fixed(" --dir ").word(&dir.to_string_lossy());
+        }
+        if let Some(team) = team.team {
+            line = line.fixed(" --team ").word(&team.to_string());
+        }
+        if let Some(now) = now {
+            line = line.fixed(" --now ").number(now);
+        }
+        return Some(format!("show names its checkout with -C: {}", line.own()));
+    }
+    None
+}
+
 /// Runs one command line. Prints exactly one JSON object on stdout: the
 /// command's answer, or `{"error": …}` with a non-zero exit — `doctor` exits
 /// non-zero with its answer, when that holds a critical finding. An answer that
@@ -3791,7 +3835,17 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
         // `-h` and `--version` are asked for by a human: clap prints them.
         Err(e) if !e.use_stderr() => e.exit(),
-        Err(e) => return fail(2, e.render().to_string().trim()),
+        Err(e) => {
+            let mut said = e.render().to_string().trim().to_string();
+            if matches!(
+                e.kind(),
+                clap::error::ErrorKind::ArgumentConflict | clap::error::ErrorKind::UnknownArgument
+            ) && let Some(hint) = show_checkout_hint(&args)
+            {
+                said.push_str(&format!("\n\n{hint}"));
+            }
+            return fail(2, &said);
+        }
     };
     if matches!(cli.command, Command::Guard) {
         return guard::guard();
@@ -4032,9 +4086,7 @@ fn run(
         Command::Skill => Ok(Value::String(SKILL.to_string())),
         Command::Draft { dir, team, yes } => draft::draft(dir, team, yes),
         Command::Show { workflow, issue, team, .. } => {
-            // A workflow is not named by a number: one given is an issue's.
-            let numbered = workflow.as_deref().and_then(|named| named.parse().ok());
-            match issue.or(numbered) {
+            match shown_issue(workflow.as_deref(), issue) {
                 // An issue is of the checkout's repo, whichever team reads it.
                 Some(issue) => {
                     let repo = checkout?;
