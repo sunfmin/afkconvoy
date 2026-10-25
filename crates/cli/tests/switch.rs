@@ -7,10 +7,15 @@ use serde_json::{Value, json};
 
 const CODEX: &str = "codex --dangerously-bypass-approvals-and-sandbox";
 
+fn hold_every_harness(world: &World) {
+    world.hold_every_harness();
+    world.kit_models("codex", &["gpt-x"]);
+}
+
 #[test]
 fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() {
     let world = World::new();
-    world.hold_every_harness();
+    hold_every_harness(&world);
     world.kit_models("codex", &["gpt-x"]);
     let before: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     let other = world.second_repo();
@@ -70,7 +75,16 @@ fn open_commands(world: &World, dir: &Path) -> Vec<String> {
     let terminals = orca["terminals"].as_array().unwrap();
     let here = terminals.iter().filter(|t| t["worktreePath"] == dir.to_str().unwrap());
     let open = here.filter(|t| t["open"] == true);
-    open.map(|t| t["command"].as_str().unwrap_or("").to_string()).collect()
+    open.map(|t| {
+        let command = t["command"].as_str().unwrap_or("");
+        if command.contains(CODEX) {
+            assert!(command.ends_with(" --model 'gpt-x'"), "{command}");
+            CODEX.to_string()
+        } else {
+            command.to_string()
+        }
+    })
+    .collect()
 }
 
 /// A world whose worker on issue 7 pushed its work, opened PR #70, and sits
@@ -80,7 +94,7 @@ fn blocked() -> World {
     world.issue(7, &["ready-for-agent", "bug"]);
     tick(&world, 700);
     // Every harness is held once the worker started: no caster held 7 back.
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let dir = worktree(&world, 7);
     commit(&dir, "seven.txt", "7\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
@@ -180,7 +194,7 @@ fn all_moves_every_claim_of_the_instance_and_a_claim_it_does_not_hold_is_refused
     world.issue(7, &["ready-for-agent", "bug"]);
     world.issue(8, &["ready-for-agent", "bug"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
     // one worker is already gone: it is started again all the same
     world.with_orca(|orca| {
@@ -373,7 +387,7 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
     std::fs::write(world.root.join("gh2.json"), gh.to_string()).unwrap();
     tick(&world, 700);
     world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "700"]).ok();
-    world.hold_every_harness();
+    hold_every_harness(&world);
     world.say_concurrency(&world.clone, 3);
     world.say_concurrency(&other, 3);
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
@@ -409,7 +423,7 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
     world.issue(7, &["ready-for-agent", "harness:claude-code", "model:opus"]);
     world.issue(8, &["ready-for-agent", "harness:claude-code", "model:haiku"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
@@ -463,7 +477,7 @@ fn an_old_command_fault_does_not_disable_a_new_profile_configured_while_it_ran()
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let dir = worktree(&world, 7);
     world.kit_command("claude-code", "agent --new-profile");
     world.with_orca(|orca| {
@@ -483,7 +497,7 @@ fn successful_recovery_restores_priority_for_new_work_without_moving_the_success
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let dir = worktree(&world, 7);
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {

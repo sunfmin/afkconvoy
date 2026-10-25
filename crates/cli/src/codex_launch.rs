@@ -108,6 +108,16 @@ fn remove_preferences(config: &mut toml::Table) {
     config.remove(EFFORT);
 }
 
+/// Validate before ending a worker that a continuation would replace.
+pub(crate) fn selected(harness: Harness, model: Option<&str>) -> Result<()> {
+    if harness == Harness::Codex && model.is_none_or(str::is_empty) {
+        bail!(
+            "the host kit holds no selected Codex model: run `afkconvoy kit`; no Codex worker was started"
+        );
+    }
+    Ok(())
+}
+
 /// Adds authoritative effort at the last point before a Codex session
 /// starts. A bound command already names its isolated role directory; an
 /// unbound command uses a fresh snapshot of the user's other settings.
@@ -117,11 +127,8 @@ pub(crate) fn prepare(
     command: &str,
     in_role: bool,
 ) -> Result<(String, Settings)> {
-    let Some(model) = model.filter(|model| !model.is_empty()) else {
-        bail!(
-            "the host kit holds no selected Codex model: run `afkconvoy kit`; no Codex worker was started"
-        );
-    };
+    selected(Harness::Codex, model)?;
+    let model = model.context("selected Codex model")?;
     let file = user_config();
     let config = config(&file)?;
     let mut settings = settings(model, &config, &file)?;

@@ -178,13 +178,21 @@ pub(crate) struct Continuing {
 /// Validate the successor before ending the old worker.
 pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) -> Result<Harness> {
     let issue = fleet.gh.issue(number)?;
-    let harness = match &fleet.config.bound {
-        Some(bound) => Staged::enter(fleet, bound, number, &issue.labels)?.harness(),
-        None if issue.labels.contains(&fleet.config.escalate_label) => {
-            fleet.stock_consult()?.harness
+    let (harness, model) = match &fleet.config.bound {
+        Some(bound) => {
+            let staged = Staged::enter(fleet, bound, number, &issue.labels)?;
+            (staged.harness(), staged.model().map(str::to_string))
         }
-        None => fleet.cast(&issue.labels, false)?.map_err(|e| anyhow!(e))?.harness,
+        None if issue.labels.contains(&fleet.config.escalate_label) => {
+            let cast = fleet.stock_consult()?;
+            (cast.harness, cast.model)
+        }
+        None => {
+            let cast = fleet.cast(&issue.labels, false)?.map_err(|e| anyhow!(e))?;
+            (cast.harness, cast.model)
+        }
     };
+    crate::codex_launch::selected(harness, model.as_deref())?;
     crate::role::startable(&agent.launches, harness, "worker continuation")?;
     Ok(harness)
 }

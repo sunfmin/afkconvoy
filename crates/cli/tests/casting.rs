@@ -94,15 +94,18 @@ fn unheld_casting_preserves_labels_and_runs_the_kit_first_without_carrying_model
 #[test]
 fn a_switch_wins_over_the_casting() {
     let world = cast(&["harness:pi", "model:a/none"]);
+    world.kit_models("codex", &["gpt-x"]);
     let switch = ["switch", "--instance", "alpha", "--host", "h1", "--now", "900"];
     world.afk(&[&switch[..], &["--all", "--harness", "codex"]].concat()).ok();
     let planned = world.afk(&PLAN).ok();
     assert_eq!(
         planned["frontier"][0]["cast"],
-        json!({"harness": "codex", "model": null, "why": "first"})
+        json!({"harness": "codex", "model": "gpt-x", "why": "first"})
     );
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::Codex.stock()]);
+    let commands = started(&world);
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].contains(&Harness::Codex.with_model(Harness::Codex.stock(), "gpt-x")));
 }
 
 /// Ticks as `alpha` at `now`.
@@ -228,9 +231,12 @@ fn cast_labels_each_issue_within_the_host_kit_and_comments_why() {
 #[test]
 fn switching_again_changes_the_kit_without_a_separate_clearable_choice() {
     let world = cast(&["harness:pi", "model:a/slow"]);
+    world.kit_models("codex", &["gpt-x"]);
     world.afk(&["switch", "--harness", "codex"]).ok();
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::Codex.stock()]);
+    let commands = started(&world);
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].contains(&Harness::Codex.with_model(Harness::Codex.stock(), "gpt-x")));
     let moved =
         world.afk(&["switch", "7", "--instance", "alpha", "--host", "h1", "--harness", "pi"]).ok();
     assert_eq!(moved["switched"][0]["to"], "pi");
