@@ -94,6 +94,48 @@ fn a_command_with_arguments_of_its_own_names_its_checkout_with_c() {
 }
 
 #[test]
+fn show_points_a_positional_checkout_to_c() {
+    let world = World::new();
+    let dir = world.root.join("a checkout's directory");
+    std::fs::create_dir(&dir).unwrap();
+    for named in [path(&dir), "a checkout's directory"] {
+        for args in [["show", "--issue", "11", named].as_slice(), &["show", "11", named]] {
+            let answer = world.afk_in(&world.root, args);
+            assert_eq!(answer.code, 2, "{answer:?}");
+            assert!(answer.stderr.is_empty(), "{answer:?}");
+            let error = answer.error();
+            assert!(error.starts_with("error: "), "{error}");
+            assert!(error.contains("Usage: afkconvoy show"), "{error}");
+            let quoted = format!("'{}'", named.replace('\'', "'\\''"));
+            let line = format!(
+                "show names its checkout with -C: afkconvoy show -C {quoted} --issue 11"
+            );
+            assert!(error.lines().any(|said| said == line), "{args:?}: {error}");
+        }
+    }
+}
+
+#[test]
+fn show_adds_no_checkout_guidance_for_other_argument_errors() {
+    let world = World::new();
+    let dir = path(&world.clone);
+    let file = world.root.join("a file");
+    std::fs::write(&file, "").unwrap();
+    for args in [
+        vec!["show", "--issue", "11", "not-a-directory"],
+        vec!["show", "11", path(&file)],
+        vec!["show", "--dir", dir, "11", "extra"],
+        vec!["show", "-C", dir, "--issue", "11", "workflow"],
+        vec!["show", "--issue", "invalid", dir],
+        vec!["show", "11", dir, "extra"],
+        vec!["claim", dir, "7", "--instance", "beta"],
+    ] {
+        let error = world.afk(&args).error();
+        assert!(!error.contains("show names its checkout with -C:"), "{args:?}: {error}");
+    }
+}
+
+#[test]
 fn exclusive_refuses_a_directory_of_no_checkout_before_it_waits() {
     let world = World::new();
     for (named, said) in [
