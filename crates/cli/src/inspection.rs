@@ -13,8 +13,9 @@
 //! episode: the stock consult, given what holds the disk, the load or the
 //! memory (`host_evidence`). What it did is kept in the cache every fleet of
 //! the host shares, for `doctor` and the panel to show beside admission's
-//! reading. No inspection opens an issue, nor hands anything to a human: a
-//! change of the repo it makes itself, and puts on the landing train with
+//! reading. Only a proven red base branch in an unbound repo has it open
+//! an issue for the fix and raise the fleet lock; it hands nothing to a human.
+//! Any other change of the repo it makes itself, and puts on the landing train with
 //! `afkconvoy land --inspection` (`land`), on no issue.
 //!
 //! One inspection runs on the host at a time, of either kind, across its

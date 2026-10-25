@@ -322,7 +322,7 @@ fn create(message: &str, dir: &Path, create: &Create) -> Result<()> {
     repo.git(&["add", "--all"])?;
     repo.git(&["commit", "--quiet", "-m", message])?;
     let visibility = if create.public { "--public" } else { "--private" };
-    let gh = GitHub { dir: dir.to_path_buf(), tracker: Tracker::Own };
+    let gh = GitHub::new(dir.to_path_buf(), Tracker::Own);
     gh.gh(&["repo", "create", create.repo.as_str(), visibility, "--source", ".", "--push"])?;
     Ok(())
 }

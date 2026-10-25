@@ -146,13 +146,15 @@ struct Runner {
 /// them all (docs/adr/0023): how each stands for host sleep, the one
 /// inspection on the host and who waits for it, and the exclusive queue; and
 /// the newer afkconvoy installed where it was started from, which it moves
-/// onto. A clone is the same.
+/// onto; and the wake routes of open blockers across repos on one tracker.
+/// A clone is the same.
 #[derive(Clone, Default)]
 pub struct Shared {
     pub standings: Standings,
     pub turn: Turn,
     pub queue: Queue,
     pub installed: Arc<Mutex<Option<Installed>>>,
+    pub blockers: wake::Blockers,
 }
 
 impl Shared {

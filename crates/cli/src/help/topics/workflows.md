@@ -40,7 +40,7 @@ Only `pass` and `reject` are keys of `on`: the other three mean the same at ever
 
 A stage may split its issue: open issues, take each in, then declare `blocked` on them. When they close, it judges the whole. The team file's `split` key may be false to omit this procedure from briefs ([`afkconvoy help team`](help:team)); true is the default.
 
-A stage that may commit and finds its gate red for a defect outside its issue — what the gate merged in is red the same way gated alone — opens that defect's issue itself, unless an open one already records it, takes it in the same way, and declares `blocked` on it. When it closes, the stage runs again and gates again. The train worker does the same for a base branch that is red without the train: it takes the defect's issue in with `afkconvoy intake --train`, to the team's first workflow unless another fits it clearly better, and has no issue to park.
+A stage that may commit and finds its gate red for a defect outside its issue — what the gate merged in is red the same way gated alone — opens that defect's issue itself, unless an open one already records it, takes it in the same way, and declares `blocked` on it. When it closes, the stage runs again and gates again. If the base branch itself is red the same way gated alone in a clean checkout, it first raises the fleet lock on the fix's issue with `afkconvoy lock --issue <n>`; a defect confined to the train raises none. The train worker does the same for a base branch that is red without the train: it takes the defect's issue in with `afkconvoy intake --train`, to the team's first workflow unless another fits it clearly better, raises the lock and stops until told to carry on. It has no issue to park.
 
 ## Rework and its breakers
 

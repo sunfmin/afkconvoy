@@ -269,6 +269,19 @@ Make it yourself, in your checkout, and land it as any worker's change lands —
    resolve every file, commit the merge and go back to 3. On `locked`, a fleet lock stands: the PR
    stays open off the train, and you say so.
 
+## A red base branch in an unbound repo
+
+If a gate is red, first read which locks stand (`{afkconvoy} plan`): a lock already standing
+needs no second issue. Otherwise prove the base branch is red the same way by gating
+`origin/{base_branch}` alone in a clean temporary checkout with `afkconvoy gate`, without
+`--train`, and remove that checkout after. A failure confined to your change raises no lock.
+In an unbound repo, search the open issues for the fix before opening one: `{afkconvoy} flows`
+gives the tracker, repo label and ready label in its issue-opening `line`. Comment your evidence
+on the existing issue, or open one with the symptom, reproduction, evidence and acceptance
+criteria requiring the cause and a test. Make the issue carry the ready label and repo label
+that line names, then raise the fleet lock: `{afkconvoy} lock --issue <n>`. Stop running gates
+while the lock stands, and say what you did below. This is the one exception to opening no issue.
+
 ## Your bounds
 
 They are those of any unattended worker, and the guard holds you to them where it can:
@@ -279,7 +292,8 @@ They are those of any unattended worker, and the guard holds you to them where i
 - Never delete what cannot be rebuilt: model weights, downloads, media ({kept}), a user's files, a
   change no commit holds.
 - No force push, no push to the base branch, no merge outside the landing train.
-- Hand nothing to a human, and open no issue: ask none. What should be changed, change.
+- Hand nothing to a human. Apart from the proven red base branch above, open no issue: what
+  should be changed, change.
 
 ## Say what you did
 
@@ -566,6 +580,11 @@ stages:
         assert!(said.contains("`cd '/w/inspection' && afkconvoy gate --train`"), "{said}");
         assert!(said.contains("`cd '/w/inspection' && afkconvoy land --inspection`"), "{said}");
         assert!(said.contains("open no issue"), "{said}");
+        assert!(said.contains("## A red base branch in an unbound repo"), "{said}");
+        assert!(said.contains("`origin/main` alone in a clean temporary checkout"), "{said}");
+        assert!(said.contains("Comment your evidence\non the existing issue"), "{said}");
+        assert!(said.contains("`cd '/w/inspection' && afkconvoy lock --issue <n>`"), "{said}");
+        assert!(said.contains("Stop running gates\nwhile the lock stands"), "{said}");
         // Not a list of remedies, each mapped from a word it found, nor an
         // issue of a change for the fleet's workers.
         for word in ["`wrong`", "`heavy`", "`not-its`", "--found", "--left", "an issue of"] {

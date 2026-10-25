@@ -108,6 +108,9 @@ pub struct Ticked {
     /// What this tick saw as it ended, but for its count: the next one's
     /// `before`.
     saw: Before,
+    /// Wake routes from the open issues this tick read, including those
+    /// still held back by another blocker or by their labels.
+    blockers: Vec<u64>,
     /// The concurrency in force (`concurrency::config_of`).
     concurrency: usize,
     /// The claims the pass could hold as it ended (`Pass::bound`).
@@ -242,6 +245,11 @@ pub fn tick(
         cut_said,
         handed,
         saw,
+        blockers: issues
+            .iter()
+            .filter(|issue| afkconvoy_core::tracker::repo_labels(&issue.labels).len() <= 1)
+            .flat_map(|issue| issue.open_blockers.iter().copied())
+            .collect(),
         concurrency,
         bound,
         set,
@@ -1197,6 +1205,7 @@ pub fn run(
         Box::new(move |during, by| said.keep(clock(), log::What::WokenDuring { during, by }))
     };
     wakes.telling(during);
+    let watching = shared.blockers.watch(me.instance.as_str(), &wakes);
     let hot = Hot::default();
     let mut inspector = Inspector::new(repo, &shared.turn);
     {
@@ -1247,11 +1256,23 @@ pub fn run(
             }
         }
         let served = show.is_some();
+        watching.begins();
         // A tick that could not even rebuild is a line, not the end of the loop.
         let ticked = turn(
             || wakes.forget(count),
             || {
                 let (ticked, fleet) = tick(repo, me, agent, &stop, before.as_ref())?;
+                let tracker = match fleet.gh.tracker.named() {
+                    Some(named) => Ok(named.to_string()),
+                    None => crate::checkout_list::named_repo(repo)
+                        .map(|named| named.to_string())
+                        .or_else(|_| crate::checkout_list::repo_of(repo)),
+                };
+                // Wake routing is best effort, like a command's wake: a
+                // name this host cannot read never fails a completed tick.
+                if let Ok(tracker) = tracker {
+                    watching.saw(&tracker, ticked.blockers.iter().copied(), &fleet.gh.closed());
+                }
                 let panel = served.then(|| ticked.panel(&fleet, me));
                 Ok::<_, anyhow::Error>((ticked, panel))
             },

@@ -130,13 +130,13 @@ pub fn check(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<C
     };
     let was = said_tracker(list, repo)?;
     let config = crate::concurrency::config_of(repo)?;
-    let gh = GitHub {
-        dir: repo.dir.clone(),
-        tracker: match &tracker {
+    let gh = GitHub::new(
+        repo.dir.clone(),
+        match &tracker {
             Some(named) => Tracker::Other { tracker: named.clone(), repo: named_repo(repo)? },
             None => Tracker::Own,
         },
-    };
+    );
     if let Some(why) = refused_public(repo, &gh)? {
         return Err(See::Troubleshooting.refusal(why));
     }

@@ -9,6 +9,7 @@
 //! that instance will do of it (`Answer`). The host runner's own threads
 //! wake an instance the same way, with no socket (`Waker`).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
@@ -19,6 +20,103 @@ use serde_json::{Value, json};
 
 use crate::git::Repo;
 use crate::runner_socket::{self, Reached, Request};
+
+/// The host's wake routes for blockers, rebuilt from each fleet's open
+/// issues. They hold no fleet state: a closure only asks a peer to read
+/// GitHub sooner. A clone belongs to the same host runner.
+#[derive(Clone, Default)]
+pub struct Blockers {
+    routes: Arc<Mutex<BTreeMap<String, Waiting>>>,
+}
+
+struct Waiting {
+    tracker: String,
+    blockers: BTreeSet<u64>,
+    wakes: Wakes,
+    /// Closures heard while this fleet reads GitHub. Applying these to the
+    /// new routes prevents an overlapping, older read from losing a wake.
+    reading: Option<BTreeMap<(String, u64), String>>,
+}
+
+/// One running fleet's routes, removed when its loop ends or panics.
+pub struct Watching {
+    host: Blockers,
+    instance: String,
+}
+
+impl Blockers {
+    fn routes(&self) -> MutexGuard<'_, BTreeMap<String, Waiting>> {
+        self.routes.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn watch(&self, instance: &str, wakes: &Wakes) -> Watching {
+        self.routes().insert(
+            instance.to_string(),
+            Waiting {
+                tracker: String::new(),
+                blockers: BTreeSet::new(),
+                wakes: wakes.clone(),
+                reading: None,
+            },
+        );
+        Watching { host: self.clone(), instance: instance.to_string() }
+    }
+}
+
+impl Watching {
+    /// Starts a read. Closures heard during it are kept until `saw`, even
+    /// of a newly said tracker whose name this read has not returned yet.
+    pub fn begins(&self) {
+        let mut routes = self.host.routes();
+        let Some(mine) = routes.get_mut(&self.instance) else { return };
+        mine.reading = Some(BTreeMap::new());
+    }
+
+    /// Replaces this fleet's routes with the open blockers its tick read,
+    /// and wakes peers on the same tracker for every closure the tick read
+    /// or made. A route is used up by its wake, so seeing a closed blocker
+    /// again starts no stream of empty ticks. The woken tick decides what
+    /// is unblocked, from GitHub alone.
+    pub fn saw(&self, tracker: &str, blockers: impl IntoIterator<Item = u64>, closed: &[u64]) {
+        let mut routes = self.host.routes();
+        let Some(mine) = routes.get_mut(&self.instance) else { return };
+        let tracker = tracker.to_ascii_lowercase();
+        mine.tracker.clone_from(&tracker);
+        mine.blockers = blockers.into_iter().collect();
+        let mut wakes = vec![];
+        for ((of, issue), by) in mine.reading.take().unwrap_or_default() {
+            if of == tracker && mine.blockers.remove(&issue) {
+                wakes.push((mine.wakes.clone(), by));
+            }
+        }
+        for issue in closed {
+            let by = format!("{tracker}#{issue} closed, seen by fleet instance {}", self.instance);
+            for (instance, peer) in routes.iter_mut() {
+                if *instance == self.instance {
+                    continue;
+                }
+                if let Some(reading) = &mut peer.reading {
+                    reading.entry((tracker.clone(), *issue)).or_insert_with(|| by.clone());
+                }
+                if peer.tracker == tracker && peer.blockers.remove(issue) {
+                    wakes.push((peer.wakes.clone(), by.clone()));
+                }
+            }
+        }
+        // Wakes can write a tick log. Never hold the host's routes while
+        // calling into another fleet.
+        drop(routes);
+        for (wake, by) in wakes {
+            wake.hear(Some(by));
+        }
+    }
+}
+
+impl Drop for Watching {
+    fn drop(&mut self) {
+        self.host.routes().remove(&self.instance);
+    }
+}
 
 /// What a fleet instance is told of a wake heard during tick `n`: the first
 /// of that tick's, as it is heard, with what it named.
@@ -232,6 +330,63 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn a_closed_blocker_wakes_every_peer_on_its_tracker_once() {
+        let host = Blockers::default();
+        let wakes: Vec<Wakes> = (0..5).map(|_| Wakes::default()).collect();
+        let watchers: Vec<Watching> = wakes
+            .iter()
+            .enumerate()
+            .map(|(i, wakes)| host.watch(&format!("fleet-{i}"), wakes))
+            .collect();
+        for (i, watch) in watchers.iter().enumerate() {
+            watch.begins();
+            watch.saw(
+                if i == 4 { "acme/elsewhere" } else { "ACME/tracker" },
+                if i == 3 { vec![99] } else { vec![7, 8] },
+                &[],
+            );
+        }
+        watchers[0].saw("acme/tracker", [7, 8], &[7]);
+        let by = "acme/tracker#7 closed, seen by fleet instance fleet-0";
+        for i in [1, 2] {
+            assert_eq!(wakes[i].rest(Duration::ZERO), Some(Woken { by: Some(by.into()) }));
+        }
+        for i in [0, 3, 4] {
+            assert!(!wakes[i].heard(), "no wake of self, unrelated issues or another tracker");
+        }
+        watchers[0].saw("acme/tracker", [], &[7]);
+        assert!(!wakes[1].heard() && !wakes[2].heard(), "a repeated observation sends none");
+        watchers[0].saw("acme/tracker", [], &[8]);
+        assert!(wakes[1].heard() && wakes[2].heard(), "the other blocker still has its route");
+    }
+
+    #[test]
+    fn a_closure_during_an_older_rebuild_is_not_lost_when_its_routes_arrive() {
+        let host = Blockers::default();
+        let wakes = Wakes::default();
+        let source = host.watch("source", &Wakes::default());
+        let target = host.watch("target", &wakes);
+        source.begins();
+        target.begins();
+        // The target's first read has not published a route yet.
+        source.saw("acme/tracker", [], &[7]);
+        assert!(!wakes.heard());
+        target.saw("acme/tracker", [7], &[]);
+        assert!(wakes.rest(Duration::ZERO).is_some(), "the older read cannot hide the closure");
+        target.begins();
+        target.saw("acme/tracker", [], &[]);
+        source.saw("acme/tracker", [], &[7]);
+        assert!(!wakes.heard(), "a fresh read with no edge replaces the route");
+        target.begins();
+        source.saw("acme/tracker", [], &[7]);
+        target.saw("acme/another", [7], &[]);
+        source.saw("acme/tracker", [], &[7]);
+        assert!(!wakes.heard(), "a tracker change replaces the route");
+        drop(target);
+        assert_eq!(host.routes().len(), 1, "a stopped or broken fleet leaves no route");
+    }
 
     #[test]
     fn a_wake_ends_the_rest_and_one_before_it_ends_it_at_once() {
