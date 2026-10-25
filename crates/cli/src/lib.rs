@@ -2729,11 +2729,11 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// To send a worker its nudge by hand. Automatic recovery first observes actual output and obtains a bounded diagnosis when no structured fault explains the stopped worker. An operator may nudge a worker directly after checking its scene.
+    /// To send a worker its nudge by hand. A tick does this on its own only when a checked diagnosis requests a retry; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
     ///
     /// ## What counts as silent
     ///
-    /// A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Unknown or invalid results preserve the scene.
+    /// A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Unknown or invalid judgments preserve the scene.
     ///
     /// Confirmed background work, waiting for a human or dependency and completed idle sessions are left alone. A worker's gate waiting in the exclusive queue is background work too. The tick does not turn a long wait into permission for another writer. Structured transient rate limits respect Retry-After and get two retries before session fallback. Account and model recovery probes run hourly; successful recovery affects new starts without moving healthy successors back.
     ///
