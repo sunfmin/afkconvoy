@@ -446,9 +446,12 @@ fn troubleshooting_has_a_row_for_every_finding_doctor_can_give() {
         "the host kit has no worker launch command",
         "is no harness",
         "cannot read the host kit",
+        "is public: anyone can comment on its issues",
     ] {
         assert!(heads.contains(&refusal), "no row for the refusal {refusal:?}");
     }
+    let public = afkconvoy_core::tracker::public("acme/dev", "/work/dev");
+    assert!(public.contains("is public: anyone can comment on its issues"), "{public}");
     assert!(heads.iter().any(|head| no_branch.starts_with(head)), "{no_branch}");
 }
 

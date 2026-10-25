@@ -79,8 +79,8 @@ fn train(world: &World) -> PathBuf {
     dir
 }
 
-/// The repo a call names, and what of it: an endpoint's path after the repo.
-/// The tracker is named by name, and the checkout's repo by `{owner}/{repo}`,
+/// The repo a call names, and what of it: an endpoint's path after the repo,
+/// empty of the repo itself. The tracker is named by name, and the checkout's repo by `{owner}/{repo}`,
 /// which `gh` fills in from the checkout: a query names its repo by its
 /// `owner` and `repo`, and `gh pr` the checkout's by naming none.
 fn named(call: &[String]) -> (String, String) {
@@ -102,12 +102,13 @@ fn named(call: &[String]) -> (String, String) {
     }
     let endpoint = call.iter().find_map(|arg| arg.strip_prefix("repos/")).expect("an endpoint");
     let parts: Vec<&str> = endpoint.splitn(3, '/').collect();
-    (format!("{}/{}", parts[0], parts[1]), parts[2].to_string())
+    (format!("{}/{}", parts[0], parts[1]), parts.get(2).unwrap_or(&"").to_string())
 }
 
 /// Every `gh` call made of `world`'s checkout and its worktrees → those of
 /// them made of the tracker, once it is shown that each is of an issue or a
-/// label, and was answered from the tracker's state; that each made of the
+/// label — or of who may see the tracker, which a start asks — and was
+/// answered from the tracker's state; that each made of the
 /// checkout's repo is of a PR — its comments among them — or a branch; and
 /// that each made of another repo reads a team's or a role's head.
 fn routed(world: &World) -> Vec<Vec<String>> {
@@ -123,7 +124,9 @@ fn routed(world: &World) -> Vec<Vec<String>> {
         match repo.as_str() {
             TRACKER => {
                 let issues = what.starts_with("issues") || what.starts_with("labels");
-                assert!(issues || what == "graphql", "{call:?}");
+                let seen =
+                    what.is_empty() && call.contains(&afkconvoy::gh::VISIBILITY_JQ.to_string());
+                assert!(issues || seen || what == "graphql", "{call:?}");
                 of_tracker.push(call.clone());
             }
             "{owner}/{repo}" => {

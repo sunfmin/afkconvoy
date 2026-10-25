@@ -1146,7 +1146,8 @@ fn check_host(host: &mut HostSleep, said: &Said, stop: &Stop, clock: &Clock) -> 
 /// host to sleep once every fleet on it has been idle long enough, within
 /// the host's sleep hours, as its host runner holds how each stands
 /// (`HostSleep`, docs/adr/0016, 0023). It obeys `holder`'s stop — whoever holds the
-/// process listens for the signals — and says each line to its echo.
+/// process listens for the signals — and says each line to its echo. It
+/// ends in an error as its tracker is found public (`probe::public_tracker`).
 pub fn run(
     repo: &Repo,
     me: &mut Me,
@@ -1192,6 +1193,16 @@ pub fn run(
     };
     let mut host = HostSleep::open(standing, &wakes, &shared.standings, pacing.host_sleep_after);
     loop {
+        // A tracker made public ends this fleet instance before it works
+        // anything more — within the hour a check that found it private
+        // stands, and at once of one said anew — as a start's probe refuses
+        // one: it is broken, keeps no host awake, and each start of it again
+        // is refused until the tracker is private or another is said
+        // (docs/adr/0027). A check that cannot be made costs nothing: the
+        // tick reads GitHub too, and says why that fails.
+        if let Ok(Some(why)) = crate::probe::public_tracker(repo, clock(), true) {
+            return Err(See::Troubleshooting.refusal(why));
+        }
         count += 1;
         host.begins();
         said.keep(clock(), log::What::TickStarted { count, cause, by: by.take() });

@@ -12,6 +12,7 @@ Start with `afkconvoy doctor`, in the checkout the fleet runs in: it reads every
 - `cannot start a worker in its role`: In a bound repo the worker launch command must end in its harness, taking flags: the fleet adds what puts the worker in its role. `afkconvoy help worker-launch`.
 - ``no `afkconvoy run` is alive``: The `run` of this host died holding claims. Start it here: it takes them back.
 - `is broken`: This checkout's fleet instance panicked, its loop ended in an error, or its startup probe no longer passes; every other goes on, and the host runner starts it again after a backoff, when `evidence` says. Put right what `what` says, then run `fix`: a `run` starts it at once.
+- `is public: its fleet instance works nothing`: GitHub says the repo this checkout's fleet reads and writes its issues in — its own, where it says no tracker — is public, so anyone can write what the fleet reads and its workers are told. Its fleet instance ends at its next check, within the hour, and every start of it is refused. Run `fix` with a private repo of yours, or make that repo private again: the next start of it works.
 - `failed in each of the last`: One step fails tick after tick; `evidence` is its error, naming what refused. `fix`.
 - `the team this repo names cannot be read`: The team's repo, or a role's, could not be read. `afkconvoy check` says which.
 - `has a fault at its head`: A team's or a role's file is wrong on its default branch. `fix` is the file and key; `afkconvoy check` gives every fault. Push the edit: no stage starts until then.
@@ -54,6 +55,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `this host cannot work a fleet yet`: What `doctor` finds on a host, said at once: run each line after a colon.
 - `cannot read the config file`: The repo has no config on the branch checked out. `afkconvoy config --help`.
 - `the remote has no branch`: The config's `base_branch` is not on the remote. Push it: the fleet creates none.
+- `is public: anyone can comment on its issues`: The checkout's tracker — its own repo, where it says none — is public. Say a private one with the line the refusal ends in, or make it private.
 - `that push would be refused`: The base branch's protection requires a PR, checks or a named pusher, and the landing train lands by pushing. Lift the rule, or pick another base branch.
 - `the remote rejects the fleet's refs under both`: The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be kept. A push rule of the remote's is what refuses: lift it for one of the two.
 - `the host kit has no worker launch command`: Run `afkconvoy kit` on this host: it holds every harness found and answering there. One it leaves out is in its `left_out`, with why.

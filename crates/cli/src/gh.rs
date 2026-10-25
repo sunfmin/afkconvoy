@@ -81,6 +81,9 @@ pub const COMMENTS_JQ: &str =
 pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
 /// What is read of each label a repo has.
 pub const LABELS_JQ: &str = ".[].name";
+/// What is read of a repo for who may see it: `public`, `private` or
+/// `internal`.
+pub const VISIBILITY_JQ: &str = ".visibility";
 /// What is read of each open PR: `isCrossRepository` says its head is in
 /// another repository — a fork's (`GitHub::open_prs`) — and
 /// `headRepository` and `headRepositoryOwner` name the repo it is of.
@@ -393,6 +396,12 @@ impl GitHub {
         args.extend(variables.iter().map(String::as_str));
         args.extend(["-f", &query, "--jq", jq]);
         self.read(&args)
+    }
+
+    /// Who GitHub lets see the tracker, as it says it (`VISIBILITY_JQ`).
+    pub fn visibility(&self) -> Result<String> {
+        let endpoint = format!("repos/{}", path(&self.tracker));
+        Ok(self.read(&["api", &endpoint, "--jq", VISIBILITY_JQ])?.trim().to_string())
     }
 
     /// The commit at the head of the default branch of `repo`.

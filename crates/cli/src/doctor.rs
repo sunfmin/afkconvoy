@@ -2,7 +2,8 @@
 //! with it — each finding with the line to run, or the file and key to edit.
 //!
 //! `read` is the half that asks: this host, the log of its `run`, GitHub and
-//! the remote, orca after each worker. It writes nothing anywhere but the
+//! the remote, orca after each worker; and whether the tracker is public,
+//! which `tracker::findings` asks and judges. It writes nothing anywhere but the
 //! fleet's own cache, and makes no startup probe: it is run beside a live
 //! fleet, often. `findings` is the half that judges what was read, and asks
 //! nothing. Nothing here fixes anything: the fleet's own commands do.
@@ -146,6 +147,7 @@ kinds! {
     LaunchTakesNoRole: Critical, "cannot start a worker in its role";
     NoRun: Critical, "no `afkconvoy run` is alive";
     Broken: Critical, "is broken";
+    PublicTracker: Critical, "is public: its fleet instance works nothing";
     StepFailed: Critical, "failed in each of the last";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
@@ -1634,6 +1636,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         state: state.as_ref().map_err(String::as_str),
     };
     let mut found = findings(&seen);
+    found.extend(crate::tracker::findings(repo));
     found.extend(crate::harness_down::findings(repo, run.instance.as_deref())?);
     found.extend(crate::paused::findings(now));
     found.extend(host_runner::findings());

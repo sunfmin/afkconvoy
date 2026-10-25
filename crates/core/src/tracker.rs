@@ -16,6 +16,10 @@ use crate::worker::worktree_name;
 /// What a repo label begins with: `repo:<owner>/<repo>`.
 pub const REPO_LABEL: &str = "repo:";
 
+/// The visibility GitHub gives a repo anyone can read: anyone can comment on
+/// its issues.
+pub const PUBLIC: &str = "public";
+
 /// The repo a fleet reads and writes its issues in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tracker {
@@ -71,6 +75,29 @@ pub fn names_a_ref(tracker: &RepoName) -> bool {
     lowered
         .split('/')
         .all(|part| !part.starts_with('.') && !part.ends_with('.') && !part.ends_with(".lock"))
+}
+
+/// Whether `visibility`, as GitHub says a repo's, is `PUBLIC`.
+pub fn is_public(visibility: &str) -> bool {
+    visibility.trim().eq_ignore_ascii_case(PUBLIC)
+}
+
+/// The line that has the checkout `checkout` say a private tracker: the fix
+/// of a public one (`public`).
+pub fn says_private(checkout: &str) -> String {
+    format!("afkconvoy run {checkout} --tracker <owner>/<private repo>")
+}
+
+/// Why the fleet of the checkout `checkout` is refused, whose tracker,
+/// `named`, GitHub says is public: anyone could write what the fleet reads as
+/// its state and what its workers read as their task (docs/adr/0027).
+pub fn public(named: &str, checkout: &str) -> String {
+    format!(
+        "the tracker of {checkout}, {named}, is public: anyone can comment on its issues, and so \
+         write what the fleet reads as its state and what its workers read as their task. Say a \
+         private one: `{}`",
+        says_private(checkout)
+    )
 }
 
 /// `name` as a part of a ref's name or of a worktree's: in lower case, so
@@ -290,6 +317,18 @@ mod tests {
         for refused in ["acme/.github", "acme/tracker.", "acme/tracker.LOCK"] {
             assert!(!names_a_ref(&RepoName::read(refused).unwrap()), "{refused}");
         }
+    }
+
+    #[test]
+    fn a_public_tracker_is_refused_naming_it_and_the_line_that_says_a_private_one() {
+        assert!(is_public("public\n") && is_public("Public"));
+        for private in ["private", "internal", ""] {
+            assert!(!is_public(private), "{private}");
+        }
+        let refused = public("acme/dev", "/work/dev");
+        assert!(refused.starts_with("the tracker of /work/dev, acme/dev, is public"), "{refused}");
+        let fix = "`afkconvoy run /work/dev --tracker <owner>/<private repo>`";
+        assert!(refused.ends_with(fix), "{refused}");
     }
 
     #[test]
