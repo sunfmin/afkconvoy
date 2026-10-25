@@ -52,10 +52,15 @@ pub enum Of {
     /// The inspection on the host so named, which made a change of the repo
     /// itself, on no issue (docs/adr/0026).
     Inspection(String),
+    /// The cut on the host so named, whose PR sets the version it makes, on
+    /// no issue (docs/adr/0027).
+    Cut(String),
 }
 
 /// The line of a join commit that names an inspection's PR, the host after it.
 const BY_INSPECTION: &str = "By an inspection on ";
+/// The line of a join commit that names a cut's PR, the host after it.
+const BY_CUT: &str = "By a cut on ";
 
 /// One PR's joining of the train.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,11 +74,11 @@ pub struct Joined {
 }
 
 impl Joined {
-    /// The issue the PR closes: none of an inspection's.
+    /// The issue the PR closes: none of an inspection's or a cut's.
     pub fn issue(&self) -> Option<u64> {
         match self.of {
             Of::Issue(issue) => Some(issue),
-            Of::Inspection(_) => None,
+            Of::Inspection(_) | Of::Cut(_) => None,
         }
     }
 }
@@ -86,6 +91,7 @@ pub fn join_message(title: &str, pr: u64, of: &Of) -> String {
     match of {
         Of::Issue(issue) => format!("{title} (#{pr})\n\nCloses #{issue}\n"),
         Of::Inspection(host) => format!("{title} (#{pr})\n\n{BY_INSPECTION}{host}\n"),
+        Of::Cut(host) => format!("{title} (#{pr})\n\n{BY_CUT}{host}\n"),
     }
 }
 
@@ -99,8 +105,8 @@ pub struct Logged<'a> {
 /// The joinings among `commits`, in the order given. A joining is a merge
 /// commit whose subject ends ` (#<pr>)` and whose message has a line
 /// `Closes #<issue>` — or, of an inspection's PR, `By an inspection on
-/// <host>`. A commit with one parent is never one, whatever its message says
-/// — a fix titled `… (#12)` is a fix.
+/// <host>`, and of a cut's, `By a cut on <host>`. A commit with one parent is
+/// never one, whatever its message says — a fix titled `… (#12)` is a fix.
 pub fn read_joins(commits: &[Logged]) -> Vec<Joined> {
     let mut joins = vec![];
     for commit in commits {
@@ -115,11 +121,14 @@ pub fn read_joins(commits: &[Logged]) -> Vec<Joined> {
             .message
             .lines()
             .find_map(|line| line.strip_prefix("Closes #").and_then(fleet_number));
-        let inspection = || {
-            let host = commit.message.lines().find_map(|line| line.strip_prefix(BY_INSPECTION));
+        let by = |by: &str| {
+            let host = commit.message.lines().find_map(|line| line.strip_prefix(by));
             host.map(str::trim).filter(|host| !host.is_empty()).map(str::to_string)
         };
-        let of = issue.map(Of::Issue).or_else(|| inspection().map(Of::Inspection));
+        let of = issue
+            .map(Of::Issue)
+            .or_else(|| by(BY_INSPECTION).map(Of::Inspection))
+            .or_else(|| by(BY_CUT).map(Of::Cut));
         if let (Some(pr), Some(of)) = (pr, of) {
             joins.push(Joined { of, pr, commit: commit.sha.to_string(), head: head.to_string() });
         }
@@ -475,6 +484,17 @@ mod tests {
         let joins = read_joins(&commits);
         assert_eq!(joins.len(), 1, "a line that names no host names no inspection");
         assert_eq!(joins[0], Joined { of: host, pr: 45, commit: "m1".into(), head: "h45".into() });
+        assert_eq!(joins[0].issue(), None);
+    }
+
+    #[test]
+    fn a_cut_s_pr_joins_on_no_issue_and_reads_back_by_its_host() {
+        let cut = Of::Cut("felixmbp14".into());
+        let message = join_message("afkconvoy 0.5.17", 470, &cut);
+        assert_eq!(message, "afkconvoy 0.5.17 (#470)\n\nBy a cut on felixmbp14\n");
+        let commits = [Logged { sha: "m1", parents: "t0 h470", message: &message }];
+        let joins = read_joins(&commits);
+        assert_eq!(joins, [Joined { of: cut, pr: 470, commit: "m1".into(), head: "h470".into() }]);
         assert_eq!(joins[0].issue(), None);
     }
 

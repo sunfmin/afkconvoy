@@ -1821,6 +1821,7 @@ mod tests {
             inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
+            cut: None,
         }
     }
 
