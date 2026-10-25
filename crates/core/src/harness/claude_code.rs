@@ -614,7 +614,10 @@ mod tests {
         let old = HELP.replace("--setting-sources", "--settings").replace("--add-dir", "--dir");
         let why = takes_flags("agent", Some(&old)).unwrap_err();
         assert!(why.contains("`agent --help` names no --add-dir, no --setting-sources."), "{why}");
-        assert!(why.contains("bound to a team") && why.contains("\"agent\""), "{why}");
+        assert!(
+            why.contains("cannot take the fleet's launch flags") && why.contains("\"agent\""),
+            "{why}"
+        );
         for silent in [None, Some(""), Some(" \n")] {
             let why = takes_flags("agent ; true", silent).unwrap_err();
             assert!(why.contains("`agent ; true --help` failed in a login shell"), "{why}");
