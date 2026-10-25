@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use afkconvoy_core::config::{Bound, Config};
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::host_inspection::{self, Due, Holding, Reason, covered};
+use afkconvoy_core::host_inspection::{self, Due, Reason, Trigger, Watching, covered};
 use afkconvoy_core::inspection::{
     self, CHECKOUT, Fields, Finding, Hot, Inspected, Inspector as Who, Kind, Operator, SAID,
     inspector, over,
@@ -53,7 +53,7 @@ use crate::fleet::Fleet;
 use crate::gh::GitHub;
 use crate::git::Repo;
 use crate::host_evidence::{self, Own};
-use crate::hot::{HotNow, held_said};
+use crate::hot::{Hot as HotWorkers, HotNow, held_said};
 use crate::log::What;
 use crate::orca::{Source, Worktree};
 use crate::role::ToldRules;
@@ -63,6 +63,34 @@ use crate::team::keep;
 /// What the last host inspection did, in the cache every fleet of the host
 /// shares.
 const LAST: &str = "host-inspection/last.json";
+
+/// macOS's pressure signal is independent of admission's available-memory
+/// share. A host that cannot report it is under no observed pressure.
+fn pressure_level() -> Option<u64> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    crate::host_sleep::output("sysctl", &["-n", "kern.memorystatus_vm_pressure_level"])
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn under_pressure() -> bool {
+    pressure_level().is_some_and(|level| level >= 2)
+}
+
+/// A current snapshot, taken after any previous inspection was ended.
+fn hot_now(hot: &HotWorkers) -> Vec<HotNow> {
+    hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+}
+
+fn still_hot(hot: &HotWorkers, episode: &HotNow) -> bool {
+    hot_now(hot)
+        .iter()
+        .any(|now| now.path == episode.path && now.episode.since == episode.episode.since)
+}
 
 /// What a host inspection's turn names as the worker it inspects.
 pub const THE_HOST: &str = "the host";
@@ -409,7 +437,7 @@ pub struct Inspector {
     running: Option<Box<Inspection>>,
     /// Admission, tick after tick: the host is inspected once it held back
     /// for one reason past `span`.
-    holding: Holding,
+    watching: Watching,
     span: u64,
     /// The main checkout of the repo, and each of its issues with its stage,
     /// as the last tick saw them: what a host inspection lists its worktrees
@@ -427,7 +455,7 @@ impl Inspector {
             place: turn.place(),
             inspected: Inspected::default(),
             running: None,
-            holding: Holding::default(),
+            watching: Watching::default(),
             span: host_inspection::SPAN,
             repo: PathBuf::new(),
             stages: vec![],
@@ -443,14 +471,14 @@ impl Inspector {
         repo: PathBuf,
         stages: Vec<(u64, String)>,
     ) {
-        self.holding.ticked(now, &admission.reasons());
+        self.watching.ticked(now, &admission.reasons(), under_pressure());
         self.span = admission.span;
         (self.repo, self.stages) = (repo, stages);
     }
 
     /// The host inspection due at `now`, if one is.
-    fn host_due(&self, now: u64) -> Option<Due> {
-        self.holding.due(now, self.span)
+    fn host_due(&self, now: u64) -> Option<(Trigger, Due)> {
+        self.watching.due(now, self.span)
     }
 
     /// The hot workers `hot`, as the core's rules see them.
@@ -475,7 +503,7 @@ impl Inspector {
     /// inspection that is over, and starts the next a hot worker waits for —
     /// or, none waiting, the host's where one is due — once the host's turn
     /// is free → what to log of it.
-    pub fn step(&mut self, agent: &Agent, hot: &[HotNow], now: u64) -> Vec<What> {
+    pub fn step(&mut self, agent: &Agent, workers: &HotWorkers, now: u64) -> Vec<What> {
         let mut said = vec![];
         if let Some(running) = &self.running {
             let gone = matches!(running.checkout.state(now), Ok(WorkerState::Gone));
@@ -486,7 +514,10 @@ impl Inspector {
             let running = self.running.take().expect("running above");
             said.extend(end(&self.checkout, running, finding, now));
         }
-        let seen = Inspector::seen(hot);
+        // Ending an inspection can take time: a snapshot taken before it
+        // ended may name a worker whose episode has already cooled.
+        let hot = hot_now(workers);
+        let seen = Inspector::seen(&hot);
         self.inspected.keep_to(&seen);
         let next = self.inspected.next(&seen);
         // A hot worker waiting goes before the host, whichever fleet's it is.
@@ -500,7 +531,7 @@ impl Inspector {
         });
         let Some(hot) = found else { return said };
         let worker = hot.worker.clone();
-        match self.start(agent, hot, now) {
+        match self.start(agent, hot, workers, now) {
             Ok(Started::Waits) => {}
             Ok(Started::Nobody(why)) => {
                 self.inspected.record(next);
@@ -523,22 +554,22 @@ impl Inspector {
     /// Starts the host's inspection at `now`, where one is due and no fleet
     /// of the host inspected it in this episode → what to log of it.
     fn step_host(&mut self, agent: &Agent, now: u64) -> Option<What> {
-        let due = self.host_due(now)?;
+        let (trigger, due) = self.host_due(now)?;
         let reason = due.reason.word().to_string();
         let last = last_on_host().map(|last| (last.reason, last.started));
         if covered(last, &due) {
-            self.holding.record();
+            self.watching.record(trigger);
             let said = "another fleet of this host inspected it in this episode".to_string();
             return Some(What::HostInspected { reason, found: "covered".into(), said });
         }
-        match self.start_host(agent, &due, now) {
+        match self.start_host(agent, trigger, &due, now) {
             Ok(Started::Waits) => None,
             Ok(Started::Nobody(said)) => {
-                self.holding.record();
+                self.watching.record(trigger);
                 Some(What::HostInspected { reason, found: "none".into(), said })
             }
             Ok(Started::Running(inspection)) => {
-                self.holding.record();
+                self.watching.record(trigger);
                 let by = inspection.by.clone();
                 let reading = match &inspection.on {
                     Subject::Host { reading, .. } => reading.clone(),
@@ -548,7 +579,7 @@ impl Inspector {
                 Some(What::HostInspecting { reason, by, reading })
             }
             Err(error) => {
-                self.holding.record();
+                self.watching.record(trigger);
                 let said = format!("it could not be started: {error:#}");
                 Some(What::HostInspected { reason, found: "failed".into(), said })
             }
@@ -558,7 +589,13 @@ impl Inspector {
     /// Starts the host's inspection for `due` at `now`: the stock consult,
     /// in a checkout of the base branch of its own, once the host's turn is
     /// taken and what it is given is taken down.
-    fn start_host(&self, agent: &Agent, due: &Due, now: u64) -> Result<Started> {
+    fn start_host(
+        &mut self,
+        agent: &Agent,
+        trigger: Trigger,
+        due: &Due,
+        now: u64,
+    ) -> Result<Started> {
         if !self.place.turn.free(true) {
             return Ok(Started::Waits);
         }
@@ -578,17 +615,34 @@ impl Inspector {
             held_back_by: Some(due.reason),
         };
         let Some(turn) = self.place.turn.take(running) else { return Ok(Started::Waits) };
+        // Another fleet may have ended its inspection while this one read
+        // GitHub. Check again while holding the turn, before taking evidence.
+        if covered(last_on_host().map(|last| (last.reason, last.started)), due) {
+            return Ok(Started::Nobody(
+                "another fleet of this host inspected it in this episode".into(),
+            ));
+        }
         // Read again as it starts: what it is given is what holds back now.
         let admission = Admission::read(&fleet.repo.dir)?;
-        let reading = admission
-            .holds()
-            .iter()
-            .filter(|hold| Reason::of(hold) == due.reason)
-            .map(|hold| admission.said(hold))
-            .collect::<Vec<_>>()
-            .join("; ");
+        let pressure = pressure_level();
+        self.watching.ticked(now, &admission.reasons(), pressure.is_some_and(|level| level >= 2));
+        if !self.watching.still_due(trigger, due, now, self.span) {
+            return Ok(Started::Waits);
+        }
+        let reading = match trigger {
+            Trigger::Pressure => {
+                format!("the host is under memory pressure (level {})", pressure.unwrap_or(0))
+            }
+            Trigger::Admission => admission
+                .holds()
+                .iter()
+                .filter(|hold| Reason::of(hold) == due.reason)
+                .map(|hold| admission.said(hold))
+                .collect::<Vec<_>>()
+                .join("; "),
+        };
         let own = Own { repo: &self.repo, stages: &self.stages };
-        let evidence = host_evidence::take(&admission, due.reason, &own)?;
+        let evidence = host_evidence::take(&admission, due.reason, &reading, &own)?;
         let source = Source::of(&fleet.repo)?;
         if let Some(left) = Worktree::named(&source, CHECKOUT)? {
             left.remove()?;
@@ -598,8 +652,9 @@ impl Inspector {
             checkout.record_inspection_kind(Kind::Host)?;
             let path = checkout.path.display().to_string();
             let fields = host_inspection::Fields {
+                trigger,
                 reason: due.reason,
-                reading: if reading.is_empty() { "it admits again" } else { &reading },
+                reading: &reading,
                 minutes: now.saturating_sub(due.since) / 60,
                 evidence: &evidence.display().to_string(),
                 role: who.role(),
@@ -618,13 +673,26 @@ impl Inspector {
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
             let brief = checkout.write_brief(&brief)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
+            let admission = Admission::read(&fleet.repo.dir)?;
+            self.watching.ticked(now, &admission.reasons(), under_pressure());
+            if !self.watching.still_due(trigger, due, now, self.span) {
+                return Ok(false);
+            }
             let handle = agent.start(&checkout, harness, &command, now)?;
             checkout.await_ready(&handle, agent.ready_timeout)?;
-            checkout.deliver(&handle, &brief)
+            checkout.deliver(&handle, &brief)?;
+            Ok(true)
         })();
-        if let Err(error) = started {
-            let _ = checkout.remove();
-            return Err(error);
+        match started {
+            Ok(true) => {}
+            Ok(false) => {
+                checkout.remove()?;
+                return Ok(Started::Waits);
+            }
+            Err(error) => {
+                let _ = checkout.remove();
+                return Err(error);
+            }
         }
         Ok(Started::Running(Box::new(Inspection {
             on: Subject::Host { reason: due.reason, reading },
@@ -637,7 +705,13 @@ impl Inspector {
 
     /// Starts the inspection of `hot` at `now`, in a checkout of the base
     /// branch of its own, once the host's turn is taken.
-    fn start(&self, agent: &Agent, hot: &HotNow, now: u64) -> Result<Started> {
+    fn start(
+        &self,
+        agent: &Agent,
+        hot: &HotNow,
+        workers: &HotWorkers,
+        now: u64,
+    ) -> Result<Started> {
         // Asked first: a worker waiting its turn reads nothing of GitHub.
         if !self.place.turn.free(false) {
             return Ok(Started::Waits);
@@ -668,6 +742,9 @@ impl Inspector {
             held_back_by: None,
         };
         let Some(turn) = self.place.turn.take(running) else { return Ok(Started::Waits) };
+        if !still_hot(workers, hot) {
+            return Ok(Started::Waits);
+        }
         let source = Source::of(&fleet.repo)?;
         if let Some(left) = Worktree::named(&source, CHECKOUT)? {
             left.remove()?;
@@ -701,14 +778,24 @@ impl Inspector {
             let brief =
                 checkout.write_brief(&inspection::brief(&fields).map_err(|e| anyhow!(e))?)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, &hot.worker)?;
+            if !still_hot(workers, hot) {
+                return Ok(false);
+            }
             let handle = agent.start(&checkout, harness, &command, now)?;
             checkout.await_ready(&handle, agent.ready_timeout)?;
-            checkout.deliver(&handle, &brief)
+            checkout.deliver(&handle, &brief)?;
+            Ok(true)
         })();
-        if let Err(error) = started {
-            // Nothing is left of an inspection that did not start.
-            let _ = checkout.remove();
-            return Err(error);
+        match started {
+            Ok(true) => {}
+            Ok(false) => {
+                checkout.remove()?;
+                return Ok(Started::Waits);
+            }
+            Err(error) => {
+                let _ = checkout.remove();
+                return Err(error);
+            }
         }
         Ok(Started::Running(Box::new(Inspection {
             on: Subject::Worker { hot: hot.clone(), why },

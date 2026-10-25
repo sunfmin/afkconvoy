@@ -276,11 +276,11 @@ impl Entry {
                 format!("inspection: {worker}: {found} · {said}")
             }
             What::HostInspecting { reason, by, reading } => format!(
-                "host inspection: admission held back for {reason} past its span ({reading}): \
+                "host inspection: {reason} past its span ({reading}): \
                  the host is inspected by {by}"
             ),
             What::HostInspected { reason, found, said } => {
-                format!("host inspection: held back for {reason}: {found} · {said}")
+                format!("host inspection: {reason}: {found} · {said}")
             }
             What::CutStarted { .. } | What::CutEnded { .. } => {
                 format!("cut: {}", cut_said(&self.what).unwrap_or_default())

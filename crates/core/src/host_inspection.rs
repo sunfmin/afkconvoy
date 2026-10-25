@@ -151,9 +151,91 @@ pub fn covered(last: Option<(Reason, u64)>, due: &Due) -> bool {
     last.is_some_and(|(reason, started)| reason == due.reason && started >= due.episode)
 }
 
+/// What calls for a host inspection. Pressure is observed independently of
+/// admission: memory may be available even while the host is under pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    Admission,
+    Pressure,
+}
+
+impl Trigger {
+    fn condition(self) -> &'static str {
+        match self {
+            Trigger::Admission => "admission has held back every new worker for {reason}",
+            Trigger::Pressure => "the host has been under memory pressure",
+        }
+    }
+
+    fn goal(self) -> &'static str {
+        match self {
+            Trigger::Admission => {
+                "admission admits new workers again, and holds back for {reason} no more"
+            }
+            Trigger::Pressure => "the host is under memory pressure no more",
+        }
+    }
+
+    fn check(self) -> &'static str {
+        match self {
+            Trigger::Admission => {
+                "check that admission would admit now (`afkconvoy plan`, its `admission`)"
+            }
+            Trigger::Pressure => {
+                "check that the host's memory pressure is gone (`sysctl -n kern.memorystatus_vm_pressure_level`, below 2); admission may already admit and is no measure of pressure"
+            }
+        }
+    }
+}
+
+/// The host's independent admission and memory-pressure episodes. Recovery
+/// of one is not held up by the other; either uses the host inspection span.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Watching {
+    admission: Holding,
+    pressure: Holding,
+}
+
+impl Watching {
+    pub fn ticked(&mut self, now: u64, reasons: &[Reason], pressure: bool) {
+        self.admission.ticked(now, reasons);
+        self.pressure.ticked(now, if pressure { &[Reason::Memory] } else { &[] });
+    }
+
+    /// The oldest uninterrupted condition due, admission first on a tie.
+    pub fn due(&self, now: u64, span: u64) -> Option<(Trigger, Due)> {
+        let admission = self.admission.due(now, span);
+        let pressure = self.pressure.due(now, span);
+        match (admission, pressure) {
+            (Some(a), Some(p)) if p.since < a.since => Some((Trigger::Pressure, p)),
+            (Some(a), _) => Some((Trigger::Admission, a)),
+            (_, Some(p)) => Some((Trigger::Pressure, p)),
+            _ => None,
+        }
+    }
+
+    pub fn record(&mut self, trigger: Trigger) {
+        match trigger {
+            Trigger::Admission => self.admission.record(),
+            Trigger::Pressure => self.pressure.record(),
+        }
+    }
+
+    /// Whether this exact episode still calls for its inspection, after a
+    /// fresh observation. An ended episode or a broken run starts nothing.
+    pub fn still_due(&self, trigger: Trigger, due: &Due, now: u64, span: u64) -> bool {
+        let current = match trigger {
+            Trigger::Admission => self.admission.due(now, span),
+            Trigger::Pressure => self.pressure.due(now, span),
+        };
+        current == Some(*due)
+    }
+}
+
 /// What a host inspection's brief is filled with.
 #[derive(Debug, Clone, Copy)]
 pub struct Fields<'a> {
+    pub trigger: Trigger,
     pub reason: Reason,
     /// What admission read, as it says it, and for how long it held back.
     pub reading: &'a str,
@@ -170,19 +252,18 @@ pub struct Fields<'a> {
 
 const BRIEF: &str = "\
 You are an afkconvoy **host inspection**, started in your role (`{role}`, skill `{skill}`) on this
-**host**: admission has held back every new worker for {reason} for {minutes} minutes in a row.
+**host**: {condition} for {minutes} minutes in a row.
 Nobody reads this terminal: never wait for an answer.
 {instruction}
 ## Your goal
 
-The fleet's work goes on: admission admits new workers again, and holds back for {reason} no more.
-Find what holds the {reason} admission read, and why — anywhere on this host, not only in the
-fleet's worktrees — fix it, check that admission would admit now (`afkconvoy plan`, its
-`admission`), and say what you did.
+The fleet's work goes on: {goal}.
+Find what holds the host's {reason}, and why — anywhere on this host, not only in the
+fleet's worktrees — fix it, {check}, and say what you did.
 
 ## What you are given
 
-- **What admission read:** {reading}
+- **What the host read:** {reading}
 - **What was taken down as it started:** `{evidence}` — admission's reading and shares, {taken}
 - **Your checkout:** `{checkout}`, the base branch as it stood, on a branch of its own: `{branch}`
 {operator}";
@@ -205,7 +286,11 @@ fn taken(reason: Reason) -> &'static str {
 
 /// The brief a host inspection is given.
 pub fn brief(fields: &Fields) -> Result<String, String> {
-    let template = with_operator(BRIEF, fields.instruction);
+    let template = BRIEF
+        .replace("{condition}", fields.trigger.condition())
+        .replace("{goal}", fields.trigger.goal())
+        .replace("{check}", fields.trigger.check());
+    let template = with_operator(&template, fields.instruction);
     let minutes = fields.minutes.to_string();
     let operator = operator_fields(Kind::Host, &fields.operator);
     let mut filled: Vec<(&str, &str)> = vec![
@@ -224,6 +309,47 @@ pub fn brief(fields: &Fields) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pressure_is_inspected_once_and_recovers_independently_of_admission() {
+        let mut watching = Watching::default();
+        watching.ticked(0, &[], true);
+        assert_eq!(watching.due(SPAN - 1, SPAN), None);
+        watching.ticked(SPAN, &[], true);
+        let due = Due { reason: Reason::Memory, since: 0, episode: 0 };
+        assert_eq!(watching.due(SPAN, SPAN), Some((Trigger::Pressure, due)));
+        assert!(covered(Some((Reason::Memory, 20)), &due));
+        watching.record(Trigger::Pressure);
+        watching.ticked(900, &[], true);
+        assert_eq!(watching.due(900, SPAN), None);
+        // A brief recovery breaks the run, but does not end the episode.
+        watching.ticked(1000, &[], false);
+        watching.ticked(1200, &[], true);
+        watching.ticked(1800, &[], true);
+        assert_eq!(watching.due(1800, SPAN), None);
+        // Pressure recovers for five minutes even though load holds admission.
+        watching.ticked(2000, &[Reason::Load], false);
+        watching.ticked(2300, &[Reason::Load], false);
+        watching.ticked(2400, &[], true);
+        watching.ticked(3000, &[], true);
+        assert_eq!(
+            watching.due(3000, SPAN),
+            Some((Trigger::Pressure, Due { reason: Reason::Memory, since: 2400, episode: 2400 }))
+        );
+    }
+
+    #[test]
+    fn an_inspection_waiting_on_a_cooled_host_episode_starts_nothing() {
+        let mut watching = Watching::default();
+        watching.ticked(0, &[], true);
+        let (trigger, due) = watching.due(SPAN, SPAN).unwrap();
+        watching.ticked(SPAN, &[], false);
+        assert!(!watching.still_due(trigger, &due, SPAN, SPAN));
+        watching.ticked(SPAN + ADMITTED_FOR, &[], false);
+        assert_eq!(watching.due(SPAN + ADMITTED_FOR, SPAN), None);
+        watching.ticked(1000, &[], true);
+        assert!(!watching.still_due(trigger, &due, 1600, SPAN), "a different episode");
+    }
 
     #[test]
     fn holding_back_for_one_reason_past_the_span_makes_an_inspection_due() {
@@ -309,6 +435,7 @@ mod tests {
     #[test]
     fn the_brief_gives_the_goal_what_admission_read_the_authority_and_the_bounds() {
         let fields = Fields {
+            trigger: Trigger::Admission,
             reason: Reason::Disk,
             reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it",
             minutes: 10,
@@ -337,6 +464,15 @@ mod tests {
         }
         let load = brief(&Fields { reason: Reason::Load, ..fields }).unwrap();
         assert!(load.contains("the process trees of each worker"), "{load}");
+        let pressure =
+            brief(&Fields { trigger: Trigger::Pressure, reason: Reason::Memory, ..fields })
+                .unwrap();
+        assert!(
+            pressure.contains("the host has been under memory pressure for 10 minutes"),
+            "{pressure}"
+        );
+        assert!(pressure.contains("admission may already admit"), "{pressure}");
+        assert!(!pressure.contains("admission has held back"), "{pressure}");
         for reason in [Reason::Load, Reason::Memory, Reason::Disk] {
             assert_eq!(Reason::read(reason.word()), Some(reason));
         }

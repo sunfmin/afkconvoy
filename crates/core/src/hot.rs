@@ -69,9 +69,6 @@ pub struct Sample {
     pub millicores: Option<u64>,
     /// The bytes they held resident.
     pub resident: u64,
-    /// Whether the host was under memory pressure while they held the most
-    /// of every worker sampled with them.
-    pub most_under_pressure: bool,
     /// The bytes they wrote to disk since the sample before; `None` at the
     /// first.
     pub written: Option<u64>,
@@ -88,8 +85,6 @@ pub enum Why {
     Cpu,
     /// They held more memory resident than the limit.
     Memory,
-    /// The host was under memory pressure, and they held the most.
-    Pressure,
     /// They wrote more to disk than the limit, within `WRITTEN_WITHIN`.
     Written,
     /// Its worktree has outgrown its fresh build: the train worktree's rule
@@ -103,7 +98,6 @@ impl Why {
         match self {
             Why::Cpu => "CPU",
             Why::Memory => "memory",
-            Why::Pressure => "memory pressure",
             Why::Written => "disk written",
             Why::Held => "disk held",
         }
@@ -161,8 +155,7 @@ impl Watch {
     ///
     /// It turns hot when its CPU has been past the limit for `CPU_HELD`,
     /// counted from the start of the first sample past it; when it holds more
-    /// memory than the limit; when the host is under memory pressure and it
-    /// holds the most; when it wrote more than the limit within
+    /// memory than the limit; when it wrote more than the limit within
     /// `WRITTEN_WITHIN`, counted from the start of the oldest sample in it; or
     /// when its worktree, as last measured, has outgrown its fresh build
     /// (`Built::outgrown`). Hot, it is hot once only: it stops being hot once
@@ -197,8 +190,6 @@ impl Watch {
             Some(Why::Cpu)
         } else if memory_over {
             Some(Why::Memory)
-        } else if sample.most_under_pressure {
-            Some(Why::Pressure)
         } else if written_over {
             Some(Why::Written)
         } else if outgrown {
@@ -226,8 +217,7 @@ impl Watch {
         episode.written = episode.written.max(written);
         episode.held = episode.held.max(held);
         self.hot = Some(episode);
-        let under =
-            !cpu_over && !memory_over && !sample.most_under_pressure && !written_over && !outgrown;
+        let under = !cpu_over && !memory_over && !written_over && !outgrown;
         if !under {
             self.under_since = None;
             return None;
@@ -250,14 +240,7 @@ mod tests {
     const LIMITS: Limits = Limits { millicores: 4000, resident: 8 * GIB, written: 4 * GIB };
 
     fn sample(at: u64, millicores: u64, resident: u64) -> Sample {
-        Sample {
-            at,
-            millicores: Some(millicores),
-            resident,
-            most_under_pressure: false,
-            written: Some(0),
-            held: None,
-        }
+        Sample { at, millicores: Some(millicores), resident, written: Some(0), held: None }
     }
 
     /// Samples one every `SAMPLE_EVERY` seconds from `from`, each taking
@@ -341,14 +324,7 @@ mod tests {
     #[test]
     fn the_first_sample_takes_no_cpu() {
         let mut watch = Watch::default();
-        let first = Sample {
-            at: 1000,
-            millicores: None,
-            resident: GIB,
-            most_under_pressure: false,
-            written: None,
-            held: None,
-        };
+        let first = Sample { at: 1000, millicores: None, resident: GIB, written: None, held: None };
         assert_eq!(watch.sampled(&first, &LIMITS, SAMPLE_EVERY), None);
         assert_eq!(watch, Watch::default());
     }
@@ -374,13 +350,22 @@ mod tests {
     }
 
     #[test]
-    fn under_pressure_the_worker_that_holds_the_most_turns_hot() {
-        let mut watch = Watch::default();
-        let most = Sample { most_under_pressure: true, ..sample(1000, 100, GIB) };
-        let Some(Turned::Hot(episode)) = watch.sampled(&most, &LIMITS, SAMPLE_EVERY) else {
-            panic!("{watch:?}")
-        };
-        assert_eq!(episode.why, Why::Pressure);
+    fn host_pressure_never_makes_a_worker_under_its_memory_limit_hot() {
+        use crate::host_inspection::{SPAN, Trigger, Watching};
+
+        let mut host = Watching::default();
+        let mut worker = Watch::default();
+        for at in (1000..=1600).step_by(SAMPLE_EVERY as usize) {
+            host.ticked(at, &[], true);
+            assert_eq!(worker.sampled(&sample(at, 100, GIB), &LIMITS, SAMPLE_EVERY), None);
+            assert_eq!(worker.hot, None);
+        }
+        assert_eq!(host.due(1600, SPAN).map(|(trigger, _)| trigger), Some(Trigger::Pressure));
+        // Its own memory limit still applies under host pressure.
+        assert!(matches!(
+            worker.sampled(&sample(1610, 100, 9 * GIB), &LIMITS, SAMPLE_EVERY),
+            Some(Turned::Hot(Episode { why: Why::Memory, .. }))
+        ));
     }
 
     #[test]

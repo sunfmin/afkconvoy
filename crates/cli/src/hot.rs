@@ -146,13 +146,6 @@ fn memory() -> Option<u64> {
     Some(kib.saturating_mul(1024))
 }
 
-/// Whether this host is under memory pressure: warned or worse, as macOS
-/// says it. A host that does not say is under none.
-fn under_pressure() -> bool {
-    cfg!(target_os = "macos")
-        && sysctl("kern.memorystatus_vm_pressure_level").is_some_and(|level| level >= 2)
-}
-
 fn sysctl(name: &str) -> Option<u64> {
     let out = Command::new("sysctl").args(["-n", name]).output().ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
@@ -531,18 +524,11 @@ impl Sampler {
             let held = if measuring { held(path) } else { None };
             taken.push((path.clone(), took, held));
         }
-        let pressure = under_pressure();
-        let most = taken
-            .iter()
-            .filter(|(_, took, _)| took.resident > 0)
-            .max_by_key(|(_, took, _)| took.resident);
-        let most = most.map(|(path, _, _)| path.clone());
         for (path, took, held) in taken {
             let sample = Sample {
                 at,
                 millicores: took.cpu_ms.map(|cpu| millicores(cpu, wall_ms)),
                 resident: took.resident,
-                most_under_pressure: pressure && most.as_ref() == Some(&path),
                 written: took.written,
                 held,
             };
@@ -590,7 +576,6 @@ pub fn why_said(why: Why, limits: &Limits) -> String {
     let past = match why {
         Why::Cpu => format!("past {} for {}s", cores(limits.millicores), CPU_HELD),
         Why::Memory => format!("past {} resident", measure::said(limits.resident)),
-        Why::Pressure => "the host under it, holding the most".to_string(),
         Why::Written => format!(
             "past {} written in {} minutes",
             measure::said(limits.written),
