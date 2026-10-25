@@ -566,7 +566,7 @@ pub fn reconcile(
     }
     if locks.is_empty()
         && let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
-        && crate::caster::last(&fleet.repo, fleet.now).is_some_and(|c| c.live)
+        && crate::caster::last(fleet).is_some_and(|c| c.live)
     {
         jobs.push((None, Some("@caster".into()), worktree));
     }

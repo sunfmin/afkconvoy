@@ -1567,7 +1567,7 @@ fn issues_json(set: &WorkingSet) -> Result<Value> {
     // As `plan` answers them: the same working set, said the same way.
     let plan = serde_json::to_value(set)?;
     let mut issues = json!({});
-    for key in ["frontier", "excluded", "escalating", "locks", "free_slots", "patrols"] {
+    for key in ["frontier", "excluded", "escalating", "locks", "free_slots", "patrols", "casting"] {
         issues[key] = plan.get(key).cloned().unwrap_or_else(|| json!([]));
     }
     Ok(issues)
@@ -1889,6 +1889,7 @@ mod tests {
             inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
+            casting: vec![],
             cut: None,
         }
     }

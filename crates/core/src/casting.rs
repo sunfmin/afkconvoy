@@ -225,11 +225,10 @@ impl Why {
 /// start: after that they are dispatched uncast.
 pub const CASTER_SECONDS: u64 = 600;
 
-/// Whether `range` leaves a choice to make: it holds more than one harness
-/// and model, a harness held with no model being one.
+/// Whether the kit-selected harness of `range` has multiple models. Later
+/// harnesses are fallback candidates, never alternatives for the caster.
 pub fn choice(range: &[Held]) -> bool {
-    let options: usize = range.iter().map(|held| held.models.len().max(1)).sum();
-    options > 1
+    range.first().is_some_and(|held| held.models.len() > 1)
 }
 
 /// `role`'s range on a host whose host kit holds `kit`, in its order: its
@@ -295,33 +294,33 @@ holds; it holds {}: the role ranges over the host kit whole, less what it holds 
     unmatched
 }
 
-/// A roster `entry` cut to the host kit `kit`, in the roster's order, each
+/// A roster `entry` cut to the host kit `kit`, in the kit's order, each
 /// harness once, with the models of it the entry allows and the host kit
 /// holds — by any of its names (`Held::model`) — and a harness the entry
 /// allows on any model, with every model the host kit holds for it. What
 /// the host kit does not hold is cut.
 fn cut_entry(entry: &Entry, kit: &[Held]) -> Vec<Held> {
     let mut range: Vec<Held> = vec![];
-    for allowed in &entry.run {
-        let Some(held) = kit.iter().find(|held| held.harness == allowed.harness) else {
+    for held in kit {
+        let allowed: Vec<_> = entry.run.iter().filter(|a| a.harness == held.harness).collect();
+        if allowed.iter().any(|a| a.model.is_none()) {
+            range.push(held.clone());
             continue;
-        };
-        let models: Vec<Model> = match &allowed.model {
-            Some(model) => match held.model(model) {
-                Ok(model) => vec![model.clone()],
-                Err(_) => continue,
-            },
-            None => held.models.clone(),
-        };
-        match range.iter_mut().find(|had| had.harness == allowed.harness) {
-            Some(had) => {
-                for model in models {
-                    if !had.models.contains(&model) {
-                        had.models.push(model);
-                    }
-                }
-            }
-            None => range.push(Held { harness: allowed.harness, models }),
+        }
+        let models: Vec<_> = held
+            .models
+            .iter()
+            .filter(|model| {
+                allowed.iter().any(|a| {
+                    a.model.as_deref().is_some_and(|name| {
+                        held.model(name).is_ok_and(|matched| matched.id == model.id)
+                    })
+                })
+            })
+            .cloned()
+            .collect();
+        if !models.is_empty() {
+            range.push(Held { harness: held.harness, models });
         }
     }
     range
@@ -530,13 +529,77 @@ pub fn preferred(labels: &[String], range: &[Held], kit: &[Held]) -> Result<Cast
         .ok_or("no eligible harness in the host kit")?;
     let only = std::slice::from_ref(held);
     let mut cast = first_of(only, Why::First, None).ok_or("no eligible harness")?;
-    if let Ok(Some((harness, Some(model)))) = held_casting(labels, only)
-        && harness == held.harness
-    {
+    if let Some(model) = labelled_model(labels, held) {
         cast.model = Some(model);
         cast.why = Why::Casting;
     }
     Ok(cast)
+}
+
+/// The model labels select within this harness alone. Labels for other
+/// harnesses remain on the issue and resume matching when priority returns.
+/// Two distinct matching models are ambiguous, so neither outranks kit order.
+pub fn labelled_model(labels: &[String], held: &Held) -> Option<String> {
+    let mut selected: Option<String> = None;
+    for label in labels {
+        let Some(name) = label.strip_prefix(MODEL_LABEL) else { continue };
+        if let Ok(model) = held.model(name) {
+            if selected.as_ref().is_some_and(|id| id != &model.id) {
+                return None;
+            }
+            selected = Some(model.id.clone());
+        }
+    }
+    selected
+}
+
+/// Whether any casting label was put on by a human. A caster may add a
+/// different harness's model beside its own labels, but never replaces or
+/// recasts human labels, including legacy harness labels.
+pub fn human_casting(labels: &[String], bodies: &[&str]) -> bool {
+    labels.iter().filter(|label| is_casting(label)).any(|label| {
+        let named = format!("`{label}`");
+        !bodies.iter().any(|body| {
+            body.starts_with("Cast ")
+                && body.split_once(": ").is_some_and(|(head, _)| head.contains(&named))
+        })
+    })
+}
+
+/// The caster has work only where a selected harness offers multiple models
+/// and this issue has no matching label of that harness already.
+pub fn needs_model(labels: &[String], bodies: &[&str], ranges: &[(String, Vec<Held>)]) -> bool {
+    !human_casting(labels, bodies)
+        && ranges.iter().any(|(_, range)| {
+            choice(range)
+                && range.first().is_some_and(|held| labelled_model(labels, held).is_none())
+        })
+}
+
+/// One issue's model-selection explanation, shared by plan, doctor and panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModelStatus {
+    pub number: u64,
+    pub needed: bool,
+    pub why: String,
+    pub stages: Vec<ModelStage>,
+    pub running: Option<ModelRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModelRun {
+    pub harness: Harness,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ModelStage {
+    pub stage: String,
+    pub harness: Option<Harness>,
+    pub model: Option<String>,
+    pub followed: bool,
+    pub why: String,
+    pub skipped: Vec<String>,
 }
 
 /// What a worker runs under a switch to `chosen`, the casting being `named`:
@@ -739,15 +802,8 @@ pub enum ForCaster {
 /// under the harness a switch `chosen`, with `caster` the last one started,
 /// `now`. An issue that has a casting, a range with no choice to make and a
 /// switch, which chooses whatever the casting, leave nothing to cast.
-pub fn for_caster(
-    number: u64,
-    labels: &[String],
-    choice: bool,
-    chosen: Option<Harness>,
-    caster: Option<&Caster>,
-    now: u64,
-) -> ForCaster {
-    if chosen.is_some() || !uncast(labels) || !choice {
+pub fn for_caster(number: u64, needed: bool, caster: Option<&Caster>, now: u64) -> ForCaster {
+    if !needed {
         return ForCaster::Dispatch;
     }
     match caster {
@@ -855,8 +911,7 @@ pub fn to_recast<'a>(
         && by_caster(labels, bodies)
 }
 
-/// What a caster puts on one issue: its `harness:` label, and its `model:`
-/// one where it names a model, with why.
+/// What a caster puts on one issue: a model of its selected harness, with why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Casting {
     pub issue: u64,
@@ -870,17 +925,18 @@ impl Casting {
     /// Its labels, where `range` holds what it names; an error says what it
     /// does not.
     pub fn labels(&self, range: &[Held]) -> Result<Vec<String>, String> {
-        let mut labels = vec![format!("{HARNESS_LABEL}{}", self.harness)];
-        labels.extend(self.model.iter().map(|model| format!("{MODEL_LABEL}{model}")));
-        // Whatever name it answered with, the label names the model's id.
-        let held = held_casting(&labels, range).map_err(|unheld| unheld.why)?;
-        labels.truncate(1);
-        labels
-            .extend(held.and_then(|(_, model)| model).map(|model| format!("{MODEL_LABEL}{model}")));
         if self.why.trim().is_empty() {
             return Err("it says nothing of why".to_string());
         }
-        Ok(labels)
+        let model = self.model.as_ref().ok_or("it names no model to choose")?;
+        let labels =
+            vec![format!("{HARNESS_LABEL}{}", self.harness), format!("{MODEL_LABEL}{model}")];
+        // Whatever name it answered with, the label names the model's id.
+        let held = held_casting(&labels, range).map_err(|unheld| unheld.why)?;
+        Ok(held
+            .and_then(|(_, model)| model)
+            .map(|model| vec![format!("{MODEL_LABEL}{model}")])
+            .unwrap_or_default())
     }
 }
 
@@ -915,9 +971,10 @@ const BODY_CHARS: usize = 3000;
 pub fn caster_prompt(issues: &[ToCast], offered: &[Offered], how: &[String]) -> String {
     let mut prompt = String::from(
         "You are the caster of a fleet of coding agents. For each GitHub issue below, choose \
-         the harness and model whose worker suits the work best: how hard the work is and what \
-         kind it is. Choose only among those listed, which are in order of preference: prefer \
-         the earlier where the work does not call for another.\n\nHarnesses and models:\n",
+         a model within each stage's kit-selected harness: how hard the work is and what \
+         kind it is. The harness is already chosen by this host; never choose another. \
+         Choose only among the models listed for that issue and stage, in kit order: prefer \
+         the earlier where the work does not call for another.\n\nModels of selected harnesses:\n",
     );
     for each in offered {
         let model = each.model.as_deref().map_or(String::new(), |model| format!(" {model}"));
@@ -932,9 +989,8 @@ pub fn caster_prompt(issues: &[ToCast], offered: &[Offered], how: &[String]) -> 
     }
     if issues.iter().any(|issue| !issue.stages.is_empty()) {
         prompt.push_str(
-            "\nEach issue below lists its stages and what each one's role may run. A stage \
-             whose role may not run the casting runs its own first: choose what suits the \
-             stages that have a choice to make.\n",
+            "\nEach issue below lists only the selected harnesses still needing a model. \
+             A stage already matched by a model label needs no casting.\n",
         );
     }
     prompt.push_str("\nIssues:\n");
@@ -949,8 +1005,9 @@ pub fn caster_prompt(issues: &[ToCast], offered: &[Offered], how: &[String]) -> 
     }
     prompt.push_str(
         "\nAnswer with one line for each issue and nothing else, each one JSON object: \
-         {\"issue\": <number>, \"harness\": \"<harness>\", \"model\": \"<model>\" or null where \
-         the harness is listed with none, \"why\": \"<one or two sentences>\"}\n",
+         {\"issue\": <number>, \"harness\": \"<selected harness>\", \"model\": \"<model>\", \
+         \"why\": \"<one or two sentences>\"}. When an issue needs models of several selected \
+         harnesses, answer one line per issue and harness. Only model labels are written.\n",
     );
     prompt
 }
@@ -1177,10 +1234,7 @@ mod tests {
             model: Some("Opus 5.5".into()),
             why: "hard".into(),
         };
-        assert_eq!(
-            casting.labels(&range),
-            Ok(labels(&["harness:claude-code", "model:claude-opus-5-5"]))
-        );
+        assert_eq!(casting.labels(&range), Ok(labels(&["model:claude-opus-5-5"])));
         // A label that matches nothing says the nearest names.
         let said = unheld(&labels(&["harness:claude-code", "model:opuss"]), &range).unwrap().why;
         assert!(said.contains("the nearest names: `opus`"), "{said}");
@@ -1343,7 +1397,7 @@ mod tests {
         let range = range();
         let given = Caster { since: 1000, given: vec![7], live: true };
         let held = |number, names: &[&str], caster: Option<&Caster>, now| {
-            for_caster(number, &labels(names), choice(&range), None, caster, now)
+            for_caster(number, uncast(&labels(names)) && choice(&range), caster, now)
         };
         assert_eq!(held(7, &["bug"], None, 1000), ForCaster::Due);
         assert_eq!(held(7, &["bug"], Some(&given), 1599), ForCaster::Wait);
@@ -1359,11 +1413,8 @@ mod tests {
         assert_eq!(held(7, &["harness:pi"], None, 1000), ForCaster::Dispatch);
         assert_eq!(held(7, &["model:a/b"], None, 1000), ForCaster::Dispatch);
         let alone = [Held { harness: Harness::Pi, models: vec!["a/b".into()] }];
-        assert_eq!(for_caster(7, &[], choice(&alone), None, None, 0), ForCaster::Dispatch);
-        assert_eq!(
-            for_caster(7, &[], choice(&range), Some(Harness::Pi), None, 0),
-            ForCaster::Dispatch
-        );
+        assert_eq!(for_caster(7, choice(&alone), None, 0), ForCaster::Dispatch);
+        assert_eq!(for_caster(7, false, None, 0), ForCaster::Dispatch);
     }
 
     #[test]
@@ -1385,12 +1436,11 @@ mod tests {
             why: why.to_string(),
         };
         let range = range();
-        assert_eq!(
-            casting("pi", Some("c/d"), "small").labels(&range),
-            Ok(labels(&["harness:pi", "model:c/d"]))
+        assert_eq!(casting("pi", Some("c/d"), "small").labels(&range), Ok(labels(&["model:c/d"])));
+        assert!(casting("codex", None, "big").labels(&range).is_err());
+        assert!(
+            casting("dsh", Some("x"), "x").labels(&range).unwrap_err().contains("does not hold")
         );
-        assert_eq!(casting("codex", None, "big").labels(&range), Ok(labels(&["harness:codex"])));
-        assert!(casting("dsh", None, "x").labels(&range).unwrap_err().contains("does not hold"));
         assert!(casting("pi", Some("x/y"), "x").labels(&range).is_err());
         assert!(casting("pi", None, " ").labels(&range).unwrap_err().contains("why"));
     }
@@ -1460,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn a_role_s_range_is_its_roster_entry_cut_to_the_host_kit_in_the_roster_s_order() {
+    fn a_role_s_range_is_its_roster_entry_cut_to_the_host_kit_in_the_kit_s_order() {
         let kit = range();
         let held = |harness, models: &[&str]| Held {
             harness,
@@ -1480,8 +1530,8 @@ mod tests {
         assert_eq!(
             super::cut(Some(&entry), &kit),
             [
+                held(Harness::Pi, &["a/b", "c/d"]),
                 held(Harness::Codex, &["gpt-x"]),
-                held(Harness::Pi, &["c/d", "a/b"]),
                 held(Harness::ClaudeCode, &[]),
             ]
         );

@@ -883,6 +883,7 @@ mod tests {
             inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
+            casting: vec![],
             cut: None,
         }
     }

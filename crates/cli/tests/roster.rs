@@ -163,7 +163,12 @@ fn casting_outside_the_selected_harness_is_preserved_without_overriding_kit_prio
 }
 #[test]
 fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to_make() {
-    let world = bound(TEAM);
+    let world =
+        bound(&TEAM.replace(
+            "model: opus }",
+            "model: opus }\n      - { harness: claude-code, model: haiku }",
+        ));
+    world.afk(&["kit", "--cast", "on"]).ok();
     world.issue(7, &["flow:feature"]);
     world.issue(8, &["flow:audit"]);
     let planned = world.afk(&PLAN).ok();
@@ -173,26 +178,24 @@ fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to
     assert_eq!(said(&planned, 8)["why"], "first");
 
     world.caster_answers(
-        "{\"issue\": 7, \"harness\": \"pi\", \"model\": \"a/fast\", \"why\": \"A small fix.\"}\n",
+        "{\"issue\": 7, \"harness\": \"claude-code\", \"model\": \"haiku\", \"why\": \"A small fix.\"}\n",
     );
     let answered = world.afk(&["cast", "--now", "1000"]).ok();
     assert_eq!(
         answered["cast"],
-        json!([{"issue": 7, "harness": "pi", "model": "a/fast", "why": "A small fix."}])
+        json!([{"issue": 7, "harness": "claude-code", "model": "haiku", "why": "A small fix."}])
     );
     let asked = world.caster_asked();
     for given in [
         "- claude-code opus\n",
-        "- pi a/fast: small fixes\n",
         "- claude-code haiku\n",
         "- dev: Small fixes on pi.\n",
-        "Stage build (dev): claude-code (opus); pi (a/fast)\n",
-        "Stage review (reviewer): claude-code (haiku)\n",
+        "Stage build (dev): claude-code (opus, haiku)\n",
     ] {
         assert!(asked.contains(given), "{given:?}\n{asked}");
     }
     assert!(!asked.contains("## #8") && !asked.contains("codex"), "{asked}");
-    assert_eq!(world.labels(7), ["flow:feature", "harness:pi", "model:a/fast"]);
+    assert_eq!(world.labels(7), ["flow:feature", "model:haiku"]);
 }
 
 #[test]
@@ -297,7 +300,8 @@ fn a_role_s_range_leaves_out_a_harness_it_holds_no_limits_for_and_plan_and_check
         planned["left_out"],
         json!([{"role": "dev", "left_out": []}, {"role": "reviewer", "left_out": left_out}])
     );
-    // The issue has a choice to make: the tick starts its caster.
+    world.afk(&["kit", "--cast", "on"]).ok();
+    // The selected harness has two models: the tick starts its caster.
     let ticked = world.afk(&TICK).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");
     assert_eq!(ticked["did"][0], json!({"do": "cast", "issue": null, "outcome": "done"}));
