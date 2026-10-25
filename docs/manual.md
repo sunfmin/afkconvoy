@@ -174,7 +174,7 @@ It exits 0 whatever the checkouts' states. Errors, as {"error": …} with a non-
 - `idle`, `holding` and `frontier` are of the last tick, not of now: those of a stopped or broken checkout are as its fleet instance last ticked, which `ticked` dates. `afkconvoy doctor`, in the checkout, reads GitHub as it is now.
 - A checkout `run` is adding is on no list until its first tick ends, and is not answered until then; one `stop` took off is not answered.
 - A broken checkout the host runner starts again is `running` once its tick log keeps that start: it is back once the start's first tick ends, and broken again if it ends before. `afkconvoy doctor` says the same of it.
-- It names no panel's address: `afkconvoy panel --open` in the checkout answers it.
+- `host_runner.panel` is where the host runner serves the panel: the address `afkconvoy panel --open` answers, with no need to ask it. Where no host runner runs it is null, as `host_runner` is whole; where the host runner serves none, it alone is null, and `panel --open` says why. `afkconvoy panel --help` says what the page shows.
 
 ##### Usage
 
