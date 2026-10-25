@@ -574,7 +574,7 @@ pub fn reconcile(
     }
     if locks.is_empty()
         && let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
-        && crate::caster::last(&fleet.repo, fleet.now).is_some_and(|c| c.live)
+        && crate::caster::last(fleet).is_some_and(|c| c.live)
     {
         jobs.push((None, Some("@caster".into()), worktree));
     }
@@ -807,7 +807,7 @@ fn decide(
         let mut failure = vec![];
         let mut answer = None;
         for held in candidates.harnesses.clone() {
-            let candidate = Kit { harnesses: vec![held], stock_consult: None };
+            let candidate = Kit { cast: false, harnesses: vec![held], stock_consult: None };
             match diagnose(&candidate, &evidence)
                 .and_then(|(h, answer)| Ok((h, checked(&answer, observed, structured)?)))
             {
@@ -885,7 +885,14 @@ fn decide(
         kit.harnesses.iter().find(|h| h.harness == observed.harness).is_none_or(|h| {
             observed.command_key.as_ref().is_none_or(|key| key == &command_key(&h.command))
         });
-    let mut excluded = if same_command { vec![observed.harness] } else { vec![] };
+    // A proved model fault removes that model through available(), so the
+    // same harness's next model remains the first continuation candidate.
+    // Session faults still need a different harness; legacy observations
+    // without a command/model identity cannot safely exclude just one model.
+    let model_fault = diagnosis.scope == Scope::Model
+        && observed.model.is_some()
+        && observed.command_key.is_some();
+    let mut excluded = if same_command && !model_fault { vec![observed.harness] } else { vec![] };
     store(book)?;
     fleet.invalidate_selection();
     excluded.extend(

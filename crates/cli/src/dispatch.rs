@@ -289,7 +289,7 @@ pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) ->
         None if issue.labels.contains(&fleet.config.escalate_label) => {
             fleet.stock_consult()?.harness
         }
-        None => fleet.cast(&issue.labels, false)?.map_err(|e| anyhow!(e))?.harness,
+        None => fleet.cast(&issue.labels)?.map_err(|e| anyhow!(e))?.harness,
     };
     crate::role::startable(&agent.launches, harness, "worker continuation")?;
     Ok(harness)
@@ -332,16 +332,15 @@ fn start(
     // (`casting::unmatched_comment`); a claim already held on a paused
     // harness — its landing — runs the host kit's first.
     let (harness, model, unmatched) = match (&staged, &consult) {
-        (Some(staged), _) => (staged.harness(), None, staged.unmatched().cloned()),
+        (Some(staged), _) => {
+            (staged.harness(), staged.model().map(str::to_string), staged.unmatched().cloned())
+        }
         (None, Some(_)) => {
             let stock = fleet.stock_consult()?;
             (stock.harness, stock.model.clone(), stock.unmatched.clone().map(|name| (name, stock)))
         }
         (None, None) => {
-            // A caster's casting to a paused harness is cast again: until it
-            // is, the issue runs as one with no casting.
-            let recast = !held && fleet.recast(number, &issue.labels)?;
-            let cast = match fleet.cast(&issue.labels, recast) {
+            let cast = match fleet.cast(&issue.labels) {
                 Ok(Ok(cast)) => cast,
                 Err(error) if held && error.is::<crate::paused::Held>() => fleet.first()?,
                 Ok(Err(why)) => bail!("{why}: run `afkconvoy kit`"),

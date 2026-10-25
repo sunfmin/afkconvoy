@@ -6,6 +6,61 @@ use common::{World, codex_line, commit, git};
 use serde_json::{Value, json};
 
 #[test]
+fn switching_a_model_promotes_its_harness_and_preserves_every_entry() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_models("claude-code", &["opus", "claude-sonnet-5-5", "haiku"]);
+    world.with_kit(|kit| {
+        kit["harnesses"][0]["models"][1]["names"] = json!(["sonnet", "Sonnet 5.5"]);
+        kit["harnesses"][0]["models"][1]["good_at"] = json!("wide changes");
+    });
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    let before: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let moved = world.afk_in(&world.root, &["switch", "--model", "SONNET"]).ok();
+    assert_eq!(moved["harness"], "claude-code");
+    assert_eq!(moved["model"], "claude-sonnet-5-5");
+    assert_eq!(moved["order"], json!(["claude-code", "codex", "pi", "dsh", "kimi"]));
+    let after: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    assert_eq!(
+        after["harnesses"][0]["models"],
+        json!([
+            before["harnesses"][1]["models"][1],
+            before["harnesses"][1]["models"][0],
+            before["harnesses"][1]["models"][2]
+        ])
+    );
+    for at in 1..after["harnesses"].as_array().unwrap().len() {
+        assert!(before["harnesses"].as_array().unwrap().contains(&after["harnesses"][at]));
+    }
+    assert_eq!(world.afk(&["switch", "--model", "Sonnet 5.5"]).ok()["changed"], false);
+    assert_eq!(
+        std::fs::read(world.kit_path()).unwrap(),
+        serde_json::to_vec_pretty(&after).unwrap()
+    );
+}
+
+#[test]
+fn an_unknown_or_ambiguous_model_leaves_the_kit_unchanged_and_names_candidates() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_models("claude-code", &["claude-sonnet-5-5"]);
+    world.kit_models("pi", &["anthropic/claude-sonnet-5-5"]);
+    let before = std::fs::read(world.kit_path()).unwrap();
+    let refused = world.afk(&["switch", "--model", "claude-sonnet-5-5"]).error();
+    assert!(
+        refused.contains("claude-code claude-sonnet-5-5")
+            && refused.contains("pi anthropic/claude-sonnet-5-5"),
+        "{refused}"
+    );
+    let unknown = world.afk(&["switch", "--model", "claude-sonnett-5-5"]).error();
+    assert!(
+        unknown.contains("nearest names") && unknown.contains("claude-sonnet-5-5"),
+        "{unknown}"
+    );
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+}
+
+#[test]
 fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() {
     let world = World::new();
     world.hold_every_harness();
@@ -427,7 +482,7 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
         }
     });
     tick(&world, 800);
-    assert_eq!(open_commands(&world, &seven), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    assert_eq!(open_commands(&world, &seven), ["agent --model 'haiku'"]);
     assert_eq!(open_commands(&world, &eight), ["agent --model 'haiku'"]);
     let plan = world.afk(&["plan", "--now", "801"]).ok();
     let faults = &plan["selection"]["health"]["faults"];
@@ -435,6 +490,38 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
     assert_eq!(faults[0]["model"], "opus");
     assert_eq!(world.paused(), json!([]));
     assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+    let kit = std::fs::read(world.kit_path()).unwrap();
+    world.issue(9, &["ready-for-agent"]);
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    let nine = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 9).unwrap();
+    assert_eq!(nine["cast"]["model"], "haiku");
+    let status = plan["casting"].as_array().unwrap().iter().find(|s| s["number"] == 9).unwrap();
+    assert!(status["stages"][0]["skipped"][0].as_str().unwrap().contains("opus: unavailable"));
+    world.probes_answer();
+    tick(&world, 4400);
+    world.issue(10, &["ready-for-agent"]);
+    let plan = world.afk(&["plan", "--now", "4401"]).ok();
+    let ten = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 10).unwrap();
+    assert_eq!(ten["cast"]["model"], "opus");
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+}
+
+#[test]
+fn switching_models_leaves_healthy_workers_alone_until_all_continues_them() {
+    let world = World::new();
+    world.kit_models("claude-code", &["opus", "haiku"]);
+    world.issue(7, &["ready-for-agent"]);
+    tick(&world, 700);
+    let dir = worktree(&world, 7);
+    std::fs::write(dir.join("unfinished.txt"), "keep this work").unwrap();
+    let claims = world.claims();
+    world.afk(&["switch", "--model", "haiku"]).ok();
+    assert_eq!(open_commands(&world, &dir), ["agent --model 'opus'"]);
+    let moved = world.afk(&["switch", "--model", "haiku", "--all", "--host", "h1"]).ok();
+    assert_eq!(moved["failed"], json!([]), "{moved}");
+    assert_eq!(open_commands(&world, &dir), ["agent --model 'haiku'"]);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep this work");
+    assert_eq!(world.claims(), claims);
 }
 
 #[test]

@@ -366,9 +366,10 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
     assert_eq!(
         kit,
         json!({
+            "cast": false,
             "harnesses": [
                 {"harness": "claude-code", "command": "agent",
-                    "models": [{"model": "default", "good_at": "not researched"}, {"model": "opus", "good_at": "not researched"}]},
+                    "models": [{"model": "opus", "good_at": "not researched"}, {"model": "default", "good_at": "not researched"}]},
                 {"harness": "pi", "command": "pi", "models": [{"model": "openai/gpt-5.5", "good_at": "not researched"}]},
             ],
             "stock_consult": {"harness": "claude-code", "model": "opus"},

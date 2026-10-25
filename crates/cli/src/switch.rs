@@ -20,19 +20,20 @@ use crate::watch::{join_record, record_join};
 /// directory the command was run in. Failures never stop the remaining checkouts.
 pub fn on_host(
     repo: Option<crate::git::Repo>,
-    harness: Harness,
+    target: crate::kit::Named,
     which: Which,
     instance: Option<afkconvoy_core::claims::InstanceId>,
     host: &str,
     now: u64,
     agent: impl Fn(&crate::git::Repo) -> Result<Agent>,
 ) -> Result<Value> {
+    let harness = target.harness;
     let here = repo
         .clone()
         .unwrap_or_else(|| crate::git::Repo::new(std::env::current_dir().unwrap_or_default()));
     let launches = crate::launch::Launches::new(&here, true)?;
     crate::role::startable(&launches, harness, PRIORITY_BY)?;
-    let mut result = crate::kit::prefer(harness)?;
+    let mut result = crate::kit::prefer(harness, target.model.as_deref())?;
     let mut switched = vec![];
     let mut failed = vec![];
     let mut paths: Vec<_> = match &which {
