@@ -244,13 +244,12 @@ fn a_wake_ends_the_sleep_of_its_checkouts_fleet_instance_alone() {
 fn closed_blocker(closes: bool, through_edge: bool) {
     let world = World::new();
     world.name_origin(&world.clone, "acme/dev");
-    world.say_tracker(&world.clone, "acme/tracker");
+    world.put_tracker("acme/tracker");
     let second = world.second_repo();
     let url = "https://github.com/acme/other.git";
     git(&second, &["config", "remote.origin.url", url]);
     let rewrite = format!("url.{}.insteadOf", world.root.join("remote2.git").display());
     git(&second, &["config", &rewrite, url]);
-    world.say_tracker(&second, "acme/tracker");
     let mut gh2 = world.gh2();
     gh2["trackers"] = world.gh()["trackers"].clone();
     std::fs::write(world.root.join("gh2.json"), gh2.to_string()).unwrap();
@@ -275,8 +274,15 @@ fn closed_blocker(closes: bool, through_edge: bool) {
             gh["edges"]["8"] = json!([7]);
         }
     });
-    let source = world.afk(&["run", "--host", "h1"]).ok();
-    let target = world.afk_in(&second, &["run", "--host", "h1"]).ok();
+    // A declared verdict is acted on only past every sign of the worker's
+    // life, including its files' mtimes. Keep that grace out of this test.
+    let now =
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+            + 600)
+            .to_string();
+    let args = ["run", "--host", "h1", "--tracker", "acme/tracker", "--now", &now];
+    let source = world.afk(&args).ok();
+    let target = world.afk_in(&second, &args).ok();
     for tick in [2, 3] {
         wake(&world, &second);
         until("an empty tick of the blocked fleet", || {
