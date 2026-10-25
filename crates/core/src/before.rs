@@ -87,7 +87,8 @@ impl Before {
         let mut open = BTreeMap::new();
         for issue in issues {
             let bar = label_bar(&issue.labels, config, flows);
-            let barred = matches!(bar, Some(LabelBar::NotReady(_) | LabelBar::NoFlow));
+            let barred =
+                matches!(bar, Some(LabelBar::NotReady(_) | LabelBar::NoFlow | LabelBar::Repos(_)));
             open.insert(
                 issue.number,
                 Looked { barred, open_blockers: issue.open_blockers.len() as u64 },

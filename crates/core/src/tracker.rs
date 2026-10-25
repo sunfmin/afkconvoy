@@ -82,6 +82,18 @@ impl Tracker {
         }
     }
 
+    /// Whether an open issue of the tracker carrying `labels` is the repo's:
+    /// in the checkout's own repo one that carries no repo label, which hands
+    /// an issue to the repo it names; in another tracker one carrying the
+    /// repo's. One that carries more is barred all the same (`plan::LabelBar`).
+    pub fn holds(&self, labels: &[String]) -> bool {
+        let carried = repo_labels(labels);
+        match self.repo_label() {
+            None => carried.is_empty(),
+            Some(mine) => carried.iter().any(|label| label.eq_ignore_ascii_case(&mine)),
+        }
+    }
+
     /// Issue `number` as the repo names it, in a PR's closing line and a
     /// join commit: `#7` of its own, `acme/tracker#7` of another tracker's.
     pub fn issue(&self, number: u64) -> String {
@@ -221,6 +233,17 @@ mod tests {
         assert_eq!(Tracker::Own.repo_label(), None);
         let labels = ["bug", "Repo:acme/dev", "repo:acme/web"].map(String::from);
         assert_eq!(repo_labels(&labels), ["Repo:acme/dev", "repo:acme/web"]);
+    }
+
+    #[test]
+    fn a_tracker_holds_the_issues_carrying_its_repos_label_and_the_own_repo_those_carrying_none() {
+        let labels = |all: &[&str]| all.iter().map(|label| label.to_string()).collect::<Vec<_>>();
+        assert!(Tracker::Own.holds(&labels(&["ready-for-agent"])));
+        assert!(!Tracker::Own.holds(&labels(&["repo:acme/web"])));
+        assert!(other().holds(&labels(&["Repo:Acme/Dev"])));
+        assert!(other().holds(&labels(&["repo:acme/dev", "repo:acme/web"])));
+        assert!(!other().holds(&labels(&["repo:acme/web"])));
+        assert!(!other().holds(&labels(&["ready-for-agent"])));
     }
 
     #[test]

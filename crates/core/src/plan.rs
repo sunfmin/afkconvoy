@@ -15,6 +15,7 @@ use crate::precedent;
 use crate::role::Due;
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
 use crate::team::{FlowLabels, LAND};
+use crate::tracker::repo_labels;
 use crate::train::Built;
 use crate::waiting::{Waiting, Waits};
 
@@ -76,6 +77,9 @@ pub enum LabelBar {
     /// A bound repo's issue that carries no flow label: it was not handed to
     /// the fleet.
     NoFlow,
+    /// It carries these repo labels, of more than one repo: no repo's fleet
+    /// works it (docs/adr/0027).
+    Repos(Vec<String>),
 }
 
 impl LabelBar {
@@ -84,6 +88,9 @@ impl LabelBar {
             LabelBar::Epic(label) => format!("epic label ({label})"),
             LabelBar::NotReady(ready) => format!("no {ready} label"),
             LabelBar::NoFlow => "no flow label".to_string(),
+            LabelBar::Repos(labels) => {
+                format!("repo labels of more than one repo ({})", labels.join(", "))
+            }
         }
     }
 }
@@ -96,6 +103,10 @@ impl LabelBar {
 pub fn label_bar(labels: &[String], config: &Config, flows: &FlowLabels) -> Option<LabelBar> {
     if let Some(epic) = labels.iter().find(|label| config.epic_labels.contains(label)) {
         return Some(LabelBar::Epic(epic.clone()));
+    }
+    let repos = repo_labels(labels);
+    if repos.len() > 1 {
+        return Some(LabelBar::Repos(repos.into_iter().map(String::from).collect()));
     }
     // The ready label means something only in an unbound repo.
     match &config.bound {
@@ -739,6 +750,7 @@ mod tests {
             issue(4, READY),
             issue(5, READY),
             blocked,
+            issue(7, &["ready-for-agent", "repo:acme/dev", "Repo:acme/web"]),
         ];
         let seen = Observed {
             issues: &issues,
@@ -777,6 +789,7 @@ mod tests {
                 (4, "already claimed"),
                 (5, "has an open linked PR"),
                 (6, "open blockers: #41, #42"),
+                (7, "repo labels of more than one repo (repo:acme/dev, Repo:acme/web)"),
             ]
         );
     }

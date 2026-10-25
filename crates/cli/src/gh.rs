@@ -508,6 +508,10 @@ impl GitHub {
                     row.number
                 );
             }
+            // Another repo's issue in the tracker is none of the fleet's.
+            if !self.tracker.holds(&row.labels) {
+                continue;
+            }
             let comments = if row.more { self.comments(row.number)? } else { row.comments };
             open.comments.insert(row.number, comments);
             open.rows.push(Issue {
