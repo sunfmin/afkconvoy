@@ -51,8 +51,8 @@ pub fn time_limit(gate_seconds: u64) -> u64 {
 }
 
 /// A repo's cut steps: the lines that set the version, and the lines that
-/// publish and install it, each run by `sh` in the cut's checkout with the
-/// version in `VERSION_ENV`.
+/// publish and install it, each run by `sh -e` in the cut's checkout with the
+/// version in `VERSION_ENV`: the first line that fails fails the step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Steps {
