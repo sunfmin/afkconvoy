@@ -2672,7 +2672,7 @@ Once the issue's last stage has passed to `land`, the worker is started in the w
 
 {"issue", "started": false, "skipped": "blocked", "blocked_by"} — the issue has an open blocker: blocked_by lists them, lowest number first. Nothing was claimed and nothing was started.
 
-Errors: the issue is closed; in a bound repo, the issue carries no flow label, more than one, or one that names no workflow of the team, it is at no stage a worker performs (the error says where it is), it passed to `land` and no open PR closes it, the team does not load (the error carries its `faults`) — none of which claims the issue; the instance's claim on it is one a stage already declared under; the worker launch command resolves to nothing; orca fails, or the worker is not ready in time. After a failed step the claim is still held: the instance's next tick finds a claim with no worker and continues it.
+Errors: the issue is closed; in a bound repo, the issue carries no flow label, more than one, or one that names no workflow of the team, it is at no stage a worker performs (the error says where it is), it passed to `land` and no open PR closes it, the team does not load (the error carries its `faults`) — none of which claims the issue; the instance's claim on it is one a stage already declared under; the worker launch command resolves to nothing; orca fails, or the worker is not ready in time. After a failed start the claim is still held: until the worker takes its brief, the instance's next tick finds a claim with no worker and starts it again in the same worktree. A second failed start escalates and releases the claim, naming the start errors. No nudge or silence judgment is made of an incomplete start.
 
 ##### What trips you up
 
@@ -2884,7 +2884,7 @@ The operator, in a checkout of the repo, on the host the worker runs on.
 
 ##### What it reads and writes
 
-It asks orca for the worker's state and reads the issue's comments for a verdict. It types one line at the worker's terminal and records the nudge in the worktree. Nothing on GitHub or the remote changes.
+It asks orca for the worker's state and reads the issue's comments for a verdict. Immediately before sending, it checks that the terminal still has a harness ready for a prompt: a bare shell receives nothing. It types one line at the worker's terminal and records the nudge in the worktree. Nothing on GitHub or the remote changes.
 
 ##### What it answers
 

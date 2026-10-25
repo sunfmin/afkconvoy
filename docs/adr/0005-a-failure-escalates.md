@@ -10,6 +10,17 @@ With the checks gate and the adversarial verify gone (ADR-0004), what is left to
 - `giving-up` and `needs-decision` lead to the same place, so they are one verdict.
 - Continuation is unaffected: a worker that died is still continued from its progress. That answers "did the worker die", not "is the work failing".
 
+## Amended: a dispatch whose worker never started is continued
+
+A terminal created is no worker started: the harness must become ready and
+take its brief. Until then, the dispatch is incomplete. The next tick starts
+the worker again under the same claim, in the same worktree, preserving its
+branch and local work. This is continuation of a claim left without a worker,
+not a fresh attempt at failed work. A second failed start escalates and
+releases the claim, with the startup errors as its reason. An incomplete
+start is never judged silent, and a nudge requires a harness ready for a
+prompt immediately before it is sent.
+
 ## Amended by ADR-0010 and ADR-0011
 
 A failure is a worker that crashed, went silent past its nudge, could not turn the gate green, declared no valid verdict, or crossed a guard. Those still escalate at once and are never retried.

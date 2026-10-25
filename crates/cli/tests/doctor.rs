@@ -367,8 +367,12 @@ fn a_tick_that_failed_whole_is_logged_and_three_in_a_row_are_a_finding() {
 fn a_step_that_fails_tick_after_tick_is_critical() {
     let world = World::new();
     world.issue(3, &["ready-for-agent"]);
-    world.with_orca(|orca| orca["create_fails"] = json!([3]));
-    // the first tick fails as it starts the worker, each one after as it looks for it
+    world
+        .afk(&["dispatch", "--issue", "3", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+        .ok();
+    // An unreadable worker state keeps failing at every tick. Failed
+    // startup is bounded instead: a second failed start ends its claim.
+    world.with_orca(|orca| orca["ps_fails"] = json!(true));
     run(&world, &["--instance", "alpha", "--ticks", "4", "--now", "1000"]);
     let unwell = doctor(&world, "1000");
     assert_eq!(unwell.code, 1);

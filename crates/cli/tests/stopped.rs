@@ -323,6 +323,23 @@ fn nudge_record(world: &World) -> PathBuf {
 }
 
 #[test]
+fn a_nudge_is_never_sent_to_a_terminal_whose_harness_has_exited() {
+    let world = fleet(1000);
+    report(&world, "done", 1000, 1000);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["bare_shell"] = json!(true);
+        }
+    });
+    world.orca_calls();
+    let refused = world.afk(&["nudge", "7", "--instance", "alpha", "--now", "1400"]).error();
+    assert!(refused.contains("no running worker harness"), "{refused}");
+    assert_eq!(typed(&world).len(), 1, "only the brief was sent before the harness exited");
+    assert!(!nudge_record(&world).exists(), "a refused nudge is never recorded");
+    assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal send"));
+}
+
+#[test]
 fn unclassified_silence_waits_for_diagnosis_and_preserves_unpushed_work() {
     let world = fleet(1000);
     let dir = worktree(&world);
