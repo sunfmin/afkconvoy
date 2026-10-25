@@ -579,7 +579,7 @@ impl Worktree {
     /// A note about the worker here, kept in the worktree's own git dir: this
     /// machine's, like the worker itself, and gone when the worktree is. git
     /// is asked where that is once.
-    fn note(&self, name: &str) -> Result<PathBuf> {
+    pub(crate) fn note(&self, name: &str) -> Result<PathBuf> {
         if self.git_dir.get().is_none() {
             let dir = Repo::new(self.path.clone()).git(&["rev-parse", "--absolute-git-dir"])?;
             let _ = self.git_dir.set(PathBuf::from(dir));

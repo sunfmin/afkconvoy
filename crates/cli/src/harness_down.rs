@@ -1,5 +1,4 @@
 //! Structured send evidence is routed to scoped worker health diagnosis.
-use crate::git::Repo;
 use crate::orca::Worktree;
 use anyhow::Result;
 
@@ -12,7 +11,7 @@ pub fn tell(
 ) -> Result<()> {
     match send() {
         Ok(()) => {
-            let file = Repo::new(worktree.path.clone()).note("convoy-worker-error.json")?;
+            let file = worktree.note("convoy-worker-error.json")?;
             if file.exists() {
                 std::fs::remove_file(file)?;
             }

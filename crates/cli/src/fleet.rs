@@ -142,7 +142,6 @@ impl Fleet {
     /// role runs without its limits.
     pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
         let kit = self.runnable()?;
-        let paused = crate::paused::read();
         let kit = kit.range();
         // Apply the role to the whole kit before excluding unhealthy
         // candidates. Temporary unavailability is never an unmatched roster
@@ -161,9 +160,6 @@ impl Fleet {
                     range.push(held);
                 }
             }
-        }
-        if range.is_empty() && !paused.is_empty() {
-            return Err(crate::paused::Held::every(&paused, self.now).into());
         }
         if range.is_empty() {
             return Err(NothingSafe(format!("the role `{}` has no currently eligible harness in its range; waiting for recovery", role.name)).into());

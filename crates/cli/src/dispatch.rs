@@ -332,7 +332,7 @@ fn start(
             DispatchStep::AwaitReady => {
                 if let Some(cut) = &worktree {
                     std::fs::write(
-                        Repo::new(cut.path.clone()).note("convoy-worker-model")?,
+                        cut.note("convoy-worker-model")?,
                         model.as_deref().unwrap_or(""),
                     )?;
                 }
@@ -430,9 +430,7 @@ pub(crate) fn continue_brief(
         "\nUncommitted work to preserve:\n```\n{}\n```\n",
         Repo::new(worktree.path.clone()).git(&["status", "--short"])?
     ));
-    if let Ok(evidence) = std::fs::read_to_string(
-        Repo::new(worktree.path.clone()).note("convoy-recovery-evidence.json")?,
-    ) {
+    if let Ok(evidence) = std::fs::read_to_string(worktree.note("convoy-recovery-evidence.json")?) {
         text.push_str(&format!("\n## Fault evidence and pending work\n{evidence}\nContinue from this scene; preserve existing work and complete the original task.\n"));
     }
     worktree.write_brief(&text)?;

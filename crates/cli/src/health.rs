@@ -163,7 +163,7 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
 /// Transport refusal is evidence for this worker first. Classification or
 /// diagnosis determines its scope, never a count of arbitrary refused sends.
 pub fn signal(worktree: &Worktree, reason: &str) -> Result<()> {
-    let file = Repo::new(worktree.path.clone()).note("convoy-worker-error.json")?;
+    let file = worktree.note("convoy-worker-error.json")?;
     std::fs::write(
         file,
         serde_json::to_vec(
@@ -174,7 +174,7 @@ pub fn signal(worktree: &Worktree, reason: &str) -> Result<()> {
 }
 
 fn error_of(worktree: &Worktree) -> Result<String> {
-    let file = Repo::new(worktree.path.clone()).note("convoy-worker-error.json")?;
+    let file = worktree.note("convoy-worker-error.json")?;
     Ok(std::fs::read_to_string(file).unwrap_or_default())
 }
 
@@ -475,6 +475,7 @@ pub fn reconcile(
             && crate::lock::explaining_lock(&fleet.gh, &fleet.config, Some(at))?.is_some()
         {
             book.workers.retain(|o| o.path != worktree.path);
+            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
         }
         let busy_without_fault = state == WorkerState::Busy
@@ -482,6 +483,7 @@ pub fn reconcile(
             && error_of(&worktree)?.is_empty();
         if state == WorkerState::Gone || busy_without_fault {
             book.workers.retain(|o| o.path != worktree.path);
+            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
         }
         let comments = open.issues.comments(claim.number);
@@ -502,6 +504,7 @@ pub fn reconcile(
         });
         if stock_answered || prohibited_work {
             book.workers.retain(|o| o.path != worktree.path);
+            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
         }
         let verdict = afkconvoy_core::verdict::latest_verdict(bodies())
@@ -516,6 +519,7 @@ pub fn reconcile(
         };
         if declared {
             book.workers.retain(|o| o.path != worktree.path);
+            book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
             continue;
         }
         jobs.push((Some(claim.number), None, worktree));
@@ -575,6 +579,7 @@ pub fn reconcile(
         }
         store(&book)?;
     }
+    store(&book)?;
     Ok(events)
 }
 
@@ -590,13 +595,16 @@ fn observe(
     worktree: &Worktree,
 ) -> Result<()> {
     let Some(terminal) = worktree.terminal()? else {
+        book.workers.retain(|o| o.path != worktree.path);
+        book.observations_failed.retain(|(path, _, _)| *path != worktree.path);
         return Ok(());
     };
     let state = worktree.state(fleet.now)?;
     let harness = worktree.harness()?.unwrap_or(Harness::DEFAULT);
     let repo = Repo::new(worktree.path.clone());
-    let model =
-        std::fs::read_to_string(repo.note("convoy-worker-model")?).ok().filter(|m| !m.is_empty());
+    let model = std::fs::read_to_string(worktree.note("convoy-worker-model")?)
+        .ok()
+        .filter(|m| !m.is_empty());
     let output = worktree.screen(&terminal, 100)?;
     let signal = error_of(worktree)?;
     let processes = crate::hot::listed_checked()?;
@@ -833,7 +841,7 @@ fn decide(
     // A fallback never promotes another kit entry. Exclusions last only for
     // this continuation; shared scoped evidence is persisted independently.
     std::fs::write(
-        Repo::new(worktree.path.clone()).note("convoy-recovery-evidence.json")?,
+        worktree.note("convoy-recovery-evidence.json")?,
         serde_json::to_vec_pretty(&json!({"source": observed.source, "diagnosis": diagnosis,
             "snapshots": observed.snapshots, "pending": "continue the original task and current stage"}))?,
     )?;
