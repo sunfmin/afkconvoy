@@ -144,7 +144,7 @@ pub fn tick(
     let _ = crate::paused::probe(repo, me.instance.as_str(), &me.host, me.now);
     let _ = crate::kit::refresh(repo, me.instance.as_str(), &me.host, me.now);
     let (mut fleet, mut open) = Fleet::read(repo, me.now)?;
-    for issue in &open.issues {
+    for issue in &open.issues.rows {
         // Dispatch reports a resolution failure against its issue; successful
         // discovery must precede casting and the caster's choice of range.
         let _ = agent.discover_casting(&issue.labels);

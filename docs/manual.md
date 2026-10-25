@@ -50,7 +50,7 @@ Read `afkconvoy help <topic>` when this guide or a command's help names the topi
 
 - One fleet instance per host per repo. `run` in a second checkout of a repo on the host's checkout list is refused, naming the first: run it there.
 - `run` returns once its checkout's first tick ended: the host runner ticks on, in the background, until `afkconvoy stop --all` stops it, keeping the checkout list. `afkconvoy stop` takes one checkout off the list. `tick` is one pass that exits.
-- Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A missing harness refuses the start.
+- Each harness's worker launch command comes from this host's host kit, kept outside the repo. `run` writes it on a host that has none, and `afkconvoy kit` writes it again; neither asks anything. `--worker-command` is gone. A known harness with no entry or command is discovered in the worker login shell, checked, and appended to the latest kit without model probes; an explicit command always wins. A running fleet reads command edits at its next worker launch.
 - A host whose fleets are all idle is put to sleep, but only within its sleep hours: 00:00-06:00 of its local time, unless it says others. `afkconvoy run --host-sleep-hours 22:00-06:00` says others for every fleet on the host, `--host-sleep-hours default` changes them back, and `--no-host-sleep` keeps the host awake at any hour.
 - In a bound repo the worker launch command must end in its harness — Claude Code, pi or Codex — taking flags: the fleet adds to it what starts each worker in its role and under the guard ([`afkconvoy help worker-launch`](help:worker-launch) says what, for each harness), and a start refuses a command whose `--help` does not name those flags. Every harness the team could ask for is checked first, and none is ever started in another's place.
 
@@ -4051,6 +4051,15 @@ How the fleet starts each harness's worker: the line a worker is started with, w
 
 #### Every worker
 
+Each launch reads the latest host kit, including edits made while the fleet
+instance runs. An explicit command wins. Where a known harness has no entry
+or its command is empty, the fleet resolves that harness's stock command in
+the worker's login shell, checks its login and the flags its role needs, and
+merges the command into the host kit. It reports the discovery as a warning.
+No model is inferred or probed; a new harness is appended after those held.
+Discovery installs nothing and logs nobody in. A failing explicit command is
+reported as given, so fixing it means editing its entry in the host kit.
+
 Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `/tmp/afkconvoy-<uid>/<16 hex digits>`, a link to `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. The link is short enough for a socket's path however long the worktree's is — a tool such as sccache binds one under its `TMPDIR` — and is named for the worktree's whole path. It goes with the worktree, but for a server the worker started, which keeps it until it ends: the fleet turns it to its own temporary directory first. Nothing else of an unbound repo's worker launch command is touched.
 
 The stage's facts are in the environment of every worker of a bound repo, and a role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE, AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL, AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's worker has AFKCONVOY_PATROL in place of the first three.
@@ -4316,7 +4325,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `is public: anyone can comment on its issues`: The checkout's tracker — its own repo, where it says none — is public. Say a private one with the line the refusal ends in, or make it private.
 - `that push would be refused`: The base branch's protection requires a PR, checks or a named pusher, and the landing train lands by pushing. Lift the rule, or pick another base branch.
 - `the remote rejects the fleet's refs under both`: The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be kept. A push rule of the remote's is what refuses: lift it for one of the two.
-- `the host kit has no worker launch command`: Run `afkconvoy kit` on this host: it holds every harness found and answering there. One it leaves out is in its `left_out`, with why.
+- A missing worker launch command is discovered automatically for a known harness in the worker's login shell and merged into the latest host kit. If resolution fails, install the named program or fix that shell's PATH. If login or required flags fail, follow the named harness's login command or update its explicit command in the host kit. An explicit command is never replaced by a default; running fleets read kit edits at their next worker launch.
 - `cannot read the host kit`: Run `afkconvoy kit` on this host, or `run`, which writes it where there is none.
 - `--worker-command is gone`: Run `afkconvoy kit` to edit this host's worker launch commands.
 - `is no harness`: Use claude-code, pi, codex or dsh.

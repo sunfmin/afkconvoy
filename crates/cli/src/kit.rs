@@ -905,6 +905,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn concurrent_command_discovery_and_kit_edits_preserve_the_latest_kit() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("kit.json");
+        let original = Kit {
+            harnesses: vec![held(Harness::Pi, "pi --custom", &["provider/model"])],
+            stock_consult: Some(Named { harness: Harness::Pi, model: None }),
+        };
+        store(&file, &original, 100).unwrap();
+        std::thread::scope(|scope| {
+            for harness in [Harness::Codex, Harness::ClaudeCode, Harness::Codex, Harness::Dsh] {
+                let file = &file;
+                scope.spawn(move || discover_at(file, harness, harness.stock()).unwrap());
+            }
+            let file = &file;
+            scope.spawn(move || {
+                let _writing = writing(file).unwrap();
+                let mut kit = load_at(file).unwrap();
+                kit.harnesses[0].models[0].good_at = Some("concurrent research".into());
+                store(file, &kit, 101).unwrap();
+            });
+        });
+        let kit = load_at(&file).unwrap();
+        assert_eq!(kit.harnesses.len(), 4);
+        assert_eq!(kit.harnesses[0].harness, Harness::Pi);
+        assert_eq!(kit.harnesses[0].command, "pi --custom");
+        assert_eq!(kit.harnesses[0].models[0].model, "provider/model");
+        assert_eq!(kit.harnesses[0].models[0].good_at.as_deref(), Some("concurrent research"));
+        assert_eq!(kit.stock_consult, original.stock_consult);
+        for held in &kit.harnesses[1..] {
+            assert!(held.models.is_empty());
+        }
+        assert_eq!(discover_at(&file, Harness::Pi, Harness::Pi.stock()).unwrap(), "pi --custom");
+        assert_eq!(load_at(&file).unwrap(), kit);
+    }
+
+    #[test]
     fn dsh_server_models_are_probed_and_held_without_the_credentials() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(

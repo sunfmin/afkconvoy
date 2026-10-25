@@ -61,7 +61,9 @@ impl Agent {
     /// Make a named, installed harness visible to casting before its range is
     /// read. No model is inferred for a newly discovered harness.
     pub fn discover_casting(&self, labels: &[String]) -> Result<()> {
-        for harness in labels.iter().filter_map(|label| label.strip_prefix("harness:").and_then(Harness::read)) {
+        for harness in
+            labels.iter().filter_map(|label| label.strip_prefix("harness:").and_then(Harness::read))
+        {
             if !crate::kit::load()?.harnesses.iter().any(|held| held.harness == harness) {
                 self.command(harness)?;
             }

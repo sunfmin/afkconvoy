@@ -97,7 +97,10 @@ fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
         ]
     );
     // checked to resolve like any other, and no alias was listed
-    assert_eq!(world.shell_asked(), ["type -- 'claude'", "gh auth status", "claude auth status"]);
+    assert_eq!(
+        world.shell_asked(),
+        ["type -- 'claude'", "gh auth status", "claude auth status", "claude auth status"]
+    );
 }
 
 #[test]
@@ -181,12 +184,13 @@ fn a_command_that_resolves_to_nothing_is_refused_before_any_worker_is_started() 
 }
 
 #[test]
-fn an_empty_command_is_refused() {
+fn an_empty_command_discovers_the_harness_default() {
     let world = backlog();
     world.kit_command("claude-code", "  ");
-    let error = wrapped(&world, &TICK).error();
-    assert!(error.contains("is empty"), "{error}");
-    assert_eq!(world.claims(), []);
+    let ran = wrapped(&world, &TICK);
+    assert_eq!(ran.json["errors"], json!([]));
+    assert!(started(&world)[0].starts_with("claude --dangerously-skip-permissions"));
+    assert!(ran.stderr.contains("discovered claude-code"), "{}", ran.stderr);
 }
 
 #[test]
@@ -433,13 +437,14 @@ fn a_missing_required_harness_refuses_the_entire_start() {
     let mut kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] != "claude-code");
     std::fs::write(world.kit_path(), serde_json::to_vec(&kit).unwrap()).unwrap();
+    world.shell_knows("claude", None);
     let error = world.afk(&TICK).error();
-    assert!(error.contains("claude-code") && error.contains("afkconvoy kit"), "{error}");
+    assert!(error.contains("claude") && error.contains("install"), "{error}");
     assert!(world.claims().is_empty());
     assert!(started(&world).is_empty());
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1000"]);
     assert_ne!(doctor.code, 0, "{}", doctor.json);
-    assert!(doctor.json["findings"].to_string().contains("host kit"));
+    assert!(doctor.json["findings"].to_string().contains("claude"));
 }
 
 #[test]
@@ -533,4 +538,100 @@ fn kit_research_is_written_from_a_fake_session_and_is_not_repeated() {
     assert_eq!(again["kit"]["harnesses"][0]["models"][0]["model"], "opus");
     assert_eq!(again["kit"]["harnesses"][0]["models"][0]["researched_at"], 1000);
     assert_eq!(std::fs::read_to_string(world.root.join("research-asked")).unwrap(), asked);
+}
+
+#[test]
+fn a_codex_casting_discovers_a_missing_entry_without_model_probes() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent", "harness:codex"]);
+    let before = std::fs::read(world.kit_path()).unwrap();
+    let ran = world.afk(&TICK);
+    assert_eq!(ran.json["errors"], json!([]), "{}", ran.stderr);
+    assert_eq!(started(&world), [afkconvoy_core::harness::Harness::Codex.stock()]);
+    assert!(ran.stderr.contains("discovered codex"), "{}", ran.stderr);
+    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let mut before: Value = serde_json::from_slice(&before).unwrap();
+    before["harnesses"][0]["models"] = json!([]);
+    assert_eq!(kit["harnesses"][0], before["harnesses"][0]);
+    assert_eq!(kit["harnesses"][1]["harness"], "codex");
+    assert_eq!(kit["harnesses"][1]["models"], json!([]));
+    assert!(!world.root.join("research-asked").exists());
+    assert!(
+        !world.shell_asked().iter().any(|asked| asked.contains("Reply with the single word OK.")
+            || asked.contains("app-server"))
+    );
+}
+
+#[test]
+fn codex_discovery_reports_missing_program_and_login_without_claiming() {
+    for missing in [true, false] {
+        let world = World::new();
+        world.issue(7, &["ready-for-agent", "harness:codex"]);
+        if missing {
+            world.shell_knows("codex", None);
+        } else {
+            world.logged_out("codex");
+        }
+        let ran =
+            world.afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"]);
+        let error = ran.error();
+        assert!(error.contains(if missing { "resolves to nothing" } else { "login" }), "{error}");
+        assert!(world.claims().is_empty());
+        assert!(started(&world).is_empty());
+        let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+        assert_eq!(kit["harnesses"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn a_resident_launches_reads_added_and_changed_commands() {
+    use afkconvoy::git::Repo;
+    use afkconvoy::launch::Launches;
+    use afkconvoy_core::harness::Harness;
+    const CHILD: &str = "AFKCONVOY_TEST_RESIDENT_LAUNCHES";
+    if std::env::var_os(CHILD).is_some() {
+        let repo = Repo::new(std::env::current_dir().unwrap());
+        let launches = Launches::new(&repo, true).unwrap();
+        launches.command(Harness::ClaudeCode).unwrap();
+        let file = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+            .join(".config/afkconvoy/kit.json");
+        let mut kit: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        kit["harnesses"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"harness": "codex", "command": "agent --new-codex", "models": []}));
+        std::fs::write(&file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        assert_eq!(launches.command(Harness::Codex).unwrap().as_str(), "agent --new-codex");
+        kit["harnesses"][1]["command"] = json!("agent --changed-codex");
+        std::fs::write(&file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        assert_eq!(launches.command(Harness::Codex).unwrap().as_str(), "agent --changed-codex");
+        kit["harnesses"][1]["command"] = json!("missing-custom");
+        std::fs::write(&file, serde_json::to_vec(&kit).unwrap()).unwrap();
+        assert!(
+            launches
+                .command(Harness::Codex)
+                .unwrap_err()
+                .to_string()
+                .contains("resolves to nothing")
+        );
+        return;
+    }
+    let world = World::new();
+    world.shell_knows("missing-custom", None);
+    let out = world
+        .command(std::env::current_exe().unwrap(), &world.clone)
+        .args([
+            "--exact",
+            "launch::a_resident_launches_reads_added_and_changed_commands",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

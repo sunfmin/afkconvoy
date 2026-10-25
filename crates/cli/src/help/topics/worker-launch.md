@@ -2,6 +2,15 @@ How the fleet starts each harness's worker: the line a worker is started with, w
 
 ## Every worker
 
+Each launch reads the latest host kit, including edits made while the fleet
+instance runs. An explicit command wins. Where a known harness has no entry
+or its command is empty, the fleet resolves that harness's stock command in
+the worker's login shell, checks its login and the flags its role needs, and
+merges the command into the host kit. It reports the discovery as a warning.
+No model is inferred or probed; a new harness is appended after those held.
+Discovery installs nothing and logs nobody in. A failing explicit command is
+reported as given, so fixing it means editing its entry in the host kit.
+
 Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `/tmp/afkconvoy-<uid>/<16 hex digits>`, a link to `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. The link is short enough for a socket's path however long the worktree's is — a tool such as sccache binds one under its `TMPDIR` — and is named for the worktree's whole path. It goes with the worktree, but for a server the worker started, which keeps it until it ends: the fleet turns it to its own temporary directory first. Nothing else of an unbound repo's worker launch command is touched.
 
 The stage's facts are in the environment of every worker of a bound repo, and a role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE, AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL, AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's worker has AFKCONVOY_PATROL in place of the first three.
