@@ -17,7 +17,7 @@ use afkconvoy_core::team::Team;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::worker::WorkerState;
 use afkconvoy_core::worker::recorded_branches;
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::dispatch::Agent;
@@ -257,10 +257,13 @@ pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
         })
         .collect();
     let first = fleet.first()?;
-    let launch = kit.command(first.harness).context("the host kit holds no harness")?;
+    let launches = crate::launch::Launches::new(repo, true)?;
+    let launch = launches.command(first.harness)?;
+    crate::probe::announce(&launches.warned());
     let kept = crate::kept::keep(first.harness, false)?.display().to_string();
     let prompt = caster_prompt(&issues, &offered(&kit, team.as_ref(), &offers), &how);
-    let question = first.harness.prompt_question(launch, &kept, first.model.as_deref(), &prompt);
+    let question =
+        first.harness.prompt_question(launch.as_str(), &kept, first.model.as_deref(), &prompt);
     let asked = crate::launch::ask_login_shell_within(&repo.dir, &question, ANSWER_TIMEOUT);
     let Some((true, answer)) = asked else {
         bail!("the host kit's first, `{}`, did not answer the caster", first.harness.key());

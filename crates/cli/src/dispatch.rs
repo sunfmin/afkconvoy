@@ -61,6 +61,19 @@ impl Agent {
     pub fn command(&self, harness: Harness) -> Result<LaunchCommand> {
         self.launches.command(harness)
     }
+
+    /// Make a named, installed harness visible to casting before its range is
+    /// read. No model is inferred for a newly discovered harness.
+    pub fn discover_casting(&self, labels: &[String]) -> Result<()> {
+        for harness in
+            labels.iter().filter_map(|label| label.strip_prefix("harness:").and_then(Harness::read))
+        {
+            if !crate::kit::load()?.harnesses.iter().any(|held| held.harness == harness) {
+                self.command(harness)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Where a dispatch starts from.
@@ -162,6 +175,7 @@ fn start(
         // before the claim: never lock a closed issue
         bail!("issue #{number} is closed, not open — nothing to dispatch");
     }
+    agent.discover_casting(&issue.labels)?;
     // In a bound repo the worker performs a stage, or the join that follows
     // the last, in its role. Read before the claim: an issue no worker can
     // be started on is never locked.

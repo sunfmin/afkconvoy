@@ -537,7 +537,7 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
             harness: *harness,
             callers: callers.clone(),
             command: proposed.as_str().to_string(),
-            tool: tools::harness(proposed).filter(|_| *harness != launches.default()),
+            tool: tools::harness(&proposed).filter(|_| *harness != launches.default()),
             fault: proposed.fault().map(said),
             flags_fault: if launches.bound() && proposed.resolves() {
                 takes().err().map(said)
@@ -583,7 +583,7 @@ pub fn startable(launches: &Launches, harness: Harness, caller: &str) -> Result<
     }
     for checked in &mut checked {
         if checked.tool.is_none() {
-            checked.tool = launches.of(harness)?.and_then(tools::harness);
+            checked.tool = launches.of(harness)?.as_ref().and_then(tools::harness);
         }
     }
     match refusal(checked) {

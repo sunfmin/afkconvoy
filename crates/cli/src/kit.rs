@@ -33,6 +33,7 @@ pub struct Held {
     #[serde(deserialize_with = "harness")]
     pub harness: Harness,
     /// Its worker launch command.
+    #[serde(default)]
     pub command: String,
     /// The models it was seen to answer with, in order of preference.
     #[serde(default)]
@@ -215,6 +216,38 @@ pub fn load() -> Result<Kit> {
     load_at(&path()?)
 }
 
+/// Merge one discovered command into the latest kit. A concurrent explicit
+/// command wins; models, research, preference order and the consult stay put.
+pub fn discover(harness: Harness, command: &str) -> Result<String> {
+    discover_at(&path()?, harness, command)
+}
+
+fn writing(file: &Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(file.parent().context("the host kit needs a parent directory")?)?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(file.with_extension("refresh"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn discover_at(file: &Path, harness: Harness, command: &str) -> Result<String> {
+    let _writing = writing(file)?;
+    let mut kit = if file.exists() { load_at(file)? } else { Kit::default() };
+    if let Some(explicit) = kit.command(harness).filter(|command| !command.trim().is_empty()) {
+        return Ok(explicit.to_string());
+    }
+    match kit.harnesses.iter_mut().find(|held| held.harness == harness) {
+        Some(held) => held.command = command.to_string(),
+        None => kit.harnesses.push(Held { harness, command: command.to_string(), models: vec![] }),
+    }
+    let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    store(file, &kit, now)?;
+    Ok(command.to_string())
+}
+
 /// The host kit kept in `file`.
 fn load_at(file: &Path) -> Result<Kit> {
     let unreadable =
@@ -295,6 +328,7 @@ pub fn ensure(now: u64) -> Result<()> {
 pub fn write(now: u64) -> Result<Value> {
     let host = Host::here(now)?;
     let file = path()?;
+    let _writing = writing(&file)?;
     let current = if file.exists() { load()? } else { Kit::default() };
     let (mut kit, left_out) = compose(&current, &host, Writing::Whole);
     crate::kit_research::research(&current, &mut kit, now, host.research);
@@ -923,6 +957,42 @@ fn named_said(named: &Named) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_command_discovery_and_kit_edits_preserve_the_latest_kit() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("kit.json");
+        let original = Kit {
+            harnesses: vec![held(Harness::Pi, "pi --custom", &["provider/model"])],
+            stock_consult: Some(Named { harness: Harness::Pi, model: None }),
+        };
+        store(&file, &original, 100).unwrap();
+        std::thread::scope(|scope| {
+            for harness in [Harness::Codex, Harness::ClaudeCode, Harness::Codex, Harness::Dsh] {
+                let file = &file;
+                scope.spawn(move || discover_at(file, harness, harness.stock()).unwrap());
+            }
+            let file = &file;
+            scope.spawn(move || {
+                let _writing = writing(file).unwrap();
+                let mut kit = load_at(file).unwrap();
+                kit.harnesses[0].models[0].good_at = Some("concurrent research".into());
+                store(file, &kit, 101).unwrap();
+            });
+        });
+        let kit = load_at(&file).unwrap();
+        assert_eq!(kit.harnesses.len(), 4);
+        assert_eq!(kit.harnesses[0].harness, Harness::Pi);
+        assert_eq!(kit.harnesses[0].command, "pi --custom");
+        assert_eq!(kit.harnesses[0].models[0].model, "provider/model");
+        assert_eq!(kit.harnesses[0].models[0].good_at.as_deref(), Some("concurrent research"));
+        assert_eq!(kit.stock_consult, original.stock_consult);
+        for held in &kit.harnesses[1..] {
+            assert!(held.models.is_empty());
+        }
+        assert_eq!(discover_at(&file, Harness::Pi, Harness::Pi.stock()).unwrap(), "pi --custom");
+        assert_eq!(load_at(&file).unwrap(), kit);
+    }
 
     #[test]
     fn dsh_server_models_are_probed_and_held_without_the_credentials() {

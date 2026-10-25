@@ -1151,7 +1151,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
 fn read_host(repo: &Repo, config: Option<&Config>) -> Host {
     let launches = Launches::foreseen(repo);
     let default = launches.default();
-    let looked = tools::look(repo, launches.of(default).ok().flatten());
+    let looked = tools::look(repo, launches.of(default).ok().flatten().as_ref());
     // An unbound repo knows of no harness: nothing calls for its one command's.
     let called = match config.and_then(|config| config.bound.as_ref()) {
         Some(bound) => {
