@@ -90,6 +90,7 @@ fn main() {
             pr_of(&mut st, &verb, &repo)
         }
         ["pr", "list", ..] => pr_list(&mut st),
+        ["pr", "create", ..] => pr_create(&mut st),
         ["pr", "close", number, ..] => {
             let number = number.to_string();
             pr_close(&mut st, &number)
@@ -348,6 +349,31 @@ fn pr_of(st: &mut State, verb: &str, repo: &str) -> ! {
         }
         _ => unsupported(st),
     }
+}
+
+/// Opens a local branch's PR, as a cut does, with the real pushed head.
+fn pr_create(st: &mut State) -> ! {
+    let head = st.opt("--head").expect("a PR has a head").to_string();
+    let base = st.opt("--base").expect("a PR has a base").to_string();
+    let title = st.opt("--title").expect("a PR has a title").to_string();
+    let body = st.opt("--body").expect("a PR has a body").to_string();
+    let bare = st.doc["bare"].as_str().unwrap();
+    let commit =
+        fake::git(&["--git-dir", bare, "rev-parse", "--verify", &format!("refs/heads/{head}")]);
+    if commit.is_empty() {
+        st.finish("", 1, "gh: head branch does not exist\n");
+    }
+    let number = ["issues", "prs"]
+        .into_iter()
+        .flat_map(|key| st.doc[key].as_array().into_iter().flatten())
+        .filter_map(|row| row["number"].as_u64())
+        .max()
+        .unwrap_or(0)
+        + 1;
+    st.list("prs").push(json!({"number": number, "headRefName": head,
+        "headRefOid": commit, "baseRefName": base, "title": title, "body": body,
+        "state": "open", "labels": []}));
+    st.finish(&format!("https://gh/pull/{number}"), 0, "")
 }
 
 fn pr_close(st: &mut State, number: &str) -> ! {
