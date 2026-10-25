@@ -301,9 +301,16 @@ fn closed_blocker(closes: bool, through_edge: bool) {
     }
     let started = Instant::now();
     wake(&world, &world.clone);
-    until("the blocked fleet dispatches at its next tick", || {
-        tick_log(&target).iter().any(|line| line.starts_with("tick 4: dispatched #9"))
-    });
+    while !tick_log(&target).iter().any(|line| line.starts_with("tick 4: dispatched #9")) {
+        assert!(
+            started.elapsed() < SOON,
+            "the blocked fleet did not dispatch: source {:#?}, target {:#?}, blocker {}",
+            tick_log(&source),
+            tick_log(&target),
+            world.tracker()["issues"][0]
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert!(started.elapsed() < SOON, "it did not wait for the idle timer");
     let by = format!(
         "tick 4: started (woken by acme/tracker#7 closed, seen by fleet instance {})",
