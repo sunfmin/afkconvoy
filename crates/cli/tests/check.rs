@@ -101,7 +101,7 @@ fn a_well_formed_team_is_accepted_with_what_was_read() {
              "roster": {"cast": "Hard work on opus.", "run": [
                  {"harness": "claude-code", "model": "opus", "good_at": "hard work"},
                  {"harness": "claude-code", "model": null, "good_at": null}]},
-             "range": [{"harness": "claude-code", "models": ["opus", "sonnet"]}], "left_out": [], "unmatched": null, "nothing_safe": null},
+             "range": [{"harness": "claude-code", "models": ["sonnet", "opus"]}], "left_out": [], "unmatched": null, "nothing_safe": null},
             {"name": "reviewer", "repo": "acme/reviewer", "path": "",
              "commit": head(&world, "acme/reviewer"), "host_user": true, "dsh_profile": "fleet", "skills": ["review", "rule"], "above": [],
              "limits": [], "roster": null,
