@@ -72,7 +72,12 @@ pub const COMMENTS_JQ: &str =
 pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
 /// What is read of each label a repo has.
 pub const LABELS_JQ: &str = ".[].name";
-pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences";
+/// What is read of each open PR: `isCrossRepository` says its head is in
+/// another repository — a fork's (`GitHub::open_prs`).
+pub const PR_FIELDS: &str =
+    "number,title,headRefName,headRefOid,body,closingIssuesReferences,isCrossRepository";
+/// What is read of each open PR of another repo.
+pub const PR_OF_FIELDS: &str = "number,headRefName,isCrossRepository";
 
 /// The checkout's own repo, as an endpoint names it: `gh` fills it in from
 /// the checkout it runs in.
@@ -598,7 +603,9 @@ impl GitHub {
         Ok(carrying)
     }
 
-    /// Every open pull request.
+    /// Every open pull request whose head is a branch of the repo itself. One
+    /// from a fork is anyone's and no part of fleet state (GLOSSARY: Fleet
+    /// state): it is dropped here, so that nothing of the fleet reads it.
     pub fn open_prs(&self) -> Result<Vec<PullRequest>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -609,6 +616,7 @@ impl GitHub {
             head_ref_oid: String,
             body: Option<String>,
             closing_issues_references: Option<Vec<Linked>>,
+            is_cross_repository: bool,
         }
         #[derive(Deserialize)]
         struct Linked {
@@ -619,6 +627,7 @@ impl GitHub {
         let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
         Ok(rows
             .into_iter()
+            .filter(|row| !row.is_cross_repository)
             .map(|row| {
                 let linked: Vec<u64> = row
                     .closing_issues_references
@@ -732,16 +741,16 @@ impl GitHub {
         Ok(())
     }
 
-    /// The open PRs of another repo, `repo`: the number and the head branch
-    /// of each.
+    /// The open PRs of another repo, `repo`, from a branch of its own — as
+    /// `open_prs` reads this one's: the number and the head branch of each.
     pub fn open_prs_of(&self, repo: &RepoName) -> Result<Vec<(u64, String)>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Row {
             number: u64,
             head_ref_name: String,
+            is_cross_repository: bool,
         }
-        let fields = "number,headRefName";
         let out = self.read(&[
             "pr",
             "list",
@@ -752,10 +761,11 @@ impl GitHub {
             "--limit",
             "1000",
             "--json",
-            fields,
+            PR_OF_FIELDS,
         ])?;
         let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
-        Ok(rows.into_iter().map(|row| (row.number, row.head_ref_name)).collect())
+        let own = rows.into_iter().filter(|row| !row.is_cross_repository);
+        Ok(own.map(|row| (row.number, row.head_ref_name)).collect())
     }
 
     /// The open issues of another repo, `repo`: the number and the body of
