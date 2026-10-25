@@ -73,11 +73,10 @@ Homebrew downloads from the tap because this repository is private.
 
 `build` uses rustup's stable toolchain whatever `cargo` is first on `PATH`, and names the line that installs it when it, or the Intel target, is missing.
 
-Then, on each host that runs a fleet, restarting the host's fleet on the release is one `afkconvoy run`, in any checkout, after the upgrade:
+Then, on each host that runs a fleet, the upgrade is all there is to it:
 
 ```sh
 brew upgrade sunfmin/tap/afkconvoy
-afkconvoy run      # in any checkout the host works
 ```
 
-The newer afkconvoy finds the older host runner, stops it as SIGTERM does, and starts a host runner of its own version on the same checkout list: every repo the host worked is worked again, and its answer names the old and new versions and pids under `host_runner`. Nothing else is restarted by hand.
+The host runner finds the newer afkconvoy installed where it was started from, and moves onto it once its fleets are idle — nothing claimed, nothing on a landing train, nothing in the exclusive queue, no inspection running — on the same checkout list: every repo the host worked is worked again, and `afkconvoy checkouts` answers the new version under `host_runner`. Until then `afkconvoy doctor` says what holds the move back, as `host.installed`, and gives a finding where the new one did not start.

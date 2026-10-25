@@ -109,6 +109,17 @@ pub enum What {
     /// The fleet instance broken `since` then is back: a start of it again
     /// ended its first tick. Written by the host runner, as that instance.
     Back { since: u64 },
+    /// The host runner moved from the afkconvoy `from` onto the newer one
+    /// installed at `path`, of `to` as the new host runner says it: the
+    /// fleet instance stopped for it, and the new one's starts it again.
+    /// Written by the host runner that moved, as that fleet instance, once
+    /// the new one answered.
+    Moved { from: String, to: String, path: PathBuf },
+    /// The host runner did not move from the afkconvoy `from` onto `to`,
+    /// installed at `path`: that one did not start, `why`, and this one took
+    /// the host back and starts the fleet instance again. Written by the host
+    /// runner, as the fleet instance that stopped for the move.
+    NotMoved { from: String, to: String, path: PathBuf, why: String },
     /// A worker turned hot (`crate::hot`): `worker` is `#7`, or its worktree's
     /// name; `why` and what it `held` as it did, in words.
     Hot { worker: String, why: String, held: String },
@@ -211,6 +222,10 @@ impl Entry {
                 format!("broken: {}", broken(why, *since, *next, self.at))
             }
             What::Back { since } => format!("back: {}", back(*since, self.at)),
+            What::Moved { from, to, path } => format!("moved: {}", moved(from, to, path)),
+            What::NotMoved { from, to, path, why } => {
+                format!("not moved: {}", not_moved(from, to, path, why))
+            }
             What::Hot { worker, why, held } => {
                 format!("hot: {worker} is hot: {why} · it holds {held}")
             }
@@ -271,6 +286,10 @@ impl Entry {
             What::Back { since } => {
                 Some(("back", format!("started again, broken since {} UTC", utc(*since))))
             }
+            What::Moved { from, to, path } => Some(("moved", moved(from, to, path))),
+            What::NotMoved { from, to, path, why } => {
+                Some(("not_moved", not_moved(from, to, path, why)))
+            }
             What::InspectionDid { worker, did } => {
                 Some(("inspection", format!("{worker}: did {did}")))
             }
@@ -295,8 +314,34 @@ impl Entry {
     /// Whether a `run` wrote it, not a command that acted beside it nor the
     /// host runner of it: only such a line says which instance the `run` is.
     pub fn of_run(&self) -> bool {
-        !matches!(self.what, What::Command { .. } | What::Broken { .. } | What::Back { .. })
+        !matches!(
+            self.what,
+            What::Command { .. }
+                | What::Broken { .. }
+                | What::Back { .. }
+                | What::Moved { .. }
+                | What::NotMoved { .. }
+        )
     }
+}
+
+/// The host runner's move from the afkconvoy `from` onto `to`, installed at
+/// `path`, in words.
+fn moved(from: &str, to: &str, path: &Path) -> String {
+    format!(
+        "the host runner moved from afkconvoy {from} to afkconvoy {to}, installed at {}",
+        path.display()
+    )
+}
+
+/// The host runner's move from `from` onto `to`, installed at `path`, that
+/// failed for `why`, in words.
+fn not_moved(from: &str, to: &str, path: &Path, why: &str) -> String {
+    format!(
+        "afkconvoy {to}, installed at {}, did not start: {why} · the host runner stays on \
+         afkconvoy {from}",
+        path.display()
+    )
 }
 
 /// A fleet instance broken, in words, said at `at`: why, since when, and when
@@ -826,6 +871,30 @@ mod tests {
         assert!(!broken.of_run() && !back.of_run());
         let line = serde_json::to_value(&broken).unwrap();
         assert_eq!(line["broken"]["next"], since + 360, "{line}");
+    }
+
+    #[test]
+    fn the_host_runners_move_and_one_that_failed_are_events_with_both_releases() {
+        let entry = |what| Entry { at: 7, instance: "alpha".into(), host: "h1".into(), what };
+        let path = PathBuf::from("/opt/homebrew/bin/afkconvoy");
+        let (from, to) = ("0.6.0".to_string(), "0.6.1".to_string());
+        let moved = entry(What::Moved { from: from.clone(), to: to.clone(), path: path.clone() });
+        let said = "the host runner moved from afkconvoy 0.6.0 to afkconvoy 0.6.1, installed at \
+                    /opt/homebrew/bin/afkconvoy";
+        assert_eq!(moved.said(), format!("moved: {said}"));
+        assert_eq!(moved.event(), Some(("moved", said.to_string())));
+        let why = "it ended as it started (exit status: 1)".to_string();
+        let not_moved = entry(What::NotMoved { from, to, path, why });
+        let said = "afkconvoy 0.6.1, installed at /opt/homebrew/bin/afkconvoy, did not start: it \
+                    ended as it started (exit status: 1) · the host runner stays on afkconvoy \
+                    0.6.0";
+        assert_eq!(not_moved.said(), format!("not moved: {said}"));
+        assert_eq!(not_moved.event(), Some(("not_moved", said.to_string())));
+        // the host runner's lines: which instance a `run` is, its own say
+        assert!(!moved.of_run() && !not_moved.of_run());
+        let line = serde_json::to_value(&moved).unwrap();
+        assert_eq!(line["moved"]["to"], "0.6.1", "{line}");
+        assert_eq!(serde_json::from_value::<Entry>(line).unwrap(), moved);
     }
 
     #[test]
