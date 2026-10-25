@@ -600,7 +600,7 @@ pub fn read(
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     panel.frontier = set.frontier.len();
-    let on_train = set.mine.iter().any(|mine| mine.status == Status::Joined);
+    let on_train = set.on_train();
     panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier, on_train);
     // Soft: a team or a host kit that cannot be read names no role.
     if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {

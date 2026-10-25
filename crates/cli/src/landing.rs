@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use afkconvoy_core::config::Config;
 use afkconvoy_core::gate::{GateCommand, Proven, Tree, at_limit, red_comment};
-use afkconvoy_core::train::{PUSH_TRIES, TrainOutcome, finished, keeps_its_commits, train_refs};
+use afkconvoy_core::train::{
+    Of, PUSH_TRIES, TrainOutcome, finished, keeps_its_commits, train_refs,
+};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
@@ -226,11 +228,12 @@ pub fn land_train(
         return Ok(stop(&answer, TrainOutcome::TargetMoved, json!({"detail": detail})));
     }
 
-    // On the base branch: landed. The claims and the PRs' worktrees are the tick's.
+    // On the base branch: landed. The claims and the PRs' worktrees are the
+    // tick's; an inspection's PR closes no issue.
     let landed = finished(&joins, &open);
-    for join in &landed {
-        if !gh.issue(join.issue)?.is_closed() {
-            gh.close_issue(join.issue)?;
+    for issue in landed.iter().filter_map(|join| join.issue()) {
+        if !gh.issue(issue)?.is_closed() {
+            gh.close_issue(issue)?;
         }
     }
     let numbers: BTreeSet<u64> = landed.iter().map(|join| join.pr).collect();
@@ -250,7 +253,12 @@ pub fn land_train(
     let more = repo.remote_sha(&refs.line)?.as_deref() != Some(&head);
     let rows: Vec<Value> = landed
         .iter()
-        .map(|join| json!({"issue": join.issue, "pr": join.pr, "commit": join.commit}))
+        .map(|join| match &join.of {
+            Of::Issue(issue) => json!({"issue": issue, "pr": join.pr, "commit": join.commit}),
+            Of::Inspection(host) => {
+                json!({"inspection": host, "pr": join.pr, "commit": join.commit})
+            }
+        })
         .collect();
     let detail = if more {
         "landed — and the train has grown since: run this again"

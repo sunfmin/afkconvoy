@@ -2721,15 +2721,16 @@ enum Command {
     ///
     /// ## What it reads and writes
     ///
-    /// On the remote it deletes the landing train — only while its tip is still the one its worker went silent on. It clears the train's worktree and keeps it. For each PR of the instance that was on the train it records the abandonment in the fleet's comment on the PR and tells the PR's worker — in a bound repo, the one in its workflow's landing role — to join the next train; a PR taken off an abandoned train before is escalated instead. Nothing has landed, and what an earlier train put on the base branch is not touched.
+    /// On the remote it deletes the landing train — only while its tip is still the one its worker went silent on. It clears the train's worktree and keeps it. For each PR of the instance that was on the train it records the abandonment in the fleet's comment on the PR and tells the PR's worker — in a bound repo, the one in its workflow's landing role — to join the next train; a PR taken off an abandoned train before is escalated instead. An inspection's PR, whose inspection is gone, it joins again itself, onto the train as it stands; one that conflicts with it is left open. Nothing has landed, and what an earlier train put on the base branch is not touched.
     ///
     /// ## What it answers
     ///
-    /// {"action": "abandoned", "train", "issues", "escalated", "worktree"}
+    /// {"action": "abandoned", "train", "issues", "escalated", "inspections", "worktree"}
     ///
     /// - `train`: the tip of the train given up
     /// - `issues`: the issues whose PRs are to join the next train
     /// - `escalated`: the issues escalated instead
+    /// - `inspections`: [{pr, joined}] — each inspection's PR that was on the train, and whether it is on the train again (false: it conflicts, and was left open)
     /// - `worktree`: the train's worktree, kept
     ///
     /// Errors, each with nothing abandoned: "nothing is on the landing train"; "has no worktree on this host"; "is not abandoned" — its worker is at work, gone, not told of what the train holds now, not nudged yet, or showed a sign of life within the grace period; "moved while it was being abandoned" — a PR joined meanwhile, and the train was kept.

@@ -21,7 +21,7 @@ use crate::gh::{Comment, IssueRead};
 use crate::git::REMOTE;
 use crate::judge::{Handed, escalate_claim, nudge_worker, own_background, progress};
 use crate::orca::{Source, Worktree};
-use crate::train::Train;
+use crate::train::{Train, join_again};
 use crate::watch::{join_record, record_join};
 
 /// The train worker as it stopped on the tip it was told about.
@@ -81,17 +81,22 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
     let joins = train.joins(&fleet.repo)?;
     let mut riders = vec![];
     let mut riding = vec![];
+    let mut inspections = vec![];
     for join in on_train(&joins, &prs) {
+        // An inspection's PR has nobody to join it again: the fleet does, below.
+        let Some(number) = join.issue() else {
+            inspections.push(join);
+            continue;
+        };
         // A peer's PR on the train is its own fleet's: joining again there, from its next tick.
-        let Some(claim) = fleet.scan.claim_of(join.issue).filter(|c| c.is_held_by(&me.instance))
-        else {
+        let Some(claim) = fleet.scan.claim_of(number).filter(|c| c.is_held_by(&me.instance)) else {
             continue;
         };
         let claim = claim.clone();
         let (record, comments) = join_record(fleet, join.pr)?;
-        let issue = fleet.gh.issue(join.issue)?;
-        riders.push(Rider { issue: join.issue, pr: join.pr, standing: standing(&record) });
-        riding.push((join.issue, Riding { claim, issue, record, comments }));
+        let issue = fleet.gh.issue(number)?;
+        riders.push(Rider { issue: number, pr: join.pr, standing: standing(&record) });
+        riding.push((number, Riding { claim, issue, record, comments }));
     }
     let of = |issue: u64| -> Result<&Riding> {
         let found = riding.iter().find(|(number, _)| *number == issue);
@@ -124,8 +129,17 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
         }
         Ok::<(), anyhow::Error>(())
     })?;
+    // Onto the train as it stands now, the one given up gone: what conflicts
+    // with it is said, and left open.
+    let mut rejoined = vec![];
+    for join in inspections {
+        let Some(pr) = prs.iter().find(|pr| pr.number == join.pr) else { continue };
+        let again = join_again(&fleet.repo, &fleet.config, pr, &join.of, fleet.now)?;
+        rejoined.push(json!({"pr": join.pr, "joined": again}));
+    }
     Ok(json!({"action": "abandoned", "train": train.tip, "issues": done.again,
-        "escalated": done.escalated, "worktree": stopped.worktree.path}))
+        "escalated": done.escalated, "inspections": rejoined,
+        "worktree": stopped.worktree.path}))
 }
 
 /// Deletes the train's refs: the line only while it is still at the tip that
