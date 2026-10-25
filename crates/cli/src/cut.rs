@@ -220,9 +220,10 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
             // One report stands for a cut until a human closes it.
             let issue = match row.failure {
                 Some(open) => open,
-                None => fleet.gh.open_issue(
+                None => fleet.gh.open_report(
                     &cut::failure_title(&version),
                     &cut::failure_report(&record, &failure, &me.host, &path, &line),
+                    &format!("the step `{}` failed: {}", failure.step.word(), failure.why.trim()),
                     &[escalate_label(fleet, read).as_str()],
                 )?,
             };

@@ -399,13 +399,13 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
   - `tracker`: the repo its fleet reads and writes its issues in, as `afkconvoy checkouts` says it: null where the checkout says none, and its own repo is its tracker. {error} where the checkout list cannot be read
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
-- `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it. null when the issues could not be read
+- `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
 
   - `severity`: how much it matters, one of those below
   - `what`: the fault, in a sentence
   - `evidence`: what was read that says so
-  - `fix`: one command line to run as it is — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit
+  - `fix`: one command line to run as it is but for what stands between < and > — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
 
 A finding's `severity` is one of, most first:
@@ -492,7 +492,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 - `caster`: while a caster runs or one is due:
 
   {running_since, due, held, to_cast} — when the one that runs was started (null: none runs), whether a tick starts one now, the frontier's issues held back for it, and every issue a caster started now is given. An uncast issue with a choice to make waits for one, for ten minutes at most from its start: `afkconvoy cast --help`
-- `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, since, answer} — why in a few words, since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
+- `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, url, since, answer} — `why`: what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url`: that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
 - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
 - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
 - `peer_live`: other instances' claims within the lease — never touched
@@ -918,7 +918,7 @@ With `--open` it reads nothing itself, and starts nothing: it asks this host's r
 Not a JSON object: one HTML document on stdout, complete in itself, with no address in it that a browser would fetch. The same fleet state gives the same document. It has three parts, each made by one rendering, whether the host runner serves the page or this prints it:
 
 - The host, once: admission — whether it holds back new workers, why, and what it read of the host; the workers that are hot, in every repo, with why and what each held at the most; the inspection running, and what the last host inspection found; the commands run alone on the host and those waiting their turn (`exclusive`); host sleep — the sleep hours it may be put to sleep in, or that the host settings keep it awake, and which fleet instances are not idle; the host kit — each harness in order with its models, each one paused, and what the stock consult runs
-- With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with why and the line that answers it: what `doctor` answers as `waiting_on_human`
+- With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`
 - Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held of its bound and its frontier, and links to its part. Each part then shows:
   - Claims held: the claims of its fleet instance that take a slot, of the concurrency
   - `Declared`: shown while there are any: the claims whose worker declared a verdict not acted on yet, which take no slot
@@ -3272,7 +3272,7 @@ Errors, as {"error": …} with a non-zero exit, with nothing written: the issue 
 
 - A ruling runs the same stage again. It does not decide the stage's verdict: the worker started under it does.
 - An issue escalated because its worker went silent, or its gate stayed red, is at the stage that worker was performing: a ruling starts that stage anew.
-- An escalation made before its comment named the workflow cannot say which flow label to put back. Put the flow label on by hand, then rule.
+- An escalation with no position cannot be ruled on: no flow label and no escalation comment says which workflow it follows. The error gives the line to put a flow label on it, as `afkconvoy doctor` does. With one workflow the label is filled in; with several, choose from the flow labels listed. This starts it at that workflow's first stage (`afkconvoy help humans`).
 - Moving the labels by hand hands the issue back with no ruling on record: an issue its records show as escalating is escalated again at the next tick.
 - Run twice, it leaves two rulings. Both count: the stage runs again once. A consult's second changes nothing: one claim declares once.
 - A human's ruling starts both rework counts over. A consult's does not. On an `escalate` it is one more of the issue's rework in total, and one that would pass `max_rework` goes to a human instead; on anything else it counts nothing, and the same hand-off again goes to a human.
@@ -3350,6 +3350,7 @@ Errors, as {"error": …} with a non-zero exit, with nothing written: the workfl
 - It is refused while the issue is claimed: a claim is dispatched to one stage, and its worker would go on performing it. Wait for the stage to declare, or hand the claim to a human with `afkconvoy escalate` first.
 - It reopens nothing and closes nothing. An issue sent back from an ended workflow must be open to be worked.
 - The stage is named as its workflow's file names it. `afkconvoy show` draws them.
+- An escalation with no position cannot be sent to a stage before it follows a workflow. The error gives the same line as `afkconvoy doctor` to put a flow label on it (`afkconvoy help humans`).
 - Run twice, it leaves two records; the issue is at the stage either way.
 
 ##### Which checkout it is about
@@ -4131,15 +4132,21 @@ Every way the fleet stops for a human, and the command that answers each.
 
 #### Where to look
 
-`afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with why, since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
+`afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with `why` (what kind of wait, then the first sentence of the reason its comment gives), `url` (that comment, or an older failure report itself), since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
 
-An escalated issue carries the escalate label (`ready-for-human` unless renamed) in place of its flow label. Its comment says why and ends with the line to answer. Run every command below in a checkout of the repo.
+An escalated issue carries the escalate label (`ready-for-human` unless renamed) in place of its flow label. Its comment says why; current comments end with the line to answer. `doctor` gives the current line, even where an older comment has none or names the issue before it moved to the tracker. Run every command below in a checkout of the repo, replacing what stands between < and >.
 
 #### An escalation
 
 A stage failed or declared `escalate`. Its consult — the stock consult where none is named, and in an unbound repo — was asked first and let it through, unless the stage says `escalate: { to: human }` or the config `escalate_to: human`. The comment says what failed or gives the question that needs your answer.
 
 For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and what failed it once fails it again. In an unbound repo there is no stage to run again: fix what the comment names and put the ready label back, with the line the comment ends with. A PR the escalation kept is not started anew: the next worker takes it up — it reads the issue's comments, merges the base branch, gates and joins the landing train — so say on the issue what is to be done on it.
+
+#### An escalation with no position
+
+An issue escalated before it entered any workflow of the team — the repo was unbound then, or it came from another repo — has no stage records: `afkconvoy show --issue <n>` says it has no position. `rule` and `send` refuse it and give the line that puts a flow label on it. Answer it with that line, as `doctor`'s `answer` gives it: with one workflow its flow label is filled in, ready to run; with several workflows, `why` lists each flow label to choose `<flow label>` from. `plan` and the panel give the same answer and choices. The issue starts at the chosen workflow's first stage.
+
+Where its comment gives a line of its own, `doctor`'s is the current one: a comment written before the issue moved to the tracker names its old number and may name no tracker. Use the current issue number and tracker in the line `doctor` gives.
 
 #### Answering an escalation
 
@@ -4215,7 +4222,7 @@ A workflow that ended without a landing leaves its issue open: `gh issue close <
 
 #### What not to do
 
-Do not move the labels by hand: an issue's stage records say where it is, so one handed back with no ruling on record is escalated again. Rule on it, or send it.
+For an issue with a position, do not move the labels by hand: its stage records say where it is, so one handed back with no ruling on record is escalated again. Rule on it, or send it. An escalation with no position needs a flow label first, as above.
 
 ### `afkconvoy help troubleshooting`
 

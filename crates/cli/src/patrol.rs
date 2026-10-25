@@ -361,9 +361,10 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
         // One report stands for a patrol until a human closes it.
         if let Some(reason) = reason.as_ref().filter(|_| row.failure.is_none()) {
             let path = checkout.path.display().to_string();
-            fleet.gh.open_issue(
+            fleet.gh.open_report(
                 &failure_title(&row.name),
                 &failure_report(&row.name, reason, &me.host, &path),
+                reason,
                 &[read.kept()?.team.escalate_label.as_str()],
             )?;
         }

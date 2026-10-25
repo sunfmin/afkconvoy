@@ -248,10 +248,17 @@ fn an_unbound_stock_consult_parks_with_a_reason_until_the_ready_label_is_restore
     report(&world, "done", 1200);
     assert_eq!(did(&tick(&world, 1500)), ["judge 7 done"]);
     assert_eq!(world.claims(), []);
+    let parked = world.comments(7).pop().unwrap();
+    let url = world.comment_url(7, &parked);
+    world.comment(7, "Routine status comment.");
     for command in ["plan", "doctor"] {
         let view = world.afk(&[command, "--now", "1550"]).ok();
         assert_eq!(view["waiting_on_human"][0]["issue"], 7, "{view}");
-        assert_eq!(view["waiting_on_human"][0]["why"], "parked for evidence");
+        assert_eq!(
+            view["waiting_on_human"][0]["why"],
+            "parked for evidence: Wait for raw failure output."
+        );
+        assert_eq!(view["waiting_on_human"][0]["url"], url);
     }
     world.comment(7, "Routine status comment.");
     assert_eq!(did(&tick(&world, 1590)), [] as [&str; 0]);

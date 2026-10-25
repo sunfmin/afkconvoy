@@ -643,6 +643,8 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     let comment = world.comments(7).pop().unwrap();
     assert!(comment.starts_with("<!--convoy:escalation "), "{comment}");
     assert!(comment.trim_end().ends_with(&ways_out), "{comment}");
+    let url = world.comment_url(7, &comment);
+    world.comment(7, "A later status comment is not the reason for escalation.");
     let board = world.boards(7).pop().unwrap();
     assert!(board.contains("**Escalated to a human**") && board.ends_with(&ways_out), "{board}");
 
@@ -652,8 +654,9 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     let reason = excluded.iter().find(|issue| issue["number"] == 7).map(|issue| &issue["reason"]);
     assert_eq!(reason, Some(&json!("escalated: waits for a ruling")), "{plan}");
     // …and lists it as waiting for a human, with the line that answers it.
-    let waiting = json!([{"issue": 7, "title": "issue 7", "why": "escalated at build",
-        "since": 1270, "answer": answer}]);
+    let why = "escalated at build: The consult of the stage `build` let it through.";
+    let waiting = json!([{"issue": 7, "title": "issue 7", "why": why,
+        "url": url, "since": 1270, "answer": answer}]);
     assert_eq!(plan["waiting_on_human"], waiting);
 
     // `doctor` gives the same list, and counts it a finding past the hour.
@@ -671,7 +674,7 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     assert_eq!(
         waited(&late),
         [json!({"severity": "warning",
-            "what": "#7 has waited for a human for 2h 1m: escalated at build",
+            "what": format!("#7 has waited for a human for 2h 1m: {why}"),
             "evidence": "nobody holds it and no tick moves it; it is the fleet's again once \
                          it is answered, and it has waited longer than 1h 0m",
             "fix": answer, "see": "afkconvoy help humans"})]
@@ -690,9 +693,10 @@ fn an_escalation_says_so_on_the_tick_line_and_names_the_command_that_answers_it(
     // labelled with its repo: the list is of every repo on the host
     let card = "data-issue=\"7\"><span class=\"repo\">clone</span> <span class=\"num\">#7</span> \
                 <span class=\"title\">issue 7</span><span class=\"meta\"><span \
-                class=\"note\">escalated at build — afkconvoy rule --issue 7 --text-file \
+                class=\"note\">escalated at build: The consult of the stage `build` let it through. — afkconvoy rule --issue 7 --text-file \
                 &lt;file&gt;</span>";
     assert!(with_a_human.contains(card), "{with_a_human}");
+    assert!(with_a_human.contains(&format!("<a href=\"{url}\">Reason</a>")), "{with_a_human}");
     assert!(page.contains("With a human</dt><dd>1<"), "{page}");
     assert!(!page.contains("the fleet leaves alone"), "it is listed once: {page}");
 
@@ -804,6 +808,18 @@ fn a_tripped_breaker_goes_to_its_consult_and_one_tripping_again_to_a_human() {
     assert_eq!(did(&tick(&world, 1540)), ["advance 7 done"]);
     assert!(with_a_human(&world), "{:?}", world.labels(7));
     assert!(world.comments(7).pop().unwrap().contains("The breaker `max_rework` tripped"));
+    let comment = world.comments(7).pop().unwrap();
+    let url = world.comment_url(7, &comment);
+    world.comment(7, "Another status update.");
+    for command in ["plan", "doctor"] {
+        let view = world.afk(&[command, "--now", "1600"]).json;
+        let waiting = &view["waiting_on_human"][0];
+        assert!(
+            waiting["why"].as_str().unwrap().contains("The breaker `max_rework` tripped:"),
+            "{view}"
+        );
+        assert_eq!(waiting["url"], url);
+    }
 }
 
 #[test]
@@ -987,10 +1003,15 @@ fn consult_close_and_park_are_outcomes_and_a_park_waits_for_an_explicit_send() {
                 continue;
             }
             assert_eq!(shown(&world)["position"]["is"], "parked-for-evidence");
+            let parked = world.comments(7).pop().unwrap();
+            let url = world.comment_url(7, &parked);
+            world.comment(7, "A later status comment.");
             for command in ["plan", "doctor"] {
                 let view = world.afk(&[command, "--now", "1400"]).ok();
                 assert_eq!(view["waiting_on_human"][0]["issue"], 7, "{view}");
                 assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().contains("parked"));
+                assert!(view["waiting_on_human"][0]["why"].as_str().unwrap().ends_with(text));
+                assert_eq!(view["waiting_on_human"][0]["url"], url);
             }
             world.comment(7, "A routine status comment does not resume the investigation.");
             assert_eq!(did(&tick(&world, 1450)), [] as [&str; 0]);

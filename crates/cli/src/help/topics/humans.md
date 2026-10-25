@@ -2,15 +2,21 @@ Every way the fleet stops for a human, and the command that answers each.
 
 ## Where to look
 
-`afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with why, since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
+`afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with `why` (what kind of wait, then the first sentence of the reason its comment gives), `url` (that comment, or an older failure report itself), since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
 
-An escalated issue carries the escalate label (`{const:ESCALATE_LABEL}` unless renamed) in place of its flow label. Its comment says why and ends with the line to answer. Run every command below in a checkout of the repo.
+An escalated issue carries the escalate label (`{const:ESCALATE_LABEL}` unless renamed) in place of its flow label. Its comment says why; current comments end with the line to answer. `doctor` gives the current line, even where an older comment has none or names the issue before it moved to the tracker. Run every command below in a checkout of the repo, replacing what stands between < and >.
 
 ## An escalation
 
 A stage failed or declared `escalate`. Its consult — the stock consult where none is named, and in an unbound repo — was asked first and let it through, unless the stage says `escalate: { to: human }` or the config `escalate_to: human`. The comment says what failed or gives the question that needs your answer.
 
 For a failure, fix what failed first: `afkconvoy rule` starts the same stage anew, and what failed it once fails it again. In an unbound repo there is no stage to run again: fix what the comment names and put the ready label back, with the line the comment ends with. A PR the escalation kept is not started anew: the next worker takes it up — it reads the issue's comments, merges the base branch, gates and joins the landing train — so say on the issue what is to be done on it.
+
+## An escalation with no position
+
+An issue escalated before it entered any workflow of the team — the repo was unbound then, or it came from another repo — has no stage records: `afkconvoy show --issue <n>` says it has no position. `rule` and `send` refuse it and give the line that puts a flow label on it. Answer it with that line, as `doctor`'s `answer` gives it: with one workflow its flow label is filled in, ready to run; with several workflows, `why` lists each flow label to choose `<flow label>` from. `plan` and the panel give the same answer and choices. The issue starts at the chosen workflow's first stage.
+
+Where its comment gives a line of its own, `doctor`'s is the current one: a comment written before the issue moved to the tracker names its old number and may name no tracker. Use the current issue number and tracker in the line `doctor` gives.
 
 ## Answering an escalation
 
@@ -86,4 +92,4 @@ A workflow that ended without a landing leaves its issue open: `gh issue close <
 
 ## What not to do
 
-Do not move the labels by hand: an issue's stage records say where it is, so one handed back with no ruling on record is escalated again. Rule on it, or send it.
+For an issue with a position, do not move the labels by hand: its stage records say where it is, so one handed back with no ruling on record is escalated again. Rule on it, or send it. An escalation with no position needs a flow label first, as above.

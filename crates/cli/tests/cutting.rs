@@ -232,6 +232,25 @@ fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_op
     assert!(!claimed(&world));
 
     assert_eq!(standing(&world, "alpha", 10_200), "failed");
+    let issue = failed[0].0;
+    let comment = world.comments(issue).pop().unwrap();
+    let url = world.comment_url(issue, &comment);
+    world.comment(issue, "A later investigation update.");
+    for command in ["plan", "doctor"] {
+        let view = world.afk(&[command, "--now", "10200"]).json;
+        let waiting = &view["waiting_on_human"][0];
+        assert_eq!(waiting["issue"], issue, "{view}");
+        assert_eq!(
+            waiting["why"],
+            "says a cut failed: the step `set` failed: it was ended from outside: its terminal is gone, and it said nothing"
+        );
+        assert_eq!(waiting["url"], url);
+    }
+    world.with_gh(|gh| gh["comments"][issue.to_string()] = json!([]));
+    let old = world.afk(&["plan", "--now", "10200"]).ok();
+    let waiting = &old["waiting_on_human"][0];
+    assert!(waiting["why"].as_str().unwrap().contains("its terminal is gone"), "{waiting}");
+    assert_eq!(waiting["url"], format!("https://gh/i/{issue}"));
     assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), Vec::<String>::new());
     assert_eq!(failures(&world).len(), 1);
 

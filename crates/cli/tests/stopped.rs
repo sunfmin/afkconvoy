@@ -448,6 +448,15 @@ fn escalate_picks_up_from_wherever_it_was_cut_and_comments_once() {
     assert_eq!(world.claims(), []);
     assert_eq!(escalations(&world), 1);
     assert!(world.comments(7)[1].contains("the schema needs a decision"));
+    let plan = world.afk(&["plan", "--now", "1700"]).ok();
+    let waiting = &plan["waiting_on_human"][0];
+    assert_eq!(waiting["issue"], 7);
+    assert_eq!(waiting["why"], "escalated: the schema needs a decision");
+    assert_eq!(waiting["url"], world.comment_url(7, &world.comments(7)[1]));
+    assert_eq!(
+        waiting["answer"],
+        "gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human"
+    );
 
     // run once more: there is no claim left to end
     world.gh_calls();

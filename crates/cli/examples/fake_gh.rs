@@ -673,6 +673,8 @@ fn open_issues(st: &State) -> ! {
             let more = with.len() > COMMENTS_WITH;
             with.truncate(COMMENTS_WITH);
             json!({"number": issue["number"], "title": issue["title"],
+                "body": issue["body"].as_str().unwrap_or(""),
+                "url": format!("https://gh/i/{number}"), "at": issue["at"],
                 "labels": issue["labels"],
                 "blockers": issue["blockers_at_rebuild"].as_array().unwrap_or(&edges),
                 "blockers_more": false,

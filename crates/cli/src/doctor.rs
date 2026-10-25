@@ -1572,7 +1572,7 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
 /// `afkconvoy doctor`, for the fleet of `host` in the checkout `repo`:
 ///
 ///   {"host", "fleet", "claims", "issues", "waiting_on_human": [{"issue", "title",
-///    "why", "since", "answer"}], "findings": [{"severity", "what", "evidence",
+///    "why", "url", "since", "answer"}], "findings": [{"severity", "what", "evidence",
 ///    "fix"}]}
 ///
 /// An answer with a `critical` finding is an `Unwell` error: the same object,

@@ -34,13 +34,14 @@ pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $lab
     issues(states: OPEN, labels: $labels, first: 100, after: $endCursor, \
     orderBy: {field: CREATED_AT, direction: DESC}) { \
     pageInfo { hasNextPage endCursor } \
-    nodes { number title labels(first: 100) { nodes { name } } \
+    nodes { number title body url createdAt labels(first: 100) { nodes { name } } \
     blockedBy(first: 100) { pageInfo { hasNextPage } nodes { number state } } \
     comments(first: 100) { pageInfo { hasNextPage } \
     nodes { fullDatabaseId body url createdAt } } } } } }";
 /// What is read of every open issue: `more` says its comments go on past
 /// those that came with it.
-pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, title, \
+pub const OPEN_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | {number, title, body, url, \
+    at: (.createdAt | fromdateiso8601? // null), \
     labels: [.labels.nodes[].name], blockers: [.blockedBy.nodes[] | select(. != null) | {number, state}], \
     blockers_more: .blockedBy.pageInfo.hasNextPage, \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
@@ -217,9 +218,30 @@ pub struct OpenIssues {
     pub rows: Vec<Issue>,
     /// issue → its comments, oldest first.
     comments: HashMap<u64, Vec<Comment>>,
+    /// Failure reports written before reason comments were added still
+    /// carry their reason in the issue body.
+    reports: HashMap<u64, Comment>,
 }
 
 impl OpenIssues {
+    /// Explains the shared waiting list from the same paged read that made
+    /// it. A report's body is a fallback behind its reason comments.
+    pub fn explain(&self, waiting: &mut [afkconvoy_core::waiting::Waiting]) {
+        use afkconvoy_core::waiting::{Said, Waits};
+        for row in waiting {
+            let report = match row.waits {
+                Waits::PatrolFailed { .. } | Waits::CutFailed => self.reports.get(&row.issue),
+                _ => None,
+            };
+            let sources: Vec<Said<'_>> = report
+                .into_iter()
+                .chain(self.comments(row.issue))
+                .map(|comment| Said { body: &comment.body, url: &comment.url, at: comment.at })
+                .collect();
+            row.explain(&sources);
+        }
+    }
+
     /// Every comment on the open issue `number`, oldest first; none of an
     /// issue that is not among them.
     pub fn comments(&self, number: u64) -> &[Comment] {
@@ -500,6 +522,12 @@ impl GitHub {
         struct Row {
             number: u64,
             title: String,
+            #[serde(default)]
+            body: String,
+            #[serde(default)]
+            url: String,
+            #[serde(default)]
+            at: Option<u64>,
             labels: Vec<String>,
             blockers: Vec<BlockedBy>,
             blockers_more: bool,
@@ -526,6 +554,8 @@ impl GitHub {
             }
             let comments = if row.more { self.comments(row.number)? } else { row.comments };
             open.comments.insert(row.number, comments);
+            open.reports
+                .insert(row.number, Comment { id: 0, body: row.body, url: row.url, at: row.at });
             open.rows.push(Issue {
                 number: row.number,
                 title: row.title,
@@ -735,6 +765,22 @@ impl GitHub {
         let body = format!("body={body}");
         about_issue(number, self.gh(&["api", "--method", "POST", &endpoint, "-f", &body]))?;
         Ok(())
+    }
+
+    /// Opens a failure report and leaves its reason in a comment, so every
+    /// wait can link directly to the explanation. If commenting fails, the
+    /// report's body still explains the wait on the next rebuild.
+    pub fn open_report(
+        &self,
+        title: &str,
+        body: &str,
+        reason: &str,
+        labels: &[&str],
+    ) -> Result<u64> {
+        let issue = self.open_issue(title, body, labels)?;
+        let marker = body.lines().next().unwrap_or("");
+        self.comment(issue, &format!("{marker}\n{reason}"))?;
+        Ok(issue)
     }
 
     /// Replaces the body of one comment on an issue.
