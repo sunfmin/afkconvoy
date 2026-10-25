@@ -428,6 +428,29 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
     Ok(Some(Asked::Stopped(Box::new(Stopped { claim, worktree, verdict, consult, said, route }))))
 }
 
+/// The command doctor can name for a stopped PR-less claim. Use the same
+/// reading and routing as the tick and `nudge`: a verdict, recent progress,
+/// background work or a prior nudge must never receive a refused nudge fix.
+/// Cases that need the tick's consult or health handling name `tick` itself.
+pub(crate) fn stopped_command(fleet: &Fleet, me: &Me, issue: u64) -> Result<&'static str> {
+    let Some(Asked::Stopped(found)) = ask_after(fleet, me, issue)? else { return Ok("tick") };
+    if found.consult || crate::health::holding(&found.worktree) {
+        return Ok("tick");
+    }
+    Ok(match found.route {
+        Route::Nudge(_) => "nudge",
+        Route::Blocked => {
+            let named = found.verdict.map(|verdict| verdict.blocked_by).unwrap_or_default();
+            match blocked_route(&standings(fleet, issue, &named)?) {
+                Blocked::Redispatch => "dispatch",
+                Blocked::Park(_) => "park",
+                Blocked::Escalate(_) => "tick",
+            }
+        }
+        _ => "tick",
+    })
+}
+
 /// Which of an issue's comments (`bodies`) asked an unbound repo's stock
 /// consult under `claim`, when it did.
 fn consulted<'a>(
