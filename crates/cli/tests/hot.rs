@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use afkconvoy::log::{Entry, What};
 use common::{Running, World};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::common;
 
@@ -81,11 +81,11 @@ fn processes(world: &World, workers: &[(&Path, u64)]) {
 
 fn host(world: &World) {
     use std::os::unix::fs::PermissionsExt;
-    let ps = world.bin.join("ps");
+    let ps = world.root.join("bin/ps");
     std::fs::write(&ps, "#!/bin/sh\ncase \"$*\" in axeww*) echo sample >> \"${0%/*}/../ps-samples\" ;; esac\ncat \"${0%/*}/../host-processes\"\n").unwrap();
     std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o755)).unwrap();
     processes(world, &[]);
-    world.say_host_settings(json!({"hot_memory": 1024 * 1024 * 1024u64, "admit_inspect_after": 0}));
+    world.say_host_settings(json!({"hot_memory": 1, "admit_inspect_after": 0}));
 }
 
 fn samples(world: &World) -> usize {
