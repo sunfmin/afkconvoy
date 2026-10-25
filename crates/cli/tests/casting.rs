@@ -102,7 +102,7 @@ fn a_switch_wins_over_the_casting() {
         json!({"harness": "codex", "model": null, "why": "first"})
     );
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::Codex.stock()]);
+    assert_eq!(started(&world), [common::codex_line(&world, &world.worktrees()[0])]);
 }
 
 /// Ticks as `alpha` at `now`.
@@ -230,7 +230,7 @@ fn switching_again_changes_the_kit_without_a_separate_clearable_choice() {
     let world = cast(&["harness:pi", "model:a/slow"]);
     world.afk(&["switch", "--harness", "codex"]).ok();
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::Codex.stock()]);
+    assert_eq!(started(&world), [common::codex_line(&world, &world.worktrees()[0])]);
     let moved =
         world.afk(&["switch", "7", "--instance", "alpha", "--host", "h1", "--harness", "pi"]).ok();
     assert_eq!(moved["switched"][0]["to"], "pi");

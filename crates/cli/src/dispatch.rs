@@ -31,7 +31,7 @@ use crate::role::Staged;
 /// How a worker is started on this machine.
 pub struct Agent {
     /// The worker launch command of each harness. In an unbound repo the
-    /// default's is the one opaque command, handed to orca as it was given;
+    /// default's is the command, with harness setup for a worktree added;
     /// in a bound repo what starts the worker in its role is added to its
     /// harness's (`role::Staged::command`).
     pub launches: Launches,
@@ -40,6 +40,30 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Starts a worker outside a role. Codex gets the fleet's user directory
+    /// with the host user's skills and rules, and trusts this worktree on
+    /// the command line; no host configuration is changed.
+    pub fn start_in_worktree(
+        &self,
+        worktree: &Worktree,
+        harness: Harness,
+        command: &str,
+        now: u64,
+    ) -> Result<String> {
+        let command = match harness {
+            Harness::Codex => {
+                let kept = crate::kept::keep(harness, true)?;
+                harness.in_worktree(
+                    command,
+                    &worktree.path.display().to_string(),
+                    &kept.display().to_string(),
+                )
+            }
+            _ => command.to_string(),
+        };
+        self.start(worktree, harness, &command, now)
+    }
+
     /// Starts every kind of worker with its harness's host network settings.
     pub fn start(
         &self,
@@ -328,7 +352,7 @@ fn start(
                             Some(model) => harness.with_model(launch, model),
                             None => launch.to_string(),
                         };
-                        agent.start(cut, harness, &launch, fleet.now)?
+                        agent.start_in_worktree(cut, harness, &launch, fleet.now)?
                     }
                 });
             }

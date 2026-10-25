@@ -48,7 +48,7 @@ use crate::team::{self, Refused};
 use crate::tools;
 use crate::topic::See;
 
-/// How many ticks in a row a step fails in before it is a finding.
+/// How many ticks in a row a step fails in before its finding is critical.
 const FAILED_TICKS: usize = 3;
 /// How many failed steps the answer lists, newest first.
 pub(crate) const FAILED_SHOWN: usize = 10;
@@ -150,6 +150,7 @@ kinds! {
     Broken: Critical, "is broken";
     PublicTracker: Critical, "is public: its fleet instance works nothing";
     StepFailed: Critical, "failed in each of the last";
+    StepUnrecovered: Warning, "failed in tick";
     HarnessDown: Critical, "harness is down";
     HarnessPaused: Warning, "is paused on this host";
     NotMoved: Warning, "the host runner did not move onto";
@@ -684,36 +685,84 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
 fn fix_of(failed: &Failed, instance: &str) -> String {
     named_line(&failed.error).unwrap_or_else(|| match (failed.step.as_str(), failed.issue) {
         ("dispatch", Some(issue)) => on("dispatch", issue, instance),
+        ("tend_train", _) => format!("afkconvoy tick --instance {instance}"),
         _ => format!("afkconvoy plan --instance {instance}"),
     })
 }
 
-/// The same step failed in each of the last ticks.
+/// Failures stay visible across ticks that do not try their step. A later
+/// successful attempt clears one, as does progress on the same issue by a
+/// step that can continue or end its claim. Boards and labels clear none.
+fn recovered(failed: &Failed, step: &Value) -> bool {
+    if step["outcome"] == "failed" {
+        return false;
+    }
+    let same = step["do"] == failed.step
+        && step["issue"].as_u64() == failed.issue
+        && step["patrol"].as_str() == failed.patrol.as_deref();
+    let progressed = failed.issue.is_some()
+        && step["issue"].as_u64() == failed.issue
+        && matches!(
+            step["do"].as_str(),
+            Some(
+                "judge"
+                    | "watch"
+                    | "advance"
+                    | "settle"
+                    | "forget"
+                    | "reclaim"
+                    | "dispatch"
+                    | "escalate"
+            )
+        )
+        && matches!(step["outcome"].as_str(), Some("done" | "continued" | "restarted" | "gone"));
+    same || progressed
+}
+
+/// Each step that failed and has not since recovered, with its latest error.
+/// Three consecutive failed ticks still make its finding critical.
 fn log_findings(run: &Run) -> Vec<Finding> {
     let ticks = run.ticks.as_deref().unwrap_or_default();
-    let Some(last) = ticks.len().checked_sub(FAILED_TICKS).map(|from| &ticks[from..]) else {
-        return vec![];
-    };
-    let Some(((_, newest), before)) = last.split_last() else { return vec![] };
     let instance = run.instance.as_deref().unwrap_or_default();
-    let again = |failed: &Failed| {
-        before.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(failed)))
-    };
-    let (first, latest) = (last[0].1.count, newest.count);
-    newest
-        .failed()
-        .iter()
-        .filter(|failed| again(failed))
-        .map(|failed| {
-            finding(
-                Kind::StepFailed,
-                format!(
-                    "`{}` failed in each of the last {FAILED_TICKS} ticks ({first} to {latest})",
-                    failed.named()
+    let mut pending: Vec<(u64, Failed)> = vec![];
+    for (_, tick) in ticks {
+        let did = tick.answer.as_ref().and_then(|answer| answer["did"].as_array());
+        pending.retain(|(_, failed)| {
+            !(failed.step == "tick" && tick.error.is_none()
+                || did.into_iter().flatten().any(|step| recovered(failed, step)))
+        });
+        for failed in tick.failed() {
+            pending.retain(|(_, previous)| !previous.same_step(&failed));
+            pending.push((tick.count, failed));
+        }
+    }
+    let recent = ticks.len().checked_sub(FAILED_TICKS).map(|from| &ticks[from..]);
+    pending
+        .into_iter()
+        .map(|(count, failed)| {
+            let repeated = recent.filter(|last| {
+                last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
+            });
+            match repeated {
+                Some(last) => {
+                    let (first, latest) = (last[0].1.count, last[FAILED_TICKS - 1].1.count);
+                    finding(
+                        Kind::StepFailed,
+                        format!(
+                            "`{}` failed in each of the last {FAILED_TICKS} ticks ({first} to {latest})",
+                            failed.named()
+                        ),
+                        failed.error.clone(),
+                        fix_of(&failed, instance),
+                    )
+                }
+                None => finding(
+                    Kind::StepUnrecovered,
+                    format!("`{}` failed in tick {count} and has not recovered", failed.named()),
+                    failed.error.clone(),
+                    fix_of(&failed, instance),
                 ),
-                failed.error.clone(),
-                fix_of(failed, instance),
-            )
+            }
         })
         .collect()
 }
@@ -2189,14 +2238,48 @@ mod tests {
         let found = self::found(&host(), &run(vec![whole(1), whole(2), whole(3)]), &state());
         assert_eq!(fixes(&found, "`tick` failed"), ["afkconvoy plan --instance alpha"]);
 
-        // twice, or not in a row, or on another issue each time: none
+        // twice, or not in a row, or on another issue each time: warnings
         let twice = vec![tick(5, both()), tick(6, both())];
-        assert_eq!(self::found(&host(), &run(twice), &state()), []);
+        let found = self::found(&host(), &run(twice), &state());
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|finding| finding.severity == Severity::Warning));
         let broken = vec![tick(4, both()), tick(5, json!([])), tick(6, both())];
-        assert_eq!(self::found(&host(), &run(broken), &state()), []);
+        let found = self::found(&host(), &run(broken), &state());
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|finding| finding.severity == Severity::Warning));
         let other = |issue| json!([failed(issue, "no")]);
         let moving = vec![tick(4, other(3)), tick(5, other(5)), tick(6, other(7))];
-        assert_eq!(self::found(&host(), &run(moving), &state()), []);
+        let found = self::found(&host(), &run(moving), &state());
+        assert_eq!(found.len(), 3);
+        assert!(found.iter().all(|finding| finding.severity == Severity::Warning));
+    }
+
+    #[test]
+    fn failures_stay_visible_across_unrelated_ticks_and_clear_when_work_recovers() {
+        let failed = tick(4, json!([{"do": "tend_train", "error": "not ready"}]));
+        let unrelated = tick(5, json!([]));
+        let mut ticks = vec![failed, unrelated];
+        let found = log_findings(&run(ticks.clone()));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].what, "`tend_train` failed in tick 4 and has not recovered");
+        assert_eq!(found[0].fix, "afkconvoy tick --instance alpha");
+        let mut recovered = tick(6, json!([]));
+        recovered.1.answer.as_mut().unwrap()["did"] =
+            json!([{"do": "tend_train", "outcome": "done"}]);
+        ticks.push(recovered);
+        assert_eq!(log_findings(&run(ticks)), []);
+
+        let failed = tick(4, json!([{"do": "dispatch", "issue": 3, "error": "not ready"}]));
+        let mut board = tick(5, json!([]));
+        board.1.answer.as_mut().unwrap()["did"] =
+            json!([{"do": "board", "issue": 3, "outcome": "done"}]);
+        let mut ticks = vec![failed, board];
+        assert_eq!(log_findings(&run(ticks.clone())).len(), 1);
+        let mut continued = tick(6, json!([]));
+        continued.1.answer.as_mut().unwrap()["did"] =
+            json!([{"do": "judge", "issue": 3, "outcome": "continued"}]);
+        ticks.push(continued);
+        assert_eq!(log_findings(&run(ticks)), []);
     }
 
     #[test]
