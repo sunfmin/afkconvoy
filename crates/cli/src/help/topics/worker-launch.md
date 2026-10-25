@@ -38,7 +38,7 @@ A worker's model is its harness's own name for it: pi's is `<provider>/<id>`. A 
 
 ## Codex
 
-Codex uses a fresh `CODEX_HOME` for each session. The fleet selects and explicitly passes the model; each launch reads reasoning effort from your own ~/.codex/config.toml, or uses Codex's model default. Saved `/model` choices stay in that session. A train worker or an unbound worker trusts its worktree on the launch line; a role's worker keeps its guard. Launch commands, rules, skills and settings evidence: [`afkconvoy help codex-workers`](help:codex-workers).
+Codex uses a fresh `CODEX_HOME` for each session. The fleet selects and explicitly passes the model; each launch reads reasoning effort from your own ~/.codex/config.toml, or uses Codex's model default. Saved `/model` choices stay in that session. A train worker or an unbound worker trusts its worktree on the launch line; a role's worker keeps its guard. Launch commands, rules, skills and settings evidence: [`afkconvoy help worker-codex`](help:worker-codex).
 
 A Codex command must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
 
