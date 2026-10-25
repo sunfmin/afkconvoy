@@ -623,6 +623,84 @@ fn report(world: &World) -> Option<Value> {
 }
 
 #[test]
+fn a_patrol_moved_along_the_base_branch_leaves_no_commit() {
+    for detached in [false, true] {
+        for at_tip in [false, true] {
+            let world = bound("[sweep]");
+            tick(&world, 10_000);
+            let patrol = checkout(&world);
+            let started = git(&patrol, &["rev-parse", "HEAD"]);
+            let repair = commit(&world.clone, "repair.txt", "an inspection's repair\n");
+            let later = commit(&world.clone, "later.txt", "more landed work\n");
+            git(&world.clone, &["push", "-q", "origin", "main"]);
+            // A remote-tracking ref is no evidence of what the base branch
+            // holds now. The run must read the remote itself.
+            git(&world.clone, &["update-ref", "refs/remotes/origin/main", &started]);
+            let target = if at_tip { &later } else { &repair };
+            if detached {
+                git(&patrol, &["checkout", "--detach", target]);
+            } else {
+                git(&patrol, &["merge", "--ff-only", target]);
+            }
+            workers_leave(&world);
+
+            assert_eq!(patrolled(&tick(&world, 10_400)), ["end_patrol sweep done"]);
+            assert!(report(&world).is_none(), "a clean run on the base branch did not fail");
+            assert!(!patrol.exists(), "the clean checkout is removed");
+            assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"], "the claim is released");
+            assert_eq!(standing(&world, 13_600), ["sweep due"], "it can run again");
+        }
+    }
+}
+
+#[test]
+fn a_patrol_commit_already_on_the_base_branch_is_not_left_behind() {
+    let world = bound("[sweep]");
+    tick(&world, 10_000);
+    let patrol = checkout(&world);
+    let landed = commit(&patrol, "repair.txt", "a repair that has since landed\n");
+    git(&world.clone, &["merge", "--ff-only", &landed]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    workers_leave(&world);
+
+    assert_eq!(patrolled(&tick(&world, 10_400)), ["end_patrol sweep done"]);
+    assert!(report(&world).is_none());
+    assert!(!patrol.exists());
+}
+
+#[test]
+fn a_patrol_that_leaves_working_tree_changes_has_failed() {
+    for change in ["unstaged", "staged", "deleted", "untracked"] {
+        let world = bound("[sweep]");
+        tick(&world, 10_000);
+        let patrol = checkout(&world);
+        let tracked = "docs/agents/afkconvoy.md";
+        match change {
+            "untracked" => write(&patrol, "unfinished.txt", "a change with no commit\n"),
+            "deleted" => std::fs::remove_file(patrol.join(tracked)).unwrap(),
+            _ => {
+                let content = git(&patrol, &["show", &format!("HEAD:{tracked}")]);
+                write(&patrol, tracked, &format!("{content}\n\n"));
+                if change == "staged" {
+                    git(&patrol, &["add", tracked]);
+                }
+            }
+        }
+        let status = git(&patrol, &["status", "--porcelain"]);
+        workers_leave(&world);
+
+        assert_eq!(patrolled(&tick(&world, 10_400)), ["end_patrol sweep done"]);
+        let failed = report(&world).expect("working-tree changes fail the run");
+        let body = failed["body"].as_str().unwrap();
+        assert!(body.contains("it left working-tree changes"), "{change}: {body}");
+        assert!(!body.contains("it left a commit"), "{change}: {body}");
+        assert!(patrol.is_dir(), "the changes are kept for the human");
+        assert_eq!(git(&patrol, &["status", "--porcelain"]), status);
+        assert_eq!(refs(&world), ["refs/convoy/patrol/sweep"]);
+    }
+}
+
+#[test]
 fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
     let world = bound("[sweep]");
     world.issue(5, &["bug"]);
