@@ -4,14 +4,20 @@
 //! among them. How the call is described and how the answer is given are
 //! that harness's
 //! (`afkconvoy_core::harness`); whether the call is refused is the core's to
-//! say, in one place for every harness (`afkconvoy_core::guard`).
+//! say, in one place for every harness (`afkconvoy_core::guard`). Whom a
+//! process an inspection would end is, this reads off the host's processes,
+//! once a call ends one.
 
+use std::cell::OnceCell;
+use std::collections::HashSet;
 use std::io::Read;
 use std::process::ExitCode;
 
-use afkconvoy_core::guard::{Limits, refused};
+use afkconvoy_core::guard::{Limits, Process, refused};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::role::HARNESS_ENV;
+
+use crate::orca::Worktree;
 
 /// Reads one tool call on stdin and the stage's facts from the environment →
 /// exit 0, saying nothing, when the worker may make the call; else the
@@ -26,8 +32,10 @@ pub fn guard() -> ExitCode {
         }
     };
     let mut described = String::new();
+    let read = OnceCell::new();
+    let whom = |pid: u32| whom(read.get_or_init(on_host), pid);
     let decided = match std::io::stdin().read_to_string(&mut described) {
-        Ok(_) => decide(harness, &described, |name| std::env::var(name).ok()),
+        Ok(_) => decide(harness, &described, |name| std::env::var(name).ok(), &whom),
         Err(error) => Err(format!("the tool call could not be read: {error}")),
     };
     match decided {
@@ -50,22 +58,58 @@ fn asking(names: Option<&str>) -> Result<Harness, String> {
 }
 
 /// Why the tool call `harness` `described` is refused under the facts `var`
-/// answers for, when it is. An error is a call or a stage that cannot be read.
+/// answers for, `processes` saying whom each process of the host is, when it
+/// is. An error is a call or a stage that cannot be read.
 fn decide(
     harness: Harness,
     described: &str,
     var: impl Fn(&str) -> Option<String>,
+    processes: &dyn Fn(u32) -> Process,
 ) -> Result<Option<String>, String> {
     let unread = |error| format!("what it was handed describes no tool call: {error}");
     let mut described = serde_json::Deserializer::from_str(described);
     let call = harness.call(&mut described).map_err(unread)?;
     described.end().map_err(unread)?;
-    Ok(refused(&call, &Limits::read(var)?))
+    Ok(refused(&call, &Limits::read(var)?, processes))
+}
+
+/// The processes of this host the fleets of this host started
+/// (`hot::fleets`), and its host runner's pid where one is known.
+struct OnHost {
+    fleets: HashSet<u32>,
+    runner: Option<u32>,
+}
+
+/// What `ps` and the host runner's lock say now. A worktree the fleet put
+/// a worker in is one whose git dir keeps the note of one.
+fn on_host() -> OnHost {
+    let procs = crate::hot::processes();
+    let ours = |worktree: &std::path::Path| {
+        Worktree::at(worktree.to_path_buf(), String::new()).holds_a_worker()
+    };
+    OnHost { fleets: crate::hot::fleets(&procs, ours), runner: crate::host_runner::pid() }
+}
+
+/// Whom `pid` is on the host `read`: the host runner before all, as it
+/// may itself have been started by a worker.
+fn whom(read: &OnHost, pid: u32) -> Process {
+    if read.runner == Some(pid) {
+        Process::Runner
+    } else if read.fleets.contains(&pid) {
+        Process::Fleets
+    } else {
+        Process::Other
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every process is someone else's.
+    fn nobody(_: u32) -> Process {
+        Process::Other
+    }
 
     /// The facts of a stage that writes nothing, with `harness` asking.
     fn facts(name: &str) -> Option<String> {
@@ -93,13 +137,21 @@ mod tests {
     fn one_call_is_refused_for_the_same_reason_whichever_harness_describes_it() {
         let claude = r#"{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}"#;
         let pi = r#"{"toolName":"bash","input":{"command":"git commit -m x"}}"#;
-        let why = decide(Harness::ClaudeCode, claude, facts).unwrap().expect("a refusal");
+        let why = decide(Harness::ClaudeCode, claude, facts, &nobody).unwrap().expect("a refusal");
         assert!(why.contains("`writes: false`: `git commit` is refused"), "{why}");
-        assert_eq!(decide(Harness::Pi, pi, facts), Ok(Some(why)));
+        assert_eq!(decide(Harness::Pi, pi, facts, &nobody), Ok(Some(why)));
         // A call described in another harness's words cannot be read.
-        assert!(decide(Harness::Pi, claude, facts).unwrap_err().contains("describes no tool call"));
-        assert!(decide(Harness::ClaudeCode, pi, facts).is_err());
+        assert!(decide(Harness::Pi, claude, facts, &nobody).unwrap_err().contains("describes no tool call"));
+        assert!(decide(Harness::ClaudeCode, pi, facts, &nobody).is_err());
         let allowed = r#"{"toolName":"bash","input":{"command":"ls"}}"#;
-        assert_eq!(decide(Harness::Pi, allowed, facts), Ok(None));
+        assert_eq!(decide(Harness::Pi, allowed, facts, &nobody), Ok(None));
+    }
+
+    #[test]
+    fn whom_a_process_is_reads_the_host_runner_first() {
+        let read = OnHost { fleets: HashSet::from([10, 77]), runner: Some(77) };
+        assert_eq!(whom(&read, 10), Process::Fleets);
+        assert_eq!(whom(&read, 77), Process::Runner, "started by a worker, it is still the runner");
+        assert_eq!(whom(&read, 501), Process::Other);
     }
 }

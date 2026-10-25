@@ -1,24 +1,26 @@
-//! An inspection (docs/adr/0019): a worker in the role of the stage's consult
-//! — the stock consult where the stage names none, and in an unbound repo —
-//! started on a hot worker to find out what it takes so much for, and why.
-//! Who inspects, which hot worker is inspected next, what an inspection is
-//! told and what is typed and left of what it found are decided here; taking
-//! down the evidence, starting the inspection and ending it are the effect
-//! layer's.
+//! An inspection (docs/adr/0026): a worker started so that the fleet's work
+//! goes on — on a hot worker, in the role of the stage's consult (the stock
+//! consult where the stage names none, and in an unbound repo), or on the
+//! host once admission keeps holding back (`crate::host_inspection`). It is
+//! the operator on its host: it finds what holds the work back, fixes it,
+//! checks that the work goes on and says what it did. Who inspects, which hot
+//! worker is inspected next, what an inspection is told, what it may never
+//! touch, and what is left of what it did are decided here; taking down the
+//! evidence, starting the inspection and ending it are the effect layer's.
 
 use serde::{Deserialize, Serialize};
 
-use crate::host_inspection::Item;
 use crate::prompt::fill;
 use crate::record;
 use crate::team::{Consult, Stage, Work};
 
-/// The variable an inspection's environment names the hot worker it
-/// inspects in: the guard holds a worker with it as a consult.
+/// The variable an inspection's environment names what it inspects in — the
+/// hot worker, or the host: the guard holds a worker with it as the operator
+/// on its host, within the bounds of any unattended worker.
 pub const INSPECTION_ENV: &str = "AFKCONVOY_INSPECTION";
 
-/// How long, in seconds, an inspection is given: what it found by then is
-/// what is typed.
+/// How long, in seconds, an inspection is given: what it said by then is
+/// what is kept.
 pub const TIME_LIMIT: u64 = 900;
 
 /// The name an inspection's checkout is created under: one a repo, for one
@@ -29,50 +31,36 @@ pub const CHECKOUT: &str = "afkconvoy-inspection";
 /// nothing derives the stage an issue is at from it (docs/adr/0010).
 const MARKER: &str = "convoy:inspection";
 
-/// What an inspection found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Found {
-    /// The work is wrong: the hot worker is told what and where, and to fix
-    /// it before going on.
-    Wrong,
-    /// The work is that heavy: the hot worker is told so, and to run the
-    /// heavy command through `afkconvoy exclusive` from now on.
-    Heavy,
-    /// What takes so much is not the worker's — of a host inspection, not
-    /// this fleet's: it is told nothing.
-    NotIts,
-    /// Of a host inspection: something on the disk can be rebuilt. The
-    /// inspection frees it itself, as its `afkconvoy inspected` is told.
-    Reclaimable,
-    /// Of a host inspection: the fleet's own shape outgrows the host. The
-    /// fleet opens one issue saying so.
-    Fleet,
-}
+/// What under the home folder cannot be rebuilt, or is expensive to fetch
+/// again — model weights, downloads, media, Docker's images, the user's own
+/// files: an inspection never deletes it, and the guard refuses a deletion
+/// it reads there.
+pub const KEPT: [&str; 13] = [
+    ".cache/huggingface",
+    ".cache/modelscope",
+    ".ollama",
+    ".lmstudio",
+    ".docker",
+    "Library/Containers/com.docker.docker",
+    "Downloads",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Documents",
+    "Desktop",
+    "Library/Mobile Documents",
+];
 
-impl Found {
-    pub const ALL: [Found; 5] =
-        [Found::Wrong, Found::Heavy, Found::NotIts, Found::Reclaimable, Found::Fleet];
-
-    /// How the command that declares it, and the log, say it.
-    pub fn word(self) -> &'static str {
-        match self {
-            Found::Wrong => "wrong",
-            Found::Heavy => "heavy",
-            Found::NotIts => "not-its",
-            Found::Reclaimable => "reclaimable",
-            Found::Fleet => "fleet",
-        }
-    }
-
-    /// Whether an inspection of `kind` finds it.
-    pub fn of(self, kind: Kind) -> bool {
-        kind.found().contains(&self)
-    }
-
-    pub fn read(word: &str) -> Option<Found> {
-        Found::ALL.into_iter().find(|found| found.word() == word)
-    }
+/// Whether `relative` — a path under the home folder, relative to it, its
+/// parts parted by `/` — is in what is kept (`KEPT`), or holds some of it. A
+/// part a shell pattern stands in (`*`, `?`, `[`) may be any.
+pub fn kept(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').filter(|part| !part.is_empty()).collect();
+    let pattern = |part: &str| part.contains(['*', '?', '[']);
+    KEPT.iter().any(|root| {
+        let root: Vec<&str> = root.split('/').collect();
+        parts.iter().zip(root.iter()).all(|(part, root)| part == root || pattern(part))
+    })
 }
 
 /// What an inspection is started on.
@@ -87,14 +75,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// What an inspection of this kind finds, in its own words.
-    pub fn found(self) -> [Found; 3] {
-        match self {
-            Kind::Worker => [Found::Wrong, Found::Heavy, Found::NotIts],
-            Kind::Host => [Found::Reclaimable, Found::Fleet, Found::NotIts],
-        }
-    }
-
     pub fn word(self) -> &'static str {
         match self {
             Kind::Worker => "worker",
@@ -103,42 +83,42 @@ impl Kind {
     }
 }
 
-/// What an inspection found, and what it says of it.
+/// What an inspection said as it ended: what held the work back, each thing
+/// it did, and each thing it could not fix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
-    pub found: Found,
-    /// What, where and why, in its own words.
+    /// What held the work back, where and why, in its own words.
     pub said: String,
-    /// Of a host inspection: what it freed, and what it named for a human.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reclaimed: Vec<Item>,
+    pub did: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub named: Vec<Item>,
+    pub left: Vec<String>,
 }
 
 impl Finding {
-    /// `found`, as `said`, which freed and named nothing.
-    pub fn new(found: Found, said: &str) -> Finding {
-        Finding { found, said: said.to_string(), reclaimed: vec![], named: vec![] }
+    /// How the log, the panel and `doctor` say how it ended: the work goes
+    /// on, or something it could not fix still holds it back.
+    pub fn word(&self) -> &'static str {
+        if self.left.is_empty() { "goes-on" } else { "held" }
     }
 
-    /// The line typed at the hot worker; none where what takes so much is
-    /// not its own.
-    pub fn typed(&self) -> Option<String> {
-        let said = self.said.split_whitespace().collect::<Vec<_>>().join(" ");
-        match self.found {
-            Found::Wrong => Some(format!(
-                "afkconvoy: an inspection of what your processes take of this host found the \
-                 work wrong: {said} Fix that before you go on."
-            )),
-            Found::Heavy => Some(format!(
-                "afkconvoy: an inspection of what your processes take of this host found the \
-                 work that heavy: {said} From now on run the heavy command through \
-                 `afkconvoy exclusive -- <command>`, so that it runs alone on the host."
-            )),
-            Found::NotIts | Found::Reclaimable | Found::Fleet => None,
+    /// What it said, did and left, in one line: what the log keeps.
+    pub fn line(&self) -> String {
+        let each = |items: &[String]| items.iter().map(|item| one_line(item)).collect::<Vec<_>>();
+        let mut said = vec![one_line(&self.said)];
+        if !self.did.is_empty() {
+            said.push(format!("did: {}", each(&self.did).join("; ")));
         }
+        if !self.left.is_empty() {
+            said.push(format!("left: {}", each(&self.left).join("; ")));
+        }
+        said.join(" · ")
     }
+}
+
+/// `text`, its lines and spaces run into one line.
+pub fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Who inspects a hot worker.
@@ -215,43 +195,102 @@ impl Inspected {
 }
 
 /// Whether the inspection started at `started` is over at `now`: it said
-/// what it found, its worker is gone, or its time is up.
-pub fn over(started: u64, found: bool, gone: bool, now: u64) -> bool {
-    found || gone || now.saturating_sub(started) >= TIME_LIMIT
+/// what it did, its worker is gone, or its time is up.
+pub fn over(started: u64, said: bool, gone: bool, now: u64) -> bool {
+    said || gone || now.saturating_sub(started) >= TIME_LIMIT
 }
 
 /// The comment left on the hot worker's issue once its inspection is over:
-/// what it found and why, or that it found nothing in time. A marker of its
-/// own: it is no stage record.
+/// what held the work back, what it did and what it could not fix, or that
+/// it said nothing in time. A marker of its own: it is no stage record.
 pub fn comment(worker: &str, why: &str, by: &str, finding: Option<&Finding>) -> String {
-    let found = finding.map_or("nothing", |finding| finding.found.word());
-    let marker = record::marker(MARKER, &[("found", found)]);
+    let word = finding.map_or("nothing", Finding::word);
+    let marker = record::marker(MARKER, &[("found", word)]);
     let head = format!(
         "{marker}\n**afkconvoy** — the worker {worker} turned hot ({why}), and was inspected by \
-         `{by}`."
+         `{by}`, as the operator on this host."
     );
     let Some(finding) = finding else {
-        return format!(
-            "{head} The inspection said nothing in {} minutes; nothing was typed at the \
-             worker.\n",
-            TIME_LIMIT / 60
-        );
+        return format!("{head} The inspection said nothing in {} minutes.\n", TIME_LIMIT / 60);
     };
-    let told = match finding.found {
-        Found::Wrong => "The work is wrong. The worker was told what is wrong, and to fix it.",
-        Found::Heavy => {
-            "The work is that heavy. The worker was told to run the heavy command through \
-             `afkconvoy exclusive`."
-        }
-        Found::NotIts | Found::Reclaimable | Found::Fleet => {
-            "What takes so much is not the worker's. Nothing was typed at it."
-        }
+    let listed = |items: &[String]| {
+        items.iter().map(|item| format!("- {}", one_line(item))).collect::<Vec<_>>().join("\n")
     };
-    format!("{head} {told}\n\n{}\n", quoted(&finding.said))
+    let mut said = format!("{head}\n\nWhat held the work back:\n\n{}\n", quoted(&finding.said));
+    if !finding.did.is_empty() {
+        said.push_str(&format!("\nWhat it did:\n\n{}\n", listed(&finding.did)));
+    }
+    match finding.left.is_empty() {
+        true => said.push_str("\nThe work goes on.\n"),
+        false => said.push_str(&format!(
+            "\nWhat it could not fix, which the next episode inspects again:\n\n{}\n",
+            listed(&finding.left)
+        )),
+    }
+    said
 }
 
 fn quoted(said: &str) -> String {
     said.trim().lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
+}
+
+/// What every inspection is told of its authority and its bounds, and how it
+/// says what it did — after what it is given, which its kind says.
+const OPERATOR: &str = "
+## Your authority
+
+You are the operator on this host: do what the operator would do at its keyboard, whatever that
+takes, so that the work goes on. For example — not a list to keep: end a runaway or orphaned
+process; tell a worker what is wrong at its terminal (`orca terminal send --terminal <terminal>
+--text '<line>' --enter`), or restart, nudge or switch it (`afkconvoy restart`, `nudge`,
+`switch`); have a gate you stopped run again; change a host setting (`afkconvoy run --concurrency`,
+admission's shares: `afkconvoy run --help`); free disk; send heavy work through
+`afkconvoy exclusive`; change the repo — its `gate_command`, say — on a branch of your own, through
+the gate and the landing train, as any worker's change goes. Each command's `--help` says how.
+
+## Your bounds
+
+They are those of any unattended worker, and the guard holds you to them where it can:
+
+- Only what the fleets of this host started or own. Never the user's own: their programs and files,
+  other apps, the host runner, orca. End a process by its pid, `kill <pid>`, and only one the
+  fleet started: a worker's, the landing train's, an inspection's, or one they left behind.
+- Never delete what cannot be rebuilt: model weights, downloads, media ({kept}), a user's files, a
+  change no commit holds.
+- No force push, no push to the base branch, no merge outside the landing train.
+- Hand nothing on: open no issue for what you find, and ask no human.
+
+## Say what you did
+
+You have {minutes_left} minutes. Check that the work goes on. Then write what held it back, where
+and why, to a file, and run this once — with a `--did` for each thing you did, and a `--left` for
+each thing you could not fix — and stop:
+```bash
+{inspected_command} --text-file <file> [--did '<what you did>']... [--left '<what still holds the work back>']...
+```
+Each is a line of the fleet's log, shown by `afkconvoy doctor` and the panel{left_on}. What you
+leave unfixed, the next episode inspects again.
+";
+
+/// The brief of an inspection of `kind` is filled with these beside its
+/// own: `OPERATOR`'s.
+pub(crate) fn operator_fields(kind: Kind) -> [(&'static str, String); 3] {
+    let left_on = match kind {
+        Kind::Worker => ", and left as a comment on the hot worker's issue",
+        Kind::Host => ", beside admission's reading",
+    };
+    [
+        ("kept", KEPT.map(|root| format!("`~/{root}`")).join(", ")),
+        ("minutes_left", (TIME_LIMIT / 60).to_string()),
+        ("left_on", left_on.to_string()),
+    ]
+}
+
+/// `template` with its `{instruction}` and `{operator}` put in: the stock
+/// consult's instruction where one is given, and `OPERATOR`.
+pub(crate) fn with_operator(template: &str, instruction: Option<&str>) -> String {
+    let instruction = instruction.map(|text| format!("\n{text}")).unwrap_or_default();
+    template.replace("{instruction}", &instruction).replace("{operator}", OPERATOR)
 }
 
 /// What an inspection's brief is filled with.
@@ -275,8 +314,7 @@ pub struct Fields<'a> {
     /// The stock consult's instruction, where nothing else gives it: an
     /// unbound repo's stock consult starts in no directory of its own.
     pub instruction: Option<&'a str>,
-    /// The line it declares what it found with: `--found <found> --text-file
-    /// <file>` follow it.
+    /// The line it says what it did with: `--text-file <file>` follows it.
     pub inspected_command: &'a str,
 }
 
@@ -285,62 +323,43 @@ You are an afkconvoy **inspection**, started in your role (`{role}`, skill `{ski
 worker**: one whose processes take more than their share of this host. Nobody reads this terminal:
 never wait for an answer.
 {instruction}
+## Your goal
+
+The fleet's work goes on. Find what holds it back — what the hot worker takes so much for, and why:
+work that is wrong, work that really is that heavy, or what is not the worker's at all — fix it,
+check that the work goes on, and say what you did.
+
+## What you are given
+
 - **Hot worker:** {worker}{issue_line}. Hot for {why}; at the most it held {held}
-- **Its worktree:** `{worktree}`, read-only to you
-- **Its terminal:** `{terminal}`. Read it (`orca terminal read --terminal {terminal}`); never type
-  at it: the fleet types what you find
+- **Its worktree:** `{worktree}`
+- **Its terminal:** `{terminal}`: read it with `orca terminal read --terminal {terminal}`
 - **What was taken down as it turned hot:** `{evidence}` — the process tree with each command
   line, a five-second `sample` of the hottest process, its resident memory over the last minutes,
   the processes that wrote the most, and the largest directories of its worktree
 - **Your checkout:** `{checkout}`, the base branch as it stood
+{operator}";
 
-## What to find
-
-What takes so much, and why. Look at the evidence, the worker's terminal and its worktree, and at
-the processes as they are now (`ps`, `sample`, `du`). It is one of three things:
-
-- `wrong`: the work is wrong — a test that never ends, a leak, a fixture copied a thousand times,
-  a temporary directory made and never removed. Say what is wrong and where.
-- `heavy`: the work really is that heavy. Say which command is heavy.
-- `not-its`: what takes so much is not the worker's — a daemon outside its tree, another fleet's
-  gate.
-
-You may read and run anything that changes nothing. Commit nothing, push nothing, and change
-nothing on this host: stop no process and delete no file. You hand nothing on: the issue stays at
-its stage and the hot worker keeps working.
-
-## Say what you found
-
-You have {minutes} minutes. Write what you found, where and why, to a file, then run this once,
-with `wrong`, `heavy` or `not-its`, and stop:
-```bash
-{inspected_command} --found <found> --text-file <file>
-```
-The fleet types it at the hot worker — not `not-its` — and leaves it as a comment on the issue.
-";
-
-/// The brief an inspection is given.
+/// The brief an inspection of a hot worker is given.
 pub fn brief(fields: &Fields) -> Result<String, String> {
     let issue_line = fields.issue.map(|issue| format!(", on issue #{issue}")).unwrap_or_default();
-    let instruction = fields.instruction.map(|text| format!("\n{text}")).unwrap_or_default();
     let template =
-        BRIEF.replace("{issue_line}", &issue_line).replace("{instruction}", &instruction);
-    fill(
-        &template,
-        &[
-            ("role", fields.role),
-            ("skill", fields.skill),
-            ("worker", fields.worker),
-            ("why", fields.why),
-            ("held", fields.held),
-            ("worktree", fields.worktree),
-            ("terminal", fields.terminal),
-            ("evidence", fields.evidence),
-            ("checkout", fields.checkout),
-            ("minutes", &(TIME_LIMIT / 60).to_string()),
-            ("inspected_command", fields.inspected_command),
-        ],
-    )
+        with_operator(BRIEF, fields.instruction).replace("{issue_line}", &issue_line);
+    let operator = operator_fields(Kind::Worker);
+    let mut filled: Vec<(&str, &str)> = vec![
+        ("role", fields.role),
+        ("skill", fields.skill),
+        ("worker", fields.worker),
+        ("why", fields.why),
+        ("held", fields.held),
+        ("worktree", fields.worktree),
+        ("terminal", fields.terminal),
+        ("evidence", fields.evidence),
+        ("checkout", fields.checkout),
+        ("inspected_command", fields.inspected_command),
+    ];
+    filled.extend(operator.iter().map(|(name, value)| (*name, value.as_str())));
+    fill(&template, &filled)
 }
 
 #[cfg(test)]
@@ -375,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn an_inspection_is_over_once_it_found_its_worker_is_gone_or_its_time_is_up() {
+    fn an_inspection_is_over_once_it_said_its_worker_is_gone_or_its_time_is_up() {
         assert!(!over(1000, false, false, 1000 + TIME_LIMIT - 1));
         assert!(over(1000, false, false, 1000 + TIME_LIMIT));
         assert!(over(1000, true, false, 1001));
@@ -383,39 +402,55 @@ mod tests {
     }
 
     #[test]
-    fn what_was_found_is_typed_at_the_worker_unless_it_is_not_its_own() {
-        let finding = |found| Finding::new(found, "the test\n `loops`  forever.");
-        let wrong = finding(Found::Wrong).typed().unwrap();
-        assert!(
-            wrong.contains("found the work wrong: the test `loops` forever. Fix that"),
-            "{wrong}"
+    fn what_an_inspection_did_and_left_is_said_in_one_line() {
+        let fixed = Finding {
+            said: "four gates\n side by side".into(),
+            did: vec!["killed 4242, an orphaned `cargo test`".into()],
+            left: vec![],
+        };
+        assert_eq!(fixed.word(), "goes-on");
+        assert_eq!(
+            fixed.line(),
+            "four gates side by side · did: killed 4242, an orphaned `cargo test`"
         );
-        assert!(!wrong.contains('\n'), "one line: {wrong}");
-        let heavy = finding(Found::Heavy).typed().unwrap();
-        assert!(heavy.contains("`afkconvoy exclusive -- <command>`"), "{heavy}");
-        assert_eq!(finding(Found::NotIts).typed(), None);
-        for found in Found::ALL {
-            assert_eq!(Found::read(found.word()), Some(found));
-        }
-        assert_eq!(Found::read("bogus"), None);
+        let held = Finding { left: vec!["the host has\n14 cores".into()], ..fixed.clone() };
+        assert_eq!(held.word(), "held");
+        assert!(held.line().ends_with(" · left: the host has 14 cores"), "{}", held.line());
+        // As a version before kept it: what it found, and no word of what it did.
+        let kept: Finding = serde_json::from_str(r#"{"found": "heavy", "said": "x"}"#).unwrap();
+        assert_eq!((kept.said.as_str(), kept.did.len(), kept.word()), ("x", 0, "goes-on"));
     }
 
     #[test]
-    fn each_kind_finds_in_words_of_its_own() {
-        assert!(Found::Wrong.of(Kind::Worker) && !Found::Wrong.of(Kind::Host));
-        assert!(Found::Fleet.of(Kind::Host) && !Found::Fleet.of(Kind::Worker));
-        assert!(Found::NotIts.of(Kind::Host) && Found::NotIts.of(Kind::Worker));
-        let typed = Finding::new(Found::Reclaimable, "x").typed();
-        assert_eq!(typed, None);
+    fn what_is_kept_is_what_cannot_be_rebuilt_under_the_home_folder() {
+        assert!(kept(".cache/huggingface/hub/models--x"));
+        assert!(kept("Downloads") && kept("Downloads/"));
+        assert!(kept("Library/Mobile Documents/x"));
+        assert!(kept(""), "the home folder itself holds it");
+        assert!(kept("Library"), "and so does a directory above it");
+        assert!(!kept("Library/Caches/Homebrew"));
+        assert!(!kept("DownloadsOld"), "a part, not a prefix");
+        assert!(!kept("src/widgets/target"));
+        assert!(kept("*") && kept("Down*/x") && kept(".cache/*"), "a pattern may be any");
+        assert!(!kept("src/*"));
     }
 
     #[test]
-    fn the_comment_says_what_was_found_and_is_no_stage_record() {
-        let finding = Finding::new(Found::Heavy, "cargo build of 900 crates");
+    fn the_comment_says_what_was_done_and_left_and_is_no_stage_record() {
+        let finding = Finding {
+            said: "cargo build of 900 crates".into(),
+            did: vec!["told #7 to run it through `afkconvoy exclusive`".into()],
+            left: vec![],
+        };
         let said = comment("#7", "past 4.0 cores for 120s", "stock-consult", Some(&finding));
-        assert!(said.starts_with("<!--convoy:inspection found=heavy-->\n"), "{said}");
+        assert!(said.starts_with("<!--convoy:inspection found=goes-on-->\n"), "{said}");
         assert!(said.contains("> cargo build of 900 crates"), "{said}");
+        assert!(said.contains("- told #7 to run it through"), "{said}");
+        assert!(said.contains("The work goes on."), "{said}");
         assert!(!said.contains(crate::stage_record::STAGE_RECORD), "{said}");
+        let held = Finding { left: vec!["a leak in `parse`".into()], ..finding };
+        let said = comment("#7", "past 4.0 cores for 120s", "stock-consult", Some(&held));
+        assert!(said.contains("found=held") && said.contains("- a leak in `parse`"), "{said}");
         let nothing = comment("#7", "past 4.0 cores for 120s", "stock-consult", None);
         assert!(nothing.contains("found=nothing") && nothing.contains("15 minutes"), "{nothing}");
     }
@@ -451,7 +486,7 @@ stages:
     }
 
     #[test]
-    fn the_brief_names_the_worker_its_evidence_and_the_command_that_ends_it() {
+    fn the_brief_gives_the_goal_what_was_taken_down_the_authority_and_the_bounds() {
         let fields = Fields {
             worker: "#7",
             issue: Some(7),
@@ -469,8 +504,20 @@ stages:
         let said = brief(&fields).unwrap();
         assert!(said.contains("- **Hot worker:** #7, on issue #7. Hot for CPU: past"), "{said}");
         assert!(said.contains("# The stock consult"), "{said}");
-        assert!(said.contains("afkconvoy inspected --found <found> --text-file <file>"), "{said}");
+        assert!(said.contains("## Your goal\n\nThe fleet's work goes on."), "{said}");
+        assert!(said.contains("You are the operator on this host"), "{said}");
+        assert!(said.contains("No force push, no push to the base branch"), "{said}");
+        assert!(said.contains("`~/.cache/huggingface`"), "{said}");
+        assert!(
+            said.contains("afkconvoy inspected --text-file <file> [--did '<what you did>']..."),
+            "{said}"
+        );
         assert!(said.contains("You have 15 minutes"), "{said}");
+        assert!(said.contains("left as a comment on the hot worker's issue"), "{said}");
+        // Not a list of remedies, each mapped from a word it found.
+        for word in ["`wrong`", "`heavy`", "`not-its`", "--found"] {
+            assert!(!said.contains(word), "{word}: {said}");
+        }
         let patrol = brief(&Fields { issue: None, instruction: None, ..fields }).unwrap();
         assert!(patrol.contains("- **Hot worker:** #7. Hot for"), "{patrol}");
         assert!(!patrol.contains("stock consult"), "{patrol}");

@@ -996,18 +996,15 @@ fn host_part(out: &mut String, page: &Page) {
     }
 
     if let Some(last) = &host.host_inspected {
-        let issue = last.issue.map(|issue| format!(" (#{issue})")).unwrap_or_default();
-        let freed = last.freed_said();
-        let freed = if freed.is_empty() { freed } else { format!(" · {}", esc(&freed)) };
         let _ = writeln!(
             out,
             "<section class=\"hot\" data-host-inspected=\"{found}\"><b>Host inspection</b>, \
-             {} ago: admission held back for {} ({}); <code>{by}</code> found \
-             <b>{found}</b>{issue}: {}{freed}</section>",
+             {} ago: admission held back for {} ({}); <code>{by}</code>, as the operator on \
+             this host: <b>{found}</b> · {}</section>",
             lasted(host.now.saturating_sub(last.ended)),
             last.reason.word(),
             esc(&last.reading),
-            esc(&last.said),
+            esc(&last.line()),
             found = esc(&last.found),
             by = esc(&last.by),
         );
@@ -1671,7 +1668,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_inspection_is_shown_as_it_runs_and_what_it_found_beside_admission() {
+    fn a_host_inspection_is_shown_as_it_runs_and_what_it_did_beside_admission() {
         use afkconvoy_core::host_inspection::Reason;
         let mut host = host_of(1000);
         host.inspection = Some(Running {
@@ -1684,7 +1681,7 @@ mod tests {
         });
         let running = render(&page_of(host.clone(), vec![]));
         assert!(running.contains("held back new workers for disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
-        for (found, issue) in [("reclaimable", None), ("fleet", Some(12)), ("not-its", None)] {
+        for (found, left) in [("goes-on", vec![]), ("held", vec!["a download of 9 GiB".into()])] {
             host.inspection = None;
             host.host_inspected = Some(Last {
                 repo: "/src/widgets".into(),
@@ -1695,17 +1692,10 @@ mod tests {
                 ended: 400,
                 found: found.into(),
                 said: "five worktrees of 14 GiB".into(),
-                issue,
-                reclaimed: vec![afkconvoy_core::host_inspection::Item {
-                    path: "/w/a/target".into(),
-                    bytes: 14 << 30,
-                }],
-                named: vec![],
+                did: vec!["removed /w/a/target".into()],
+                left,
             });
             let page = render(&page_of(host.clone(), vec![]));
-            if issue.is_some() {
-                assert!(page.contains("found <b>fleet</b> (#12)"), "{page}");
-            }
             assert!(page.contains(&format!("data-host-inspected=\"{found}\"")), "{page}");
             assert!(
                 page.contains(
@@ -1713,14 +1703,10 @@ mod tests {
                 ),
                 "{page}"
             );
-            assert!(page.contains(&format!("found <b>{found}</b>")), "{page}");
+            assert!(page.contains(&format!("as the operator on this host: <b>{found}</b> · five worktrees of 14 GiB · did: removed /w/a/target")), "{page}");
         }
         let page = render(&page_of(host, vec![]));
-        assert!(page.contains("found <b>not-its</b>: five worktrees"));
-        assert!(
-            page.contains("five worktrees of 14 GiB · freed 14.0 GiB: /w/a/target (14.0 GiB)"),
-            "what it freed is shown"
-        );
+        assert!(page.contains("did: removed /w/a/target · left: a download of 9 GiB"), "{page}");
     }
 
     #[test]

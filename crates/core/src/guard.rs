@@ -7,7 +7,7 @@
 //! a shell line; what a script, a variable or a quoted substitution hides
 //! gets past it. It stops a worker that errs, not one that means to get by.
 
-use crate::inspection::INSPECTION_ENV;
+use crate::inspection::{INSPECTION_ENV, kept};
 use crate::intake::INTAKE_RECORD;
 use crate::patrol::PATROL_ENV;
 use crate::precedent::PROPOSAL_ENV;
@@ -35,6 +35,17 @@ const COMMITS: [&str; 5] = ["commit", "merge", "cherry-pick", "revert", "am"];
 /// The programs that change the host — delete what is on it, or stop what
 /// runs on it — which a consult does not run (docs/adr/0018).
 const HOST_CHANGES: [&str; 7] = ["rm", "rmdir", "unlink", "shred", "kill", "pkill", "killall"];
+/// The programs that delete the paths they are given.
+const DELETES: [&str; 4] = ["rm", "rmdir", "unlink", "shred"];
+/// The programs that end every process a name matches, whoever started it.
+const ENDS_BY_NAME: [&str; 2] = ["pkill", "killall"];
+/// The options of `kill` that take the next word as their value.
+const KILL_VALUES: [&str; 2] = ["-s", "-n"];
+/// The options of `git push` that force it: what others built on is lost.
+const PUSH_FORCES: [&str; 3] = ["-f", "--force", "--force-with-lease"];
+/// Where what is deleted outside the home folder is the system's temporary
+/// files, no one's own.
+const TEMPORARY: [&str; 4] = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
 /// The `git` subcommands, with the word after them where it matters, that
 /// delete from the host.
 const GIT_DELETES: [(&str, Option<&str>); 3] =
@@ -76,9 +87,24 @@ enum At {
     /// The proposal of a precedent: its worker commits and pushes, in its
     /// clone of the team's repo, and is held to what holds every worker.
     Proposal,
-    /// The inspection of the hot worker so named (docs/adr/0019): held as a
-    /// consult, whatever its facts say.
+    /// The inspection of the hot worker so named, or of the host
+    /// (docs/adr/0026): the operator on its host, whatever its facts say,
+    /// within the bounds of any unattended worker.
     Inspection(String),
+}
+
+/// What the guard knows of one process of this host that a worker would end:
+/// whom it is, as the effect layer reads the host's processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Process {
+    /// The fleets of this host started it — a worker, the landing train, an
+    /// inspection — or it runs under one they started, or was left by one.
+    Fleets,
+    /// The host runner.
+    Runner,
+    /// Anything else: the user's own, another app, orca — or no process
+    /// runs under that pid.
+    Other,
 }
 
 /// What the worker of one stage, or of one patrol, may not do, read from the
@@ -92,6 +118,9 @@ pub struct Limits {
     base_branch: String,
     escalate_label: String,
     lock_label: String,
+    /// The home folder, which an inspection reads paths under; `None` where
+    /// the environment names none.
+    home: Option<String>,
 }
 
 impl Limits {
@@ -117,19 +146,23 @@ impl Limits {
             (None, Some(_), None) => At::Proposal,
             (None, None, None) => At::Stage(fact(STAGE_ENV)?),
         };
+        // An inspection is the operator on its host: it commits, and it is
+        // no consult, whatever its facts say.
         let inspection = matches!(at, At::Inspection(_));
         Ok(Limits {
             at,
-            writes: flag(WRITES_ENV)? && !inspection,
-            consult: flag(CONSULT_ENV)? || inspection,
+            writes: flag(WRITES_ENV)? || inspection,
+            consult: flag(CONSULT_ENV)? && !inspection,
             base_branch: fact(BASE_BRANCH_ENV)?,
             escalate_label: fact(ESCALATE_LABEL_ENV)?,
             lock_label: fact(LOCK_LABEL_ENV)?,
+            home: var("HOME").filter(|home| home.starts_with('/')),
         })
     }
 
-    /// Why the simple command `words` is refused, when it is.
-    fn refuses(&self, command: &Command) -> Option<String> {
+    /// Why the simple command `words` is refused, when it is, `processes`
+    /// saying whom each process of the host is.
+    fn refuses(&self, command: &Command, processes: &dyn Fn(u32) -> Process) -> Option<String> {
         let mut rest = command.iter().map(String::as_str);
         let mut wrapped = false;
         let program = loop {
@@ -147,13 +180,18 @@ impl Limits {
         {
             return Some(host_change(&format!("`{name}`")));
         }
+        if let (At::Inspection(_), Some(name)) = (&self.at, name)
+            && let Some(why) = self.refuses_operator(name, &args, processes)
+        {
+            return Some(why);
+        }
         match name {
             Some("sh" | "bash" | "zsh" | "dash" | "ksh") => {
                 let mut rest = args.iter();
                 while let Some(arg) = rest.next() {
                     if arg.starts_with('-') && !arg.starts_with("--") && arg.contains('c') {
                         return rest.next().and_then(|line| {
-                            commands(line).iter().find_map(|words| self.refuses(words))
+                            commands(line).iter().find_map(|words| self.refuses(words, processes))
                         });
                     }
                 }
@@ -162,13 +200,87 @@ impl Limits {
             Some("git") => self.refuses_git(&args),
             Some("gh") => self.refuses_gh(&args, &command.input),
             Some("orca") if self.consult => {
-                let words = positionals(&args, &[]);
-                let removes = words.first() == Some(&"worktree")
-                    && words.get(1).is_some_and(|verb| ["rm", "remove"].contains(verb));
-                removes.then(|| host_change("`orca worktree rm`"))
+                orca_removes(&args).then(|| host_change("`orca worktree rm`"))
             }
             _ => None,
         }
+    }
+
+    /// Why the inspection, the operator on its host, is refused the program
+    /// `name` run with `args`: what holds it to the bounds of any unattended
+    /// worker beside what holds every worker — only what the fleets of this
+    /// host started or own, and never what cannot be rebuilt.
+    fn refuses_operator(
+        &self,
+        name: &str,
+        args: &[&str],
+        processes: &dyn Fn(u32) -> Process,
+    ) -> Option<String> {
+        if ENDS_BY_NAME.contains(&name) {
+            return Some(format!(
+                "an inspection ends only what the fleets of this host started: `{name}` ends every \
+                 process its name matches, the user's own among them. Find the pid (`ps`), and \
+                 `kill <pid>`"
+            ));
+        }
+        if name == "kill" {
+            return ended(args).into_iter().find_map(|target| ends(target, processes));
+        }
+        if DELETES.contains(&name) {
+            return deleted(args).into_iter().find_map(|path| self.keeps(path));
+        }
+        if name == "orca" && orca_removes(args) && has_any(args, &["--force"]) {
+            return Some(loses_changes("`orca worktree rm --force`"));
+        }
+        let words = positionals(args, &[]);
+        if name == "afkconvoy" && words.first() == Some(&"stop") {
+            return Some(
+                "an inspection never stops the host runner, nor takes a checkout off its list: \
+                 `afkconvoy stop` is the user's. Change what holds the work back instead"
+                    .to_string(),
+            );
+        }
+        None
+    }
+
+    /// Why an inspection may not delete `path`, a word of a deleting
+    /// command: it is, or holds, what cannot be rebuilt under the home folder
+    /// (`inspection::KEPT`), or it is outside the home folder and the
+    /// system's temporary files — the user's programs and files. A path the
+    /// guard cannot place — relative, or named by another variable — is the
+    /// worker's to place.
+    fn keeps(&self, path: &str) -> Option<String> {
+        let home = self.home.as_deref().unwrap_or("");
+        let under = |root: &str, path: &str| {
+            !root.is_empty()
+                && path.strip_prefix(root).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        let path = ["~", "$HOME", "${HOME}"]
+            .iter()
+            .find_map(|named| {
+                let rest = path.strip_prefix(named)?;
+                (rest.is_empty() || rest.starts_with('/')).then(|| format!("{home}{rest}"))
+            })
+            .unwrap_or_else(|| path.to_string());
+        if !path.starts_with('/') {
+            return None;
+        }
+        if under(home, &path) {
+            let relative = path.strip_prefix(home).unwrap_or_default();
+            return kept(relative).then(|| {
+                format!(
+                    "an inspection never deletes what cannot be rebuilt: `{path}` is, or holds, \
+                     model weights, downloads, media, Docker's images or the user's own files"
+                )
+            });
+        }
+        if TEMPORARY.iter().any(|root| under(root, &path)) {
+            return None;
+        }
+        Some(format!(
+            "an inspection never touches what is outside the home folder: `{path}` is the \
+             user's, or the system's"
+        ))
     }
 
     fn refuses_git(&self, args: &[&str]) -> Option<String> {
@@ -194,13 +306,12 @@ impl Limits {
         if self.consult && deletes {
             return Some(host_change(&format!("`git {subcommand}`")));
         }
+        if let At::Inspection(_) = &self.at
+            && let Some(why) = git_loses(subcommand, next, args)
+        {
+            return Some(why);
+        }
         if COMMITS.contains(&subcommand) || subcommand == "push" {
-            if let At::Inspection(worker) = &self.at {
-                return Some(format!(
-                    "an inspection writes no code: `git {subcommand}` is refused. Say what you \
-                     found of {worker} with `afkconvoy inspected`, and the fleet tells it"
-                ));
-            }
             if self.consult {
                 return Some(format!(
                     "a consult writes no code: `git {subcommand}` is refused. Rule on what \
@@ -333,6 +444,131 @@ impl Limits {
              issue goes is read off the verdict its stage declares"
         ))
     }
+}
+
+/// Why an inspection may not run `git subcommand`, `next` the word after it,
+/// with `args`: a force push, or what deletes a change no commit holds.
+fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<String> {
+    match subcommand {
+        "push" => {
+            let forced = args.iter().any(|arg| {
+                PUSH_FORCES.iter().any(|force| {
+                    arg == force || arg.strip_prefix(force).is_some_and(|rest| rest.starts_with('='))
+                })
+            });
+            let plus = positionals(args, &PUSH_VALUES).iter().skip(2).any(|spec| spec.starts_with('+'));
+            (forced || plus).then(|| {
+                "an inspection never force-pushes: what others built on would be lost. Push a \
+                 branch of your own, as any worker's change goes"
+                    .to_string()
+            })
+        }
+        "clean" => {
+            let groups: Vec<&str> = args
+                .iter()
+                .filter(|arg| arg.starts_with('-') && !arg.starts_with("--"))
+                .copied()
+                .collect();
+            let dry = has_any(args, &["--dry-run"]) || groups.iter().any(|group| group.contains('n'));
+            let ignored_only = groups.iter().any(|group| group.contains('X'))
+                && !groups.iter().any(|group| group.contains('x'));
+            (!dry && !ignored_only).then(|| {
+                loses_changes(
+                    "`git clean` without `-X` (deleting what git does not track is deleting a \
+                     change no commit holds; `git clean -fdX` deletes only what git ignores)",
+                )
+            })
+        }
+        "worktree" if next == Some("remove") && has_any(args, &["-f", "--force"]) => {
+            Some(loses_changes("`git worktree remove --force`"))
+        }
+        "reset" if has_any(args, &["--hard"]) => Some(loses_changes("`git reset --hard`")),
+        _ => None,
+    }
+}
+
+fn loses_changes(what: &str) -> String {
+    format!(
+        "an inspection never deletes a change no commit holds: {what} is refused. Commit it, or \
+         leave it"
+    )
+}
+
+/// The processes `kill` with `args` ends: the words after its signal, or
+/// none where it only lists signals.
+fn ended<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut targets = vec![];
+    let (mut options, mut signalled) = (true, false);
+    let mut rest = args.iter().copied();
+    while let Some(arg) = rest.next() {
+        if options && arg == "--" {
+            options = false;
+        } else if options && ["-l", "-L"].contains(&arg) {
+            return vec![];
+        } else if options && KILL_VALUES.contains(&arg) {
+            rest.next();
+            signalled = true;
+        } else if options && !signalled && arg.starts_with('-') {
+            signalled = true;
+        } else {
+            options = false;
+            targets.push(arg);
+        }
+    }
+    targets
+}
+
+/// Why an inspection may not end `target`, a word `kill` was given: a pid
+/// of a process the fleets of this host did not start, the host runner, or
+/// what names none — a variable, a process group. A job of its own shell
+/// (`%1`) is its own.
+fn ends(target: &str, processes: &dyn Fn(u32) -> Process) -> Option<String> {
+    if target.starts_with('%') {
+        return None;
+    }
+    let Ok(pid) = target.parse::<u32>() else {
+        return Some(format!(
+            "an inspection ends a process by its pid, and `{target}` names none the guard can \
+             read: find the pid (`ps`), and `kill <pid>`"
+        ));
+    };
+    match processes(pid) {
+        Process::Fleets => None,
+        Process::Runner => Some(format!(
+            "{pid} is the host runner, which an inspection never ends: it is the user's"
+        )),
+        Process::Other => Some(format!(
+            "the fleets of this host did not start {pid}, and an inspection ends only what they \
+             started — a worker's process, the landing train's, an inspection's, or one they left \
+             behind. Never the user's own, another app or orca"
+        )),
+    }
+}
+
+/// The paths a deleting command with `args` deletes: its words but its
+/// options, every word after `--`.
+fn deleted<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut paths = vec![];
+    let mut options = true;
+    for arg in args {
+        if options && *arg == "--" {
+            options = false;
+        } else if !(options && arg.starts_with('-') && arg.len() > 1) {
+            paths.push(*arg);
+        }
+    }
+    paths
+}
+
+/// Whether `orca` with `args` removes a worktree.
+fn orca_removes(args: &[&str]) -> bool {
+    let words = positionals(args, &[]);
+    words.first() == Some(&"worktree")
+        && words.get(1).is_some_and(|verb| ["rm", "remove"].contains(verb))
+}
+
+fn has_any(args: &[&str], options: &[&str]) -> bool {
+    args.iter().any(|arg| options.contains(arg))
 }
 
 fn host_change(what: &str) -> String {
@@ -577,14 +813,23 @@ enum Within {
     Comment,
 }
 
-/// Why `call` is refused under `limits`; `None` when the worker may make it.
+/// Why `call` is refused under `limits`, `processes` saying whom each process
+/// of the host is; `None` when the worker may make it.
 /// Refused for every worker: adding or removing a flow, stage, escalate or
 /// lock label; writing a stage record by hand; merging a PR; pushing the base
 /// branch. Refused besides in a stage that writes nothing, and for a consult:
-/// committing and pushing. The reason is written for the worker to read.
-pub fn refused(call: &Call, limits: &Limits) -> Option<String> {
+/// committing and pushing, and changing the host. Refused besides for an
+/// inspection, the operator on its host: ending what the fleets of this host
+/// did not start, deleting what cannot be rebuilt or a change no commit holds,
+/// a force push, and stopping the host runner. The reason is written for the
+/// worker to read.
+pub fn refused(
+    call: &Call,
+    limits: &Limits,
+    processes: &dyn Fn(u32) -> Process,
+) -> Option<String> {
     let Call::Shell(line) = call else { return None };
-    commands(line).iter().find_map(|words| limits.refuses(words))
+    commands(line).iter().find_map(|words| limits.refuses(words, processes))
 }
 
 /// Where a stage that writes nothing started: what the fleet keeps of it to
@@ -652,6 +897,21 @@ impl WritesNothing {
 mod tests {
     use super::*;
     use crate::role::{Facts, On};
+
+    /// The fleets of this test's host started 4242 and 4243, and its host
+    /// runner is 77; every other pid is someone else's.
+    fn whom(pid: u32) -> Process {
+        match pid {
+            4242 | 4243 => Process::Fleets,
+            77 => Process::Runner,
+            _ => Process::Other,
+        }
+    }
+
+    /// Why `call` is refused under `limits`, on this test's host (`whom`).
+    fn refused(call: &Call, limits: &Limits) -> Option<String> {
+        super::refused(call, limits, &whom)
+    }
 
     fn facts(writes: bool, consult: bool) -> Facts<'static> {
         Facts {
@@ -727,33 +987,132 @@ mod tests {
         assert!(refused(&merging, &limits).is_some());
     }
 
-    #[test]
-    fn an_inspection_is_held_as_a_consult_whatever_its_facts_say() {
-        // Started with a writing role's facts, it is held all the same.
-        let facts = Facts { on: On::Inspection("#7"), ..facts(true, false) };
-        let env = facts.env();
+    /// The limits of an inspection started with a consult's facts, whose
+    /// home folder is /Users/kim.
+    fn inspection() -> Limits {
+        let facts = Facts { on: On::Inspection("#7"), ..facts(false, true) };
+        let mut env = facts.env();
         assert!(env.iter().all(|(name, _)| *name != STAGE_ENV), "an inspection has no stage");
-        let limits = Limits::read(|name| {
+        env.push(("HOME", "/Users/kim".to_string()));
+        Limits::read(|name| {
             env.iter().find(|(known, _)| *known == name).map(|(_, value)| value.clone())
         })
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn an_inspection_is_the_operator_on_its_host_whatever_its_facts_say() {
+        // Started with a consult's facts, it is no consult all the same.
+        let limits = inspection();
         assert_eq!(
             (&limits.at, limits.writes, limits.consult),
-            (&At::Inspection("#7".into()), false, true)
+            (&At::Inspection("#7".into()), true, false)
         );
-        let commit = refused(&Call::shell("git commit -m x"), &limits).expect("a refusal");
-        assert!(
-            commit.contains("an inspection writes no code") && commit.contains("#7"),
-            "{commit}"
-        );
-        assert!(refused(&Call::shell("git push origin HEAD"), &limits).is_some());
-        for host in ["kill -9 4242", "rm -rf target", "git clean -fdx"] {
-            let why = refused(&Call::shell(host), &limits).unwrap_or_else(|| panic!("{host}"));
-            assert!(why.contains("does not change the host"), "{host}: {why}");
+        for line in [
+            // It changes the repo on a branch of its own, as any worker's change goes.
+            "git switch -c afkconvoy-gate-queued && git commit -am 'queue the gate' && git push -u origin HEAD",
+            "gh pr create --base main --title 'Queue the gate' --body x",
+            // It changes the host, as the operator would.
+            "kill 4242",
+            "kill -9 4242 4243",
+            "kill -s TERM -- 4242",
+            "kill %1",
+            "kill -l",
+            "rm -rf /Users/kim/orca/workspaces/widgets/issue-7/target",
+            "rm -rf ~/Library/Caches/Homebrew \"$HOME/.cargo/registry/cache\"",
+            "rm -rf target node_modules",
+            "rm -f /tmp/afkconvoy-leak.jsonl",
+            "git clean -fdX",
+            "git clean -n",
+            "git worktree remove /Users/kim/orca/workspaces/widgets/issue-3",
+            "orca worktree rm --worktree path:/Users/kim/orca/workspaces/widgets/issue-3",
+            "afkconvoy run /src/widgets --concurrency 2",
+            "afkconvoy restart 7 --instance alpha",
+            "afkconvoy switch 7 --instance alpha --harness codex",
+            "orca terminal send --terminal term-1 --text 'run the suite through afkconvoy exclusive' --enter",
+            "ps -o pid,command -p 4242",
+            "sample 4242 5",
+            "du -sh target",
+        ] {
+            assert_eq!(refused(&Call::shell(line), &limits), None, "{line}");
         }
-        for looking in ["ps -o pid,command -p 4242", "sample 4242 5", "du -sh target"] {
-            assert_eq!(refused(&Call::shell(looking), &limits), None, "{looking}");
+    }
+
+    #[test]
+    fn an_inspection_ends_only_what_the_fleets_of_its_host_started() {
+        let limits = inspection();
+        let why = |line: &str| {
+            refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
+        };
+        // A process the fleet did not start is refused, wherever it stands.
+        for line in ["kill 501", "kill -9 4242 501", "sh -c 'kill -TERM 501'", "kill -- 501"] {
+            let said = why(line);
+            assert!(said.contains("the fleets of this host did not start 501"), "{line}: {said}");
         }
+        assert!(why("kill 77").contains("77 is the host runner"));
+        for line in ["kill $PID", "kill -9 -4242", "kill $(pgrep cargo)", "kill -- -4242"] {
+            assert!(why(line).contains("by its pid"), "{line}");
+        }
+        for line in ["pkill cargo", "killall -9 cargo", "/usr/bin/pkill -f nextest"] {
+            assert!(why(line).contains("ends every process its name matches"), "{line}");
+        }
+        assert!(why("afkconvoy stop --all").contains("never stops the host runner"));
+        assert!(why("/opt/homebrew/bin/afkconvoy stop /src/widgets").contains("never stops"));
+    }
+
+    #[test]
+    fn an_inspection_never_deletes_what_cannot_be_rebuilt() {
+        let limits = inspection();
+        let why = |line: &str| {
+            refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
+        };
+        for line in [
+            "rm -rf ~/.cache/huggingface/hub",
+            "rm -rf /Users/kim/Downloads/old.dmg",
+            "rm -rf \"$HOME/Movies\"",
+            "rm -rf ${HOME}/Library/Containers/com.docker.docker",
+            "rm -rf ~/.cache",
+            "rm -rf ~",
+            "rm -rf ~/*",
+            "rmdir -- ~/Pictures/x",
+        ] {
+            assert!(why(line).contains("never deletes what cannot be rebuilt"), "{line}");
+        }
+        for line in ["rm -rf /Applications/Orca.app", "unlink /opt/homebrew/bin/gh", "rm -rf /"] {
+            assert!(why(line).contains("outside the home folder"), "{line}");
+        }
+        for line in [
+            "git clean -fdx",
+            "git clean -fd",
+            "git -C /w/a clean -f -d -x",
+            "git worktree remove --force /w/a",
+            "git reset --hard origin/main",
+            "orca worktree rm --worktree path:/w/a --force",
+        ] {
+            assert!(why(line).contains("a change no commit holds"), "{line}");
+        }
+    }
+
+    #[test]
+    fn an_inspection_pushes_no_base_branch_and_forces_nothing() {
+        let limits = inspection();
+        let why = |line: &str| {
+            refused(&Call::shell(line), &limits).unwrap_or_else(|| panic!("allowed: {line}"))
+        };
+        // A push to the base branch is refused, as for every worker.
+        for line in ["git push origin main", "git push origin HEAD:main", "git push --all"] {
+            assert!(why(line).contains("pushes the base branch `main`"), "{line}");
+        }
+        for line in [
+            "git push -f origin HEAD",
+            "git push --force origin afkconvoy-gate-queued",
+            "git push --force-with-lease=x:y origin HEAD",
+            "git push origin +HEAD:afkconvoy-gate-queued",
+        ] {
+            assert!(why(line).contains("never force-pushes"), "{line}");
+        }
+        assert!(why("gh pr merge 70 --squash").contains("merging a PR is refused"));
+        assert!(why("gh issue edit 7 --add-label ready-for-human").contains("escalate label"));
     }
 
     #[test]
