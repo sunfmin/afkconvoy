@@ -22,6 +22,8 @@ afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance
 2. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
 3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 
+To watch a running fleet, checking on it every few minutes, run `afkconvoy doctor --all --since <until of your last look>`. A first look runs `afkconvoy doctor --all` without `--since`; its `until` is where the next look starts.
+
 And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
 
 ## What a command answers
@@ -32,7 +34,7 @@ Every command prints exactly one JSON object on stdout. A failure is {"error": �
 
 Read `afkconvoy <command> --help` before the first time you run one. The commands below are grouped by who runs them:
 
-- **Run by the operator** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` is what to run when something looks wrong, or you are asked whether the fleet is working: it says what the fleet on this host is doing and what is wrong, each finding with the line that fixes it.
+- **Run by the operator** — starting, watching or stopping a fleet. Read these first: `config`, `check` and `plan` before it starts, `run` to start it, `tick` for one pass of it and `stop` to stop it, `doctor --all --since <until of your last look>`, `checkouts` and `panel` to watch it, `kit`, `cast` and `switch` for the harness and model each worker runs, `patrol-now` to have a patrol run now and `takeover` to take another fleet instance's claims. `doctor` also says what is wrong, each finding with the line that fixes it.
 - **Run by whoever designs a team** — `scaffold` to start one or a role of it from a skeleton, `draft` to draft its roster from the host kit, then, once `check` accepts it, `show` to review a workflow or to ask where an issue is in it, and `rehearse` to try one out.
 - **Run by whoever hands the fleet work** — a human, or the agent a human is talking to, with work decided on and issues to open for it. Read `flows` before opening the first issue: it says which workflow takes which issue and the line that opens one, and creates the labels. `wake`, after the last, has the fleet take them up now.
 - **Run by whoever sets an agent up** — `skill` prints the skill file that sends their agent to `afkconvoy --help`.
@@ -428,11 +430,21 @@ It exits 0 with no critical finding, and non-zero with one — printing the same
 
 With `--all`:
 
-{"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}]}
+{"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
 
 - `host`: what of `host` is the host's alone, as above, said once
 - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy
 - `checkouts`: each checkout on the list, in its order — [] with none — with the repo its remote `origin` names, null where it is no git checkout any more, and its `doctor`: what `doctor` answers in it — `waiting_on_human` and `proposals` among it — but for the host's, which are above. Each is asked as the fleet of the host its `run` named, unless `--host` names one. {"error", "see"} where it could not be asked
+- `until`: this look's boundary in epoch seconds, captured before reading any checkout. Pass it as the next `--since`. Null when a checkout or its interval could not be read: keep the previous boundary and try again.
+
+With `--all --since <time>`, each checkout's `doctor.watching` adds what happened on this host and on GitHub. Time is epoch seconds or UTC `YYYY-MM-DDTHH:MM:SSZ`. The interval includes `since` and excludes `until`: events stamped in the current second are left for the next look, so adjacent looks lose no step and repeat none. Without `--since`, no interval is read and the state and findings are answered as usual.
+
+- `since`, `until`: the interval's boundaries, in epoch seconds.
+- `issues`: each issue that moved, and each issue with an open PR, as {issue, title, pr, steps, last_step}. `steps` are oldest first, each {at, source, step, detail}; source is tick_log or github. Gate queue counts, waits, exit codes and run times are in detail, as logged. `last_step` adds `ago`, seconds since the last step, including a step before `since`; null if neither source has one. A queued, running or red gate therefore explains a PR quiet on GitHub.
+- `ticks`: ticks that acted, held admission back or failed, oldest first, as {instance, first, last, count, line, failed, did, errors}. Consecutive successful ticks with the same line, steps and errors are folded, count saying how many; every failed tick is separate, including a failure said only in its line.
+- `events`: other tick log lines, oldest first, as {at, instance, line}: commands, starts, stops, hot workers and what inspections did among them. A command that names no issue stays here.
+- `ended`: GitHub's issue_closed, pr_merged, pr_closed and intake steps in the interval, each {at, issue, pr, step, detail}. Fork PRs and another repo's issues in a shared tracker are left out.
+- `log`: {file, first, retained_only}: the local log, its oldest retained timestamp (null with none), and true because older lines may have been cut back. The interval can only report local steps still retained. GitHub reads include closed issues and PRs, and their intake and stage records. {error, see} in place of watching means that interval could not be read; the top-level until is null and the command exits non-zero.
 
 It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
 
@@ -465,6 +477,7 @@ afkconvoy doctor [OPTIONS] [CHECKOUT]
 
 - `[CHECKOUT]`: The checkout it is about, or a directory in it [default: the one it is run in]
 - `--all`: Every checkout on this host's checkout list, saying the host's findings once
+- `--since <SINCE>`: Add what happened since this time (epoch seconds or YYYY-MM-DDTHH:MM:SSZ); requires --all
 - `--worker-no-proxy <[HARNESS=]HOSTS>`: Hosts reached directly, comma-separated, for the default harness or HARNESS; repeat for each harness. DSH defaults to api.deepseek.com. An empty list disables the stock addition. Extends no_proxy and NO_PROXY
 - `--host <HOST>`: The host whose fleet is asked after [default: this machine's name]
 

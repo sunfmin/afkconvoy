@@ -64,6 +64,52 @@ pub const LANDED_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
     {number, at: (.closedAt | fromdateiso8601? // null), \
     more: .comments.pageInfo.hasNextPage, comments: [.comments.nodes[] | \
     {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// Issues updated since a watching agent's last look, open or closed, in
+/// the tracker and scoped to this repo's label. Comments past the first page
+/// are read through the ordinary comments endpoint.
+pub const WATCH_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, \
+    $labels: [String!], $since: DateTime!, $endCursor: String) { \
+    repository(owner: $owner, name: $repo) { \
+    issues(labels: $labels, filterBy: {since: $since}, first: 100, after: $endCursor, \
+    orderBy: {field: UPDATED_AT, direction: ASC}) { \
+    pageInfo { hasNextPage endCursor } nodes { number title closedAt \
+    labels(first: 100) { nodes { name } } \
+    comments(first: 100) { pageInfo { hasNextPage } \
+    nodes { fullDatabaseId body url createdAt } } } } } }";
+pub const WATCH_ISSUES_JQ: &str = ".data.repository.issues.nodes[] | \
+    {number, title, closed: (.closedAt | fromdateiso8601? // null), \
+    labels: [.labels.nodes[].name], more: .comments.pageInfo.hasNextPage, \
+    comments: [.comments.nodes[] | \
+    {id: (.fullDatabaseId | tonumber), body, url, at: (.createdAt | fromdateiso8601? // null)}]}";
+/// PRs ordered by most recently updated: watching stops paging once a page
+/// reaches before its lower boundary, including every tie at that boundary.
+pub const WATCH_PRS_JQ: &str = ".[] | {number, title, body, \
+    updated: (.updated_at | fromdateiso8601), \
+    closed: (.closed_at | fromdateiso8601? // null), \
+    merged: (.merged_at | fromdateiso8601? // null), \
+    fork: (.head.repo.full_name != .base.repo.full_name), of: .base.repo.full_name}";
+
+#[derive(Debug, Deserialize)]
+pub struct WatchIssue {
+    pub number: u64,
+    pub title: String,
+    pub closed: Option<u64>,
+    pub labels: Vec<String>,
+    pub more: bool,
+    pub comments: Vec<Comment>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WatchPr {
+    pub number: u64,
+    pub title: String,
+    pub body: Option<String>,
+    pub updated: u64,
+    pub closed: Option<u64>,
+    pub merged: Option<u64>,
+    pub fork: bool,
+    pub of: Option<String>,
+}
 /// How many comments of an issue come with it (`OPEN_ISSUES_QUERY`).
 pub const COMMENTS_WITH: usize = 100;
 /// What is read of one issue, open or not.
@@ -576,6 +622,60 @@ impl GitHub {
             });
         }
         Ok(open)
+    }
+
+    /// The issues that may hold a closing or a stage/intake record since
+    /// `since`. This uses GitHub's update time, not a search index, and pages
+    /// through every result without a search result cap.
+    pub fn watching_issues(&self, since: u64) -> Result<Vec<WatchIssue>> {
+        let query = format!("query={WATCH_ISSUES_QUERY}");
+        let since = format!("since={}Z", crate::log::utc(since).replace(' ', "T"));
+        let variables = variables(&self.tracker);
+        let mut args = vec!["api", "graphql", "--paginate"];
+        args.extend(variables.iter().map(String::as_str));
+        args.extend(["-f", &query, "-f", &since, "--jq", WATCH_ISSUES_JQ]);
+        let out = self.read(&args)?;
+        let mut issues = vec![];
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            let mut issue: WatchIssue = serde_json::from_str(line)
+                .context("gh api graphql: unexpected watching issues answer")?;
+            if !self.tracker.holds(&issue.labels)
+                || afkconvoy_core::tracker::repo_labels(&issue.labels).len() > 1
+            {
+                continue;
+            }
+            if issue.more {
+                issue.comments = self.comments(issue.number)?;
+            }
+            issues.push(issue);
+        }
+        Ok(issues)
+    }
+
+    /// Recently updated PRs in the checkout's own repo, including ones
+    /// which disappeared from the open list between looks. Forks are not
+    /// fleet state, but still count toward pagination's lower boundary.
+    pub fn watching_prs(&self, since: u64) -> Result<Vec<WatchPr>> {
+        let mut prs = vec![];
+        for page in 1.. {
+            let endpoint = format!(
+                "repos/{OWN}/pulls?state=all&sort=updated&direction=desc&per_page=100&page={page}"
+            );
+            let out = self.read(&["api", &endpoint, "--jq", WATCH_PRS_JQ])?;
+            let rows: Vec<WatchPr> = out
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str(line).context("gh api: unexpected watching PRs answer")
+                })
+                .collect::<Result<_>>()?;
+            let finished = rows.len() < 100 || rows.iter().any(|row| row.updated < since);
+            prs.extend(rows.into_iter().filter(|row| row.updated >= since && !row.fork));
+            if finished {
+                break;
+            }
+        }
+        Ok(prs)
     }
 
     /// Patrol ownership and completion times in the rolling day. Read only

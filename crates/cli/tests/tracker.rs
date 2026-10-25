@@ -51,6 +51,45 @@ fn tick(world: &World, now: &str) -> Value {
     world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", now]).ok()
 }
 
+#[test]
+fn watching_reads_the_trackers_endings_and_keeps_same_numbered_repos_apart() {
+    let world = world();
+    let second = world.second_repo();
+    world.say_concurrency(&world.clone, 3);
+    world.say_concurrency(&second, 3);
+    tracker_issue(&world, 7, &[MINE]);
+    tracker_issue(&world, 8, &["repo:acme/other"]);
+    tracker_issue(&world, 9, &[MINE, "repo:acme/other"]);
+    world.with_tracker(|gh| {
+        for row in gh["issues"].as_array_mut().unwrap() {
+            row["state"] = json!("closed");
+            row["closed_at"] = json!(1050);
+        }
+    });
+    world.pr_closing(101, "acme/tracker#7", "work");
+    world.with_gh(|gh| {
+        gh["prs"][0]["state"] = json!("merged");
+        gh["prs"][0]["merged_at"] = json!(1060);
+        gh["prs"][0]["updated_at"] = json!(1060);
+    });
+    // The checkout's own issues never leak into its external tracker's report.
+    world.issue(7, &[]);
+    world.with_gh(|gh| {
+        gh["issues"][0]["state"] = json!("closed");
+        gh["issues"][0]["closed_at"] = json!(1070);
+    });
+    let answer = world.afk(&["doctor", "--all", "--since", "1000", "--now", "1100"]).ok();
+    assert_eq!(answer["until"], 1100);
+    let rows = answer["checkouts"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let watching = &rows[0]["doctor"]["watching"];
+    assert_eq!(watching["issues"].as_array().unwrap().len(), 1, "{watching}");
+    assert_eq!(watching["issues"][0]["issue"], 7);
+    assert_eq!(watching["ended"][0]["at"], 1050);
+    assert_eq!(watching["ended"][1]["step"], "pr_merged");
+    assert_eq!(rows[1]["doctor"]["watching"]["issues"], json!([]));
+}
+
 /// The brief of the worker in `worktree`.
 fn brief(worktree: &Path) -> String {
     let git_dir = PathBuf::from(git(worktree, &["rev-parse", "--absolute-git-dir"]));
