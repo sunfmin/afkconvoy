@@ -343,6 +343,9 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
         _ => return Ok(Outcome::Nothing),
     };
     if let Some(checkout) = checkout {
+        if crate::health::holding(&checkout) {
+            return Ok(Outcome::Nothing);
+        }
         if !run_over(claim, checkout.state(me.now)?, me.now) {
             return Ok(Outcome::Nothing);
         }

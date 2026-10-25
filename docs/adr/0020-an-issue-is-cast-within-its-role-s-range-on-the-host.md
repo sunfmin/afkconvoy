@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # An issue is cast within its role's range on the host
@@ -14,7 +14,17 @@ So the choice is made per issue, inside bounds two places set:
 
 An issue's **casting** is its `harness:` and `model:` labels, the model in the harness's own name. A stage whose range holds the casting runs it; one whose range does not runs its range's first; a range of one leaves nothing to choose. An issue none of whose stages has a choice to make is not cast. One that has, and carries a flow label and no casting, is cast by a **caster**: a worker in no role, started by a tick that finds such an issue on the frontier and none running, which casts every such issue of the repo in one session and says on each why. The tick holds those issues back while it runs, for ten minutes at most, and dispatches them uncast after that. A human's labels are never recast; a casting no stage's range holds is not followed — each stage runs its range's first, `plan` says `unmatched`, and the issue is told once — for a name that matches nothing never stops work. Issues cast to a harness that is paused are cast again.
 
-From the highest: a switch, then the range's answer to the casting. A human clears a switch with `switch --clear`, which replaces `--harness config`: the casting stands again for every worker started after it, and a worker it names is moved onto what its range and casting say, as a switch moves one. A switch, or a stock consult, naming what the host kit does not hold is not followed either: the range's first, or the host kit's. The stock consult runs what the host kit names for it, or the host kit's first; every other worker in no role — the caster, the proposal of a precedent — runs the host kit's first, and a landing runs its issue's casting where the host kit holds it.
+## Host priority and fault continuation (control #19)
+
+Supersedes the earlier repository-local switch choice and the preference ordering above. Harness priority has one home: the order of the host kit. `switch --harness X` moves an existing entry first, preserving its command, models and probe evidence and the relative order of the rest. It runs without a checkout or instance. There is no separate chosen-harness record, repository mapping, clear operation or saved previous order. Old git-directory choices are neither read nor migrated. Kit writes reconcile with the latest order under the same mutation lock as promotion, so research or probes already in flight cannot overwrite a switch. Research ranks models, never harnesses.
+
+Every issue, stage, consult, patrol, landing, caster and inspection selects the first eligible harness in kit order. Role support and limits remain constraints. Ticket casting, roster preference and stock-consult preference cannot select a later harness; matching model preferences only apply within the selected harness. Startability faults are skipped and explained, not passed off as a successful preferred launch. Team and ticket data are unchanged.
+
+No running worker is interrupted by changing priority alone. `--all` continues workers across the host's checkout list, collecting failures while processing the rest. Continuation keeps the scene and breaker counts. Before another writer starts, terminal closure, runtime reports and the old process tree are checked; uncertainty leaves no second writer.
+
+Worker health is evidence, not priority: observations and scoped faults live in the host cache, shared by its fleets and retained across runner restarts. Structured quota/authentication/disable, model and session errors retain their scope. A transient rate limit waits for its retry time and has two retries before session fallback. A screen alone goes first to another available kit harness for a tool-free diagnosis. The diagnosis returns a checked structured judgment with quoted evidence and missing information; it cannot perform recovery itself. Unknown, malformed or timed-out judgments preserve the scene. Silence never certifies an account fault.
+
+Observation begins after a worker stops reporting progress. Two observations span at least 300 seconds; known background work and declared verdicts are excluded. Diagnosis has 30 seconds per candidate, three attempts per unchanged episode, and at least 300 seconds between attempts. Candidate account/model recovery probes run hourly, and only successful probes restore availability. Diagnostic failures try subsequent eligible harnesses; no candidate means waiting. A recovered preference participates in new starts without moving healthy successors back. Plan, doctor, panel and the tick log expose evidence, diagnosis source, scope, next check, action and actual successor.
 
 ## Considered options
 

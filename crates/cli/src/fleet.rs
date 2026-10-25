@@ -18,7 +18,7 @@ use afkconvoy_core::team::{Consult, Role, Team, Workflow};
 use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use std::thread;
 
 use crate::claims::Scan;
@@ -37,6 +37,7 @@ pub struct Fleet {
     pub repo: Repo,
     /// Candidates excluded for this continuation only, never a preference.
     pub avoiding: Vec<Harness>,
+    runnable: std::cell::RefCell<Option<(crate::kit::Kit, Vec<(Harness, String)>)>>,
     /// The repo's config, with the concurrency its checkout says on this
     /// host laid over it (`concurrency::config_of`).
     pub config: Config,
@@ -100,6 +101,7 @@ impl Fleet {
         Ok(Fleet {
             repo,
             avoiding: vec![],
+            runnable: std::cell::RefCell::new(None),
             config,
             gh,
             scan,
@@ -134,8 +136,8 @@ impl Fleet {
     /// so does a range that holds nothing (`NothingSafe`): no worker of the
     /// role runs without its limits.
     pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
-        let (mut kit, paused) = crate::kit::running()?;
-        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
+        let kit = self.runnable()?;
+        let paused = crate::paused::read();
         let kit = kit.range();
         let range = casting::range(role, &kit);
         if range.is_empty() && !paused.is_empty() {
@@ -150,8 +152,8 @@ impl Fleet {
 
     /// The stock consult follows the same kit order as every other worker.
     pub fn stock_consult(&self) -> Result<Cast> {
-        let (mut kit, paused) = crate::kit::running()?;
-        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
+        let kit = self.runnable()?;
+        let paused = crate::paused::read();
         if kit.harnesses.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
@@ -170,14 +172,45 @@ impl Fleet {
 
     /// Kit order chooses the harness. Labels can only choose a model within it.
     pub fn cast(&self, labels: &[String], recast: bool) -> Result<Result<Cast, String>> {
-        let (mut kit, paused) = crate::kit::running()?;
-        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
+        let kit = self.runnable()?;
+        let paused = crate::paused::read();
         let range = kit.range();
         let labels = if recast { casting::without_casting(labels) } else { labels.to_vec() };
         if range.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
         Ok(casting::preferred(&labels, &range, &range))
+    }
+
+    /// One view's capability snapshot. Failed startability checks skip only
+    /// that candidate; they never rewrite the kit or remote casting.
+    pub fn runnable(&self) -> Result<crate::kit::Kit> {
+        if self.runnable.borrow().is_none() {
+            let mut kit = crate::kit::running()?.0;
+            let launches = crate::launch::Launches::foreseen(&self.repo);
+            let mut skipped = vec![];
+            kit.harnesses.retain(|held| {
+                match crate::role::startable(&launches, held.harness, "kit priority") {
+                    Ok(()) => true,
+                    Err(e) => {
+                        skipped.push((held.harness, format!("{e:#}")));
+                        false
+                    }
+                }
+            });
+            *self.runnable.borrow_mut() = Some((kit, skipped));
+        }
+        let mut kit = self.runnable.borrow().as_ref().context("runnable kit")?.0.clone();
+        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
+        Ok(kit)
+    }
+
+    pub fn selection(&self) -> serde_json::Value {
+        let kit = self.runnable();
+        serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
+            "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
+            "skipped": self.runnable.borrow().as_ref().map(|(_, skipped)| skipped),
+            "health": crate::health::show(), "why": "first eligible harness in kit order; role limits still apply"})
     }
 
     /// Whether issue `number`, labelled `labels`, is to be cast again: a
@@ -337,7 +370,8 @@ impl Fleet {
     /// started on, is held back while it is paused, and so is every issue
     /// while every harness is.
     fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, consults: &[u64]) {
-        let Ok((kit, paused)) = crate::kit::running() else { return };
+        let Ok(kit) = self.runnable() else { return };
+        let paused = crate::paused::read();
         let range = kit.range();
         let issues = &open.rows;
         let labels_of = |number: u64| -> Vec<String> {
@@ -434,7 +468,8 @@ impl Fleet {
     /// an unbound repo: an issue a caster cast to one is cast again, and one
     /// a human cast to it is held back while it is paused (`cast_in`).
     fn cast_bound_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, stages: &Flows) {
-        let Ok((kit, paused)) = crate::kit::running() else { return };
+        let Ok(kit) = self.runnable() else { return };
+        let paused = crate::paused::read();
         let kit = kit.range();
         let Ok(team) = stages.team() else { return };
         let positions = stages.positions();

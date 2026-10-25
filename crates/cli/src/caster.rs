@@ -204,7 +204,8 @@ fn read_castings(answer: &str) -> Vec<Casting> {
 ///   {"cast": [{issue, harness, model, why}], "uncast": [{issue, why}]}
 pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
     let (fleet, open) = Fleet::read(repo, now)?;
-    let (kit, paused) = crate::kit::running()?;
+    let kit = fleet.runnable()?;
+    let paused = crate::paused::read();
     let range = kit.range();
     let team = match fleet.config.bound {
         Some(_) => Some(crate::team::load(crate::team::From::Config, Some(repo))?.team),

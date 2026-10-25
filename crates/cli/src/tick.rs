@@ -280,6 +280,7 @@ fn carry_out(
     if let Some(issue) = issue {
         let source = crate::orca::Source::of(&fleet.repo)?;
         if let Some(worktree) = crate::orca::Worktree::of_issue(&source, issue)?
+            && worktree.state(fleet.now)? != afkconvoy_core::worker::WorkerState::Gone
             && crate::health::holding(&worktree)
         {
             return Ok(Outcome::Nothing);

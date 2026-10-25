@@ -220,6 +220,36 @@ pub(crate) fn continuing(worktree: Option<&Worktree>, before: Harness) -> Contin
     Continuing { from, said: said.split_off(blank) }
 }
 
+/// Continues a worker with no issue in the same checkout and with its brief
+/// intact. Train and caster records are untouched.
+pub(crate) fn auxiliary(
+    fleet: &Fleet,
+    agent: &Agent,
+    worktree: &Worktree,
+    caster: bool,
+) -> Result<Value> {
+    let cast = fleet.first()?;
+    crate::role::startable(&agent.launches, cast.harness, "worker continuation")?;
+    let continued = continuing(Some(worktree), cast.harness);
+    worktree.stop_for_continuation()?;
+    if worktree.brief()?.exists() {
+        crate::dispatch::continue_brief(fleet, worktree, None, &continued)?;
+    }
+    let command = if caster {
+        crate::own_command().fixed(" cast; exit").own()
+    } else {
+        cast.command(agent.command(cast.harness)?.as_str())
+    };
+    let terminal = agent.start(worktree, cast.harness, &command, fleet.now)?;
+    if !caster {
+        worktree.await_ready(&terminal, agent.ready_timeout)?;
+        worktree.deliver(&terminal, &worktree.brief()?)?;
+    }
+    Ok(
+        json!({"worktree": worktree.path, "from": continued.from, "to": cast.harness, "terminal": terminal}),
+    )
+}
+
 /// Moves the worker of my claim on `issue` onto what it runs now — this host's
 /// chosen harness, else what its range and casting say: a worker
 /// started on it as a continuation of what survives (`dispatch`), which closes

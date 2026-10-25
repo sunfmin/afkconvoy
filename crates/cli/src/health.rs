@@ -364,21 +364,35 @@ pub fn reconcile(
         if !claim.is_held_by(&me.instance) {
             continue;
         }
-        let read = fleet.gh.issue(claim.number)?;
-        if read.is_closed() {
+        if !open.issues.rows.iter().any(|i| i.number == claim.number) {
             continue;
         }
-        // Declared, dependency-held or human-owned work is not stalled.
+        let Some(worktree) = Worktree::of_issue(&source, claim.number)? else {
+            continue;
+        };
+        let state = worktree.state(fleet.now)?;
+        if matches!(state, WorkerState::Gone | WorkerState::Busy) {
+            book.workers.retain(|o| o.path != worktree.path);
+            continue;
+        }
+        let comments = open.issues.comments(claim.number);
+        let bodies = || comments.iter().map(|c| c.body.as_str());
+        let asked = afkconvoy_core::stock::asked_at(bodies(), &claim.id);
+        let verdict = afkconvoy_core::verdict::latest_verdict(bodies())
+            .filter(|v| asked.is_none_or(|at| v.comment > at));
+        let said = verdict.as_ref().and_then(|v| comments.get(v.comment)).map(|c| c.url.as_str());
+        let answered = worktree.answered()?;
+        let unbound_declared =
+            afkconvoy_core::stopped::standing_verdict(verdict, said, answered.as_deref()).is_some();
         let declared = match &fleet.config.bound {
             Some(_) => flows.declared(claim.number, &claim.id),
-            None => fleet.declared_since(open, claim),
+            None => unbound_declared,
         };
         if declared {
+            book.workers.retain(|o| o.path != worktree.path);
             continue;
         }
-        if let Some(worktree) = Worktree::of_issue(&source, claim.number)? {
-            jobs.push((Some(claim.number), None, worktree));
-        }
+        jobs.push((Some(claim.number), None, worktree));
     }
     for run in &fleet.scan.runs {
         if run.owner.as_ref().is_none_or(|owner| owner.instance != me.instance.as_str()) {
@@ -390,6 +404,17 @@ pub fn reconcile(
             {
                 jobs.push((None, Some(name.to_string()), worktree));
             }
+        }
+    }
+    if let Some(worktree) = Worktree::of_train(&source)? {
+        let train = crate::train::Train::read(&fleet.repo, &fleet.config)?;
+        if train.tip != train.base {
+            jobs.push((None, Some("@train".into()), worktree));
+        }
+    }
+    if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)? {
+        if crate::caster::last(&fleet.repo, fleet.now).is_some_and(|c| c.live) {
+            jobs.push((None, Some("@caster".into()), worktree));
         }
     }
     let mut events = vec![];
@@ -628,6 +653,9 @@ fn decide(
         fleet.avoiding = excluded.clone();
         let next = match issue {
             Some(n) => crate::switch::switch_issue(fleet, me, agent, n, observed.harness),
+            None if patrol.is_some_and(|p| p.starts_with('@')) => {
+                crate::switch::auxiliary(fleet, agent, worktree, patrol == Some("@caster"))
+            }
             None => crate::patrol::switch(
                 fleet,
                 me,
