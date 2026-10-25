@@ -226,7 +226,9 @@ fn start(
     // (`casting::unmatched_comment`); a claim already held on a paused
     // harness — its landing — runs the host kit's first.
     let (harness, model, unmatched) = match (&staged, &consult) {
-        (Some(staged), _) => (staged.harness(), None, staged.unmatched().cloned()),
+        (Some(staged), _) => {
+            (staged.harness(), staged.model().map(str::to_string), staged.unmatched().cloned())
+        }
         (None, Some(_)) => {
             let stock = fleet.stock_consult()?;
             (stock.harness, stock.model.clone(), stock.unmatched.clone().map(|name| (name, stock)))
@@ -368,12 +370,6 @@ fn start(
                 });
             }
             DispatchStep::AwaitReady => {
-                if let Some(cut) = &worktree {
-                    std::fs::write(
-                        cut.note("convoy-worker-model")?,
-                        model.as_deref().unwrap_or(""),
-                    )?;
-                }
                 let (cut, handle) =
                     worktree.as_ref().zip(terminal.as_ref()).ok_or_else(undecided)?;
                 cut.await_ready(handle, agent.ready_timeout)?;
