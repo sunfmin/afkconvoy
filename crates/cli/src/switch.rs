@@ -153,12 +153,9 @@ pub enum Which {
     All,
 }
 
-/// `afkconvoy switch`: chooses `to` as this host's harness for the repo —
-/// `None` forgets the choice (`--clear`) — then moves the workers `which`
-/// names onto what each now runs: `to`, or, cleared, what its range and
-/// casting say. A harness chosen that cannot be started here is refused
-/// before anything is chosen or any worker ended; so is a claim or a run I do
-/// not hold.
+/// Continue the named workers using current host kit order. Host promotion
+/// has already completed. Each successor is validated before its old writer
+/// is stopped, and ownership is checked before any continuation.
 pub fn switch(fleet: &mut Fleet, me: &Me, agent: &Agent, which: Which) -> Result<Value> {
     // What a worker started before any switch kept its harness ran on.
     let before = fleet.first().map_or(Harness::DEFAULT, |first| first.harness);

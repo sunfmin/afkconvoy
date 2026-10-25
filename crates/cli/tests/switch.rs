@@ -318,6 +318,7 @@ fn ambiguous_normal_work_and_invalid_diagnoses_never_authorize_a_switch() {
     }
     for answer in [
         "not JSON",
+        r#"{"status":"fault","class":"stalled","scope":"model","evidence":["Your organization has disabled Claude Code access"],"action":"continue","missing":[],"retry_after":null}"#,
         r#"{"status":"fault","class":"quota","scope":"account","evidence":["invented"],"action":"continue","missing":[],"retry_after":null}"#,
     ] {
         let world = blocked();

@@ -3559,8 +3559,8 @@ fn verdict(text: &str) -> Result<Declared, String> {
     })
 }
 
-/// A harness `switch` moves onto, by its key. `config`, which once forgot
-/// this host's choice, is refused for `--clear`, which does that now.
+/// An existing kit harness to promote, by its key. The old `config`
+/// pseudo-harness is rejected because priority has no independent override.
 fn kit_harness(text: &str) -> Result<Harness, String> {
     match text {
         "config" => {

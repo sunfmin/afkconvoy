@@ -290,6 +290,9 @@ fn checked(answer: &str, observed: &Observed, structured: &Value) -> Result<Diag
         {
             bail!("diagnosis does not justify continuation");
         }
+        if diagnosis.scope == Scope::Model && diagnosis.class != "model" {
+            bail!("a session diagnosis cannot disable a model");
+        }
         if diagnosis.scope == Scope::Account
             && !["quota", "authentication", "disabled"].contains(&diagnosis.class.as_str())
         {
