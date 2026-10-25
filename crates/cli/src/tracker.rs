@@ -53,11 +53,11 @@ pub fn json_of(list: &List, repo: &Repo) -> Value {
 }
 
 /// Has the checkout `repo`, whose fleet stamps its claims with `host`, say
-/// `to` of its tracker on the host of `list` (`checked`): with its entry,
+/// `to` of its tracker on the host of `list` (`check`): with its entry,
 /// where the list holds one; where it holds none yet, as what its `run`
-/// asked, in this process → what that changed, as `checked` says it.
+/// asked, in this process → what that changed, as `check` says it.
 pub fn say(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<Value> {
-    let (tracker, changed) = checked(list, repo, to, host)?;
+    let Checked { tracker, changed } = check(list, repo, to, host)?;
     list.change(|listed| {
         let root = &repo.dir;
         match listed.checkouts.iter_mut().find(|entry| entry.checkout == *root) {
@@ -72,9 +72,32 @@ pub fn say(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<Val
 /// `run --foreground` does, which leaves the checkout list alone: what its
 /// entry says, where the list holds one, holds over it.
 pub fn ask(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<Value> {
-    let (tracker, changed) = checked(list, repo, to, host)?;
+    let Checked { tracker, changed } = check(list, repo, to, host)?;
     asked().entry(repo.dir.clone()).or_default().tracker = tracker;
     Ok(changed)
+}
+
+/// A tracker a checkout says, checked (`check`) and not kept yet: the one it
+/// names, none where that is the checkout's own repo, and what saying it
+/// changes, as `check` says it.
+pub struct Checked {
+    tracker: Option<RepoName>,
+    changed: Value,
+}
+
+impl Checked {
+    /// Keeps it with the entry of the checkout `repo` on `list` → what that
+    /// changed; `None` where the list holds no entry of it, and nothing is
+    /// kept.
+    pub fn kept(self, list: &List, repo: &Repo) -> Result<Option<Value>> {
+        let Checked { tracker, changed } = self;
+        let kept = list.change(|listed| {
+            let entry = listed.checkouts.iter_mut().find(|entry| entry.checkout == repo.dir)?;
+            entry.tracker = tracker;
+            Some(())
+        })?;
+        Ok(kept.map(|()| changed))
+    }
 }
 
 /// What the checkout `repo` says of its tracker once it says `to` → the
@@ -88,13 +111,9 @@ pub fn ask(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<Val
 /// labels of the repo's config. A change is refused while the checkout's
 /// fleet holds a claim on an issue of the tracker it had, or the landing
 /// train carries a PR of one: their issues would be read in a tracker that
-/// does not hold them.
-fn checked(
-    list: &List,
-    repo: &Repo,
-    to: To<RepoName>,
-    host: &str,
-) -> Result<(Option<RepoName>, Value)> {
+/// does not hold them. Nothing is kept: `say`, `ask` and `Checked::kept` keep
+/// it.
+pub fn check(list: &List, repo: &Repo, to: To<RepoName>, host: &str) -> Result<Checked> {
     let said = |name: &Option<RepoName>| name.as_ref().map(|name| name.as_str().to_lowercase());
     let tracker = match to.kept() {
         Some(named) if !named.as_str().eq_ignore_ascii_case(named_repo(repo)?.as_str()) => {
@@ -125,7 +144,7 @@ fn checked(
         labelled(&gh, repo, &config)?;
     }
     if said(&was) == said(&tracker) {
-        return Ok((tracker, Value::Null));
+        return Ok(Checked { tracker, changed: Value::Null });
     }
     let held = held(repo, &config, host)?;
     if !held.is_empty() {
@@ -137,7 +156,8 @@ fn checked(
             held.join("; ")
         );
     }
-    Ok((tracker.clone(), json!({"from": was, "to": tracker})))
+    let changed = json!({"from": was, "to": tracker});
+    Ok(Checked { tracker, changed })
 }
 
 /// Makes in the tracker `gh` names, another repo than the checkout `repo`'s,

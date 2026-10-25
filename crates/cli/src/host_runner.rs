@@ -72,6 +72,7 @@ use crate::panel::Broken;
 use crate::runner_socket::{self, Reached, Reply, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line, Show};
+use crate::tracker::Checked;
 use crate::wake::{self, Wakes};
 use crate::{VERSION, concurrency, host_settings, kit, launch, probe, tracker};
 
@@ -340,9 +341,6 @@ struct Seen {
 
 #[derive(Default)]
 struct Stage {
-    /// Whether a `run` asked for this start: one refused then is taken off
-    /// the list.
-    asked: bool,
     /// Whether `stop` took its checkout off the list: its first tick, where
     /// it has yet to end, puts it back on it never.
     removed: bool,
@@ -377,8 +375,8 @@ enum Came {
     /// Its loop ended after its first tick, or its thread did, and why.
     Ended(String),
     /// Broken: it waits to be started again, after a backoff or once a
-    /// `run` asks for it.
-    Broken,
+    /// `run` asks for it. Why, as a command prints its error (`error_json`).
+    Broken(Value),
 }
 
 impl Seen {
@@ -903,7 +901,7 @@ impl Runner {
             .map(|(root, held)| {
                 let stage = held.seen.stage();
                 let stands = match stage.came {
-                    Came::Broken => Some(Stands::Broken),
+                    Came::Broken(_) => Some(Stands::Broken),
                     Came::Ticked { .. } => None,
                     Came::Starting | Came::Refused(_) | Came::Ended(_) => Some(Stands::Starting),
                 };
@@ -955,7 +953,7 @@ impl Runner {
                 });
             match start {
                 Ok((key, start)) => {
-                    self.start(&mut held, checkout, key, start, false);
+                    self.start(&mut held, checkout, key, start);
                 }
                 Err(why) => self.log.say(&format!(
                     "fleet instance not started: {}: {why:#} — it stays on the checkout list",
@@ -970,7 +968,7 @@ impl Runner {
         let held = |key: &str| {
             let holding = self.holding();
             match holding.values().find(|held| held.repo == key) {
-                Some(held) if matches!(held.seen.stage().came, Came::Broken) => HeldAs::Broken,
+                Some(held) if matches!(held.seen.stage().came, Came::Broken(_)) => HeldAs::Broken,
                 Some(held) => HeldAs::Running(held.reach.clone()),
                 None => HeldAs::Nothing,
             }
@@ -1005,12 +1003,15 @@ impl Runner {
     /// instance as `start` asks → once its first tick ended, `run`'s answer;
     /// or the refusal of a checkout of a repo held from another, of one that
     /// is no checkout, or of one whose fleet instance ended before its first
-    /// tick. A checkout whose fleet instance runs already is answered with
-    /// that instance, and `start` changes nothing but its concurrency; one on
-    /// the list whose fleet instance does not run, or is broken, starts now
-    /// with what the list kept of its `run`, and what `start` names laid over
-    /// that. The concurrency `start` says is the checkout's from now on,
-    /// whichever it is (`said`).
+    /// tick — which leaves one on the list there, broken (`ended`). A
+    /// checkout whose fleet instance runs already is answered with that
+    /// instance, and `start` changes nothing but its concurrency and its
+    /// tracker; one the host runner is starting is answered as that start
+    /// comes; one on the list whose fleet instance does not run, or is
+    /// broken, starts now with what the list kept of its `run`, and what
+    /// `start` names laid over that. The concurrency and the tracker `start`
+    /// says are the checkout's from now on, whichever it is (`said`,
+    /// `tracker::say`).
     fn add(self: &Arc<Self>, checkout: &Path, start: Start) -> Result<Value> {
         if self.stop.told() || self.moved() {
             bail!(
@@ -1073,9 +1074,8 @@ impl Runner {
                                     root.display()
                                 );
                             }
-                            stage.asked = true;
                             // A broken one is started again now, not after its backoff.
-                            if matches!(stage.came, Came::Broken) {
+                            if matches!(stage.came, Came::Broken(_)) {
                                 stage.again = Some(start);
                                 stage.came = Came::Starting;
                                 running.seen.changed.notify_all();
@@ -1083,12 +1083,10 @@ impl Runner {
                             drop(stage);
                             (Arc::clone(&running.seen), false)
                         }
-                        None => {
-                            (self.start(&mut held, root.clone(), key.clone(), start, true), false)
-                        }
+                        None => (self.start(&mut held, root.clone(), key.clone(), start), false),
                     }
                 }
-                OnList::No => (self.start(&mut held, root.clone(), key.clone(), start, true), true),
+                OnList::No => (self.start(&mut held, root.clone(), key.clone(), start), true),
             };
             (seen, added, said, tracked)
         };
@@ -1114,11 +1112,12 @@ impl Runner {
             Came::Ended(why) => {
                 bail!("its fleet instance ended before this run was answered: {why}")
             }
-            Came::Broken => bail!(
-                "its fleet instance broke before this run was answered: the host runner's log, \
-                 {}, says why",
-                log_path()?.display()
-            ),
+            Came::Broken(why) => {
+                let mut broke = why.clone();
+                let said = why["error"].as_str().unwrap_or_default();
+                broke["error"] = json!(format!("{said} — {STAYS_BROKEN}"));
+                Ok(broke)
+            }
             Came::Starting => unreachable!("waited for above"),
         }
     }
@@ -1145,10 +1144,8 @@ impl Runner {
         root: PathBuf,
         key: String,
         start: Start,
-        asked: bool,
     ) -> Arc<Seen> {
         let seen = Arc::new(Seen::default());
-        seen.stage().asked = asked;
         let (stop, reach) = (self.stop.instance(), Reach::default());
         let holding = Held {
             repo: key.clone(),
@@ -1230,6 +1227,8 @@ impl Runner {
             let what = What::Broken { why, since, next };
             let entry = log::Entry { at: now, instance: broke_as.clone(), host, what };
             self.said_of(root, &entry, &said);
+            // A `run` waiting on this start is answered once both logs say so.
+            seen.changed.notify_all();
             let until = Instant::now() + Duration::from_millis(wait.saturating_mul(second));
             let Some((anew, reached, again)) = self.rested(root, seen, until) else {
                 self.let_go(root, seen, &start, broke_as);
@@ -1266,7 +1265,7 @@ impl Runner {
                 let left = until.saturating_duration_since(Instant::now());
                 if left.is_zero() {
                     // A `run` that asks from now on waits for this start.
-                    (stage.came, stage.asked) = (Came::Starting, false);
+                    stage.came = Came::Starting;
                     break None;
                 }
                 let rested = seen.changed.wait_timeout(stage, left.min(WATCHED_EVERY));
@@ -1323,32 +1322,39 @@ impl Runner {
     /// it broke, where it did: it is still held, now `Came::Broken`, and its
     /// thread holds it again. It broke where its loop ended in an error or a
     /// panic while the host runner goes on and `stop` did not take its
-    /// checkout off the list — after its first tick, or before it where
-    /// nobody asked for it. Otherwise it ended, and is held no more: one that
-    /// ended before its first tick was refused, and a `run` that asked for it
-    /// is told why and its checkout taken off the list; one `stop` took off
-    /// before its first tick, it is told so.
+    /// checkout off the list — after its first tick, or before it where its
+    /// checkout is on the list, whoever started it: a `run` that waits for
+    /// it is told why, and its checkout stays on the list. Otherwise it
+    /// ended, and is held no more: one that ended before its first tick was
+    /// refused, and a `run` that waits for it is told why; one `stop` took
+    /// off before its first tick, it is told so.
     fn ended(&self, root: &Path, held: Result<Value>) -> Option<String> {
         let mut holding = self.holding();
         let why = match &held {
             Ok(answer) => answer.to_string(),
             Err(error) => format!("{error:#}"),
         };
+        let listed = self
+            .list
+            .read()
+            .is_ok_and(|listed| listed.checkouts.iter().any(|entry| entry.checkout == root));
         // Decided and marked under one lock: a `run` that asks meanwhile
-        // finds it broken, or asked for the start that ended.
+        // finds it broken, or waits for the start that ended.
         let broke = holding.get(root).is_some_and(|holds| {
             let mut stage = holds.seen.stage();
             let at_work = match stage.came {
-                Came::Starting => !stage.asked,
+                Came::Starting => listed,
                 Came::Ticked { .. } => true,
-                Came::Refused(_) | Came::Ended(_) | Came::Broken => false,
+                Came::Refused(_) | Came::Ended(_) | Came::Broken(_) => false,
             };
-            let broke =
-                at_work && held.is_err() && !stage.removed && !self.stop.told() && !self.moved();
-            if broke {
-                stage.came = Came::Broken;
+            let removed = stage.removed || self.stop.told() || self.moved();
+            match &held {
+                Err(error) if at_work && !removed => {
+                    stage.came = Came::Broken(crate::error_json(error));
+                    true
+                }
+                _ => false,
             }
-            broke
         });
         if broke {
             return Some(why);
@@ -1366,32 +1372,19 @@ impl Runner {
             Came::Starting => {
                 let error = held.err().unwrap_or_else(|| anyhow!("it ended before its first tick"));
                 stage.came = Came::Refused(crate::error_json(&error));
-                if stage.asked {
-                    let removed = self.list.change(|listed| {
-                        let before = listed.checkouts.len();
-                        listed.checkouts.retain(|entry| entry.checkout != root);
-                        listed.checkouts.len() < before
-                    });
-                    self.log.say(&match removed {
-                        Ok(true) => format!("checkout removed: {at}: refused: {why}"),
-                        Ok(false) => format!("checkout refused: {at}: {why}"),
-                        Err(error) => format!(
-                            "checkout refused: {at}: {why}; it stays on the checkout list, which \
-                             could not be written: {error:#}"
-                        ),
-                    });
-                } else {
-                    self.log.say(&format!(
+                self.log.say(&match listed {
+                    true => format!(
                         "fleet instance not started: {at}: {why} — it stays on the checkout \
                          list, and `afkconvoy run` there starts it again"
-                    ));
-                }
+                    ),
+                    false => format!("checkout refused: {at}: {why}"),
+                });
             }
             Came::Ticked { .. } => {
                 self.log.say(&format!("fleet instance ended: {at}: {why}"));
                 stage.came = Came::Ended(why);
             }
-            Came::Refused(_) | Came::Ended(_) | Came::Broken => {
+            Came::Refused(_) | Came::Ended(_) | Came::Broken(_) => {
                 self.log.say(&format!("fleet instance ended: {at}: {why}"));
             }
         }
@@ -1488,6 +1481,12 @@ impl Runner {
 fn kept_in(root: &Path, entry: &log::Entry) -> Result<()> {
     Repo::at(root).and_then(|repo| log::Log::of(&repo)?.append(entry))
 }
+
+/// What a `run` is told after why the fleet instance of its checkout, on the
+/// list already, broke before it was answered: refused as it started, say.
+const STAYS_BROKEN: &str = "its checkout stays on the checkout list, and its fleet instance is \
+                            broken: the host runner starts it again after a backoff, and a `run` \
+                            of it at once; `afkconvoy doctor` in the checkout says why and when";
 
 /// Why a `run` waiting on a fleet instance that `stop` stopped before its
 /// first tick ended is refused.
@@ -1658,21 +1657,27 @@ impl Heard {
 /// one detached where none answers, and waits for its fleet instance's first
 /// tick → the host runner's answer, `host_runner.started` saying whether this
 /// `run` started it, `host_runner.replaced` which host runner of an older
-/// release it stopped first (`moved`), and `settings` what it changed of the
-/// host settings. A refusal the host runner answered is `Answered`, printed
-/// as it is.
+/// release it stopped first (`older_of`), and `settings` what it changed of
+/// the host settings. A refusal the host runner answered is `Answered`,
+/// printed as it is.
 pub fn run(
     checkout: &Repo,
-    start: Start,
+    mut start: Start,
     settings: &host_settings::Named,
     now: u64,
 ) -> Result<Value> {
-    let (log, lock) = (log_path()?, cache()?.join(LOCK));
+    let (log, lock, list) = (log_path()?, cache()?.join(LOCK), List::of_host()?);
     let pid = || holder_of(&lock).map(|pid| format!(" (pid {pid})")).unwrap_or_default();
-    // Before anything changes: which afkconvoy the host runner is.
-    let replaced = match runner_socket::ask(&Request::Version, SAID_WITHIN)? {
-        Reached::Answer(said) => moved(&said["host_runner"])?,
-        Reached::Nobody | Reached::Closed => None,
+    // Before anything changes: which afkconvoy the host runner is, and
+    // whether this `run` starts one — none answers, or one of an older
+    // release.
+    let (older, starts) = match runner_socket::ask(&Request::Version, SAID_WITHIN)? {
+        Reached::Answer(said) => {
+            let older = older_of(&said["host_runner"])?;
+            let starts = older.is_some();
+            (older, starts)
+        }
+        Reached::Nobody | Reached::Closed => (None, true),
         Reached::Unanswered => bail!(
             "the host runner{} did not say its version within {}s: its log, {}, says why",
             pid(),
@@ -1680,11 +1685,26 @@ pub fn run(
             log.display()
         ),
     };
+    // One this `run` starts starts every checkout on the list before it is
+    // handed this one, which goes by its entry there: the tracker this `run`
+    // says is kept with it first (`tracker_first`).
+    let tracker = if starts { tracker_first(&list, checkout, &start)? } else { None };
+    let replaced = older.map(Older::replaced).transpose()?;
     // A first start writes the host kit here, saying so to whoever ran `run`.
     kit::ensure(now)?;
     // Before the checkout is handed over: its fleet instance starts under
     // them, and every other on the host reads them as it goes.
-    let changed = host_settings::change(&List::of_host()?, settings)?;
+    let changed = host_settings::change(&list, settings)?;
+    // Kept once no host runner runs: one of an older release would write the
+    // list over it, knowing no tracker. One whose entry is gone meanwhile is
+    // the host runner's to say, as it is handed the checkout.
+    let tracked = match tracker {
+        Some(checked) => checked.kept(&list, checkout)?,
+        None => None,
+    };
+    if tracked.is_some() {
+        start.tracker = None;
+    }
     let add = Request::Add { checkout: checkout.dir.clone(), start: Box::new(start) };
     let (reached, started) = match runner_socket::ask(&add, FIRST_TICK_WITHIN)? {
         Reached::Nobody => (started_and_asked(&add)?, true),
@@ -1711,6 +1731,9 @@ pub fn run(
         about.insert("replaced".into(), json!(replaced));
     }
     answer["settings"] = Value::Object(changed);
+    if let Some(tracked) = tracked {
+        answer["tracker"] = tracked;
+    }
     if answer.get("error").is_some() {
         return Err(Answered(answer).into());
     }
@@ -1900,15 +1923,13 @@ fn answered_stop(reached: Reached, waited_for: &str) -> Result<Value> {
     Ok(answer)
 }
 
-/// What `run` does with the host runner that said it is `about` — its pid
-/// and version — before it hands it anything (docs/adr/0023) → the host
-/// runner it replaced, if it did. One of this afkconvoy's release is left
-/// as it is → `None`. One of an older release is stopped as SIGTERM stops
-/// it — each fleet instance finishes the step it is in, and the checkout list
-/// is kept — and waited for until it lets the host go → its {pid, version}.
-/// One of a newer release refuses this `run`, which changes nothing, and so
-/// does a fleet instance held in the foreground, whatever its release.
-fn moved(about: &Value) -> Result<Option<Value>> {
+/// What `run` makes of the host runner that said it is `about` — its pid and
+/// version — before it hands it anything (docs/adr/0023) → one of an older
+/// release, which it replaces (`Older::replaced`). One of this afkconvoy's
+/// release is left as it is → `None`. One of a newer release refuses this
+/// `run`, which changes nothing, and so does a fleet instance held in the
+/// foreground, whatever its release.
+fn older_of(about: &Value) -> Result<Option<Older>> {
     let (theirs, pid) = (about["version"].as_str().unwrap_or_default(), &about["pid"]);
     if about["foreground"] == true {
         bail!(
@@ -1928,21 +1949,55 @@ fn moved(about: &Value) -> Result<Option<Value>> {
             let Some(pid) = pid.as_u64() else {
                 bail!("the host runner of afkconvoy {theirs} gave no pid, and cannot be stopped")
             };
-            let told = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
-            told.context("`kill` could not be run to stop the host runner")?;
-            // However `kill` ended: one already gone has let the host go.
-            if !let_go(&cache()?.join(LOCK), UP_WITHIN) {
-                bail!(
-                    "the host runner of afkconvoy {theirs} (pid {pid}) was told to stop, to make \
-                     way for this afkconvoy, {VERSION}, and still holds the host after {}s: its \
-                     log, {}, says how far it is. Run again once it has stopped",
-                    UP_WITHIN.as_secs(),
-                    log_path()?.display()
-                );
-            }
-            Ok(Some(json!({"pid": pid, "version": theirs})))
+            Ok(Some(Older { pid, version: theirs.to_string() }))
         }
     }
+}
+
+/// A host runner of an older release than this `run`'s, which it replaces.
+struct Older {
+    pid: u64,
+    version: String,
+}
+
+impl Older {
+    /// Stops it as SIGTERM stops it — each fleet instance finishes the step
+    /// it is in, and the checkout list is kept — and waits until it lets the
+    /// host go → its {pid, version}.
+    fn replaced(self) -> Result<Value> {
+        let Older { pid, version } = self;
+        let told = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        told.context("`kill` could not be run to stop the host runner")?;
+        // However `kill` ended: one already gone has let the host go.
+        if !let_go(&cache()?.join(LOCK), UP_WITHIN) {
+            bail!(
+                "the host runner of afkconvoy {version} (pid {pid}) was told to stop, to make way \
+                 for this afkconvoy, {VERSION}, and still holds the host after {}s: its log, {}, \
+                 says how far it is. Run again once it has stopped",
+                UP_WITHIN.as_secs(),
+                log_path()?.display()
+            );
+        }
+        Ok(json!({"pid": pid, "version": version}))
+    }
+}
+
+/// What the `run` of the checkout `checkout`, as `start` asks, says of its
+/// tracker before it starts the host runner, which starts every checkout on
+/// `list` as its entry has it before it is handed this one: where `start`
+/// names a tracker and the list holds an entry of the checkout, that tracker
+/// checked (`tracker::check`) → to keep with the entry; `None` where there
+/// is nothing to say first. A tracker the check refuses refuses this `run`
+/// before anything changes.
+fn tracker_first(list: &List, checkout: &Repo, start: &Start) -> Result<Option<Checked>> {
+    let Some(to) = start.tracker.clone() else { return Ok(None) };
+    let listed = list.read()?.checkouts;
+    let Some(entry) = listed.into_iter().find(|entry| entry.checkout == checkout.dir) else {
+        return Ok(None);
+    };
+    // Its claims are stamped with the host its fleet instance starts on.
+    let host = start.named.clone().or(entry.named).host.unwrap_or_else(crate::this_host);
+    tracker::check(list, checkout, to, &host).map(Some)
 }
 
 /// Whether a host runner holds this host now.
