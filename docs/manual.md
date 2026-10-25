@@ -2285,7 +2285,7 @@ From the next tick the fleet works lock issues only, until the last of them clos
 
 ##### Who runs it
 
-In a bound repo, a patrol or a stage that finds the base branch red. In an unbound repo, a worker or an inspection that proves the base branch red the same way gated alone in a clean checkout: no role is needed. The train worker does the same in either repo. Each finds the open issue for the fix or opens one, makes it dispatchable — the ready label in an unbound repo, intake to a workflow in a bound one — then runs this command on it from its worktree. The operator may run it too, in a checkout of the repo; a human may as well put the lock label on the issue on GitHub.
+A worker, in its own worktree. In a bound repo, a patrol or a stage that finds the base branch red. In an unbound repo, a worker or an inspection that proves the base branch red the same way gated alone in a clean checkout: no role is needed. The train worker does the same in either repo. Each finds the open issue for the fix or opens one, makes it dispatchable — the ready label in an unbound repo, intake to a workflow in a bound one — then runs this command on it from its worktree. The operator may run it too, in a checkout of the repo; a human may as well put the lock label on the issue on GitHub.
 
 ##### What it reads and writes
 
