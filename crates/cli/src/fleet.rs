@@ -326,6 +326,7 @@ impl Fleet {
             idle_train: if train.tip == train.base { self.train_built() } else { None },
             consults: &consults,
             inspections: &inspections,
+            tracker: &self.gh.tracker,
         };
         let mut set = assemble(&seen, me, self.now, &self.config);
         match self.config.bound {

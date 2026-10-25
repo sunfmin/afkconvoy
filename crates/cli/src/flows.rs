@@ -27,7 +27,7 @@ pub(crate) const READY_LABEL_SAYS: &str = "afkconvoy: the fleet works an issue t
 fn line(tracker: &Tracker, label: &str) -> String {
     let mut line = Line::new().fixed("gh issue create");
     if let Some(named) = tracker.named() {
-        line = line.fixed(" --repo ").word(named.as_str());
+        line = line.fixed(" --repo ").program(named.as_str());
     }
     line = line.fixed(" --label ").word(label);
     if let Some(repo_label) = tracker.repo_label() {

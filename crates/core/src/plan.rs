@@ -15,7 +15,7 @@ use crate::precedent;
 use crate::role::Due;
 use crate::slow_gate::{Landing, Reported, SlowGate, slow};
 use crate::team::{FlowLabels, LAND};
-use crate::tracker::repo_labels;
+use crate::tracker::{Tracker, repo_labels};
 use crate::train::Built;
 use crate::waiting::{Waiting, Waits};
 
@@ -439,6 +439,9 @@ pub struct Observed<'a> {
     /// The open PRs of inspections on the landing train at their current
     /// head: changes of the repo an inspection made on no issue.
     pub inspections: &'a [u64],
+    /// The fleet's tracker, which holds `issues`: the lines that answer one
+    /// that waits for a human name it (`Waiting::new`).
+    pub tracker: &'a Tracker,
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -512,7 +515,7 @@ fn waiting(
             claims.iter().any(|claim| claim.number == number) || seen.consults.contains(&number);
         let listed = rows.iter().any(|row| row.issue == number);
         if let Some(issue) = open.filter(|_| !held && !listed) {
-            rows.push(Waiting::new(number, &issue.title, waits, since));
+            rows.push(Waiting::new(number, seen.tracker, &issue.title, waits, since));
         }
     }
     rows.sort_by_key(|row| row.issue);
@@ -774,6 +777,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
@@ -820,6 +824,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
@@ -863,6 +868,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
@@ -921,6 +927,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let claims = [claim(5, "me"), claim(6, "me")];
@@ -1003,6 +1010,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
@@ -1119,6 +1127,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
@@ -1203,6 +1212,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
@@ -1262,6 +1272,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
@@ -1313,6 +1324,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
@@ -1347,6 +1359,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            tracker: &Tracker::Own,
             consults: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
@@ -1390,6 +1403,7 @@ mod tests {
                     slow_gate: &Reported::NONE,
                     idle_train: None,
                     inspections: &[],
+                    tracker: &Tracker::Own,
                     consults: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)

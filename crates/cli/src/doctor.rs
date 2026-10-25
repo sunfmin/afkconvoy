@@ -21,6 +21,7 @@ use afkconvoy_core::plan::{LabelBar, NOT_OURS, Status, WorkingSet, closing_pr};
 use afkconvoy_core::slow_gate;
 use afkconvoy_core::team::Fault;
 use afkconvoy_core::tools::{Found, START_ORCA, Tool, add_checkout, harness_missing};
+use afkconvoy_core::tracker::Tracker;
 use afkconvoy_core::waiting::{WAITED_LONG, Waiting};
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Result, anyhow};
@@ -401,6 +402,8 @@ pub struct State {
     pub stood: Vec<Stood>,
     pub team: TeamRead,
     pub ready_label: String,
+    /// The fleet's tracker: a fix that runs `gh issue` names it.
+    pub tracker: Tracker,
     /// The worktrees on this host whose issue holds no claim.
     pub unclaimed: Vec<Unclaimed>,
     /// The open ready issues held off, with no claim, only by an open PR
@@ -839,7 +842,9 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
         let Some(excluded) = excluded.filter(|_| !claimed.clone().any(|n| n == *lock)) else {
             continue;
         };
-        let label = |label: &str| format!("gh issue edit {lock} --add-label {label}");
+        let label = |label: &str| {
+            format!("{} --add-label {label}", state.tracker.gh_issue("edit", *lock).own())
+        };
         let fix = if excluded.reason == LabelBar::NotReady(state.ready_label.clone()).reason() {
             label(&state.ready_label)
         } else if excluded.reason == LabelBar::NoFlow.reason() {
@@ -850,7 +855,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
                 _ => "afkconvoy flows".to_string(),
             }
         } else {
-            format!("gh issue view {lock}")
+            state.tracker.gh_issue("view", *lock).own()
         };
         found.push(finding(
             Kind::LockUnworked,
@@ -875,7 +880,7 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
                 Kind::PatrolFailed,
                 "its last run failed",
                 format!("#{failure} reports the failure and is still open"),
-                format!("gh issue close {failure}"),
+                state.tracker.gh_issue("close", failure).own(),
             ),
             (Standing::Full, _, Some(oldest)) => (
                 Kind::PatrolFull,
@@ -1388,6 +1393,7 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
     let held = read_held(&fleet, &set, &stood, loaded.as_ref());
     let unclaimed = read_unclaimed(&fleet);
     let ready_label = fleet.config.ready_label.clone();
+    let tracker = fleet.gh.tracker.clone();
     let not_ours = set
         .excluded
         .iter()
@@ -1410,7 +1416,7 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
                 .map(|owner| owner.instance.clone()),
         })
         .collect();
-    Ok(State { set, held, stood, team, ready_label, unclaimed, not_ours, on_gone })
+    Ok(State { set, held, stood, team, ready_label, tracker, unclaimed, not_ours, on_gone })
 }
 
 /// The worktrees on this host whose issue holds no claim, each with what it
@@ -1848,6 +1854,7 @@ mod tests {
             stood: vec![],
             team: TeamRead::Unbound,
             ready_label: "ready-for-agent".into(),
+            tracker: Tracker::Own,
             unclaimed: vec![],
             not_ours: vec![],
             on_gone: vec![],

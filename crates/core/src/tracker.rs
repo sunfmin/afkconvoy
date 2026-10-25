@@ -7,6 +7,7 @@
 
 use crate::closing::issues_closed_by;
 use crate::config::RepoName;
+use crate::line::Line;
 use crate::record::fleet_number;
 use crate::worker::worktree_name;
 
@@ -127,6 +128,18 @@ impl Tracker {
             ));
         }
         Ok(mine.filter(|_| carried.is_empty()))
+    }
+
+    /// The line `gh issue <verb> <number>` of this tracker's issue, as a
+    /// human runs it in a checkout of the repo: naming the tracker, where it
+    /// is another repo — `gh` would act on the checkout's own issue of that
+    /// number.
+    pub fn gh_issue(&self, verb: &'static str, number: u64) -> Line {
+        let line = Line::new().fixed("gh issue ").fixed(verb).fixed(" ").number(number);
+        match self {
+            Tracker::Own => line,
+            Tracker::Other { tracker, .. } => line.fixed(" --repo ").program(tracker.as_str()),
+        }
     }
 
     /// Issue `number` as the repo names it, in a PR's closing line and a
