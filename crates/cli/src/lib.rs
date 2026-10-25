@@ -3423,6 +3423,7 @@ pub fn manual() -> agent_help::Help {
         .topic::<Cache>()
         .topic::<TickLog>()
         .topic::<WorkerLaunch>()
+        .topic::<WorkerCodex>()
         .topic::<WorkerProxy>()
         .topic::<Humans>()
         .topic::<Troubleshooting>()
