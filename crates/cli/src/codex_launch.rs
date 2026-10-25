@@ -159,6 +159,26 @@ pub(crate) fn record(worktree: &Worktree, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
+/// A caster is started by a shell-only auxiliary, then makes one headless
+/// Codex call. It gets the same fresh directory and user effort as an
+/// interactive worker, and records the call in its own worktree.
+pub(crate) fn caster_question(
+    worktree: &Worktree,
+    command: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> Result<String> {
+    let (kept, _) = crate::kept::for_worker(Harness::Codex, false, &worktree.path, &worktree.path)?;
+    let question = Harness::Codex.prompt_question(command, &kept, model, prompt);
+    let (question, settings) = prepare(worktree, model, &question, true)?;
+    // A human may also run `cast` in an existing worker's worktree. That
+    // helper call must not overwrite the existing worker's launch evidence.
+    if worktree.caster()?.is_some() {
+        record(worktree, &settings)?;
+    }
+    Ok(question)
+}
+
 pub(crate) fn recorded(worktree: &Worktree) -> Option<Settings> {
     (worktree.harness().ok().flatten()? == Harness::Codex).then_some(())?;
     let mut settings: Settings =
@@ -196,7 +216,7 @@ pub(crate) fn planned(model: &str) -> Value {
 /// settings again here would describe a future launch, not these sessions.
 pub(crate) fn workers(repo: &crate::git::Repo) -> Vec<Value> {
     let Some(workers) =
-        crate::orca::Source::of(repo).and_then(|source| Worktree::of_workers(&source)).ok()
+        crate::orca::Source::of(repo).and_then(|source| Worktree::of_sessions(&source)).ok()
     else {
         return vec![];
     };

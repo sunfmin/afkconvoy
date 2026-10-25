@@ -1401,3 +1401,36 @@ fn codex_starts_no_session_without_a_fleet_model_or_with_invalid_user_effort() {
         }));
     }
 }
+
+#[test]
+fn a_codex_caster_takes_fresh_user_effort_and_reports_its_actual_call() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_models("codex", &["fleet-first", "fleet-second"]);
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'xhigh'\n");
+    write(&kept(&world), "config.toml", "model = 'stale'\nmodel_reasoning_effort = 'medium'\n");
+    world.issue(7, &["ready-for-agent"]);
+    tick(&world, 1000).ok();
+    let caster = world.root.join("wt/convoy-caster");
+    world.caster_answers(
+        "{\"issue\":7,\"harness\":\"codex\",\"model\":\"fleet-first\",\"why\":\"fits\"}\n",
+    );
+    world.afk_in(&caster, &["cast", "--now", "1001"]).ok();
+    let first = under_codex(&world, &world.caster_asked());
+    assert_selection(&first, "fleet-first", Some("xhigh"));
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1002"]).ok();
+    let rows = plan["codex_workers"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|row| row["worktree"] == json!(caster) && row["effort"] == "xhigh"),
+        "{rows:?}"
+    );
+    write(Path::new(&first[1]), "config.toml", "model_reasoning_effort = 'medium'\n");
+    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
+    world.issue(8, &["ready-for-agent"]);
+    world.caster_answers(
+        "{\"issue\":8,\"harness\":\"codex\",\"model\":\"fleet-first\",\"why\":\"fits\"}\n",
+    );
+    world.afk_in(&caster, &["cast", "--now", "1100"]).ok();
+    assert_selection(&under_codex(&world, &world.caster_asked()), "fleet-first", Some("high"));
+}
