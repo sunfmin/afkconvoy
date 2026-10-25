@@ -207,6 +207,16 @@ impl Launches {
         Ok(Some(proposed))
     }
 
+    /// Identity of the exact base command resolved for this launch. No
+    /// credentials or command text are copied into worker health records.
+    pub(crate) fn command_key(&self, harness: Harness) -> Option<String> {
+        self.proposed
+            .borrow()
+            .iter()
+            .find(|p| p.harness == harness)
+            .map(|p| crate::health::command_key(&p.command))
+    }
+
     fn propose(&self, harness: Harness, command: String) -> Proposed {
         let resolution = first_word(&command)
             .and_then(|word| {

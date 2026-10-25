@@ -456,3 +456,49 @@ fn a_diagnosed_stuck_session_is_continued_without_pausing_its_harness() {
     assert_eq!(plan["selection"]["health"]["faults"], json!([]));
     assert_eq!(plan["selection"]["eligible"][0], "claude-code");
 }
+
+#[test]
+fn an_old_command_fault_does_not_disable_a_new_profile_configured_while_it_ran() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick(&world, 700);
+    world.hold_every_harness();
+    let dir = worktree(&world, 7);
+    world.kit_command("claude-code", "agent --new-profile");
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"idle", "error":{"code":"insufficient_quota"}});
+        }
+    });
+    tick(&world, 800);
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    assert_eq!(plan["selection"]["eligible"][0], "claude-code", "{plan}");
+    assert_eq!(open_commands(&world, &dir), ["agent --new-profile"]);
+    assert_eq!(plan["selection"]["health"]["faults"][0]["scope"], "account");
+}
+
+#[test]
+fn successful_recovery_restores_priority_for_new_work_without_moving_the_successor_back() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    tick(&world, 700);
+    world.hold_every_harness();
+    let dir = worktree(&world, 7);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"idle", "error":{"code":"insufficient_quota"}});
+        }
+    });
+    tick(&world, 800);
+    let successor = open_commands(&world, &dir);
+    assert_eq!(successor, [afkconvoy_core::harness::Harness::Pi.stock()]);
+    world.probes_answer();
+    tick(&world, 4400);
+    let plan = world.afk(&["plan", "--now", "4401"]).ok();
+    assert_eq!(plan["selection"]["health"]["faults"], json!([]), "{plan}");
+    assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+    assert_eq!(open_commands(&world, &dir), successor, "recovery never interrupts the successor");
+    world.issue(8, &["ready-for-agent"]);
+    tick(&world, 4402);
+    assert_eq!(open_commands(&world, &worktree(&world, 8)), ["agent"]);
+}

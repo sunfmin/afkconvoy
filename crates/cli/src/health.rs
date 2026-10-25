@@ -67,7 +67,8 @@ struct Book {
 struct Fault {
     #[serde(deserialize_with = "crate::kit::harness")]
     harness: Harness,
-    command: String,
+    #[serde(default)]
+    command_key: Option<String>,
     model: Option<String>,
     scope: Scope,
     since: u64,
@@ -87,6 +88,8 @@ struct Observed {
     terminal: String,
     #[serde(deserialize_with = "crate::kit::harness")]
     harness: Harness,
+    #[serde(default)]
+    command_key: Option<String>,
     model: Option<String>,
     snapshots: Vec<Snapshot>,
     next_check: u64,
@@ -105,6 +108,15 @@ struct Observed {
     action: String,
     successor: Option<String>,
     error: Option<String>,
+}
+
+/// A non-secret identity for the launch command/profile. Faults observed on
+/// an old command cannot disable a replacement configured while it ran.
+pub(crate) fn command_key(command: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    command.hash(&mut hash);
+    format!("{:016x}", hash.finish())
 }
 
 fn file() -> Result<PathBuf> {
@@ -142,17 +154,16 @@ pub fn show() -> Value {
 /// never pauses a harness for unrelated workers. Expiry alone is not recovery.
 pub fn available(mut kit: Kit) -> Result<Kit> {
     for fault in read()?.faults {
-        if let Some(held) = kit
-            .harnesses
-            .iter_mut()
-            .find(|h| h.harness == fault.harness && h.command == fault.command)
-            && fault.scope == Scope::Model
+        if let Some(held) = kit.harnesses.iter_mut().find(|h| {
+            h.harness == fault.harness
+                && fault.command_key.as_ref() == Some(&command_key(&h.command))
+        }) && fault.scope == Scope::Model
         {
             held.models.retain(|m| Some(&m.model) != fault.model.as_ref());
         }
         kit.harnesses.retain(|h| {
             !(h.harness == fault.harness
-                && h.command == fault.command
+                && fault.command_key.as_ref() == Some(&command_key(&h.command))
                 && (fault.scope == Scope::Account
                     || (fault.scope == Scope::Model && h.models.is_empty())))
         });
@@ -413,9 +424,10 @@ fn probe_due(book: &mut Book, kit: &Kit, now: u64) {
         if now < fault.next_check {
             return true;
         }
-        let Some(held) =
-            kit.harnesses.iter().find(|h| h.harness == fault.harness && h.command == fault.command)
-        else {
+        let Some(held) = kit.harnesses.iter().find(|h| {
+            h.harness == fault.harness
+                && fault.command_key.as_ref() == Some(&command_key(&h.command))
+        }) else {
             return false;
         };
         fault.next_check = now.saturating_add(RECOVERY_SECONDS);
@@ -605,6 +617,9 @@ fn observe(
     let model = std::fs::read_to_string(worktree.note("convoy-worker-model")?)
         .ok()
         .filter(|m| !m.is_empty());
+    let binding = std::fs::read_to_string(worktree.note("convoy-worker-command-key")?)
+        .ok()
+        .filter(|s| !s.is_empty());
     let output = worktree.screen(&terminal, 100)?;
     let signal = error_of(worktree)?;
     let processes = crate::hot::listed_checked()?;
@@ -615,7 +630,12 @@ fn observe(
     let scoped: Vec<_> = book
         .faults
         .iter()
-        .filter(|f| f.harness == harness && (f.scope == Scope::Account || f.model == model))
+        .filter(|f| {
+            f.harness == harness
+                && binding.is_some()
+                && f.command_key == binding
+                && (f.scope == Scope::Account || f.model == model)
+        })
         .collect();
     let structured = json!({"runtime": worktree.health_report()?, "process_activity":activity,
         "known_scoped_faults": scoped,
@@ -629,6 +649,7 @@ fn observe(
             terminal: terminal.clone(),
             harness,
             model: model.clone(),
+            command_key: binding.clone(),
             snapshots: vec![],
             next_check: fleet.now,
             attempts: 0,
@@ -653,6 +674,7 @@ fn observe(
         observed.terminal = terminal;
         observed.harness = harness;
         observed.model = model;
+        observed.command_key = binding;
         observed.snapshots.clear();
         observed.attempts = 0;
         observed.rate_retries = 0;
@@ -818,23 +840,25 @@ fn decide(
         }
         _ => {}
     }
-    if diagnosis.scope != Scope::Worker
+    if observed.command_key.is_some()
+        && diagnosis.scope != Scope::Worker
         && let Some(held) = kit.harnesses.iter().find(|h| h.harness == observed.harness)
     {
         let fault = Fault {
             harness: held.harness,
-            command: held.command.clone(),
+            command_key: observed.command_key.clone(),
             model: if diagnosis.scope == Scope::Model { observed.model.clone() } else { None },
             scope: diagnosis.scope,
             since: fleet.now,
             next_check: fleet.now.saturating_add(RECOVERY_SECONDS),
             evidence: diagnosis.evidence.clone(),
         };
-        if !book
-            .faults
-            .iter()
-            .any(|f| f.harness == fault.harness && f.model == fault.model && f.scope == fault.scope)
-        {
+        if !book.faults.iter().any(|f| {
+            f.harness == fault.harness
+                && f.command_key == fault.command_key
+                && f.model == fault.model
+                && f.scope == fault.scope
+        }) {
             book.faults.push(fault);
         }
     }
@@ -845,7 +869,11 @@ fn decide(
         serde_json::to_vec_pretty(&json!({"source": observed.source, "diagnosis": diagnosis,
             "snapshots": observed.snapshots, "pending": "continue the original task and current stage"}))?,
     )?;
-    let mut excluded = vec![observed.harness];
+    let same_command =
+        kit.harnesses.iter().find(|h| h.harness == observed.harness).is_none_or(|h| {
+            observed.command_key.as_ref().is_none_or(|key| key == &command_key(&h.command))
+        });
+    let mut excluded = if same_command { vec![observed.harness] } else { vec![] };
     store(book)?;
     fleet.invalidate_selection();
     excluded.extend(
@@ -856,7 +884,7 @@ fn decide(
             .filter_map(|(h, _)| Harness::read(h)),
     );
     let mut failures = vec![];
-    for candidate in kit.harnesses.iter().filter(|h| h.harness != observed.harness) {
+    for candidate in &kit.harnesses {
         if excluded.contains(&candidate.harness) {
             continue;
         }

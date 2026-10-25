@@ -52,6 +52,9 @@ impl Agent {
         // Record what actually started, never a replacement whose old
         // terminal could not be ended.
         worktree.keep_harness(harness)?;
+        let binding = worktree.note("convoy-worker-command-key")?;
+        std::fs::write(binding, self.launches.command_key(harness).unwrap_or_default())?;
+
         Ok(terminal)
     }
 
