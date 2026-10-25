@@ -143,7 +143,7 @@ The operator, or a session of theirs that looks after every repo of the host: an
 
 ##### What it reads and writes
 
-The checkout list: checkouts.json in the cache directory (`afkconvoy help cache` says where it is). The host runner, asked on its socket which checkouts it holds a fleet instance of: where none runs, the list alone answers. Each checkout's tick log, for whether its fleet instance is broken and for its last tick, and its entry, for its concurrency. It writes nothing, asks neither GitHub nor the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like.
+The checkout list: checkouts.json in the cache directory (`afkconvoy help cache` says where it is). The host runner, asked on its socket which checkouts it holds a fleet instance of: where none runs, the list alone answers. Each checkout's tick log, for whether its fleet instance is broken and for its last tick, and its entry, for its concurrency and its tracker. It writes nothing, asks neither GitHub nor the remote, and makes no startup probe: it is safe beside a live fleet, as often as you like.
 
 ##### What it answers
 
@@ -153,7 +153,7 @@ The checkout list: checkouts.json in the cache directory (`afkconvoy help cache`
  "checkouts": [{"checkout": "/Users/me/Developments/hkj", "repo": "github.com/me/hkj",
   "instance": "me-h1-1a2b3c4d", "state": "running", "broken": null,
   "ticked": 1767225600, "idle": false, "holding": 2, "frontier": 1,
-  "concurrency": {"in_force": 6, "said_by": "checkout"},
+  "concurrency": {"in_force": 6, "said_by": "checkout"}, "tracker": "me/issues",
   "tick_log": "<cache>/runs/hkj-0123456789abcdef.jsonl"}]}
 ```
 
@@ -167,6 +167,7 @@ The checkout list: checkouts.json in the cache directory (`afkconvoy help cache`
   - `ticked`: when that fleet instance's last tick ended, in epoch seconds; null with none
   - `idle`, `holding`, `frontier`: as that tick ended: whether the fleet instance was idle — it held nothing, nothing of its was on the landing train, and its frontier was empty — the claims it held, and the frontier issues it left undispatched (`afkconvoy tick --help`). null with no tick, or one that failed whole; `idle` null too of a tick logged by an older release
   - `concurrency`: {in_force, said_by}: how many claims its fleet instance holds at work at once on this host, and who says it, as `afkconvoy plan` answers it: `checkout` (`afkconvoy run --concurrency`) or `default`. {error} where its config cannot be read, or it is no git checkout any more
+  - `tracker`: the repo its fleet reads and writes its issues in, `<owner>/<repo>`, as its entry says it (`afkconvoy run --tracker`); null where it says none, and the checkout's own repo is its tracker
   - `tick_log`: the file its fleet instance logs its ticks in, as `run` answers it; null where it is no git checkout any more
 
 It exits 0 whatever the checkouts' states. Errors, as {"error": …} with a non-zero exit: the checkout list cannot be read; the host runner cannot say which checkouts it holds — it is of an older afkconvoy, which `afkconvoy run` in any checkout moves onto this one; it ended before it answered; or it answered nothing within 10 seconds.
@@ -392,6 +393,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
   - `events`: the last 20 events that reached a `run` of this host, newest first, whichever instance: {at, event, cause, instance} — event being wake (between ticks, or during one), start, stop (told to, by SIGTERM or SIGINT), broken, back (`afkconvoy run --help`), host_sleep, host_wake or inspection (a thing an inspection did, and how it ended: `afkconvoy inspected --help`); cause says what caused it, in words. [] with no log
   - `broken`: {why, since, next, instance}: its fleet instance is broken (`afkconvoy run --help`) — why, as it last broke; since when, and when the host runner starts it again, in epoch seconds, null where no host runner runs on this host; and the fleet instance that broke, "" where none had started. null: it is not broken
   - `concurrency`: {in_force, said_by}: how many claims its fleet instance holds at work at once on this host, as `plan` says it — said_by `checkout` or `default`. {error} where the config or the checkout list cannot be read
+  - `tracker`: the repo its fleet reads and writes its issues in, as `afkconvoy checkouts` says it: null where the checkout says none, and its own repo is its tracker. {error} where the checkout list cannot be read
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it. null when the issues could not be read
@@ -471,11 +473,11 @@ It makes the startup probe — which checks, as a start does, the worker launch 
 
 WHEN IT PROBES. Not every time: a startup probe that passed on this host in the last hour stands, and `plan` then makes none — it says so on stderr, repeats that probe's warnings, and pushes nothing. It probes when no probe stands: none passed on this host within the hour — `run` makes one at every start, `tick` and `plan` when they find none — or the config's `base_branch` or `team` changed since, or the remote's URL did, or the note of where the remote keeps the fleet's refs. The probe is noted in the repo's git dir (`convoy-probe`); delete that file to have the next `plan` probe.
 
-The rebuild asks GitHub twice, side by side with one listing of the remote, however many issues are open: one query for the open issues with their comments (an issue with more than a hundred comments is asked about once more), one for the open PRs. It asks once more — for the issues that carry the label `slow-gate` — only while the recorded gate runs of the base branch's landings say the gate is slow.
+The rebuild asks GitHub twice, side by side with one listing of the remote, however many issues are open: one query for the open issues with their comments (an issue with more than a hundred comments is asked about once more), one for the open PRs. In a tracker another repo than the checkout's, GitHub answers only the open issues that carry this repo's repo label, so it asks as often however many repos' issues the tracker holds. It asks once more — for the issues that carry the label `slow-gate` — only while the recorded gate runs of the base branch's landings say the gate is slow.
 
 ##### What it answers
 
-{"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some, and "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate" while the gate is slow; and "caster" while one runs or is due
+{"frontier", "excluded", "waiting_on_human", "mine", "peer_live", "stale", "stale_closed", "free_slots", "now", "locks", "concurrency", "tracker", "admission", "host_kit", "worker_no_proxy"} — "held_back" while admission holds; and in a bound repo "intake", "left_out", "unmatched" and "nothing_safe" where they name some, "patrols" where it names some, and "proposals" while a ruling is proposed as a precedent or waits to be; and "slow_gate" while the gate is slow; and "caster" while one runs or is due
 
 - `host_kit`: {path, refreshed, harnesses, stock_consult}: this host's kit file; when it was last written, in epoch seconds — by `kit`, by `run`, or by a tick's daily refresh, which writes it again once a day (`afkconvoy kit --help`); each harness in order of preference, first first, as {harness, command, models}, each model {model, names, probed: {at, seconds}, good_at, sources, researched_at} — good_at, from sourced research or `not researched`, what a caster is told the model is good at; sources the dated URLs and researched_at the epoch seconds of the research, absent where none succeeded — in order — `at` when it last answered a probe, in epoch seconds, and `probed` null for one a kit written before DSH was probed holds as named; and {harness, model, named, unmatched} that the stock consult runs, named false when it is the host kit's first, and unmatched, where what the host kit names for it matches nothing held, saying so — it then runs the host kit's first. With an unreadable kit, {path, error}. `afkconvoy kit` writes it again.
 - `frontier`: the issues a tick would dispatch, lowest number first: {number, title} — in a bound repo with the stage each is at: {number, title, stage}, those a stage has already declared on ahead of those never started; an issue whose stage's `escalate` waits for its consult is here too, at that stage; the stage is `land` once the last one passed to the landing train and the issue's PR waits for a worker to join it. Each but the stock consult's has cast: {harness, model, why}: what its worker would run, model null for its command as written, and why — `casting` (its `harness:` and `model:` labels, which the range holds), `switch` (this host's switch, over any casting), `unmatched` (a name it was given matches nothing held — a label, or a switch to a harness the host kit does not hold — and cast has `unmatched` too, naming it: the range's first, and the issue is told so once, in a comment, as its worker starts), `uncast` (a caster had it and did not cast it in ten minutes: the range's first); in an unbound repo `first` (no casting: the host kit's first); in a bound repo, of its stage's role's range (`afkconvoy help roster`), `range_first` (no casting: its first), `outside` (it does not hold the casting, and another stage's range does: its first) or `only` (it holds one harness and model, whatever the casting)
@@ -495,6 +497,7 @@ The rebuild asks GitHub twice, side by side with one listing of the remote, howe
 - `stale_closed`: the same on closed issues — a tick deletes them (each of the three: {number, instance, sha})
 - `free_slots`: how many more claims the instance may take
 - `concurrency`: {in_force, said_by}: how many claims the fleet of this checkout holds at work at once on this host — what `free_slots` counts from, beside the claims a fleet lock leaves alone and those whose worker declared — and who says it: `checkout`, where `afkconvoy run --concurrency` said it of this checkout, which keeps it on the checkout list; `default`, where it said none (3). The repo config says none: a `concurrency` it names is read no more
+- `tracker`: the repo the fleet of this checkout reads and writes its issues in, `<owner>/<repo>`, where `afkconvoy run --tracker` said one of it, which keeps it on the checkout list; null where it said none, and the checkout's own repo is its tracker. With one, the frontier, `excluded` and every other issue here are the open issues there that carry this repo's repo label, `repo:<owner>/<repo>`; one that carries the repo label of another repo too is excluded, "repo labels of more than one repo" (`docs/adr/0027`)
 - `now`: the time the plan was made at, in epoch seconds
 - `locks`: the fleet locks standing: the open issues that carry the lock label, lowest number first — none: []. While there is one, the frontier holds lock issues only, and every issue a tick would otherwise dispatch or hand to a human is under `excluded` with the reason "a fleet lock stands (#n)"
 - `admission`: whether a tick would start a new worker on this host now (`afkconvoy run --help`, ADMISSION): {admits, held_back_by, shares, thresholds, reading}. held_back_by is each threshold the host is past, as a tick's line says it: none, and it admits. shares are the percentages in force — load_percent_of_cores, memory_free_percent, disk_free_percent — and said_by_host the host settings that said one, by key (admit_load, admit_memory, admit_disk, admit_inspect_after); thresholds what they come to on this host — load, memory_free_percent, disk_free_bytes; reading what the host reads now — cores, load, memory_free_percent, disk_free_bytes, disk_size_bytes, each null where it could not be read
@@ -585,6 +588,8 @@ The checkout list: checkouts.json in the cache directory, kept on this host and 
 
 The checkout's concurrency, with its entry: how many claims its fleet instance holds at work at once on this host. `--concurrency 6` says it — a whole number, at least 1 — and `--concurrency default` changes it back to the default, 3; a `run` that names none leaves it as it is. Until the checkout says one, its fleet instance holds 3. It is said here and nowhere else: the repo config's `concurrency` is read no more, and `afkconvoy doctor` gives the `run` that keeps what one still says. Unlike the `--instance`, `--host` and `--worker-no-proxy` it named, which hold from the start of its fleet instance, it is read at each tick, as the host settings are: a change holds at the next tick, and the fleet instance is never started again for it. Lowered below the claims held, it ends no worker: those claims are worked to the end — the tick's line counts those past it, as `holding 2/2 · 1 past the bound` — and no new one is taken until fewer are held. A checkout the list does not hold yet goes by it from its first tick, which puts it on the list with it. A host runner started again keeps it; `plan`, `doctor` and `checkouts` say the one in force and who says it.
 
+The checkout's tracker, with its entry, read at each tick as its concurrency is: the repo its fleet reads and writes its issues in — the issues, their labels, comments, blockers, escalations and closing — while PRs, branches, the gate and the landing train stay the checkout's own repo's (`docs/adr/0027`). `--tracker me/issues` says it, and `--tracker default`, or the checkout's own repo, says none; a `run` that names none leaves it as it is. Until the checkout says one, its tracker is its own repo. A tracker another repo than the checkout's holds the issues of many repos: the fleet works the open issues there that carry its repo's repo label, `repo:<owner>/<repo>`, and the ready label; every issue it or a worker opens there carries the repo label; and a PR or a join commit names its issue `me/issues#7`, never `#7`, which is the checkout's own repo's. `run` makes the repo label, and the ready, escalate and lock labels of the repo config, in the tracker where it lacks them. It refuses to change the tracker while the checkout's fleet holds a claim on an issue of the tracker it had, or the landing train carries a PR of one, naming them, and changes nothing: run it again once they are done. The issues of the tracker it had stay there. Keep the tracker private where the repo is public: whoever can comment on an issue writes what a worker reads. `plan`, `doctor`, `checkouts` and the panel say the tracker.
+
 The host settings, in the same file: what this host says for every fleet instance on it — whether it may be put to sleep (`--no-host-sleep`, `--host-sleep`) and in which hours of its local time (`--host-sleep-hours`), the limits past which a worker is hot (`--hot-cores`, `--hot-memory`, `--hot-written`), the shares admission holds back at (`--admit-load`, `--admit-memory`, `--admit-disk`, `--admit-inspect-after`) and the panel's port (`--panel`). A `run` that names one — by its flag, or by the variable of its environment that stands for it, the flag winning: AFKCONVOY_NO_HOST_SLEEP=true, AFKCONVOY_HOST_SLEEP_HOURS, AFKCONVOY_HOT_CORES, AFKCONVOY_HOT_MEMORY, AFKCONVOY_HOT_WRITTEN, AFKCONVOY_ADMIT_LOAD, AFKCONVOY_ADMIT_MEMORY, AFKCONVOY_ADMIT_DISK, AFKCONVOY_ADMIT_INSPECT_AFTER — changes it for the host before it hands its checkout over. Every fleet instance on the host reads them as it goes — admission at each tick, the hot limits at each sample, host sleep at each check — so a change holds for all of them at once, and none is started again for it; the host runner reads the panel's port as it starts. A `run` that names none changes none, and nothing else changes them: `tick`, `plan` and `doctor` read them as they are, and a host runner started again keeps them. `--host-sleep` changes `--no-host-sleep` back, and `default` changes any other back to its default (`--hot-cores default`, `--host-sleep-hours default`). `afkconvoy doctor` says those in force, as `host.settings`.
 
 The host runner: one process of the host, holding a fleet instance for each checkout on the list, each ticking as a fleet instance always has. `run` asks it on its socket in the cache directory (host-runner.sock) — the one socket of the host: `stop`, `wake`, `panel --open`, `exclusive` and `doctor` ask it there too, each naming its checkout, and no fleet instance or repo has one of its own; one nobody listens on, which a host runner killed with no goodbye left, is removed by whoever finds it — and starts it where none answers: in a process group of its own, so the terminal that ran `run` can close, in /, with a fresh login shell's environment — the names your login shell (`$SHELL -lic`) exports, and none of those of the shell that ran `run`. A variable exported only in that shell, or one a session set for itself (Claude Code's, orca's), reaches neither the host runner nor any worker it starts: put it in your login shell's rc files. It keeps the cache directory and the config directory of the `run` that started it. Started again, it starts every checkout on the list, each with what its `run` named, under the host settings the file keeps; a checkout whose fleet instance cannot start then is broken (below), and stays on the list.
@@ -637,6 +642,7 @@ Once its checkout's fleet instance has ended its first tick, with exit 0:
  "first_tick": "tick 1: dispatched #12, #15 · holding 2/6 · frontier 4 · next in 30s",
  "concurrency": {"from": {"in_force": 3, "said_by": "default"},
                  "to": {"in_force": 6, "said_by": "checkout"}},
+ "tracker": {"from": null, "to": "me/issues"},
  "settings": {"hot_cores": {"from": null, "to": 4.0}},
  "warnings": []}
 ```
@@ -646,6 +652,7 @@ Once its checkout's fleet instance has ended its first tick, with exit 0:
 - `host_runner`: the one that answered — its pid, its version, its log and where it serves the panel, null where it serves none — and whether this `run` started it. `replaced`: the host runner of an older release this `run` stopped to start it, as {"pid": 4100, "version": "0.5.13"}; null where it stopped none.
 - `tick_log` and `first_tick`: the fleet instance's tick log, and the line that ended its first tick. `<cache>` stands for the cache directory, whole in the answer.
 - `concurrency`: what this `run` changed of its checkout's concurrency, as {from, to}, each the one in force before and after, as `plan` says it: {in_force, said_by} — said_by `checkout` or `default`. null where it named none, or named the one in force.
+- `tracker`: what this `run` changed of its checkout's tracker, as {from, to}, each the repo named, `<owner>/<repo>`, or null for the checkout's own. null where it named none, or named the one it has.
 - `settings`: what this `run` changed of the host settings, each by its key — its flag's name, as `hot_cores` for `--hot-cores` — as {from, to}, in its flag's units; null is the default. {} where it named none, or named each as it was.
 - `warnings`: what its fleet instance warned of until its first tick ended — the startup probe's warnings among them — also on stderr; empty where this `run` waited on no start.
 
@@ -755,6 +762,7 @@ afkconvoy run [OPTIONS] [CHECKOUT]
 - `--instance <INSTANCE>`: The fleet instance to run as [default: a new one, named for this host]
 - `--host <HOST>`
 - `--concurrency <CLAIMS>`: How many claims this checkout's fleet instance holds at work at once on this host, from its next tick: the checkout's own, kept with it on the checkout list and never pushed; `default` changes it back [default: 3]
+- `--tracker <OWNER/REPO>`: The repo this checkout's fleet reads and writes its issues in, from its next tick: the checkout's own, kept with it on the checkout list and never pushed; `default` changes it back [default: the checkout's own repo]
 - `--worker-no-proxy <[HARNESS=]HOSTS>`: Hosts reached directly, comma-separated, for the default harness or HARNESS; repeat for each harness. DSH defaults to api.deepseek.com. An empty list disables the stock addition. Extends no_proxy and NO_PROXY
 - `--panel <PORT>`: The port the host runner serves the panel on, from its next start: a host setting; `default` changes it back [default: 7070, or any free port where it is taken]
 - `--no-host-sleep`: Keep this host awake: no fleet on it puts it to sleep. A host setting, for every fleet on it until a `run` says `--host-sleep`, which changes it back
@@ -3340,6 +3348,7 @@ A bound repo's config names a team. The issue passes through the stages of one o
 - The gate is the only machine verification between a worker and the base branch: one command of the repo's, which exits 0 only on a good tree. `afkconvoy gate --help`.
 - Nothing is ever rebased. A branch is brought up to date by merging into it.
 - The fleet reads only the PRs of the repo's own branches, which only a login with write access can push: a PR from a fork is anyone's, and the fleet acts as if it did not exist. Fleet state, in [`afkconvoy help glossary`](help:glossary).
+- A fleet's issues are in its tracker: the repo's own, unless its host says another with `afkconvoy run --tracker` — a private one, say, where the repo is public, so that no stranger writes what a worker reads. There the fleet works only the issues that carry its repo's repo label. Its PRs, branches, gate and landing train stay the repo's. Tracker, in [`afkconvoy help glossary`](help:glossary).
 - No human stands in a workflow unless a stage is given to one. A human is asked by exception, and each way that happens has its command: [`afkconvoy help humans`](help:humans).
 - Every worker of a bound repo works under the guard, which refuses what no worker may do — merging a PR, pushing the base branch, moving a flow label. `afkconvoy guard --help`.
 - A fleet lock — an open issue under the lock label — makes the fleet work lock issues only until it closes: for a fault every issue shares, as a broken base branch is. `afkconvoy lock --help`.
@@ -4216,12 +4225,20 @@ A host's one long-running process of the fleet, holding a fleet instance for eac
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
-The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** there, which a `run` that names it changes, and its fleet instance reads at each tick.
+The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** and its **tracker** there, which a `run` that names them changes, and its fleet instance reads at each tick.
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Concurrency**:
 How many claims a fleet instance holds at work at once on its host. It is its checkout's, said on the checkout list of the host that runs it, and 3 until that host says otherwise: what a host can carry — its cores, its memory, its logins — is no fact of the repo, so a repo config names none (`docs/adr/0025`).
 _Avoid_: parallelism, workers (the processes it bounds), the repo's concurrency
+
+**Tracker**:
+The repo a fleet reads and writes its issues in: its checkout's own, until the checkout says another on the checkout list of its host (`run --tracker`), never pushed. Everything about an issue is the tracker's — its labels, its comments, its blockers, its escalation, its closing, and every issue the fleet opens — and every PR, branch, worktree, gate run and the landing train are the repo's. `#<n>` alone is the repo's own issue: the repo names a tracker's `<owner>/<tracker>#<n>` (`docs/adr/0027`).
+_Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
+
+**Repo label**:
+`repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.
+_Avoid_: component label, project label
 
 **Broken**:
 A fleet instance whose loop panicked or ended in an error, or that the host runner started again, with nobody asking, and that ended before its first tick — its startup probe no longer passing, say. It harms no other and stays on the checkout list: the host runner starts it again after a backoff — a minute, twice as long at each break in a row, half an hour at the most — or at once when a `run` of its checkout asks. It is **back** once such a start ended its first tick. A tick that fails is no break: the loop goes on.
@@ -4248,7 +4265,7 @@ One of the two ways every ref the fleet writes is named: hidden refs (`refs/conv
 _Avoid_: namespace, fallback mode
 
 **Fleet state**:
-The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is joined, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
+The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is joined, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
@@ -4256,11 +4273,11 @@ A tick's view of the fleet at one moment, derived from fleet state and dropped w
 _Avoid_: session state
 
 **Rebuild**:
-The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open.
+The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open, and however many repos' issues its tracker holds.
 _Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:
-The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, off the landing train — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
+The issues of the fleet's tracker a worker can be started on now — of a tracker that is another repo, those carrying the repo's repo label and no other: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, off the landing train — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
 _Avoid_: queue (the exclusive queue of a host's heavy commands), backlog (all the issues a repo has open)
 
 **Idle**:
@@ -4520,7 +4537,7 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Landing train**:
-The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes — or, of an inspection's change of the repo, the inspection.
+The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes as the repo names it — `#7`, or `acme/tracker#7` of a tracker's — or, of an inspection's change of the repo, the inspection. Every fleet of the repo joins the one train, whatever its tracker, and closes only its own tracker's issues.
 _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:

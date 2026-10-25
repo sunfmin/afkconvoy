@@ -13,12 +13,20 @@ A host's one long-running process of the fleet, holding a fleet instance for eac
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
-The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** there, which a `run` that names it changes, and its fleet instance reads at each tick.
+The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** and its **tracker** there, which a `run` that names them changes, and its fleet instance reads at each tick.
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Concurrency**:
 How many claims a fleet instance holds at work at once on its host. It is its checkout's, said on the checkout list of the host that runs it, and 3 until that host says otherwise: what a host can carry — its cores, its memory, its logins — is no fact of the repo, so a repo config names none (`docs/adr/0025`).
 _Avoid_: parallelism, workers (the processes it bounds), the repo's concurrency
+
+**Tracker**:
+The repo a fleet reads and writes its issues in: its checkout's own, until the checkout says another on the checkout list of its host (`run --tracker`), never pushed. Everything about an issue is the tracker's — its labels, its comments, its blockers, its escalation, its closing, and every issue the fleet opens — and every PR, branch, worktree, gate run and the landing train are the repo's. `#<n>` alone is the repo's own issue: the repo names a tracker's `<owner>/<tracker>#<n>` (`docs/adr/0027`).
+_Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
+
+**Repo label**:
+`repo:<owner>/<repo>`: what makes an issue of a tracker one of that repo's. A fleet whose tracker is another repo works only the issues there that carry its repo's; one carrying two is no fleet's. In a repo that is its own tracker, an issue carrying one is the repo's it names.
+_Avoid_: component label, project label
 
 **Broken**:
 A fleet instance whose loop panicked or ended in an error, or that the host runner started again, with nobody asking, and that ended before its first tick — its startup probe no longer passing, say. It harms no other and stays on the checkout list: the host runner starts it again after a backoff — a minute, twice as long at each break in a row, half an hour at the most — or at once when a `run` of its checkout asks. It is **back** once such a start ended its first tick. A tick that fails is no break: the loop goes on.
@@ -45,7 +53,7 @@ One of the two ways every ref the fleet writes is named: hidden refs (`refs/conv
 _Avoid_: namespace, fallback mode
 
 **Fleet state**:
-The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is joined, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
+The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub — the issues in the fleet's tracker, the PRs, branches and refs in the repo — and no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is joined, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
@@ -53,11 +61,11 @@ A tick's view of the fleet at one moment, derived from fleet state and dropped w
 _Avoid_: session state
 
 **Rebuild**:
-The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open.
+The read-only pass at the top of every tick that derives the working set. Any fleet instance rebuilds the same working set from the same GitHub. It lists the remote once and asks GitHub a fixed number of times, however many issues are open, and however many repos' issues its tracker holds.
 _Avoid_: refresh (a heartbeat is refreshed), resync
 
 **Frontier**:
-The issues a worker can be started on now: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, off the landing train — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
+The issues of the fleet's tracker a worker can be started on now — of a tracker that is another repo, those carrying the repo's repo label and no other: open, carrying a flow label, not an epic, unclaimed, with no open blocker, and at a stage a role performs or whose `escalate` a consult is to rule on — or landing, with an open PR to join. In an unbound repo: carrying the ready label, with no open linked PR but one of the fleet's own that a released claim kept, off the landing train — which its worker takes up. While a fleet lock stands: of these, the lock issues only.
 _Avoid_: queue (the exclusive queue of a host's heavy commands), backlog (all the issues a repo has open)
 
 **Idle**:
@@ -317,7 +325,7 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Landing train**:
-The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes — or, of an inspection's change of the repo, the inspection.
+The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes as the repo names it — `#7`, or `acme/tracker#7` of a tracker's — or, of an inspection's change of the repo, the inspection. Every fleet of the repo joins the one train, whatever its tracker, and closes only its own tracker's issues.
 _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:
