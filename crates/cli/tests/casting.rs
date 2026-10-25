@@ -114,6 +114,37 @@ fn fallback_adds_a_model_for_the_new_harness_without_removing_the_previous_casti
 }
 
 #[test]
+fn disabling_cast_releases_waiting_issues_and_a_changed_candidate_set_gets_a_new_chance() {
+    let world = cast(&[]);
+    world.afk(&["kit", "--cast", "on"]).ok();
+    tick_at(&world, 1000);
+    assert_eq!(casters(&world), 1);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["open"] = json!(false);
+        }
+    });
+    world.afk(&["switch", "--harness", "pi"]).ok();
+    let planned = world.afk(&["plan", "--now", "1100"]).ok();
+    assert_eq!(
+        planned["caster"]["due"], true,
+        "a previous wait was for different candidates: {planned}"
+    );
+    tick_at(&world, 1100);
+    assert_eq!(casters(&world), 2);
+    world.afk(&["kit", "--cast", "off"]).ok();
+    let planned = world.afk(&["plan", "--now", "1200"]).ok();
+    assert_eq!(planned["caster"], Value::Null);
+    assert_eq!(planned["frontier"][0]["cast"]["model"], "a/fast");
+    tick_at(&world, 1200);
+    assert_eq!(casters(&world), 2);
+    assert_eq!(
+        started(&world).last(),
+        Some(&Harness::Pi.with_model(Harness::Pi.stock(), "a/fast"))
+    );
+}
+
+#[test]
 fn casting_selects_a_model_only_within_the_first_eligible_kit_harness() {
     let world = cast(&["harness:pi", "model:a/slow"]);
     let planned = world.afk(&PLAN).ok();

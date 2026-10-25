@@ -798,10 +798,8 @@ pub enum ForCaster {
     Late,
 }
 
-/// What an issue labelled `labels` on the frontier waits for, within `range`,
-/// under the harness a switch `chosen`, with `caster` the last one started,
-/// `now`. An issue that has a casting, a range with no choice to make and a
-/// switch, which chooses whatever the casting, leave nothing to cast.
+/// What a frontier issue waits for, given its model-casting eligibility and
+/// the last caster started on these candidates. Ineligible issues dispatch.
 pub fn for_caster(number: u64, needed: bool, caster: Option<&Caster>, now: u64) -> ForCaster {
     if !needed {
         return ForCaster::Dispatch;
@@ -1004,10 +1002,9 @@ pub fn caster_prompt(issues: &[ToCast], offered: &[Offered], how: &[String]) -> 
         prompt.push_str(&format!("{}{cut}\n", body.trim()));
     }
     prompt.push_str(
-        "\nAnswer with one line for each issue and nothing else, each one JSON object: \
+        "\nAnswer only one JSON line per issue and selected harness: \
          {\"issue\": <number>, \"harness\": \"<selected harness>\", \"model\": \"<model>\", \
-         \"why\": \"<one or two sentences>\"}. When an issue needs models of several selected \
-         harnesses, answer one line per issue and harness. Only model labels are written.\n",
+         \"why\": \"<one or two sentences>\"}. Only model labels are written.\n",
     );
     prompt
 }

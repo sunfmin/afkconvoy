@@ -136,13 +136,9 @@ impl Fleet {
         Ok((fleet?, open?))
     }
 
-    /// What a worker of `role` runs for an issue labelled `labels`
-    /// (`casting::cast_within`) within its range on this host — its roster
-    /// entry cut to the host kit without the harnesses paused here — and
-    /// this host's switch → it, or why it cannot be started. A casting to a
-    /// paused harness the role may run holds the issue back (`paused::Held`);
-    /// so does a range that holds nothing (`NothingSafe`): no worker of the
-    /// role runs without its limits.
+    /// Select the first eligible harness and model in kit order within the
+    /// role's range. Matching model labels override model order within that
+    /// harness alone; a role without an eligible candidate waits safely.
     pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
         let range = self.range_in(role)?;
         casting::preferred(labels, &range, &range)
@@ -407,22 +403,9 @@ impl Fleet {
         Ok((set, stages))
     }
 
-    /// Says of each issue on an unbound repo's frontier what its worker
-    /// would run, and why; one whose casting the host kit does not hold runs
-    /// its first, `unmatched`, naming the label. The stock consult's runs
-    /// what the host kit names for it, and is cast by nothing. A host kit
-    /// that cannot be read casts nothing: a start refuses it, saying so.
-    ///
-    /// An uncast issue with a choice to make is held back for the caster
-    /// while one runs, and starts one where none does
-    /// (`casting::for_caster`); one a caster had and did not cast runs the
-    /// host kit's first.
-    ///
-    /// The harnesses paused on this host are left out of the host kit: an
-    /// issue a caster cast to one, which no worker started on, is cast again
-    /// as one with no casting; one a human cast to it, or that a worker
-    /// started on, is held back while it is paused, and so is every issue
-    /// while every harness is.
+    /// Apply host priority and the shared model-casting eligibility to the
+    /// unbound frontier. Only an enabled, missing model choice waits, at most
+    /// ten minutes; human labels and ineligible harnesses never hold it back.
     fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, consults: &[u64]) {
         let Ok(kit) = self.runnable() else { return };
         let paused = crate::paused::read();
@@ -495,21 +478,9 @@ impl Fleet {
         }
     }
 
-    /// Says of each issue on a bound repo's frontier what the worker due on
-    /// it runs, and why (`casting::cast_within`): its casting where its
-    /// role's range holds it, the range's first where not — `unmatched` where
-    /// none of its workflow's stages' ranges holds it (`casting::unmatched_in`).
-    /// One at a stage whose role can run nothing safely on this host waits,
-    /// excluded with why (`casting::nothing_safe`). The stock consult's runs
-    /// what the host kit names for it, and is cast by nothing. A host kit or
-    /// a team that cannot be read casts nothing: a start refuses it.
-    ///
-    /// An uncast issue one of whose stages has a choice to make is held back
-    /// for the caster as in an unbound repo (`cast_frontier`).
-    ///
-    /// The harnesses paused on this host are left out of every range, as in
-    /// an unbound repo: an issue a caster cast to one is cast again, and one
-    /// a human cast to it is held back while it is paused (`cast_in`).
+    /// Apply kit priority within each due role's constraints. Missing models
+    /// across its workflow's selected harnesses wait only when casting is on;
+    /// ranges with no safe candidate wait for recovery, independently.
     fn cast_bound_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, stages: &Flows) {
         let Ok(kit) = self.runnable() else { return };
         let kit = kit.range();

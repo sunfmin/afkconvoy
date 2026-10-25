@@ -376,7 +376,7 @@ mod tests {
             );
             Ok(json!({"harness_order":["claude-code","pi"],"model_order":[{"harness":"claude-code","models":["new-generation","deep"]},{"harness":"pi","models":["other","provider/fast"]}],"models":[{"harness":"claude-code","model":"new-generation","good_at":"small fixes","sources":[{"url":"https://vendor.example/new","date":"2026-10-24"}]}]}).to_string())
         });
-        assert_eq!(after.harnesses[0].models[0].good_at.as_deref(), Some("small fixes"));
-        assert_eq!(after.harnesses[0].models[1], before.harnesses[0].models[1]);
+        assert_eq!(after.harnesses[0].models[1].good_at.as_deref(), Some("small fixes"));
+        assert_eq!(after.harnesses[0].models[0], before.harnesses[0].models[1]);
     }
 }

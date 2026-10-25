@@ -1,8 +1,7 @@
-//! The caster (docs/adr/0020): a worker in no role that casts, in one
-//! session, every issue of the repo that has a choice to make and no
-//! casting — in a bound repo, one of whose stages' ranges leaves one. A tick starts one in the caster's worktree, where it runs
-//! `afkconvoy cast`; a human runs that in the foreground. What is held back
-//! for it, and for how long, is the core's (`casting::for_caster`).
+//! Optional model casting within each stage's kit-selected harness. The kit
+//! owns the host setting, default off; the same eligibility explains plan,
+//! doctor and panel and controls the frontier's bounded wait. Casting adds
+//! model labels and preserves every existing casting label.
 
 use std::time::Duration;
 
