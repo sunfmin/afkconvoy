@@ -1254,11 +1254,11 @@ fn a_concurrency_the_repo_config_names_changes_nothing_and_doctor_gives_the_line
     let first_tick = first["first_tick"].as_str().unwrap();
     assert!(first_tick.contains("holding 3/3 · frontier 1"), "{first}");
 
-    // `doctor` warns of it, with the line that keeps it on this host
+    // `doctor` explains it: nothing is held up, with the line that keeps it on this host
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     let found = retired_concurrency(&doctor);
     assert_eq!(found.len(), 1, "{doctor}");
-    assert_eq!(found[0]["severity"], "warning");
+    assert_eq!(found[0]["severity"], "info");
     let what = found[0]["what"].as_str().unwrap();
     assert!(what.contains("names `concurrency: 5`") && what.contains("up to 3 claims"), "{what}");
     let line = format!("afkconvoy run {} --concurrency 5", shown(&world.clone));

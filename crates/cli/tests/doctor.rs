@@ -61,6 +61,39 @@ fn a_config_with_no_gate_seconds_is_a_finding_and_one_that_sets_it_is_none() {
 }
 
 #[test]
+fn a_retired_concurrency_is_info_and_only_a_different_default_needs_a_run() {
+    for (named, own) in [(3, None), (4, None), (5, Some(5)), (4, Some(5))] {
+        let world = World::new();
+        world.set_gate_config(&format!(
+            "gate_command: ./gate.sh\ngate_seconds: 600\nconcurrency: {named}"
+        ));
+        if let Some(own) = own {
+            world.say_concurrency(&world.clone, own);
+        }
+        let answer = doctor(&world, "1100").json;
+        let findings = found(&answer, "which nothing reads any more");
+        assert_eq!(findings.len(), 1, "{answer}");
+        let finding = findings[0];
+        let in_force = own.unwrap_or(3);
+        let fix = if own.is_none() && named != in_force {
+            format!(
+                "afkconvoy run {} --concurrency {named}, then delete `concurrency` from \
+                 docs/agents/afkconvoy.md",
+                world.clone.display()
+            )
+        } else {
+            "docs/agents/afkconvoy.md: concurrency".to_owned()
+        };
+        assert_eq!(finding["fix"], fix, "config names {named}, checkout says {own:?}");
+        assert_eq!(finding["severity"], "info", "{finding}");
+        let what = finding["what"].as_str().unwrap();
+        assert!(what.contains(&format!("concurrency: {named}")), "{what}");
+        assert!(what.contains(&format!("up to {in_force} claims")), "{what}");
+        assert_eq!(finding["see"], "afkconvoy help troubleshooting");
+    }
+}
+
+#[test]
 fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let world = World::new();
     world.say_concurrency(&world.clone, 2);
