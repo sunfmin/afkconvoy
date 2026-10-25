@@ -1,7 +1,8 @@
 # afkconvoy config
 
-What `afkconvoy` reads for this repo: the yaml block below, and nothing else in
-this file. An unknown key or a wrong type is an error, not a default.
+What `afkconvoy` reads for this repo: the yaml block below, the cut steps under
+"Cutting a version", and nothing else in this file. An unknown key or a wrong
+type is an error, not a default.
 
 ```yaml
 base_branch: main                 # workers cut from it, open their PR against it, land on it
@@ -61,3 +62,40 @@ it is written, for every host.
 Fewer workers at once (`--concurrency`) would also keep gates apart, but would
 slow every worker's editing as well, and still let two gates overlap. The queue
 bounds only the heavy step.
+
+## Cutting a version
+
+The fleet cuts each version of afkconvoy itself, once it goes idle with landed
+work past the newest `v*` tag: it sets the version, lands it through the
+landing train, tags it, and publishes and installs it on its host
+(`afkconvoy cut --help`, `docs/adr/0028`). These are its steps, and the one
+place they are written. Each is run by `sh` in the cut's checkout, with the
+version in `$VERSION`: `set` on the base branch, `publish` with the new tag
+checked out.
+
+```yaml cut
+set: |
+  set -ex
+  packaging/release.sh set "$VERSION"
+publish: |
+  set -ex
+  packaging/release.sh check "$(git describe --tags --exact-match)"
+  afkconvoy exclusive -- packaging/release.sh build
+  packaging/release.sh package
+  packaging/release.sh publish
+  brew update --quiet
+  brew upgrade sunfmin/tap/afkconvoy
+  test "$("$(brew --prefix)/bin/afkconvoy" --version)" = "afkconvoy $VERSION"
+```
+
+- `set -ex` first: `sh` runs on past a line that fails and judges the step by
+  its last line, and the cut's log (`convoy-cut.log`) shows each line as it
+  runs, so a failed step shows the line it failed at.
+- `build` makes both release binaries, one rustc job per core: it waits its
+  turn in the host's exclusive queue, as a gate does (above).
+- `publish` writes the archives and the formula to `sunfmin/homebrew-tap`: the
+  host's `gh` login must be able to write there.
+- `brew update` comes first: `brew upgrade` alone fetches the tap at most once
+  a day, and would find nothing newer. The last line fails the step unless the
+  afkconvoy Homebrew links is the version cut. The host runner moves onto it
+  once its fleets are idle (`afkconvoy run --help`).

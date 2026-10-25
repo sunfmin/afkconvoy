@@ -1,6 +1,6 @@
 //! What a release is made of: the version the binary prints, and
-//! `packaging/release.sh`, which the README gives step by step for a release,
-//! cut on a Mac by hand.
+//! `packaging/release.sh`, whose steps the fleet takes to cut a version, on a
+//! Mac, as the cut steps of this repo's config say.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -100,24 +100,93 @@ fn a_build_with_no_stable_toolchain_says_how_to_get_it() {
 }
 
 #[test]
-fn a_release_is_cut_by_hand_by_the_steps_the_readme_gives() {
-    // This repository is private and its GitHub Actions has no budget: nothing
-    // else runs a release.
+fn a_version_is_set_in_cargo_toml_and_in_cargo_lock_for_the_workspace_s_crates() {
+    // A workspace shaped like this one: its version under [workspace.package],
+    // a dependency's beside it, and a lock that says the version before.
+    let root = tempfile::tempdir().unwrap();
+    let at = |path: &str, text: &str| {
+        let file = root.path().join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    };
+    at("packaging/release.sh", &std::fs::read_to_string(SCRIPT).unwrap());
+    let script = root.path().join("packaging/release.sh");
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    at(
+        "Cargo.toml",
+        "[workspace]\nresolver = \"3\"\nmembers = [\"crates/cli\"]\n\n[workspace.package]\n\
+         version = \"0.5.16\"\nedition = \"2024\"\n\n[workspace.dependencies]\n\
+         serde = { version = \"1\" }\n",
+    );
+    at(
+        "crates/cli/Cargo.toml",
+        "[package]\nname = \"afkconvoy\"\nversion.workspace = true\nedition.workspace = true\n",
+    );
+    at("crates/cli/src/lib.rs", "");
+    at("Cargo.lock", "version = 4\n\n[[package]]\nname = \"afkconvoy\"\nversion = \"0.5.16\"\n");
+
+    let set = |args: &[&str]| {
+        Command::new(&script).args(args).env("CARGO_NET_OFFLINE", "true").output().unwrap()
+    };
+    stdout(&set(&["set", "0.5.17"]));
+    assert_eq!(stdout(&set(&["version"])).trim(), "0.5.17");
+    let read = |path: &str| std::fs::read_to_string(root.path().join(path)).unwrap();
+    let lock = read("Cargo.lock");
+    assert!(lock.contains("name = \"afkconvoy\"\nversion = \"0.5.17\"\n"), "{lock}");
+    let toml = read("Cargo.toml");
+    assert!(toml.contains("\nversion = \"0.5.17\"\n"), "{toml}");
+    assert!(
+        toml.contains("serde = { version = \"1\" }"),
+        "a dependency's is not the version: {toml}"
+    );
+    assert!(!root.path().join("Cargo.toml.bak").exists(), "nothing is left beside it");
+    assert!(!set(&["set"]).status.success(), "no version is set to nothing");
+}
+
+#[test]
+fn a_version_is_cut_by_the_steps_the_config_gives_and_the_readme_points_to_them() {
+    // This repository is private and its GitHub Actions has no budget: the
+    // fleet cuts on a Mac, by the cut steps of this repo's config, and
+    // nothing else runs a release.
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    assert!(!root.join(".github/workflows").exists(), "a release is cut by hand alone");
-    let script = std::fs::read_to_string(SCRIPT).unwrap();
-    let section = &README[README.find("**Cutting a release**").unwrap()..];
-    let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+    assert!(!root.join(".github/workflows").exists(), "a release is cut on a Mac alone");
+    let config = afkconvoy::config::load(&root.join(afkconvoy::config::FILE)).unwrap();
+    let steps = config.cut.expect("this repo turns cutting on: its config names cut steps");
+
+    // Each step stops at the first line that fails: `sh` alone runs on past
+    // it, and judges the step by its last line.
+    for lines in [&steps.set, &steps.publish] {
+        assert!(lines.starts_with("set -ex\n"), "{lines}");
+    }
+    assert!(steps.set.contains("\npackaging/release.sh set \"$VERSION\"\n"), "{}", steps.set);
     let mut last = 0;
-    for step in ["check", "build", "package", "publish"] {
-        let line = format!("\npackaging/release.sh {step} ");
-        let at = section.find(&line).unwrap_or_else(|| panic!("the README runs no {step}"));
-        assert!(at > last, "{step} is out of order");
+    for line in [
+        "packaging/release.sh check ",
+        "packaging/release.sh build",
+        "packaging/release.sh package",
+        "packaging/release.sh publish",
+        "brew update",
+        "brew upgrade sunfmin/tap/afkconvoy",
+        "--version)\" = \"afkconvoy $VERSION\"",
+    ] {
+        let at = steps.publish.find(line).unwrap_or_else(|| panic!("publish runs no {line}"));
+        assert!(at > last, "{line} is out of order: {}", steps.publish);
         last = at;
     }
-    for (what, text) in [("the README", section), ("release.sh", script.as_str())] {
+
+    let section = &README[README.find("**Cutting a release**").unwrap()..];
+    let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+    assert!(section.contains("(docs/agents/afkconvoy.md)"), "the README points to the steps");
+    for step in ["set", "check", "build", "package", "publish"] {
+        let line = format!("release.sh {step}");
+        assert!(!section.contains(&line), "the README repeats the cut step {step}");
+    }
+    let script = std::fs::read_to_string(SCRIPT).unwrap();
+    let cut = format!("{}{}", steps.set, steps.publish);
+    for (what, text) in [("the README", section), ("release.sh", &script), ("the cut steps", &cut)]
+    {
         for named in ["workflow", "secret", "HOMEBREW_TAP_TOKEN"] {
-            assert!(!text.contains(named), "{what} names a {named}: a release is cut by hand");
+            assert!(!text.contains(named), "{what} names a {named}: a release is cut on a Mac");
         }
     }
 }
