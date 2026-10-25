@@ -302,23 +302,32 @@ holds; it holds {}: the role ranges over the host kit whole, less what it holds 
 fn cut_entry(entry: &Entry, kit: &[Held]) -> Vec<Held> {
     let mut range: Vec<Held> = vec![];
     for held in kit {
-        let allowed: Vec<_> = entry.run.iter().filter(|a| a.harness == held.harness).collect();
-        if allowed.iter().any(|a| a.model.is_none()) {
+        let mut any_model = false;
+        for allowed in &entry.run {
+            if allowed.harness == held.harness && allowed.model.is_none() {
+                any_model = true;
+            }
+        }
+        if any_model {
             range.push(held.clone());
             continue;
         }
-        let models: Vec<_> = held
-            .models
-            .iter()
-            .filter(|model| {
-                allowed.iter().any(|a| {
-                    a.model.as_deref().is_some_and(|name| {
-                        held.model(name).is_ok_and(|matched| matched.id == model.id)
-                    })
-                })
-            })
-            .cloned()
-            .collect();
+        let mut models = vec![];
+        for model in &held.models {
+            let mut permitted = false;
+            for allowed in &entry.run {
+                if allowed.harness == held.harness
+                    && let Some(name) = &allowed.model
+                    && let Ok(matched) = held.model(name)
+                    && matched.id == model.id
+                {
+                    permitted = true;
+                }
+            }
+            if permitted {
+                models.push(model.clone());
+            }
+        }
         if !models.is_empty() {
             range.push(Held { harness: held.harness, models });
         }
@@ -557,13 +566,25 @@ pub fn labelled_model(labels: &[String], held: &Held) -> Option<String> {
 /// different harness's model beside its own labels, but never replaces or
 /// recasts human labels, including legacy harness labels.
 pub fn human_casting(labels: &[String], bodies: &[&str]) -> bool {
-    labels.iter().filter(|label| is_casting(label)).any(|label| {
+    for label in labels {
+        if !is_casting(label) {
+            continue;
+        }
         let named = format!("`{label}`");
-        !bodies.iter().any(|body| {
-            body.starts_with("Cast ")
-                && body.split_once(": ").is_some_and(|(head, _)| head.contains(&named))
-        })
-    })
+        let mut owned = false;
+        for body in bodies {
+            if body.starts_with("Cast ")
+                && let Some((head, _)) = body.split_once(": ")
+                && head.contains(&named)
+            {
+                owned = true;
+            }
+        }
+        if !owned {
+            return true;
+        }
+    }
+    false
 }
 
 /// The caster has work only where a selected harness offers multiple models
