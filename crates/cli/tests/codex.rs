@@ -1241,7 +1241,9 @@ fn assert_selection(ran: &[String], model: &str, effort: Option<&str>) {
 
 #[test]
 fn codex_uses_fleet_models_and_fresh_user_effort_despite_saved_worker_preferences() {
-    let world = bound();
+    let world = bound_with(
+        &TEAM.replace("auditor: acme/auditor", "auditor: { dir: acme/auditor, host_user: false }"),
+    );
     let stale = "model = 'stale-model'\nmodel_reasoning_effort = 'medium'\n";
     write(&kept_host_user(&world), "config.toml", stale);
     write(&kept(&world), "config.toml", stale);
@@ -1261,9 +1263,11 @@ fn codex_uses_fleet_models_and_fresh_user_effort_despite_saved_worker_preference
     assert_selection(&second, "gpt-5.5", Some("high"));
     assert_ne!(first[1], second[1]);
     // A role that opts out of user skills still takes the user's effort.
-    std::fs::remove_file(world.home().join(".codex/config.toml")).unwrap();
     world.issue(9, &["flow:audit"]);
-    assert_selection(&launch(&world, 9, 1200), "gpt-5.5", None);
+    assert_selection(&launch(&world, 9, 1200), "gpt-5.5", Some("high"));
+    std::fs::remove_file(world.home().join(".codex/config.toml")).unwrap();
+    world.issue(10, &["flow:audit"]);
+    assert_selection(&launch(&world, 10, 1300), "gpt-5.5", None);
     assert_eq!(
         std::fs::read_to_string(kept_host_user(&world).join("config.toml")).unwrap(),
         stale,
@@ -1316,7 +1320,7 @@ fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
     world.issue(7, &["flow:feature"]);
     let plan = world.afk(&["plan", "--now", "1000"]).ok();
     assert_eq!(plan["frontier"][0]["codex"]["effort"], "xhigh");
-    launch(&world, 7, 1000);
+    let ran = launch(&world, 7, 1000);
     write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
     for command in ["plan", "doctor"] {
         let args = if command == "plan" {
@@ -1355,6 +1359,17 @@ fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
     ] {
         assert!(page.contains(expected), "missing {expected}: {page}");
     }
+    write(
+        Path::new(&ran[1]),
+        "config.toml",
+        "model = 'session-choice'\nmodel_reasoning_effort = 'low'\n",
+    );
+    let current = world.afk(&["plan", "--instance", "alpha", "--now", "1200"]).ok();
+    assert_eq!(current["codex_workers"][0]["model"], "session-choice");
+    assert_eq!(current["codex_workers"][0]["effort"], "low");
+    assert!(current["codex_workers"][0]["model_source"].as_str().unwrap().starts_with("session:"));
+    world.issue(8, &["flow:feature"]);
+    assert_selection(&launch(&world, 8, 1200), "gpt-5.5", Some("high"));
 }
 
 #[test]
