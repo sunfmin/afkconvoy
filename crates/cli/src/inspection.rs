@@ -312,6 +312,12 @@ impl As {
             As::Unbound { harness, .. } | As::Bound { harness, .. } => *harness,
         }
     }
+
+    fn model(&self) -> Option<&str> {
+        match self {
+            As::Unbound { model, .. } | As::Bound { model, .. } => model.as_deref(),
+        }
+    }
 }
 
 /// The stock consult of an unbound repo, on what the host kit names for it.
@@ -619,7 +625,14 @@ impl Inspector {
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
             let brief = checkout.write_brief(&brief)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
-            let handle = agent.start(&checkout, harness, &command, now)?;
+            let handle = agent.start_worker(
+                &checkout,
+                (harness, who.model()),
+                &command,
+                matches!(who, As::Bound { .. }),
+                None,
+                now,
+            )?;
             checkout.await_ready(&handle, agent.ready_timeout)?;
             checkout.deliver(&handle, &brief)
         })();
@@ -702,7 +715,14 @@ impl Inspector {
             let brief =
                 checkout.write_brief(&inspection::brief(&fields).map_err(|e| anyhow!(e))?)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, &hot.worker)?;
-            let handle = agent.start(&checkout, harness, &command, now)?;
+            let handle = agent.start_worker(
+                &checkout,
+                (harness, who.model()),
+                &command,
+                matches!(who, As::Bound { .. }),
+                None,
+                now,
+            )?;
             checkout.await_ready(&handle, agent.ready_timeout)?;
             checkout.deliver(&handle, &brief)
         })();
@@ -754,6 +774,7 @@ fn command(
         *harness,
         *host_user,
         &role_copy.dir,
+        &checkout.path,
         &told.told(),
         &crate::own_command().fixed(" guard").own(),
     )?;

@@ -10,6 +10,8 @@ So a worker of a bound repo is given the host user's own **skills and rules** by
 
 Nothing else of the host user's is loaded either way: no setting, hook, MCP server, plugin or extension. The guard and orca's status report stay the only hooks the fleet adds, and a role's limits are untouched.
 
+Codex effort is a later exception (sunfmin/control#22): each worker takes `model_reasoning_effort` from the host user's own Codex config at launch, independently of `host_user`; with none it takes Codex's model default. The fleet still selects the model and passes it explicitly. Each session has its own user directory, so Codex's saved `/model` preferences cannot become another worker's defaults. Other user settings remain excluded from a bound worker.
+
 ## Precedence
 
 - A skill of the role's wins over a host user's skill of the same name. Claude Code and pi do so by themselves (the role's is found first); Codex shows both, so the fleet turns the host user's off by the path of its file.

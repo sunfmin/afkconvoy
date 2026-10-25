@@ -248,6 +248,7 @@ pub(crate) fn auxiliary(
     caster: bool,
 ) -> Result<Value> {
     let cast = fleet.first()?;
+    crate::codex_launch::selected(cast.harness, cast.model.as_deref())?;
     crate::role::startable(&agent.launches, cast.harness, "worker continuation")?;
     let continued = continuing(Some(worktree), cast.harness);
     worktree.stop_for_continuation()?;
@@ -259,7 +260,18 @@ pub(crate) fn auxiliary(
     } else {
         cast.command(agent.command(cast.harness)?.as_str())
     };
-    let terminal = agent.start(worktree, cast.harness, &command, fleet.now)?;
+    let terminal = if caster {
+        agent.start(worktree, cast.harness, &command, fleet.now)?
+    } else {
+        agent.start_worker(
+            worktree,
+            (cast.harness, cast.model.as_deref()),
+            &command,
+            false,
+            None,
+            fleet.now,
+        )?
+    };
     if !caster {
         worktree.await_ready(&terminal, agent.ready_timeout)?;
         worktree.deliver(&terminal, &worktree.brief()?)?;

@@ -593,7 +593,17 @@ fn refresh_at<'a>(
     // The lock holds when a refresh was last tried, in epoch seconds.
     let lock = file.with_extension("refresh");
     let tried = || std::fs::read_to_string(&lock).ok().and_then(|text| text.trim().parse().ok());
-    if !due(written(file), tried(), now) {
+    // Command discovery used to leave Codex with no models until the daily
+    // refresh. Repair those entries without waiting a day or restarting a
+    // runner, retaining the ordinary backoff when discovery cannot answer.
+    let is_due = || {
+        let incomplete = load_at(file)
+            .ok()
+            .is_some_and(|kit| kit.held(Harness::Codex).is_some_and(|held| held.models.is_empty()));
+        due(written(file), tried(), now)
+            || (incomplete && tried().is_none_or(|at| now.saturating_sub(at) >= TRIED_AGAIN_AFTER))
+    };
+    if !is_due() {
         return Ok(None);
     }
     let held = OpenOptions::new()
@@ -610,13 +620,40 @@ fn refresh_at<'a>(
         }
     }
     // Another process may have written it again since it was found due.
-    if !due(written(file), tried(), now) {
+    if !is_due() {
         return Ok(None);
     }
     std::fs::write(&lock, now.to_string())
         .with_context(|| format!("cannot write {}", lock.display()))?;
     let current = load_at(file)?;
     let host = host()?;
+    if !due(written(file), None, now) {
+        // An early repair is only about Codex. In particular it must not
+        // normalize, drop or reorder any other command-only kit entry.
+        let found = |harness| match harness {
+            Harness::Codex => (host.found)(harness),
+            _ => Err("not part of the Codex repair".into()),
+        };
+        let only = Host { found: &found, ..host };
+        let before = Kit {
+            cast: current.cast,
+            harnesses: current.held(Harness::Codex).cloned().into_iter().collect(),
+            stock_consult: None,
+        };
+        let (mut repaired, _) = compose(&before, &only, Writing::Refresh);
+        if repaired.held(Harness::Codex).is_none_or(|held| held.models.is_empty()) {
+            return Ok(Some((current.clone(), current)));
+        }
+        crate::kit_research::research(&current, &mut repaired, now, host.research);
+        let mut kit = current.clone();
+        if let Some(held) = kit.harnesses.iter_mut().find(|held| held.harness == Harness::Codex)
+            && let Some(repaired) = repaired.held(Harness::Codex)
+        {
+            *held = repaired.clone();
+        }
+        store(file, &kit, now)?;
+        return Ok(Some((current, kit)));
+    }
     let (mut kit, _) = compose(&current, &host, Writing::Refresh);
     crate::kit_research::research(&current, &mut kit, now, host.research);
     store(file, &kit, now)?;
@@ -1556,6 +1593,65 @@ mod tests {
         assert!(!due(Some(day), Some(2 * day), 2 * day + 3599), "tried within the hour");
         assert!(due(Some(day), Some(2 * day), 2 * day + 3600));
         assert!(!due(Some(3 * day), None, day), "written after now");
+    }
+
+    #[test]
+    fn a_command_only_codex_entry_is_probed_without_waiting_for_the_daily_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kit.json");
+        let current = Kit {
+            cast: true,
+            harnesses: vec![held(Harness::Codex, "codex", &[])],
+            stock_consult: None,
+        };
+        store(&file, &current, 1000).unwrap();
+        let found = |harness| if harness == Harness::Codex { Ok(()) } else { Err("absent".into()) };
+        let listed = |_: Harness, _: &str| Ok(vec![listed("gpt-first", None)]);
+        let probe = |asked: &[Asked]| asked.iter().map(|_| Answer::Answered(1.0, None)).collect();
+        let host = || {
+            Ok(Host {
+                found: &found,
+                listed: &listed,
+                probe: &probe,
+                research: &|_, _| bail!("no research"),
+                now: 1001,
+            })
+        };
+        let (_, after) = refresh_at(&file, 1001, host).unwrap().unwrap();
+        assert!(after.cast);
+        assert_eq!(after.harnesses[0].models[0].model, "gpt-first");
+        assert!(
+            refresh_at(&file, 1002, || panic!("the repaired kit is current")).unwrap().is_none()
+        );
+    }
+
+    #[test]
+    fn an_unsuccessful_codex_repair_preserves_the_kit_and_waits_an_hour() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("kit.json");
+        let current = Kit {
+            cast: true,
+            harnesses: vec![held(Harness::Codex, "codex", &[]), held(Harness::Dsh, "dsh-tui", &[])],
+            stock_consult: None,
+        };
+        store(&file, &current, 1000).unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        let host = || {
+            Ok(Host {
+                found: &|_| Err("not answering".into()),
+                listed: &|_, _| panic!("nothing was found"),
+                probe: &|asked| {
+                    assert!(asked.is_empty());
+                    vec![]
+                },
+                research: &|_, _| panic!("no model answered"),
+                now: 1001,
+            })
+        };
+        let (before, after) = refresh_at(&file, 1001, host).unwrap().unwrap();
+        assert_eq!(before, after);
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        assert!(refresh_at(&file, 1002, || panic!("backoff")).unwrap().is_none());
     }
 
     #[test]

@@ -17,6 +17,7 @@ dependencies = [
  "serde_yaml",
  "signal-hook",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

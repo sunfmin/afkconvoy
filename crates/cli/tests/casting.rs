@@ -70,18 +70,16 @@ fn enabled_casting_has_no_choice_on_a_model_less_harness_and_reuses_labels_after
     let world = cast(&["model:haiku"]);
     world.comment(7, "Cast `model:haiku`: Small.");
     world.afk(&["kit", "--cast", "on"]).ok();
-    world.afk(&["switch", "--harness", "codex"]).ok();
+    world.kit_models("pi", &[]);
+    world.afk(&["switch", "--harness", "pi"]).ok();
     let planned = world.afk(&PLAN).ok();
     assert_eq!(planned["caster"], Value::Null);
-    assert_eq!(
-        planned["frontier"][0]["cast"],
-        json!({"harness":"codex","model":null,"why":"first"})
-    );
+    assert_eq!(planned["frontier"][0]["cast"], json!({"harness":"pi","model":null,"why":"first"}));
     assert!(planned["casting"][0]["why"].as_str().unwrap().contains("no model choice"));
     world.afk(&TICK).ok();
     let commands = started(&world);
-    assert_eq!(commands, [common::codex_line(&world, &world.worktrees()[0])]);
-    assert!(!commands[0].contains("--model"), "Codex must not inherit Claude Code's model");
+    assert_eq!(commands, [Harness::Pi.stock()]);
+    assert!(!commands[0].contains("--model"), "pi must not inherit Claude Code's model");
     world.afk(&["switch", "--harness", "claude-code"]).ok();
     world.issue(8, &["ready-for-agent", "model:haiku"]);
     world.comment(8, "Cast `model:haiku`: Small.");
@@ -201,15 +199,18 @@ fn unheld_casting_preserves_labels_and_runs_the_kit_first_without_carrying_model
 #[test]
 fn a_switch_wins_over_the_casting() {
     let world = cast(&["harness:pi", "model:a/none"]);
+    world.kit_models("codex", &["gpt-x"]);
     let switch = ["switch", "--instance", "alpha", "--host", "h1", "--now", "900"];
     world.afk(&[&switch[..], &["--all", "--harness", "codex"]].concat()).ok();
     let planned = world.afk(&PLAN).ok();
     assert_eq!(
         planned["frontier"][0]["cast"],
-        json!({"harness": "codex", "model": null, "why": "first"})
+        json!({"harness": "codex", "model": "gpt-x", "why": "first"})
     );
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [common::codex_line(&world, &world.worktrees()[0])]);
+    let commands = started(&world);
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].contains(&Harness::Codex.with_model(Harness::Codex.stock(), "gpt-x")));
 }
 
 /// Ticks as `alpha` at `now`.
@@ -325,9 +326,12 @@ fn cast_labels_each_issue_only_with_a_model_of_its_selected_harness() {
 #[test]
 fn switching_again_changes_the_kit_without_a_separate_clearable_choice() {
     let world = cast(&["harness:pi", "model:a/slow"]);
+    world.kit_models("codex", &["gpt-x"]);
     world.afk(&["switch", "--harness", "codex"]).ok();
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [common::codex_line(&world, &world.worktrees()[0])]);
+    let commands = started(&world);
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].contains(&Harness::Codex.with_model(Harness::Codex.stock(), "gpt-x")));
     let moved =
         world.afk(&["switch", "7", "--instance", "alpha", "--host", "h1", "--harness", "pi"]).ok();
     assert_eq!(moved["switched"][0]["to"], "pi");

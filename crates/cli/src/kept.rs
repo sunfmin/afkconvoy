@@ -156,11 +156,28 @@ pub fn for_worker(
     harness: Harness,
     host_user: bool,
     role_dir: &Path,
+    worktree: &Path,
     told: &afkconvoy_core::role::Told,
     guard: &str,
 ) -> Result<(String, Vec<String>)> {
-    let base = keep(harness, host_user)?;
-    worker_at(base, home(), harness, host_user, role_dir, told, guard)
+    let shared = keep(harness, host_user)?;
+    let base = if harness == Harness::Codex {
+        // /model preferences belong to this session, never another worker.
+        keep_under(
+            &crate::codex_launch::directory(worktree),
+            home().as_deref(),
+            harness,
+            host_user,
+        )?
+    } else {
+        shared
+    };
+    let (dir, shadowed) = worker_at(base, home(), harness, host_user, role_dir, told, guard)?;
+    if harness == Harness::Codex {
+        let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
+        std::fs::write(worker.note(crate::codex_launch::HOME_NOTE)?, &dir)?;
+    }
+    Ok((dir, shadowed))
 }
 
 /// `for_worker` on a host whose cache and home are named explicitly.

@@ -19,12 +19,16 @@ pub const CONFIG: &str =
 
 /// The expected Codex command in a worktree for selection and continuation
 /// tests. `codex.rs` separately checks its decoded arguments and isolation.
-pub fn codex_line(world: &World, dir: &Path) -> String {
+pub fn codex_line(_world: &World, dir: &Path) -> String {
     use afkconvoy_core::harness::Harness;
+    let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
+    let home = std::fs::read_to_string(notes.join("convoy-codex-home")).unwrap();
+    let model = std::fs::read_to_string(notes.join("convoy-worker-model")).unwrap();
+    assert!(!model.is_empty(), "Codex starts with an explicit fleet model");
     Harness::Codex.in_worktree(
-        Harness::Codex.stock(),
+        &Harness::Codex.with_model(Harness::Codex.stock(), &model),
         &dir.display().to_string(),
-        &world.cache().join("afkconvoy/harness/codex-host-user").display().to_string(),
+        &home,
     )
 }
 
@@ -1159,7 +1163,7 @@ case "$2" in
   *" --list-models")
     if [ -f "$root/shell-models" ]; then cat "$root/shell-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
-  *" debug models")
+  *" debug models"*)
     if [ -f "$root/shell-server-models" ]; then cat "$root/shell-server-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;
   *" --help")

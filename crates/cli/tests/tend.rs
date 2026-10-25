@@ -64,6 +64,37 @@ fn train_worktree(world: &World) -> PathBuf {
     world.root.join("wt/convoy-train")
 }
 
+#[test]
+fn a_codex_train_session_has_model_and_effort_evidence_in_plan_and_doctor() {
+    let world = fleet(&[7]);
+    finish(&world, 7);
+    world.hold_every_harness();
+    world.kit_models("codex", &["fleet-model"]);
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    common::write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
+    let ticked = tick(&world, "1090");
+    assert_eq!(ticked["errors"], json!([]), "{ticked}");
+    let train = train_worktree(&world);
+    let terminals = terminals(&world, &train);
+    assert_eq!(terminals.len(), 1);
+    let command = terminals[0]["command"].as_str().unwrap();
+    assert!(command.contains("--model 'fleet-model'"), "{command}");
+    assert!(command.contains("model_reasoning_effort="), "{command}");
+    for args in [
+        vec!["plan", "--instance", "alpha", "--now", "1100"],
+        vec!["doctor", "--host", "h1", "--now", "1100"],
+    ] {
+        let result = world.afk(&args);
+        let rows = result.json["codex_workers"].as_array().unwrap();
+        assert!(
+            rows.iter().any(|row| row["worktree"] == json!(train)
+                && row["model"] == "fleet-model"
+                && row["effort"] == "high"),
+            "{rows:?}"
+        );
+    }
+}
+
 /// The terminals open in a worktree.
 fn terminals(world: &World, dir: &Path) -> Vec<Value> {
     let orca = world.orca();

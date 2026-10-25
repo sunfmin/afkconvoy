@@ -5,8 +5,10 @@
 //! user's configuration out, so it is given a user directory of the fleet's
 //! own (docs/adr/0013). It writes its configuration file in that directory
 //! by itself: what the fleet says to it is said on the line that starts it,
-//! and in no file — the hooks that ask the guard and tell the worker backend
-//! among it. It loads rules from the directory it starts in and from no
+//! and in no shared file — each session's user directory is private, so a
+//! saved /model choice cannot affect a later worker. The hooks that ask the
+//! guard and tell the worker backend are said on the command too. It loads
+//! rules from the directory it starts in and from no
 //! directory added to it: a role's it is told to load from the file every
 //! harness does, and the repo's own and the team rules are said on the line
 //! too. It finds skills in directories of its own and not where a role's are:
@@ -60,6 +62,11 @@ const HELP: &str = " --help";
 /// it fetches from its server with that login and keeps a while. Not the
 /// ones it was built with (`--bundled`): those differ from an account's.
 const LIST_MODELS: &str = " debug models";
+/// The catalog also carries hundreds of kilobytes of model instructions.
+/// Keep only names before it reaches a terminal's bounded scrollback: losing
+/// the opening question mark makes a successful listing look like a timeout.
+const MODEL_NAMES: &str = " | awk '{ while (match($0, /\"slug\"[[:space:]]*:[[:space:]]*\"[^\"]+\"/)) \
+    { print substr($0, RSTART, RLENGTH); $0 = substr($0, RSTART + RLENGTH) } }'";
 /// What comes before each model's name in what Codex answers: the key of it,
 /// in the JSON it prints. A `"` inside a JSON string is written `\"`, so this
 /// is in the answer only where a key is.
@@ -386,6 +393,7 @@ pub(super) fn models_question(command: &str, kept: &str) -> String {
         .fixed(" && ")
         .launch(command)
         .fixed(LIST_MODELS)
+        .fixed(MODEL_NAMES)
         .done()
 }
 
@@ -721,9 +729,12 @@ mod tests {
 
     #[test]
     fn codex_is_asked_its_models_under_the_directory_a_worker_is_given() {
-        assert_eq!(
-            Harness::Codex.models_question("kim  --search", "/it's kept"),
-            "export CODEX_HOME='/it'\\''s kept' && kim  --search debug models"
+        let question = Harness::Codex.models_question("kim  --search", "/it's kept");
+        assert!(
+            question.starts_with(
+                "export CODEX_HOME='/it'\\''s kept' && kim  --search debug models | awk "
+            ),
+            "{question}"
         );
         assert_eq!(Harness::Codex.models(LISTED).unwrap(), ["gpt-5.5", "codex-auto-review"]);
         for nothing in ["", "{\"models\":[]}\n", "error: unrecognized subcommand 'models'\n"] {

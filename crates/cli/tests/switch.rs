@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 use common::{World, codex_line, commit, git};
 use serde_json::{Value, json};
 
+fn hold_every_harness(world: &World) {
+    world.hold_every_harness();
+    world.kit_models("codex", &["gpt-x"]);
+}
+
 #[test]
 fn switching_a_model_promotes_its_harness_and_preserves_every_entry() {
     let world = World::new();
@@ -63,7 +68,7 @@ fn an_unknown_or_ambiguous_model_leaves_the_kit_unchanged_and_names_candidates()
 #[test]
 fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() {
     let world = World::new();
-    world.hold_every_harness();
+    hold_every_harness(&world);
     world.kit_models("codex", &["gpt-x"]);
     let before: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     let other = world.second_repo();
@@ -133,7 +138,7 @@ fn blocked() -> World {
     world.issue(7, &["ready-for-agent", "bug"]);
     tick(&world, 700);
     // Every harness is held once the worker started: no caster held 7 back.
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let dir = worktree(&world, 7);
     commit(&dir, "seven.txt", "7\n");
     git(&dir, &["push", "-q", "origin", "HEAD"]);
@@ -219,6 +224,18 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
 }
 
 #[test]
+fn a_codex_successor_without_a_selected_model_does_not_end_the_existing_worker() {
+    let world = blocked();
+    world.kit_models("codex", &[]);
+    let dir = worktree(&world, 7);
+    let answer = switch(&world, "800", &["7", "--harness", "codex"]).ok();
+    let why = answer["failed"][0]["error"].as_str().unwrap();
+    assert!(why.contains("no selected Codex model"), "{why}");
+    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    assert_eq!(world.claims().len(), 1);
+}
+
+#[test]
 fn a_harness_that_cannot_be_started_is_refused_before_any_worker_is_ended() {
     let world = blocked();
     let dir = worktree(&world, 7);
@@ -240,7 +257,7 @@ fn all_moves_every_claim_of_the_instance_and_a_claim_it_does_not_hold_is_refused
     world.issue(7, &["ready-for-agent", "bug"]);
     world.issue(8, &["ready-for-agent", "bug"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
     // one worker is already gone: it is started again all the same
     world.with_orca(|orca| {
@@ -433,7 +450,7 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
     std::fs::write(world.root.join("gh2.json"), gh.to_string()).unwrap();
     tick(&world, 700);
     world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "700"]).ok();
-    world.hold_every_harness();
+    hold_every_harness(&world);
     world.say_concurrency(&world.clone, 3);
     world.say_concurrency(&other, 3);
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
@@ -469,7 +486,7 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
     world.issue(7, &["ready-for-agent", "harness:claude-code", "model:opus"]);
     world.issue(8, &["ready-for-agent", "harness:claude-code", "model:haiku"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
@@ -555,7 +572,7 @@ fn an_old_command_fault_does_not_disable_a_new_profile_configured_while_it_ran()
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let dir = worktree(&world, 7);
     world.kit_command("claude-code", "agent --new-profile");
     world.with_orca(|orca| {
@@ -575,7 +592,7 @@ fn successful_recovery_restores_priority_for_new_work_without_moving_the_success
     let world = World::new();
     world.issue(7, &["ready-for-agent"]);
     tick(&world, 700);
-    world.hold_every_harness();
+    hold_every_harness(&world);
     let dir = worktree(&world, 7);
     world.with_orca(|orca| {
         for terminal in orca["terminals"].as_array_mut().unwrap() {
