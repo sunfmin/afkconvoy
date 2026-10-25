@@ -1680,7 +1680,7 @@ fn host_once(now: u64) -> Map<String, Value> {
 /// fleet of `host` — else of the host its `run` named, else of this machine
 /// — under the network settings `proxy` names:
 ///
-///   {"host": {"host_kit", "exclusive", "inspection"}, "findings",
+///   {"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings",
 ///    "checkouts": [{"checkout", "repo", "doctor"}]}
 ///
 /// What is the host's is said once, at the top: the part of `host` that is

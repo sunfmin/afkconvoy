@@ -116,7 +116,7 @@ const LOG_ROLLS_AT: u64 = 1 << 20;
 
 /// How often the host runner looks at the file it was started from, for a
 /// newer afkconvoy installed there.
-const INSTALLED_LOOKED_EVERY: Duration = Duration::from_secs(1);
+pub(crate) const INSTALLED_LOOKED_EVERY: Duration = Duration::from_secs(1);
 
 /// How long the afkconvoy installed there has to say its version.
 const VERSION_SAID_WITHIN: Duration = Duration::from_secs(10);
