@@ -45,7 +45,7 @@ One of the two ways every ref the fleet writes is named: hidden refs (`refs/conv
 _Avoid_: namespace, fallback mode
 
 **Fleet state**:
-The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
+The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is joined, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
