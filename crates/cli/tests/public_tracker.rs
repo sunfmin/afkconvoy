@@ -7,6 +7,7 @@
 
 use crate::common;
 
+use std::process::Child;
 use std::time::{Duration, Instant};
 
 use common::World;
@@ -107,6 +108,114 @@ fn run_tracker_naming_a_private_repo_of_a_checkout_of_a_public_one_is_taken_and_
     until("the tracker's #7 is dispatched", || !world.claims().is_empty());
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(found(&doctor, "is public"), [] as [&Value; 0], "{doctor}");
+}
+
+/// Has `world`'s checkout on the host's checkout list as an older afkconvoy
+/// left it, saying no tracker.
+fn listed_untracked(world: &World) {
+    let file = world.cache().join("afkconvoy/checkouts.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let list = json!({"checkouts": [{"checkout": world.clone, "named": {"host": "h1"}}]});
+    std::fs::write(file, list.to_string()).unwrap();
+}
+
+/// Has `world`'s checkout on the host's checkout list as an older afkconvoy
+/// left it (`listed_untracked`), and that afkconvoy's host runner hold the
+/// host → it, which the next `run` moves onto this afkconvoy.
+fn listed_by_an_older_host_runner(world: &World) -> Child {
+    listed_untracked(world);
+    world.host_runner_of("0.0.1")
+}
+
+/// The lines of the host runner's log of `world`'s checkout that say a start
+/// of its fleet instance did not come to its first tick.
+fn refused_starts(world: &World) -> Vec<String> {
+    let at = world.clone.display().to_string();
+    let lines = world.runner_log().into_iter().filter(|line| {
+        ["fleet instance broken: ", "fleet instance not started: ", "checkout "]
+            .iter()
+            .any(|said| line.starts_with(&format!("{said}{at}")))
+    });
+    lines.filter(|line| !line.starts_with("checkout added: ")).collect()
+}
+
+#[test]
+fn run_tracker_that_moves_an_older_host_runner_starts_its_checkout_under_that_tracker_at_once() {
+    let world = world("public");
+    world.put_tracker(TRACKER);
+    world.with_tracker_of(TRACKER, |gh| {
+        let issue = json!({"number": 7, "title": "tracked 7", "state": "open",
+            "labels": ["ready-for-agent", MINE]});
+        gh["issues"].as_array_mut().unwrap().push(issue);
+    });
+    let mut older = listed_by_an_older_host_runner(&world);
+    let old = older.id();
+
+    // Taken at the first `run`: the host runner it starts starts the checkout
+    // from the list, and the list says the tracker by then.
+    let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
+    assert_eq!(ran["host_runner"]["replaced"], json!({"pid": old, "version": "0.0.1"}), "{ran}");
+    assert!(older.wait().unwrap().success());
+    assert_eq!(ran["added"], false, "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(world.checkout_list()["checkouts"][0]["tracker"], TRACKER);
+
+    // Never started under the entry it had: no start of it was refused.
+    assert_eq!(refused_starts(&world), [] as [String; 0]);
+    until("the tracker's #7 is dispatched", || !world.claims().is_empty());
+}
+
+#[test]
+fn run_tracker_that_starts_the_host_runner_starts_its_listed_checkout_under_that_tracker_at_once() {
+    let world = world("public");
+    world.put_tracker(TRACKER);
+    listed_untracked(&world);
+
+    let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
+    assert_eq!(ran["host_runner"]["started"], true, "{ran}");
+    assert_eq!(ran["host_runner"]["replaced"], Value::Null, "{ran}");
+    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(refused_starts(&world), [] as [String; 0]);
+}
+
+#[test]
+fn a_listed_checkout_of_a_public_repo_a_move_starts_is_refused_and_stays_on_the_list_broken() {
+    let world = world("public");
+    let mut older = listed_by_an_older_host_runner(&world);
+
+    // The `run` that moves the older host runner asks for the checkout, as
+    // that host runner's next one starts it from the list: refused, with the
+    // line that fixes it, and still on the list.
+    let refused = world.afk(&RUN);
+    assert_eq!(refused.code, 1, "{}", refused.json);
+    assert!(older.wait().unwrap().success());
+    let error = refused.json["error"].as_str().unwrap();
+    assert!(refuses(&world, error, "acme/dev"), "{error}");
+    let stays = "its checkout stays on the checkout list, and its fleet instance is broken";
+    assert!(error.contains(stays), "{error}");
+    let listed = world.checkout_list()["checkouts"].clone();
+    assert_eq!(listed, json!([{"checkout": world.clone, "named": {"host": "h1"}}]));
+    let removed =
+        world.runner_log().into_iter().filter(|line| line.starts_with("checkout removed"));
+    assert_eq!(removed.collect::<Vec<_>>(), [] as [String; 0]);
+
+    // Broken, as one whose tracker is made public: `doctor` says why, with
+    // the line that fixes it.
+    let checkouts = world.afk(&["checkouts"]).ok();
+    assert_eq!(checkouts["checkouts"][0]["state"], "broken", "{checkouts}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let broken = found(&doctor, "is broken");
+    assert_eq!(broken.len(), 1, "{doctor}");
+    assert!(refuses(&world, broken[0]["what"].as_str().unwrap(), "acme/dev"), "{doctor}");
+    assert_eq!(broken[0]["fix"], json!(fix(&world)), "{doctor}");
+    let public = found(&doctor, "is public: its fleet instance works nothing");
+    assert_eq!(public.len(), 1, "{doctor}");
+
+    // And that line starts it at once.
+    world.put_tracker(TRACKER);
+    let ran = world.afk(&[&RUN[..], &["--tracker", TRACKER]].concat()).ok();
+    assert_eq!(ran["tracker"], json!({"from": null, "to": TRACKER}), "{ran}");
+    assert_eq!(ran["added"], false, "{ran}");
 }
 
 #[test]
