@@ -832,6 +832,8 @@ fn cast_labels_the_trackers_issue_and_says_why_there() {
     let world = world();
     world.hold_every_harness();
     world.kit_models("pi", &["a/fast", "a/slow"]);
+    world.afk(&["switch", "--harness", "pi"]).ok();
+    world.afk(&["kit", "--cast", "on"]).ok();
     tracker_issue(&world, 7, &["ready-for-agent", MINE]);
     world.issue(7, &["ready-for-agent"]);
     let own = world.gh()["issues"].clone();
@@ -845,10 +847,7 @@ fn cast_labels_the_trackers_issue_and_says_why_there() {
         "{answered}"
     );
     let tracker = world.tracker();
-    assert_eq!(
-        issue_of(&tracker, 7)["labels"],
-        json!(["ready-for-agent", MINE, "harness:pi", "model:a/fast"])
-    );
+    assert_eq!(issue_of(&tracker, 7)["labels"], json!(["ready-for-agent", MINE, "model:a/fast"]));
     assert!(comments_of(&tracker, 7).join("\n").contains("A one-line fix."), "{tracker}");
     assert_eq!(world.gh()["issues"], own);
     assert_eq!(world.gh()["comments"], json!({}));
