@@ -298,6 +298,42 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
     line.fixed(" ").fixed(USER_DIR).fixed("=").word(start.kept)
 }
 
+/// Starts Codex outside a role, with the same trust and session isolation
+/// as a role's worker. Repo rules load from the working directory itself;
+/// there is no role, team, stage or guard to add.
+pub(super) fn in_worktree(command: &str, worktree: &str, kept: &str) -> String {
+    let line = Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(command);
+    let line = trust(line, worktree).fixed(" ").fixed(CONFIG).fixed(" ").word(&rules_files());
+    isolated(line).done()
+}
+
+/// Answers both questions Codex would otherwise ask before loading the
+/// directory's own configuration. Adding this never adds a launch command.
+#[spec(fn(Line[@l], &str) -> Line[l])]
+fn trust(line: Line, dir: &str) -> Line {
+    line.fixed(" ").fixed(HOOKS_REVIEWED).fixed(" ").fixed(CONFIG).fixed(" ").word(&trusted(dir))
+}
+
+/// Keeps a worker's session from carrying memories to another worker, or
+/// adding bundled skills. Adding this never adds a launch command.
+#[spec(fn(Line[@l]) -> Line[l])]
+fn isolated(line: Line) -> Line {
+    line.fixed(" ")
+        .fixed(CONFIG)
+        .fixed(" ")
+        .fixed(NO_MEMORY)
+        .fixed(" ")
+        .fixed(CONFIG)
+        .fixed(" ")
+        .fixed(NO_CARRIED_SKILLS)
+}
+
 /// `line`, which starts the worker launch command, with what Codex is given
 /// to put a worker in its role: the worktree added, the review of its hooks
 /// and the question about its role's directory answered, the role's rules
@@ -306,17 +342,8 @@ pub(super) fn environment(line: Line, start: &Start) -> Line {
 /// user's a role's stands for, and the stage's model.
 #[spec(fn(Line[@l], &Start) -> Line[l])]
 pub(super) fn added(line: Line, start: &Start) -> Line {
-    let line = line
-        .fixed(" ")
-        .fixed(ADD_DIR)
-        .fixed(" ")
-        .word(start.worktree)
-        .fixed(" ")
-        .fixed(HOOKS_REVIEWED)
-        .fixed(" ")
-        .fixed(CONFIG)
-        .fixed(" ")
-        .word(&trusted(start.role_dir))
+    let line = line.fixed(" ").fixed(ADD_DIR).fixed(" ").word(start.worktree);
+    let line = trust(line, start.role_dir)
         .fixed(" ")
         .fixed(CONFIG)
         .fixed(" ")
@@ -329,19 +356,8 @@ pub(super) fn added(line: Line, start: &Start) -> Line {
         Some(told) => line.fixed(" ").fixed(CONFIG).fixed(" ").word(&told),
         None => line,
     };
-    let line = line
-        .fixed(" ")
-        .fixed(CONFIG)
-        .fixed(" ")
-        .word(&added_hooks(start.guard, REPORT))
-        .fixed(" ")
-        .fixed(CONFIG)
-        .fixed(" ")
-        .fixed(NO_MEMORY)
-        .fixed(" ")
-        .fixed(CONFIG)
-        .fixed(" ")
-        .fixed(NO_CARRIED_SKILLS);
+    let line =
+        isolated(line.fixed(" ").fixed(CONFIG).fixed(" ").word(&added_hooks(start.guard, REPORT)));
     let line = match turned_off(start.shadowed) {
         Some(off) => line.fixed(" ").fixed(CONFIG).fixed(" ").word(&off),
         None => line,

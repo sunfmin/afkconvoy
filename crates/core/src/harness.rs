@@ -391,6 +391,16 @@ impl Harness {
         }
     }
 
+    /// Starts a worker in its worktree, outside a role. Codex still needs
+    /// its own user directory and the worktree trusted before it starts;
+    /// the other harnesses keep their opaque launch commands.
+    pub fn in_worktree(self, command: &str, worktree: &str, kept: &str) -> String {
+        match self {
+            Harness::Codex => codex::in_worktree(command, worktree, kept),
+            _ => command.to_string(),
+        }
+    }
+
     /// The line a terminal opened on the issue's worktree runs to start a
     /// worker of this harness in its role with the worker launch command
     /// `command`: change to the role's copy, put the stage's facts and this

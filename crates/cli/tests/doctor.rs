@@ -383,7 +383,7 @@ fn a_worker_that_fails_to_start_is_a_finding_after_one_tick() {
         let answer = doctor(&world, "1000").json;
         let failures = found(&answer, "`dispatch #3` failed");
         assert_eq!(failures.len(), 1, "{knob}: {answer}");
-        assert_eq!(failures[0]["fix"], "afkconvoy dispatch 3 --instance alpha");
+        assert_eq!(failures[0]["fix"], "afkconvoy dispatch --issue 3 --instance alpha");
         assert_eq!(failures[0]["evidence"], answer["fleet"]["failed_steps"][0]["error"]);
     }
 }

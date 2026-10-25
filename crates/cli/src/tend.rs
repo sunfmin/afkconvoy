@@ -82,7 +82,7 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
             // the host kit's first.
             let first = fleet.first()?;
             let launch = agent.command(first.harness)?;
-            let terminal = agent.start(
+            let terminal = agent.start_in_worktree(
                 &worktree,
                 first.harness,
                 &first.command(launch.as_str()),
