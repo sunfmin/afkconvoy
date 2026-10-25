@@ -138,13 +138,43 @@ pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
 /// what is done next: as the entry of `repo` itself says it, or of its main
 /// checkout, which every worktree of it shares — a worker's command acts on
 /// the issues its fleet does. One the list holds no entry of, or whose entry
-/// says none, is its own repo's.
+/// says none, is its own repo's. Another repo's issues are the checkout's
+/// by its repo label, which names the repo its remote names (`named_repo`).
 pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
+    match said_tracker(list, repo)? {
+        None => Ok(Tracker::Own),
+        Some(tracker) => Ok(Tracker::Other { tracker, repo: named_repo(repo)? }),
+    }
+}
+
+/// The tracker the checkout `repo` says on the host of `list`, with its
+/// entry or its main checkout's: none, and it is its own repo.
+pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<RepoName>> {
     let listed = list.read()?;
     let main = repo.main_checkout()?;
     let of = |entry: &Entry| entry.checkout == repo.dir || entry.checkout == main;
-    let entry = listed.checkouts.into_iter().find(of);
-    Ok(entry.and_then(|entry| entry.tracker).map_or(Tracker::Own, Tracker::Other))
+    Ok(listed.checkouts.into_iter().find(of).and_then(|entry| entry.tracker))
+}
+
+/// The repo the checkout `repo` is of, as GitHub names it, `owner/name`:
+/// what its remote `origin` is set to (`checkouts::repo_of`), in lower case,
+/// before any `insteadOf` of git's config rewrites it. An error where that
+/// names no repo of a host of git — a path on this one.
+pub fn named_repo(repo: &Repo) -> Result<RepoName> {
+    let set = repo.try_git(&["config", "--get", &format!("remote.{REMOTE}.url")])?;
+    let url = set.stdout.trim();
+    let named = checkouts::repo_of(url).and_then(|repo| {
+        let (_, path) = repo.split_once('/')?;
+        RepoName::read(path)
+    });
+    named.ok_or_else(|| {
+        anyhow::anyhow!(
+            "the remote `{REMOTE}` of {} is {url:?}, which names no repo on GitHub: in another \
+             repo its issues carry its repo label, `repo:<owner>/<repo>`, which names the repo \
+             its remote does",
+            repo.dir.display()
+        )
+    })
 }
 
 /// The repo the checkout `repo` is of, as its remote `origin` names it
@@ -269,10 +299,14 @@ mod tests {
         };
         git(&["init", "--quiet", "w"]);
         git(&["-C", "w", "commit", "--quiet", "--allow-empty", "-m", "initial"]);
+        git(&["-C", "w", "remote", "add", "origin", "git@github.com:Acme/Dev.git"]);
         git(&["-C", "w", "worktree", "add", "--quiet", "../wt"]);
         let (checkout, worktree) = (Repo::new(root.join("w")), Repo::new(root.join("wt")));
         let list = List::at(root.join(FILE));
-        let other = Tracker::Other(RepoName::read("acme/tracker").unwrap());
+        let other = Tracker::Other {
+            tracker: RepoName::read("acme/tracker").unwrap(),
+            repo: RepoName::read("acme/dev").unwrap(),
+        };
 
         // none on the list, or none said: its own repo
         assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own);

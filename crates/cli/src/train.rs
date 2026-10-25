@@ -11,7 +11,7 @@ use afkconvoy_core::train::{
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::gh::GitHub;
+use crate::gh::{GitHub, Tracker};
 use crate::git::{Listing, REMOTE, Repo};
 use crate::lock::standing_locks;
 
@@ -52,18 +52,19 @@ impl Train {
     }
 
     /// The joinings on the train that the base branch does not hold yet,
-    /// oldest first.
-    pub fn joins(&self, repo: &Repo) -> Result<Vec<Joined>> {
+    /// oldest first, as the fleet whose tracker is `tracker` reads them.
+    pub fn joins(&self, repo: &Repo, tracker: &Tracker) -> Result<Vec<Joined>> {
         if self.tip == self.base {
             return Ok(vec![]);
         }
-        joins_in(repo, &[&format!("{}..{}", self.base, self.tip)])
+        joins_in(repo, tracker, &[&format!("{}..{}", self.base, self.tip)])
     }
 }
 
-/// The joinings among the commits `revs` selects, oldest first. Whatever
-/// narrows the walk (`--grep`) never decides what a commit is.
-pub fn joins_in(repo: &Repo, revs: &[&str]) -> Result<Vec<Joined>> {
+/// The joinings among the commits `revs` selects, oldest first, as the fleet
+/// whose tracker is `tracker` reads them. Whatever narrows the walk
+/// (`--grep`) never decides what a commit is.
+pub fn joins_in(repo: &Repo, tracker: &Tracker, revs: &[&str]) -> Result<Vec<Joined>> {
     let mut args = vec!["log", "--reverse", "--merges", "--format=%H%x09%P%x09%B%x00"];
     args.extend(revs);
     let log = repo.git_raw(&args)?;
@@ -74,7 +75,7 @@ pub fn joins_in(repo: &Repo, revs: &[&str]) -> Result<Vec<Joined>> {
             Some(Logged { sha: parts.next()?, parents: parts.next()?, message: parts.next()? })
         })
         .collect();
-    Ok(read_joins(&commits))
+    Ok(read_joins(&commits, tracker))
 }
 
 /// The files a merge in progress in a worktree has left conflicted.
@@ -184,7 +185,7 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, issue: u64, now: u64) -> 
     if keeps_off(&locks, issue) {
         return Ok(locked(answer, &locks));
     }
-    join(repo, config, pr, &Of::Issue(issue), answer, now)
+    join(repo, config, &gh.tracker, pr, &Of::Issue(issue), answer, now)
 }
 
 /// `answer`, with the `locked` outcome the standing `locks` give it.
@@ -201,7 +202,8 @@ pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
 }
 
 /// Puts `pr`, whose branch is checked out in the worktree `repo`, on the
-/// landing train, its join commit naming whose it is (`of`) → `answer` with
+/// landing train, its join commit naming whose it is (`of`), an issue as the
+/// repo names one of `tracker`'s → `answer` with
 /// the outcome: `joined`, `conflict`, or `merged` when the base branch
 /// already holds the PR's head. No gate runs here: the train's own worker
 /// gates the train and lands it.
@@ -212,6 +214,7 @@ pub fn locked(mut answer: Value, locks: &[u64]) -> Value {
 pub fn join(
     repo: &Repo,
     config: &Config,
+    tracker: &Tracker,
     pr: &PullRequest,
     of: &Of,
     mut answer: Value,
@@ -253,12 +256,12 @@ pub fn join(
                             format!("this PR's head is already on {} — stop", config.base_branch);
                         return Ok(stop("merged", json!({"head": head, "detail": detail})));
                     }
-                    let joins = train.joins(repo)?;
+                    let joins = train.joins(repo, tracker)?;
                     let current = [pr.at_head(&head)];
                     if let Some(on) = on_train(&joins, &current).first() {
                         return Ok(stop("joined", joined(&head, &on.commit, true)));
                     }
-                    let message = join_message(&pr.title, pr.number, of);
+                    let message = join_message(&pr.title, pr.number, of, tracker);
                     commit = merged_onto(repo, &train.tip, &head, &message, now)?;
                     if commit.is_none() {
                         let files = merge_in(repo, &train.tip, "the landing train")?;
@@ -302,6 +305,7 @@ pub fn join(
 pub fn join_again(
     repo: &Repo,
     config: &Config,
+    tracker: &Tracker,
     pr: &PullRequest,
     of: &Of,
     now: u64,
@@ -313,11 +317,11 @@ pub fn join_again(
     for _ in 0..PUSH_TRIES {
         let train = Train::read(repo, config)?;
         if repo.within(&head, &train.base)?
-            || !on_train(&train.joins(repo)?, &[pr.at_head(&head)]).is_empty()
+            || !on_train(&train.joins(repo, tracker)?, &[pr.at_head(&head)]).is_empty()
         {
             return Ok(true);
         }
-        let message = join_message(&pr.title, pr.number, of);
+        let message = join_message(&pr.title, pr.number, of, tracker);
         let Some(commit) = merged_onto(repo, &train.tip, &head, &message, now)? else {
             return Ok(false);
         };

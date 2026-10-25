@@ -7,7 +7,6 @@ use serde::Serialize;
 
 use crate::admission::Hold;
 use crate::claims::{Claim, InstanceId};
-use crate::closing::issues_closed_by;
 use crate::config::Config;
 use crate::lease::is_stale;
 use crate::lock;
@@ -36,7 +35,7 @@ pub struct PullRequest {
     pub title: String,
     pub head_branch: String,
     pub head_sha: String,
-    /// The issues it closes (`PullRequest::closing`).
+    /// The issues of the fleet's tracker it closes (`Tracker::closed_by`).
     pub closes: Vec<u64>,
 }
 
@@ -44,11 +43,6 @@ impl PullRequest {
     /// This PR as it is once its branch is at `head`.
     pub fn at_head(&self, head: &str) -> PullRequest {
         PullRequest { head_sha: head.to_string(), ..self.clone() }
-    }
-
-    /// The issues a PR closes, from the ones GitHub linked and its body.
-    pub fn closing(body: &str, linked: &[u64]) -> Vec<u64> {
-        issues_closed_by(body, linked)
     }
 }
 

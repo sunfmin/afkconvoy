@@ -1399,7 +1399,7 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
         .iter()
         .map(|&issue| OnGone {
             issue,
-            claim_ref: claim_ref(fleet.repo.layout(), issue),
+            claim_ref: claim_ref(fleet.repo.layout(), &fleet.scan.tracker, issue),
             holder: fleet
                 .scan
                 .claim_of(issue)

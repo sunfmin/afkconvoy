@@ -7,23 +7,29 @@ use afkconvoy_core::plan::{PullRequest, closing_pr};
 use afkconvoy_core::settle::{
     Follow, SettleStep, cut_landing, follow, landed_comment, settle_steps,
 };
-use afkconvoy_core::train::Joined;
+use afkconvoy_core::train::{Joined, closes_grep};
 use anyhow::{Result, bail};
 
 use crate::board::last_word;
 use crate::claims::{Me, release};
 use crate::fleet::Fleet;
+use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
 use crate::orca::{Source, Worktree};
 use crate::recovery::own_heads;
 use crate::train::joins_in;
 
-/// The joining on the base branch that landed `issue` — the newest merge
-/// commit there a PR joined a train with that closes it — and when it was
-/// made. A later commit that only says `Closes #n` is not one.
-fn landing_of(repo: &Repo, base_tip: &str, issue: u64) -> Result<Option<(Joined, u64)>> {
-    let grep = format!("--grep=^Closes #{issue}$");
-    let joins = joins_in(repo, &["-E", &grep, base_tip])?;
+/// The joining on the base branch that landed `issue` of `tracker` — the
+/// newest merge commit there a PR joined a train with that closes it — and
+/// when it was made. A later commit that only says `Closes #n` is not one.
+fn landing_of(
+    repo: &Repo,
+    tracker: &Tracker,
+    base_tip: &str,
+    issue: u64,
+) -> Result<Option<(Joined, u64)>> {
+    let grep = format!("--grep={}", closes_grep(tracker, issue));
+    let joins = joins_in(repo, tracker, &["-E", "-i", &grep, base_tip])?;
     let Some(join) = joins.into_iter().rfind(|join| join.issue() == Some(issue)) else {
         return Ok(None);
     };
@@ -31,15 +37,17 @@ fn landing_of(repo: &Repo, base_tip: &str, issue: u64) -> Result<Option<(Joined,
     Ok(Some((join, at)))
 }
 
-/// The landing that put the still-open issue of `claim` on the base branch,
-/// when there is one and it is this claim's (`cut_landing`).
+/// The landing that put the still-open issue of `claim`, of `tracker`, on
+/// the base branch, when there is one and it is this claim's
+/// (`cut_landing`).
 pub fn cut_landing_of(
     repo: &Repo,
+    tracker: &Tracker,
     base_tip: &str,
     claim: &Claim,
     open: &[PullRequest],
 ) -> Result<Option<Joined>> {
-    let Some((join, at)) = landing_of(repo, base_tip, claim.number)? else {
+    let Some((join, at)) = landing_of(repo, tracker, base_tip, claim.number)? else {
         return Ok(None);
     };
     let claimed_at = claim.since;
@@ -89,7 +97,9 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
                 let open = fleet.gh.open_prs()?;
                 let claim = fleet.scan.claim_of(issue);
                 let landed = match claim {
-                    Some(claim) => cut_landing_of(&fleet.repo, &base_tip, claim, &open)?,
+                    Some(claim) => {
+                        cut_landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, claim, &open)?
+                    }
                     None => None,
                 };
                 if landed.is_none() {
@@ -100,7 +110,7 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
             SettleStep::ClosePr => {
                 // The base branch itself is asked: a PR whose join commit is not on it is left alone.
                 let open = fleet.gh.open_prs()?;
-                let landing = landing_of(&fleet.repo, &base_tip, issue)?;
+                let landing = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?;
                 if let (Some(pr), Some((join, _))) = (closing_pr(&open, issue), landing)
                     && pr.number == join.pr
                 {
@@ -138,7 +148,7 @@ pub fn settle(fleet: &mut Fleet, me: &Me, issue: u64) -> Result<()> {
             }
             SettleStep::Board => {
                 // The base branch itself says whether the work landed.
-                let landed = landing_of(&fleet.repo, &base_tip, issue)?;
+                let landed = landing_of(&fleet.repo, &fleet.gh.tracker, &base_tip, issue)?;
                 let (stage, pr) = match landed {
                     Some((join, _)) => (Stage::Merged, Some(join.pr)),
                     None => (Stage::Closed, None),
