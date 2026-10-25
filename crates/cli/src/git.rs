@@ -205,17 +205,23 @@ impl Repo {
             .collect())
     }
 
-    /// The tip of the branch `base_branch` and every ref the fleet keeps, as
-    /// ONE listing of the remote saw them: what a rebuild reads of the remote,
-    /// all of it from one moment.
+    /// The tip of the branch `base_branch`, every version tag and every ref
+    /// the fleet keeps, as ONE listing of the remote saw them: what a rebuild
+    /// reads of the remote, all of it from one moment.
     pub fn listing(&self, base_branch: &str) -> Result<Listing> {
         let (every, base_ref) = (self.layout().every(""), format!("refs/heads/{base_branch}"));
-        let mut records = self.listed(&[&every, &base_ref])?;
+        let mut records = self.listed(&[&every, &base_ref, TAGS])?;
         let base = records.iter().find(|record| record.name == base_ref);
         let base = base.map(|record| record.sha.clone());
-        records.retain(|record| record.name != base_ref);
+        let tags = tags_of(&records);
+        records.retain(|record| record.name.starts_with(every.trim_end_matches('*')));
         self.read_records(&mut records, &every)?;
-        Ok(Listing { base_ref, base, records })
+        Ok(Listing { base_ref, base, records, tags })
+    }
+
+    /// Every version tag the remote has, each with the commit it is on.
+    pub fn remote_tags(&self) -> Result<Vec<(String, String)>> {
+        Ok(tags_of(&self.listed(&[TAGS])?))
     }
 
     /// Every branch the remote has, by its short name. An error when the
@@ -302,6 +308,9 @@ pub struct Listing {
     pub base: Option<String>,
     /// Every ref of the fleet, with the record its commit carries.
     pub records: Vec<RemoteRecord>,
+    /// Every tag whose name starts `v` — a version tag, where it names one
+    /// (`cut::Version::tagged`) — each with the commit it is on.
+    pub tags: Vec<(String, String)>,
 }
 
 impl Listing {
@@ -310,6 +319,29 @@ impl Listing {
         let found = self.records.iter().find(|record| record.name == refname);
         found.map(|record| record.sha.as_str())
     }
+}
+
+/// What a listing of the remote's version tags asks for: every tag whose
+/// name starts `v`.
+const TAGS: &str = "refs/tags/v*";
+
+/// The tags among `listed`, each by its name with the commit it is on: an
+/// annotated tag's is listed once more, peeled (`<tag>^{}`), and that one is
+/// taken.
+fn tags_of(listed: &[RemoteRecord]) -> Vec<(String, String)> {
+    let tag = |name: &str| name.strip_prefix("refs/tags/").map(str::to_string);
+    let mut tags: Vec<(String, String)> = listed
+        .iter()
+        .filter(|listed| !listed.name.ends_with("^{}"))
+        .filter_map(|listed| Some((tag(&listed.name)?, listed.sha.clone())))
+        .collect();
+    for (name, commit) in &mut tags {
+        let peeled = format!("refs/tags/{name}^{{}}");
+        if let Some(peeled) = listed.iter().find(|listed| listed.name == peeled) {
+            commit.clone_from(&peeled.sha);
+        }
+    }
+    tags
 }
 
 const RECORD_IDENTITY: [(&str, &str); 4] = [
@@ -334,4 +366,26 @@ fn run(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ran> {
         stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_annotated_tag_is_on_the_commit_it_peels_to() {
+        let listed = |name: &str, sha: &str| RemoteRecord {
+            name: name.to_string(),
+            sha: sha.to_string(),
+            subject: String::new(),
+        };
+        let tags = tags_of(&[
+            listed("refs/tags/v0.5.15", "c15"),
+            listed("refs/tags/v0.5.16", "t16"),
+            listed("refs/tags/v0.5.16^{}", "c16"),
+            listed("refs/heads/main", "m"),
+        ]);
+        let named = |name: &str, commit: &str| (name.to_string(), commit.to_string());
+        assert_eq!(tags, [named("v0.5.15", "c15"), named("v0.5.16", "c16")]);
+    }
 }

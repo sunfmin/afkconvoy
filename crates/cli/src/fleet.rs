@@ -15,7 +15,7 @@ use afkconvoy_core::position::Position;
 use afkconvoy_core::stock;
 use afkconvoy_core::stopped::standing_verdict;
 use afkconvoy_core::team::{Consult, Role, Team, Workflow};
-use afkconvoy_core::train::{Built, on_train};
+use afkconvoy_core::train::{Built, Of, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
 use anyhow::{Context, Result, anyhow};
@@ -65,6 +65,9 @@ pub struct Fleet {
     /// What this machine's train's worktree held when this view cut it again:
     /// what a tick's line says of it.
     pub cut_train: Option<Built>,
+    /// What this view's start and end of a cut said: what a tick's line says
+    /// of them, and its log keeps.
+    pub cut_said: Vec<crate::log::What>,
 }
 
 /// Why no worker of a role can be started on this host: it holds limits for
@@ -109,6 +112,7 @@ impl Fleet {
             unread: vec![],
             closers: vec![],
             cut_train: None,
+            cut_said: vec![],
         })
     }
 
@@ -226,6 +230,12 @@ impl Fleet {
         self.cast(&[], false)?.map_err(|why| anyhow!("{why}: run `afkconvoy kit`"))
     }
 
+    /// Every version tag the remote had when this view was opened, each with
+    /// the commit it is on.
+    pub fn version_tags(&self) -> &[(String, String)] {
+        &self.listing.tags
+    }
+
     /// The base branch's tip on the remote, its commits in this repo.
     pub fn base_tip(&self) -> Result<String> {
         let branch = &self.config.base_branch;
@@ -276,8 +286,11 @@ impl Fleet {
         }
         let riding = on_train(&joins, prs);
         let joined: Vec<u64> = riding.iter().filter_map(|join| join.issue()).collect();
-        let inspections: Vec<u64> =
-            riding.iter().filter(|join| join.issue().is_none()).map(|join| join.pr).collect();
+        let inspections: Vec<u64> = riding
+            .iter()
+            .filter(|join| matches!(join.of, Of::Inspection(_)))
+            .map(|join| join.pr)
+            .collect();
         // A PR is the fleet's own when its branch is one recorded on the issue.
         let mut kept = vec![];
         for issue in issues {
@@ -303,6 +316,7 @@ impl Fleet {
         let consults = self.stock_consults(open);
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
+        let cut = crate::cut::seen(self, &stages, issues, &riding, &train.base)?;
         let seen = Observed {
             issues,
             prs,
@@ -326,6 +340,7 @@ impl Fleet {
             idle_train: if train.tip == train.base { self.train_built() } else { None },
             consults: &consults,
             inspections: &inspections,
+            cut: Some(&cut),
         };
         let mut set = assemble(&seen, me, self.now, &self.config);
         match self.config.bound {

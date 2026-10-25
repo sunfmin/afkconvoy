@@ -39,6 +39,7 @@ pub mod claims;
 pub mod concurrency;
 pub mod config;
 pub mod copies;
+pub mod cut;
 pub mod dispatch;
 pub mod doctor;
 pub mod draft;
@@ -2291,6 +2292,82 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
+    /// Take the steps of a cut: set the version, land it, tag it, publish and install it (a cut's command)
+    ///
+    /// ## When to run it
+    ///
+    /// The fleet runs it: a tick that ends idle starts a cut in a repo that turns cutting on, once its base branch holds landed commits past its newest version tag, and runs this in the cut's terminal. Nothing else starts one: no flag, no command, no schedule.
+    ///
+    /// A human runs it with `--from <step>` once, after a cut failed, to go on from the step that failed: the issue the failure opened gives the exact line, in the checkout the cut kept.
+    ///
+    /// ## Who runs it
+    ///
+    /// A cut, in its own checkout (`afkconvoy-cut`), which the tick that started it cut from the base branch as it stood; a human, there, after a failure. Run anywhere else it is refused.
+    ///
+    /// A cut is a worker in no role, started the way an inspection is: its own checkout, the bounds of any unattended worker, a time limit. It is this command, not a model session: its steps are known, each is timed, and a failure names its step. It takes no slot of the concurrency, and keeps the host awake while it runs (`afkconvoy run --help`, host sleep).
+    ///
+    /// ## Turning it on
+    ///
+    /// A repo turns cutting on by naming its cut steps in its config file, {const:CONFIG_FILE}, in a block of their own opened by the line ```yaml cut — never in the ```yaml block of the config, which an older afkconvoy reads with every key known to it, and refuses a key it does not know. An older afkconvoy reads only that first block, and reads past this one.
+    ///
+    /// ~~~markdown
+    /// ```yaml cut
+    /// set: ./packaging/set-version.sh "$VERSION"
+    /// publish: |
+    ///   ./packaging/release.sh publish "$VERSION"
+    ///   brew upgrade acme/tap/widget
+    /// ```
+    /// ~~~
+    ///
+    /// Both keys are required, and nothing else is read. Each is run by `sh` in the cut's checkout with the version, `0.5.17`, in `$VERSION`; what it prints goes to the cut's log, in the checkout's git dir (`convoy-cut.log`). A repo whose file has no such block turns cutting off: nothing is cut. `afkconvoy config` answers the steps as `cut`, and `afkconvoy plan` says where the cut stands.
+    ///
+    /// ## What it does
+    ///
+    /// The version: the next patch past the newest version tag — a tag `v` and three numbers, `v0.5.16` — or the next minor, its patch 0, where a PR that landed since carries the label `{const:CUT_MINOR_LABEL}`. The tick that starts the cut picks it, from the tags as they are then, and keeps it in the checkout with the PRs the cut holds: those the base branch's landings past the tag name.
+    ///
+    /// Its steps, in order, each timed:
+    ///
+    /// 1. `set` — runs the `set` lines on the base branch as it stood, and commits what they changed, titled `<repo> <version>`. Lines that change nothing find the version set: by a cut whose end was cut short after its PR landed. Where a cut's PR of that title landed past the tag, that landing is the one tagged, and the steps up to `tag` are passed by; else it fails.
+    /// 2. `pr` — pushes the commit to a branch of its own, `afkconvoy-cut/v<version>-<started>`, and opens its PR.
+    /// 3. `gate` — gates it, the landing train merged in (`afkconvoy gate --train`): green, and on record.
+    /// 4. `land` — joins its PR to the landing train on no issue, as an inspection's change joins it: its join commit says `By a cut on <host>`. It waits for the train to land it, looking every 30 seconds, and joins it again whenever it is off the train and not landed — a train given up joins it again by itself where it can. A fleet lock standing, or a conflict with the train, fails it.
+    /// 5. `tag` — tags the commit that landed it `v<version>` (annotated), and pushes the tag. The PRs it holds are read again, up to that commit.
+    /// 6. `publish` — with the tag checked out, runs the `publish` lines.
+    ///
+    /// It merges nothing outside the landing train and pushes nothing to the base branch: its own branch, the train's line through `land`, and the tag.
+    ///
+    /// ## What it reads and writes
+    ///
+    /// It keeps the cut's record in the checkout's git dir (`convoy-cut.json`): the version, the tag it is cut past, the PRs it holds, its PR, where it landed, the step it is at, and each step it took with its seconds — and, where one failed, which and why. The tick reads it, and ends the cut once it says it took every step or failed at one, once its terminal is gone, or once its time ran out: two gate limits (`gate_seconds`) and an hour beside — three hours at the default.
+    ///
+    /// A cut that took every step is a line of the tick log — `cut v0.5.17 (past v0.5.16, holding #451, #452) · its PR #470 · landed as 0123456789 · set 3s, pr 2s, gate 270s, land 610s, tag 1s, publish 95s` — `afkconvoy doctor` lists it among its events, and the panel shows it; its checkout is removed.
+    ///
+    /// A cut that failed, ran out of time or was ended from outside opens one issue under the escalate label, titled `afkconvoy: the cut of v<version> failed`: which step failed, why, what it did before, and the line that goes on from there. The tick log, `doctor` and the panel say it too. Its checkout is kept, its terminal closed. No cut starts while that issue is open (`afkconvoy help humans`).
+    ///
+    /// With `--from <step>` it takes that step and those after it, the record kept as it was; without, the step after the last it took. Once it took its last, it closes the open issue that said this version's cut failed.
+    ///
+    /// ## What it answers
+    ///
+    /// {"version", "tag", "prs", "pr", "landed", "took", "closed", "said"} — the cut took every step: `took` is each step with its seconds, `closed` the issues it closed. {"version", "failed", "why", "said", "log"} — it failed at the step `failed`.
+    ///
+    /// Errors: the checkout is no cut's, or keeps no cut's record; the repo names no cut steps; `--from` names no step.
+    ///
+    /// ## What trips you up
+    ///
+    /// - One cut runs at a time across a repo's hosts: it is claimed on the remote as a patrol's run is, and the tick that claims it reads the version tags again. A peer's that went silent is unclaimed by the next tick, and a new one starts when the fleet is idle again.
+    /// - A cut that ran out of time at `land` leaves its PR on the train, which may still land it: the next cut finds the version set, and tags that landing.
+    /// - The cut's commit is made in the checkout's name, by its git config: a repo whose base branch is protected against pushes is as good as any other here, for the cut pushes nothing to it.
+    #[command(next_help_heading = WORKER, verbatim_doc_comment)]
+    Cut {
+        /// Go on from this step: set, pr, gate, land, tag or publish [default: the step after the last it took]
+        #[arg(long, value_name = "STEP", value_parser = cut_step)]
+        from: Option<afkconvoy_core::cut::Step>,
+        /// The host its PR joins the landing train as cut on [default: this machine's name]
+        #[arg(long)]
+        host: Option<String>,
+        #[command(flatten)]
+        at: At,
+    },
     /// Run a heavy command alone on this host, once no other `exclusive` command runs (a worker's command)
     ///
     /// ## When to run it
@@ -3026,6 +3103,15 @@ struct At {
     checkout: Option<PathBuf>,
 }
 
+/// The step `word` names, of a cut (`--from`).
+fn cut_step(word: &str) -> Result<afkconvoy_core::cut::Step, String> {
+    afkconvoy_core::cut::Step::named(word).ok_or_else(|| {
+        let words: Vec<&str> =
+            afkconvoy_core::cut::Step::ALL.iter().map(|step| step.word()).collect();
+        format!("names no step of a cut: {}", words.join(", "))
+    })
+}
+
 /// The checkout a command is about, named with `-C`: for a command whose
 /// arguments after it are its own.
 #[derive(clap::Args)]
@@ -3155,7 +3241,7 @@ fn own_program() -> String {
 
 /// The commands that act: each logs a line and wakes the `run` as it ends
 /// (`Command::acting`), and its `--help` says so (`acting::HELP`).
-const ACTS: [&str; 25] = [
+const ACTS: [&str; 26] = [
     "dispatch",
     "cast",
     "close",
@@ -3178,6 +3264,7 @@ const ACTS: [&str; 25] = [
     "patrol-now",
     "over",
     "inspected",
+    "cut",
     "gate",
     "wake",
     "tick",
@@ -3187,7 +3274,7 @@ const ACTS: [&str; 25] = [
 /// consult's, the caster's and an inspection's give them: with those that
 /// only read (`ONLY_READ`), the only commands a worker's worktree is taken
 /// for (`checkout::resolve`).
-const IN_ITS_WORKTREE: [&str; 15] = [
+const IN_ITS_WORKTREE: [&str; 16] = [
     "cast",
     "doctor",
     "plan",
@@ -3201,6 +3288,7 @@ const IN_ITS_WORKTREE: [&str; 15] = [
     "lock",
     "over",
     "inspected",
+    "cut",
     "exclusive",
     "wake",
 ];
@@ -3354,7 +3442,8 @@ pub fn manual() -> agent_help::Help {
         .constant("TIMED_OUT_CODE", gate::TIMED_OUT_CODE)
         .constant("STRAYS_LISTED", gate::STRAYS_LISTED)
         .constant("DOCTOR_FAILED_SHOWN", doctor::FAILED_SHOWN)
-        .constant("DOCTOR_EVENTS_SHOWN", doctor::EVENTS_SHOWN);
+        .constant("DOCTOR_EVENTS_SHOWN", doctor::EVENTS_SHOWN)
+        .constant("CUT_MINOR_LABEL", afkconvoy_core::cut::MINOR_LABEL);
     for (name, group) in [
         ("OPERATOR", OPERATOR),
         ("DESIGNER", DESIGNER),
@@ -3840,6 +3929,7 @@ impl Command {
                 Err(_) => Acting::new("inspected"),
             },
             Command::Gate { .. } => Acting::new("gate").on_own_issue().saying_start(),
+            Command::Cut { .. } => Acting::new("cut").saying_start(),
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
@@ -4155,6 +4245,12 @@ fn run(
         Command::Inspected { text, did, .. } => {
             inspection::inspected(&checkout?, &text.read()?, &did)
         }
+        Command::Cut { from, host, .. } => {
+            let repo = checkout?;
+            let config = config::load(&repo.dir.join(config::FILE))?;
+            let host = host.unwrap_or_else(this_host);
+            cut::run(&repo, &config, from, &host, clock)
+        }
         // `main` answers it: a hook's answer is no JSON object.
         Command::Guard => anyhow::bail!("guard answers with its exit code"),
         Command::Exclusive { .. } => {
@@ -4275,6 +4371,7 @@ mod tests {
         &["patrol-now", "sweep"],
         &["over", "--run", "sweep"],
         &["inspected", "--text", "x", "--did", "y"],
+        &["cut", "--from", "gate"],
         &["guard"],
         &["exclusive", "--", "true"],
         &["dispatch", "7", "--instance", "a-h1-1"],

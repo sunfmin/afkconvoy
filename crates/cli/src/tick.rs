@@ -100,6 +100,8 @@ pub struct Ticked {
     /// What the train's worktree held when the pass cut it again
     /// (`Fleet::cut_train`).
     cut_train: Option<Built>,
+    /// What the pass's start and end of a cut said (`Fleet::cut_said`).
+    cut_said: Vec<log::What>,
     /// The open issues, each with the label that hands it to the fleet
     /// (`plan::handed_by`).
     handed: Vec<(u64, String)>,
@@ -202,6 +204,7 @@ pub fn tick(
     let forgotten = std::mem::take(&mut fleet.forgotten);
     let closers = std::mem::take(&mut fleet.closers);
     let cut_train = fleet.cut_train.take();
+    let cut_said = std::mem::take(&mut fleet.cut_said);
     let (concurrency, bound) = (fleet.config.concurrency(), pass.bound);
     let issues = &open.issues.rows;
     let config = &fleet.config;
@@ -228,6 +231,7 @@ pub fn tick(
         lost,
         closers,
         cut_train,
+        cut_said,
         handed,
         saw,
         concurrency,
@@ -338,6 +342,11 @@ fn carry_out(
             }
             Ok(if started["started"] == true { Outcome::Done } else { Outcome::Lost })
         }
+        TickStep::EndCut => match &read.set.cut {
+            Some(row) => crate::cut::end(fleet, me, read.flows, row),
+            None => Ok(Outcome::Nothing),
+        },
+        TickStep::Cut => crate::cut::start(fleet, me, agent),
         TickStep::Cast => match &read.set.caster {
             Some(caster) => crate::caster::start(fleet, agent, &caster.to_cast),
             None => Ok(Outcome::Nothing),
@@ -372,6 +381,8 @@ fn words(step: TickStep) -> (&'static str, Option<u64>) {
         TickStep::Unlock { issue } => ("unlock", Some(issue)),
         TickStep::Reclaim { issue } => ("reclaim", Some(issue)),
         TickStep::Dispatch { issue } => ("dispatch", Some(issue)),
+        TickStep::EndCut => ("end_cut", None),
+        TickStep::Cut => ("cut", None),
         TickStep::Cast => ("cast", None),
         TickStep::SlowGate => ("slow_gate", None),
         TickStep::Board { issue, .. } => ("board", Some(issue)),
@@ -545,12 +556,19 @@ impl Ticked {
 
     /// Whether this instance is idle after the tick, and whether it worked in
     /// it: held a claim — as its rebuild read the claims, or as its pass ended
-    /// — or had something on the landing train.
+    /// — or had something on the landing train. A cut of mine going is work,
+    /// as a claim held is: it takes no slot, and keeps the host awake.
     pub fn idle(&self) -> (bool, bool) {
         let on_train = self.set.on_train();
         let pass = &self.pass;
-        let idle = host_sleep::idle(pass.held, pass.frontier_remaining, on_train);
-        (idle, host_sleep::worked(self.set.held().max(pass.held), on_train))
+        let cutting = pass.cutting(&self.set);
+        let idle = host_sleep::idle(pass.held, pass.frontier_remaining, on_train) && !cutting;
+        (idle, host_sleep::worked(self.set.held().max(pass.held), on_train) || cutting)
+    }
+
+    /// What the pass's start and end of a cut said, for the log to keep.
+    pub fn cut_said(&self) -> &[log::What] {
+        &self.cut_said
     }
 
     /// Whether a step of the tick failed on a read GitHub could not be
@@ -821,6 +839,7 @@ impl Ticked {
         if self.pass.did.contains(&(TickStep::SlowGate, Outcome::Done)) {
             parts.push("opened an issue for the slow gate".to_string());
         }
+        parts.extend(self.cut_said.iter().filter_map(log::cut_said));
         if self.pass.held_back(&self.set) {
             parts.push(format!(
                 "admission holds back new workers: {}",
@@ -1189,8 +1208,10 @@ pub fn run(
         wakes.ended();
         let idle = ticked.as_ref().ok().map(|(ticked, _)| ticked.idle());
         host.ticked(clock(), idle);
+        let mut cut_said = vec![];
         let (line, sleep, logged) = match ticked {
             Ok((ticked, panel)) => {
+                cut_said = ticked.cut_said().to_vec();
                 if let Some(panel) = panel {
                     shown = panel;
                 }
@@ -1217,6 +1238,9 @@ pub fn run(
         };
         let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         for what in inspector.step(agent, &hot_now, clock()) {
+            said.keep(clock(), what);
+        }
+        for what in cut_said {
             said.keep(clock(), what);
         }
         // A launch command a worker first needed in this tick may warn.

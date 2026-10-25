@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use afkconvoy_core::casting::CASTER_WORKTREE;
+use afkconvoy_core::cut;
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::inspection::{self, Finding, Kind};
@@ -61,6 +62,10 @@ const INSPECTED_FILE: &str = "convoy-inspected.json";
 const INSPECTION_KIND_FILE: &str = "convoy-inspection-kind";
 /// The PRs the inspection in this checkout put on the landing train.
 const INSPECTION_PRS_FILE: &str = "convoy-inspection-prs";
+/// What the cut in a checkout is, and what it did so far (`cut::Record`).
+const CUT_FILE: &str = "convoy-cut.json";
+/// What each step of the cut in a checkout printed, one after another.
+const CUT_LOG_FILE: &str = "convoy-cut.log";
 /// More worktrees than one machine runs workers in.
 const PS_LIMIT: &str = "1000";
 /// What orca says holds up a worker asking whether its folder is trusted.
@@ -282,7 +287,7 @@ pub struct OnHost {
     /// The main checkout of its repo, where orca says one.
     pub repo: Option<PathBuf>,
     pub issue: Option<u64>,
-    /// The landing train's, the caster's, or an inspection's: the fleet's own.
+    /// The landing train's, the caster's, an inspection's or a cut's: the fleet's own.
     pub fleets: bool,
     /// A worker holds it: a terminal of it is live.
     pub held: bool,
@@ -311,7 +316,8 @@ fn on_host(repos: &Value, listed: &Value, ps: &Value) -> Vec<OnHost> {
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
             let fleets = is_worktree_named(name, TRAIN_WORKTREE)
                 || is_worktree_named(name, CASTER_WORKTREE)
-                || is_worktree_named(name, inspection::CHECKOUT);
+                || is_worktree_named(name, inspection::CHECKOUT)
+                || is_worktree_named(name, cut::CHECKOUT);
             Some(OnHost { issue: row["linkedIssue"].as_u64(), path, repo, fleets, held })
         })
         .collect()
@@ -446,13 +452,14 @@ impl Worktree {
         Ok(on_host(&repos, &listed, &ps))
     }
 
-    /// Whether this is the landing train's worktree, the caster's or an inspection's: the
-    /// fleet's own, and no worker's.
+    /// Whether this is the landing train's worktree, the caster's, an
+    /// inspection's or a cut's: the fleet's own, and no worker's.
     fn is_fleets(&self) -> bool {
         let name = self.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
         is_worktree_named(name, TRAIN_WORKTREE)
             || is_worktree_named(name, CASTER_WORKTREE)
             || is_worktree_named(name, inspection::CHECKOUT)
+            || is_worktree_named(name, cut::CHECKOUT)
     }
 
     /// The checkout `repo`, as a worker's worktree.
@@ -718,6 +725,29 @@ impl Worktree {
         let file = self.note(INSPECTED_FILE)?;
         std::fs::write(&file, serde_json::to_string(finding)?)
             .with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// What the cut in this checkout is and did so far, where it says; `None`
+    /// where nothing does, or what does cannot be read.
+    pub fn cut_record(&self) -> Result<Option<cut::Record>> {
+        let said = std::fs::read_to_string(self.note(CUT_FILE)?).unwrap_or_default();
+        Ok(serde_json::from_str(&said).ok())
+    }
+
+    /// Keeps what the cut in this checkout is and did so far: the last it
+    /// said stands. It is written whole, then put in place: a tick reading it
+    /// meanwhile reads the one before, never half of this one.
+    pub fn record_cut(&self, record: &cut::Record) -> Result<()> {
+        let file = self.note(CUT_FILE)?;
+        let written = self.note(&format!("{CUT_FILE}.new"))?;
+        std::fs::write(&written, serde_json::to_string(record)?)
+            .with_context(|| format!("cannot write {}", written.display()))?;
+        std::fs::rename(&written, &file).with_context(|| format!("cannot write {}", file.display()))
+    }
+
+    /// The file what each step of the cut in this checkout prints is kept in.
+    pub fn cut_log(&self) -> Result<PathBuf> {
+        self.note(CUT_LOG_FILE)
     }
 
     /// The commit the branch here is at.
