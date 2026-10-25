@@ -8,7 +8,7 @@ use crate::common;
 
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -778,6 +778,259 @@ fn a_run_older_than_the_host_runner_changes_nothing_and_says_so() {
     assert!(!world.cache().join("afkconvoy/runs").exists(), "no tick log");
     newer.kill().unwrap();
     newer.wait().unwrap();
+}
+
+/// An afkconvoy installed in `world` as Homebrew installs one: a link,
+/// `installed/afkconvoy`, to the one built → the link, which a `run` is
+/// started as (`World::afk_as`).
+fn installed(world: &World) -> PathBuf {
+    let link = world.root.join("installed/afkconvoy");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_afkconvoy"), &link).unwrap();
+    link
+}
+
+/// Installs another afkconvoy at `link`, as `brew upgrade` does: the link is
+/// pointed at a file of its own, which says `version` to `--version`, and
+/// runs `otherwise` for anything else.
+fn upgraded(link: &Path, version: &str, otherwise: &str) {
+    let file = link.parent().unwrap().join(format!("../cellar/{version}/afkconvoy"));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'afkconvoy {version}'; exit 0; fi\n\
+         {otherwise}\n"
+    );
+    std::fs::write(&file, script).unwrap();
+    std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let new = link.with_extension("new");
+    std::os::unix::fs::symlink(&file, &new).unwrap();
+    std::fs::rename(new, link).unwrap();
+}
+
+/// What the afkconvoy built is, for anything but `--version`.
+fn as_built() -> String {
+    format!("exec {} \"$@\"", env!("CARGO_BIN_EXE_afkconvoy"))
+}
+
+/// Waits up to 30 seconds for `got` to give something → it.
+fn until<T>(what: &str, mut got: impl FnMut() -> Option<T>) -> T {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(got) = got() {
+            return got;
+        }
+        assert!(Instant::now() < until, "no {what} within 30s");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// What `doctor` says of the afkconvoy installed where the host runner was
+/// started from: `host.installed`.
+fn installed_said(world: &World) -> Value {
+    world.afk(&["doctor", "--host", "h1"]).json["host"]["installed"].clone()
+}
+
+#[test]
+fn the_host_runner_moves_onto_a_newer_afkconvoy_installed_where_it_was_started_from() {
+    let world = World::new();
+    let link = installed(&world);
+    let clone2 = world.second_repo();
+    let second = world.afk_as(&link, &clone2, &RUN).ok();
+    let first = world.afk_as(&link, &world.clone, &RUN).ok();
+    let old = first["host_runner"]["pid"].as_u64().unwrap();
+    let list = world.checkout_list();
+
+    upgraded(&link, "999.0.0", &as_built());
+    let moved = logged(&world, "host runner moved: ");
+    let new = world.host_runner().unwrap();
+    let (version, at) = (afkconvoy::VERSION, link.display());
+    assert_eq!(
+        moved,
+        format!(
+            "host runner moved: from afkconvoy {version} (pid {old}) to afkconvoy {version} \
+             (pid {new}), installed at {at}"
+        )
+    );
+    assert_ne!(u64::from(new), old);
+    until("end of the host runner that moved", || (!alive(&json!(old))).then_some(()));
+
+    // what it found, then that nothing held it back, then the newer one
+    // holding the host on the same list
+    let log = world.runner_log();
+    let at_line = |start: &str| log.iter().position(|said| said.starts_with(start));
+    let found = format!(
+        "afkconvoy 999.0.0 is installed at {at}, newer than this host runner's, {version}: it \
+         moves onto it once its fleets are idle"
+    );
+    let started = format!("host runner started: afkconvoy {version}, pid {new}, 2 checkouts");
+    let lines = [found.as_str(), "host runner moving: nothing holds it back", &started];
+    let lines = lines.map(at_line);
+    assert!(lines.iter().all(Option::is_some) && lines.is_sorted(), "{lines:?} in {log:#?}");
+    assert_eq!(world.checkout_list(), list);
+
+    // each fleet instance stopped between two ticks, the move a line of its
+    // tick log, and the newer one started it again
+    for answer in [&first, &second] {
+        let starts = || of_kind(&tick_log(answer), "start").len();
+        until("start of each fleet instance again", || (starts() == 2).then_some(()));
+        let lines = tick_log(answer);
+        let moved = of_kind(&lines, "moved");
+        assert_eq!(moved.len(), 1, "{lines:#?}");
+        let said = serde_json::from_value::<Entry>(moved[0].clone()).unwrap().said();
+        let to = format!("from afkconvoy {version} to afkconvoy {version}, installed at {at}");
+        assert_eq!(said, format!("moved: the host runner moved {to}"));
+        let at = |kind: &str| lines.iter().position(|line| self::kind(line) == kind);
+        assert!(at("stop") < at("moved"), "after its fleet instance stopped: {lines:#?}");
+    }
+
+    // `checkouts` and `doctor` say the host runner it moved onto
+    let checkouts = world.afk(&["checkouts"]).ok();
+    assert_eq!(checkouts["host_runner"]["pid"], new, "{checkouts}");
+    assert_eq!(checkouts["host_runner"]["version"], version, "{checkouts}");
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let events = doctor["fleet"]["events"].as_array().unwrap();
+    assert!(events.iter().any(|event| event["event"] == "moved"), "{doctor}");
+}
+
+#[test]
+fn a_newer_afkconvoy_that_does_not_start_leaves_the_host_runner_holding_the_host() {
+    let world = World::new();
+    let link = installed(&world);
+    let first = world.afk_as(&link, &world.clone, &RUN).ok();
+    let old = first["host_runner"]["pid"].as_u64().unwrap();
+
+    let broken = "dyld: Library not loaded: libgit2.1.9.dylib";
+    upgraded(&link, "999.0.0", &format!("echo '{broken}' >&2; exit 1"));
+    let not_moved = logged(&world, "host runner not moved: ");
+    let (version, at) = (afkconvoy::VERSION, link.display());
+    // what it said as it ended, and nothing of this host runner's own
+    let said = format!(
+        "host runner not moved: afkconvoy 999.0.0, installed at {at}, did not start: it ended as \
+         it started (exit status: 1): {broken} — it takes the host back, on afkconvoy {version}, \
+         and tries that file no more until it changes"
+    );
+    assert_eq!(not_moved, said);
+
+    // the host runner takes the host back, and starts its fleet instance again
+    logged(&world, &format!("host runner started: afkconvoy {version}, pid {old}, 1 checkouts"));
+    assert_eq!(world.host_runner().map(u64::from), Some(old));
+    let starts = || of_kind(&tick_log(&first), "start").len();
+    until("start of the fleet instance again", || (starts() == 2).then_some(()));
+    let lines = tick_log(&first);
+    let not_moved = of_kind(&lines, "not_moved");
+    assert_eq!(not_moved.len(), 1, "{lines:#?}");
+    let said = serde_json::from_value::<Entry>(not_moved[0].clone()).unwrap().said();
+    let start = format!("not moved: afkconvoy 999.0.0, installed at {at}, did not start: ");
+    assert!(said.starts_with(&start), "{said}");
+    assert!(said.ends_with(&format!("· the host runner stays on afkconvoy {version}")), "{said}");
+
+    // `doctor` gives a finding that names it, as long as the host runner
+    // works on
+    let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+    let findings = doctor["findings"].as_array().unwrap();
+    let what = format!(
+        "the host runner did not move onto afkconvoy 999.0.0, installed at {at}: it did not \
+         start, and the host runner works on, of afkconvoy {version}"
+    );
+    let found = findings.iter().find(|found| found["what"] == what.as_str());
+    let found = found.unwrap_or_else(|| panic!("no {what:?} in {doctor}"));
+    assert_eq!(found["severity"], "warning", "{found}");
+    assert!(found["evidence"].as_str().unwrap().contains(broken), "{found}");
+    assert_eq!(found["fix"], format!("{at} --version"));
+    let installed = &doctor["host"]["installed"];
+    assert_eq!(installed["version"], "999.0.0", "{doctor}");
+    assert_eq!(installed["from"], version, "{doctor}");
+    assert!(installed["failed"].as_str().unwrap().contains(broken), "{doctor}");
+    let events = doctor["fleet"]["events"].as_array().unwrap();
+    assert!(events.iter().any(|event| event["event"] == "not_moved"), "{doctor}");
+
+    // and it tries that file no more until it changes
+    std::thread::sleep(Duration::from_secs(3));
+    let log = world.runner_log();
+    let moving = log.iter().filter(|said| said.starts_with("host runner moving: ")).count();
+    assert_eq!(moving, 1, "{log:#?}");
+}
+
+#[test]
+fn the_host_runner_never_moves_onto_an_older_afkconvoy_nor_one_that_does_not_say_its_version() {
+    let world = World::new();
+    let link = installed(&world);
+    let first = world.afk_as(&link, &world.clone, &RUN).ok();
+    let old = first["host_runner"]["pid"].as_u64().unwrap();
+    let (version, at) = (afkconvoy::VERSION, link.display());
+
+    upgraded(&link, "0.0.1", &as_built());
+    logged(
+        &world,
+        &format!(
+            "afkconvoy 0.0.1 is installed at {at}, older than this host runner's, {version}: it \
+             never moves onto an older one"
+        ),
+    );
+    assert_eq!(installed_said(&world), Value::Null);
+
+    // one that says no version is a finding, and no move either
+    upgraded(&link, "says nothing", "exit 1");
+    let unsaid = format!(
+        "the host runner did not move onto the afkconvoy installed at {at}: it does not say its \
+         version, and the host runner works on, of afkconvoy {version}"
+    );
+    let found = until("finding of an afkconvoy that says no version", || {
+        let doctor = world.afk(&["doctor", "--host", "h1"]).json;
+        let findings = doctor["findings"].as_array().unwrap().clone();
+        findings.into_iter().find(|found| found["what"] == unsaid.as_str())
+    });
+    let evidence = found["evidence"].as_str().unwrap();
+    assert!(evidence.contains("`--version` said \"afkconvoy says nothing\""), "{found}");
+    logged(&world, &format!("{at}, which this host runner was started from, changed and does not"));
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(world.host_runner().map(u64::from), Some(old));
+    let log = world.runner_log();
+    assert!(!log.iter().any(|said| said.starts_with("host runner moving: ")), "{log:#?}");
+    assert_eq!(of_kind(&tick_log(&first), "start").len(), 1);
+}
+
+#[test]
+fn the_host_runner_does_not_move_while_a_claim_is_held_or_a_command_is_queued() {
+    let world = World::new();
+    world.issue(7, &["ready-for-agent"]);
+    let link = installed(&world);
+    let first = world.afk_as(&link, &world.clone, &RUN).ok();
+    let old = first["host_runner"]["pid"].as_u64().unwrap();
+    assert!(ticked(&first, "dispatched #7").contains("holding 1/"));
+
+    upgraded(&link, "999.0.0", &as_built());
+    let claimed =
+        format!("{} holds a claim or has something on the landing train", shown(&world.clone));
+    until("claim holding the move back", || {
+        (installed_said(&world)["held_back"] == json!([claimed])).then_some(())
+    });
+
+    // an exclusive command holds it back as long as it runs, with the claim
+    // settled
+    let go = world.root.join("go");
+    let script = format!("while [ ! -e '{}' ]; do sleep 0.05; done", go.display());
+    let mut exclusive = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["exclusive", "--", "sh", "-c", &script])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    world.close(7, "completed");
+    until("exclusive command holding the move back alone", || {
+        let held = installed_said(&world)["held_back"].clone();
+        (held == json!(["1 command(s) in the exclusive queue"])).then_some(())
+    });
+    assert_eq!(world.host_runner().map(u64::from), Some(old));
+    let log = world.runner_log();
+    assert!(!log.iter().any(|said| said.starts_with("host runner moving: ")), "{log:#?}");
+
+    std::fs::write(&go, "").unwrap();
+    assert!(exclusive.wait().unwrap().success());
+    logged(&world, "host runner moved: ");
+    assert_ne!(world.host_runner().map(u64::from), Some(old));
 }
 
 /// Waits up to 30 seconds for the host runner's log to hold `count` lines

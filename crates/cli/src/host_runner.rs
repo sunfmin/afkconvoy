@@ -40,6 +40,7 @@ use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::num::NonZeroUsize;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::panic::AssertUnwindSafe;
@@ -509,6 +510,7 @@ pub fn serve() -> Result<Value> {
             }
             Err(why) => {
                 let why = format!("{why:#}");
+                followed_log();
                 log.say(&format!(
                     "host runner not moved: afkconvoy {to}, installed at {at}, did not start: \
                      {why} — it takes the host back, on afkconvoy {VERSION}, and tries that file \
@@ -845,7 +847,9 @@ fn version_of(path: &Path) -> Result<String> {
 /// or none answered in time, and the one started is ended. The host is then
 /// free for this one to take back.
 fn handed_over(path: &Path, lock: File) -> Result<Value> {
-    let lock_file = cache()?.join(LOCK);
+    let (lock_file, log) = (cache()?.join(LOCK), log_path()?);
+    // What it says as it ends is what it wrote past here.
+    let written = std::fs::metadata(&log).map_or(0, |kept| kept.len());
     let started = start_detached(path);
     // Once it can wait for it: it takes the host as this one lets it go.
     drop(lock);
@@ -860,7 +864,7 @@ fn handed_over(path: &Path, lock: File) -> Result<Value> {
         if let Some(ended) = child.try_wait()?
             && !held(&lock_file)
         {
-            bail!("it ended as it started ({ended}): {}", last_lines(&log_path()?, 5));
+            bail!("it ended as it started ({ended}): {}", last_lines(&log, written, 5));
         }
         if Instant::now() >= until {
             let _ = child.kill();
@@ -2083,7 +2087,7 @@ fn started_and_asked(add: &Request) -> Result<Reached> {
             bail!(
                 "the host runner ended as it started ({ended}): its log, {}, says why:\n{}",
                 log.display(),
-                last_lines(&log, 20)
+                last_lines(&log, 0, 20)
             );
         }
         if Instant::now() >= until {
@@ -2150,6 +2154,18 @@ fn pinned(
     unpinned.chain(pins.map(|(name, value)| (name.into(), value.to_os_string()))).collect()
 }
 
+/// Points this host runner's stdout and stderr, which are its log, at the
+/// log as it is now: starting another host runner may have moved the file
+/// they were aside (`opened_log`). Where it cannot be opened, they stay.
+fn followed_log() {
+    let Ok(log) = log_path().and_then(|file| opened_log(&file)) else { return };
+    for to in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        // SAFETY: both descriptors are open; `to` is pointed at the file
+        // `log` holds, which stays open there as `log` is dropped.
+        unsafe { libc::dup2(log.as_raw_fd(), to) };
+    }
+}
+
 /// The host runner's log, opened to append to; one past `LOG_ROLLS_AT` is
 /// moved aside to `.1` first.
 fn opened_log(file: &Path) -> Result<File> {
@@ -2160,10 +2176,13 @@ fn opened_log(file: &Path) -> Result<File> {
     opened.with_context(|| format!("cannot open the host runner's log {}", file.display()))
 }
 
-/// The last `count` lines of `file`, or nothing where it cannot be read.
-fn last_lines(file: &Path, count: usize) -> String {
-    let text = std::fs::read(file).map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    let text = text.unwrap_or_default();
+/// The last `count` lines of `file` written past its first `from` bytes —
+/// of all of it, where it is shorter, having rolled — or nothing where it
+/// cannot be read.
+fn last_lines(file: &Path, from: u64, count: usize) -> String {
+    let bytes = std::fs::read(file).unwrap_or_default();
+    let from = usize::try_from(from).ok().filter(|from| *from <= bytes.len()).unwrap_or(0);
+    let text = String::from_utf8_lossy(&bytes[from..]);
     let lines: Vec<&str> = text.lines().collect();
     lines[lines.len().saturating_sub(count)..].join("\n")
 }
@@ -2221,9 +2240,12 @@ mod tests {
     fn the_end_of_a_log_is_its_last_lines() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(LOG);
-        assert_eq!(last_lines(&file, 2), "");
+        assert_eq!(last_lines(&file, 0, 2), "");
         std::fs::write(&file, "a\nb\nc\n").unwrap();
-        assert_eq!(last_lines(&file, 2), "b\nc");
-        assert_eq!(last_lines(&file, 5), "a\nb\nc");
+        assert_eq!(last_lines(&file, 0, 2), "b\nc");
+        assert_eq!(last_lines(&file, 0, 5), "a\nb\nc");
+        // what was written past a point, and all of a log that rolled since
+        assert_eq!(last_lines(&file, 2, 5), "b\nc");
+        assert_eq!(last_lines(&file, 99, 5), "a\nb\nc");
     }
 }
