@@ -1400,9 +1400,15 @@ mod tests {
     #[test]
     fn a_consult_runs_what_a_human_answering_runs_and_changes_nothing_of_the_host() {
         let consult = limits(true, true);
-        for line in crate::waiting::ANSWERING {
-            let line = line.replace("<n>", "7").replace("<ready label>", "ready-for-agent");
-            assert_eq!(refused(&Call::shell(&line), &consult), None, "{line}");
+        let tracker = crate::tracker::Tracker::Other {
+            tracker: crate::config::RepoName::read("acme/tracker").unwrap(),
+            repo: crate::config::RepoName::read("acme/dev").unwrap(),
+        };
+        for tracker in [crate::tracker::Tracker::Own, tracker] {
+            for line in crate::waiting::answering(&tracker) {
+                let line = line.replace("<n>", "7").replace("<ready label>", "ready-for-agent");
+                assert_eq!(refused(&Call::shell(&line), &consult), None, "{line}");
+            }
         }
         for line in ["df -h /", "uptime", "orca terminal list --worktree path:/w", "git status"] {
             assert_eq!(refused(&Call::shell(line), &consult), None, "{line}");

@@ -8,23 +8,33 @@ use serde::Serialize;
 
 use crate::line::Line;
 use crate::position::{Declared, Position};
+use crate::prompt::in_tracker;
 use crate::role::{Due, due};
 use crate::stage_record::{StageRecord, history};
 use crate::team::{Team, Workflow};
+use crate::tracker::Tracker;
 
-/// Every command a human runs to answer an escalated issue, as the
-/// `humans` help names them, `<n>` standing for the issue's number: a
-/// consult, who stands where that human stands (docs/adr/0018), is given
-/// the same list. A command added here is both's.
-pub const ANSWERING: [&str; 7] = [
+/// Every command a human runs to answer an escalated issue, `<n>` standing
+/// for the issue's number, with the marks of the fleet's tracker in each of
+/// its issue commands (`answering`).
+const ANSWERING: [&str; 7] = [
     "afkconvoy rule --issue <n> --text-file <file>",
     "afkconvoy send --issue <n> --stage <stage> --text-file <file>",
-    "gh issue close <n> --comment <why>",
-    "gh issue create --title <title> --body-file <file> --label <ready label>",
-    "gh issue edit <n> --body-file <file>",
-    "gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
-    "gh api -X DELETE repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by/<id>",
+    "gh issue close <n><tracker> --comment <why>",
+    "gh issue create<tracker> --title <title> --body-file <file> --label <ready label><labelled>",
+    "gh issue edit <n><tracker> --body-file <file>",
+    "gh api repos/<issues>/issues/<n>/dependencies/blocked_by -F issue_id=<id>",
+    "gh api -X DELETE repos/<issues>/issues/<n>/dependencies/blocked_by/<id>",
 ];
+
+/// Every command a human runs to answer an escalated issue of `tracker`, as
+/// the `humans` help names them of the checkout's own repo, `<n>` standing
+/// for the issue's number: a consult, who stands where that human stands
+/// (docs/adr/0018), is given the same list, each issue command naming the
+/// tracker. A command added here is both's.
+pub fn answering(tracker: &Tracker) -> Vec<String> {
+    ANSWERING.iter().map(|line| in_tracker(line, tracker)).collect()
+}
 
 /// How long an issue waits for a human before `doctor` counts it a finding.
 pub const WAITED_LONG: u64 = 3600;

@@ -214,6 +214,7 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         intake_command: &own().fixed(" intake --issue <number> --workflow <name>").own(),
         lock_command: &own().fixed(" lock --issue <number>").own(),
         over_command: &own().fixed(" over --run ").word(&claim.key).own(),
+        tracker: &fleet.gh.tracker,
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
