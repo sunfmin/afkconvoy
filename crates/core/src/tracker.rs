@@ -52,10 +52,12 @@ pub fn repo_label(repo: &RepoName) -> String {
 
 /// The repo labels among `labels`, whatever their case.
 pub fn repo_labels(labels: &[String]) -> Vec<&str> {
-    let is_one = |label: &&String| {
-        label.get(..REPO_LABEL.len()).is_some_and(|head| head.eq_ignore_ascii_case(REPO_LABEL))
-    };
-    labels.iter().filter(is_one).map(String::as_str).collect()
+    labels.iter().filter_map(|label| is_repo_label(label).then_some(label.as_str())).collect()
+}
+
+/// Whether `label` is a repo label, whatever its case.
+fn is_repo_label(label: &str) -> bool {
+    label.get(..REPO_LABEL.len()).is_some_and(|head| head.eq_ignore_ascii_case(REPO_LABEL))
 }
 
 /// Whether `tracker` can be a part of a ref's name, as a claim on one of its
@@ -181,15 +183,25 @@ impl Tracker {
     /// in the PR's own repo, `of`, where GitHub said which that is. An issue
     /// named or linked in any other repo is none of them.
     pub fn closed_by(&self, body: &str, linked: &[Linked], of: Option<&str>) -> Vec<u64> {
-        let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
-        let in_tracker = |link: &&Linked| match (self, link.repo.as_deref()) {
-            (Tracker::Own, Some(repo)) => of.is_none_or(|of| same(repo, of)),
-            (Tracker::Own, None) => true,
-            (Tracker::Other { tracker, .. }, Some(repo)) => same(repo, tracker.as_str()),
-            (Tracker::Other { .. }, None) => false,
-        };
-        let linked: Vec<u64> = linked.iter().filter(in_tracker).map(|link| link.number).collect();
+        let linked: Vec<u64> = linked
+            .iter()
+            .filter_map(|link| self.holds_link(link, of).then_some(link.number))
+            .collect();
         issues_closed_by(body, &linked, self.named().map(RepoName::as_str))
+    }
+
+    /// Whether `link`, an issue GitHub linked to a PR of the repo `of`, is
+    /// one of this tracker's: of the checkout's own repo, one in `of`, or in
+    /// no repo GitHub named; of another tracker, one in it.
+    fn holds_link(&self, link: &Linked, of: Option<&str>) -> bool {
+        match (self, link.repo.as_deref()) {
+            (Tracker::Own, Some(repo)) => of.is_none_or(|of| repo.eq_ignore_ascii_case(of)),
+            (Tracker::Own, None) => true,
+            (Tracker::Other { tracker, .. }, Some(repo)) => {
+                repo.eq_ignore_ascii_case(tracker.as_str())
+            }
+            (Tracker::Other { .. }, None) => false,
+        }
     }
 }
 
