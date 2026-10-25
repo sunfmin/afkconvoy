@@ -34,6 +34,16 @@ fn manual() -> String {
     asked(&["help", "all"])
 }
 
+#[test]
+fn help_explains_the_idle_wait_and_a_closed_blockers_wake() {
+    for text in [asked(&["help"]), asked(&["run", "--help"])] {
+        assert!(text.contains("25 minutes"), "{text}");
+        assert!(text.contains("3 empty ticks") || text.contains("3 ticks in a row were empty"));
+        assert!(text.contains("same tracker"));
+        assert!(text.contains("closed issue and the fleet instance that saw it"));
+    }
+}
+
 /// The most the index may be: what an agent's harness shows whole, with room.
 const INDEX_MOST: usize = 20 * 1024;
 

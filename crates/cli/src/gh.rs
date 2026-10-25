@@ -6,9 +6,10 @@
 //! not the checkout's own repo, the fleet's issues are those that carry its
 //! repo label: the open ones are read by it, and one opened carries it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -194,6 +195,9 @@ fn carrying_labels(tracker: &Tracker, label: &str) -> String {
 pub struct GitHub {
     pub dir: PathBuf,
     pub tracker: Tracker,
+    /// Closures this view read or made, shared with its clones. These only
+    /// route wakes; every woken tick reads GitHub for itself.
+    closed: Arc<Mutex<BTreeSet<u64>>>,
 }
 
 /// An open PR from another repo's own branch, with when it was opened.
@@ -210,13 +214,35 @@ impl GitHub {
     /// in the tracker it says on this host (`checkout_list::tracker_of`).
     pub fn of(repo: &Repo) -> Result<GitHub> {
         let tracker = crate::checkout_list::tracker_of(repo)?;
-        Ok(GitHub { dir: repo.dir.clone(), tracker })
+        Ok(GitHub::new(repo.dir.clone(), tracker))
+    }
+
+    pub fn new(dir: PathBuf, tracker: Tracker) -> GitHub {
+        GitHub { dir, tracker, closed: Arc::default() }
+    }
+
+    /// The issues this view has seen closed, whatever read or write saw it.
+    pub fn closed(&self) -> Vec<u64> {
+        self.closed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().copied().collect()
+    }
+
+    fn saw_closed(&self, number: u64) {
+        self.closed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(number);
+    }
+
+    fn blockers(&self, edges: Vec<BlockedBy>) -> Vec<u64> {
+        for edge in &edges {
+            if edge.state.eq_ignore_ascii_case("closed") {
+                self.saw_closed(edge.number);
+            }
+        }
+        open_blockers(edges)
     }
 
     /// `gh` for the calls that each name their repo, where no checkout is at
     /// hand: they need none, and are made in the host's temporary directory.
     pub fn in_no_checkout() -> GitHub {
-        GitHub { dir: std::env::temp_dir(), tracker: Tracker::Own }
+        GitHub::new(std::env::temp_dir(), Tracker::Own)
     }
 }
 
@@ -618,7 +644,7 @@ impl GitHub {
                 number: row.number,
                 title: row.title,
                 labels: row.labels,
-                open_blockers: open_blockers(row.blockers),
+                open_blockers: self.blockers(row.blockers),
             });
         }
         Ok(open)
@@ -834,8 +860,12 @@ impl GitHub {
     pub fn issue(&self, number: u64) -> Result<IssueRead> {
         let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
         let out = about_issue(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
-        serde_json::from_str(&out)
-            .with_context(|| format!("gh api issue {number}: unexpected answer"))
+        let issue: IssueRead = serde_json::from_str(&out)
+            .with_context(|| format!("gh api issue {number}: unexpected answer"))?;
+        if issue.is_closed() {
+            self.saw_closed(number);
+        }
+        Ok(issue)
     }
 
     /// Every comment on an issue, oldest first: `Gone` of one GitHub says was
@@ -935,6 +965,7 @@ impl GitHub {
     pub fn close_issue(&self, number: u64) -> Result<()> {
         let endpoint = endpoint(&self.tracker, &format!("issues/{number}"));
         self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"])?;
+        self.saw_closed(number);
         Ok(())
     }
 
@@ -1084,7 +1115,7 @@ impl GitHub {
 
     /// The open issues among those `number` is blocked by.
     pub fn open_blockers(&self, number: u64) -> Result<Vec<u64>> {
-        Ok(open_blockers(self.blocked_by(number)?))
+        Ok(self.blockers(self.blocked_by(number)?))
     }
 
     /// Records `number` as blocked by the issue whose database id is `blocker_id`.
