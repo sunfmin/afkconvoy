@@ -10,6 +10,7 @@ use afkconvoy_core::role::{followed, workflow_of};
 use afkconvoy_core::stage_record::{Author, StageRecord, Stated, history, stage_records};
 use afkconvoy_core::team::{Team, Workflow};
 use afkconvoy_core::transition::Relabel;
+use afkconvoy_core::waiting::{Waits, back};
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
@@ -50,6 +51,23 @@ impl Unheld {
 
     fn records(&self) -> Vec<StageRecord> {
         stage_records(self.bodies()).into_iter().map(|(_, record)| record).collect()
+    }
+
+    /// Finds the workflow this issue follows. An escalation from before it
+    /// entered one needs intake first, with the same answer every view gives.
+    fn workflow<'t>(&self, team: &'t Team) -> Result<&'t Workflow> {
+        followed(team, &self.labels, self.bodies()).map_err(|why| {
+            if self.labels.contains(&team.escalate_label) && team.flows(&self.labels).is_empty() {
+                let waits = Waits::Escalated(back(team, None, &self.records()));
+                anyhow!(
+                    "{why}; {}. Run: {}",
+                    waits.why(),
+                    waits.answer(self.number, &self.gh.tracker)
+                )
+            } else {
+                anyhow!(why)
+            }
+        })
     }
 
     /// Writes the record a human leaves about `stage`, with what they said.
@@ -103,8 +121,8 @@ pub fn rule(repo: &Repo, team: &Team, number: u64, text: String) -> Result<Value
     let text = said(text, "the ruling")?;
     let instead = "Rule once its escalation is done and its claim released";
     let issue = Unheld::read(repo, number, instead)?;
-    let workflow = followed(team, &issue.labels, issue.bodies())
-        .map_err(|why| anyhow!("issue #{number} cannot be ruled on: {why}"))?;
+    let workflow =
+        issue.workflow(team).map_err(|why| anyhow!("issue #{number} cannot be ruled on: {why}"))?;
     let position = history(workflow, &issue.records()).place.position;
     let Some(stage) = position.stage() else {
         bail!(
@@ -138,7 +156,8 @@ pub fn send(repo: &Repo, team: &Team, number: u64, stage: &str, text: String) ->
     let text = said(text, "why the issue is sent")?;
     let instead = "Send it once its stage has declared, or `afkconvoy escalate` it first";
     let issue = Unheld::read(repo, number, instead)?;
-    let workflow = followed(team, &issue.labels, issue.bodies())
+    let workflow = issue
+        .workflow(team)
         .map_err(|why| anyhow!("issue #{number} cannot be sent to a stage: {why}"))?;
     if !workflow.stages().iter().any(|has| has.name == stage) {
         let has: Vec<&str> = workflow.stages().iter().map(|stage| stage.name.as_str()).collect();

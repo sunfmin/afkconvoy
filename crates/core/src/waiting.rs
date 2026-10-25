@@ -48,8 +48,10 @@ pub enum Back {
     /// none runs again under a ruling.
     Send,
     /// By one flow label: it follows no one workflow of its team, and nothing
-    /// says which it left. `escalate` is the label that comes off.
-    Flow { escalate: String },
+    /// says which it left. `labels` are the team's available flow labels;
+    /// its only one is filled in, otherwise a human chooses among them.
+    /// `escalate` is the label that comes off.
+    Flow { labels: Vec<String>, escalate: String },
     /// An unbound repo's: by the ready label, put back in place of the
     /// escalate label.
     Ready { ready: String, escalate: String },
@@ -105,6 +107,14 @@ impl Waits {
     pub fn why(&self) -> String {
         match self {
             Waits::Escalated(Back::Rule { stage }) => format!("escalated at {stage}"),
+            Waits::Escalated(Back::Flow { labels, .. }) => match labels.as_slice() {
+                [_] => "escalated with no position".to_string(),
+                [] => "escalated with no position; `afkconvoy flows` lists flow labels".to_string(),
+                _ => format!(
+                    "escalated with no position; choose <flow label> from: {}",
+                    labels.join(", ")
+                ),
+            },
             Waits::Escalated(_) => "escalated".to_string(),
             Waits::Verdict { stage, .. } => format!("stage {stage} is by a human"),
             Waits::ParkedUnbound { .. } => "parked for evidence".to_string(),
@@ -153,10 +163,12 @@ impl Waits {
                     .to_string(),
                 line: own("send", issue, " --stage <stage> --text-file <file>"),
             },
-            Waits::Escalated(Back::Flow { escalate }) => WayOut {
-                what: "put its one flow label back: nothing says which workflow it left"
-                    .to_string(),
-                line: swap(issue, tracker, "<flow label>", escalate),
+            Waits::Escalated(Back::Flow { labels, escalate }) => WayOut {
+                what: format!("put a flow label on it: {}", self.why()),
+                line: match labels.as_slice() {
+                    [label] => swap(issue, tracker, label, escalate),
+                    _ => swap(issue, tracker, "<flow label>", escalate),
+                },
             },
             Waits::Escalated(Back::Ready { ready, escalate }) => WayOut {
                 what: "fix what the comment names, and put the ready label back".to_string(),
@@ -218,10 +230,13 @@ impl Waits {
 }
 
 /// How an escalated issue that followed `workflow` — or none, where nothing
-/// says which — goes back to a bound repo's fleet, given its stage records.
-pub fn back(workflow: Option<&Workflow>, records: &[StageRecord], escalate: &str) -> Back {
+/// says which — goes back to a bound repo's fleet, given its stage records
+/// and the team whose flow labels a human may choose from.
+pub fn back(team: &Team, workflow: Option<&Workflow>, records: &[StageRecord]) -> Back {
     let Some(workflow) = workflow else {
-        return Back::Flow { escalate: escalate.to_string() };
+        let labels =
+            team.workflows.iter().map(|workflow| workflow.flow_label().to_string()).collect();
+        return Back::Flow { labels, escalate: team.escalate_label.clone() };
     };
     match history(workflow, records).place.position.stage() {
         Some(stage) => Back::Rule { stage: stage.name.clone() },
@@ -246,7 +261,7 @@ pub fn waits(
     let workflow = crate::role::workflow_of(team, labels).ok();
     match due(team, labels, records, pr) {
         Due::Worker(_) | Due::Consult(_) | Due::Stock(..) | Due::Lander(_) => None,
-        Due::Human(_) => Some(Waits::Escalated(back(workflow, records, &team.escalate_label))),
+        Due::Human(_) => Some(Waits::Escalated(back(team, workflow, records))),
         Due::Nothing(_) => {
             let read = history(workflow?, records);
             let mut verdicts = vec![];
@@ -356,7 +371,12 @@ impl Waits {
                     return StageRecord::read(body).map(|record| record.text);
                 }
                 let text = after_marker()?;
-                Some(text.strip_prefix("**afkconvoy: escalated to a human.**")?.trim().into())
+                Some(
+                    text.strip_prefix("**afkconvoy: escalated to a human.**")
+                        .unwrap_or(text)
+                        .trim()
+                        .into(),
+                )
             }
             Waits::ParkedUnbound { .. } => {
                 Some(body.strip_prefix("**Stock consult — park**")?.trim().into())
@@ -449,7 +469,10 @@ mod tests {
             "afkconvoy send --issue 12 --stage <stage> --text-file <file>"
         );
         assert_eq!(
-            answer(Waits::Escalated(Back::Flow { escalate: "needs a human".into() })),
+            answer(Waits::Escalated(Back::Flow {
+                labels: vec![],
+                escalate: "needs a human".into()
+            })),
             "gh issue edit 12 --add-label '<flow label>' --remove-label 'needs a human'"
         );
         let ready = Back::Ready { ready: "ready-for-agent".into(), escalate: "stuck".into() };
@@ -474,7 +497,7 @@ mod tests {
         let answer = |waits: Waits| waits.answer(12, &tracker);
         assert_eq!(answer(Waits::Ended), "gh issue close 12 --repo acme/tracker");
         assert_eq!(
-            answer(Waits::Escalated(Back::Flow { escalate: "stuck".into() })),
+            answer(Waits::Escalated(Back::Flow { labels: vec![], escalate: "stuck".into() })),
             "gh issue edit 12 --repo acme/tracker --add-label '<flow label>' --remove-label stuck"
         );
         // A command of the fleet's own works the checkout's tracker itself.
