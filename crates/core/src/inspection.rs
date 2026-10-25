@@ -20,8 +20,9 @@ use crate::team::{Consult, Stage, Work};
 pub const INSPECTION_ENV: &str = "AFKCONVOY_INSPECTION";
 
 /// How long, in seconds, an inspection is given: what it said by then is
-/// what is kept.
-pub const TIME_LIMIT: u64 = 900;
+/// what is kept. An hour, for a change of the repo it makes is gated within
+/// it, the gate's wait in the host's queue among it.
+pub const TIME_LIMIT: u64 = 3600;
 
 /// The name an inspection's checkout is created under: one a repo, for one
 /// inspection runs on its host at a time.
@@ -490,7 +491,7 @@ mod tests {
             "{said}"
         );
         let nothing = comment("#7", "past 4.0 cores for 120s", "stock-consult", None);
-        assert!(nothing.contains("found=nothing") && nothing.contains("15 minutes"), "{nothing}");
+        assert!(nothing.contains("found=nothing") && nothing.contains("60 minutes"), "{nothing}");
     }
 
     #[test]
@@ -554,7 +555,7 @@ stages:
             said.contains("afkconvoy inspected --text-file <file> [--did '<what you did>']..."),
             "{said}"
         );
-        assert!(said.contains("You have 15 minutes"), "{said}");
+        assert!(said.contains("You have 60 minutes"), "{said}");
         assert!(said.contains("left as a comment on the hot worker's issue"), "{said}");
         // A change of the repo it makes and lands itself, on no issue.
         assert!(said.contains("`/w/inspection`, the base branch as it stood, on a branch of its own: `tester/afkconvoy-inspection`"), "{said}");
