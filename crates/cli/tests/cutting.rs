@@ -4,6 +4,8 @@ use afkconvoy::log::Entry;
 use common::{BASE, CONFIG, World, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 /// The `publish` line that says, in the world, what it published with which
 /// tag checked out.
@@ -181,6 +183,179 @@ fn with_no_version_tag_there_is_nothing_to_cut_from() {
     turn_cutting_on(&world, "Turn cutting on");
     assert_eq!(standing(&world, "alpha", 10_000), "untagged");
     assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), Vec::<String>::new());
+}
+
+/// An untagged repo declaring its first version. Its gate can be failed by
+/// a file outside the checkout, so retry uses exactly the same committed tree.
+fn initial(preset: bool) -> World {
+    let world = World::new();
+    if preset {
+        common::commit(&world.clone, "VERSION", "1.2.3\n");
+    }
+    let gate = format!("test ! -f '{}'", world.root.join("red").display());
+    let steps = cut_block(&says_published(&world))
+        .replace("```yaml cut\n", "```yaml cut\ninitial: 1.2.3\n");
+    commit_config(
+        &world,
+        &format!("{}\n{steps}", CONFIG.replace("./gate.sh", &gate)),
+        "Turn cutting on (#7)",
+    );
+    // Labels on old landings do not override the explicitly declared first version.
+    world.with_gh(|gh| {
+        gh["prs"].as_array_mut().unwrap().push(json!({
+            "number": 7, "title": "Turn cutting on", "headRefName": "seven",
+            "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]
+        }))
+    });
+    world
+}
+
+/// Runs the real cut command while the real train command lands its PR.
+/// Only `gh` and `orca` are stood in for; no cut record is edited by the test.
+fn finish_on_train(world: &World, checkout: &Path) -> Value {
+    let train = world.root.join("train");
+    git(
+        &world.clone,
+        &["worktree", "add", "-q", "-b", "convoy-train", train.to_str().unwrap(), "HEAD"],
+    );
+    let answer = world.root.join("cut-answer");
+    let errors = world.root.join("cut-errors");
+    let mut child = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), checkout)
+        .args(["cut", "--host", "h1"])
+        .stdout(std::fs::File::create(&answer).unwrap())
+        .stderr(Stdio::from(std::fs::File::create(&errors).unwrap()))
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    let line = "refs/convoy/train/line/main";
+    let joined = loop {
+        let tip = world.remote(&["for-each-ref", "--format=%(objectname)", line]);
+        if !tip.is_empty() {
+            break tip;
+        }
+        if child.try_wait().unwrap().is_some() || Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "cut did not join: {} {}",
+                std::fs::read_to_string(&answer).unwrap(),
+                std::fs::read_to_string(&errors).unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(!world.root.join("published").exists(), "publish waits for landing and tag");
+    assert!(world.remote(&["tag", "--list"]).is_empty(), "nothing tagged before landing");
+    let landed = world.afk_in(&train, &["land", "--train", "--merged-timeout", "5"]).ok();
+    assert_eq!(landed["outcome"], "landed", "{landed}");
+    assert_eq!(landed["commit"], joined);
+    assert!(child.wait().unwrap().success(), "{}", std::fs::read_to_string(errors).unwrap());
+    let answer: Value = serde_json::from_str(&std::fs::read_to_string(answer).unwrap()).unwrap();
+    assert_eq!(answer["landed"], joined);
+    answer
+}
+
+/// The first version takes every release step, whether setting it changes
+/// a file or it was already set. Later versions are picked from its tag.
+fn first_cut(preset: bool) {
+    let world = initial(preset);
+    let config = world.afk(&["config"]).ok();
+    assert_eq!(config["cut"]["initial"], "1.2.3");
+    let plan = planned(&world, "alpha", 10_000);
+    assert_eq!(plan["cut"]["standing"], "due", "{plan}");
+    assert_eq!(plan["cut"]["initial"], "1.2.3");
+    assert_eq!(plan["cut"]["past"], 0);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let first = record(&checkout);
+    assert_eq!(first["version"], "1.2.3");
+    assert!(first["from"].is_null());
+    assert_eq!(first["prs"], json!([7]));
+    assert_eq!(standing(&world, "beta", 10_010), "peer_running");
+    assert_eq!(cut(&tick_as(&world, "beta", 10_010)), Vec::<String>::new());
+    assert_eq!(world.worktrees().iter().filter(|p| p.ends_with("afkconvoy-cut")).count(), 1);
+
+    // Failure at gate leaves one PR and a record that resumes at gate. A
+    // peer still starts no cut, and the retry closes the reported failure.
+    std::fs::write(world.root.join("red"), "red").unwrap();
+    let failed = world.afk_in(&checkout, &["cut", "--host", "h1"]).ok();
+    assert_eq!(failed["failed"], "gate", "{failed}");
+    let failed_record = record(&checkout);
+    let pr = failed_record["pr"].as_u64().unwrap();
+    assert_ne!(git(&checkout, &["rev-parse", "HEAD"]), git(&world.clone, &["rev-parse", "HEAD"]));
+    let same_tree = git(&checkout, &["rev-parse", "HEAD^{tree}"])
+        == git(&world.clone, &["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(same_tree, preset, "a version already set still gets a commit");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    assert_eq!(standing(&world, "beta", 10_110), "failed");
+    assert_eq!(cut(&tick_as(&world, "beta", 10_110)), Vec::<String>::new());
+    std::fs::remove_file(world.root.join("red")).unwrap();
+
+    let answer = finish_on_train(&world, &checkout);
+    assert_eq!(answer["tag"], "v1.2.3", "{answer}");
+    assert_eq!(answer["pr"], pr);
+    assert_eq!(answer["prs"], json!([7]), "the cut's own PR is excluded");
+    assert_eq!(answer["closed"].as_array().unwrap().len(), 1);
+    let steps: Vec<_> = answer["took"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| step["step"].as_str().unwrap())
+        .collect();
+    assert_eq!(steps, ["set", "pr", "gate", "land", "tag", "publish"]);
+    let tagged = world.remote(&["rev-parse", "v1.2.3^{commit}"]);
+    assert_eq!(answer["landed"], tagged);
+    assert_eq!(world.remote(&["rev-parse", BASE]), tagged);
+    assert_eq!(std::fs::read_to_string(world.root.join("published")).unwrap(), "1.2.3 v1.2.3\n");
+    assert_eq!(world.gh()["prs"].as_array().unwrap().len(), 2, "one old PR and one cut PR");
+    assert!(failures(&world).is_empty());
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["end_cut done"]);
+    assert_eq!(standing(&world, "alpha", 10_210), "tagged");
+    assert!(!claimed(&world));
+
+    // The initial declaration stays in config, but only landings past the
+    // new tag choose the next patch or minor; old release:minor labels do not.
+    git(&world.clone, &["fetch", "-q", "origin"]);
+    git(&world.clone, &["merge", "--ff-only", "origin/main"]);
+    land(&world, "Add a gadget (#9)");
+    world.with_gh(|gh| {
+        gh["prs"].as_array_mut().unwrap().push(json!({
+        "number": 9, "title": "Add a gadget", "headRefName": "nine", "headRefOid": "",
+        "body": "", "state": "merged", "labels": if preset { vec!["release:minor"] } else { vec![] }
+    }))
+    });
+    assert!(planned(&world, "alpha", 10_300)["cut"].get("initial").is_none());
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_300)), ["cut done"]);
+    let next = record(&self::checkout(&world));
+    assert_eq!(next["from"], "v1.2.3");
+    assert_eq!(next["version"], if preset { "1.3.0" } else { "1.2.4" });
+    assert_eq!(next["prs"], json!([9]));
+}
+
+#[test]
+fn an_untagged_repo_cuts_its_declared_initial_version_and_then_the_next_patch() {
+    first_cut(false);
+}
+
+#[test]
+fn an_initial_version_already_set_is_gated_landed_and_cut_then_the_next_minor() {
+    first_cut(true);
+}
+
+#[test]
+fn the_initial_cut_obeys_admission_and_a_fleet_lock() {
+    let world = initial(false);
+    world.busy("1000");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), Vec::<String>::new());
+    assert!(!claimed(&world));
+    world.busy("0");
+    world.issue(9, &["fleet-lock"]);
+    assert_eq!(standing(&world, "alpha", 10_100), "locked");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), Vec::<String>::new());
+    assert!(!claimed(&world));
+    world.close_issue(9);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), ["cut done"]);
 }
 
 #[test]

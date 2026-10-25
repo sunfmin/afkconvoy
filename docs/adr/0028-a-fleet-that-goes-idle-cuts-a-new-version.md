@@ -10,7 +10,7 @@ The fleet cuts a version itself (#466). A **cut** is the run that makes a new ve
 
 ## When
 
-A tick whose pass ends idle — no claim held, nothing on the landing train, an empty frontier, admission holding nothing back — in a repo that turns cutting on, whose base branch holds landed commits past its newest version tag (`v` and three numbers). Nothing else starts one: no command, no flag, no schedule. Idle is when the work that will be in the version has all landed; a cut started earlier would cut a version the next landing makes stale. `plan` says where a cut stands — due, tagged, untagged, failed, locked, running — so whoever reads it knows whether the next idle tick starts one.
+A tick whose pass ends idle — no claim held, nothing on the landing train, an empty frontier, admission holding nothing back — in a repo that turns cutting on, whose base branch holds landed commits past its newest version tag (`v` and three numbers), or whose remote has no version tag and whose cut block declares `initial: X.Y.Z`. Nothing else starts one: no command, no flag, no schedule. Idle is when the work that will be in the version has all landed; a cut started earlier would cut a version the next landing makes stale. `plan` says where a cut stands — due, tagged, untagged, failed, locked, running — so whoever reads it knows whether the next idle tick starts one.
 
 ## Once
 
@@ -41,6 +41,14 @@ Its time: two gate limits — its own gate and the train's — and an hour besid
 ## Turning it on
 
 The repo names its cut steps in its config file, in a block of their own opened by ```` ```yaml cut ````: `set` and `publish`, each run by `sh -e` in the cut's checkout with the version in `$VERSION`: the first line that fails fails the step, as a release script's would. By `sh` alone the lines after it would run, and the last one's status would stand for them all — a publish that failed, followed by an install that found nothing newer, would pass. The config's own ```` ```yaml ```` block refuses a key it does not know, so a key there would make every afkconvoy older than this one refuse the repo's config once the change lands on the base branch — every fleet of the repo, on every host not yet upgraded. An older afkconvoy reads only the first block whose line is ```` ```yaml ```` alone, and reads past this one.
+
+## The first cut (sunfmin/control#67)
+
+An untagged repo can declare `initial: X.Y.Z` beside `set` and `publish` in its cut block: three whole numbers, without leading zeroes, a `v` prefix or a prerelease suffix. Without that declaration it stays untagged, as before. With it, the next idle tick starts a cut of that exact version under the same admission, fleet lock and remote claim rules. The winner reads the remote tags again: if a peer has cut already, the usual tagged behavior applies. Once a version tag exists, the declaration is ignored; subsequent cuts pick the patch or minor past the newest tag as before.
+
+The first cut has no previous tag (`from: null` in its record), and holds the PRs all of the base branch's landings name. Their labels do not change the declared initial version. Every step still runs: `set`, `pr`, `gate`, `land`, `tag`, `publish`. If `set` changes nothing and no cut's PR of that title has landed, the initial cut makes an empty version commit so that the PR, recorded gate run and landing train remain the only way to tag a release. A previous cut's landing can still be found across the whole base branch history and tagged after an interrupted cut. There is no seed tag or manual release outside that path.
+
+Choosing an explicit version instead of inferring it from files keeps the version's one home in the repo's cut declaration; afkconvoy need not know each language's manifest. Existing cut blocks without `initial`, and existing records naming a previous tag, keep their behavior.
 
 ## Considered options
 

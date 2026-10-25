@@ -48,17 +48,18 @@ pub fn seen(
 ) -> Result<Option<Seen>> {
     let claim = fleet.scan.runs.iter().find(|run| run.key == CLAIM_KEY).cloned();
     let on_train = riding.iter().find(|join| matches!(join.of, Of::Cut(_))).map(|join| join.pr);
-    if fleet.config.cut.is_none() {
+    let Some(steps) = &fleet.config.cut else {
         let going = claim.is_some() || on_train.is_some();
         return Ok(going.then(|| Seen { claim, on_train, ..Seen::default() }));
-    }
+    };
     let newest = cut::newest(fleet.version_tags());
     let past = match &newest {
         Some(tag) => past(&fleet.repo, tag, base)?,
         None => 0,
     };
     let failure = cut::failure_of(issues, &escalate_label(fleet, read));
-    Ok(Some(Seen { on: true, newest, past, claim, failure, on_train }))
+    let initial = steps.initial_version();
+    Ok(Some(Seen { on: true, newest, initial, past, claim, failure, on_train }))
 }
 
 /// How many commits the base branch at `base` holds past the tag `tag`, its
@@ -69,10 +70,19 @@ fn past(repo: &Repo, tag: &Tag, base: &str) -> Result<u64> {
     counted.parse().with_context(|| format!("git rev-list --count: no count in {counted:?}"))
 }
 
+/// The history up to `to`, past `from` where a version tag exists; all of it
+/// for the initial cut.
+fn history(from: Option<&str>, to: &str) -> String {
+    match from {
+        Some(from) => format!("{from}..{to}"),
+        None => to.to_string(),
+    }
+}
+
 /// The PRs whose landings the commits past `from` up to `to` hold, as the
 /// subjects of their first parents name them (`cut::prs_of`).
-fn prs_past(repo: &Repo, from: &str, to: &str) -> Result<Vec<u64>> {
-    let subjects = repo.git(&["log", "--first-parent", "--format=%s", &format!("{from}..{to}")])?;
+fn prs_past(repo: &Repo, from: Option<&str>, to: &str) -> Result<Vec<u64>> {
+    let subjects = repo.git(&["log", "--first-parent", "--format=%s", &history(from, to)])?;
     Ok(cut::prs_of(subjects.lines()))
 }
 
@@ -87,25 +97,37 @@ fn escalate_label(fleet: &Fleet, read: &Flows) -> String {
 
 /// What a cut started now makes, past the newest version tag on the remote
 /// as it is now and holding the PRs the base branch at `base` holds past it,
-/// started `now` → its record; `None` where the remote has no version tag,
-/// or the base branch holds nothing past it.
+/// started `now` → its record. Without a version tag it makes the declared
+/// initial version; `None` without that declaration, or with no work past a tag.
 fn pick(fleet: &Fleet, base: &str, now: u64) -> Result<Option<Record>> {
-    let Some(newest) = cut::newest(&fleet.repo.remote_tags()?) else { return Ok(None) };
-    if past(&fleet.repo, &newest, base)? == 0 {
-        return Ok(None);
-    }
-    let prs = prs_past(&fleet.repo, &newest.commit, base)?;
-    let labelled = match prs.is_empty() {
-        true => vec![],
-        false => fleet.gh.merged_prs_labelled(MINOR_LABEL)?,
+    let newest = cut::newest(&fleet.repo.remote_tags()?);
+    let (version, from, prs, minor) = match newest {
+        Some(newest) => {
+            if past(&fleet.repo, &newest, base)? == 0 {
+                return Ok(None);
+            }
+            let prs = prs_past(&fleet.repo, Some(&newest.commit), base)?;
+            let labelled = match prs.is_empty() {
+                true => vec![],
+                false => fleet.gh.merged_prs_labelled(MINOR_LABEL)?,
+            };
+            let version = cut::pick(newest.version, &prs, &labelled)
+                .ok_or_else(|| anyhow!("no version follows {}", newest.version.tag()))?;
+            (version, Some(newest.version.tag()), prs, version.minor != newest.version.minor)
+        }
+        None => {
+            let Some(version) = fleet.config.cut.as_ref().and_then(cut::Steps::initial_version)
+            else {
+                return Ok(None);
+            };
+            (version, None, prs_past(&fleet.repo, None, base)?, false)
+        }
     };
-    let version = cut::pick(newest.version, &prs, &labelled)
-        .ok_or_else(|| anyhow!("no version follows {}", newest.version.tag()))?;
     Ok(Some(Record {
         version: version.to_string(),
-        from: newest.version.tag(),
+        from,
         prs,
-        minor: version.minor != newest.version.minor,
+        minor,
         started: now,
         pr: None,
         landed: None,
@@ -197,7 +219,7 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
     // A record nobody can read names no version: the issue still stands for it.
     let record = record.unwrap_or_else(|| Record {
         version: "?".to_string(),
-        from: "?".to_string(),
+        from: Some("?".to_string()),
         prs: vec![],
         minor: false,
         started,
@@ -402,34 +424,42 @@ impl Cutting<'_> {
     /// Runs the repo's `set` lines, and commits what they changed. Lines that
     /// change nothing find the version set already: by a cut whose end was
     /// cut short after its PR landed. Where that landing is on the base
-    /// branch, it is the one this cut tags; else nothing set the version.
+    /// branch, it is the one this cut tags. An initial version already set
+    /// still gets its own commit, gate and landing through the landing train.
     fn set(&self, record: &mut Record) -> Result<()> {
         self.sh(Step::Set, &self.steps.set, &record.version)?;
         self.repo.git(&["add", "-A"])?;
         let changed = self.repo.git_raw(&["status", "--porcelain"])?;
         let title = cut::title(&repo_name(self.repo)?, &record.version);
         if changed.trim().is_empty() {
-            let Some(landed) = self.landed_titled(&record.from, &title)? else {
+            if let Some(landed) = self.landed_titled(record.from.as_deref(), &title)? {
+                record.pr = Some(landed.pr);
+                record.landed = Some(landed.commit);
+                return Ok(());
+            }
+            if let Some(from) = &record.from {
                 bail!(
                     "the set lines changed nothing, and no cut's PR titled {title:?} landed past \
-                     {}: they set no version",
-                    record.from
+                     {from}: they set no version"
                 );
-            };
-            record.pr = Some(landed.pr);
-            record.landed = Some(landed.commit);
-            return Ok(());
+            }
         }
-        self.repo.git(&["commit", "--quiet", "-m", &title])?;
+        self.repo.git(&["commit", "--quiet", "--allow-empty", "-m", &title])?;
         Ok(())
     }
 
+    /// The landings on `base` past the previous tag, or all landings for an
+    /// initial cut. Every step reads the same history of the cut's origin.
+    fn landings(&self, from: Option<&str>, base: &str) -> Result<Vec<Joined>> {
+        let tag = from.map(|tag| self.tag_commit(tag)).transpose()?;
+        joins_in(self.repo, &self.gh.tracker, &[&history(tag.as_deref(), base)])
+    }
+
     /// The landing of a cut's PR titled `title` the base branch holds past
-    /// the tag `from`, where one is.
-    fn landed_titled(&self, from: &str, title: &str) -> Result<Option<Joined>> {
-        let tag = self.tag_commit(from)?;
+    /// the tag `from`, or anywhere on it for an initial cut, where one is.
+    fn landed_titled(&self, from: Option<&str>, title: &str) -> Result<Option<Joined>> {
         let base = self.base()?;
-        let joins = joins_in(self.repo, &self.gh.tracker, &[&format!("{tag}..{base}")])?;
+        let joins = self.landings(from, &base)?;
         let ends = format!("{title} (#");
         Ok(joins.into_iter().find(|join| {
             matches!(join.of, Of::Cut(_))
@@ -505,9 +535,7 @@ impl Cutting<'_> {
         loop {
             let train = Train::read(self.repo, self.config)?;
             if self.repo.within(&head, &train.base)? {
-                let tag = self.tag_commit(&record.from)?;
-                let joins =
-                    joins_in(self.repo, &self.gh.tracker, &[&format!("{tag}..{}", train.base)])?;
+                let joins = self.landings(record.from.as_deref(), &train.base)?;
                 let Some(join) = joins.into_iter().rev().find(|join| join.pr == number) else {
                     bail!(
                         "PR #{number} is on {} with no landing of the landing train's: it was \
@@ -555,11 +583,11 @@ impl Cutting<'_> {
         let landed =
             record.landed.clone().ok_or_else(|| anyhow!("nothing says where it landed"))?;
         let tag = format!("v{}", record.version);
-        let from = self.tag_commit(&record.from)?;
-        let mut prs = prs_past(self.repo, &from, &landed)?;
+        let from = record.from.as_deref().map(|tag| self.tag_commit(tag)).transpose()?;
+        let mut prs = prs_past(self.repo, from.as_deref(), &landed)?;
         prs.retain(|pr| Some(*pr) != record.pr);
         record.prs = prs;
-        if !record.minor && !record.prs.is_empty() {
+        if record.from.is_some() && !record.minor && !record.prs.is_empty() {
             let labelled = self.gh.merged_prs_labelled(MINOR_LABEL)?;
             if let Some(pr) = record.prs.iter().find(|pr| labelled.contains(pr)) {
                 bail!(
