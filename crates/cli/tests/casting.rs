@@ -70,18 +70,16 @@ fn enabled_casting_has_no_choice_on_a_model_less_harness_and_reuses_labels_after
     let world = cast(&["model:haiku"]);
     world.comment(7, "Cast `model:haiku`: Small.");
     world.afk(&["kit", "--cast", "on"]).ok();
-    world.afk(&["switch", "--harness", "codex"]).ok();
+    world.kit_models("pi", &[]);
+    world.afk(&["switch", "--harness", "pi"]).ok();
     let planned = world.afk(&PLAN).ok();
     assert_eq!(planned["caster"], Value::Null);
-    assert_eq!(
-        planned["frontier"][0]["cast"],
-        json!({"harness":"codex","model":null,"why":"first"})
-    );
+    assert_eq!(planned["frontier"][0]["cast"], json!({"harness":"pi","model":null,"why":"first"}));
     assert!(planned["casting"][0]["why"].as_str().unwrap().contains("no model choice"));
     world.afk(&TICK).ok();
     let commands = started(&world);
-    assert_eq!(commands, [common::codex_line(&world, &world.worktrees()[0])]);
-    assert!(!commands[0].contains("--model"), "Codex must not inherit Claude Code's model");
+    assert_eq!(commands, [Harness::Pi.stock()]);
+    assert!(!commands[0].contains("--model"), "pi must not inherit Claude Code's model");
     world.afk(&["switch", "--harness", "claude-code"]).ok();
     world.issue(8, &["ready-for-agent", "model:haiku"]);
     world.comment(8, "Cast `model:haiku`: Small.");
