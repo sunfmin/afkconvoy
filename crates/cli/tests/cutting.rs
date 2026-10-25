@@ -1,6 +1,7 @@
 use crate::common;
 
 use afkconvoy::log::Entry;
+use afkconvoy_core::{cut::CHECKOUT, worker::is_worktree_named};
 use common::{BASE, CONFIG, World, git};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -121,7 +122,13 @@ fn its_pr_lands(world: &World, checkout: &Path) -> String {
 /// The checkout the cut was started in.
 fn checkout(world: &World) -> PathBuf {
     let listed = world.worktrees().into_iter();
-    let mut cuts: Vec<_> = listed.filter(|path| path.ends_with("afkconvoy-cut")).collect();
+    let mut cuts: Vec<_> = listed
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| is_worktree_named(name, CHECKOUT))
+        })
+        .collect();
     cuts.pop().expect("the cut has a checkout")
 }
 
