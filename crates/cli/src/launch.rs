@@ -2,7 +2,7 @@
 //! their first words in the login shell a worker gets. Commands are passed
 //! to orca as written, under nice with the worker's own TMPDIR.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Read;
@@ -17,7 +17,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::config;
 use crate::git::Repo;
-use crate::topic::{Explain, See};
+use crate::topic::See;
 
 /// How long the login shell is given to answer.
 pub(crate) const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -25,6 +25,7 @@ pub(crate) const SHELL_TIMEOUT: Duration = Duration::from_secs(20);
 /// The command a start would give the workers of one harness, with what the
 /// login shell says its first word is: not yet one a worker may be started
 /// with.
+#[derive(Clone)]
 pub struct Proposed {
     harness: Harness,
     command: String,
@@ -75,9 +76,9 @@ impl Proposed {
     }
 }
 
-/// One start's snapshot of the host kit, with shell resolutions checked once.
+/// Reads the latest host kit at each launch; shell resolutions are reused only
+/// while the command itself is unchanged.
 pub struct Launches {
-    kit: Result<crate::kit::Kit, String>,
     bypass: afkconvoy_core::proxy::Lists,
     /// The default harness of the repo it is for: the one the bare form names.
     default: Harness,
@@ -93,7 +94,7 @@ pub struct Launches {
     /// that set up a toolchain for the repo there too, and nothing is asked
     /// in the directory the process happens to run in.
     dir: PathBuf,
-    proposed: Vec<(Harness, OnceCell<Option<Proposed>>)>,
+    proposed: RefCell<Vec<Proposed>>,
     /// What the commands it resolved warn of, until whoever reports them
     /// takes them (`warned`).
     warned: RefCell<Vec<String>>,
@@ -104,9 +105,7 @@ impl Launches {
     /// workers.
     pub fn new(repo: &Repo, starts: bool) -> Result<Launches> {
         let mut launches = Self::foreseen(repo);
-        if let Err(why) = &launches.kit {
-            bail!("{why}");
-        }
+        crate::kit::load()?;
         launches.starts = starts;
         Ok(launches)
     }
@@ -119,13 +118,12 @@ impl Launches {
         // The host kit's first is what a worker nothing casts runs.
         let first = kit.as_ref().ok().and_then(|kit| kit.first()).map(|first| first.harness);
         Launches {
-            kit,
             bypass: afkconvoy_core::proxy::Lists::default(),
             default: first.unwrap_or(Harness::DEFAULT),
             bound: config.is_some_and(|config| config.bound.is_some()),
             starts: false,
             dir: repo.dir.clone(),
-            proposed: Harness::ALL.map(|harness| (harness, OnceCell::new())).into(),
+            proposed: RefCell::default(),
             warned: RefCell::default(),
         }
     }
@@ -159,7 +157,10 @@ impl Launches {
     }
 
     pub fn default(&self) -> Harness {
-        self.default
+        crate::kit::load()
+            .ok()
+            .and_then(|kit| kit.first())
+            .map_or(self.default, |first| first.harness)
     }
 
     pub fn bound(&self) -> bool {
@@ -171,35 +172,69 @@ impl Launches {
     }
 
     /// The host kit's command, with its first word resolved in the login shell.
-    /// An absent harness is an error; no stock command is substituted. What a
-    /// start's command warns of is kept for `warned`.
-    pub fn of(&self, harness: Harness) -> Result<Option<&Proposed>> {
-        let cell = self.proposed.iter().find(|(named, _)| *named == harness).map(|(_, cell)| cell);
-        let cell = cell.ok_or_else(|| anyhow!("`{}` is no harness", harness.key()))?;
-        if cell.get().is_none() {
-            let proposed = self.propose(harness).see(See::Troubleshooting)?;
-            if let Some(Ok(command)) = proposed.as_ref().map(Proposed::checked)
-                && let Some(warning) = command.warning().filter(|_| self.starts)
-            {
-                self.warned.borrow_mut().push(warning.to_string());
-            }
-            let _ = cell.set(proposed);
+    /// A missing command is discovered from the harness's stock command in
+    /// the worker's login shell. Read-only commands never write the kit.
+    pub fn of(&self, harness: Harness) -> Result<Option<Proposed>> {
+        let kit = crate::kit::load()?;
+        let explicit = kit.command(harness).filter(|command| !command.trim().is_empty());
+        let command = explicit.unwrap_or(harness.stock());
+        if let Some(proposed) = self
+            .proposed
+            .borrow()
+            .iter()
+            .find(|proposed| proposed.harness == harness && proposed.command == command)
+        {
+            return Ok(Some(proposed.clone()));
         }
-        Ok(cell.get().and_then(Option::as_ref))
+        let mut proposed = self.propose(harness, command.to_string());
+        if explicit.is_none() && self.starts {
+            self.validate(&proposed)?;
+            let merged = crate::kit::discover(harness, command)?;
+            if merged != command {
+                proposed = self.propose(harness, merged);
+            } else {
+                self.warned.borrow_mut().push(format!("discovered {} worker launch command from its harness default in the login shell: {command}", harness.key()));
+            }
+        }
+        if let Ok(command) = proposed.checked()
+            && let Some(warning) = command.warning().filter(|_| self.starts)
+        {
+            self.warned.borrow_mut().push(warning.to_string());
+        }
+        let mut cached = self.proposed.borrow_mut();
+        cached.retain(|old| old.harness != harness);
+        cached.push(proposed.clone());
+        Ok(Some(proposed))
     }
 
-    fn propose(&self, harness: Harness) -> Result<Option<Proposed>> {
-        let kit = self.kit.as_ref().map_err(|why| anyhow!("{why}"))?;
-        let command = kit.command(harness).map(str::to_string).ok_or_else(|| anyhow!(
-            "the host kit has no worker launch command for the harness `{}`: run `afkconvoy kit`",
-            harness.key()
-        ))?;
+    fn propose(&self, harness: Harness, command: String) -> Proposed {
         let resolution = first_word(&command)
             .and_then(|word| {
                 login_shell(&self.dir, &format!("type -- '{}'", word.replace('\'', "'\\''")))
             })
             .filter(|answer| !answer.trim().is_empty());
-        Ok(Some(Proposed { harness, command, resolution, dir: self.dir.clone() }))
+        Proposed { harness, command, resolution, dir: self.dir.clone() }
+    }
+
+    fn validate(&self, proposed: &Proposed) -> Result<()> {
+        proposed.checked().map_err(|why| {
+            anyhow!(
+                "{why}; install {} or set its command in the host kit",
+                proposed.harness.program()
+            )
+        })?;
+        if self.bound {
+            proposed
+                .harness
+                .takes(proposed.as_str(), proposed.flags().as_deref())
+                .map_err(|why| anyhow!(why))?;
+        }
+        if let Some((tool, found)) = crate::tools::harness(proposed)
+            && let Some(why) = afkconvoy_core::tools::refusal(&[(tool, found)], None, None)
+        {
+            bail!("{why}");
+        }
+        Ok(())
     }
 
     /// The command every worker of `harness` is started with, checked to
@@ -210,6 +245,7 @@ impl Launches {
             See::Troubleshooting
                 .refusal("no worker launch command in the host kit: run `afkconvoy kit`")
         })?;
+        self.validate(&proposed)?;
         let checked = proposed.checked();
         checked.map_err(|why| See::Troubleshooting.refusal(self.said(&why, harness, &[])))
     }
@@ -236,9 +272,9 @@ impl Launches {
 
     /// Fingerprint the entire kit so any edit invalidates a standing probe.
     pub fn key(&self) -> Result<Option<u64>> {
-        let Some(default) = self.of(self.default)? else { return Ok(None) };
+        let Some(default) = self.of(self.default())? else { return Ok(None) };
         let mut text = default.as_str().to_string();
-        for (harness, command) in self.kit.as_ref().into_iter().flat_map(|kit| kit.commands()) {
+        for (harness, command) in crate::kit::load()?.commands() {
             text.push_str(&format!("\n{}={command}", harness.key()));
         }
         Ok(Some(key(&text)))
@@ -247,9 +283,9 @@ impl Launches {
     /// First words alone for the run log; commands remain in the host kit.
     pub fn logged(&self) -> (String, BTreeMap<String, String>) {
         let word = |command: &str| first_word(command).unwrap_or_default().to_string();
-        let default = self.of(self.default).ok().flatten().map(|command| word(command.as_str()));
-        let others = self
-            .kit
+        let default = self.of(self.default()).ok().flatten().map(|command| word(command.as_str()));
+        let kit = crate::kit::load();
+        let others = kit
             .as_ref()
             .into_iter()
             .flat_map(|kit| kit.commands())

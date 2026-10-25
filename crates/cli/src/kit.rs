@@ -33,6 +33,7 @@ pub struct Held {
     #[serde(deserialize_with = "harness")]
     pub harness: Harness,
     /// Its worker launch command.
+    #[serde(default)]
     pub command: String,
     /// The models it was seen to answer with, in order of preference.
     #[serde(default)]
@@ -215,6 +216,38 @@ pub fn load() -> Result<Kit> {
     load_at(&path()?)
 }
 
+/// Merge one discovered command into the latest kit. A concurrent explicit
+/// command wins; models, research, preference order and the consult stay put.
+pub fn discover(harness: Harness, command: &str) -> Result<String> {
+    discover_at(&path()?, harness, command)
+}
+
+fn writing(file: &Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(file.parent().context("the host kit needs a parent directory")?)?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(file.with_extension("refresh"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn discover_at(file: &Path, harness: Harness, command: &str) -> Result<String> {
+    let _writing = writing(file)?;
+    let mut kit = if file.exists() { load_at(file)? } else { Kit::default() };
+    if let Some(explicit) = kit.command(harness).filter(|command| !command.trim().is_empty()) {
+        return Ok(explicit.to_string());
+    }
+    match kit.harnesses.iter_mut().find(|held| held.harness == harness) {
+        Some(held) => held.command = command.to_string(),
+        None => kit.harnesses.push(Held { harness, command: command.to_string(), models: vec![] }),
+    }
+    let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+    store(file, &kit, now)?;
+    Ok(command.to_string())
+}
+
 /// The host kit kept in `file`.
 fn load_at(file: &Path) -> Result<Kit> {
     let unreadable =
@@ -295,6 +328,7 @@ pub fn ensure(now: u64) -> Result<()> {
 pub fn write(now: u64) -> Result<Value> {
     let host = Host::here(now)?;
     let file = path()?;
+    let _writing = writing(&file)?;
     let current = if file.exists() { load()? } else { Kit::default() };
     let (mut kit, left_out) = compose(&current, &host, Writing::Whole);
     crate::kit_research::research(&current, &mut kit, now, host.research);
