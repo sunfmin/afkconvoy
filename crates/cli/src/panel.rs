@@ -148,6 +148,9 @@ pub struct Panel {
     pub off: Vec<Card>,
     /// The patrols the repo names, each as it stands.
     pub patrols: Vec<patrol::Row>,
+    /// Where the repo's cut stands, and the last one, in words: `None` where
+    /// it turns cutting off and no cut is going.
+    pub cut: Option<String>,
     /// When the part was made, in epoch seconds: what a patrol's wait is
     /// counted from.
     pub now: u64,
@@ -402,6 +405,7 @@ impl Panel {
             to_human: vec![],
             off: vec![],
             patrols: vec![],
+            cut: None,
             now: fleet.now,
             hot: vec![],
             caster: None,
@@ -605,7 +609,9 @@ pub fn read(
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
     panel.frontier = set.frontier.len();
     let on_train = set.on_train();
-    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier, on_train);
+    panel.idle = afkconvoy_core::host_sleep::idle(set.held(), panel.frontier, on_train)
+        && !set.cut_running();
+    panel.cut = set.cut.as_ref().and_then(|row| crate::cut::says(&fleet.repo, row));
     // Soft: a team or a host kit that cannot be read names no role.
     if let (Ok(team), Ok((kit, _))) = (flows.team(), crate::kit::running()) {
         panel.nothing_safe = afkconvoy_core::casting::range_faults(team, &kit.range());
@@ -1409,6 +1415,15 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         }
         out.push_str("</ul></section>\n");
     }
+    if let Some(cut) = &panel.cut {
+        let _ = writeln!(
+            out,
+            "<section class=\"patrols\" data-cut><h2>Cut</h2><ul class=\"cards\"><li \
+             class=\"card\"><span class=\"meta\"><span class=\"note\">{}</span></span></li>\
+             </ul></section>",
+            esc(cut)
+        );
+    }
     if !panel.off.is_empty() {
         let _ = write!(
             out,
@@ -1445,6 +1460,7 @@ mod tests {
             to_human: vec![],
             off: vec![],
             patrols: vec![],
+            cut: None,
             now,
             hot: vec![],
             caster: None,

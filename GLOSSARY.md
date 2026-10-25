@@ -69,7 +69,7 @@ The issues of the fleet's tracker a worker can be started on now — of a tracke
 _Avoid_: queue (the exclusive queue of a host's heavy commands), backlog (all the issues a repo has open)
 
 **Idle**:
-A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run or the proposal of a precedent — nothing is on its landing train, and its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
+A fleet instance with nothing to do now: it holds no claim — on an issue, a patrol's run, the proposal of a precedent or a cut — nothing is on its landing train, and its frontier is empty. An escalated issue waiting for a human leaves it idle, and so does a patrol not yet due.
 _Avoid_: drained, done (what a step or a command did), finished (a PR its worker is through with)
 
 **Host sleep**:
@@ -325,11 +325,11 @@ Bringing a branch up to date by merging into it. Nothing is ever rebased.
 _Avoid_: rebase, update branch
 
 **Landing train**:
-The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes as the repo names it — `#7`, or `acme/tracker#7` of a tracker's — or, of an inspection's change of the repo, the inspection. Every fleet of the repo joins the one train, whatever its tracker, and closes only its own tracker's issues.
+The one append-only line of merge commits ahead of the base branch that finished PRs join, one merge commit per PR, which names the issue the PR closes as the repo names it — `#7`, or `acme/tracker#7` of a tracker's — or, of an inspection's change of the repo, the inspection; of a cut's version, the cut. Every fleet of the repo joins the one train, whatever its tracker, and closes only its own tracker's issues.
 _Avoid_: merge queue, merge batch, landing turn
 
 **Join**:
-Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed. An inspection joins its own change of the repo, which closes no issue: the train takes it by the inspection.
+Putting a finished PR on the landing train. In an unbound repo the worker that wrote it does; in a bound repo a new worker does, in the landing role its workflow names, after the last stage passed. An inspection joins its own change of the repo, which closes no issue: the train takes it by the inspection. A cut joins its version the same way, taken by the cut.
 _Avoid_: merge (what git does to two branches, and a human to a proposal's PR), enqueue
 
 **Train worker**:
@@ -339,3 +339,7 @@ _Avoid_: merger, integrator, batch worker
 **Abandon**:
 Giving up a landing train whose worker stayed silent, with nothing landed; its PRs join the next train.
 _Avoid_: fail (as under Escalate), bisect
+
+**Cut**:
+The run that makes a new version of a repo from its base branch: it sets the version, lands it, tags it, and publishes and installs it. A tick whose pass ends idle starts one in a repo that turns cutting on — that names its cut steps in a ```` ```yaml cut ```` block of its config file — once the base branch holds landed commits past its newest version tag; nothing else starts one. It is claimed on the remote, so one host cuts each version. The version is the next patch past that tag, or the next minor where a PR that landed since carries `release:minor`. It is `afkconvoy cut`, run in a checkout of its own: a worker in no role, started the way an inspection is, taking no slot of the concurrency and keeping the host awake while it runs. Its steps — `set`, `pr`, `gate`, `land`, `tag`, `publish` — commit the version, land it through the landing train on no issue, tag the commit that landed it and push the tag, and run the publish lines with the tag checked out; each is timed, and what it did is a line of the tick log, an event of `doctor` and on the panel. One that fails or runs out of time opens one issue under the escalate label naming the step, why and the line that goes on from there; no cut starts while it is open.
+_Avoid_: release (a claim's last step, and `afkconvoy release`), publish (a heartbeat's), deploy

@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::admission::Hold;
 use crate::claims::{Claim, InstanceId};
 use crate::config::Config;
+use crate::cut;
 use crate::lease::is_stale;
 use crate::lock;
 use crate::patrol::{self, Standing};
@@ -279,14 +280,26 @@ pub struct WorkingSet {
     /// assembles the set leaves it out, and the effect layer puts it in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caster: Option<crate::casting::Standing>,
+    /// The repo's cut (docs/adr/0028), as it stands now: whether a pass that
+    /// ends idle starts one, or asks after one of mine. Left out of a set
+    /// assembled with nothing read of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<cut::Row>,
 }
 
 impl WorkingSet {
     /// Whether the landing train holds something of this fleet's to tend: a
-    /// PR of mine, or an inspection's.
+    /// PR of mine, an inspection's, or a cut's.
     pub fn on_train(&self) -> bool {
         self.mine.iter().any(|mine| mine.status == Status::Joined)
             || !self.inspections_on_train.is_empty()
+            || self.cut.as_ref().is_some_and(|cut| cut.on_train.is_some())
+    }
+
+    /// Whether a cut of mine is going, as this set was read: it takes no
+    /// slot, and keeps the fleet instance from being idle.
+    pub fn cut_running(&self) -> bool {
+        self.cut.as_ref().is_some_and(|cut| cut.standing == cut::Standing::Running)
     }
 
     /// Whether a fleet lock keeps the fleet off `issue` (`lock::keeps_off`).
@@ -439,6 +452,9 @@ pub struct Observed<'a> {
     /// The open PRs of inspections on the landing train at their current
     /// head: changes of the repo an inspection made on no issue.
     pub inspections: &'a [u64],
+    /// What was read of the repo's cut (`cut::Seen`); `None` where nothing
+    /// was, and the set holds no cut.
+    pub cut: Option<&'a cut::Seen>,
 }
 
 /// How many more claims a fleet holding `held` may take under `concurrency`:
@@ -500,12 +516,14 @@ fn waiting(
     issues: &[&Issue],
     claims: &[&Claim],
     patrols: &[patrol::Row],
+    cut: Option<&cut::Row>,
 ) -> Vec<Waiting> {
     let mut rows: Vec<Waiting> = vec![];
     let failed = patrols.iter().filter_map(|patrol| {
         Some((patrol.failure?, Waits::PatrolFailed { patrol: patrol.name.clone() }, None))
     });
-    for (number, waits, since) in seen.waiting.iter().cloned().chain(failed) {
+    let cut_failed = cut.and_then(|cut| cut.failure).map(|issue| (issue, Waits::CutFailed, None));
+    for (number, waits, since) in seen.waiting.iter().cloned().chain(failed).chain(cut_failed) {
         let open = issues.iter().find(|issue| issue.number == number);
         // Neither does one the stock consult is asked of.
         let held =
@@ -552,13 +570,15 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         inspections_on_train: seen.inspections.to_vec(),
         held_back: vec![],
         caster: None,
+        cut: None,
     };
     let locked = !set.locks.is_empty();
     for patrol in seen.patrols {
         set.patrols.push(patrol::row(patrol, me, seen.heartbeats, now, locked));
     }
     set.proposals = precedent::rows(seen.proposals, me, seen.heartbeats, now, locked);
-    set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols);
+    set.cut = seen.cut.map(|cut| cut::row(cut, me, seen.heartbeats, now, locked));
+    set.waiting_on_human = waiting(seen, &issues, &claims, &set.patrols, set.cut.as_ref());
     for issue in &issues {
         if config.bound.is_some() && !seen.flows.among(&issue.labels).is_empty() {
             set.flowing.push((*issue).clone());
@@ -774,6 +794,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
@@ -820,6 +841,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
@@ -863,6 +885,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &config(3));
@@ -921,6 +944,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let claims = [claim(5, "me"), claim(6, "me")];
@@ -1003,6 +1027,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
@@ -1119,6 +1144,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
@@ -1203,6 +1229,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 1000, &bound());
@@ -1262,6 +1289,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
@@ -1313,6 +1341,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         let set = assemble(&seen, Some(&me()), 10_000, &config(5));
@@ -1347,6 +1376,7 @@ mod tests {
             slow_gate: &Reported::NONE,
             idle_train: None,
             inspections: &[],
+            cut: None,
             consults: &[],
         };
         assert_eq!(assemble(&seen, None, 1000, &config(3)).stale.len(), 1);
@@ -1390,6 +1420,7 @@ mod tests {
                     slow_gate: &Reported::NONE,
                     idle_train: None,
                     inspections: &[],
+                    cut: None,
                     consults: &[],
                 };
                 assemble(&seen, Some(&me()), 1000, &config)

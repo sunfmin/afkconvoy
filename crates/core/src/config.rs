@@ -147,6 +147,11 @@ pub struct Config {
     /// `None` in an unbound repo, whose config is the keys above and nothing else.
     #[serde(flatten)]
     pub bound: Option<Bound>,
+    /// The repo's cut steps, which turn cutting on (docs/adr/0028): read off
+    /// a block of their own (`cut::BLOCK`), never the config's, and laid over
+    /// it (`Config::cutting`). `None` where the file has no such block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<crate::cut::Steps>,
 }
 
 /// Why a repo's settings are no config. Each names the key at fault.
@@ -305,6 +310,12 @@ impl Config {
         Config { concurrency, concurrency_said_by: SaidBy::Checkout, ..self }
     }
 
+    /// This config with `steps`, the cut steps its file says in a block of
+    /// their own: what turns cutting on.
+    pub fn cutting(self, steps: Option<crate::cut::Steps>) -> Config {
+        Config { cut: steps, ..self }
+    }
+
     /// The gate limit, in seconds: how long a run of the gate command is
     /// given before it is ended, and red. Never zero.
     #[spec(fn(&Config[@c]) -> u64[c.gate_seconds])]
@@ -351,6 +362,7 @@ fn checked(
         lock_label,
         escalate_to,
         bound,
+        cut: None,
     })
 }
 

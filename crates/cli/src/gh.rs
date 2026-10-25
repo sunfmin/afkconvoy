@@ -768,6 +768,36 @@ impl GitHub {
         Ok(())
     }
 
+    /// The PRs that merged carrying `label`, by number: none where no PR, or
+    /// no label, is so.
+    pub fn merged_prs_labelled(&self, label: &str) -> Result<Vec<u64>> {
+        let out = self.read(&[
+            "pr",
+            "list",
+            "--state",
+            "merged",
+            "--label",
+            label,
+            "--limit",
+            "1000",
+            "--json",
+            "number",
+            "--jq",
+            ".[].number",
+        ])?;
+        Ok(out.lines().filter_map(|line| line.trim().parse().ok()).collect())
+    }
+
+    /// Opens a PR of the branch `head` onto `base` → its number.
+    pub fn open_pr(&self, base: &str, head: &str, title: &str, body: &str) -> Result<u64> {
+        let args =
+            ["pr", "create", "--base", base, "--head", head, "--title", title, "--body", body];
+        let out = self.gh(&args)?;
+        // `gh` says the PR's URL, which ends in its number.
+        let number = out.trim().rsplit('/').next().and_then(|number| number.parse().ok());
+        number.with_context(|| format!("gh pr create: no PR number in {out:?}"))
+    }
+
     /// Closes one PR without merging it, with a comment saying why.
     pub fn close_pr(&self, number: u64, comment: &str) -> Result<()> {
         self.gh(&["pr", "close", &number.to_string(), "--comment", comment])?;

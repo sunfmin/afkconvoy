@@ -835,7 +835,7 @@ fn the_readme_explains_no_concept_and_sends_its_reader_to_the_help() {
 #[test]
 fn the_short_help_is_still_one_screen() {
     let short = help("-h");
-    assert!(short.lines().count() <= 53, "{short}");
+    assert!(short.lines().count() <= 54, "{short}");
     assert!(!short.contains("THE COMMANDS"));
 }
 
@@ -939,7 +939,8 @@ fn the_guide_and_each_subcommand_agree_on_who_runs_it_and_why() {
             "lock",
             "over",
             "exclusive",
-            "inspected"
+            "inspected",
+            "cut"
         ])
     );
     for command in &workers {

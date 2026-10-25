@@ -82,6 +82,8 @@ pub fn run_said(key: &str) -> String {
         format!("the proposal of the ruling on #{}", ruling.issue)
     } else if let Some(name) = patrol::claimed(key) {
         format!("the run of the patrol {name}")
+    } else if key == crate::cut::CLAIM_KEY {
+        "the cut".to_string()
     } else {
         format!("the run {key}")
     }
@@ -460,6 +462,7 @@ mod tests {
     fn a_run_taken_is_said_as_what_it_is_a_run_of() {
         assert_eq!(run_said("patrol-triage"), "the run of the patrol triage");
         assert_eq!(run_said("precedent-7-c2001"), "the proposal of the ruling on #7");
+        assert_eq!(run_said("cut"), "the cut");
         assert_eq!(run_said("else"), "the run else");
     }
 
