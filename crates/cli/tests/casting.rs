@@ -79,7 +79,9 @@ fn enabled_casting_has_no_choice_on_a_model_less_harness_and_reuses_labels_after
     );
     assert!(planned["casting"][0]["why"].as_str().unwrap().contains("no model choice"));
     world.afk(&TICK).ok();
-    assert_eq!(started(&world), [Harness::Codex.stock()]);
+    let commands = started(&world);
+    assert_eq!(commands, [common::codex_line(&world, &world.worktrees()[0])]);
+    assert!(!commands[0].contains("--model"), "Codex must not inherit Claude Code's model");
     world.afk(&["switch", "--harness", "claude-code"]).ok();
     world.issue(8, &["ready-for-agent", "model:haiku"]);
     world.comment(8, "Cast `model:haiku`: Small.");
