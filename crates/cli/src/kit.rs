@@ -17,6 +17,10 @@ use serde_json::{Value, json};
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Kit {
+    /// Whether this host starts a caster to choose models. Older kits and
+    /// new hosts both default to off; the kit is its only home.
+    #[serde(default)]
+    pub cast: bool,
     /// The harnesses this host can start, in order of preference: the first
     /// is the host kit's first.
     pub harnesses: Vec<Held>,
@@ -138,6 +142,7 @@ impl Kit {
     pub fn without(&self, paused: &[afkconvoy_core::casting::Paused]) -> Kit {
         let is_paused = |harness: Harness| paused.iter().any(|pause| pause.harness == harness);
         Kit {
+            cast: self.cast,
             harnesses: self
                 .harnesses
                 .iter()
@@ -293,6 +298,7 @@ pub fn show(now: u64) -> Value {
             let running = kit.without(&paused);
             json!({
                 "path": file,
+                "cast": kit.cast,
                 "refreshed": refreshed(),
                 "harnesses": kit.harnesses,
                 "stock_consult": running.stock_consult().map(|named| json!({
@@ -304,7 +310,9 @@ pub fn show(now: u64) -> Value {
                 "paused": paused_said, "worker_health": crate::health::show(),
             })
         }
-        Err(error) => json!({"path": file, "error": format!("{error:#}"), "paused": paused_said}),
+        Err(error) => {
+            json!({"path": file, "cast": false, "error": format!("{error:#}"), "paused": paused_said})
+        }
     }
 }
 
@@ -338,8 +346,59 @@ pub fn write(now: u64) -> Result<Value> {
     Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
 }
 
-/// Promotes an existing harness without changing its contents or probe age.
-pub fn prefer(harness: Harness) -> Result<Value> {
+/// Resolves a switch before any mutation. A model must identify exactly one
+/// harness as well as one model within it; all its usual names match.
+pub fn switch_target(harness: Option<Harness>, model: Option<&str>) -> Result<Named> {
+    if let Some(harness) = harness {
+        return Ok(Named { harness, model: None });
+    }
+    let name = model.context("name a kit harness with --harness or a model with --model")?;
+    let range = load()?.range();
+    let mut matches = vec![];
+    let mut faults = vec![];
+    for held in &range {
+        match held.model(name) {
+            Ok(model) => {
+                matches.push(Named { harness: held.harness, model: Some(model.id.clone()) })
+            }
+            Err(why) => faults.push(why.said(name, held.harness)),
+        }
+    }
+    if matches.len() == 1
+        && !range.iter().any(|held| {
+            matches!(held.model(name), Err(afkconvoy_core::casting::Unmatched::Two(..)))
+        })
+    {
+        return Ok(matches.remove(0));
+    }
+    let candidates: Vec<_> = matches.iter().map(named_said).collect();
+    bail!(
+        "cannot switch to model `{name}`; name one model by its id{}: {}",
+        if candidates.is_empty() {
+            String::new()
+        } else {
+            format!("; candidates: {}", candidates.join(", "))
+        },
+        faults.join("; ")
+    )
+}
+
+/// Changes the host's casting setting without probing or ageing the kit.
+pub fn set_cast(enabled: bool) -> Result<Value> {
+    let file = path()?;
+    let _lock = mutation_lock(&file)?;
+    let mut kit = load_at(&file)?;
+    let changed = kit.cast != enabled;
+    kit.cast = enabled;
+    if changed {
+        store_unlocked(&file, &kit, written(&file).unwrap_or_else(crate::clock))?;
+    }
+    Ok(json!({"path": file, "cast": enabled, "changed": changed}))
+}
+
+/// Promotes an existing harness and optionally one of its models, preserving
+/// all contents, other relative orders and probe age under one lock.
+pub fn prefer(harness: Harness, model: Option<&str>) -> Result<Value> {
     let file = path()?;
     let _lock = mutation_lock(&file)?;
     let mut kit = load_at(&file)?;
@@ -347,20 +406,37 @@ pub fn prefer(harness: Harness) -> Result<Value> {
     let at = kit.harnesses.iter().position(|held| held.harness == harness).with_context(|| {
         format!("the host kit does not hold `{}`: run `afkconvoy kit`", harness.key())
     })?;
-    if at != 0 {
+    let model_at = model
+        .map(|name| {
+            kit.harnesses[at].models.iter().position(|seen| seen.model == name).with_context(|| {
+                format!(
+                    "the host kit no longer holds model `{name}` of {}; run switch again",
+                    harness.key()
+                )
+            })
+        })
+        .transpose()?;
+    let changed = at != 0 || model_at.is_some_and(|at| at != 0);
+    if changed {
         let held = kit.harnesses.remove(at);
         kit.harnesses.insert(0, held);
         let mut raw: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
         let entries = raw["harnesses"].as_array_mut().context("kit harnesses must be an array")?;
         let held = entries.remove(at);
         entries.insert(0, held);
+        if let Some(at) = model_at {
+            let models =
+                entries[0]["models"].as_array_mut().context("kit models must be an array")?;
+            let model = models.remove(at);
+            models.insert(0, model);
+        }
         let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
         std::fs::write(&temporary, serde_json::to_vec_pretty(&raw)?)?;
         stamp(&temporary, written(&file).unwrap_or_else(crate::clock))?;
         std::fs::rename(&temporary, &file)?;
     }
-    Ok(json!({"harness": harness, "path": file, "order_before": before,
-        "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(), "changed": at != 0}))
+    Ok(json!({"harness": harness, "model": model, "path": file, "order_before": before,
+        "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(), "changed": changed}))
 }
 
 fn mutation_lock(file: &Path) -> Result<std::fs::File> {
@@ -384,6 +460,7 @@ fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
     // Promotion may have happened while probes and research ran.
     let mut kit = kit.clone();
     if let Ok(latest) = load_at(file) {
+        kit.cast = latest.cast;
         kit.harnesses.sort_by_key(|held| {
             latest
                 .harnesses
@@ -391,8 +468,21 @@ fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
                 .position(|old| old.harness == held.harness)
                 .unwrap_or(usize::MAX)
         });
+        retain_model_order(&latest, &mut kit);
     }
     store_unlocked(file, &kit, now)
+}
+
+/// Established model order is user priority, whether researched or switched.
+/// New discoveries follow the models still held, never displacing the first.
+pub(super) fn retain_model_order(before: &Kit, kit: &mut Kit) {
+    for held in &mut kit.harnesses {
+        if let Some(old) = before.held(held.harness) {
+            held.models.sort_by_key(|model| {
+                old.models.iter().position(|seen| seen.model == model.model).unwrap_or(usize::MAX)
+            });
+        }
+    }
 }
 
 fn store_unlocked(file: &Path, kit: &Kit, now: u64) -> Result<()> {
@@ -866,26 +956,6 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
             });
         }
     }
-    for held in &mut harnesses {
-        if let Some(before) = current.held(held.harness) {
-            let mut ranked: Vec<_> = held
-                .models
-                .iter()
-                .filter(|m| before.models.iter().any(|old| old.model == m.model))
-                .cloned()
-                .collect();
-            ranked.sort_by_key(|m| before.models.iter().position(|old| old.model == m.model));
-            // Only a successful research established a preference to preserve.
-            if before.models.iter().any(|m| m.researched_at.is_some()) {
-                let mut ranked = ranked.into_iter();
-                for model in &mut held.models {
-                    if before.models.iter().any(|old| old.model == model.model) {
-                        *model = ranked.next().expect("one replacement per held slot");
-                    }
-                }
-            }
-        }
-    }
     harnesses.retain(|held| {
         let kept = !held.models.is_empty();
         if !kept {
@@ -894,7 +964,8 @@ fn compose(current: &Kit, host: &Host, writing: Writing) -> (Kit, Vec<LeftOut>) 
         kept
     });
 
-    let mut kit = Kit { harnesses, stock_consult: None };
+    let mut kit = Kit { cast: current.cast, harnesses, stock_consult: None };
+    retain_model_order(current, &mut kit);
     kit.stock_consult = current.stock_consult.clone().filter(|named| {
         Kit { stock_consult: Some(named.clone()), ..kit.clone() }.stock_fault().is_none()
     });
@@ -959,10 +1030,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rebuild_and_refresh_preserve_cast_and_unresearched_model_priority() {
+        let current = Kit {
+            cast: true,
+            harnesses: vec![held(
+                Harness::ClaudeCode,
+                "claude",
+                &["claude-sonnet-5-5", "claude-opus-5-5"],
+            )],
+            stock_consult: None,
+        };
+        for writing in [Writing::Whole, Writing::Refresh] {
+            let (kit, _, _) = composed_as(&current, writing);
+            assert!(kit.cast);
+            assert_eq!(
+                kit.harnesses[0]
+                    .models
+                    .iter()
+                    .map(|model| model.model.as_str())
+                    .collect::<Vec<_>>(),
+                ["claude-sonnet-5-5", "claude-opus-5-5"]
+            );
+        }
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("kit.json");
+        store(&file, &current, 100).unwrap();
+        let stale = Kit {
+            cast: false,
+            harnesses: vec![held(
+                Harness::ClaudeCode,
+                "claude",
+                &["new", "claude-opus-5-5", "claude-sonnet-5-5"],
+            )],
+            stock_consult: None,
+        };
+        store(&file, &stale, 200).unwrap();
+        let latest = load_at(&file).unwrap();
+        assert!(latest.cast);
+        assert_eq!(
+            latest.harnesses[0].models.iter().map(|model| model.model.as_str()).collect::<Vec<_>>(),
+            ["claude-sonnet-5-5", "claude-opus-5-5", "new"]
+        );
+        assert!(!serde_json::from_str::<Kit>(r#"{"harnesses":[]}"#).unwrap().cast);
+    }
+
+    #[test]
     fn concurrent_command_discovery_and_kit_edits_preserve_the_latest_kit() {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("kit.json");
         let original = Kit {
+            cast: false,
             harnesses: vec![held(Harness::Pi, "pi --custom", &["provider/model"])],
             stock_consult: Some(Named { harness: Harness::Pi, model: None }),
         };
@@ -1231,6 +1348,7 @@ mod tests {
         opus.models[1].names = vec!["opus".into()];
         opus.models[1].good_at = Some("hard work".into());
         let current = Kit {
+            cast: false,
             harnesses: vec![held(Harness::Codex, "mycodex --yolo", &["gpt-a"]), opus],
             stock_consult: Some(Named { harness: Harness::ClaudeCode, model: Some("opus".into()) }),
         };
@@ -1271,6 +1389,7 @@ mod tests {
     #[test]
     fn a_stock_consult_no_longer_held_runs_the_host_kit_s_first_and_a_silent_harness_is_left_out() {
         let current = Kit {
+            cast: false,
             harnesses: vec![held(Harness::Pi, "pi", &["a/b"])],
             stock_consult: Some(Named { harness: Harness::Pi, model: None }),
         };
@@ -1304,6 +1423,7 @@ mod tests {
         let mut claude = held(Harness::ClaudeCode, "claude", &["claude-opus-5-5", "gone"]);
         claude.models[0].good_at = Some("hard work".into());
         let current = Kit {
+            cast: false,
             harnesses: vec![
                 claude,
                 held(Harness::Codex, "codex", &["gpt-a"]),
@@ -1361,6 +1481,7 @@ mod tests {
     fn a_harness_held_with_no_model_is_written_again_with_the_models_that_answer_or_left_out() {
         // A host kit no `kit` wrote: by hand, or by an older afkconvoy.
         let current = Kit {
+            cast: false,
             harnesses: vec![
                 held(Harness::ClaudeCode, "claude", &[]),
                 held(Harness::Codex, "codex", &[]),
@@ -1394,7 +1515,7 @@ mod tests {
     fn a_refresh_follows_an_alias_that_moves_and_keeps_a_still_listed_id() {
         let mut claude = held(Harness::ClaudeCode, "claude", &["old-id"]);
         claude.models[0].names = vec!["opus".into()];
-        let current = Kit { harnesses: vec![claude], stock_consult: None };
+        let current = Kit { cast: false, harnesses: vec![claude], stock_consult: None };
         let found =
             |harness| if harness == Harness::ClaudeCode { Ok(()) } else { Err("absent".into()) };
         let listed =
@@ -1435,8 +1556,11 @@ mod tests {
     fn one_process_refreshes_the_host_kit_and_the_others_read_it() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("afkconvoy/kit.json");
-        let current =
-            Kit { harnesses: vec![held(Harness::Pi, "pi", &["a/b"])], stock_consult: None };
+        let current = Kit {
+            cast: false,
+            harnesses: vec![held(Harness::Pi, "pi", &["a/b"])],
+            stock_consult: None,
+        };
         store(&file, &current, 1000).unwrap();
         assert_eq!(written(&file), Some(1000));
         let probes = std::sync::atomic::AtomicUsize::new(0);
@@ -1509,6 +1633,7 @@ mod tests {
     #[test]
     fn the_stock_consult_runs_what_is_named_or_the_host_kit_s_first() {
         let mut kit = Kit {
+            cast: false,
             harnesses: vec![
                 held(Harness::Pi, "pi", &["a/b", "c/d"]),
                 held(Harness::Codex, "codex", &[]),
@@ -1536,6 +1661,7 @@ mod tests {
     #[test]
     fn a_kit_reads_as_it_is_written() {
         let kit = Kit {
+            cast: false,
             harnesses: vec![held(Harness::ClaudeCode, "claude", &["opus"])],
             stock_consult: Some(Named { harness: Harness::ClaudeCode, model: None }),
         };

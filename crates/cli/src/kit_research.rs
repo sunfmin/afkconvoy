@@ -196,7 +196,8 @@ pub fn research(
             }
         }
     }
-    // Harness priority belongs to the host user. Research ranks models only.
+    // Research may rank new discoveries, but established host priority wins.
+    crate::kit::retain_model_order(before, kit);
 }
 
 fn valid(finding: &Finding) -> bool {

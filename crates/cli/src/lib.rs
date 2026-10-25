@@ -266,7 +266,11 @@ enum Command {
     ///
     /// A tick — of `run`, or `afkconvoy tick` — writes the host kit again once its file was last written a day ago or more, before anything else: a model a harness now lists is added once it answers its probe, and one it no longer lists is dropped. The rest is kept as it is, unprobed: a harness that cannot be found or listed, or that stops answering, is kept, and a pause leaves it out, as above. The file's modification time is when it was last written — by `kit`, by `run` on a host without one, or by a tick — and `plan` and `doctor` answer it as `host_kit.refreshed`. Every fleet of the host shares the file and the lock beside it (kit.refresh): one of them writes it again, once a day, and the others read what it wrote. A refresh that changed the host kit is a line of the run log, `refresh_kit (fleet): the host kit was written again: added claude-code sonnet; dropped claude-code opus`; one that failed is one too, and is tried again an hour later. The pause is the host's running state, in its cache: this file is not changed. `plan`, `doctor` and the panel say which is paused, since when and why.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
-    Kit,
+    Kit {
+        /// Enable or disable automatic model casting on this host, without probing
+        #[arg(long, value_parser = ["on", "off"])]
+        cast: Option<String>,
+    },
     /// Choose the harness and model to run for each issue handed to the fleet that has no `harness:` or `model:` label and more than one to choose from, and label it with them, in one session of the host kit's preferred harness and model
     ///
     /// ## When to run it
@@ -2828,8 +2832,11 @@ enum Command {
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Switch {
         /// The existing kit harness to put first
-        #[arg(long, value_parser = kit_harness)]
-        harness: Harness,
+        #[arg(long, value_parser = kit_harness, required_unless_present = "model", conflicts_with = "model")]
+        harness: Option<Harness>,
+        /// Put this model first within its harness, and that harness first in the kit
+        #[arg(long)]
+        model: Option<String>,
         /// The issue whose worker to continue in this checkout
         #[arg(value_name = "ISSUE", conflicts_with_all = ["all", "patrol"])]
         issue: Option<u64>,
@@ -3949,7 +3956,7 @@ impl Command {
             Command::Wake { .. } => Acting::new("wake").on_own_issue(),
             Command::Cast { .. } => Acting::new("cast"),
             Command::Tick { who, .. } => as_who("tick", who),
-            Command::Kit
+            Command::Kit { .. }
             | Command::Config { .. }
             | Command::Check { .. }
             | Command::Scaffold { .. }
@@ -3984,7 +3991,8 @@ fn run(
 ) -> anyhow::Result<Value> {
     let now = fixed_now.unwrap_or_else(clock);
     match command {
-        Command::Kit => kit::write(now),
+        Command::Kit { cast: Some(cast) } => kit::set_cast(cast == "on"),
+        Command::Kit { cast: None } => kit::write(now),
         Command::Cast { .. } => caster::cast(&checkout?, now),
         Command::Config { file, .. } => {
             let file = match file {
@@ -4316,7 +4324,8 @@ fn run(
             probe::announce(&agent.launches.warned());
             restarted
         }
-        Command::Switch { harness, issue, patrol, all, instance, host, agent, .. } => {
+        Command::Switch { harness, model, issue, patrol, all, instance, host, agent, .. } => {
+            let target = kit::switch_target(harness, model.as_deref())?;
             let which = match (issue, patrol, all) {
                 (Some(issue), _, _) => switch::Which::Issue(issue),
                 (None, Some(patrol), _) => switch::Which::Patrol(patrol.trim().to_string()),
@@ -4325,7 +4334,7 @@ fn run(
             };
             switch::on_host(
                 checkout.ok(),
-                harness,
+                target,
                 which,
                 instance,
                 &host.unwrap_or_else(this_host),

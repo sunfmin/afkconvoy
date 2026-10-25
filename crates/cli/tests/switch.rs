@@ -8,6 +8,61 @@ use serde_json::{Value, json};
 const CODEX: &str = "codex --dangerously-bypass-approvals-and-sandbox";
 
 #[test]
+fn switching_a_model_promotes_its_harness_and_preserves_every_entry() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_models("claude-code", &["opus", "claude-sonnet-5-5", "haiku"]);
+    world.with_kit(|kit| {
+        kit["harnesses"][0]["models"][1]["names"] = json!(["sonnet", "Sonnet 5.5"]);
+        kit["harnesses"][0]["models"][1]["good_at"] = json!("wide changes");
+    });
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    let before: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let moved = world.afk_in(&world.root, &["switch", "--model", "SONNET"]).ok();
+    assert_eq!(moved["harness"], "claude-code");
+    assert_eq!(moved["model"], "claude-sonnet-5-5");
+    assert_eq!(moved["order"], json!(["claude-code", "codex", "pi", "dsh"]));
+    let after: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    assert_eq!(
+        after["harnesses"][0]["models"],
+        json!([
+            before["harnesses"][1]["models"][1],
+            before["harnesses"][1]["models"][0],
+            before["harnesses"][1]["models"][2]
+        ])
+    );
+    for at in 1..4 {
+        assert!(before["harnesses"].as_array().unwrap().contains(&after["harnesses"][at]));
+    }
+    assert_eq!(world.afk(&["switch", "--model", "Sonnet 5.5"]).ok()["changed"], false);
+    assert_eq!(
+        std::fs::read(world.kit_path()).unwrap(),
+        serde_json::to_vec_pretty(&after).unwrap()
+    );
+}
+
+#[test]
+fn an_unknown_or_ambiguous_model_leaves_the_kit_unchanged_and_names_candidates() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_models("claude-code", &["claude-sonnet-5-5"]);
+    world.kit_models("pi", &["anthropic/claude-sonnet-5-5"]);
+    let before = std::fs::read(world.kit_path()).unwrap();
+    let refused = world.afk(&["switch", "--model", "claude-sonnet-5-5"]).error();
+    assert!(
+        refused.contains("claude-code claude-sonnet-5-5")
+            && refused.contains("pi anthropic/claude-sonnet-5-5"),
+        "{refused}"
+    );
+    let unknown = world.afk(&["switch", "--model", "claude-sonnett-5-5"]).error();
+    assert!(
+        unknown.contains("nearest names") && unknown.contains("claude-sonnet-5-5"),
+        "{unknown}"
+    );
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), before);
+}
+
+#[test]
 fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() {
     let world = World::new();
     world.hold_every_harness();

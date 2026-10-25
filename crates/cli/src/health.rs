@@ -799,7 +799,7 @@ fn decide(
         let mut failure = vec![];
         let mut answer = None;
         for held in candidates.harnesses.clone() {
-            let candidate = Kit { harnesses: vec![held], stock_consult: None };
+            let candidate = Kit { cast: false, harnesses: vec![held], stock_consult: None };
             match diagnose(&candidate, &evidence)
                 .and_then(|(h, answer)| Ok((h, checked(&answer, observed, structured)?)))
             {
