@@ -477,7 +477,7 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
         }
     });
     tick(&world, 800);
-    assert_eq!(open_commands(&world, &seven), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    assert_eq!(open_commands(&world, &seven), ["agent --model 'haiku'"]);
     assert_eq!(open_commands(&world, &eight), ["agent --model 'haiku'"]);
     let plan = world.afk(&["plan", "--now", "801"]).ok();
     let faults = &plan["selection"]["health"]["faults"];

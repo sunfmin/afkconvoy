@@ -876,7 +876,14 @@ fn decide(
         kit.harnesses.iter().find(|h| h.harness == observed.harness).is_none_or(|h| {
             observed.command_key.as_ref().is_none_or(|key| key == &command_key(&h.command))
         });
-    let mut excluded = if same_command { vec![observed.harness] } else { vec![] };
+    // A proved model fault removes that model through available(), so the
+    // same harness's next model remains the first continuation candidate.
+    // Session faults still need a different harness; legacy observations
+    // without a command/model identity cannot safely exclude just one model.
+    let model_fault = diagnosis.scope == Scope::Model
+        && observed.model.is_some()
+        && observed.command_key.is_some();
+    let mut excluded = if same_command && !model_fault { vec![observed.harness] } else { vec![] };
     store(book)?;
     fleet.invalidate_selection();
     excluded.extend(
