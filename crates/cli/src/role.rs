@@ -236,8 +236,12 @@ impl Staged {
     /// keeps for that harness is put in place first (`kept::keep`).
     pub fn command(&self, launch: &str, worktree: &Worktree) -> Result<String> {
         let told = ToldRules::read(self.harness, &worktree.path, self.team_rules.as_deref())?;
-        let (kept, shadowed) =
-            crate::kept::for_worker(self.harness, self.host_user, &self.role_copy.dir)?;
+        let (kept, shadowed) = crate::kept::for_worker(
+            self.harness,
+            self.host_user,
+            &self.role_copy.dir,
+            &worktree.path,
+        )?;
         let start = Start {
             role_dir: &self.role_copy.dir.display().to_string(),
             worktree: &worktree.path.display().to_string(),

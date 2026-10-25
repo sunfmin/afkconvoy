@@ -221,7 +221,8 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
-    let terminal = agent.start(&checkout, harness, &line, me.now)?;
+    let terminal =
+        agent.start_worker(&checkout, (harness, cast.model.as_deref()), &line, true, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 
@@ -256,7 +257,8 @@ fn in_role(
     let team_rules = kept.rules();
     let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;
     let host_user = role.host_user;
-    let (kept_dir, shadowed) = crate::kept::for_worker(harness, host_user, &role_copy.dir)?;
+    let (kept_dir, shadowed) =
+        crate::kept::for_worker(harness, host_user, &role_copy.dir, &checkout.path)?;
     let start = Start {
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
@@ -319,7 +321,8 @@ pub(crate) fn switch(
     let continuing = said(&checkout);
     checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
-    let terminal = agent.start(&checkout, harness, &line, me.now)?;
+    let terminal =
+        agent.start_worker(&checkout, (harness, cast.model.as_deref()), &line, true, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
     Ok(json!({"patrol": name, "from": continuing.from, "to": harness,

@@ -36,6 +36,7 @@ pub mod checkout_list;
 pub mod checkouts;
 pub mod claim_status;
 pub mod claims;
+mod codex_launch;
 pub mod concurrency;
 pub mod config;
 pub mod copies;
@@ -4147,6 +4148,14 @@ fn run(
             plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();
+            plan["codex_workers"] = json!(codex_launch::workers(&fleet.repo));
+            for issue in plan["frontier"].as_array_mut().into_iter().flatten() {
+                if issue["cast"]["harness"] == "codex"
+                    && let Some(model) = issue["cast"]["model"].as_str()
+                {
+                    issue["codex"] = codex_launch::planned(model);
+                }
+            }
             if let Ok(team) = flows.team() {
                 plan["selection"]["roles"] = json!(
                     team.roles.iter().map(|role| fleet.role_selection(role)).collect::<Vec<_>>()

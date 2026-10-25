@@ -106,8 +106,21 @@ pub fn for_worker(
     harness: Harness,
     host_user: bool,
     role_dir: &Path,
+    worktree: &Path,
 ) -> Result<(String, Vec<String>)> {
-    let dir = keep(harness, host_user)?;
+    let shared = keep(harness, host_user)?;
+    let dir = if harness == Harness::Codex {
+        // Codex writes /model preferences to CODEX_HOME. A fresh home has
+        // only the allowed links, never a previous worker's config.toml.
+        keep_under(
+            &crate::codex_launch::directory(worktree),
+            home().as_deref(),
+            harness,
+            host_user,
+        )?
+    } else {
+        shared
+    };
     let shadowed = shadowed(harness, role_dir, &dir);
     Ok((dir.display().to_string(), shadowed))
 }

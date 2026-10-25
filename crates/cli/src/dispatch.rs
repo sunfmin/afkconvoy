@@ -40,6 +40,31 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Starts an interactive worker with the fleet's selected model and
+    /// freshly read host-user effort. Shell-only auxiliaries use `start`.
+    pub fn start_worker(
+        &self,
+        worktree: &Worktree,
+        selection: (Harness, Option<&str>),
+        command: &str,
+        in_role: bool,
+        now: u64,
+    ) -> Result<String> {
+        let (harness, model) = selection;
+        let prepared = if harness == Harness::Codex {
+            Some(crate::codex_launch::prepare(worktree, model, command, in_role)?)
+        } else {
+            None
+        };
+        let command = prepared.as_ref().map_or(command, |(line, _)| line.as_str());
+        let terminal = self.start(worktree, harness, command, now)?;
+        std::fs::write(worktree.note("convoy-worker-model")?, model.unwrap_or_default())?;
+        if let Some((_, settings)) = prepared {
+            crate::codex_launch::record(worktree, &settings)?;
+        }
+        Ok(terminal)
+    }
+
     /// Starts every kind of worker with its harness's host network settings.
     pub fn start(
         &self,
@@ -320,15 +345,25 @@ fn start(
                     })?;
                 }
                 terminal = Some(match &staged {
-                    Some(staged) => {
-                        agent.start(cut, harness, &staged.command(launch, cut)?, fleet.now)?
-                    }
+                    Some(staged) => agent.start_worker(
+                        cut,
+                        (harness, model.as_deref()),
+                        &staged.command(launch, cut)?,
+                        true,
+                        fleet.now,
+                    )?,
                     None => {
                         let launch = match &model {
                             Some(model) => harness.with_model(launch, model),
                             None => launch.to_string(),
                         };
-                        agent.start(cut, harness, &launch, fleet.now)?
+                        agent.start_worker(
+                            cut,
+                            (harness, model.as_deref()),
+                            &launch,
+                            false,
+                            fleet.now,
+                        )?
                     }
                 });
             }

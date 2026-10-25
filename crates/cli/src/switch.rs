@@ -258,7 +258,17 @@ pub(crate) fn auxiliary(
     } else {
         cast.command(agent.command(cast.harness)?.as_str())
     };
-    let terminal = agent.start(worktree, cast.harness, &command, fleet.now)?;
+    let terminal = if caster {
+        agent.start(worktree, cast.harness, &command, fleet.now)?
+    } else {
+        agent.start_worker(
+            worktree,
+            (cast.harness, cast.model.as_deref()),
+            &command,
+            false,
+            fleet.now,
+        )?
+    };
     if !caster {
         worktree.await_ready(&terminal, agent.ready_timeout)?;
         worktree.deliver(&terminal, &worktree.brief()?)?;

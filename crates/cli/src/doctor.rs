@@ -1554,6 +1554,11 @@ fn held_json(held: &Held) -> Value {
         && let Ok(Some(harness)) = Worktree::at(path.clone(), String::new()).harness()
     {
         worker["harness"] = json!(harness);
+        if let Some(settings) =
+            crate::codex_launch::recorded(&Worktree::at(path.clone(), String::new()))
+        {
+            worker["codex"] = json!(settings);
+        }
     }
     json!({
         "issue": held.issue, "title": held.title, "status": held.status, "pr": held.pr,
@@ -1699,6 +1704,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         "host": host,
         "fleet": fleet,
         "claims": Value::Array(claims),
+        "codex_workers": crate::codex_launch::workers(repo),
         "issues": issues,
         "waiting_on_human": waiting,
         "proposals": state.as_ref().ok().and_then(|state| state.proposals.as_ref()),
