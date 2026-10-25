@@ -208,34 +208,7 @@ pub(crate) fn dispatch_continuing(
                 Ok(started)
             }
             Err(error) if error.is::<crate::paused::Held>() => Err(error),
-            Err(error) => {
-                let Some(claim) = fleet
-                    .scan
-                    .claim_of(number)
-                    .filter(|claim| claim.is_held_by(&me.instance))
-                    .cloned()
-                else {
-                    return Err(error);
-                };
-                let failed = format!("{error:#}");
-                keep_starting(fleet, number, &failed)?;
-                if let Some(previous) = previous {
-                    let why = crate::judge::Handed::new(
-                        "its worker start failed again",
-                        format!(
-                            "The worker start failed again before it could take its brief.\n\n\
-                         Previous start: {}\n\nFailed start: {failed}",
-                            previous.error
-                        ),
-                    );
-                    let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
-                    let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
-                    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
-                    forget_starting(fleet, number)?;
-                    return Err(error.context("worker start failed again; the claim was escalated"));
-                }
-                Err(error)
-            }
+            Err(error) => start_failed(fleet, me, number, previous, error),
         };
     };
     let held = fleet.scan.claim_of(number).is_some_and(|claim| claim.is_held_by(&me.instance));
@@ -250,6 +223,38 @@ pub(crate) fn dispatch_continuing(
     let said = if how.deleted { "deleted" } else { "transferred" };
     forget_starting(fleet, number)?;
     Ok(json!({"issue": number, "started": false, "gone": said, "released": released}))
+}
+
+/// One failed start keeps the claim for continuation; another hands it on
+/// with the startup errors, never with a judgment of worker silence.
+fn start_failed(
+    fleet: &mut Fleet,
+    me: &Me,
+    number: u64,
+    previous: Option<Starting>,
+    error: anyhow::Error,
+) -> Result<Value> {
+    let Some(claim) =
+        fleet.scan.claim_of(number).filter(|claim| claim.is_held_by(&me.instance)).cloned()
+    else {
+        return Err(error);
+    };
+    let failed = format!("{error:#}");
+    keep_starting(fleet, number, &failed)?;
+    let Some(previous) = previous else { return Err(error) };
+    let why = crate::judge::Handed::new(
+        "its worker start failed again",
+        format!(
+            "The worker start failed again before it could take its brief.\n\n\
+             Previous start: {}\n\nFailed start: {failed}",
+            previous.error
+        ),
+    );
+    let pr = closing_pr(&fleet.gh.open_prs()?, number).map(|pr| pr.number);
+    let worktree = Worktree::of_issue(&Source::of(&fleet.repo)?, number)?;
+    crate::judge::escalate_claim(fleet, &claim, &why, pr, worktree.as_ref())?;
+    forget_starting(fleet, number)?;
+    Err(error.context("worker start failed again; the claim was escalated"))
 }
 
 /// What the brief of a worker that continues one ended mid-way says of it.

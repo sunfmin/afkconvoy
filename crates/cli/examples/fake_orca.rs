@@ -253,6 +253,9 @@ fn terminal_wait(st: &State) -> ! {
     assert_eq!(st.opt("--for"), Some("tui-idle"), "{:?}", st.argv);
     assert!(st.opt("--timeout-ms").is_some_and(|ms| ms.parse::<u64>().unwrap() > 0));
     let Some(at) = terminal_at(st) else { fail(st, "terminal_handle_stale") };
+    if st.doc["terminals"][at]["bare_shell"] == true {
+        fail(st, "timeout"); // a live shell never satisfies tui-idle
+    }
     if st.doc["terminals"][at]["tui_busy"] == true {
         fail(st, "timeout"); // as real orca: a timeout is an error
     }
@@ -263,8 +266,7 @@ fn terminal_wait(st: &State) -> ! {
         let answer = json!({"id": "x", "ok": true, "result": {"wait": wait}});
         st.finish(&answer.to_string(), 1, "")
     }
-    // A live PTY that has fallen back to its shell cannot satisfy tui-idle.
-    let ready = st.doc["never_ready"] != true && st.doc["terminals"][at]["bare_shell"] != true;
+    let ready = st.doc["never_ready"] != true;
     let status = if ready { "idle" } else { "timeout" };
     done(st, json!({"wait": {"satisfied": ready, "status": status}}))
 }

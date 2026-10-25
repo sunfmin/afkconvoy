@@ -1020,7 +1020,10 @@ impl Worktree {
     /// read. Require the harness's prompt immediately before a nudge; never
     /// answer a trust question or type a nudge into a shell.
     pub(crate) fn ready_for_nudge(&self, terminal: &str) -> Result<()> {
-        if self.wait(terminal, 1)? != Waited::Ready {
+        let ready = self.wait(terminal, 1).with_context(|| {
+            format!("no running worker harness confirmed in terminal {terminal}; no nudge was sent")
+        })?;
+        if ready != Waited::Ready {
             bail!("no running worker harness ready in terminal {terminal}; no nudge was sent");
         }
         Ok(())

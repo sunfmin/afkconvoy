@@ -835,6 +835,7 @@ fn decide(
             observed.rate_retries += 1;
             observed.action = "retrying".into();
             if diagnosis.class != "rate_limit" {
+                worktree.ready_for_nudge(&observed.terminal)?;
                 worktree.tell(
                     &observed.terminal,
                     "Continue the existing task if ready. Do not restart or discard work.",
