@@ -223,7 +223,12 @@ impl GitHub {
 
     /// The issues this view has seen closed, whatever read or write saw it.
     pub fn closed(&self) -> Vec<u64> {
-        self.closed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().copied().collect()
+        self.closed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .copied()
+            .collect()
     }
 
     fn saw_closed(&self, number: u64) {
