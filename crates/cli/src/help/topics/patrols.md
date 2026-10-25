@@ -4,7 +4,7 @@ A patrol is a role run on a schedule rather than for an issue: it looks for work
 
 It is a worker in one role, with one skill, started when its interval has passed, in a checkout of the base branch that is linked to no issue. What it finds — an issue no workflow has taken, a broken base branch, something worth proposing — it writes down as issues, and takes in the ones the fleet is to work.
 
-It is no stage: it owns no issue, belongs to no workflow and declares no verdict. It writes no code: a run that left a commit or opened a PR has failed. And it is no timer for anything else: nothing but a role's skill can be run by one.
+It is no stage: it owns no issue, belongs to no workflow and declares no verdict. It writes no code: a run has failed if its checkout ends on a commit not on the base branch, has working-tree changes (staged, unstaged or untracked), or it opened a PR. A final commit already on the base branch, at its tip or before it, is nothing the run left behind, whoever moved its HEAD there. A clean checkout on such a commit, with no PR, is a clean run. And it is no timer for anything else: nothing but a role's skill can be run by one.
 
 ## A patrol's file
 

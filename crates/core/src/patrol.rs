@@ -354,14 +354,18 @@ pub fn run_over(claim: &RunClaim, worker: WorkerState, now: u64) -> bool {
     }
 }
 
-/// Why a run failed, when it did: its checkout, at `started` when its worker
-/// was started, is at `tip` now — it left a commit — or it opened the PRs
-/// `prs`. A patrol writes no code; every change it prompts goes through a
-/// workflow.
-pub fn broke(started: Option<&str>, tip: &str, prs: &[u64]) -> Option<String> {
+/// Why a run failed, when it did: `left` is its checkout's final commit only
+/// when it is not on the base branch, `dirty` says it has working-tree
+/// changes, and `prs` are the PRs it opened. Whoever moved its HEAD, a commit
+/// already on the base branch is nothing left behind. A patrol writes no
+/// code; every change it prompts goes through a workflow.
+pub fn broke(left: Option<&str>, dirty: bool, prs: &[u64]) -> Option<String> {
     let mut found: Vec<String> = vec![];
-    if let Some(started) = started.filter(|started| *started != tip) {
-        found.push(format!("it left a commit in its checkout ({started} → {tip})"));
+    if let Some(left) = left {
+        found.push(format!("it left a commit not on the base branch ({left})"));
+    }
+    if dirty {
+        found.push("it left working-tree changes".to_string());
     }
     if !prs.is_empty() {
         let numbers: Vec<String> = prs.iter().map(|pr| format!("#{pr}")).collect();
@@ -632,13 +636,18 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_left_a_commit_or_opened_a_pr_failed() {
-        assert_eq!(broke(Some("a"), "a", &[]), None);
-        assert_eq!(broke(None, "a", &[]), None);
-        let commit = broke(Some("a"), "b", &[]).unwrap();
-        assert_eq!(commit, "it left a commit in its checkout (a → b)");
-        assert_eq!(broke(Some("a"), "a", &[4, 6]).unwrap(), "it opened #4, #6");
-        assert!(broke(Some("a"), "b", &[4]).unwrap().ends_with(", and it opened #4"));
+    fn a_run_fails_for_each_thing_it_left() {
+        assert_eq!(broke(None, false, &[]), None);
+        assert_eq!(
+            broke(Some("b"), false, &[]).unwrap(),
+            "it left a commit not on the base branch (b)"
+        );
+        assert_eq!(broke(None, true, &[]).unwrap(), "it left working-tree changes");
+        assert_eq!(broke(None, false, &[4, 6]).unwrap(), "it opened #4, #6");
+        assert_eq!(
+            broke(Some("b"), true, &[4]).unwrap(),
+            "it left a commit not on the base branch (b), and it left working-tree changes, and it opened #4"
+        );
     }
 
     #[test]
