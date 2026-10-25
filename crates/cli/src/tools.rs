@@ -102,9 +102,6 @@ pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
                 Err(e) => failures.push(format!("{e:#}")),
             }
         }
-        if selected.is_none() && !failures.is_empty() {
-            bail!("{}", failures.join("\n"));
-        }
     }
     let default = selected.unwrap_or_else(|| launches.default());
     let read = launches.of(default);
@@ -118,6 +115,9 @@ pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
         fault.map(|fault| launches.said(&fault, default, &[crate::role::BY_FIRST.to_string()]));
     if let Some(why) = refusal(&looked.found, looked.host.as_deref(), fault.as_deref()) {
         bail!(why);
+    }
+    if selected.is_none() && !failures.is_empty() {
+        bail!("{}", failures.join("\n"));
     }
     read.map(|_| ())
 }

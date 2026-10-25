@@ -42,35 +42,11 @@ fn dsh_is_read_in_a_role_s_range_and_is_probed_before_start() {
     let read = world.afk(&["check"]).ok();
     let range = &read["roles"][0]["range"];
     assert_eq!(*range, serde_json::json!([{"harness": "dsh", "models": ["deepseek-test"]}]));
-    // All entry points refuse a wrapper that cannot take the overlay.
-    for args in [
-        vec!["tick", "--instance", "a", "--host", "h1", "--now", "1000"],
-        vec![
-            "run",
-            "--foreground",
-            "--instance",
-            "a",
-            "--host",
-            "h1",
-            "--now",
-            "1000",
-            "--ticks",
-            "1",
-            "--second-ms",
-            "0",
-        ],
-    ] {
-        let why = {
-            world.kit_command("dsh", "agent");
-            world.afk(&args)
-        }
-        .error();
-        assert!(why.contains("names no --patch"), "{why}");
-        assert!(why.contains("DeepSeek Harness taking flags"), "{why}");
-    }
-    world.shell_help(Some("no fleet flags"));
-    let why = world.afk(&["plan", "--now", "1000"]).error();
-    assert!(why.contains("names no --patch"), "{why}");
+    // An incompatible candidate is visible without blocking other roles.
+    world.kit_command("dsh", "agent");
+    world.afk(&["tick", "--instance", "a", "--host", "h1", "--now", "1000"]).ok();
+    let plan = world.afk(&["plan", "--now", "1000"]).ok();
+    assert!(plan["selection"]["skipped"].to_string().contains("names no --patch"), "{plan}");
     let diagnosis = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json;
     assert!(diagnosis.to_string().contains("--patch"), "{diagnosis}");
     assert!(world.worktrees().is_empty());

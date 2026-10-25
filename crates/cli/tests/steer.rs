@@ -278,17 +278,9 @@ fn a_ruling_answers_an_issue_whose_worker_went_silent() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
-    // Its reviewer stops with no verdict, past its nudge: no record says so.
-    world.with_orca(|orca| {
-        for terminal in orca["terminals"].as_array_mut().unwrap() {
-            if terminal["open"] == true && !terminal["command"].is_null() {
-                terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_100_000});
-                terminal["lastOutputAt"] = json!(1_100_000);
-            }
-        }
-    });
-    assert_eq!(did(&tick(&world, 1500)), ["advance 7 nudged"]);
-    assert_eq!(did(&tick(&world, 1900)), ["advance 7 done"]);
+    // A declared escalation is actionable; silence alone waits for diagnosis.
+    world.comment(7, "<!--convoy:stage stage=review verdict=escalate by=reviewer-->\n\nReview requires a ruling.");
+    tick(&world, 1500);
     assert!(has(&world, 7, "stuck") && !has(&world, 7, "flow:feature"));
     assert_eq!(at(&world, 7), ("perform".to_string(), "review".to_string()));
 

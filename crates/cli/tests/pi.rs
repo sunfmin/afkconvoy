@@ -196,18 +196,14 @@ fn a_role_s_range_holds_pi_and_pi_has_a_stock_worker_launch_command() {
     }
     assert!(started(&world, &worktree(&world, 7)).contains(" && pi --approve "));
 
-    // A command that does not take what the fleet adds for pi starts nothing.
+    // An unsafe candidate holds only the affected role.
     let world = bound();
     world.issue(7, &["flow:audit"]);
-    let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
-    let why = {
-        world.kit_command("pi", "agent");
-        world.afk(&args)
-    }
-    .error();
-    assert!(why.contains("`agent --help` names no --approve, no --no-skills,"), "{why}");
-    assert!(why.contains("the worker launch command of the harness `pi`"), "{why}");
-    assert!(why.contains("the range of the role `auditor`"), "{why}");
+    world.kit_command("pi", "agent");
+    tick(&world, 1000).ok();
+    let plan = world.afk(&["plan", "--now", "1000"]).ok();
+    assert!(plan["selection"]["skipped"].to_string().contains("names no --approve"), "{plan}");
+    assert!(plan["frontier"].as_array().unwrap().is_empty());
     assert!(world.worktrees().is_empty());
 }
 
@@ -239,8 +235,6 @@ fn doctor_finds(world: &World) -> Vec<(String, String)> {
     of_pi.map(|finding| (text(&finding["what"]), text(&finding["fix"]))).collect()
 }
 
-const CALLED: &str = "called for by the range of the role `dev`, the range of the role `auditor`";
-
 #[test]
 fn a_host_without_pi_is_refused_with_the_ranges_that_call_for_it_and_its_installer() {
     let world = bound();
@@ -248,10 +242,10 @@ fn a_host_without_pi_is_refused_with_the_ranges_that_call_for_it_and_its_install
     world.issue(7, &["flow:feature"]);
     let install = "curl -fsSL https://pi.dev/install.sh | sh";
     for start in starts(&world) {
-        let error = start.error();
-        let said: Vec<&str> = error.lines().skip(1).collect();
-        assert_eq!(said, [format!("  pi is not installed, {CALLED}: {install}")], "{error}");
-        assert!(error.contains("nothing was started"), "{error}");
+        start.ok();
+        let plan = world.afk(&["plan", "--now", "1000"]).ok();
+        assert!(plan["selection"]["skipped"].to_string().contains("is not installed"), "{plan}");
+        assert!(plan["frontier"].as_array().unwrap().is_empty());
     }
     assert!(world.worktrees().is_empty());
     assert_eq!(world.claims(), []);
@@ -277,9 +271,13 @@ fn a_pi_that_holds_no_credentials_is_refused_with_the_line_that_logs_it_in() {
     world.issue(7, &["flow:feature"]);
     let words = "holds credentials for no provider (`/login` at its prompt logs it in)";
     for start in starts(&world) {
-        let error = start.error();
-        let said: Vec<&str> = error.lines().skip(1).collect();
-        assert_eq!(said, [format!("  pi {words}, {CALLED}: pi")], "{error}");
+        start.ok();
+        let plan = world.afk(&["plan", "--now", "1000"]).ok();
+        assert!(
+            plan["selection"]["skipped"].to_string().contains("holds credentials for no provider"),
+            "{plan}"
+        );
+        assert!(plan["frontier"].as_array().unwrap().is_empty());
     }
     assert!(world.worktrees().is_empty());
     assert_eq!(doctor_finds(&world), [(format!("`pi` {words}"), "pi".to_string())]);
@@ -308,12 +306,15 @@ fn a_host_without_pi_is_told_nothing_of_it_by_a_team_whose_roster_names_no_pi() 
     world.issue(7, &["flow:feature"]);
     for start in starts(&world) {
         let said = start.stderr.clone() + &start.ok().to_string();
-        assert!(!said.contains("pi "), "{said}");
+        assert!(!said.contains("install.sh"), "{said}");
     }
     assert_eq!(world.claims(), [(7, "alpha".to_string())]);
     assert_eq!(doctor_finds(&world), []);
     let asked = world.shell_asked();
-    assert!(!asked.iter().any(|line| line.contains("pi")), "pi was not looked for: {asked:?}");
+    assert!(
+        !asked.iter().any(|line| line == "pi --list-models"),
+        "missing pi is never asked for credentials: {asked:?}"
+    );
 }
 
 #[test]

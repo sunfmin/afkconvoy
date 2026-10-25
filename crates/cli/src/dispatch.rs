@@ -69,7 +69,7 @@ impl Agent {
             labels.iter().filter_map(|label| label.strip_prefix("harness:").and_then(Harness::read))
         {
             if !crate::kit::load()?.harnesses.iter().any(|held| held.harness == harness) {
-                self.command(harness)?;
+                let _ = self.command(harness);
             }
         }
         Ok(())

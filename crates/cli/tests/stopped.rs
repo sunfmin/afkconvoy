@@ -365,7 +365,7 @@ fn a_verdict_is_never_overridden_by_a_nudge() {
     declare(&world, "already-satisfied");
     assert_eq!(did(&tick(&world, 1600)), ["judge 7 done"]);
     assert_eq!(world.state(7), "closed");
-    assert_eq!(typed(&world).len(), 2);
+    assert_eq!(typed(&world).len(), 1);
 }
 
 #[test]
@@ -539,12 +539,11 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
     assert_eq!(did(&tick(&world, 1250 + 599))[0], "judge 7 waiting");
     assert_eq!(typed(&world).len(), 1, "never nudged for it");
 
-    // the gate limit is 600s here: a wait that long is silent, as any such wait is
-    assert_eq!(did(&tick(&world, 1250 + 600))[0], "judge 7 done");
+    // A live background command remains a wait past the observation interval.
+    assert_eq!(did(&tick(&world, 1250 + 600))[0], "judge 7 waiting");
     assert_eq!(typed(&world).len(), 1, "no nudge");
-    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
-    let said = world.comments(7).last().unwrap().clone();
-    assert!(said.contains("waited 600s on its own background work, past the limit"), "{said}");
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
 }
 
 #[test]

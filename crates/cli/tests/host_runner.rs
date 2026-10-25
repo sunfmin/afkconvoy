@@ -1402,6 +1402,7 @@ fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
     let pid = ran["host_runner"]["pid"].clone();
     for (number, command) in [(7, "agent --added-codex"), (8, "agent --changed-codex")] {
         world.kit_command("codex", command);
+        world.afk(&["switch", "--harness", "codex"]).ok();
         world.issue(number, &["ready-for-agent", "harness:codex"]);
         world.afk(&["wake"]).ok();
         let until = Instant::now() + Duration::from_secs(30);
