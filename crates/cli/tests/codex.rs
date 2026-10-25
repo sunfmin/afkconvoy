@@ -597,6 +597,18 @@ fn a_codex_worker_outside_a_role_trusts_its_worktree_without_editing_the_user_s_
 }
 
 #[test]
+fn a_codex_command_outside_a_role_must_take_the_trust_flags_before_any_start() {
+    let world = unbound_codex();
+    world.shell_help(Some("--add-dir --model --dangerously-bypass-hook-trust"));
+    world.issue(7, &["ready-for-agent"]);
+    let error = tick(&world, 1000).error();
+    assert!(error.contains("names no --config"), "{error}");
+    assert!(world.worktrees().is_empty());
+    let findings = doctor_finds(&world);
+    assert!(findings.iter().any(|(_, fix)| fix == "afkconvoy kit"), "{findings:?}");
+}
+
+#[test]
 fn a_codex_train_worker_trusts_its_worktree_without_editing_the_user_s_config() {
     let world = unbound_codex();
     write(&world.home(), ".codex/auth.json", "{}\n");

@@ -715,10 +715,7 @@ fn recovered(failed: &Failed, step: &Value) -> bool {
                     | "escalate"
             )
         )
-        && matches!(
-            step["outcome"].as_str(),
-            Some("done" | "continued" | "restarted" | "handed_on" | "gone")
-        );
+        && matches!(step["outcome"].as_str(), Some("done" | "continued" | "restarted" | "gone"));
     same || progressed
 }
 
@@ -739,31 +736,34 @@ fn log_findings(run: &Run) -> Vec<Finding> {
             pending.push((tick.count, failed));
         }
     }
-    pending.into_iter().map(|(count, failed)| {
-        let repeated = ticks.len().checked_sub(FAILED_TICKS).map(|from| &ticks[from..]).filter(|last| {
-            last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
-        });
-        match repeated {
-            Some(last) => {
-                let (first, latest) = (last[0].1.count, last[FAILED_TICKS - 1].1.count);
-            finding(
-                Kind::StepFailed,
-                format!(
-                    "`{}` failed in each of the last {FAILED_TICKS} ticks ({first} to {latest})",
-                    failed.named()
+    let recent = ticks.len().checked_sub(FAILED_TICKS).map(|from| &ticks[from..]);
+    pending
+        .into_iter()
+        .map(|(count, failed)| {
+            let repeated = recent.filter(|last| {
+                last.iter().all(|(_, tick)| tick.failed().iter().any(|was| was.same_step(&failed)))
+            });
+            match repeated {
+                Some(last) => {
+                    let (first, latest) = (last[0].1.count, last[FAILED_TICKS - 1].1.count);
+                    finding(
+                        Kind::StepFailed,
+                        format!(
+                            "`{}` failed in each of the last {FAILED_TICKS} ticks ({first} to {latest})",
+                            failed.named()
+                        ),
+                        failed.error.clone(),
+                        fix_of(&failed, instance),
+                    )
+                }
+                None => finding(
+                    Kind::StepUnrecovered,
+                    format!("`{}` failed in tick {count} and has not recovered", failed.named()),
+                    failed.error.clone(),
+                    fix_of(&failed, instance),
                 ),
-                failed.error.clone(),
-                fix_of(&failed, instance),
-            )
             }
-            None => finding(
-                Kind::StepUnrecovered,
-                format!("`{}` failed in tick {count} and has not recovered", failed.named()),
-                failed.error.clone(),
-                fix_of(&failed, instance),
-            ),
-        }
-    })
+        })
         .collect()
 }
 
