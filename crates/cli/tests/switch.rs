@@ -102,12 +102,13 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     assert_eq!(open_commands(&world, &dir), ["agent"]);
     world.orca_calls();
 
-    let moved = switch(&world, "800", &["7", "--harness", "codex"]).ok();
+    let answer = switch(&world, "800", &["7", "--harness", "codex"]).ok();
+    let moved = &answer["switched"][0];
     assert_eq!(moved["issue"], 7);
     assert_eq!((&moved["from"], &moved["to"]), (&json!("claude-code"), &json!("codex")));
     assert_eq!(moved["worktree"], json!(dir));
     assert_eq!(moved["pr"], 70);
-    assert_eq!(moved["chosen"], json!({"was": null, "now": "codex"}));
+    assert_eq!(answer["order"][0], "codex");
 
     // the old worker's terminal is closed, a codex worker is in the same worktree
     assert_eq!(open_commands(&world, &dir), [CODEX]);
@@ -142,8 +143,9 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     commit(&eight, "eight.txt", "8\n");
     git(&eight, &["push", "-q", "origin", "HEAD"]);
     world.pr(80, 8, &git(&eight, &["symbolic-ref", "--short", "HEAD"]));
-    let back = switch(&world, "1000", &["8", "--clear"]).ok();
-    assert_eq!(back["chosen"], json!({"was": "codex", "now": null}));
+    let answer = switch(&world, "1000", &["8", "--harness", "claude-code"]).ok();
+    let back = &answer["switched"][0];
+    assert_eq!(answer["order"][0], "claude-code");
     assert_eq!((&back["from"], &back["to"]), (&json!("codex"), &json!("claude-code")));
     assert_eq!(back["pr"], 80);
     assert_eq!(open_commands(&world, &eight), ["agent"]);
@@ -152,7 +154,7 @@ fn a_switch_moves_the_worker_onto_the_harness_in_the_same_worktree_and_records_i
     assert_eq!(records.len(), 1);
     assert!(records[0].contains("switched from `codex` to `claude-code` by `alpha`"));
     let said = switch(&world, "1000", &["--harness", "config"]).error();
-    assert!(said.contains("`--harness config` is gone: `--clear`"), "{said}");
+    assert!(said.contains("`--harness config` is gone: switch"), "{said}");
     assert_eq!(open_commands(&world, &dir), [CODEX], "a worker it names not is left alone");
 }
 
@@ -189,8 +191,8 @@ fn all_moves_every_claim_of_the_instance_and_a_claim_it_does_not_hold_is_refused
         }
     });
 
-    let said = switch(&world, "800", &["9", "--harness", "codex"]).error();
-    assert!(said.contains("holds no claim on issue #9"), "{said}");
+    let said = switch(&world, "800", &["9", "--harness", "codex"]).ok();
+    assert!(!said["failed"].as_array().unwrap().is_empty(), "{said}");
     assert_eq!(open_commands(&world, &seven), ["agent"]);
 
     let moved = switch(&world, "800", &["--all", "--harness", "codex"]).ok();
@@ -239,8 +241,9 @@ fn an_acknowledged_close_that_leaves_the_terminal_is_no_permission_for_a_second_
     let world = blocked();
     let dir = worktree(&world, 7);
     world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
-    let error = switch(&world, "800", &["7", "--harness", "codex"]).error();
-    assert!(error.contains("still has a terminal after close"), "{error}");
+    let answer = switch(&world, "800", &["7", "--harness", "codex"]).ok();
+    let error = answer["failed"][0]["error"].as_str().unwrap();
+    assert!(error.contains("termination is unconfirmed"), "{error}");
     assert_eq!(open_commands(&world, &dir), ["agent"]);
     assert_eq!(world.claims().len(), 1);
 }
@@ -327,5 +330,73 @@ fn ambiguous_normal_work_and_invalid_diagnoses_never_authorize_a_switch() {
         assert_eq!(std::fs::read_to_string(world.root.join("diagnosis-asked")).unwrap(), asked);
         assert_eq!(open_commands(&world, &dir), ["agent"]);
         assert_eq!(world.claims().len(), 1);
+    }
+}
+
+#[test]
+fn structured_rate_limits_wait_for_retry_after_before_a_bounded_session_fallback() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] =
+                json!({"state":"idle", "error":{"code":"rate_limit_exceeded", "retry_after":120}});
+        }
+    });
+    tick(&world, 800);
+    tick(&world, 919);
+    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    let path = world.cache().join("afkconvoy/worker-health.json");
+    let book: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(book["workers"][0]["rate_retries"], 1);
+    assert_eq!(book["workers"][0]["next_check"], 920);
+    tick(&world, 920);
+    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    tick(&world, 1040);
+    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    let book: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(book["faults"], json!([]), "a rate limit never pauses the entire account");
+    assert!(
+        !world.root.join("diagnosis-asked").exists(),
+        "classified runtime errors need no model"
+    );
+}
+
+#[test]
+fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_host_scoped() {
+    let world = World::new();
+    let other = world.second_repo();
+    world.issue(7, &["ready-for-agent"]);
+    let mut gh = world.gh2();
+    gh["issues"] = json!([{"number":8,"title":"second repo task", "labels":["ready-for-agent"], "state":"OPEN"}]);
+    std::fs::write(world.root.join("gh2.json"), gh.to_string()).unwrap();
+    tick(&world, 700);
+    world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "700"]).ok();
+    world.hold_every_harness();
+    world.say_concurrency(&world.clone, 3);
+    world.say_concurrency(&other, 3);
+    let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
+    for dir in [&seven, &eight] {
+        std::fs::write(dir.join("unfinished.txt"), "preserve").unwrap();
+    }
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"idle", "error":{"code":"insufficient_quota"}});
+        }
+    });
+    let kit = std::fs::read(world.kit_path()).unwrap();
+    tick(&world, 800);
+    world.afk_in(&other, &["tick", "--instance", "beta", "--host", "h1", "--now", "800"]).ok();
+    for dir in [&seven, &eight] {
+        assert_eq!(open_commands(&world, dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+        assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "preserve");
+    }
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+    let switched =
+        world.afk_in(&world.root, &["switch", "--harness", "codex", "--all", "--host", "h1"]).ok();
+    assert_eq!(switched["failed"], json!([]), "{switched}");
+    assert_eq!(switched["switched"].as_array().unwrap().len(), 2);
+    for dir in [&seven, &eight] {
+        assert_eq!(open_commands(&world, dir), [CODEX]);
     }
 }

@@ -23,6 +23,7 @@ pub const CHECK_SECONDS: u64 = 300;
 pub const DIAGNOSIS_SECONDS: u64 = 30;
 pub const MAX_DIAGNOSES: u32 = 3;
 pub const MAX_RATE_RETRIES: u32 = 2;
+pub const MAX_CONTINUATIONS: u32 = 3;
 pub const RECOVERY_SECONDS: u64 = 3600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +90,10 @@ struct Observed {
     next_check: u64,
     attempts: u32,
     rate_retries: u32,
+    #[serde(default)]
+    continuations: u32,
+    #[serde(default)]
+    failed_candidates: Vec<(String, u64)>,
     diagnosis: Option<Diagnosis>,
     source: String,
     action: String,
@@ -265,6 +270,38 @@ fn checked(answer: &str, observed: &Observed, structured: &Value) -> Result<Diag
             && !["quota", "authentication", "disabled"].contains(&diagnosis.class.as_str())
         {
             bail!("a session diagnosis cannot pause an account");
+        }
+        if diagnosis.scope == Scope::Account {
+            let evidence = diagnosis.evidence.join(" ").to_lowercase();
+            let explicit = match diagnosis.class.as_str() {
+                "quota" => [
+                    "quota",
+                    "usage limit",
+                    "usage_limit",
+                    "insufficient_quota",
+                    "credits exhausted",
+                    "out of credits",
+                ]
+                .iter()
+                .any(|s| evidence.contains(s)),
+                "authentication" => [
+                    "login",
+                    "log in",
+                    "authentication",
+                    "invalid_api_key",
+                    "token expired",
+                    "unauthorized",
+                ]
+                .iter()
+                .any(|s| evidence.contains(s)),
+                "disabled" => {
+                    ["disabled", "deactivated", "suspended"].iter().any(|s| evidence.contains(s))
+                }
+                _ => false,
+            };
+            if !explicit {
+                bail!("account scope lacks explicit account fault evidence");
+            }
         }
         if diagnosis.scope == Scope::Model && observed.model.is_none() {
             bail!("model scope requires an observed model identity");
@@ -465,6 +502,8 @@ fn observe(
             next_check: fleet.now,
             attempts: 0,
             rate_retries: 0,
+            continuations: 0,
+            failed_candidates: vec![],
             diagnosis: None,
             source: "observation".into(),
             action: "observing".into(),
@@ -473,6 +512,10 @@ fn observe(
         },
     };
     if observed.terminal != terminal {
+        if observed.action == "continued" {
+            observed.continuations = 0;
+            observed.failed_candidates.clear();
+        }
         observed.terminal = terminal;
         observed.harness = harness;
         observed.model = model;
@@ -500,6 +543,7 @@ fn observe(
     if observed.snapshots.len() > 3 {
         observed.snapshots.remove(1);
     }
+    let previous = (observed.action.clone(), observed.attempts, observed.continuations);
     let result = decide(
         book,
         &mut observed,
@@ -517,6 +561,20 @@ fn observe(
         observed.error = Some(format!("{e:#}"));
         observed.action = "waiting".into();
         observed.next_check = fleet.now.saturating_add(CHECK_SECONDS);
+    }
+    if previous != (observed.action.clone(), observed.attempts, observed.continuations) {
+        crate::log::Log::of(&fleet.repo)?.append(&crate::log::Entry {
+            at: fleet.now,
+            instance: me.instance.as_str().into(),
+            host: me.host.clone(),
+            what: crate::log::What::Command {
+                command: "worker_health".into(),
+                on: issue.map(|n| n.to_string()).or_else(|| patrol.map(str::to_string)),
+                by: observed.source.clone(),
+                outcome: json!(observed).to_string(),
+                failed: result.is_err(),
+            },
+        })?;
     }
     book.workers.push(observed);
     result
@@ -538,6 +596,18 @@ fn decide(
 ) -> Result<()> {
     if fleet.now < observed.next_check {
         return Ok(());
+    }
+    if observed
+        .snapshots
+        .first()
+        .is_some_and(|s| fleet.now.saturating_sub(s.at) >= RECOVERY_SECONDS)
+    {
+        observed.attempts = 0;
+        observed.continuations = 0;
+        observed.failed_candidates.clear();
+        if let Some(first) = observed.snapshots.first_mut() {
+            first.at = fleet.now;
+        }
     }
     let raw_error = structured.get("error").unwrap_or(structured);
     let rule = classified(raw_error);
@@ -643,8 +713,22 @@ fn decide(
             "snapshots": observed.snapshots, "pending": "continue the original task and current stage"}))?,
     )?;
     let mut excluded = vec![observed.harness];
+    excluded.extend(
+        observed
+            .failed_candidates
+            .iter()
+            .filter(|(_, at)| fleet.now < *at)
+            .filter_map(|(h, _)| Harness::read(h)),
+    );
     let mut failures = vec![];
     for candidate in kit.harnesses.iter().filter(|h| h.harness != observed.harness) {
+        if excluded.contains(&candidate.harness) {
+            continue;
+        }
+        if observed.continuations >= MAX_CONTINUATIONS {
+            break;
+        }
+        observed.continuations += 1;
         if crate::role::startable(&agent.launches, candidate.harness, "fault continuation").is_err()
         {
             excluded.push(candidate.harness);
@@ -674,6 +758,10 @@ fn decide(
             Err(e) => {
                 failures.push(format!("{}: {e:#}", candidate.harness.key()));
                 excluded.push(candidate.harness);
+                observed.failed_candidates.push((
+                    candidate.harness.key().into(),
+                    fleet.now.saturating_add(RECOVERY_SECONDS),
+                ));
             }
         }
     }
