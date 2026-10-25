@@ -368,6 +368,11 @@ fn start(
         staged.refuse_spent(fleet.scan.claim_of(number))?;
     }
     let by_hand = from == StartFrom::Fresh;
+    let answered = if held && staged.is_none() && consult.is_none() && !by_hand {
+        crate::park::cleared_verdict(fleet, number)?
+    } else {
+        None
+    };
     let mut found: Option<Survey> = None;
     let mut plan = Recovery::discarded();
     let mut worktree: Option<Worktree> = None;
@@ -501,6 +506,11 @@ fn start(
         }
     }
     let cut = worktree.ok_or_else(undecided)?;
+    // Last: a failed start leaves the verdict standing for the next tick.
+    // This belongs to dispatch so a continuation by hand answers it too.
+    if let Some(said) = answered {
+        cut.record_answered(&said)?;
+    }
     let mut started = json!({"issue": number, "started": true,
         "claim": if held { "held" } else { "won" },
         "tier": plan.tier.number(), "action": plan.tier.word(),
