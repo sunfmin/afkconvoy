@@ -647,7 +647,7 @@ pub fn cast_within(
     if let Some(chosen) = chosen {
         return Ok(first(Why::Unmatched, Some(switch_named(chosen)))?);
     }
-    if !choice(range) {
+    if range.iter().map(|held| held.models.len().max(1)).sum::<usize>() <= 1 {
         return Ok(first(Why::Only, None)?);
     }
     match named {

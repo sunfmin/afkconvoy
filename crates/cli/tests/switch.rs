@@ -485,6 +485,38 @@ fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
     assert_eq!(faults[0]["model"], "opus");
     assert_eq!(world.paused(), json!([]));
     assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+    let kit = std::fs::read(world.kit_path()).unwrap();
+    world.issue(9, &["ready-for-agent"]);
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    let nine = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 9).unwrap();
+    assert_eq!(nine["cast"]["model"], "haiku");
+    let status = plan["casting"].as_array().unwrap().iter().find(|s| s["number"] == 9).unwrap();
+    assert!(status["stages"][0]["skipped"][0].as_str().unwrap().contains("opus: unavailable"));
+    world.probes_answer();
+    tick(&world, 4400);
+    world.issue(10, &["ready-for-agent"]);
+    let plan = world.afk(&["plan", "--now", "4401"]).ok();
+    let ten = plan["frontier"].as_array().unwrap().iter().find(|i| i["number"] == 10).unwrap();
+    assert_eq!(ten["cast"]["model"], "opus");
+    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit);
+}
+
+#[test]
+fn switching_models_leaves_healthy_workers_alone_until_all_continues_them() {
+    let world = World::new();
+    world.kit_models("claude-code", &["opus", "haiku"]);
+    world.issue(7, &["ready-for-agent"]);
+    tick(&world, 700);
+    let dir = worktree(&world, 7);
+    std::fs::write(dir.join("unfinished.txt"), "keep this work").unwrap();
+    let claims = world.claims();
+    world.afk(&["switch", "--model", "haiku"]).ok();
+    assert_eq!(open_commands(&world, &dir), ["agent --model 'opus'"]);
+    let moved = world.afk(&["switch", "--model", "haiku", "--all", "--host", "h1"]).ok();
+    assert_eq!(moved["failed"], json!([]), "{moved}");
+    assert_eq!(open_commands(&world, &dir), ["agent --model 'haiku'"]);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "keep this work");
+    assert_eq!(world.claims(), claims);
 }
 
 #[test]

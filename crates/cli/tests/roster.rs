@@ -78,6 +78,52 @@ fn said(planned: &Value, number: u64) -> Value {
 }
 
 #[test]
+fn default_off_and_model_switch_follow_kit_order_in_bound_and_unbound_checkouts() {
+    let team = TEAM
+        .replace("model: opus }", "model: opus }\n      - { harness: claude-code, model: haiku }");
+    let world = bound(&team);
+    let other = world.second_repo();
+    world.issue(7, &["flow:feature"]);
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["host_kit"]["cast"], false);
+    assert_eq!(planned["caster"], Value::Null);
+    assert_eq!(said(&planned, 7)["model"], "opus");
+    assert!(planned["casting"][0]["why"].as_str().unwrap().contains("off on this host"));
+    world.afk(&["switch", "--model", "haiku"]).ok();
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(said(&planned, 7)["model"], "haiku", "roster order does not outrank kit order");
+    let mut gh = world.gh2();
+    gh["issues"] =
+        json!([{"number":8,"title":"task", "labels":["ready-for-agent"], "state":"open"}]);
+    std::fs::write(world.root.join("gh2.json"), gh.to_string()).unwrap();
+    assert_eq!(world.afk_in(&other, &PLAN).ok()["frontier"][0]["cast"]["model"], "haiku");
+    world.afk(&TICK).ok();
+    world.afk_in(&other, &TICK).ok();
+    let terminals = world.orca()["terminals"].as_array().unwrap().clone();
+    assert_eq!(terminals.len(), 2);
+    assert!(terminals.iter().all(|t| t["command"].as_str().unwrap().ends_with("--model 'haiku'")));
+    // A manual label still wins within that range, even with no harness label.
+    world.issue(9, &["flow:feature", "model:opus"]);
+    assert_eq!(said(&world.afk(&PLAN).ok(), 9)["model"], "opus");
+}
+
+#[test]
+fn enabled_casting_does_not_hold_a_bound_issue_whose_selected_harness_has_no_models() {
+    let world = bound("```yaml\nroles:\n  dev: acme/dev\n  reviewer: acme/reviewer\n```\n");
+    world.afk(&["kit", "--cast", "on"]).ok();
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    world.issue(7, &["flow:feature"]);
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["caster"], Value::Null);
+    assert_eq!(said(&planned, 7)["harness"], "codex");
+    assert_eq!(said(&planned, 7)["model"], Value::Null);
+    assert!(planned["casting"][0]["why"].as_str().unwrap().contains("no model choice"));
+    world.afk(&TICK).ok();
+    assert_eq!(world.worktrees().len(), 1);
+    assert!(world.caster_asked().is_empty());
+}
+
+#[test]
 fn bound_and_unbound_checkouts_share_kit_priority_while_role_limits_remain_constraints() {
     let world = bound(TEAM);
     let other = world.second_repo();
