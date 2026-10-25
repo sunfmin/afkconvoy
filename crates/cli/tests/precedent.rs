@@ -677,6 +677,25 @@ fn proposal_capacity_and_age_follow_the_open_prs_even_when_the_team_stops_propos
 }
 
 #[test]
+fn open_proposals_name_the_tracker_of_their_rulings_separately_from_the_team() {
+    let world = proposing(1);
+    world.name_origin(&world.clone, "acme/code");
+    world.say_tracker(&world.clone, "acme/control");
+    world.with_gh(|gh| {
+        gh["prs_of"]["acme/team"] = json!([
+            {"number": 31, "headRefName": named(7, 123), "state": "open", "since": 1000}
+        ])
+    });
+    let doctor = world.afk(&["doctor", "--now", "8200"]).json;
+    assert_eq!(doctor["proposals"]["tracker"], "acme/control", "{doctor}");
+    assert_eq!(doctor["proposals"]["team"], "acme/team");
+    let page = world.render_panel("proposal-tracker", &["--now", "8200"], (1440, 1000));
+    let human = page.part("section", "human");
+    assert!(human.contains("ruling on acme/control#7"), "{human}");
+    assert!(human.contains("gh pr merge 31 --repo acme/team"), "{human}");
+}
+
+#[test]
 fn a_stage_s_brief_says_where_the_precedents_are_and_to_read_them_before_an_escalate() {
     let world = proposing(3);
     world.issue(7, &["flow:feature"]);

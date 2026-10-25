@@ -46,8 +46,6 @@ pub struct Proposal {
     pub age: Option<u64>,
     pub merge: String,
     pub close: String,
-    #[serde(skip)]
-    branch: String,
 }
 
 /// Reads the team's open proposals from its own branches, never from forks.
@@ -68,7 +66,6 @@ pub fn open(fleet: &Fleet, read: &Flows) -> Result<Option<Open>> {
             age: pr.since.map(|since| fleet.now.saturating_sub(since)),
             merge: format!("gh pr merge {number} --repo {team}"),
             close: format!("gh pr close {number} --repo {team}"),
-            branch,
         });
     }
     open.sort_by_key(|pr| pr.pr);
@@ -125,7 +122,7 @@ pub fn seen(fleet: &Fleet, read: &Flows) -> Result<Seen> {
     seen.open = fleet
         .proposals
         .as_ref()
-        .map(|read| read.open.iter().map(|pr| pr.branch.clone()).collect())
+        .map(|read| read.open.iter().map(|pr| pr.ruling.branch()).collect())
         .unwrap_or_default();
     Ok(seen)
 }

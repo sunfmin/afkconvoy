@@ -76,7 +76,7 @@ impl Ruling {
 
 /// Whether `branch` is one a proposal is opened from.
 pub fn is_proposal(branch: &str) -> bool {
-    branch.starts_with(NAME)
+    Ruling::of_branch(branch).is_some()
 }
 
 /// The rulings of humans among the stage records of issue `issue`, oldest
