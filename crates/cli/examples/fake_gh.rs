@@ -37,7 +37,7 @@ mod fake;
 use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
     LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
-    PR_OF_FIELDS, VISIBILITY_JQ,
+    PR_OF_FIELDS, PR_OF_JQ, VISIBILITY_JQ,
 };
 use std::path::PathBuf;
 
@@ -297,13 +297,14 @@ fn pr_of(st: &mut State, verb: &str, repo: &str) -> ! {
     if verb == "list" {
         assert_eq!(st.opt("--state"), Some("open"), "{:?}", st.argv);
         assert_eq!(st.opt("--json"), Some(PR_OF_FIELDS), "{:?}", st.argv);
+        assert_eq!(st.opt("--jq"), Some(PR_OF_JQ), "{:?}", st.argv);
         let rows = st.doc["prs_of"][repo].as_array().cloned().unwrap_or_default();
         let open: Vec<Value> = rows
             .iter()
             .filter(|pr| is_open(pr))
             .map(|pr| {
                 json!({"number": pr["number"], "headRefName": pr["headRefName"],
-                    "isCrossRepository": is_fork(pr)})
+                    "isCrossRepository": is_fork(pr), "since": pr["since"]})
             })
             .collect();
         st.finish(&Value::from(open).to_string(), 0, "")

@@ -68,6 +68,8 @@ pub struct Fleet {
     /// What this view's start and end of a cut said: what a tick's line says
     /// of them, and its log keeps.
     pub cut_said: Vec<crate::log::What>,
+    /// The open proposals on the team's repo, as the last rebuild read them.
+    pub proposals: Option<precedent::Open>,
 }
 
 /// Why no worker of a role can be started on this host: it holds limits for
@@ -113,6 +115,7 @@ impl Fleet {
             closers: vec![],
             cut_train: None,
             cut_said: vec![],
+            proposals: None,
         })
     }
 
@@ -314,6 +317,7 @@ impl Fleet {
         let heartbeats = self.scan.beats();
         let (landings, slow_gate) = slow_gate::seen(self, &self.listing.records, &train.base)?;
         let cut = crate::cut::seen(self, &stages, issues, &riding, &train.base)?;
+        self.proposals = precedent::open(self, &stages)?;
         let seen = Observed {
             issues,
             prs,

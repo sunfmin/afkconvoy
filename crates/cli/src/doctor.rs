@@ -126,7 +126,8 @@ macro_rules! kinds {
             /// has a row for each.
             fn see(self) -> See {
                 match self {
-                    Kind::LockUnworked | Kind::PatrolFailed | Kind::CutFailed | Kind::WaitedLong => {
+                    Kind::LockUnworked | Kind::PatrolFailed | Kind::CutFailed | Kind::WaitedLong
+                    | Kind::ProposalsFull => {
                         See::Humans
                     }
                     _ => See::Troubleshooting,
@@ -167,6 +168,7 @@ kinds! {
     NearBreaker: Warning, "is one rework from a breaker";
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
+    ProposalsFull: Warning, "have reached the team's `max_open`";
     CutFailed: Warning, "cuts no version: its last cut failed";
     WaitedLong: Warning, "has waited for a human for";
     NotOurs: Warning, "is held off by a PR not the fleet's";
@@ -404,6 +406,7 @@ pub enum TeamRead {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
     pub set: WorkingSet,
+    pub proposals: Option<crate::precedent::Open>,
     pub held: Vec<Held>,
     pub stood: Vec<Stood>,
     pub team: TeamRead,
@@ -1131,6 +1134,7 @@ pub fn findings(seen: &Seen) -> Vec<Finding> {
             found.extend(claim_findings(seen.run, &state.held));
             found.extend(issue_findings(&state.stood, &state.team, seen.now));
             found.extend(waiting_findings(&state.set, seen.now));
+            found.extend(state.proposals.as_ref().and_then(crate::precedent::Open::finding));
             found.extend(state.unclaimed.iter().map(unclaimed_finding));
             found.extend(state.not_ours.iter().map(not_ours_finding));
             found.extend(state.on_gone.iter().map(on_gone_finding));
@@ -1435,7 +1439,18 @@ fn read_state(repo: &Repo, now: u64, run: &mut Run) -> Result<State> {
                 .map(|owner| owner.instance.clone()),
         })
         .collect();
-    Ok(State { set, held, stood, team, ready_label, tracker, unclaimed, not_ours, on_gone })
+    Ok(State {
+        set,
+        proposals: fleet.proposals,
+        held,
+        stood,
+        team,
+        ready_label,
+        tracker,
+        unclaimed,
+        not_ours,
+        on_gone,
+    })
 }
 
 /// The worktrees on this host whose issue holds no claim, each with what it
@@ -1567,7 +1582,7 @@ fn exclusive_json(standing: Result<Vec<Ticket>>) -> Value {
 /// `afkconvoy doctor`, for the fleet of `host` in the checkout `repo`:
 ///
 ///   {"host", "fleet", "claims", "issues", "waiting_on_human": [{"issue", "title",
-///    "why", "url", "since", "answer"}], "findings": [{"severity", "what", "evidence",
+///    "why", "url", "since", "answer"}], "proposals", "findings": [{"severity", "what", "evidence",
 ///    "fix"}]}
 ///
 /// An answer with a `critical` finding is an `Unwell` error: the same object,
@@ -1677,6 +1692,7 @@ fn examined(repo: &Repo, now: u64, host: &str, proxy: &[String]) -> Result<Exami
         "claims": Value::Array(claims),
         "issues": issues,
         "waiting_on_human": waiting,
+        "proposals": state.as_ref().ok().and_then(|state| state.proposals.as_ref()),
     });
     Ok((answer, found))
 }
@@ -1871,6 +1887,7 @@ mod tests {
     fn state() -> State {
         State {
             set: set(),
+            proposals: None,
             held: vec![],
             stood: vec![],
             team: TeamRead::Unbound,

@@ -369,7 +369,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 
 ##### What it answers
 
-{"host", "fleet", "claims", "issues", "waiting_on_human", "findings"}
+{"host", "fleet", "claims", "issues", "waiting_on_human", "proposals", "findings"}
 
 - `host`: what this host has of what the fleet needs:
 
@@ -400,6 +400,7 @@ With `--all` it reads the checkout list (checkouts.json in the cache directory) 
 - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
 - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
 - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
+- `proposals`: a bound repo's team's open proposals, including those whose source issue is closed: {team, tracker, max_open, open}. team is the team's repo; tracker names another tracker, null where the checkout's own repo holds the rulings; max_open is the team's limit, null where it names nobody who proposes. `proposals.open` lists each PR from the team's own branches, lowest PR first: {pr, issue, comment, since, age, merge, close} — the PR number, the source issue and the id of its ruling's comment, when the PR opened in epoch seconds and its age in seconds (both null where GitHub said no time), and the exact `gh pr merge <pr> --repo <team>` and `gh pr close <pr> --repo <team>` commands. [] with none; proposals is null in an unbound repo or when the team or fleet state cannot be read. The panel shows these under "With a human" too. Once open proposals reach max_open, a warning finding names the PRs and a merge command: further proposals wait at `full` (`afkconvoy help humans`)
 - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
 
   - `severity`: how much it matters, one of those below
@@ -422,7 +423,7 @@ With `--all`:
 
 - `host`: what of `host` is the host's alone, as above, said once
 - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy
-- `checkouts`: each checkout on the list, in its order — [] with none — with the repo its remote `origin` names, null where it is no git checkout any more, and its `doctor`: what `doctor` answers in it — `waiting_on_human` among it — but for the host's, which are above. Each is asked as the fleet of the host its `run` named, unless `--host` names one. {"error", "see"} where it could not be asked
+- `checkouts`: each checkout on the list, in its order — [] with none — with the repo its remote `origin` names, null where it is no git checkout any more, and its `doctor`: what `doctor` answers in it — `waiting_on_human` and `proposals` among it — but for the host's, which are above. Each is asked as the fleet of the host its `run` named, unless `--host` names one. {"error", "see"} where it could not be asked
 
 It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
 
@@ -918,7 +919,7 @@ With `--open` it reads nothing itself, and starts nothing: it asks this host's r
 Not a JSON object: one HTML document on stdout, complete in itself, with no address in it that a browser would fetch. The same fleet state gives the same document. It has three parts, each made by one rendering, whether the host runner serves the page or this prints it:
 
 - The host, once: admission — whether it holds back new workers, why, and what it read of the host; the workers that are hot, in every repo, with why and what each held at the most; the inspection running, and what the last host inspection found; the commands run alone on the host and those waiting their turn (`exclusive`); host sleep — the sleep hours it may be put to sleep in, or that the host settings keep it awake, and which fleet instances are not idle; the host kit — each harness in order with its models, each one paused, and what the stock consult runs
-- With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`
+- With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`. Also every open proposal on each bound repo's team's repo: its PR, source issue and ruling's comment, how long it has been open, and the exact merge and close commands — what `doctor` and `doctor --all` answer as `proposals.open`, including proposals whose source issue is closed. Once these reach the team's `max_open`, the page says so: further proposals wait at `full` (`afkconvoy help humans`)
 - Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held of its bound and its frontier, and links to its part. Each part then shows:
   - Claims held: the claims of its fleet instance that take a slot, of the concurrency
   - `Declared`: shown while there are any: the claims whose worker declared a verdict not acted on yet, which take no slot
@@ -4253,7 +4254,7 @@ Where the team names who proposes precedents, each ruling a human gives with `af
 - `gh pr merge <pr> --repo <the team's repo>`: Merging accepts the precedent: every later stage reads it, and follows it in place of declaring `escalate` on the same question.
 - `gh pr close <pr> --repo <the team's repo>`: The ruling was about that one issue, and no stage should follow it unasked.
 
-The fleet never merges on the team's repo. `afkconvoy plan` lists the proposals under way and open under `proposals`.
+The fleet never merges on the team's repo. `afkconvoy doctor` lists the team's open proposals under `proposals.open`: each PR, the issue and comment of its ruling, how long it has been open, and the merge and close commands. `afkconvoy doctor --all` lists them for every checkout on this host's checkout list. `afkconvoy panel` shows them under "With a human" too. Both read only and make no startup probe. Once the open proposals reach the team's `max_open`, doctor gives a finding and the panel says so: no further proposal starts until a human merges or closes one. `afkconvoy plan` lists the rulings being proposed or still to be proposed under `proposals`, with how each stands; it makes a startup probe where one is due.
 
 #### An issue past the end of its workflow
 
@@ -4305,6 +4306,8 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `cuts no version: its last cut failed`: The issue that reports the fleet's failed cut is open: it names the step that failed, why, and the line that goes on from there. Read it (`fix`), then run that line in the cut's checkout, which closes it once the cut is over; or close it, and the next idle tick cuts again from the start (`afkconvoy help humans`).
 - `` have reached its `max_open` ``: A patrol is not run while that many of its issues are open. Close some, or raise it.
 - `has waited for a human for`: Nothing in the fleet moves that issue. `fix` answers it: [`afkconvoy help humans`](help:humans).
+
+- ``have reached the team's `max_open` ``: Open proposals on the team's repo fill its limit, so further proposals wait at `full`. `doctor` lists every PR under `proposals.open`, with the commands to merge or close it; the panel shows them under "With a human". Accept or close one to make room ([`afkconvoy help humans`](help:humans)).
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.
 - `is claimed but GitHub has it no more`: Deleted or transferred: its fleet's next tick releases it. `fix` is for one stopped.
 - `the gate is slow`: On one host, the last 5 landings with a recorded gate run all took more than 80% of the gate limit. A tick opens one issue for the fleet to make the gate faster: `fix` shows it. Raising `gate_seconds` is no fix, nor is deleting or skipping tests.
