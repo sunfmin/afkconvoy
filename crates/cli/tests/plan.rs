@@ -80,6 +80,23 @@ fn plan_assembles_the_working_set() {
 }
 
 #[test]
+fn a_pr_from_a_fork_is_read_by_nothing() {
+    let world = backlog();
+    world.issue(11, &["ready-for-agent"]);
+    // A fork's PRs, numbered past the fleet's own: one closes #4, which is
+    // joining on PR 40, one #11, unclaimed and ready.
+    world.fork_pr(99, 4, "feature-4");
+    world.fork_pr(98, 11, "patch-1");
+    let plan = world.afk(&["plan", "--instance", "me", "--now", "10000"]).ok();
+    assert_eq!(
+        plan["mine"][1],
+        json!({"number": 4, "title": "issue 4", "status": "joining", "pr": 40, "declared": false})
+    );
+    assert_eq!(numbers(&plan["frontier"]), [11], "{plan}");
+    assert!(!numbers(&plan["excluded"]).contains(&11), "{plan}");
+}
+
+#[test]
 fn an_unclaimed_ready_issue_is_on_the_frontier_in_number_order() {
     let world = World::new();
     world.say_concurrency(&world.clone, 2);

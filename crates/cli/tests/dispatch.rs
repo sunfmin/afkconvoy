@@ -338,3 +338,24 @@ fn a_stale_dependency_summary_does_not_hold_a_closed_blockers_issue_out_of_the_f
     let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"]).ok();
     assert_eq!(world.claims(), [(7, "alpha".to_string())], "{ticked}");
 }
+
+#[test]
+fn a_fork_s_pr_that_closes_a_ready_issue_holds_it_off_from_nobody() {
+    let world = ready_world();
+    world.fork_pr(98, 7, "patch-1");
+    let plan = world.afk(&["plan", "--instance", "alpha", "--now", "1000"]).ok();
+    assert_eq!(plan["frontier"][0]["number"], 7, "{plan}");
+    let ticked = world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"]).ok();
+    assert_eq!(world.claims(), [(7, "alpha".to_string())], "{ticked}");
+
+    // Its worker starts the issue afresh: the fork's PR is no work of its own.
+    let orca = world.orca();
+    let rows = orca["worktrees"].as_array().unwrap();
+    let row = rows.iter().find(|row| row["linkedIssue"] == 7).expect("a worktree of issue 7");
+    let worktree = Path::new(row["path"].as_str().unwrap());
+    let brief = Path::new(git(worktree, &["rev-parse", "--absolute-git-dir"]).as_str())
+        .join("convoy-worker-prompt.md");
+    let prompt = std::fs::read_to_string(&brief).unwrap();
+    assert!(prompt.contains("**Implement**") && !prompt.contains("#98"), "{prompt}");
+    assert_eq!(world.comments(98), [] as [String; 0]);
+}

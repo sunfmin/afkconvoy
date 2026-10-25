@@ -3,14 +3,16 @@
 //!
 //! State: `issues` [{number, title, labels: [name…], state, state_reason?, closed_at?, closed_by?,
 //! blocked_by?, id?}], `labels` [the labels the repo has beside those an issue carries], `edges` {number: [the issues it is blocked by…]}, `comments` {number: [{id, body, html_url, at?}]}, `now` the time a comment posted here is written at, when there is one, `prs` [{number, headRefName, headRefOid, body, state,
-//! linked?: [issue…]}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
+//! linked?: [issue…], fork?: its head is a fork's branch, which the bare repo does not hold, at
+//! `headRefOid`}], `protection` {branch: rules | "why it cannot be read"}, `bare`, `base`, `calls`, and `fail`: substrings of a
 //! command line that make the call fail. `cut_short` {a substring of a command
 //! line: how many more calls it cuts short}: each such call fails as one whose
 //! answer was cut short in transit. `repos` {owner/repo: the git repo that
 //! stands in for it}: the other repos GitHub holds, which `repo clone` clones and
 //! `repo create` adds to.
-//! `prs_of` {owner/repo: [{number, headRefName, state, closed_with?}]}: the
-//! PRs of those, each from a branch of the repo that stands in; what one
+//! `prs_of` {owner/repo: [{number, headRefName, state, closed_with?, fork?}]}: the
+//! PRs of those, each from a branch of the repo that stands in — or, where it
+//! says `fork`, of a fork, that branch standing in for the fork's; what one
 //! changes is that branch against the default one.
 //! `deleted` and `transferred` {number: how many more calls about it are
 //! answered}: past those, each call about the issue answers 410 — or 404 —
@@ -26,6 +28,7 @@ mod fake;
 use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
     LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
+    PR_OF_FIELDS,
 };
 use fake::State;
 use serde_json::{Value, json};
@@ -152,6 +155,20 @@ fn is_open(row: &Value) -> bool {
     row["state"].as_str().unwrap_or("open") == "open"
 }
 
+fn is_fork(row: &Value) -> bool {
+    row["fork"].as_bool().unwrap_or(false)
+}
+
+/// Where the branch of a PR from the repo itself points now in the bare
+/// repo: empty where it is gone, and for a fork's, which it does not hold.
+fn branch_head(pr: &Value, bare: &str) -> String {
+    if is_fork(pr) {
+        return String::new();
+    }
+    let branch = format!("refs/heads/{}", pr["headRefName"].as_str().unwrap());
+    fake::git(&["--git-dir", bare, "rev-parse", "-q", "--verify", &branch])
+}
+
 /// GitHub marks a PR merged by itself once its head is on the base branch —
 /// except the PRs listed under `slow_merge`, which it has not got round to.
 fn notice_merges(st: &mut State) {
@@ -162,8 +179,7 @@ fn notice_merges(st: &mut State) {
         if !is_open(pr) || slow.contains(&pr["number"]) {
             continue;
         }
-        let branch = format!("refs/heads/{}", pr["headRefName"].as_str().unwrap());
-        let head = fake::git(&["--git-dir", &bare, "rev-parse", "-q", "--verify", &branch]);
+        let head = branch_head(pr, &bare);
         let landed = !head.is_empty()
             && fake::ok(&["--git-dir", &bare, "merge-base", "--is-ancestor", &head, &base]);
         if landed {
@@ -185,15 +201,15 @@ fn pr_list(st: &mut State) -> ! {
         .filter(|pr| is_open(pr))
         .map(|pr| {
             // A PR's head is wherever its branch points now, as on GitHub.
-            let branch = format!("refs/heads/{}", pr["headRefName"].as_str().unwrap());
-            let head = fake::git(&["--git-dir", bare, "rev-parse", "-q", "--verify", &branch]);
+            let head = branch_head(pr, bare);
             let head = if head.is_empty() { pr["headRefOid"].clone() } else { json!(head) };
             let linked: Vec<Value> = pr["linked"]
                 .as_array()
                 .map(|numbers| numbers.iter().map(|n| json!({"number": n})).collect())
                 .unwrap_or_default();
-            json!({"number": pr["number"], "title": pr["title"], "headRefName": pr["headRefName"], "headRefOid": head,
-                "body": pr["body"], "closingIssuesReferences": linked})
+            json!({"number": pr["number"], "title": pr["title"], "headRefName": pr["headRefName"],
+                "headRefOid": head, "body": pr["body"], "closingIssuesReferences": linked,
+                "isCrossRepository": is_fork(pr)})
         })
         .collect();
     st.finish(&Value::from(rows).to_string(), 0, "")
@@ -206,11 +222,15 @@ fn pr_of(st: &mut State, verb: &str, repo: &str) -> ! {
     };
     if verb == "list" {
         assert_eq!(st.opt("--state"), Some("open"), "{:?}", st.argv);
+        assert_eq!(st.opt("--json"), Some(PR_OF_FIELDS), "{:?}", st.argv);
         let rows = st.doc["prs_of"][repo].as_array().cloned().unwrap_or_default();
         let open: Vec<Value> = rows
             .iter()
             .filter(|pr| is_open(pr))
-            .map(|pr| json!({"number": pr["number"], "headRefName": pr["headRefName"]}))
+            .map(|pr| {
+                json!({"number": pr["number"], "headRefName": pr["headRefName"],
+                    "isCrossRepository": is_fork(pr)})
+            })
             .collect();
         st.finish(&Value::from(open).to_string(), 0, "")
     }

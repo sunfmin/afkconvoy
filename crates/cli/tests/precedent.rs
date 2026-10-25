@@ -191,6 +191,16 @@ fn opens(world: &World, number: u64, branch: &str, change: impl FnOnce(&Path)) {
     });
 }
 
+/// Anyone opens PR `number` on the team's repo from a fork's `branch`,
+/// having changed there what `change` does.
+fn fork_opens(world: &World, number: u64, branch: &str, change: impl FnOnce(&Path)) {
+    opens(world, number, branch, change);
+    world.with_gh(|gh| {
+        let rows = gh["prs_of"]["acme/team"].as_array_mut().unwrap();
+        rows.last_mut().unwrap()["fork"] = json!(true);
+    });
+}
+
 fn append(dir: &Path, line: &str) {
     write(dir, "precedents.md", &format!("{KEPT}{line}\n"));
 }
@@ -512,6 +522,29 @@ fn no_proposal_is_started_while_the_open_ones_have_reached_max_open() {
     world.with_gh(|gh| gh["prs_of"]["acme/team"][1]["state"] = json!("merged"));
     assert_eq!(standing(&world, 2400), ["8 due"]);
     assert_eq!(did(&tick(&world, 2400)), ["propose 8 done"]);
+    assert!(!merged(&world));
+}
+
+#[test]
+fn a_fork_s_pr_named_as_a_proposal_s_is_neither_taken_for_one_nor_closed() {
+    let world = proposing(1);
+    let (comment, _) = ruled(&world, 7, 1000);
+    // Anyone's PRs from a fork: one named as another ruling's proposal, one
+    // as this ruling's, changing what no proposal may.
+    fork_opens(&world, 30, &named(9, 1), |dir| write(dir, "notes.md", "mine\n"));
+    fork_opens(&world, 31, &named(7, comment), |dir| {
+        write(dir, "workflows/feature.md", "loosened\n");
+    });
+    // Neither is an open proposal: the one `max_open` allows is started…
+    assert_eq!(standing(&world, 1100), ["7 due"]);
+    assert_eq!(did(&tick(&world, 1100)), ["dispatch 7 done", "propose 7 done"]);
+    // …and ended, leaving both as they were.
+    worker_leaves(&world, &checkout(&world, 7, comment));
+    assert_eq!(did(&tick(&world, 1200)), ["end_proposal 7 done"]);
+    for number in [30, 31] {
+        let left = pr(&world, number);
+        assert_eq!((&left["state"], &left["closed_with"]), (&json!("open"), &json!(null)));
+    }
     assert!(!merged(&world));
 }
 

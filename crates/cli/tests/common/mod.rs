@@ -400,6 +400,15 @@ impl World {
         });
     }
 
+    /// Adds an open PR from a fork's `branch` whose body closes issue
+    /// `closes`: anyone's, its head in another repository.
+    pub fn fork_pr(&self, number: u64, closes: u64, branch: &str) {
+        self.pr(number, closes, branch);
+        self.with_gh(|gh| {
+            gh["prs"].as_array_mut().unwrap().last_mut().unwrap()["fork"] = json!(true)
+        });
+    }
+
     /// A worker's worktree for `issue`, cut from the base branch, with one
     /// commit pushed and PR #`issue`0 open for it.
     pub fn worker(&self, issue: u64, file: &str, text: &str) -> PathBuf {
