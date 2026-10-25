@@ -73,6 +73,13 @@ place they are written. Each is run by `sh` in the cut's checkout, with the
 version in `$VERSION`: `set` on the base branch, `publish` with the new tag
 checked out.
 
+An untagged repo can declare `initial: 0.1.0` beside `set` and `publish` in
+its cut block. The next idle tick cuts that exact first version through the
+same gate and landing train, even if `set` finds it already set. Without the
+declaration it stays untagged; after the first version tag exists, the usual
+patch/minor selection applies and the declaration is ignored. `plan` shows
+the declaration as `cut.initial` while there is no version tag.
+
 ```yaml cut
 set: |
   set -ex

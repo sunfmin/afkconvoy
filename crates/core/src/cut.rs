@@ -2,7 +2,8 @@
 //! its base branch — it sets the version, lands it, tags it, and publishes
 //! and installs it. A tick that ends idle starts one in a repo that names its
 //! cut steps, once the base branch holds landed commits past the newest
-//! version tag; it is claimed on the remote as a run is, so one host cuts each
+//! version tag, or the repo declares its initial version on an untagged
+//! remote; it is claimed on the remote as a run is, so one host cuts each
 //! version. Where a cut stands, which version it cuts, what it is given and
 //! what is left of it are decided here; running its steps, and starting and
 //! ending it, are the effect layer's.
@@ -56,6 +57,10 @@ pub fn time_limit(gate_seconds: u64) -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Steps {
+    /// The version of the first cut where the remote has no version tag.
+    /// Left out, an untagged repo is not cut; after a tag, this is ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial: Option<String>,
     /// Run on the base branch as it stood: what it changes is the version's
     /// commit, which lands through the landing train.
     pub set: String,
@@ -64,9 +69,12 @@ pub struct Steps {
 }
 
 impl Steps {
-    /// The steps, each with something to run → them, or the key that has
-    /// nothing.
+    /// The steps, each with something to run and a valid initial version
+    /// where declared → them, or the key whose value is invalid.
     pub fn checked(self) -> Result<Steps, &'static str> {
+        if self.initial.is_some() && self.initial_version().is_none() {
+            return Err("initial");
+        }
         if self.set.trim().is_empty() {
             return Err("set");
         }
@@ -74,6 +82,11 @@ impl Steps {
             return Err("publish");
         }
         Ok(self)
+    }
+
+    /// The declared initial version, while it is three version numbers.
+    pub fn initial_version(&self) -> Option<Version> {
+        Version::parse(self.initial.as_deref()?)
     }
 }
 
@@ -90,7 +103,12 @@ impl Version {
     /// writes them (`record::fleet_number`), parted by `.`. Any other tag
     /// names none — `v1.2`, `v1.2.3-rc1`, `release-1`.
     pub fn tagged(name: &str) -> Option<Version> {
-        let mut parts = name.strip_prefix('v')?.split('.');
+        Version::parse(name.strip_prefix('v')?)
+    }
+
+    /// Three version numbers without a tag's `v`, each as the fleet writes it.
+    pub fn parse(name: &str) -> Option<Version> {
+        let mut parts = name.split('.');
         let major = fleet_number(parts.next()?)?;
         let minor = fleet_number(parts.next()?)?;
         let patch = fleet_number(parts.next()?)?;
@@ -171,6 +189,8 @@ pub struct Seen {
     pub on: bool,
     /// The newest version tag on the remote, while it has one.
     pub newest: Option<Tag>,
+    /// The initial version the repo declares, used only without a version tag.
+    pub initial: Option<Version>,
     /// How many commits the base branch holds past it.
     pub past: u64,
     /// The claim on a cut, while one stands.
@@ -189,7 +209,7 @@ pub enum Standing {
     Off,
     /// A cut failed, and the issue that says so is still open.
     Failed,
-    /// The remote has no version tag: nothing to count a version from.
+    /// The remote has no version tag, and the repo declares no initial version.
     Untagged,
     /// The base branch holds no commit past the newest version tag.
     Tagged,
@@ -229,6 +249,9 @@ pub struct Row {
     /// past it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub newest_tag: Option<String>,
+    /// The declared initial version, while the remote has no version tag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial: Option<String>,
     pub past: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<u64>,
@@ -261,14 +284,15 @@ pub fn row(
         },
         None if !seen.on => Standing::Off,
         None if seen.failure.is_some() => Standing::Failed,
-        None if seen.newest.is_none() => Standing::Untagged,
-        None if seen.past == 0 => Standing::Tagged,
+        None if seen.newest.is_none() && seen.initial.is_none() => Standing::Untagged,
+        None if seen.newest.is_some() && seen.past == 0 => Standing::Tagged,
         None if locked => Standing::Locked,
         None => Standing::Due,
     };
     Row {
         standing,
         newest_tag: seen.newest.as_ref().map(|tag| tag.version.tag()),
+        initial: seen.initial.filter(|_| seen.newest.is_none()).map(|version| version.to_string()),
         past: seen.past,
         failure: seen.failure,
         on_train: seen.on_train,
@@ -348,9 +372,12 @@ pub struct Failure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     /// The version it makes, `0.5.17`, and the tag it was cut past, `v0.5.16`.
+    /// No tag means the declared initial version: its cut holds all landings.
     pub version: String,
-    pub from: String,
-    /// The PRs it holds: those that landed since that tag, lowest first.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// The PRs it holds: those that landed since that tag, or all landings
+    /// for an initial cut, lowest first.
     #[serde(default)]
     pub prs: Vec<u64>,
     /// Whether it raises the minor version, for a PR carrying `MINOR_LABEL`.
@@ -396,7 +423,11 @@ impl Record {
 
     /// What it is and did, in one line: what the log keeps.
     pub fn line(&self) -> String {
-        let mut said = format!("v{} (past {}", self.version, self.from);
+        let origin = match &self.from {
+            Some(tag) => format!("past {tag}"),
+            None => "the initial version".to_string(),
+        };
+        let mut said = format!("v{} ({origin}", self.version);
         if self.minor {
             said.push_str(&format!(", the next minor for a PR labelled {MINOR_LABEL}"));
         }
@@ -563,16 +594,17 @@ pub fn title(repo: &str, version: &str) -> String {
 
 /// The body of a cut's PR.
 pub fn pr_body(record: &Record, host: &str) -> String {
-    let why = match record.minor {
-        true => format!(
-            "the next minor past {}: a PR it holds is labelled `{MINOR_LABEL}`",
-            record.from
-        ),
-        false => format!("the next patch past {}", record.from),
+    let why = match (&record.from, record.minor) {
+        (None, _) => "the repo's declared initial version".to_string(),
+        (Some(tag), true) => {
+            format!("the next minor past {tag}: a PR it holds is labelled `{MINOR_LABEL}`")
+        }
+        (Some(tag), false) => format!("the next patch past {tag}"),
     };
+    let since = if record.from.is_some() { "since the tag" } else { "on the base branch" };
     let holds = match record.prs.is_empty() {
-        true => "It holds no PR: the commits past the tag name none.".to_string(),
-        false => format!("It holds the PRs that landed since: {}.", numbered(&record.prs)),
+        true => format!("It holds no PR: the commits {since} name none."),
+        false => format!("It holds the PRs that landed {since}: {}.", numbered(&record.prs)),
     };
     format!(
         "A cut by the fleet on `{host}` (`afkconvoy cut --help`): v{}, {why}. {holds}\n\nIt \
@@ -641,6 +673,7 @@ mod tests {
         Seen {
             on: true,
             newest: Some(Tag { version: version(0, 5, 16), commit: "t".into() }),
+            initial: None,
             past: 4,
             claim: None,
             failure: None,
@@ -688,6 +721,20 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_initial_version_is_due_only_on_an_untagged_remote() {
+        let first = Seen { newest: None, initial: Some(version(1, 2, 3)), past: 0, ..seen() };
+        let row = row(&first, None, &[], 1000, false);
+        assert_eq!(row.standing, Standing::Due);
+        assert_eq!(row.initial.as_deref(), Some("1.2.3"));
+        assert_eq!(row.newest_tag, None);
+        assert_eq!(standing(&first, true), Standing::Locked);
+        assert_eq!(standing(&Seen { failure: Some(9), ..first }, false), Standing::Failed);
+        let tagged = Seen { initial: Some(version(1, 2, 3)), past: 0, ..seen() };
+        assert_eq!(standing(&tagged, false), Standing::Tagged);
+        assert_eq!(super::row(&tagged, None, &[], 1000, false).initial, None);
+    }
+
+    #[test]
     fn only_a_tick_that_ends_idle_with_admission_open_starts_a_due_cut() {
         let due = row(&seen(), None, &[], 1000, false);
         assert!(starts(&due, 0, 0, false, false));
@@ -709,7 +756,7 @@ mod tests {
     fn record() -> Record {
         Record {
             version: "0.5.17".into(),
-            from: "v0.5.16".into(),
+            from: Some("v0.5.16".into()),
             prs: vec![451, 452],
             minor: false,
             started: 1000,
@@ -780,6 +827,19 @@ mod tests {
     }
 
     #[test]
+    fn an_initial_cuts_record_names_no_previous_tag() {
+        let first = Record { version: "1.2.3".into(), from: None, ..record() };
+        assert!(first.line().starts_with("v1.2.3 (the initial version, holding #451"));
+        let body = pr_body(&first, "h1");
+        assert!(body.contains("the repo's declared initial version"), "{body}");
+        assert!(body.contains("on the base branch: #451, #452"), "{body}");
+        let old = serde_json::to_value(record()).unwrap();
+        assert_eq!(old["from"], "v0.5.16");
+        let read: Record = serde_json::from_value(old).unwrap();
+        assert_eq!(read.from.as_deref(), Some("v0.5.16"));
+    }
+
+    #[test]
     fn a_failed_cut_is_found_again_by_its_title_and_the_escalate_label() {
         let issue = |number: u64, title: &str, labels: &[&str]| Issue {
             number,
@@ -819,7 +879,11 @@ mod tests {
 
     #[test]
     fn the_cut_steps_need_both_lines() {
-        let steps = |set: &str, publish: &str| Steps { set: set.into(), publish: publish.into() };
+        let steps = |set: &str, publish: &str| Steps {
+            initial: None,
+            set: set.into(),
+            publish: publish.into(),
+        };
         assert!(steps("bump", "ship").checked().is_ok());
         assert_eq!(steps(" ", "ship").checked(), Err("set"));
         assert_eq!(steps("bump", "").checked(), Err("publish"));

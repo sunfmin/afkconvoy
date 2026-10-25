@@ -37,10 +37,13 @@ pub fn parse(markdown: &str) -> Result<Config> {
 }
 
 /// The cut steps a ```` ```yaml cut ```` block says: `set` and `publish`,
-/// each something to run, and nothing else.
+/// each something to run, and optionally `initial`, three version numbers.
 fn cut_steps(yaml: &str) -> Result<cut::Steps> {
     let steps: cut::Steps = serde_yaml::from_str(yaml)?;
-    steps.checked().map_err(|key| anyhow!("`{key}` names nothing to run"))
+    steps.checked().map_err(|key| match key {
+        "initial" => anyhow!("`initial` must be X.Y.Z, three whole numbers without leading zeroes or a v prefix; set `initial: 0.1.0` or remove it"),
+        _ => anyhow!("`{key}` names nothing to run"),
+    })
 }
 
 /// The text of the first ```` ```yaml ```` block of a markdown text: the one
@@ -161,5 +164,33 @@ mod tests {
     fn a_missing_required_key_is_named() {
         assert!(error("gate_command: make").contains("base_branch"));
         assert!(error("base_branch: main").contains("gate_command"));
+    }
+
+    #[test]
+    fn an_initial_cut_declares_three_version_numbers() {
+        let config = "```yaml\nbase_branch: main\ngate_command: make\n```\n";
+        let declared = |initial: &str| {
+            parse(&format!(
+                "{config}```yaml cut\ninitial: {initial}\nset: bump\npublish: ship\n```\n"
+            ))
+        };
+        for initial in ["0.0.0", "0.1.0", "12.34.56"] {
+            let cut = declared(initial).unwrap().cut.unwrap();
+            assert_eq!(cut.initial.as_deref(), Some(initial));
+            assert_eq!(cut.initial_version().unwrap().to_string(), initial);
+        }
+        for wrong in [
+            "v0.1.0",
+            "0.1",
+            "0.1.0-rc1",
+            "0.01.0",
+            "-1.2.3",
+            "''",
+            "[0, 1, 0]",
+            "18446744073709551616.0.0",
+        ] {
+            let error = format!("{:#}", declared(wrong).unwrap_err());
+            assert!(error.contains("initial"), "{wrong}: {error}");
+        }
     }
 }

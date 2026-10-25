@@ -1639,6 +1639,7 @@ mod tests {
 
     fn cut(standing: crate::cut::Standing) -> Option<crate::cut::Row> {
         Some(crate::cut::Row {
+            initial: None,
             standing,
             newest_tag: Some("v0.5.16".into()),
             past: 4,
