@@ -295,20 +295,38 @@ fn a_checkout_whose_startup_probe_fails_is_refused_and_not_left_on_the_list() {
 }
 
 #[test]
-fn a_listed_checkout_whose_startup_probe_fails_is_refused_and_taken_off_the_list() {
+fn a_listed_checkout_whose_startup_probe_fails_is_refused_and_stays_on_the_list_broken() {
     let world = World::new();
     world.afk(&RUN).ok();
     world.kill_host_runner("KILL");
     base_branch_gone(&world);
 
+    // the host runner this `run` starts starts the checkout from the list,
+    // and the `run` asks for it as well: whichever start is refused, the
+    // checkout stays where it was
     let refused = world.afk(&RUN);
     assert_eq!(refused.code, 1, "{}", refused.json);
     let error = refused.json["error"].as_str().unwrap();
     assert!(error.contains("the remote has no branch \"release\""), "{error}");
-    assert_eq!(listed(&world), [] as [String; 0]);
+    let stays = "its checkout stays on the checkout list, and its fleet instance is broken";
+    assert!(error.contains(stays), "{error}");
+    assert_eq!(refused.json["see"], "afkconvoy help troubleshooting", "{}", refused.json);
+    assert_eq!(listed(&world), [shown(&world.clone)]);
     let log = world.runner_log();
-    let said = format!("checkout removed: {}: refused: ", shown(&world.clone));
-    assert!(log.iter().any(|line| line.starts_with(&said)), "{log:#?}");
+    let clone = shown(&world.clone);
+    let broken = format!("fleet instance broken: {clone}: ");
+    assert!(log.iter().any(|line| line.starts_with(&broken)), "{log:#?}");
+    assert!(!log.iter().any(|line| line.starts_with("checkout removed: ")), "{log:#?}");
+    let checkouts = world.afk(&["checkouts"]).ok();
+    assert_eq!(checkouts["checkouts"][0]["state"], "broken", "{checkouts}");
+
+    // fixed, a `run` starts it at once
+    git(&world.clone, &["revert", "--no-edit", "HEAD"]);
+    git(&world.clone, &["push", "-q", "origin", "main"]);
+    let again = world.afk(&RUN).ok();
+    assert_eq!(again["added"], false, "{again}");
+    assert!(again["first_tick"].as_str().unwrap().starts_with("tick 1: "), "{again}");
+    logged(&world, &format!("fleet instance back: {clone}: "));
 }
 
 #[test]
