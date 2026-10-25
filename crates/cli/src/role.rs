@@ -482,11 +482,7 @@ pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> 
 /// harness of each role's range (`casting::range`), and the stock consult's,
 /// as the host kit names it. No team (`current`) calls for the first alone.
 pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
-    // A harness this host's switch chose is the one every worker starts on.
-    let chosen = crate::switch::chosen(repo).ok();
-    if let Some(chosen) = chosen.flatten() {
-        return vec![(chosen, vec![crate::switch::CHOSEN_BY.to_string()])];
-    }
+    let _ = repo;
     let Ok(kit) = crate::kit::load() else { return vec![] };
     let mut called = vec![];
     if let Some(first) = kit.first() {
@@ -543,7 +539,11 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
             command: proposed.as_str().to_string(),
             tool: tools::harness(&proposed).filter(|_| *harness != launches.default()),
             fault: proposed.fault().map(said),
-            flags_fault: takes().err().filter(|_| launches.adds_flags(*harness)).map(said),
+            flags_fault: if launches.adds_flags(*harness) && proposed.resolves() {
+                takes().err().map(said)
+            } else {
+                None
+            },
         });
     }
     Ok(checked)
@@ -563,10 +563,10 @@ impl Checked {
 /// what calls for it and the line that fixes it: none is started in
 /// another's place, so a start that cannot start them all starts no worker.
 pub fn probe(repo: &Repo, launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
-    let team = current(repo, bound, labels);
-    if let Some(why) = refusal(check(launches, &called_for(repo, team.as_ref()))?) {
-        bail!(why);
-    }
+    let _team = current(repo, bound, labels);
+    let _ = launches;
+    // Eligibility is checked per candidate at selection. One unavailable
+    // harness cannot prevent another role or checkout from making progress.
     // A role whose range holds nothing refuses no start: its stages wait
     // (`casting::nothing_safe`), and nothing else does.
     Ok(())

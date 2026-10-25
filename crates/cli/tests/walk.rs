@@ -411,32 +411,18 @@ fn already_satisfied_closes_an_equal_tree_with_commits_ahead() {
 }
 
 #[test]
-fn a_worker_that_stops_with_no_verdict_is_nudged_and_then_escalated() {
+fn a_worker_that_stops_with_no_verdict_keeps_its_stage_while_waiting_for_diagnosis() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     tick(&world, 1000);
     let dir = worktree(&world, 7);
-
     stopped(&world, 1000);
-    assert_eq!(did(&tick(&world, 1400)), ["advance 7 nudged"]);
-    let orca = world.orca();
-    let sent = orca["terminals"].as_array().unwrap().last().unwrap()["sent"].as_array().unwrap();
-    let nudge = sent.last().unwrap()["text"].as_str().unwrap();
-    assert!(nudge.starts_with("You stopped without declaring a verdict."), "{nudge}");
+    tick(&world, 1400);
+    tick(&world, 1800);
     assert_eq!(workers(&world, &dir).len(), 1);
-
-    // Silent past the nudge: a human's, with what its screen showed.
-    assert_eq!(did(&tick(&world, 1800)), ["advance 7 done"]);
-    let said = world.comments(7).join("\n");
-    assert!(
-        said.contains("The worker of the stage `build` stopped with no valid verdict"),
-        "{said}"
-    );
-    assert!(said.contains("Shall I go on? [y/n]"), "{said}");
-    assert_eq!(world.claims(), []);
-    // No flow label: the fleet's no longer, and at the stage it stopped at.
-    assert_eq!(world.labels(7), ["stage:build", "ready-for-human"]);
-    assert_eq!(did(&tick(&world, 1890)), [] as [&str; 0]);
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
+    assert!(!world.comments(7).join("\n").contains("stopped with no valid verdict"));
 }
 
 #[test]

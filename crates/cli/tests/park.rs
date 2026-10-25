@@ -228,13 +228,12 @@ fn every_blocker_closed_starts_a_worker_on_the_issue_again() {
     let sent = open[0]["sent"].as_array().unwrap();
     assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
 
-    // the verdict that was answered is not the new worker's: its silence is
-    // left a grace period from its start, nudged, then escalated — the issue
-    // is not started over and over
-    assert_eq!(did(&tick(&world, 1180))[0], "judge 7 nothing");
-    assert_eq!(did(&tick(&world, 1390))[0], "judge 7 nudged");
-    assert_eq!(did(&tick(&world, 1690))[0], "judge 7 done");
-    assert!(escalation(&world).contains("stayed silent after one nudge"));
+    // The answered verdict is not the new worker's. Unknown silence must
+    // be diagnosed rather than consuming a nudge/escalation ladder.
+    for now in [1180, 1390, 1690] {
+        assert_eq!(did(&tick(&world, now))[0], "judge 7 nothing");
+    }
+    assert_eq!(world.claims().len(), 1);
 }
 
 #[test]

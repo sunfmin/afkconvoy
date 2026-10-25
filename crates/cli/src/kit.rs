@@ -95,7 +95,7 @@ pub struct Named {
     pub model: Option<String>,
 }
 
-fn harness<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Harness, D::Error> {
+pub(crate) fn harness<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Harness, D::Error> {
     let key = String::deserialize(deserializer)?;
     Harness::read(&key).ok_or_else(|| serde::de::Error::custom(Harness::unknown(&key)))
 }
@@ -152,15 +152,15 @@ impl Kit {
     /// id of the model that name matches (`casting::Held::model`) — or the
     /// host kit's first.
     pub fn stock_consult(&self) -> Option<Named> {
-        let Some(named) = self.stock_consult.clone().filter(|_| self.stock_unmatched().is_none())
+        let first = self.first()?;
+        let Some(named) =
+            self.stock_consult.as_ref().filter(|named| named.harness == first.harness)
         else {
-            return self.first();
+            return Some(first);
         };
-        let model = named.model.as_deref().map(|model| match self.matched(named.harness, model) {
-            Ok(id) => id,
-            Err(_) => model.to_string(),
-        });
-        Some(Named { harness: named.harness, model })
+        let model =
+            named.model.as_deref().and_then(|model| self.matched(first.harness, model).ok());
+        Some(Named { model: model.or(first.model), ..first })
     }
 
     /// The id of the model of `harness` that `name` names here
@@ -264,7 +264,7 @@ fn load_at(file: &Path) -> Result<Kit> {
 /// harnesses paused on it (`Kit::without`), with them.
 pub fn running() -> Result<(Kit, Vec<afkconvoy_core::casting::Paused>)> {
     let paused = crate::paused::read();
-    Ok((load()?.without(&paused), paused))
+    Ok((crate::health::available(load()?.without(&paused))?, paused))
 }
 
 /// The harness and model the stock consult runs, as this host's host kit
@@ -301,7 +301,7 @@ pub fn show(now: u64) -> Value {
                     "named": running.stock_consult.is_some(),
                     "unmatched": running.stock_unmatched(),
                 })),
-                "paused": paused_said,
+                "paused": paused_said, "worker_health": crate::health::show(),
             })
         }
         Err(error) => json!({"path": file, "error": format!("{error:#}"), "paused": paused_said}),
@@ -338,10 +338,64 @@ pub fn write(now: u64) -> Result<Value> {
     Ok(json!({"path": file, "written": true, "kit": kit, "left_out": left_out}))
 }
 
+/// Promotes an existing harness without changing its contents or probe age.
+pub fn prefer(harness: Harness) -> Result<Value> {
+    let file = path()?;
+    let _lock = mutation_lock(&file)?;
+    let mut kit = load_at(&file)?;
+    let before: Vec<_> = kit.harnesses.iter().map(|held| held.harness).collect();
+    let at = kit.harnesses.iter().position(|held| held.harness == harness).with_context(|| {
+        format!("the host kit does not hold `{}`: run `afkconvoy kit`", harness.key())
+    })?;
+    if at != 0 {
+        let held = kit.harnesses.remove(at);
+        kit.harnesses.insert(0, held);
+        let mut raw: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+        let entries = raw["harnesses"].as_array_mut().context("kit harnesses must be an array")?;
+        let held = entries.remove(at);
+        entries.insert(0, held);
+        let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
+        std::fs::write(&temporary, serde_json::to_vec_pretty(&raw)?)?;
+        stamp(&temporary, written(&file).unwrap_or_else(crate::clock))?;
+        std::fs::rename(&temporary, &file)?;
+    }
+    Ok(json!({"harness": harness, "path": file, "order_before": before,
+        "order": kit.harnesses.iter().map(|held| held.harness).collect::<Vec<_>>(), "changed": at != 0}))
+}
+
+fn mutation_lock(file: &Path) -> Result<std::fs::File> {
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(file.with_extension("lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
 /// Writes `kit` to `file` at once, as written `now`: the time its file
 /// keeps as when it was last modified, which says when the host kit was last
 /// written (`written`).
 fn store(file: &Path, kit: &Kit, now: u64) -> Result<()> {
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _lock = mutation_lock(file)?;
+    // Promotion may have happened while probes and research ran.
+    let mut kit = kit.clone();
+    if let Ok(latest) = load_at(file) {
+        kit.harnesses.sort_by_key(|held| {
+            latest
+                .harnesses
+                .iter()
+                .position(|old| old.harness == held.harness)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    store_unlocked(file, &kit, now)
+}
+
+fn store_unlocked(file: &Path, kit: &Kit, now: u64) -> Result<()> {
     let parent = file.parent().context("the host kit needs a parent directory")?;
     std::fs::create_dir_all(parent)?;
     let temporary = file.with_extension(format!("{}.tmp", crate::unique()));
@@ -1196,7 +1250,7 @@ mod tests {
         assert_eq!(kit.harnesses[1].models[1].good_at, None);
         // A stock consult named by a name runs the model's id.
         assert_eq!(kit.stock_consult, current.stock_consult);
-        let stock = Named { harness: Harness::ClaudeCode, model: Some("claude-opus-5-5".into()) };
+        let stock = Named { harness: Harness::Codex, model: Some("gpt-a".into()) };
         assert_eq!(kit.stock_consult(), Some(stock));
         // A model gone from its harness's list is left out, and said so.
         assert!(
@@ -1466,7 +1520,7 @@ mod tests {
         let named = Named { harness: Harness::Codex, model: None };
         kit.stock_consult = Some(named.clone());
         assert_eq!(kit.fault(), None);
-        assert_eq!(kit.stock_consult(), Some(named));
+        assert_eq!(kit.stock_consult(), Some(first.clone()));
         // One the host kit does not hold: the host kit's first, and said.
         kit.stock_consult = Some(Named { harness: Harness::Dsh, model: None });
         assert_eq!(kit.fault(), None);

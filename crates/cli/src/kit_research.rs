@@ -196,10 +196,7 @@ pub fn research(
             }
         }
     }
-    if !sourced.is_empty() {
-        kit.harnesses
-            .sort_by_key(|h| answer.harness_order.iter().position(|key| key == h.harness.key()));
-    }
+    // Harness priority belongs to the host user. Research ranks models only.
 }
 
 fn valid(finding: &Finding) -> bool {
@@ -298,8 +295,8 @@ mod tests {
             );
             Ok(answer().to_string())
         });
-        assert_eq!(after.harnesses[0].harness.key(), "pi");
-        assert_eq!(after.harnesses[1].models[0].model, "deep");
+        assert_eq!(after.harnesses[0].harness.key(), "claude-code");
+        assert_eq!(after.harnesses[0].models[0].model, "deep");
         for m in after.harnesses.iter().flat_map(|h| &h.models) {
             assert_eq!(m.good_at.as_deref(), Some("review; costly"));
             assert_eq!(m.researched_at, Some(100));

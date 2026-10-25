@@ -17,7 +17,8 @@
 //! Knobs: `stopped` (it is not running: it says so, and every other call
 //! fails), `create_fails` [issue…], `rm_fails`, `never_ready`, `send_refused`,
 //! `stale_base` (a ref worktrees are cut at instead of the one asked for),
-//! `ps_truncated`, `ps_fails`.
+//! `ps_truncated`, `ps_fails`, `close_fails` [worktree paths…],
+//! `close_keeps_terminal` (acknowledges close without ending its terminal).
 
 mod fake;
 
@@ -357,6 +358,12 @@ fn terminal_close(st: &mut State) -> ! {
     }
     let path = selected(st);
     assert!(st.has("--all"), "{:?}", st.argv);
+    if st.doc["close_fails"].as_array().is_some_and(|paths| paths.contains(&json!(path))) {
+        fail(st, "terminal_close_failed");
+    }
+    if st.doc["close_keeps_terminal"] == true {
+        done(st, json!({"closed": true}));
+    }
     // a closed agent stays on record, closed; the bare shell leaves nothing behind
     st.list("terminals").retain(|t| !t["command"].is_null() || t["worktreePath"] != path.as_str());
     for terminal in st.list("terminals") {

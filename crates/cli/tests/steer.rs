@@ -363,23 +363,14 @@ fn both_rework_counts_are_taken_from_after_the_ruling() {
 }
 
 #[test]
-fn a_ruling_answers_an_issue_whose_worker_went_silent() {
+fn a_ruling_answers_a_reviewer_that_declared_escalation() {
     let world = bound(2);
     world.issue(7, &["flow:feature"]);
     stage(&world, 7, 1000, "build", "pass");
-    // Its reviewer stops with no verdict, past its nudge: no record says so.
-    world.with_orca(|orca| {
-        for terminal in orca["terminals"].as_array_mut().unwrap() {
-            if terminal["open"] == true && !terminal["command"].is_null() {
-                terminal["agent"] = json!({"state": "done", "stateStartedAt": 1_100_000});
-                terminal["lastOutputAt"] = json!(1_100_000);
-            }
-        }
-    });
-    assert_eq!(did(&tick(&world, 1500)), ["advance 7 nudged"]);
-    assert_eq!(did(&tick(&world, 1900)), ["advance 7 done"]);
+    // A declared escalation is actionable; silence alone waits for diagnosis.
+    stage(&world, 7, 1400, "review", "escalate");
     assert!(has(&world, 7, "stuck") && !has(&world, 7, "flow:feature"));
-    assert_eq!(at(&world, 7), ("perform".to_string(), "review".to_string()));
+    assert_eq!(at(&world, 7), ("escalating".to_string(), "review".to_string()));
 
     let ruled = world.afk(&["rule", "--issue", "7", "--text", "Review it again."]).ok();
     assert_eq!((&ruled["stage"], &ruled["relabelled"]), (&json!("review"), &json!(true)));

@@ -1053,6 +1053,10 @@ pwd -P >> "$root/shell-asked-in"
 case "$2" in
   *"AFKCONVOY_ENV"*)
     . "$HOME/.profile"; eval "$2"; exit 0 ;;
+  *"AFKCONVOY_DIAGNOSIS"*)
+    printf '%s\n' "$2" >> "$root/diagnosis-asked"
+    if [ -f "$root/diagnosis-answer" ]; then cat "$root/diagnosis-answer"; exit 0; fi
+    exit 1 ;;
   *"You are the caster of a fleet"*)
     # A caster's prompt: answered with what `caster-answer` holds.
     printf '%s' "$2" > "$root/caster-asked"

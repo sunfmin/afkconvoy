@@ -128,7 +128,7 @@ fn already_satisfied_with_nothing_on_the_branch_closes_the_issue() {
     let ticked = tick(&world, 1390);
     assert_eq!(
         did(&ticked),
-        ["judge 7 done", "judge 9 nudged", "dispatch 10 done", "heartbeat done"],
+        ["judge 7 done", "judge 9 nothing", "dispatch 10 done", "heartbeat done"],
         "the latest verdict wins, and the slot it frees is filled"
     );
     assert_eq!(world.state(7), "closed");
@@ -286,7 +286,7 @@ fn a_worker_waiting_on_its_own_background_work_is_not_silent_until_it_ends() {
     assert_eq!(did(&ticked), ["judge 7 waiting", "heartbeat done"]);
     assert_eq!(ticked["did"][0]["waiting_since"], 1300, "{ticked}");
     assert_eq!(typed(&world).len(), 1, "only its brief");
-    assert_eq!(read_limits(&world), ["12"], "its footer is read, and only that");
+    assert!(read_limits(&world).contains(&"12".to_string()), "background activity is observed");
     let ticked = tick(&world, 1800);
     assert_eq!(did(&ticked), ["judge 7 waiting", "heartbeat done"]);
     assert_eq!(ticked["did"][0]["waiting_since"], 1300, "since when it was first seen");
@@ -296,31 +296,25 @@ fn a_worker_waiting_on_its_own_background_work_is_not_silent_until_it_ends() {
     let said = "waiting on its own background work #7 (since 1970-01-01 00:21 UTC, 8m ago)";
     assert!(lines.iter().any(|line| line.contains(said)), "{lines:?}");
 
-    // the work ended: the silence is counted as ever — a nudge, then stalled past it
+    // Once background work ends, new observations precede any recovery.
     show(&world, &ENDED);
-    assert_eq!(did(&tick(&world, 1900)), ["judge 7 nudged", "heartbeat done"]);
-    assert_eq!(typed(&world).len(), 2);
-    assert_eq!(did(&tick(&world, 2199)), ["judge 7 nothing", "heartbeat done"]);
-    assert_eq!(did(&tick(&world, 2200)), ["judge 7 done"]);
-    let said = world.comments(7).last().unwrap().clone();
-    assert!(said.contains("stayed silent after one nudge"), "{said}");
+    assert_eq!(did(&tick(&world, 1900)), ["judge 7 nothing", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 2200)), ["judge 7 nothing", "heartbeat done"]);
+    assert_eq!(typed(&world).len(), 1);
+    assert_eq!(world.claims().len(), 1);
 }
 
 #[test]
-fn a_worker_waiting_past_the_gate_limit_is_silent_saying_so() {
+fn a_worker_still_waiting_on_background_work_is_not_failed_by_a_silence_limit() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
     show(&world, &WAITING);
-    assert_eq!(did(&tick(&world, 1300))[0], "judge 7 waiting");
-    // the gate limit is 600s here: still waiting just short of it…
-    assert_eq!(did(&tick(&world, 1300 + 599))[0], "judge 7 waiting");
-    // …and silent at it, never nudged
-    assert_eq!(did(&tick(&world, 1300 + 600))[0], "judge 7 done");
-    assert_eq!(typed(&world).len(), 1, "no nudge");
-    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
-    let said = world.comments(7).last().unwrap().clone();
-    assert!(said.contains("waited 600s on its own background work, past the limit"), "{said}");
-    assert!(said.contains("1 shell, 1 monitor"), "where it stopped: {said}");
+    for now in [1300, 1899, 1900] {
+        assert_eq!(did(&tick(&world, now))[0], "judge 7 waiting");
+    }
+    assert_eq!(typed(&world).len(), 1);
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
 }
 
 fn nudge_record(world: &World) -> PathBuf {
@@ -329,7 +323,7 @@ fn nudge_record(world: &World) -> PathBuf {
 }
 
 #[test]
-fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
+fn unclassified_silence_waits_for_diagnosis_and_preserves_unpushed_work() {
     let world = fleet(1000);
     let dir = worktree(&world);
     commit(&dir, "work.txt", "x\n");
@@ -342,69 +336,15 @@ fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
     });
     world.orca_calls();
 
-    // within grace of stopping: left
-    assert_eq!(did(&tick(&world, 1090)), ["judge 7 nothing", "heartbeat done"]);
-    assert_eq!(typed(&world).len(), 1, "only its brief");
-
-    // past grace, having declared nothing: told once to carry on
-    let ticked = tick(&world, 1300);
-    assert_eq!(did(&ticked), ["judge 7 nudged", "heartbeat done"]);
-    let lines = typed(&world);
-    assert_eq!(lines.len(), 2);
-    assert!(lines[1].starts_with("You stopped without an outcome. Nobody is watching"));
-    assert!(lines[1].contains("convoy-worker-prompt.md") && lines[1].contains("convoy:verdict"));
-    assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1300");
-    assert_eq!(world.claims().len(), 1, "the claim is still held");
-    assert_eq!(read_limits(&world), ["12"], "only its footer is read to nudge");
-
-    // the nudge is a sign of life for one grace period
-    assert_eq!(did(&tick(&world, 1599)), ["judge 7 nothing", "heartbeat done"]);
-    assert_eq!(typed(&world).len(), 2);
-    assert_eq!(screen_reads(&world), [] as [Vec<String>; 0]);
-
-    // still silent: escalated, saying where it stopped
-    assert_eq!(did(&tick(&world, 1600)), ["judge 7 done"]);
-    assert_eq!(typed(&world).len(), 2, "never a second nudge");
-    assert_eq!(world.claims(), []);
-    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
-    assert!(dir.exists(), "the worktree holds its work");
-    let comments = world.comments(7);
-    let said = comments.last().unwrap();
-    assert!(said.contains("stayed silent after one nudge"), "{said}");
-    let screen = "```\nRan the tests.\nShall I open the PR? [y/n]\n```";
-    // …and ending with the line that answers it, the issue's number filled in
-    let answer = "- fix what the comment names, and put the ready label back — `gh issue edit 7 \
-                  --add-label ready-for-agent --remove-label ready-for-human`\n- close it: the \
-                  fleet leaves a closed issue alone — `gh issue close 7`";
-    // …then the work only this host holds, each commit the remote lacks by its subject…
-    let only_here = format!(
-        "**Work only one host holds**: the worktree `{}` on `h1` is kept — it holds 1 commit \
-         the remote does not have.\n- work.txt",
-        dir.display()
-    );
-    assert!(said.contains(&format!("{screen}\n\n{only_here}\n\n**To answer it**")), "{said}");
-    assert!(said.trim_end().ends_with(answer), "{said}");
-    // An unbound repo's escalated issue is excluded as escalated, and waits for a human.
+    assert_eq!(did(&tick(&world, 1300)), ["judge 7 nothing", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 1600)), ["judge 7 nothing", "heartbeat done"]);
+    assert_eq!(world.claims().len(), 1);
+    assert_eq!(typed(&world).len(), 1, "no unapproved nudge or second writer");
+    assert!(dir.exists());
     let plan = world.afk(&["plan", "--now", "1700"]).ok();
-    assert_eq!(plan["excluded"][0]["reason"], "escalated: waits for the ready label", "{plan}");
-    let waiting = &plan["waiting_on_human"];
-    assert_eq!(waiting[0]["issue"], 7);
-    assert_eq!(
-        waiting[0]["why"],
-        "escalated: The worker stopped with no PR and no verdict, and stayed silent after one nudge."
-    );
-    assert_eq!(waiting[0]["url"], world.comment_url(7, said));
-    assert_eq!(
-        waiting[0]["answer"],
-        "gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human"
-    );
-    let reads = screen_reads(&world);
-    assert_eq!(reads.len(), 2, "its footer, then where it stopped: {reads:?}");
-    let limit = reads[1].iter().position(|arg| arg == "--limit").unwrap();
-    assert_eq!(
-        (reads[1][limit + 1].as_str(), reads[1].contains(&"--screen".to_string())),
-        ("60", true)
-    );
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
+    assert!(screen_reads(&world).iter().all(|r| r.contains(&"--screen".to_string())));
 }
 
 #[test]
@@ -421,30 +361,28 @@ fn a_verdict_is_never_overridden_by_a_nudge() {
     // declared in answer to the nudge: routed as declared, not as silence
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
-    assert_eq!(did(&tick(&world, 1300))[0], "judge 7 nudged");
+    assert_eq!(did(&tick(&world, 1300))[0], "judge 7 nothing");
     declare(&world, "already-satisfied");
     assert_eq!(did(&tick(&world, 1600)), ["judge 7 done"]);
     assert_eq!(world.state(7), "closed");
-    assert_eq!(typed(&world).len(), 2);
+    assert_eq!(typed(&world).len(), 1);
 }
 
 #[test]
-fn a_nudge_the_worker_did_not_take_is_not_recorded() {
+fn a_manual_nudge_the_worker_did_not_take_is_not_recorded_or_treated_as_an_account_fault() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
     world.with_orca(|orca| orca["send_refused"] = json!(true));
-    let ticked = tick(&world, 1300);
-    assert_eq!(did(&ticked)[0], "judge 7 failed");
+    let args = ["nudge", "7", "--instance", "alpha", "--host", "h1", "--now", "1300"];
+    world.afk(&args).error();
     assert!(!nudge_record(&world).exists());
-
-    // so the next tick nudges, and the silence is not held against the worker
+    assert_eq!(world.paused(), json!([]));
     world.with_orca(|orca| orca["send_refused"] = json!(false));
-    assert_eq!(did(&tick(&world, 1390))[0], "judge 7 nudged");
+    world.afk(&["nudge", "7", "--instance", "alpha", "--host", "h1", "--now", "1390"]).ok();
     assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1390");
-    // a terminal that cannot be read does not hold the escalation back
     world.with_orca(|orca| orca["read_fails"] = json!(true));
-    assert_eq!(did(&tick(&world, 1700)), ["judge 7 done"]);
-    assert!(world.comments(7).last().unwrap().contains("after one nudge.\n\n**To answer it**"));
+    tick(&world, 1700);
+    assert_eq!(world.claims().len(), 1, "missing observations never authorize escalation");
 }
 
 #[test]
@@ -510,6 +448,15 @@ fn escalate_picks_up_from_wherever_it_was_cut_and_comments_once() {
     assert_eq!(world.claims(), []);
     assert_eq!(escalations(&world), 1);
     assert!(world.comments(7)[1].contains("the schema needs a decision"));
+    let plan = world.afk(&["plan", "--now", "1700"]).ok();
+    let waiting = &plan["waiting_on_human"][0];
+    assert_eq!(waiting["issue"], 7);
+    assert_eq!(waiting["why"], "escalated: the schema needs a decision");
+    assert_eq!(waiting["url"], world.comment_url(7, &world.comments(7)[1]));
+    assert_eq!(
+        waiting["answer"],
+        "gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human"
+    );
 
     // run once more: there is no claim left to end
     world.gh_calls();
@@ -601,106 +548,50 @@ fn a_worker_waiting_in_the_exclusive_queue_is_busy_until_the_gate_limit() {
     assert_eq!(did(&tick(&world, 1250 + 599))[0], "judge 7 waiting");
     assert_eq!(typed(&world).len(), 1, "never nudged for it");
 
-    // the gate limit is 600s here: a wait that long is silent, as any such wait is
-    assert_eq!(did(&tick(&world, 1250 + 600))[0], "judge 7 done");
+    // A live background command remains a wait past the observation interval.
+    assert_eq!(did(&tick(&world, 1250 + 600))[0], "judge 7 waiting");
     assert_eq!(typed(&world).len(), 1, "no nudge");
-    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
-    let said = world.comments(7).last().unwrap().clone();
-    assert!(said.contains("waited 600s on its own background work, past the limit"), "{said}");
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
 }
 
 #[test]
-fn a_refusing_harness_holds_claims_reports_once_and_recovers_without_restart() {
+fn an_unclassified_refusal_waits_for_diagnosis_without_pausing_unrelated_work() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
     world.with_orca(|orca| {
         orca["prompt_blocked"] = json!("organization disabled subscription access")
     });
-    for now in [1300, 1390, 1480] {
-        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now.to_string()]);
-    }
+    world.afk(&["nudge", "7", "--instance", "alpha", "--host", "h1", "--now", "1300"]).error();
+    tick(&world, 1300);
+    tick(&world, 1600);
     assert_eq!(world.claims().len(), 1);
-    world.orca_calls();
-    for now in [1500, 1600, 1700] {
-        let ticked = tick(&world, now);
-        assert_eq!(ticked["errors"], json!([]));
-        assert_eq!(world.claims().len(), 1);
-        assert_eq!(escalations(&world), 0);
-    }
-    let calls = world.orca_calls();
-    assert!(!calls.iter().any(|call| common::asked(call) == "terminal send"));
+    assert_eq!(world.paused(), json!([]));
     let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1700"]).json;
-    let found: Vec<_> = doctor["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|finding| finding["what"].as_str().unwrap().contains("harness is down"))
-        .collect();
-    assert_eq!(found.len(), 1, "{doctor}");
-    assert!(found[0]["evidence"].as_str().unwrap().contains("organization disabled"));
-    assert!(found[0]["fix"].as_str().unwrap().contains("afkconvoy switch"));
-    let files = std::fs::read_dir(world.cache().join("afkconvoy/runs")).unwrap();
-    let entries = files
-        .filter_map(Result::ok)
-        .filter(|file| file.path().extension().is_some_and(|ext| ext == "jsonl"))
-        .flat_map(|file| {
-            std::fs::read_to_string(file.path())
-                .unwrap()
-                .lines()
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .map(|line| serde_json::from_str::<Value>(&line).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        entries.iter().filter(|entry| entry["command"]["command"] == "harness_down").count(),
-        1,
-        "{entries:?}"
-    );
-    // It is paused on the host, since it was found down, and why.
-    assert_eq!(world.paused()[0]["harness"], "claude-code");
-    assert_eq!(world.paused()[0]["why"], "organization disabled subscription access");
-    let planned = world.afk(&["plan", "--now", "1700"]).ok();
-    assert_eq!(planned["host_kit"]["paused"][0]["since"], 1480, "{planned}");
-    world.with_orca(|orca| orca["prompt_blocked"] = Value::Null);
-    let recovered = tick(&world, 1780);
-    assert!(did(&recovered).contains(&"judge 7 nudged".to_string()), "{recovered}");
-    assert_eq!(world.paused(), json!([]), "a prompt it took is a probe it answered");
-    assert_eq!(world.claims().len(), 1);
-    assert_eq!(std::fs::read_to_string(nudge_record(&world)).unwrap(), "1780");
-    let doctor = world.afk(&["doctor", "--host", "h1", "--now", "1780"]).json;
+    assert_eq!(doctor["host"]["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
     assert!(
         !doctor["findings"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|finding| finding["what"].as_str().unwrap().contains("harness is down"))
+            .any(|f| f["what"].as_str().unwrap().contains("harness is down"))
     );
 }
 
 #[test]
-fn a_down_harness_is_paused_and_a_new_issue_waits_for_it_taking_no_slot() {
+fn a_verified_account_fault_holds_new_work_when_no_successor_is_available() {
     let world = fleet(1000);
     report(&world, "done", 1000, 1000);
-    let kit = std::fs::read(world.kit_path()).unwrap();
-    world.with_orca(|orca| orca["prompt_blocked"] = json!("subscription disabled"));
-    for now in [1300, 1390, 1480] {
-        world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now.to_string()]);
-    }
-    world.close_issue(7);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = json!({"state":"idle","error":{"code":"organization_disabled"}});
+        }
+    });
+    tick(&world, 1300);
     world.issue(9, &["ready-for-agent"]);
-    let planned = world.afk(&["plan", "--now", "1600"]).ok();
-    let nine = planned["excluded"].as_array().unwrap().iter().find(|e| e["number"] == 9);
-    let reason = nine.unwrap_or_else(|| panic!("{planned}"))["reason"].as_str().unwrap();
-    assert!(
-        reason.starts_with("held while every harness of the host kit is paused: `claude-code`")
-            && reason.contains("subscription disabled"),
-        "{reason}"
-    );
-    let held = tick(&world, 1600);
-    assert_eq!(held["errors"], json!([]));
-    assert_eq!(held["held"], 0, "a paused harness holds no claim: {held}");
-    assert!(world.claims().is_empty());
-    assert!(!did(&held).iter().any(|did| did.starts_with("dispatch 9")), "{held}");
-    assert_eq!(std::fs::read(world.kit_path()).unwrap(), kit, "the host kit's file is unchanged");
+    let plan = world.afk(&["plan", "--now", "1400"]).ok();
+    assert!(plan["frontier"].as_array().unwrap().is_empty());
+    assert_eq!(plan["host_kit"]["worker_health"]["faults"][0]["scope"], "account");
+    assert_eq!(world.claims().len(), 1);
+    assert_eq!(world.paused(), json!([]), "health does not rewrite the kit pause list");
 }

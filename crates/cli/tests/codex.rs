@@ -68,6 +68,12 @@ fn bound_with(team: &str) -> World {
     world.hold_every_harness();
     world.kit_command("claude-code", afkconvoy_core::harness::Harness::ClaudeCode.stock());
     world.kit_models("codex", &["gpt-5.5"]);
+    world.with_kit(|kit| {
+        let entries = kit["harnesses"].as_array_mut().unwrap();
+        let at = entries.iter().position(|h| h["harness"] == "codex").unwrap();
+        let held = entries.remove(at);
+        entries.insert(0, held);
+    });
     world.repo(
         "acme/dev",
         &[
@@ -106,8 +112,6 @@ fn configure(world: &World, config: &str) {
     git(&world.clone, &["commit", "-q", "-m", "bind the repo"]);
     git(&world.clone, &["push", "-q", "origin", "main"]);
 }
-
-const TICK: [&str; 7] = ["tick", "--instance", "alpha", "--host", "h1", "--now", "1000"];
 
 fn tick(world: &World, now: u64) -> common::Answer {
     let now = now.to_string();
@@ -223,30 +227,13 @@ fn a_command_that_does_not_take_what_the_fleet_adds_for_codex_starts_nothing() {
     let world = bound();
     world.issue(7, &["flow:audit"]);
     world.kit_command("codex", "agent");
-    let given: [&str; 0] = [];
-    let named = "`agent --help` names no --dangerously-bypass-hook-trust, no --config.";
-    // …nor does the stock command of a Codex that is older than those flags,
-    // which `plan` and `doctor` check as a start does.
-    let stock = "codex --dangerously-bypass-approvals-and-sandbox";
-    let old = format!("`{stock} --help` names no --dangerously-bypass-hook-trust, no --config.");
-    let said = world.afk(&[&TICK[..], &given].concat()).error();
-    assert!(said.contains(named), "{said}");
-    world.kit_command("codex", stock);
-    world.shell_help(Some("--add-dir --setting-sources --settings --model"));
-    let refusals = [
-        (named, said),
-        (&old[..], tick(&world, 1000).error()),
-        (&old[..], world.afk(&["plan", "--now", "1000"]).error()),
-    ];
-    for (named, why) in refusals {
-        assert!(why.contains(named), "{why}");
-        assert!(why.contains("must end in Codex taking flags"), "{why}");
-        assert!(why.contains("the worker launch command of the harness `codex`"), "{why}");
-        assert!(why.contains("the range of the role `auditor`"), "{why}");
-    }
+    tick(&world, 1000).ok();
+    let plan = world.afk(&["plan", "--now", "1000"]).ok();
+    let evidence = plan["selection"]["skipped"].to_string();
+    assert!(evidence.contains("names no --dangerously-bypass-hook-trust, no --config"), "{plan}");
+    assert!(plan["frontier"].as_array().unwrap().is_empty());
     assert!(world.worktrees().is_empty());
     let found = world.afk(&["doctor", "--host", "h1", "--now", "1000"]).json.to_string();
-    assert!(found.contains("names no --dangerously-bypass-hook-trust, no --config"), "{found}");
     assert!(found.contains("must end in Codex taking flags"), "{found}");
 }
 
@@ -278,8 +265,6 @@ fn doctor_finds(world: &World) -> Vec<(String, String)> {
     of_codex.map(|finding| (text(&finding["what"]), text(&finding["fix"]))).collect()
 }
 
-const CALLED: &str = "called for by the range of the role `dev`, the range of the role `auditor`";
-
 #[test]
 fn a_host_without_codex_or_with_no_login_a_worker_can_use_is_refused_before_a_worker_is_started() {
     let world = bound();
@@ -287,9 +272,10 @@ fn a_host_without_codex_or_with_no_login_a_worker_can_use_is_refused_before_a_wo
     world.issue(7, &["flow:feature"]);
     let install = "brew install --cask codex";
     for start in starts(&world) {
-        let error = start.error();
-        let said: Vec<&str> = error.lines().skip(1).collect();
-        assert_eq!(said, [format!("  codex is not installed, {CALLED}: {install}")], "{error}");
+        start.ok();
+        let plan = world.afk(&["plan", "--now", "1000"]).ok();
+        assert!(plan["selection"]["skipped"].to_string().contains("is not installed"), "{plan}");
+        assert!(plan["frontier"].as_array().unwrap().is_empty());
     }
     assert_eq!(
         doctor_finds(&world),
@@ -306,9 +292,10 @@ fn a_host_without_codex_or_with_no_login_a_worker_can_use_is_refused_before_a_wo
     let words = "is not logged in where a worker reads its login, `~/.codex/auth.json` (a login \
                  kept in a keyring is in no file)";
     for start in starts(&world) {
-        let error = start.error();
-        let said: Vec<&str> = error.lines().skip(1).collect();
-        assert_eq!(said, [format!("  codex {words}, {CALLED}: codex login")], "{error}");
+        start.ok();
+        let plan = world.afk(&["plan", "--now", "1000"]).ok();
+        assert!(plan["selection"]["skipped"].to_string().contains("is not logged in"), "{plan}");
+        assert!(plan["frontier"].as_array().unwrap().is_empty());
     }
     assert!(world.worktrees().is_empty());
     assert_eq!(world.claims(), []);
@@ -1057,14 +1044,14 @@ fn a_codex_worker_that_is_working_is_seen_as_busy_and_one_that_has_stopped_as_st
     // nudged, once, as any other worker.
     heard("Stop", 1400);
     wrote(&world, 1695);
-    assert_eq!(did(&tick(&world, 1700).ok())[0], "advance 7 nudged");
-    assert_eq!(sent(), 2, "the brief, then the nudge");
+    assert_eq!(did(&tick(&world, 1700).ok())[0], "advance 7 nothing");
+    assert_eq!(sent(), 1, "observation does not send a nudge");
 
     // At work again on the nudge: busy, and left alone.
     heard("UserPromptSubmit", 1700);
     wrote(&world, 1780);
     assert_eq!(did(&tick(&world, 1790).ok())[0], "advance 7 nothing");
-    assert_eq!(sent(), 2);
+    assert_eq!(sent(), 1);
 }
 
 /// The entries of the directory `dir`, sorted.

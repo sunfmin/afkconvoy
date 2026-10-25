@@ -96,10 +96,13 @@ fn on_stock_claude_the_stock_command_is_used_and_nobody_is_asked() {
             r#"claude --dangerously-skip-permissions --settings '{"skipDangerousModePermissionPrompt":true}'"#
         ]
     );
-    // checked to resolve like any other, and no alias was listed
-    assert_eq!(
-        world.shell_asked(),
-        ["type -- 'claude'", "gh auth status", "claude auth status", "claude auth status"]
+    // Only resolution and authentication are checked, with no model discovery.
+    let asked = world.shell_asked();
+    assert!(asked.iter().any(|line| line == "gh auth status"));
+    assert!(
+        asked.iter().all(|line| ["type -- 'claude'", "gh auth status", "claude auth status"]
+            .contains(&line.as_str())),
+        "{asked:?}"
     );
 }
 
@@ -135,10 +138,11 @@ fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
     ran.ok();
 
     assert_eq!(started(&world), [passed], "not trimmed, not composed, not appended to");
-    assert_eq!(
-        world.shell_asked(),
-        ["type -- 'kim'", "gh auth status"],
-        "only its first word was looked at, and what it logs in to is its own business"
+    let asked = world.shell_asked();
+    assert!(asked.iter().any(|line| line == "type -- 'kim'"));
+    assert!(
+        asked.iter().all(|line| ["type -- 'kim'", "gh auth status"].contains(&line.as_str())),
+        "opaque wrapper credentials are never inspected: {asked:?}"
     );
 
     // nothing of the fleet's own environment goes to orca, on any call
@@ -417,7 +421,7 @@ fn plan_and_doctor_show_the_host_kit() {
     let shown = world.afk(&["plan", "--now", "1000"]).json;
     assert_eq!(
         shown["host_kit"]["stock_consult"],
-        json!({"harness": "pi", "model": "a/slow", "named": true, "unmatched": null})
+        json!({"harness": "claude-code", "model": null, "named": true, "unmatched": null})
     );
     // …and one it does not hold is not followed: the host kit's first, and
     // said.
@@ -509,7 +513,7 @@ fn kit_holds_the_names_that_answered_as_one_model_once_by_its_id() {
         frontier.iter().find(|issue| issue["number"] == number).unwrap()["cast"].clone()
     };
     assert_eq!(cast(8)["model"], "claude-opus-5-5", "{planned}");
-    assert_eq!(cast(9)["model"], "openai-codex/gpt-6-sol", "{planned}");
+    assert_eq!(cast(9)["model"], "claude-opus-5-5", "{planned}");
 }
 
 #[test]
@@ -547,7 +551,7 @@ fn a_codex_casting_discovers_a_missing_entry_without_model_probes() {
     let before = std::fs::read(world.kit_path()).unwrap();
     let ran = world.afk(&TICK);
     assert_eq!(ran.json["errors"], json!([]), "{}", ran.stderr);
-    assert_eq!(started(&world), [afkconvoy_core::harness::Harness::Codex.stock()]);
+    assert_eq!(started(&world), ["agent"], "discovery appends without overriding priority");
     assert!(ran.stderr.contains("discovered codex"), "{}", ran.stderr);
     let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
     let mut before: Value = serde_json::from_slice(&before).unwrap();
@@ -563,7 +567,7 @@ fn a_codex_casting_discovers_a_missing_entry_without_model_probes() {
 }
 
 #[test]
-fn codex_discovery_reports_missing_program_and_login_without_claiming() {
+fn unavailable_later_casting_does_not_block_the_first_kit_harness() {
     for missing in [true, false] {
         let world = World::new();
         world.issue(7, &["ready-for-agent", "harness:codex"]);
@@ -574,10 +578,9 @@ fn codex_discovery_reports_missing_program_and_login_without_claiming() {
         }
         let ran =
             world.afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"]);
-        let error = ran.error();
-        assert!(error.contains(if missing { "resolves to nothing" } else { "login" }), "{error}");
-        assert!(world.claims().is_empty());
-        assert!(started(&world).is_empty());
+        ran.ok();
+        assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+        assert_eq!(started(&world), ["agent"]);
         let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
         assert_eq!(kit["harnesses"].as_array().unwrap().len(), 1);
     }

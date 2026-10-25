@@ -33,15 +33,19 @@ use crate::slow_gate;
 use crate::stage::Flows;
 use crate::train::Train;
 
+struct Runnable {
+    kit: crate::kit::Kit,
+    skipped: Vec<(Harness, String)>,
+}
+
 pub struct Fleet {
     pub repo: Repo,
+    /// Candidates excluded for this continuation only, never a preference.
+    pub avoiding: Vec<Harness>,
+    runnable: std::cell::RefCell<Option<Runnable>>,
     /// The repo's config, with the concurrency its checkout says on this
     /// host laid over it (`concurrency::config_of`).
     pub config: Config,
-    /// The harness a switch on this host chose for the repo: every worker
-    /// this host starts for it is of this one, whatever a role's range or an
-    /// issue's casting says (`switch::chosen`).
-    pub chosen: Option<Harness>,
     pub gh: GitHub,
     pub scan: Scan,
     /// The base branch and the fleet's refs as the remote had them when this
@@ -98,13 +102,14 @@ impl Fleet {
         // As this checkout's fleet instance goes by it on this host: read
         // anew at each view, so a concurrency said since holds now.
         let config = crate::concurrency::config_of(&repo)?;
-        let chosen = crate::switch::chosen(&repo)?;
+
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
         Ok(Fleet {
             repo,
+            avoiding: vec![],
+            runnable: std::cell::RefCell::new(None),
             config,
-            chosen,
             gh,
             scan,
             listing,
@@ -139,77 +144,133 @@ impl Fleet {
     /// so does a range that holds nothing (`NothingSafe`): no worker of the
     /// role runs without its limits.
     pub fn cast_in(&self, role: &Role, labels: &[String]) -> Result<Cast> {
-        let (kit, paused) = crate::kit::running()?;
+        let kit = self.runnable()?;
         let kit = kit.range();
-        let range = casting::range(role, &kit);
-        if let Some(why) = casting::nothing_safe(role, &kit) {
+        // Apply the role to the whole kit before excluding unhealthy
+        // candidates. Temporary unavailability is never an unmatched roster
+        // entry and cannot broaden the role's permissions.
+        let whole = crate::kit::load()?.range();
+        if let Some(why) = casting::nothing_safe(role, &whole) {
             return Err(NothingSafe(why).into());
         }
-        if self.chosen.is_none() {
-            let allowed = |pause: &&casting::Paused| {
-                let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
-                casting::range(role, &whole).iter().any(|held| held.harness == pause.harness)
-            };
-            if let Some(pause) = casting::paused_of(labels, &paused).filter(allowed) {
-                return Err(crate::paused::Held::of(pause, self.now).into());
+        let allowed = casting::range(role, &whole);
+        let mut range = vec![];
+        for available in &kit {
+            if let Some(held) = allowed.iter().find(|h| h.harness == available.harness) {
+                let mut held = held.clone();
+                held.models.retain(|model| available.models.iter().any(|m| m.id == model.id));
+                if !held.models.is_empty() || available.models.is_empty() {
+                    range.push(held);
+                }
             }
         }
-        casting::cast_within(labels, &range, &kit, self.chosen)
+        if range.is_empty() {
+            return Err(NothingSafe(format!("the role `{}` has no currently eligible harness in its range; waiting for recovery", role.name)).into());
+        }
+        casting::preferred(labels, &range, &kit)
             .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
     }
 
-    /// The harness and model the stock consult runs: the host kit's
-    /// (`Kit::stock_consult`), without the harnesses paused on this host —
-    /// its first where what it names matches nothing held, `unmatched` — but
-    /// this host's chosen harness, where a switch chose one the host kit
-    /// holds, without the model of another; its first, `unmatched`, where the
-    /// switch matches nothing held. Every harness paused holds it back
-    /// (`paused::Held`).
+    /// The stock consult follows the same kit order as every other worker.
     pub fn stock_consult(&self) -> Result<Cast> {
-        let (kit, paused) = crate::kit::running()?;
+        let kit = self.runnable()?;
+        let paused = crate::paused::read();
         if kit.harnesses.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
-        let named =
-            kit.stock_consult().context("the host kit holds no harness: run `afkconvoy kit`")?;
-        let (why, unmatched) = match (&kit.stock_consult, kit.stock_unmatched()) {
-            (Some(said), Some(_)) => (Why::Unmatched, Some(format!("`{}`", said.harness.key()))),
-            (Some(_), None) => (Why::Casting, None),
-            (None, _) => (Why::First, None),
-        };
-        let cast = Cast { harness: named.harness, model: named.model, why, unmatched };
-        Ok(match self.chosen {
-            Some(chosen) if kit.command(chosen).is_none() => {
-                let first = kit.first().context("the host kit holds no harness")?;
-                let unmatched = Some(format!("this host's switch to `{}`", chosen.key()));
-                Cast { harness: first.harness, model: first.model, why: Why::Unmatched, unmatched }
-            }
-            Some(chosen) if chosen != cast.harness => {
-                Cast { harness: chosen, model: None, why: Why::Switch, unmatched: None }
-            }
-            _ => cast,
-        })
+        let named = kit.stock_consult();
+        let labels: Vec<String> = named
+            .into_iter()
+            .flat_map(|named| {
+                let mut labels = vec![format!("harness:{}", named.harness.key())];
+                labels.extend(named.model.map(|model| format!("model:{model}")));
+                labels
+            })
+            .collect();
+        let range = kit.range();
+        casting::preferred(&labels, &range, &range).map_err(|why| anyhow!("{why}"))
     }
 
-    /// What the worker of an unbound repo's issue labelled `labels` runs
-    /// (`casting::cast`) within the host kit without the harnesses paused on
-    /// this host, and this host's switch → it: a casting or a switch that
-    /// matches nothing held runs the host kit's first. A casting to be cast
-    /// again (`recast`) is taken for none. A casting to a paused harness, or
-    /// a host kit every harness of which is paused, holds the issue back
-    /// (`paused::Held`); any other error is the host kit's.
+    /// Kit order chooses the harness. Labels can only choose a model within it.
     pub fn cast(&self, labels: &[String], recast: bool) -> Result<Result<Cast, String>> {
-        let (kit, paused) = crate::kit::running()?;
+        let kit = self.runnable()?;
+        let paused = crate::paused::read();
         let range = kit.range();
         let labels = if recast { casting::without_casting(labels) } else { labels.to_vec() };
-        if let Some(pause) = casting::paused_of(&labels, &paused).filter(|_| self.chosen.is_none())
-        {
-            return Err(crate::paused::Held::of(pause, self.now).into());
-        }
         if range.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
-        Ok(casting::cast(&labels, &range, self.chosen))
+        if range.is_empty() {
+            let why = self
+                .runnable
+                .borrow()
+                .as_ref()
+                .map(|r| {
+                    r.skipped.iter().map(|(_, why)| why.as_str()).collect::<Vec<_>>().join("; ")
+                })
+                .unwrap_or_default();
+            return Ok(Err(format!("no eligible harness in the host kit: {why}")));
+        }
+        Ok(casting::preferred(&labels, &range, &range))
+    }
+
+    /// One view's capability snapshot. Failed startability checks skip only
+    /// that candidate; they never rewrite the kit or remote casting.
+    pub fn runnable(&self) -> Result<crate::kit::Kit> {
+        if self.runnable.borrow().is_none() {
+            let mut kit = crate::kit::running()?.0;
+            let launches = crate::launch::Launches::foreseen(&self.repo);
+            let mut skipped = vec![];
+            kit.harnesses.retain(|held| {
+                match crate::role::startable(&launches, held.harness, "kit priority") {
+                    Ok(()) => true,
+                    Err(e) => {
+                        skipped.push((held.harness, format!("{e:#}")));
+                        false
+                    }
+                }
+            });
+            *self.runnable.borrow_mut() = Some(Runnable { kit, skipped });
+        }
+        let mut kit = self.runnable.borrow().as_ref().context("runnable kit")?.kit.clone();
+        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
+        Ok(kit)
+    }
+
+    pub fn selection(&self) -> serde_json::Value {
+        let kit = self.runnable();
+        serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
+            "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
+            "skipped": self.runnable.borrow().as_ref().map(|runnable| &runnable.skipped),
+            "health": crate::health::show(), "why": "first eligible harness in kit order; role limits still apply"})
+    }
+
+    pub(crate) fn invalidate_selection(&self) {
+        *self.runnable.borrow_mut() = None;
+    }
+
+    pub fn role_selection(&self, role: &Role) -> serde_json::Value {
+        let whole = crate::kit::load().map(|k| k.range()).unwrap_or_default();
+        let allowed = casting::range(role, &whole);
+        let eligible = self.runnable().map(|k| k.range()).unwrap_or_default();
+        let chosen = self.cast_in(role, &[]).ok().map(|cast| cast.harness);
+        let skipped: Vec<_> = whole
+            .iter()
+            .take_while(|h| Some(h.harness) != chosen)
+            .map(|h| {
+                let why = if let Some(why) = afkconvoy_core::team::unlimited(role, h.harness) {
+                    why.to_string()
+                } else if !allowed.iter().any(|a| a.harness == h.harness) {
+                    "outside this role's roster range".into()
+                } else if !eligible.iter().any(|a| a.harness == h.harness) {
+                    "unavailable on this host; see skipped candidates and health evidence".into()
+                } else {
+                    "no eligible model within this role's range".into()
+                };
+                serde_json::json!({"harness":h.harness,"why":why})
+            })
+            .collect();
+        serde_json::json!({"role":role.name,"harness":chosen,"skipped":skipped})
     }
 
     /// Whether issue `number`, labelled `labels`, is to be cast again: a
@@ -218,7 +279,8 @@ impl Fleet {
     /// (`casting::to_recast`). Its comments are read only where its casting
     /// names one of those.
     pub fn recast(&self, number: u64, labels: &[String]) -> Result<bool> {
-        let (kit, paused) = crate::kit::running()?;
+        let (mut kit, paused) = crate::kit::running()?;
+        kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
         let kit = kit.range();
         if casting::paused_of(labels, &paused).is_none() && !casting::names_nothing(labels, &kit) {
             return Ok(false);
@@ -370,7 +432,8 @@ impl Fleet {
     /// started on, is held back while it is paused, and so is every issue
     /// while every harness is.
     fn cast_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, consults: &[u64]) {
-        let Ok((kit, paused)) = crate::kit::running() else { return };
+        let Ok(kit) = self.runnable() else { return };
+        let paused = crate::paused::read();
         let range = kit.range();
         let issues = &open.rows;
         let labels_of = |number: u64| -> Vec<String> {
@@ -385,7 +448,7 @@ impl Fleet {
         // This host's caster is asked after only where an issue waits for one.
         let waits = set.frontier.iter().any(|issue| {
             let labels = labels_of(issue.number);
-            casting::for_caster(issue.number, &labels, choice(&range), self.chosen, None, 0)
+            casting::for_caster(issue.number, &labels, choice(&range), None, None, 0)
                 != ForCaster::Dispatch
         });
         let caster = if waits { crate::caster::last(&self.repo, self.now) } else { None };
@@ -402,14 +465,8 @@ impl Fleet {
                 set.frontier.push(issue);
                 continue;
             }
-            let paused_held = match casting::paused_of(&labels, &paused) {
-                _ if self.chosen.is_some() => None,
-                Some(pause) => Some(crate::paused::Held::of(pause, self.now)),
-                None if range.is_empty() && !paused.is_empty() => {
-                    Some(crate::paused::Held::every(&paused, self.now))
-                }
-                None => None,
-            };
+            let paused_held = (range.is_empty() && !paused.is_empty())
+                .then(|| crate::paused::Held::every(&paused, self.now));
             if let Some(held) = paused_held {
                 set.excluded.push(Excluded {
                     number: issue.number,
@@ -422,7 +479,7 @@ impl Fleet {
                 issue.number,
                 &labels,
                 choice(&range),
-                self.chosen,
+                None,
                 caster.as_ref(),
                 self.now,
             );
@@ -436,7 +493,7 @@ impl Fleet {
                 });
                 continue;
             }
-            match casting::cast(&labels, &range, self.chosen) {
+            match casting::preferred(&labels, &range, &range) {
                 Ok(mut cast) => {
                     if held == ForCaster::Late {
                         cast.why = Why::Uncast;
@@ -473,7 +530,8 @@ impl Fleet {
     /// an unbound repo: an issue a caster cast to one is cast again, and one
     /// a human cast to it is held back while it is paused (`cast_in`).
     fn cast_bound_frontier(&self, set: &mut WorkingSet, open: &OpenIssues, stages: &Flows) {
-        let Ok((kit, paused)) = crate::kit::running() else { return };
+        let Ok(kit) = self.runnable() else { return };
+        let paused = crate::paused::read();
         let kit = kit.range();
         let Ok(team) = stages.team() else { return };
         let positions = stages.positions();
@@ -495,14 +553,8 @@ impl Fleet {
         };
         let waits = set.frontier.iter().any(|issue| {
             let choice = choice_of(issue.number);
-            casting::for_caster(
-                issue.number,
-                &labels_of(issue.number),
-                choice,
-                self.chosen,
-                None,
-                0,
-            ) != ForCaster::Dispatch
+            casting::for_caster(issue.number, &labels_of(issue.number), choice, None, None, 0)
+                != ForCaster::Dispatch
         });
         let caster = if waits { crate::caster::last(&self.repo, self.now) } else { None };
         let mut standing = Standing {
@@ -545,7 +597,7 @@ impl Fleet {
                 issue.number,
                 &labels,
                 casting::any_choice(&ranges),
-                self.chosen,
+                None,
                 caster.as_ref(),
                 self.now,
             );
@@ -559,8 +611,7 @@ impl Fleet {
                 });
                 continue;
             }
-            let range = casting::range(role, &kit);
-            match casting::cast_within(&labels, &range, &kit, self.chosen) {
+            match self.cast_in(role, &labels).map_err(|e| format!("{e:#}")) {
                 Ok(cast) => {
                     let mut cast = casting::unmatched_in(cast, &labels, &ranges);
                     if held == ForCaster::Late && cast.why == Why::RangeFirst {
@@ -613,7 +664,7 @@ impl Fleet {
     /// created — one from an earlier claim is not its own — and not answered
     /// by a worker started on the issue again (`stopped::standing_verdict`).
     /// What cannot be read says no: the claim then takes a slot.
-    fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
+    pub(crate) fn declared_since(&self, open: &Open, claim: &Claim) -> bool {
         let comments = open.issues.comments(claim.number);
         let Some(verdict) = latest_verdict(comments.iter().map(|c| c.body.as_str())) else {
             return false;

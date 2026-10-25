@@ -315,54 +315,36 @@ fn an_issue_walks_a_four_stage_workflow_to_the_base_branch() {
 }
 
 #[test]
-fn a_silent_landing_worker_is_nudged_restarted_in_its_role_nudged_and_then_escalated() {
+fn a_faulted_landing_worker_continues_in_its_role_without_consuming_a_restart() {
     let world = bound();
     let now = through_the_stages(&world);
-    assert_eq!(did(&tick(&world, now)), ["dispatch 7 done"]);
+    tick(&world, now);
     let dir = worktree(&world);
-    let first = terminals(&world, &dir)[0]["handle"].clone();
     let head = git(&dir, &["rev-parse", "HEAD"]);
-
-    // grace → nudge → grace
-    stopped(&world, now);
-    assert_eq!(did(&tick(&world, now + 90)), [] as [&str; 0]);
-    assert_eq!(did(&tick(&world, now + 400)), ["watch 7 nudged"]);
-    assert!(last_told(&world, &dir).starts_with("You stopped without an outcome."));
-    assert_eq!(did(&tick(&world, now + 490)), [] as [&str; 0]);
-
-    // → the one restart: a new worker in the same role and worktree, on the same brief
-    assert_eq!(did(&tick(&world, now + 800)), ["watch 7 restarted"]);
-    let restarts: Vec<String> =
-        world.comments(70).into_iter().filter(|body| body.contains("convoy:join")).collect();
-    assert_eq!(restarts.len(), 1, "{restarts:?}");
-    assert_ne!(terminals(&world, &dir)[0]["handle"], first, "the idle session was closed");
+    std::fs::write(dir.join("unfinished.txt"), "landing work").unwrap();
+    world.comment(70, "<!--convoy:join restarted=1040-->\nexisting restart evidence");
+    world.hold_every_harness();
+    let claims = world.claims();
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            if terminal["open"] == true && terminal["worktreePath"] == dir.to_str().unwrap() {
+                terminal["agent"] = json!({"state":"idle","error":{"code":"insufficient_quota"}});
+            }
+        }
+    });
+    tick(&world, now + 90);
     let started = worker(&world, &dir);
     assert!(started.contains(" AFKCONVOY_STAGE='land' AFKCONVOY_ROLE='lander' "), "{started}");
+    assert!(started.contains(" && pi "), "{started}");
+    assert_eq!(world.claims(), claims);
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(std::fs::read_to_string(dir.join("unfinished.txt")).unwrap(), "landing work");
+    assert_eq!(status(&world), "joining");
     assert!(brief(&dir).contains("**Your role:** `lander`"));
-
-    // → grace → nudge → grace → escalate, with the PR and its branch kept
-    stopped(&world, now + 800);
-    assert_eq!(did(&tick(&world, now + 890)), [] as [&str; 0]);
-    assert_eq!(did(&tick(&world, now + 1200)), ["watch 7 nudged"]);
-    assert_eq!(did(&tick(&world, now + 1290)), [] as [&str; 0]);
-    assert_eq!(did(&tick(&world, now + 1600)), ["watch 7 done"]);
-    assert_eq!(world.claims(), []);
-    assert_eq!(world.labels(7), ["stage:land", "ready-for-human"]);
-    let said = world.comments(7).join("\n");
-    assert!(said.contains("opened PR #70 and stopped before it was on the landing train"));
-    assert!(said.contains("a nudge, one restart, and a second nudge"), "{said}");
-    assert!(said.contains("Shall I go on? [y/n]"), "{said}");
-    assert_eq!(world.gh()["prs"][0]["state"], "open");
-    // everything in its worktree is on the pushed branch: the worktree goes
-    assert!(!dir.exists());
-    let branch = world.gh()["prs"][0]["headRefName"].as_str().unwrap().to_string();
-    assert_eq!(world.remote(&["rev-parse", &format!("refs/heads/{branch}")]), head);
-
-    // It is a human's now: nobody is started on it again.
-    assert_eq!(frontier(&world), []);
-    assert_eq!(did(&tick(&world, now + 1690)), [] as [&str; 0]);
+    let record = world.comments(70).into_iter().find(|c| c.starts_with("<!--convoy:join")).unwrap();
+    assert!(record.contains("restarted=1040"));
+    assert!(record.contains("switched="));
 }
-
 #[test]
 fn a_pr_taken_off_an_abandoned_train_is_joined_again_by_a_worker_in_the_same_role() {
     let world = bound();
@@ -375,13 +357,19 @@ fn a_pr_taken_off_an_abandoned_train_is_joined_again_by_a_worker_in_the_same_rol
 
     // The train worker stays silent: nudged once, then the train is given up.
     stopped(&world, now + 90);
-    assert_eq!(did(&tick(&world, now + 390)), ["tend_train nudged"]);
+    assert_eq!(did(&tick(&world, now + 390)), [] as [&str; 0]);
+    let train_dir = world.root.join("wt/convoy-train");
+    let train_git = PathBuf::from(git(&train_dir, &["rev-parse", "--absolute-git-dir"]));
+    std::fs::write(train_git.join("convoy-nudged"), (now + 390).to_string()).unwrap();
     std::fs::remove_file(
         PathBuf::from(git(&dir, &["rev-parse", "--absolute-git-dir"]))
             .join("convoy-worker-prompt.md"),
     )
     .unwrap();
-    assert_eq!(did(&tick(&world, now + 690)), ["tend_train abandoned"]);
+    let abandoned = world
+        .afk(&["abandon", "--instance", "alpha", "--host", "h1", "--now", &(now + 690).to_string()])
+        .ok();
+    assert_eq!(abandoned["action"], "abandoned");
     assert_eq!(status(&world), "joining");
     assert_eq!(world.gh()["prs"][0]["state"], "open");
 

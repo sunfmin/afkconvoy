@@ -210,7 +210,7 @@ impl Why {
     pub fn said(self) -> &'static str {
         match self {
             Why::Casting => "its casting labels",
-            Why::First => "no casting: the host kit's first",
+            Why::First => "the host kit's first eligible harness",
             Why::Switch => "this host's switch, over any casting",
             Why::Uncast => "the caster did not cast it in ten minutes: its range's first",
             Why::RangeFirst => "no casting: its role's range's first",
@@ -518,6 +518,25 @@ fn first_of(range: &[Held], why: Why, unmatched: Option<String>) -> Option<Cast>
     let first = range.first()?;
     let model = first.models.first().map(|model| model.id.clone());
     Some(Cast { harness: first.harness, model, why, unmatched })
+}
+
+/// Selects the first eligible harness in kit order. A casting can select a
+/// model only within that harness; roster order never changes host priority.
+/// The caller removes paused or unstartable candidates before asking.
+pub fn preferred(labels: &[String], range: &[Held], kit: &[Held]) -> Result<Cast, String> {
+    let held = kit
+        .iter()
+        .find_map(|candidate| range.iter().find(|held| held.harness == candidate.harness))
+        .ok_or("no eligible harness in the host kit")?;
+    let only = std::slice::from_ref(held);
+    let mut cast = first_of(only, Why::First, None).ok_or("no eligible harness")?;
+    if let Ok(Some((harness, Some(model)))) = held_casting(labels, only)
+        && harness == held.harness
+    {
+        cast.model = Some(model);
+        cast.why = Why::Casting;
+    }
+    Ok(cast)
 }
 
 /// What a worker runs under a switch to `chosen`, the casting being `named`:
