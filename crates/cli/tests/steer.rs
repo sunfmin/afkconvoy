@@ -230,7 +230,6 @@ fn an_escalation_with_no_position_names_the_only_flow_label_in_its_answer() {
     let world = escalation_with_no_position();
     let answer =
         "gh issue edit 11 --repo acme/tracker --add-label ready-for-agent --remove-label stuck";
-    assert!(!answer.contains('<'));
     recovery_with_no_position(&world, answer, &[]);
 }
 

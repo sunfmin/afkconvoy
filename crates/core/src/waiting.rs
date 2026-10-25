@@ -230,7 +230,8 @@ impl Waits {
 }
 
 /// How an escalated issue that followed `workflow` — or none, where nothing
-/// says which — goes back to a bound repo's fleet, given its stage records.
+/// says which — goes back to a bound repo's fleet, given its stage records
+/// and the team whose flow labels a human may choose from.
 pub fn back(team: &Team, workflow: Option<&Workflow>, records: &[StageRecord]) -> Back {
     let Some(workflow) = workflow else {
         let labels =
