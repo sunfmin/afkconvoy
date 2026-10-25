@@ -13,7 +13,7 @@ How many workers run at once is what a host can carry — its cores, its memory,
 The repos on the host this was decided on said 2, 3, 4, 5 and 8 in their configs. Refusing the key, as `harness` was refused (ADR-0020), would have stopped every one of those fleets at its next tick for a line nobody needed to change in a hurry. Ignoring it silently would have dropped each to 3 with nothing to say why.
 
 - A config that names `concurrency` is read as before, but for that key: it is not an unknown key, and it changes nothing.
-- `doctor` warns of each checkout whose repo config names it, with the value it names and the concurrency in force. Its fix is `afkconvoy run <checkout> --concurrency <value>`, which keeps the number on this host, and then the key deleted; where the checkout says its own, the deletion alone.
+- `doctor` reports each checkout whose repo config names it as `info`, with the value it names and the concurrency in force: nothing is held up, even where the values differ. Its fix is `afkconvoy run <checkout> --concurrency <value>`, which keeps the number on this host, and then the key deleted; where the checkout says its own or the config names the number already in force, the deletion alone.
 - `afkconvoy config` answers no `concurrency`.
 
 ## Considered options

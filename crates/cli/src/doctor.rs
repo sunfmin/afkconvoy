@@ -172,8 +172,8 @@ kinds! {
     NotOurs: Warning, "is held off by a PR not the fleet's";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
     SlowGate: Warning, "the gate is slow";
-    RetiredConcurrency: Warning, "which nothing reads any more";
     Moved: Info, "moved since the stage";
+    RetiredConcurrency: Info, "which nothing reads any more";
     KeptWorktree: Info, "is kept with no claim";
     NoGateLimit: Info, "declares no gate limit";
 }
@@ -1089,21 +1089,26 @@ fn config_finding(config: &Config) -> Option<Finding> {
 
 /// A repo config that still names a `concurrency`, which nothing reads any
 /// more (docs/adr/0025): the fleet instance of `checkout` goes by its own on
-/// this host, or the default. Where it says none of its own, the line that
-/// keeps the config's on this host comes before deleting the key.
+/// this host, or the default. Nothing is held up. Where it says none of its
+/// own and the config names a different number, the line that keeps that
+/// number on this host comes before deleting the key.
 fn retired_concurrency_finding(checkout: &Path, config: &Config) -> Option<Finding> {
     let named = config.retired_concurrency?;
     let in_force = config.concurrency();
-    let delete = format!("delete `concurrency` from {}", config::FILE);
-    let (said, fix) = match config.concurrency_said_by() {
-        SaidBy::Checkout => (
-            format!("this checkout says {in_force} on this host"),
-            format!("{}: concurrency", config::FILE),
-        ),
-        SaidBy::Default => (
-            format!("this checkout says none on this host, so the default, {in_force}, holds"),
-            format!("afkconvoy run {} --concurrency {named}, then {delete}", checkout.display()),
-        ),
+    let said = match config.concurrency_said_by() {
+        SaidBy::Checkout => format!("this checkout says {in_force} on this host"),
+        SaidBy::Default => {
+            format!("this checkout says none on this host, so the default, {in_force}, holds")
+        }
+    };
+    let fix = if config.concurrency_said_by() == SaidBy::Default && named.get() != in_force {
+        format!(
+            "afkconvoy run {} --concurrency {named}, then delete `concurrency` from {}",
+            checkout.display(),
+            config::FILE
+        )
+    } else {
+        format!("{}: concurrency", config::FILE)
     };
     Some(finding(
         Kind::RetiredConcurrency,
@@ -2511,7 +2516,7 @@ mod tests {
             ["afkconvoy run /repos/widgets --concurrency 5, then delete `concurrency` from \
                  docs/agents/afkconvoy.md"]
         );
-        assert_eq!((named.len(), named[0].severity), (1, Severity::Warning));
+        assert_eq!((named.len(), named[0].severity), (1, Severity::Info));
         assert!(
             named[0].evidence.contains("says none on this host, so the default, 3"),
             "{named:?}"
@@ -2520,6 +2525,16 @@ mod tests {
         let own = found("concurrency: 5\n", 6);
         assert_eq!(fixes(&own, "holds up to 6 claims"), ["docs/agents/afkconvoy.md: concurrency"]);
         assert!(own[0].evidence.contains("this checkout says 6 on this host"), "{own:?}");
+        // the config names the number already in force: no run is needed,
+        // whether the checkout says its own or holds the default
+        for (named, own) in [(3, 0), (6, 6)] {
+            let same = found(&format!("concurrency: {named}\n"), own);
+            assert_eq!(
+                fixes(&same, "which nothing reads any more"),
+                ["docs/agents/afkconvoy.md: concurrency"]
+            );
+            assert_eq!(same[0].severity, Severity::Info);
+        }
         // the key deleted: nothing, whatever the checkout says
         assert_eq!(found("", 6), []);
         assert_eq!(found("", 0), []);
