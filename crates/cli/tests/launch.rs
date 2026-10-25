@@ -156,9 +156,10 @@ fn on_a_custom_provider_the_passed_command_is_handed_over_exactly_as_passed() {
         .cloned()
         .unwrap();
     let create: Vec<String> = serde_json::from_value(create).unwrap();
-    // …but for starting it under `nice`, with the worktree's own `TMPDIR`
+    // …but for its issue, and starting it under `nice` with its own `TMPDIR`
     let dir = Path::new(create[3].strip_prefix("path:").unwrap());
-    let niced = common::niced(dir, passed);
+    let line = format!("export AFKCONVOY_ISSUE=7 && {passed}");
+    let niced = common::niced(dir, &line);
     assert_eq!(create[create.len() - 3..create.len() - 1], ["--command", &niced], "{create:?}");
     assert!(create.len() <= 7, "a worktree, a command, and nothing else: {create:?}");
 
