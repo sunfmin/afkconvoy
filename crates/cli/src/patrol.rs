@@ -255,7 +255,13 @@ fn in_role(
     let team_rules = kept.rules();
     let told = crate::role::ToldRules::read(harness, &checkout.path, team_rules.as_deref())?;
     let host_user = role.host_user;
-    let (kept_dir, shadowed) = crate::kept::for_worker(harness, host_user, &role_copy.dir)?;
+    let (kept_dir, shadowed) = crate::kept::for_worker(
+        harness,
+        host_user,
+        &role_copy.dir,
+        &told.told(),
+        &crate::own_command().fixed(" guard").own(),
+    )?;
     let start = Start {
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &path,
