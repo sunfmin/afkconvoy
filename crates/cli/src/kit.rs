@@ -1234,6 +1234,39 @@ mod tests {
     }
 
     #[test]
+    fn a_harness_held_with_no_model_is_written_again_with_the_models_that_answer_or_left_out() {
+        // A host kit no `kit` wrote: by hand, or by an older afkconvoy.
+        let current = Kit {
+            harnesses: vec![
+                held(Harness::ClaudeCode, "claude", &[]),
+                held(Harness::Codex, "codex", &[]),
+                held(Harness::Pi, "pi", &[]),
+            ],
+            stock_consult: None,
+        };
+        // Its first and its stock consult name no model: each is started on
+        // its command as written.
+        assert_eq!(current.first(), Some(Named { harness: Harness::ClaudeCode, model: None }));
+        assert_eq!(current.stock_consult(), current.first());
+        for writing in [Writing::Whole, Writing::Refresh] {
+            let (kit, left_out, _) = composed_as(&current, writing);
+            // Pi lists nothing, so nothing of it answers: it is left out.
+            assert_eq!(
+                summary(&kit),
+                [
+                    (Harness::ClaudeCode, "claude", vec!["claude-opus-5-5", "claude-sonnet-5-5"]),
+                    (Harness::Codex, "codex", vec!["gpt-a"]),
+                ],
+                "{writing:?}"
+            );
+            assert!(left_out.iter().any(|out| out.harness == Harness::Pi && out.model.is_none()));
+            let stock =
+                Named { harness: Harness::ClaudeCode, model: Some("claude-opus-5-5".into()) };
+            assert_eq!(kit.stock_consult(), Some(stock), "{writing:?}");
+        }
+    }
+
+    #[test]
     fn a_refresh_follows_an_alias_that_moves_and_keeps_a_still_listed_id() {
         let mut claude = held(Harness::ClaudeCode, "claude", &["old-id"]);
         claude.models[0].names = vec!["opus".into()];
