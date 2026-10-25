@@ -169,3 +169,42 @@ fn all_moves_every_claim_of_the_instance_and_a_claim_it_does_not_hold_is_refused
     assert!(brief(&eight).contains("its terminal was already gone"), "{}", brief(&eight));
     assert_eq!(world.claims().len(), 2);
 }
+
+#[test]
+fn a_failed_close_preserves_work_and_all_continues_with_the_other_workers() {
+    let world = blocked();
+    world.issue(8, &["ready-for-agent", "bug", "harness:claude-code"]);
+    tick(&world, 750);
+    let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
+    let uncommitted = seven.join("unfinished.txt");
+    std::fs::write(&uncommitted, "work in progress\n").unwrap();
+    let head = git(&seven, &["rev-parse", "HEAD"]);
+    world.with_orca(|orca| orca["close_fails"] = json!([seven]));
+    world.orca_calls();
+
+    let moved = switch(&world, "800", &["--all", "--harness", "codex"]).ok();
+    assert_eq!(moved["switched"][0]["issue"], 8, "{moved}");
+    assert_eq!(moved["failed"][0]["issue"], 7, "{moved}");
+    assert!(moved["failed"][0]["error"].as_str().unwrap().contains("terminal_close_failed"));
+    assert_eq!(open_commands(&world, &seven), ["agent"]);
+    assert_eq!(open_commands(&world, &eight), [CODEX]);
+    assert_eq!(std::fs::read_to_string(uncommitted).unwrap(), "work in progress\n");
+    assert_eq!(git(&seven, &["rev-parse", "HEAD"]), head);
+    assert_eq!(world.claims().len(), 2);
+    let calls = world.orca_calls();
+    assert!(!calls.iter().any(|call| {
+        common::asked(call) == "terminal create"
+            && call.iter().any(|arg| arg == &format!("path:{}", seven.display()))
+    }));
+}
+
+#[test]
+fn an_acknowledged_close_that_leaves_the_terminal_is_no_permission_for_a_second_writer() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    world.with_orca(|orca| orca["close_keeps_terminal"] = json!(true));
+    let error = switch(&world, "800", &["7", "--harness", "codex"]).error();
+    assert!(error.contains("still has a terminal after close"), "{error}");
+    assert_eq!(open_commands(&world, &dir), ["agent"]);
+    assert_eq!(world.claims().len(), 1);
+}

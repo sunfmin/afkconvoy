@@ -877,10 +877,20 @@ impl Worktree {
     /// it cuts. A new worker was never nudged, and waits on no background
     /// work, whatever the one before it did, and was started `now`.
     pub fn start(&self, command: &str, now: u64) -> Result<String> {
+        // A failed close must not turn a continuation into a second writer.
+        // Check again even after an acknowledged close: Orca may still be
+        // ending the previous terminal. Leave the worker's progress markers
+        // intact until its replacement can actually be started.
+        self.close_terminals()?;
+        if self.terminal()?.is_some() {
+            bail!(
+                "the previous worker in {} still has a terminal after close; \
+                 no replacement was started",
+                self.path.display()
+            );
+        }
         self.forget(NUDGE_FILE)?;
         self.forget(BACKGROUND_FILE)?;
-        // One with no terminal is as wanted.
-        let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
         let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), command);
         let made =
             orca(&["terminal", "create", "--worktree", &self.selector(), "--command", &command])?;
