@@ -1136,6 +1136,19 @@ fn the_help_of_land_says_what_the_trains_worktree_holds_in_each_of_its_three_num
     }
 }
 
+/// `checkouts` answers where the host runner serves the panel, and its help
+/// says so instead of sending its reader to `panel --open` for it.
+#[test]
+fn the_help_of_checkouts_says_what_host_runner_panel_holds() {
+    let checkouts = asked(&["checkouts", "--help"]);
+    assert!(!checkouts.contains("names no panel"), "{checkouts}");
+    let row = checkouts.lines().find(|line| line.starts_with("- `host_runner.panel` "));
+    let row = row.unwrap_or_else(|| panic!("`host_runner.panel` in {checkouts}"));
+    for says in ["where the host runner serves the panel", "Where no host runner runs it is null"] {
+        assert!(row.contains(says), "{says:?}: {row}");
+    }
+}
+
 #[test]
 fn the_help_that_keeps_the_trains_worktree_with_what_it_built_says_when_it_is_cut_again() {
     let land = asked(&["land", "--help"]).split_whitespace().collect::<Vec<_>>().join(" ");
