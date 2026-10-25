@@ -292,7 +292,7 @@ fn a_pi_that_holds_no_credentials_is_refused_with_the_line_that_logs_it_in() {
 }
 
 #[test]
-fn a_host_without_pi_is_told_nothing_of_it_by_a_team_whose_roster_names_no_pi() {
+fn an_unavailable_pi_does_not_block_a_team_whose_roles_use_claude() {
     let on_claude = TEAM
         .replace("{ harness: pi, model: openai/gpt-5.5 }", "{ harness: claude-code }")
         .replace("{ harness: pi }", "{ harness: claude-code }");
@@ -306,10 +306,10 @@ fn a_host_without_pi_is_told_nothing_of_it_by_a_team_whose_roster_names_no_pi() 
     world.issue(7, &["flow:feature"]);
     for start in starts(&world) {
         let said = start.stderr.clone() + &start.ok().to_string();
-        assert!(!said.contains("install.sh"), "{said}");
+        assert!(!said.contains("\"error\":"), "{said}");
     }
     assert_eq!(world.claims(), [(7, "alpha".to_string())]);
-    assert_eq!(doctor_finds(&world), []);
+    assert!(doctor_finds(&world).iter().any(|(what, _)| what.contains("not installed")));
     let asked = world.shell_asked();
     assert!(
         !asked.iter().any(|line| line == "pi --list-models"),

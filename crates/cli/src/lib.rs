@@ -2427,7 +2427,7 @@ enum Command {
     ///
     /// It writes a line to the tick log of this host for this repo as it starts to wait, when another command is ahead of it; as its command runs — in its turn, or at once in no queue, with why; as it waits again, in the next host runner's queue; and as it ends, with its exit status. `doctor` and the panel show what runs alone and what waits.
     ///
-    /// While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. The wait and the run together count toward the gate limit (`gate_seconds`), as any background work of a worker's does: one that has been in the queue longer than that is silent, and its issue is escalated.
+    /// While it waits or runs, the fleet counts the worker busy, not silent: it is not nudged for that. The wait and run count toward the command's gate limit (`gate_seconds`). A worker with confirmed live background work remains waiting even past the observation interval; silence alone does not authorize escalation or continuation.
     ///
     /// ## What it answers
     ///
@@ -2728,13 +2728,13 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// To send a worker its nudge by hand. A tick does this on its own, once, for a worker that stopped with no PR and no verdict and stayed quiet for the grace period. Do it yourself when a tick is not running and such a worker sits idle.
+    /// To send a worker its nudge by hand. Automatic recovery first observes actual output and obtains a bounded diagnosis when no structured fault explains the stopped worker. An operator may nudge a worker directly after checking its scene.
     ///
     /// ## What counts as silent
     ///
-    /// A worker is silent when it stopped, declared nothing, showed no sign of life — its terminal's output, a commit, a file touched, being started or nudged — for the grace period (300s), and waits on no background work of its own. Silent, it is nudged once; silent a grace period past that nudge, it is escalated (a joining worker is restarted first, a train worker's train abandoned).
+    /// A stopped worker with no verdict or progress is observed over at least 300 seconds. Actual terminal output, git progress, runtime reports and process activity are evidence for diagnosis, never proof of quota exhaustion by themselves. A diagnostic harness has 30 seconds per candidate, at most three attempts per unchanged episode and 300 seconds between attempts. Unknown or invalid results preserve the scene.
     ///
-    /// A worker whose turn ended while a shell or a monitor it started in the background still runs — its gate, say — is waiting, not silent: its harness shows that work in the footer under its prompt (Claude Code's `1 shell, 1 monitor`), which the tick reads off its screen, and the tick's line says `waiting on its own background work #7 (since …)`. It is neither nudged nor escalated while it waits. Once that work ends, its silence is counted as ever: a nudge, then escalated past it. Waiting longer than the gate limit (`gate_seconds`) is a silence at once, nudged or not, and the escalation says it waited on its own background work past the limit.
+    /// Confirmed background work, waiting for a human or dependency and completed idle sessions are left alone. A worker's gate waiting in the exclusive queue is background work too. The tick does not turn a long wait into permission for another writer. Structured transient rate limits respect Retry-After and get two retries before session fallback. Account and model recovery probes run hourly; successful recovery affects new starts without moving healthy successors back.
     ///
     /// ## Who runs it
     ///

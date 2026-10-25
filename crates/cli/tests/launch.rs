@@ -430,7 +430,7 @@ fn plan_and_doctor_show_the_host_kit() {
     let shown = world.afk(&["plan", "--now", "1000"]).json;
     let stock = &shown["host_kit"]["stock_consult"];
     assert_eq!(stock["harness"], "claude-code", "{shown}");
-    assert_eq!(stock["unmatched"], Value::Null, "a later harness cannot select the model");
+    assert!(stock["unmatched"].as_str().unwrap().contains("`a/none`"), "{stock}");
 }
 
 #[test]

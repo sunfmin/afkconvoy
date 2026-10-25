@@ -114,7 +114,7 @@ fn plan_trusts_a_probe_that_passed_on_this_host_in_the_last_hour_and_says_so() {
     assert_eq!(world.probes().len(), 4);
     let again_asked = world.shell_asked();
     assert_eq!(again_asked.len(), asked + 2, "proxy exports and launch eligibility are read again");
-    assert!(again_asked[asked].starts_with("printf 'AFKCONVOY_PROXY"));
+    assert!(again_asked[asked..].iter().any(|line| line.starts_with("printf 'AFKCONVOY_PROXY")));
     let (mut first, mut again) = (first.ok(), again.ok());
     assert_eq!((first["now"].take(), again["now"].take()), (json!(1000), json!(4599)));
     assert_eq!(again, first, "and the answer is the one a probe leads to");
