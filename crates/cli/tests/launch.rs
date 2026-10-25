@@ -635,3 +635,15 @@ fn a_resident_launches_reads_added_and_changed_commands() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn every_known_harness_discovers_its_existing_stock_command() {
+    for harness in afkconvoy_core::harness::Harness::ALL {
+        let world = World::new();
+        world.with_kit(|kit| kit["harnesses"] = json!([{"harness": harness.key()}]));
+        world.issue(7, &["ready-for-agent"]);
+        let ran = world.afk(&TICK);
+        assert_eq!(ran.json["errors"], json!([]), "{}: {} {}", harness.key(), ran.json, ran.stderr);
+        assert_eq!(started(&world), [harness.stock()], "{}", harness.key());
+    }
+}

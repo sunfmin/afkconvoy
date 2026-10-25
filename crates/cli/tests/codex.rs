@@ -1162,3 +1162,30 @@ fn a_codex_worker_of_a_role_that_keeps_from_the_host_user_s_skills_and_rules_is_
     assert!(given(7), "dev is started on Codex with the host user's");
     assert!(!given(8), "auditor is started on Codex with none of the host user's");
 }
+
+#[test]
+fn a_discovered_codex_command_must_take_the_role_flags_before_it_is_saved() {
+    let world = bound();
+    world.issue(7, &["flow:audit"]);
+    world.with_kit(|kit| {
+        let codex = kit["harnesses"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|held| held["harness"] == "codex")
+            .unwrap();
+        codex.as_object_mut().unwrap().remove("command");
+    });
+    world.shell_help(Some("--add-dir --model"));
+    let why = tick(&world, 1000).error();
+    assert!(why.contains("no --dangerously-bypass-hook-trust, no --config"), "{why}");
+    assert!(world.claims().is_empty());
+    let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let codex = kit["harnesses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|held| held["harness"] == "codex")
+        .unwrap();
+    assert!(codex.get("command").is_none(), "failed discovery was saved: {codex}");
+}
