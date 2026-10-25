@@ -19,7 +19,7 @@ afkconvoy works a repo's ready GitHub-issue backlog unattended. A fleet instance
 ## What to run first, in a checkout of the repo
 
 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
-2. `afkconvoy plan`: what a tick would act on. It changes nothing.
+2. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
 3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 
 And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
@@ -460,7 +460,7 @@ afkconvoy doctor [OPTIONS] [CHECKOUT]
 
 #### `afkconvoy plan`
 
-Show what a tick would act on, and change nothing
+Show what a tick would act on, changing no fleet state (may push and delete a startup probe; read-only: `afkconvoy doctor`)
 
 ##### When to run it
 
@@ -560,7 +560,7 @@ The probe's warnings go to stderr. Errors: a command the fleet needs is missing 
 - A patrol is due or it is not: one that missed ten intervals runs once. And a run still going takes one slot of the concurrency, like a claim on an issue.
 - With a lock standing, `free_slots` counts as free the slot of every claim of `--instance` the lock leaves alone: a lock issue does not wait for them.
 - `free_slots` counts as free the slot of every claim of `--instance` that is `declared`: `mine` may hold more claims than the concurrency, and the frontier does not wait out the grace period of a worker that already declared.
-- "Changes nothing" is about fleet state. When it probes it still pushes to the remote, and deletes there: it needs push access, and it is not a read-only command.
+- Fleet state is unchanged. When it probes it still pushes to the remote, and deletes there: it needs push access, and it is not a read-only command. To read without writing anything, run `afkconvoy doctor`.
 - A slow gate is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and 5 landings spread over hosts none of which has 5 say nothing. After an issue for a slow gate closed, only the landings made since count.
 - A probe that stands is trusted, not checked: a command uninstalled or logged out since, or a rule the remote gained, shows as the error of whatever runs into it — or, for the ref layout, not until the next probe. `run` probes at every start.
 
