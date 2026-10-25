@@ -194,7 +194,13 @@ fn offered(kit: &Kit, team: Option<&Team>, range: &[Held]) -> Vec<Offered> {
         held.models.iter().find(|seen| seen.model == model.id)?.good_at.clone()
     };
     let mut offered = vec![];
-    for held in range {
+    // Different roles may allow overlapping subsets. Their union's first
+    // appearance order is not the host's model priority.
+    for mut held in kit.range() {
+        let Some(allowed) = range.iter().find(|allowed| allowed.harness == held.harness) else {
+            continue;
+        };
+        held.models.retain(|model| allowed.models.iter().any(|allowed| allowed.id == model.id));
         if held.models.is_empty() {
             let good_at = rostered(held.harness, None);
             offered.push(Offered { harness: held.harness, model: None, good_at });
@@ -357,4 +363,50 @@ pub fn cast(repo: &Repo, now: u64) -> Result<Value> {
         }
     }
     Ok(json!({"cast": cast, "uncast": left}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_s_answer_is_read_a_casting_a_line_whatever_is_around_it() {
+        let answer = "Sure.\n```json\n{\"issue\":7,\"harness\":\"pi\",\"model\":\"a/b\",\"why\":\"small\"}\nnot json\n{\"issue\":8,\"harness\":\"codex\",\"model\":null,\"why\":\"big\"}\n{\"issue\":7,\"harness\":\"dsh\",\"why\":\"another harness\"}\n{\"issue\":7,\"harness\":\"pi\",\"model\":\"duplicate\",\"why\":\"ignored\"}\n```";
+        let read = read_castings(answer);
+        assert_eq!(read.len(), 3);
+        assert_eq!((read[0].issue, read[0].harness.as_str()), (7, "pi"));
+        assert_eq!(read[0].model.as_deref(), Some("a/b"));
+        assert_eq!((read[1].issue, read[1].model.as_deref()), (8, None));
+    }
+
+    #[test]
+    fn overlapping_stage_offers_follow_kit_model_order() {
+        let kit: Kit = serde_json::from_value(json!({"harnesses":[{
+            "harness":"claude-code", "command":"claude", "models":[
+                {"model":"opus"}, {"model":"haiku"}, {"model":"sonnet"}
+            ]
+        }]}))
+        .unwrap();
+        let ranges = vec![
+            (
+                "first".into(),
+                vec![Held {
+                    harness: afkconvoy_core::harness::Harness::ClaudeCode,
+                    models: vec!["haiku".into(), "sonnet".into()],
+                }],
+            ),
+            (
+                "second".into(),
+                vec![Held {
+                    harness: afkconvoy_core::harness::Harness::ClaudeCode,
+                    models: vec!["opus".into(), "haiku".into()],
+                }],
+            ),
+        ];
+        let offered = offered(&kit, None, &union(&ranges));
+        assert_eq!(
+            offered.iter().filter_map(|o| o.model.as_deref()).collect::<Vec<_>>(),
+            ["opus", "haiku", "sonnet"]
+        );
+    }
 }
