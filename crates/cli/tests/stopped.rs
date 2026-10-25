@@ -332,7 +332,7 @@ fn a_nudge_is_never_sent_to_a_terminal_whose_harness_has_exited() {
         }
     });
     world.orca_calls();
-    let refused = act(&world, "nudge", "alpha", &["--now", "1400"]).error();
+    let refused = world.afk(&["nudge", "7", "--instance", "alpha", "--now", "1400"]).error();
     assert!(refused.contains("no running worker harness"), "{refused}");
     assert_eq!(typed(&world).len(), 1, "only the brief was sent before the harness exited");
     assert!(!nudge_record(&world).exists(), "a refused nudge is never recorded");
