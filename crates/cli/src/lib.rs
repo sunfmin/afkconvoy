@@ -4350,10 +4350,13 @@ mod tests {
         }
         let workers = cli.get_subcommands().filter(|c| c.get_next_help_heading() == Some(WORKER));
         let workers: Vec<&str> = workers.map(clap::Command::get_name).collect();
-        assert!(workers.len() >= 9, "{workers:?}");
+        assert!(workers.len() >= 8, "{workers:?}");
         for name in workers {
             assert!(IN_ITS_WORKTREE.contains(&name), "a worker runs `{name}`");
         }
+        // `wake` is in the group of whoever hands the fleet work, and still a
+        // worker's last command.
+        assert!(IN_ITS_WORKTREE.contains(&"wake"));
         // Those that only read are about one repo and no worker's own, and
         // the flag that makes one act is one of its own: one with none acts
         // never.
