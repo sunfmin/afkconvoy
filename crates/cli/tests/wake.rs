@@ -238,3 +238,107 @@ fn a_wake_ends_the_sleep_of_its_checkouts_fleet_instance_alone() {
     let other = tick_log(&first);
     assert!(!other.iter().any(|line| line.starts_with("tick 2:")), "{other:#?}");
 }
+
+/// Two repos' fleets on one host and tracker. The second has reached its
+/// 1500s idle sleep when the first closes #7 or reads it closed.
+fn closed_blocker(closes: bool, through_edge: bool) {
+    let world = World::new();
+    world.name_origin(&world.clone, "acme/dev");
+    world.put_tracker("acme/tracker");
+    let second = world.second_repo();
+    let url = "https://github.com/acme/other.git";
+    git(&second, &["config", "remote.origin.url", url]);
+    let rewrite = format!("url.{}.insteadOf", world.root.join("remote2.git").display());
+    git(&second, &["config", &rewrite, url]);
+    let mut gh2 = world.gh2();
+    gh2["trackers"] = world.gh()["trackers"].clone();
+    std::fs::write(world.root.join("gh2.json"), gh2.to_string()).unwrap();
+    world.with_tracker(|gh| {
+        gh["issues"] = json!([
+            {"number": 7, "title": "blocker", "state": "open",
+             "labels": if through_edge { vec!["repo:acme/dev"] }
+                       else { vec!["repo:acme/dev", "ready-for-agent"] }},
+            {"number": 9, "title": "unblocked next", "state": "open",
+             "labels": ["repo:acme/other", "ready-for-agent"]},
+            {"number": 10, "title": "still blocked", "state": "open",
+             "labels": ["repo:acme/other", "ready-for-agent"]},
+            {"number": 11, "title": "another blocker", "state": "open", "labels": []},
+            {"number": 13, "title": "older closure", "state": "closed", "labels": []}
+        ]);
+        gh["edges"] = json!({"9": [7, 13], "10": [7, 11]});
+        if through_edge {
+            gh["issues"].as_array_mut().unwrap().push(json!({
+                "number": 8, "title": "observer", "state": "open",
+                "labels": ["repo:acme/dev"]
+            }));
+            gh["edges"]["8"] = json!([7]);
+        }
+    });
+    // A declared verdict is acted on only past every sign of the worker's
+    // life, including its files' mtimes. Keep that grace out of this test.
+    let now =
+        (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+            + 600)
+            .to_string();
+    let args = ["run", "--host", "h1", "--tracker", "acme/tracker", "--now", &now];
+    let source = world.afk(&args).ok();
+    let target = world.afk_in(&second, &args).ok();
+    for tick in [2, 3] {
+        wake(&world, &second);
+        until("an empty tick of the blocked fleet", || {
+            tick_log(&target).iter().any(|line| line.starts_with(&format!("tick {tick}: nothing")))
+        });
+    }
+    assert!(tick_log(&target).iter().any(|line| line.ends_with("next in 1500s")));
+    if closes {
+        world.with_tracker(|gh| {
+            gh["comments"]["7"].as_array_mut().unwrap().push(json!({
+                "id": 90001, "body": "<!--convoy:verdict phase=already-satisfied-->",
+                "html_url": "https://gh/i/7#90001"
+            }));
+        });
+        world.with_orca(|orca| {
+            let terminal = &mut orca["terminals"][0];
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": 1});
+            terminal["lastOutputAt"] = json!(1);
+        });
+    } else {
+        world.with_tracker(|gh| gh["issues"][0]["state"] = json!("closed"));
+    }
+    let started = Instant::now();
+    wake(&world, &world.clone);
+    while !tick_log(&target).iter().any(|line| line.starts_with("tick 4: dispatched #9")) {
+        assert!(
+            started.elapsed() < SOON,
+            "the blocked fleet did not dispatch: source {:#?}, target {:#?}, blocker {}",
+            tick_log(&source),
+            tick_log(&target),
+            world.tracker()["issues"][0]
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(started.elapsed() < SOON, "it did not wait for the idle timer");
+    let by = format!(
+        "tick 4: started (woken by acme/tracker#7 closed, seen by fleet instance {})",
+        source["instance"].as_str().unwrap()
+    );
+    let lines = tick_log(&target);
+    assert!(lines.contains(&by), "{lines:#?}");
+    assert!(!lines.iter().any(|line| line.contains("dispatched #10")), "{lines:#?}");
+    assert_eq!(world.tracker()["issues"][0]["state"], "closed");
+}
+
+#[test]
+fn closing_an_issue_wakes_the_other_repos_fleet_and_it_dispatches_without_its_idle_wait() {
+    closed_blocker(true, false);
+}
+
+#[test]
+fn reading_a_claimed_issue_closed_wakes_the_other_repos_blocked_fleet() {
+    closed_blocker(false, false);
+}
+
+#[test]
+fn reading_a_closed_dependency_edge_wakes_the_other_repos_blocked_fleet() {
+    closed_blocker(false, true);
+}
