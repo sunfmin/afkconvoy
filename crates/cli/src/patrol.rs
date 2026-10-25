@@ -196,7 +196,6 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
         left.remove()?;
     }
     let checkout = Worktree::cut(&source, &created_as, &base, None)?;
-    checkout.keep_started()?;
 
     let path = checkout.path.display().to_string();
     // A worker starts in its role's copy: its commands are run from the checkout.
@@ -221,8 +220,14 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
-    let terminal =
-        agent.start_worker(&checkout, (harness, cast.model.as_deref()), &line, true, me.now)?;
+    let terminal = agent.start_worker(
+        &checkout,
+        (harness, cast.model.as_deref()),
+        &line,
+        true,
+        None,
+        me.now,
+    )?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
 
@@ -328,8 +333,14 @@ pub(crate) fn switch(
     crate::codex_launch::selected(harness, cast.model.as_deref())?;
     checkout.stop_for_continuation()?;
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
-    let terminal =
-        agent.start_worker(&checkout, (harness, cast.model.as_deref()), &line, true, me.now)?;
+    let terminal = agent.start_worker(
+        &checkout,
+        (harness, cast.model.as_deref()),
+        &line,
+        true,
+        None,
+        me.now,
+    )?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;
     Ok(json!({"patrol": name, "from": continuing.from, "to": harness,
@@ -338,9 +349,9 @@ pub(crate) fn switch(
 
 /// Ends the run of the patrol `row` once it is over: a peer's presumed dead
 /// is only unclaimed; mine, declared over or its worker gone or stopped, is
-/// checked for what
-/// a patrol never leaves — a commit, a PR — and unclaimed. A run that left
-/// one has failed: an issue is opened for a human, and no other is touched.
+/// checked for what a patrol never leaves — a commit not on the base branch,
+/// working-tree changes, a PR — and unclaimed. A run that left one has failed:
+/// an issue is opened for a human, and no other is touched.
 /// Its worker is ended with it: the checkout is removed, its terminal with
 /// it — but a failed run's is kept, with only the terminal closed, for the
 /// human its report gives the path to. `Nothing` while the worker is still
@@ -367,7 +378,12 @@ pub fn end(fleet: &mut Fleet, me: &Me, read: &Flows, row: &Row) -> Result<Outcom
             .filter(|pr| pr.head_branch == checkout.branch || Some(&pr.head_branch) == on.as_ref())
             .map(|pr| pr.number)
             .collect();
-        let reason = broke(checkout.started()?.as_deref(), &checkout.tip()?, &prs);
+        let repo = Repo::new(checkout.path.clone());
+        let tip = checkout.tip()?;
+        let base = fleet.base_tip()?;
+        let left = (!repo.within(&tip, &base)?).then_some(tip.as_str());
+        let dirty = !repo.git_raw(&["status", "--porcelain"])?.trim().is_empty();
+        let reason = broke(left, dirty, &prs);
         // One report stands for a patrol until a human closes it.
         if let Some(reason) = reason.as_ref().filter(|_| row.failure.is_none()) {
             let path = checkout.path.display().to_string();

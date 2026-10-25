@@ -268,6 +268,7 @@ pub(crate) fn auxiliary(
             (cast.harness, cast.model.as_deref()),
             &command,
             false,
+            None,
             fleet.now,
         )?
     };

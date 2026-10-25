@@ -49,21 +49,16 @@ fn lines(file: &Path) -> Vec<String> {
     text.lines().map(str::to_string).collect()
 }
 
-/// What every tick log under `cache` says of `exclusive`.
-fn logged(cache: &Path) -> Vec<String> {
+/// Every command line of every tick log under `cache`.
+fn commands(cache: &Path) -> Vec<serde_json::Value> {
     let runs = cache.join("afkconvoy").join("runs");
     let mut said = vec![];
     for entry in std::fs::read_dir(runs).unwrap().flatten() {
         if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
             for line in lines(&entry.path()) {
                 let line: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let command = &line["command"];
-                if command["command"] == "exclusive" {
-                    said.push(format!(
-                        "{} {}",
-                        command["on"].as_str().unwrap(),
-                        command["outcome"]
-                    ));
+                if let Some(command) = line.get("command") {
+                    said.push(command.clone());
                 }
             }
         }
@@ -71,8 +66,126 @@ fn logged(cache: &Path) -> Vec<String> {
     said
 }
 
+/// What every tick log under `cache` says of `exclusive`.
+fn logged(cache: &Path) -> Vec<String> {
+    commands(cache)
+        .into_iter()
+        .filter(|command| command["command"] == "exclusive")
+        .map(|command| {
+            format!("{} {}", command["on"].as_str().unwrap_or_default(), command["outcome"])
+        })
+        .collect()
+}
+
 fn text(out: &[u8]) -> String {
     String::from_utf8_lossy(out).into_owned()
+}
+
+#[test]
+fn an_unbound_worker_s_gate_names_its_issue_in_the_tick_log_and_the_host_s_queue() {
+    let world = World::new();
+    let binary = env!("CARGO_BIN_EXE_afkconvoy");
+    let gate = afkconvoy_core::line::Line::new()
+        .program(binary)
+        .fixed(" exclusive -- sh -c ")
+        .word(
+            "touch \"$CACHE/worker-ran\"; \
+             while test -d \"$CACHE\" && test ! -f \"$CACHE/worker-release\"; do sleep 0.02; done; \
+             test ! -f \"$CACHE/red\"",
+        )
+        .own();
+    world.set_gate(&gate);
+    // The command remains a shell string: export the issue for all of it,
+    // including a harness reached through a shell function.
+    world.kit_command("claude-code", "issue_worker ; true");
+    world.issue(12, &["ready-for-agent"]);
+    let dispatched =
+        world.afk(&["dispatch", "--issue", "12", "--instance", "alpha", "--host", "h1"]).ok();
+    let dir = Path::new(dispatched["worktree"].as_str().unwrap());
+    let orca = world.orca();
+    let terminal = orca["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|terminal| terminal["handle"] == dispatched["terminal"])
+        .unwrap();
+    let line = terminal["line"].as_str().unwrap();
+    let script = format!("issue_worker() {{ \"$AFKCONVOY_BIN\" gate --now 1100; }}; {line}");
+    let cache = world.cache();
+    let _host_runner = world.host_held();
+    let holder = world
+        .command(binary, &world.clone)
+        .env("CACHE", &cache)
+        .args([
+            "exclusive",
+            "--",
+            "sh",
+            "-c",
+            "while test -d \"$CACHE\" && test ! -f \"$CACHE/holder-release\"; do sleep 0.02; done",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    until(|| tickets(&world) == 1);
+    let run = || {
+        world
+            .command("sh", dir)
+            .env("CACHE", &cache)
+            .env("AFKCONVOY_BIN", binary)
+            .args(["-c", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let worker = run();
+    until(|| tickets(&world) == 2);
+    let shown = world.afk(&["doctor", "--host", "h1"]).json;
+    let queue = &shown["host"]["exclusive"];
+    assert!(queue["running"]["issue"].is_null(), "{queue}");
+    assert_eq!(queue["waiting"][0]["issue"], 12, "{queue}");
+    std::fs::write(cache.join("holder-release"), "").unwrap();
+    assert!(holder.wait_with_output().unwrap().status.success());
+    until(|| cache.join("worker-ran").exists());
+    let shown = world.afk(&["doctor", "--host", "h1"]).json;
+    assert_eq!(shown["host"]["exclusive"]["running"]["issue"], 12, "{shown}");
+    std::fs::write(cache.join("worker-release"), "").unwrap();
+    let out = worker.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["status"], "green", "{answer}");
+    assert_eq!(answer["recorded"], true, "{answer}");
+
+    std::fs::write(cache.join("red"), "").unwrap();
+    let out = run().wait_with_output().unwrap();
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["status"], "red", "{answer}");
+    let said = commands(&cache);
+    let gates: Vec<_> = said.iter().filter(|line| line["command"] == "gate").collect();
+    assert_eq!(gates.len(), 4, "{gates:?}");
+    for gate in &gates {
+        assert_eq!(gate["on"], "#12", "{gate}");
+    }
+    assert_eq!(gates[1]["outcome"], "green");
+    assert_eq!(gates[3]["outcome"], "red");
+    let said = logged(&cache);
+    for outcome in ["waits behind", "runs", "(exit 0)", "(exit 1)"] {
+        assert!(
+            said.iter().any(|line| line.starts_with("#12 ") && line.contains(outcome)),
+            "{said:?}"
+        );
+    }
+
+    // The same gate run by no issue's worker carries no issue, including
+    // its nested exclusive command.
+    let before = commands(&cache).len();
+    let out =
+        world.command(binary, &world.clone).env("CACHE", &cache).arg("gate").output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let said = commands(&cache);
+    assert_eq!(said[before..].len(), 4, "{said:?}");
+    assert!(said[before..].iter().all(|line| line["on"].is_null()), "{said:?}");
 }
 
 #[test]

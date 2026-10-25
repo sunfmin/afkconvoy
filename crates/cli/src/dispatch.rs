@@ -6,11 +6,13 @@ use afkconvoy_core::casting::{self, Cast};
 use afkconvoy_core::guard::WritesNothing;
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::launch::LaunchCommand;
+use afkconvoy_core::line::Line;
 use afkconvoy_core::plan::closing_pr;
 use afkconvoy_core::prompt::{
     StockFields, Switched, WorkerFields, stock_prompt, switched, worker_prompt,
 };
 use afkconvoy_core::recovery::{Recovery, Tier, Variant, superseded};
+use afkconvoy_core::role::ISSUE_ENV;
 use afkconvoy_core::stock;
 use afkconvoy_core::tick::Outcome;
 use afkconvoy_core::transition::escalated_at;
@@ -88,12 +90,15 @@ pub struct Agent {
 impl Agent {
     /// Starts an interactive worker with the fleet's selected model and
     /// freshly read host-user effort. Shell-only auxiliaries use `start`.
+    /// An issue given here is exported for every command that worker runs;
+    /// the train and inspections carry no issue context.
     pub fn start_worker(
         &self,
         worktree: &Worktree,
         selection: (Harness, Option<&str>),
         command: &str,
         in_role: bool,
+        issue: Option<u64>,
         now: u64,
     ) -> Result<String> {
         let (harness, model) = selection;
@@ -103,7 +108,18 @@ impl Agent {
             None
         };
         let command = prepared.as_ref().map_or(command, |(line, _)| line.as_str());
-        let terminal = self.start(worktree, harness, command, now)?;
+        let command = match issue {
+            Some(issue) => Line::new()
+                .fixed("export ")
+                .fixed(ISSUE_ENV)
+                .fixed("=")
+                .number(issue)
+                .fixed(" && ")
+                .launch(command)
+                .done(),
+            None => command.to_string(),
+        };
+        let terminal = self.start(worktree, harness, &command, now)?;
         std::fs::write(worktree.note("convoy-worker-model")?, model.unwrap_or_default())?;
         if let Some((_, settings)) = prepared {
             crate::codex_launch::record(worktree, &settings)?;
@@ -453,6 +469,7 @@ fn start(
                         (harness, model.as_deref()),
                         &staged.command(launch, cut)?,
                         true,
+                        None,
                         fleet.now,
                     )?,
                     None => {
@@ -465,6 +482,7 @@ fn start(
                             (harness, model.as_deref()),
                             &launch,
                             false,
+                            Some(number),
                             fleet.now,
                         )?
                     }

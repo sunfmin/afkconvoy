@@ -629,6 +629,7 @@ impl Inspector {
                 (harness, who.model()),
                 &command,
                 matches!(who, As::Bound { .. }),
+                None,
                 now,
             )?;
             checkout.await_ready(&handle, agent.ready_timeout)?;
@@ -718,6 +719,7 @@ impl Inspector {
                 (harness, who.model()),
                 &command,
                 matches!(who, As::Bound { .. }),
+                None,
                 now,
             )?;
             checkout.await_ready(&handle, agent.ready_timeout)?;

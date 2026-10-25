@@ -36,7 +36,8 @@ fn a_worker_is_started_under_nice_with_a_tmpdir_its_worktree_ignores_and_takes_w
     let worktree = Path::new(started["worktree"].as_str().unwrap()).to_path_buf();
     let calls = world.orca_calls();
     let created = calls.iter().find(|call| common::asked(call) == "terminal create").unwrap();
-    assert_eq!(created[4..6], ["--command".to_string(), common::niced(&worktree, COMMAND)]);
+    let line = format!("export AFKCONVOY_ISSUE=7 && {COMMAND}");
+    assert_eq!(created[4..6], ["--command".to_string(), common::niced(&worktree, &line)]);
 
     // what the worker writes there is in its worktree, and not git's to show…
     let tmp = afkconvoy::worker_tmp::of(&worktree);
