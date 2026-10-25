@@ -355,8 +355,8 @@ fn checked(
 }
 
 /// A repo's name as GitHub names it: `owner/repo`, each part of letters,
-/// digits, `.`, `_` and `-`, and neither `.` nor `..`. The one home of the form: the repo of a team and
-/// of a role is named so, and `read` is the only way to one.
+/// digits, `.`, `_` and `-`, and neither `.` nor `..`. The one home of the form: the repo of a team,
+/// of a role and of a tracker is named so, and `read` is the only way to one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub struct RepoName(String);

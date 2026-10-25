@@ -119,7 +119,7 @@ fn routed(world: &World) -> Vec<Vec<String>> {
                     || what.starts_with("branches/")
                     || prs.iter().any(|pr| pr == on)
                     || rest.and_then(|rest| rest.strip_prefix("comments/")).is_some_and(|id| {
-                        on_prs.iter().any(|comment| comment["id"].to_string() == id)
+                        on_prs.iter().any(|comment| comment["id"].as_u64() == id.parse().ok())
                     });
                 assert!(of_pr, "a call of the checkout's repo is of a PR or a branch: {call:?}");
             }
