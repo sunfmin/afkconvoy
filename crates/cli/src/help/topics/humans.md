@@ -84,7 +84,7 @@ Where the team names who proposes precedents, each ruling a human gives with `af
 - `gh pr merge <pr> --repo <the team's repo>`: Merging accepts the precedent: every later stage reads it, and follows it in place of declaring `escalate` on the same question.
 - `gh pr close <pr> --repo <the team's repo>`: The ruling was about that one issue, and no stage should follow it unasked.
 
-The fleet never merges on the team's repo. `afkconvoy plan` lists the proposals under way and open under `proposals`.
+The fleet never merges on the team's repo. `afkconvoy doctor` lists the team's open proposals under `proposals.open`: each PR, the issue and comment of its ruling, how long it has been open, and the merge and close commands. `afkconvoy doctor --all` lists them for every checkout on this host's checkout list. `afkconvoy panel` shows them under "With a human" too. Both read only and make no startup probe. Once the open proposals reach the team's `max_open`, doctor gives a finding and the panel says so: no further proposal starts until a human merges or closes one. `afkconvoy plan` lists the rulings being proposed or still to be proposed under `proposals`, with how each stands; it makes a startup probe where one is due.
 
 ## An issue past the end of its workflow
 

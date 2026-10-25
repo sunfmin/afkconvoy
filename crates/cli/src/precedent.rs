@@ -9,7 +9,7 @@
 
 use afkconvoy_core::patrol::run_over;
 use afkconvoy_core::precedent::{
-    Row, Ruling, Seen, Standing, closing_comment, is_proposal, proposed, proposed_comment, refused,
+    Row, Ruling, Seen, Standing, closing_comment, proposed, proposed_comment, refused,
 };
 use afkconvoy_core::prompt::{ProposalFields, proposal_prompt};
 use afkconvoy_core::role::{Facts, On, Start};
@@ -17,6 +17,7 @@ use afkconvoy_core::stage_record::stage_records;
 use afkconvoy_core::team::PRECEDENTS;
 use afkconvoy_core::tick::Outcome;
 use anyhow::{Result, anyhow};
+use serde::Serialize;
 
 use crate::claims::{Me, drop_run, take_run};
 use crate::dispatch::Agent;
@@ -24,12 +25,91 @@ use crate::fleet::Fleet;
 use crate::orca::{Source, Worktree};
 use crate::stage::Flows;
 
+/// The proposals open on a bound repo's team, read once per rebuild even
+/// when no ruling waits to be proposed. Doctor and the panel share this view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Open {
+    pub team: String,
+    /// Another tracker, where this checkout names one; otherwise its own repo.
+    pub tracker: Option<String>,
+    pub max_open: Option<u64>,
+    pub open: Vec<Proposal>,
+}
+
+/// One PR left for a human to merge or close on the team's repo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Proposal {
+    pub pr: u64,
+    #[serde(flatten)]
+    pub ruling: Ruling,
+    pub since: Option<u64>,
+    pub age: Option<u64>,
+    pub merge: String,
+    pub close: String,
+    #[serde(skip)]
+    branch: String,
+}
+
+/// Reads the team's open proposals from its own branches, never from forks.
+/// The branch names the ruling even after its source issue has closed.
+pub fn open(fleet: &Fleet, read: &Flows) -> Result<Option<Open>> {
+    let Some(bound) = fleet.config.bound.as_ref() else { return Ok(None) };
+    let Ok(kept) = read.kept() else { return Ok(None) };
+    let team = bound.team.repo.as_str();
+    let mut open = vec![];
+    for pr in fleet.gh.open_prs_of(&bound.team.repo)? {
+        let branch = pr.head_ref_name;
+        let Some(ruling) = Ruling::of_branch(&branch) else { continue };
+        let number = pr.number;
+        open.push(Proposal {
+            pr: number,
+            ruling,
+            since: pr.since,
+            age: pr.since.map(|since| fleet.now.saturating_sub(since)),
+            merge: format!("gh pr merge {number} --repo {team}"),
+            close: format!("gh pr close {number} --repo {team}"),
+            branch,
+        });
+    }
+    open.sort_by_key(|pr| pr.pr);
+    Ok(Some(Open {
+        team: team.to_string(),
+        tracker: fleet.gh.tracker.named().map(ToString::to_string),
+        max_open: kept.team.precedents.as_ref().map(|precedents| precedents.max_open),
+        open,
+    }))
+}
+
+impl Open {
+    /// Whether open proposals have reached the team's declared limit.
+    pub fn full(&self) -> bool {
+        self.max_open.is_some_and(|max| self.open.len() as u64 >= max)
+    }
+
+    /// The finding that explains why no further proposal can start.
+    pub fn finding(&self) -> Option<crate::doctor::Finding> {
+        let first = self.open.first().filter(|_| self.full())?;
+        Some(crate::doctor::finding(
+            crate::doctor::Kind::ProposalsFull,
+            format!("the open proposals on {} have reached the team's `max_open`", self.team),
+            format!(
+                "{} open of {}: {}",
+                self.open.len(),
+                self.max_open?,
+                self.open.iter().map(|pr| format!("#{}", pr.pr)).collect::<Vec<_>>().join(", ")
+            ),
+            first.merge.clone(),
+        ))
+    }
+}
+
 /// What the remote and GitHub say of the proposals of a bound repo: the
 /// claims on those still going, and — where the team names who proposes —
-/// the rulings to propose and the proposals open on the team's repo. That
-/// repo is asked only while a ruling waits to be proposed.
+/// the rulings to propose and the open proposals this rebuild already read.
 pub fn seen(fleet: &Fleet, read: &Flows) -> Result<Seen> {
-    let Some(bound) = fleet.config.bound.as_ref() else { return Ok(Seen::default()) };
+    if fleet.config.bound.is_none() {
+        return Ok(Seen::default());
+    }
     let mut seen = Seen::default();
     for run in &fleet.scan.runs {
         if let Some(ruling) = Ruling::claimed(&run.key) {
@@ -42,13 +122,11 @@ pub fn seen(fleet: &Fleet, read: &Flows) -> Result<Seen> {
     };
     seen.max_open = Some(precedents.max_open);
     seen.unproposed = read.unproposed();
-    if !seen.unproposed.is_empty() {
-        for (_, branch) in fleet.gh.open_prs_of(&bound.team.repo)? {
-            if is_proposal(&branch) {
-                seen.open.push(branch);
-            }
-        }
-    }
+    seen.open = fleet
+        .proposals
+        .as_ref()
+        .map(|read| read.open.iter().map(|pr| pr.branch.clone()).collect())
+        .unwrap_or_default();
     Ok(seen)
 }
 
@@ -187,10 +265,11 @@ pub fn end(fleet: &mut Fleet, me: &Me, row: &Row) -> Result<Outcome> {
     let link = comments.iter().find(|c| c.id == ruling.comment).map_or("", |c| c.url.as_str());
     let file = team.join(PRECEDENTS);
     let team = &team.repo;
-    for (number, branch) in fleet.gh.open_prs_of(team)? {
-        if branch != ruling.branch() {
+    for pr in fleet.gh.open_prs_of(team)? {
+        if pr.head_ref_name != ruling.branch() {
             continue;
         }
+        let number = pr.number;
         if let Some(reason) = refused(&fleet.gh.pr_diff_of(team, number)?, link, file.path()) {
             fleet.gh.close_pr_of(team, number, &closing_comment(&reason))?;
         }

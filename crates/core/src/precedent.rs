@@ -49,7 +49,16 @@ impl Ruling {
     /// The ruling a run's claim keyed `key` is on the proposal of; `None` for
     /// a claim on anything else.
     pub fn claimed(key: &str) -> Option<Ruling> {
-        let (issue, comment) = key.strip_prefix(CLAIM_KEY)?.split_once("-c")?;
+        Self::tagged(key.strip_prefix(CLAIM_KEY)?)
+    }
+
+    /// The ruling named by a proposal's branch on the team's repo.
+    pub fn of_branch(branch: &str) -> Option<Ruling> {
+        Self::tagged(branch.strip_prefix(NAME)?)
+    }
+
+    fn tagged(tag: &str) -> Option<Ruling> {
+        let (issue, comment) = tag.split_once("-c")?;
         Some(Ruling { issue: fleet_number(issue)?, comment: fleet_number(comment)? })
     }
 
@@ -393,10 +402,12 @@ mod tests {
         assert_eq!(of.claim_key(), "precedent-7-c2001");
         assert_eq!(Ruling::claimed(&of.claim_key()), Some(of));
         assert_eq!(of.branch(), "convoy-precedent-7-c2001");
+        assert_eq!(Ruling::of_branch(&of.branch()), Some(of));
         assert!(is_proposal(&of.branch()) && !is_proposal("issue-7"));
         // Neither a patrol's claim nor a name a hand wrote reads as one.
         for not in ["patrol-sweep", "precedent-7", "precedent-7-c", "precedent-07-c1", "7"] {
             assert_eq!(Ruling::claimed(not), None, "{not}");
+            assert_eq!(Ruling::of_branch(&format!("convoy-{not}")), None, "{not}");
         }
         // orca's `-<k>` on a name taken never reads as another ruling's checkout.
         assert!(!crate::worker::is_worktree_named("convoy-precedent-7-c20", &of.checkout_name()));
