@@ -45,8 +45,6 @@ const BACKGROUND_FILE: &str = "convoy-background";
 const START_FILE: &str = "convoy-started";
 /// Where a stage that writes nothing started here (`guard::WritesNothing`).
 const WRITES_NOTHING_FILE: &str = "convoy-writes-nothing";
-/// The commit a patrol's checkout was at when its worker was started.
-const STARTED_FILE: &str = "convoy-patrol-started";
 /// The comment of the `blocked` verdict a worker was last started again over.
 const ANSWERED_FILE: &str = "convoy-answered";
 /// What a bound repo's worker here was started under (`Under`).
@@ -805,19 +803,6 @@ impl Worktree {
     pub fn branch_now(&self) -> Result<Option<String>> {
         let named = Repo::new(self.path.clone()).try_git(&["symbolic-ref", "--short", "HEAD"])?;
         Ok(named.ok.then_some(named.stdout))
-    }
-
-    /// The commit a patrol's checkout here was at when its worker was started.
-    pub fn started(&self) -> Result<Option<String>> {
-        let kept = std::fs::read_to_string(self.note(STARTED_FILE)?).ok();
-        Ok(kept.map(|tip| tip.trim().to_string()).filter(|tip| !tip.is_empty()))
-    }
-
-    /// Keeps the commit this checkout is at, as a patrol's worker starts in it.
-    pub fn keep_started(&self) -> Result<()> {
-        let file = self.note(STARTED_FILE)?;
-        std::fs::write(&file, self.tip()?)
-            .with_context(|| format!("cannot write {}", file.display()))
     }
 
     /// Where the stage that writes nothing started here, when one did.

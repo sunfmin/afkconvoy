@@ -1,7 +1,7 @@
 //! Patrols (docs/adr/0008): a role run on a schedule and for no issue. A tick
 //! runs the patrols its repo names that are due, one host of several; a run
-//! takes a slot, declares nothing, and has failed when it left a commit or a
-//! PR.
+//! takes a slot, declares nothing, and has failed when it left a commit not
+//! on the base branch, working-tree changes, or a PR.
 
 use crate::common;
 
@@ -714,7 +714,7 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
     assert_eq!(failed["labels"], json!(["ready-for-human"]));
     let body = failed["body"].as_str().unwrap();
     assert!(body.starts_with("<!--convoy:patrol-failed patrol=sweep-->"), "{body}");
-    assert!(body.contains(&format!("it left a commit in its checkout ({started} → {left})")));
+    assert!(body.contains(&format!("it left a commit not on the base branch ({left})")));
     let kept = checkout(&world);
     assert!(body.contains(kept.to_str().unwrap()) && body.contains("`h1`"), "{body}");
     // No issue is touched, and nothing is undone: the checkout the report
@@ -737,7 +737,7 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
         (
             &json!(number),
             &json!(format!(
-                "reports a failed run of the patrol `sweep`: it left a commit in its checkout ({started} → {left})"
+                "reports a failed run of the patrol `sweep`: it left a commit not on the base branch ({left})"
             )),
             &json!(format!("gh issue close {number}"))
         )
@@ -757,7 +757,10 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
     world.with_gh(|gh| gh["comments"][number.to_string()] = json!([]));
     let old = planned(&world, "alpha", 90_000);
     let old = &old["waiting_on_human"][0];
-    assert!(old["why"].as_str().unwrap().contains("it left a commit in its checkout"), "{old}");
+    assert!(
+        old["why"].as_str().unwrap().contains("it left a commit not on the base branch"),
+        "{old}"
+    );
     assert_eq!(old["url"], format!("https://gh/i/{number}"));
     // …and is once a human closed it, in a new checkout: the one that was
     // kept for them goes then.
