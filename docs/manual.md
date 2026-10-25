@@ -3339,6 +3339,7 @@ A bound repo's config names a team. The issue passes through the stages of one o
 
 - The gate is the only machine verification between a worker and the base branch: one command of the repo's, which exits 0 only on a good tree. `afkconvoy gate --help`.
 - Nothing is ever rebased. A branch is brought up to date by merging into it.
+- The fleet reads only the PRs of the repo's own branches, which only a login with write access can push: a PR from a fork is anyone's, and the fleet acts as if it did not exist. Fleet state, in [`afkconvoy help glossary`](help:glossary).
 - No human stands in a workflow unless a stage is given to one. A human is asked by exception, and each way that happens has its command: [`afkconvoy help humans`](help:humans).
 - Every worker of a bound repo works under the guard, which refuses what no worker may do — merging a PR, pushing the base branch, moving a flow label. `afkconvoy guard --help`.
 - A fleet lock — an open issue under the lock label — makes the fleet work lock issues only until it closes: for a fault every issue shares, as a broken base branch is. `afkconvoy lock --help`.
@@ -4247,7 +4248,7 @@ One of the two ways every ref the fleet writes is named: hidden refs (`refs/conv
 _Avoid_: namespace, fallback mode
 
 **Fleet state**:
-The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it.
+The authoritative record of what is claimed, in flight, landed, parked and escalated. It lives entirely in GitHub; no process holds it. A PR whose head is in another repository is no part of it: only a login with write access can push a branch to the repo, so a PR from one of its branches is a collaborator's, and one from a fork is anyone's. The fleet acts as if a fork's PR did not exist — none is joined, taken up, synced, closed, commented on or reported, none holds an issue off, and none on a team's repo is taken for a proposal.
 _Avoid_: run state, memory (what a host holds resident, as under Hot worker)
 
 **Working set**:
