@@ -2729,7 +2729,7 @@ enum Command {
     ///
     /// ## When to run it
     ///
-    /// To send a worker its nudge by hand. A tick does this on its own only when a checked diagnosis requests a retry; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
+    /// To send a worker its nudge by hand. A tick does this on its own only when a checked diagnosis asks the worker to carry on; silence alone starts observation and diagnosis. Do it yourself when you have checked the worker’s scene and want it to carry on.
     ///
     /// ## What counts as silent
     ///
