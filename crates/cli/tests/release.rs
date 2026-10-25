@@ -1,6 +1,6 @@
 //! What a release is made of: the version the binary prints, and
-//! `packaging/release.sh`, which the release workflow runs step by step and
-//! the README gives for a release cut by hand.
+//! `packaging/release.sh`, which the README gives step by step for a release,
+//! cut on a Mac by hand.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -8,8 +8,6 @@ use std::process::{Command, Output};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/release.sh");
 
-const WORKFLOW: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.github/workflows/release.yml"));
 const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"));
 
 /// The build script, for what it makes of a checkout.
@@ -99,21 +97,28 @@ fn a_build_with_no_stable_toolchain_says_how_to_get_it() {
     let install = "rustup toolchain install stable --profile minimal \
                    --target aarch64-apple-darwin x86_64-apple-darwin";
     assert!(said.contains(install), "{said}");
-    // the line it gives is the one the workflow installs its toolchain with
-    assert!(WORKFLOW.contains(install), "{WORKFLOW}");
 }
 
 #[test]
-fn the_workflow_runs_what_the_readme_gives_and_stores_no_artifact() {
-    assert!(!WORKFLOW.contains("artifact@"), "nothing is handed from job to job");
-    let token = WORKFLOW.find("HOMEBREW_TAP_TOKEN }}").unwrap();
-    let mut last = token;
-    for step in ["build", "package", "publish"] {
-        let line = format!("packaging/release.sh {step}\n");
-        let at = WORKFLOW.find(&line).unwrap_or_else(|| panic!("the workflow runs no {step}"));
-        assert!(at > last, "{step} is out of order, or runs before the tap's token is looked for");
+fn a_release_is_cut_by_hand_by_the_steps_the_readme_gives() {
+    // This repository is private and its GitHub Actions has no budget: nothing
+    // else runs a release.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert!(!root.join(".github/workflows").exists(), "a release is cut by hand alone");
+    let script = std::fs::read_to_string(SCRIPT).unwrap();
+    let section = &README[README.find("**Cutting a release**").unwrap()..];
+    let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+    let mut last = 0;
+    for step in ["check", "build", "package", "publish"] {
+        let line = format!("\npackaging/release.sh {step} ");
+        let at = section.find(&line).unwrap_or_else(|| panic!("the README runs no {step}"));
+        assert!(at > last, "{step} is out of order");
         last = at;
-        assert!(README.contains(&format!("\npackaging/release.sh {step} ")), "{step}: the README");
+    }
+    for (what, text) in [("the README", section), ("release.sh", script.as_str())] {
+        for named in ["workflow", "secret", "HOMEBREW_TAP_TOKEN"] {
+            assert!(!text.contains(named), "{what} names a {named}: a release is cut by hand");
+        }
     }
 }
 
