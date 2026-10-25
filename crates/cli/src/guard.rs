@@ -141,7 +141,11 @@ mod tests {
         assert!(why.contains("`writes: false`: `git commit` is refused"), "{why}");
         assert_eq!(decide(Harness::Pi, pi, facts, &nobody), Ok(Some(why)));
         // A call described in another harness's words cannot be read.
-        assert!(decide(Harness::Pi, claude, facts, &nobody).unwrap_err().contains("describes no tool call"));
+        assert!(
+            decide(Harness::Pi, claude, facts, &nobody)
+                .unwrap_err()
+                .contains("describes no tool call")
+        );
         assert!(decide(Harness::ClaudeCode, pi, facts, &nobody).is_err());
         let allowed = r#"{"toolName":"bash","input":{"command":"ls"}}"#;
         assert_eq!(decide(Harness::Pi, allowed, facts, &nobody), Ok(None));

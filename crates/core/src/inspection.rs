@@ -343,8 +343,7 @@ check that the work goes on, and say what you did.
 /// The brief an inspection of a hot worker is given.
 pub fn brief(fields: &Fields) -> Result<String, String> {
     let issue_line = fields.issue.map(|issue| format!(", on issue #{issue}")).unwrap_or_default();
-    let template =
-        with_operator(BRIEF, fields.instruction).replace("{issue_line}", &issue_line);
+    let template = with_operator(BRIEF, fields.instruction).replace("{issue_line}", &issue_line);
     let operator = operator_fields(Kind::Worker);
     let mut filled: Vec<(&str, &str)> = vec![
         ("role", fields.role),

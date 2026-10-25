@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use crate::copies::cache;
 use crate::git::Repo;
+use crate::inspection::THE_HOST;
 
 /// How far back a log keeps every line, in seconds: a day.
 pub(crate) const KEPT_FOR: u64 = 86_400;
@@ -270,6 +271,16 @@ impl Entry {
             What::Back { since } => {
                 Some(("back", format!("started again, broken since {} UTC", utc(*since))))
             }
+            What::InspectionDid { worker, did } => {
+                Some(("inspection", format!("{worker}: did {did}")))
+            }
+            What::Inspected { worker, found, said } => {
+                Some(("inspection", format!("{worker}: {found} · {said}")))
+            }
+            What::HostInspected { reason, found, said } => Some((
+                "inspection",
+                format!("{THE_HOST}, held back for {reason}: {found} · {said}"),
+            )),
             What::TickStarted { .. }
             | What::Tick(_)
             | What::HostSleep { slept: false, .. }
@@ -277,10 +288,7 @@ impl Entry {
             | What::Hot { .. }
             | What::Cooled { .. }
             | What::Inspecting { .. }
-            | What::InspectionDid { .. }
-            | What::Inspected { .. }
-            | What::HostInspecting { .. }
-            | What::HostInspected { .. } => None,
+            | What::HostInspecting { .. } => None,
         }
     }
 
@@ -818,5 +826,25 @@ mod tests {
         assert!(!broken.of_run() && !back.of_run());
         let line = serde_json::to_value(&broken).unwrap();
         assert_eq!(line["broken"]["next"], since + 360, "{line}");
+    }
+
+    #[test]
+    fn what_an_inspection_did_and_how_it_ended_are_events() {
+        let did = Entry {
+            what: What::InspectionDid { worker: "#7".into(), did: "ended pid 4242".into() },
+            ..tick(1)
+        };
+        assert_eq!(did.said(), "inspection: #7: did ended pid 4242");
+        assert_eq!(did.event(), Some(("inspection", "#7: did ended pid 4242".to_string())));
+        let host = What::HostInspected {
+            reason: "disk".into(),
+            found: "held".into(),
+            said: "a download · left: 9 GiB of it".into(),
+        };
+        let host = Entry { what: host, ..tick(1) }.event().unwrap();
+        assert_eq!(host.1, "the host, held back for disk: held · a download · left: 9 GiB of it");
+        let starts = What::Inspecting { worker: "#7".into(), by: "stock-consult".into() };
+        let starts = Entry { what: starts, ..tick(1) };
+        assert!(starts.event().is_none(), "an inspection starting is a line, not an event");
     }
 }

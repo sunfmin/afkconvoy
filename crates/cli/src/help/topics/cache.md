@@ -26,7 +26,7 @@ Each command reads the variable for itself, so two commands find the same copies
 - `host-runner.lock`: held by the host runner as long as it runs, so a host has one; it says its pid, its version and when it started.
 - `host-runner.sock`: the host runner's socket, the one socket of the host: `run`, `stop`, `wake`, `panel --open`, `exclusive` and `doctor` speak to the host runner there, each naming its checkout. No fleet instance and no repo has a socket of its own. One nobody listens on — a host runner killed with no goodbye left it — is removed by whoever finds it.
 - `host-runner.log`: the host runner's log, moved aside to host-runner.log.1 once past a MiB: what it started, added, refused and stopped, each line stamped in UTC.
-- `host-inspection/`: what the last inspection of the host was given (evidence.md) and what it found (last.json), whichever fleet of the host started it: what `doctor` and the panel show beside admission's reading.
+- `host-inspection/`: what the last inspection of the host was given (evidence.md) and what it did (last.json), whichever fleet of the host started it: what `doctor` and the panel show beside admission's reading.
 
 None of it is fleet state: that is in GitHub and on the repo's remote.
 

@@ -253,7 +253,9 @@ impl Limits {
         let home = self.home.as_deref().unwrap_or("");
         let under = |root: &str, path: &str| {
             !root.is_empty()
-                && path.strip_prefix(root).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                && path
+                    .strip_prefix(root)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
         };
         let path = ["~", "$HOME", "${HOME}"]
             .iter()
@@ -453,10 +455,12 @@ fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<Stri
         "push" => {
             let forced = args.iter().any(|arg| {
                 PUSH_FORCES.iter().any(|force| {
-                    arg == force || arg.strip_prefix(force).is_some_and(|rest| rest.starts_with('='))
+                    arg == force
+                        || arg.strip_prefix(force).is_some_and(|rest| rest.starts_with('='))
                 })
             });
-            let plus = positionals(args, &PUSH_VALUES).iter().skip(2).any(|spec| spec.starts_with('+'));
+            let plus =
+                positionals(args, &PUSH_VALUES).iter().skip(2).any(|spec| spec.starts_with('+'));
             (forced || plus).then(|| {
                 "an inspection never force-pushes: what others built on would be lost. Push a \
                  branch of your own, as any worker's change goes"
@@ -469,7 +473,8 @@ fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<Stri
                 .filter(|arg| arg.starts_with('-') && !arg.starts_with("--"))
                 .copied()
                 .collect();
-            let dry = has_any(args, &["--dry-run"]) || groups.iter().any(|group| group.contains('n'));
+            let dry =
+                has_any(args, &["--dry-run"]) || groups.iter().any(|group| group.contains('n'));
             let ignored_only = groups.iter().any(|group| group.contains('X'))
                 && !groups.iter().any(|group| group.contains('x'));
             (!dry && !ignored_only).then(|| {
@@ -823,11 +828,7 @@ enum Within {
 /// did not start, deleting what cannot be rebuilt or a change no commit holds,
 /// a force push, and stopping the host runner. The reason is written for the
 /// worker to read.
-pub fn refused(
-    call: &Call,
-    limits: &Limits,
-    processes: &dyn Fn(u32) -> Process,
-) -> Option<String> {
+pub fn refused(call: &Call, limits: &Limits, processes: &dyn Fn(u32) -> Process) -> Option<String> {
     let Call::Shell(line) = call else { return None };
     commands(line).iter().find_map(|words| limits.refuses(words, processes))
 }
