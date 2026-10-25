@@ -2826,7 +2826,7 @@ enum Command {
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Switch {
         /// The existing kit harness to put first
-        #[arg(long, value_parser = chosen_harness)]
+        #[arg(long, value_parser = kit_harness)]
         harness: Harness,
         /// The issue whose worker to continue in this checkout
         #[arg(value_name = "ISSUE", conflicts_with_all = ["all", "patrol"])]
@@ -3560,7 +3560,7 @@ fn verdict(text: &str) -> Result<Declared, String> {
 
 /// A harness `switch` moves onto, by its key. `config`, which once forgot
 /// this host's choice, is refused for `--clear`, which does that now.
-fn chosen_harness(text: &str) -> Result<Harness, String> {
+fn kit_harness(text: &str) -> Result<Harness, String> {
     match text {
         "config" => {
             Err("`--harness config` is gone: switch to a harness already in the kit".into())

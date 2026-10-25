@@ -33,11 +33,16 @@ use crate::slow_gate;
 use crate::stage::Flows;
 use crate::train::Train;
 
+struct Runnable {
+    kit: crate::kit::Kit,
+    skipped: Vec<(Harness, String)>,
+}
+
 pub struct Fleet {
     pub repo: Repo,
     /// Candidates excluded for this continuation only, never a preference.
     pub avoiding: Vec<Harness>,
-    runnable: std::cell::RefCell<Option<(crate::kit::Kit, Vec<(Harness, String)>)>>,
+    runnable: std::cell::RefCell<Option<Runnable>>,
     /// The repo's config, with the concurrency its checkout says on this
     /// host laid over it (`concurrency::config_of`).
     pub config: Config,
@@ -198,9 +203,9 @@ impl Fleet {
                     }
                 }
             });
-            *self.runnable.borrow_mut() = Some((kit, skipped));
+            *self.runnable.borrow_mut() = Some(Runnable { kit, skipped });
         }
-        let mut kit = self.runnable.borrow().as_ref().context("runnable kit")?.0.clone();
+        let mut kit = self.runnable.borrow().as_ref().context("runnable kit")?.kit.clone();
         kit.harnesses.retain(|held| !self.avoiding.contains(&held.harness));
         Ok(kit)
     }
@@ -209,7 +214,7 @@ impl Fleet {
         let kit = self.runnable();
         serde_json::json!({"order": crate::kit::load().map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
             "eligible": kit.map(|k| k.harnesses.iter().map(|h| h.harness).collect::<Vec<_>>()).unwrap_or_default(),
-            "skipped": self.runnable.borrow().as_ref().map(|(_, skipped)| skipped),
+            "skipped": self.runnable.borrow().as_ref().map(|runnable| &runnable.skipped),
             "health": crate::health::show(), "why": "first eligible harness in kit order; role limits still apply"})
     }
 

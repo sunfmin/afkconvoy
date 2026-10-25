@@ -138,10 +138,9 @@ pub fn available(mut kit: Kit) -> Result<Kit> {
             .harnesses
             .iter_mut()
             .find(|h| h.harness == fault.harness && h.command == fault.command)
+            && fault.scope == Scope::Model
         {
-            if fault.scope == Scope::Model {
-                held.models.retain(|m| Some(&m.model) != fault.model.as_ref());
-            }
+            held.models.retain(|m| Some(&m.model) != fault.model.as_ref());
         }
         kit.harnesses.retain(|h| {
             !(h.harness == fault.harness
@@ -196,10 +195,10 @@ fn classified(value: &Value) -> Option<Diagnosis> {
             }
         }
     }
-    if let Some(text) = value.as_str() {
-        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
-            return classified(&parsed);
-        }
+    if let Some(text) = value.as_str()
+        && let Ok(parsed) = serde_json::from_str::<Value>(text)
+    {
+        return classified(&parsed);
     }
     let code = value.get("code").and_then(Value::as_str)?;
     let (class, scope, action) = match code {
@@ -496,12 +495,11 @@ pub fn reconcile(
         if run.owner.as_ref().is_none_or(|owner| owner.instance != me.instance.as_str()) {
             continue;
         }
-        if let Some(name) = afkconvoy_core::patrol::claimed(&run.key) {
-            if let Some(worktree) =
+        if let Some(name) = afkconvoy_core::patrol::claimed(&run.key)
+            && let Some(worktree) =
                 Worktree::named(&source, &afkconvoy_core::patrol::checkout_name(name))?
-            {
-                jobs.push((None, Some(name.to_string()), worktree));
-            }
+        {
+            jobs.push((None, Some(name.to_string()), worktree));
         }
     }
     if let Some(worktree) = Worktree::of_train(&source)? {
@@ -510,10 +508,10 @@ pub fn reconcile(
             jobs.push((None, Some("@train".into()), worktree));
         }
     }
-    if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)? {
-        if crate::caster::last(&fleet.repo, fleet.now).is_some_and(|c| c.live) {
-            jobs.push((None, Some("@caster".into()), worktree));
-        }
+    if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
+        && crate::caster::last(&fleet.repo, fleet.now).is_some_and(|c| c.live)
+    {
+        jobs.push((None, Some("@caster".into()), worktree));
     }
     let mut events = vec![];
     for (issue, patrol, worktree) in jobs {
@@ -748,22 +746,24 @@ fn decide(
         }
         _ => {}
     }
-    if diagnosis.scope != Scope::Worker {
-        if let Some(held) = kit.harnesses.iter().find(|h| h.harness == observed.harness) {
-            let fault = Fault {
-                harness: held.harness,
-                command: held.command.clone(),
-                model: if diagnosis.scope == Scope::Model { observed.model.clone() } else { None },
-                scope: diagnosis.scope,
-                since: fleet.now,
-                next_check: fleet.now.saturating_add(RECOVERY_SECONDS),
-                evidence: diagnosis.evidence.clone(),
-            };
-            if !book.faults.iter().any(|f| {
-                f.harness == fault.harness && f.model == fault.model && f.scope == fault.scope
-            }) {
-                book.faults.push(fault);
-            }
+    if diagnosis.scope != Scope::Worker
+        && let Some(held) = kit.harnesses.iter().find(|h| h.harness == observed.harness)
+    {
+        let fault = Fault {
+            harness: held.harness,
+            command: held.command.clone(),
+            model: if diagnosis.scope == Scope::Model { observed.model.clone() } else { None },
+            scope: diagnosis.scope,
+            since: fleet.now,
+            next_check: fleet.now.saturating_add(RECOVERY_SECONDS),
+            evidence: diagnosis.evidence.clone(),
+        };
+        if !book
+            .faults
+            .iter()
+            .any(|f| f.harness == fault.harness && f.model == fault.model && f.scope == fault.scope)
+        {
+            book.faults.push(fault);
         }
     }
     // A fallback never promotes another kit entry. Exclusions last only for

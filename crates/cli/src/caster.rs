@@ -87,7 +87,10 @@ pub fn to_cast_bound(
 /// branch on it (`casting::to_recast`).
 pub fn recast(labels: &[String], comments: &[Comment], paused: &[Paused], kit: &[Held]) -> bool {
     let bodies = || comments.iter().map(|comment| comment.body.as_str());
-    to_recast(labels, bodies(), !recorded_branches(bodies()).is_empty(), paused, kit)
+    let _ = paused;
+    // Temporary health exclusions never authorize rewriting ticket casting.
+    let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_else(|_| kit.to_vec());
+    to_recast(labels, bodies(), !recorded_branches(bodies()).is_empty(), &[], &whole)
 }
 
 /// The last caster this host started for the repo, where it can be read: a

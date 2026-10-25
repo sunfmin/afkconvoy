@@ -400,3 +400,59 @@ fn account_faults_continue_stalled_workers_across_checkouts_and_switch_all_is_ho
         assert_eq!(open_commands(&world, dir), [CODEX]);
     }
 }
+
+#[test]
+fn a_model_fault_does_not_pause_other_models_or_interrupt_a_healthy_peer() {
+    let world = World::new();
+    world.kit_models("claude-code", &["opus", "haiku"]);
+    world.issue(7, &["ready-for-agent", "harness:claude-code", "model:opus"]);
+    world.issue(8, &["ready-for-agent", "harness:claude-code", "model:haiku"]);
+    tick(&world, 700);
+    world.hold_every_harness();
+    let (seven, eight) = (worktree(&world, 7), worktree(&world, 8));
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["agent"] = if terminal["worktreePath"] == seven.to_str().unwrap() {
+                json!({"state":"idle", "error":{"code":"model_unavailable"}})
+            } else {
+                json!({"state":"working", "stateStartedAt":790000})
+            };
+            terminal["lastOutputAt"] = json!(790000);
+        }
+    });
+    tick(&world, 800);
+    assert_eq!(open_commands(&world, &seven), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    assert_eq!(open_commands(&world, &eight), ["agent --model 'haiku'"]);
+    let plan = world.afk(&["plan", "--now", "801"]).ok();
+    let faults = &plan["selection"]["health"]["faults"];
+    assert_eq!(faults[0]["scope"], "model");
+    assert_eq!(faults[0]["model"], "opus");
+    assert_eq!(world.paused(), json!([]));
+    assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+}
+
+#[test]
+fn a_diagnosed_stuck_session_is_continued_without_pausing_its_harness() {
+    let world = blocked();
+    let dir = worktree(&world, 7);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["screen"] = json!([
+                "Agent session stopped accepting requests; the previous request never returned."
+            ]);
+        }
+    });
+    diagnosis(
+        &world,
+        "stalled",
+        "continue",
+        "worker",
+        &["Agent session stopped accepting requests"],
+    );
+    tick(&world, 800);
+    tick(&world, 1100);
+    assert_eq!(open_commands(&world, &dir), [afkconvoy_core::harness::Harness::Pi.stock()]);
+    let plan = world.afk(&["plan", "--now", "1101"]).ok();
+    assert_eq!(plan["selection"]["health"]["faults"], json!([]));
+    assert_eq!(plan["selection"]["eligible"][0], "claude-code");
+}

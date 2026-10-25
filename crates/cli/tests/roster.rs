@@ -78,6 +78,29 @@ fn said(planned: &Value, number: u64) -> Value {
 }
 
 #[test]
+fn bound_and_unbound_checkouts_share_kit_priority_while_role_limits_remain_constraints() {
+    let world = bound(TEAM);
+    let other = world.second_repo();
+    world.with_kit(|kit| kit["stock_consult"] = json!({"harness":"claude-code", "model":"haiku"}));
+    world.issue(7, &["flow:feature", "harness:claude-code", "model:opus"]);
+    world.issue(9, &["flow:audit", "harness:pi", "model:a/fast"]);
+    let mut gh = world.gh2();
+    gh["issues"] = json!([{"number":8,"title":"unbound task", "labels":["ready-for-agent","harness:claude-code","model:opus"], "state":"open"}]);
+    std::fs::write(world.root.join("gh2.json"), gh.to_string()).unwrap();
+    world.afk_in(&world.root, &["switch", "--harness", "pi"]).ok();
+    let bound_plan = world.afk(&PLAN).ok();
+    let unbound_plan = world.afk_in(&other, &PLAN).ok();
+    assert_eq!(said(&bound_plan, 7)["harness"], "pi");
+    assert_eq!(said(&bound_plan, 7)["model"], "a/fast");
+    assert_eq!(unbound_plan["frontier"][0]["cast"]["harness"], "pi");
+    assert_eq!(unbound_plan["host_kit"]["stock_consult"]["harness"], "pi");
+    // The audit role allows Claude Code alone. Kit priority cannot invent
+    // permission to run pi in that role.
+    assert_eq!(said(&bound_plan, 9)["harness"], "claude-code");
+    assert_eq!(said(&bound_plan, 9)["model"], "haiku");
+}
+
+#[test]
 fn a_stage_s_worker_runs_its_casting_within_its_role_s_range_and_plan_says_which_and_why() {
     let world = bound(TEAM);
     world.issue(7, &["flow:feature", "harness:pi", "model:a/fast"]);

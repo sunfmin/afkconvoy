@@ -31,7 +31,7 @@ pub fn on_host(
         .clone()
         .unwrap_or_else(|| crate::git::Repo::new(std::env::current_dir().unwrap_or_default()));
     let launches = crate::launch::Launches::new(&here, true)?;
-    crate::role::startable(&launches, harness, CHOSEN_BY)?;
+    crate::role::startable(&launches, harness, PRIORITY_BY)?;
     let mut result = crate::kit::prefer(harness)?;
     let mut switched = vec![];
     let mut failed = vec![];
@@ -47,10 +47,9 @@ pub fn on_host(
     };
     if matches!(which, Which::All)
         && let Some(repo) = &repo
+        && !paths.contains(&repo.dir)
     {
-        if !paths.contains(&repo.dir) {
-            paths.push(repo.dir.clone());
-        }
+        paths.push(repo.dir.clone());
     }
     for path in paths {
         let continued = (|| -> Result<Value> {
@@ -139,7 +138,7 @@ pub fn on_host(
 }
 
 /// What calls for the kit promotion.
-pub const CHOSEN_BY: &str = "this host's kit priority";
+pub const PRIORITY_BY: &str = "this host's kit priority";
 const SAID_LINES: usize = 80;
 
 /// The workers a switch moves.
