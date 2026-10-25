@@ -76,83 +76,51 @@ fn restart(world: &World, now: &str) -> common::Answer {
     world.afk(&[&args[..], &[]].concat())
 }
 
+fn manual_nudge(world: &World, now: &str) {
+    world.afk(&["nudge", "7", "--instance", "alpha", "--host", "h1", "--now", now]).ok();
+}
+
 #[test]
-fn a_silent_joining_worker_is_nudged_restarted_once_nudged_and_then_escalated() {
+fn a_silent_joining_worker_waits_for_diagnosis_without_consuming_its_restart() {
     let world = joining();
     let dir = worktree(&world);
     let head = git(&dir, &["rev-parse", "HEAD"]);
     std::fs::write(dir.join("scratch.txt"), "uncommitted").unwrap();
     let first = open_terminals(&world, &dir);
-    world.watch_pushes(None);
-    world.orca_calls();
-
-    // nudge → grace
-    assert_eq!(did(&tick(&world, 1090)), ["watch 7 nudged", "heartbeat done"]);
-    assert_eq!(did(&tick(&world, 1180))[0], "watch 7 nothing");
+    for now in [1090, 1390, 1690] {
+        assert_eq!(did(&tick(&world, now))[0], "watch 7 nothing");
+    }
+    assert_eq!(open_terminals(&world, &dir), first);
     assert_eq!(restarts(&world), [] as [String; 0]);
-    assert!(!joins_only(&brief(&dir)));
-
-    // → restart: recorded on the PR, a new worker in the same worktree, briefed only to join
-    assert_eq!(did(&tick(&world, 1390)), ["watch 7 restarted", "heartbeat done"]);
-    assert_eq!(restarts(&world).len(), 1);
-    assert!(restarts(&world)[0].starts_with("<!--convoy:join restarted=1390-->\n"));
-    let second = open_terminals(&world, &dir);
-    assert_eq!(second.len(), 1, "the idle session was closed");
-    assert_ne!(second, first);
-    assert!(joins_only(&brief(&dir)), "{}", brief(&dir));
-    assert!(brief(&dir).contains("afkconvoy land --issue 7"));
-
-    // → grace → nudge → grace
-    assert_eq!(did(&tick(&world, 1480))[0], "watch 7 nothing");
-    assert_eq!(did(&tick(&world, 1690))[0], "watch 7 nudged");
-    assert_eq!(did(&tick(&world, 1780))[0], "watch 7 nothing");
-    assert_eq!(world.claims().len(), 1);
-
-    // → escalate, with everything kept
-    world.with_orca(|orca| {
-        for terminal in orca["terminals"].as_array_mut().unwrap() {
-            terminal["screen"] = json!(["", "Proceed? [y/n]", ""]);
-        }
-    });
-    assert_eq!(did(&tick(&world, 1990)), ["watch 7 done"]);
-    assert_eq!(world.claims(), []);
-    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
-    let said = world.comments(7);
-    let escalation = said.iter().find(|body| body.contains("convoy:escalation")).unwrap();
-    assert!(escalation.contains("opened PR #70 and stopped before it was on the landing train"));
-    assert!(escalation.contains("a nudge, one restart, and a second nudge"), "{escalation}");
-    assert!(escalation.contains("Proceed? [y/n]"), "{escalation}");
-    assert_eq!(restarts(&world).len(), 1, "one restart per PR");
-
-    // the PR, the branch and the worktree were untouched at every rung
-    assert!(pr_is_open(&world));
-    assert_eq!(world.state(7), "open");
-    assert_eq!(world.remote(&["rev-parse", "refs/heads/tester/issue-7-issue-7"]), head);
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read_to_string(dir.join("scratch.txt")).unwrap(), "uncommitted");
-    let calls: Vec<String> = world.orca_calls().iter().map(|call| common::asked(call)).collect();
-    assert!(!calls.iter().any(|call| call == "worktree rm" || call == "worktree create"));
-    let pushes = world.pushes();
-    assert!(pushes.iter().all(|push| push.starts_with("refs/convoy/")), "{pushes:?}");
+    assert_eq!(world.claims().len(), 1);
+    assert!(pr_is_open(&world));
 }
 
 #[test]
-fn the_loop_says_which_worker_it_restarted_and_which_claim_it_escalated() {
+fn the_loop_keeps_the_joining_claim_while_diagnosis_is_unavailable() {
     let world = joining();
     world.say_concurrency(&world.clone, 2);
     tick(&world, 1090);
-    let run = |now: &str| {
-        let args = ["run", "--foreground", "--host", "h1", "--second-ms", "0"];
-        let more = ["--instance", "alpha", "--ticks", "1", "--now", now];
-        world.afk_lines(&[&args[..], &more[..]].concat()).0
-    };
-    assert_eq!(run("1390"), ["tick 1: restarted #7 · holding 1/2 · frontier 0 · next in 90s"]);
-    tick(&world, 1690);
-    assert_eq!(
-        run("1990"),
-        ["tick 1: escalated #7 (its worker went silent joining the train) · holding 0/2 · \
-             frontier 0 · next in 90s"]
-    );
+    let args = [
+        "run",
+        "--foreground",
+        "--host",
+        "h1",
+        "--second-ms",
+        "0",
+        "--instance",
+        "alpha",
+        "--ticks",
+        "1",
+        "--now",
+        "1390",
+    ];
+    let lines = world.afk_lines(&args).0;
+    assert!(lines[0].contains("nothing to do · holding 1/2"), "{lines:?}");
+    assert_eq!(world.claims().len(), 1);
+    assert!(restarts(&world).is_empty());
 }
 
 #[test]
@@ -160,7 +128,7 @@ fn a_second_restart_is_refused_by_hand_and_by_any_host_that_reads_the_pr() {
     let world = joining();
     // not before the nudge, nor within its grace
     assert!(restart(&world, "1090").error().contains("it was not nudged yet"));
-    tick(&world, 1090);
+    manual_nudge(&world, "1090");
     assert!(restart(&world, "1180").error().contains("sign of life within the grace period"));
     assert_eq!(restarts(&world), [] as [String; 0]);
 
@@ -170,7 +138,7 @@ fn a_second_restart_is_refused_by_hand_and_by_any_host_that_reads_the_pr() {
     assert_eq!(restarts(&world).len(), 1);
 
     // the new worker goes silent too: nudged, and past that there is no second restart
-    assert_eq!(did(&tick(&world, 1690))[0], "watch 7 nudged");
+    manual_nudge(&world, "1690");
     let refused = restart(&world, "1990").error();
     assert!(refused.contains("already had its one restart"), "{refused}");
     assert_eq!(restarts(&world).len(), 1);
@@ -179,8 +147,8 @@ fn a_second_restart_is_refused_by_hand_and_by_any_host_that_reads_the_pr() {
     // a restart another host recorded counts here just the same
     let elsewhere = joining();
     elsewhere.comment(70, "<!--convoy:join restarted=1100-->\nrestarted on another host");
-    assert_eq!(did(&tick(&elsewhere, 1400))[0], "watch 7 nudged");
-    assert_eq!(did(&tick(&elsewhere, 1700))[0], "watch 7 done", "escalated, not restarted");
+    manual_nudge(&elsewhere, "1400");
+    assert!(restart(&elsewhere, "1700").error().contains("already had its one restart"));
     assert_eq!(restarts(&elsewhere).len(), 1);
     assert!(pr_is_open(&elsewhere));
 }
@@ -207,8 +175,8 @@ fn a_worker_whose_terminal_is_gone_is_continued_onto_the_join_and_keeps_its_rest
     // the join still has its whole ladder: a grace period from its start,
     // the nudge, then the one restart
     assert_eq!(did(&tick(&world, 1180))[0], "watch 7 nothing");
-    assert_eq!(did(&tick(&world, 1390))[0], "watch 7 nudged");
-    assert_eq!(did(&tick(&world, 1690))[0], "watch 7 restarted");
+    manual_nudge(&world, "1390");
+    restart(&world, "1690").ok();
     assert_eq!(restarts(&world).len(), 1);
 }
 
@@ -276,12 +244,12 @@ fn a_worker_stopped_on_a_join_conflict_is_on_the_same_rungs_with_its_merge_left_
     let unmerged = || git(&dir, &["diff", "--name-only", "--diff-filter=U"]);
     assert_eq!(unmerged(), "README.md");
 
-    assert_eq!(did(&tick(&world, 1090))[0], "watch 7 nudged");
-    assert_eq!(did(&tick(&world, 1390))[0], "watch 7 restarted");
+    manual_nudge(&world, "1090");
+    restart(&world, "1390").ok();
     assert_eq!(unmerged(), "README.md", "the merge in progress is the new worker's to finish");
     assert!(brief(&dir).contains("A merge left in progress is a"));
-    assert_eq!(did(&tick(&world, 1690))[0], "watch 7 nudged");
-    assert_eq!(did(&tick(&world, 1990))[0], "watch 7 done");
+    assert_eq!(did(&tick(&world, 1690))[0], "watch 7 nothing");
+    assert_eq!(did(&tick(&world, 1990))[0], "watch 7 nothing");
     assert_eq!(unmerged(), "README.md");
     assert!(pr_is_open(&world));
 }

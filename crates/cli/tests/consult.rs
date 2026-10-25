@@ -429,15 +429,13 @@ fn the_stock_consult_s_own_failure_goes_to_a_human() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(did(&tick(&world, 1360)), ["advance 7 done"]);
     assert!(with_a_human(&world), "{:?}", world.labels(7));
-    // Silent past its nudge: a human's too, and no consult is asked of that.
     let world = bound(FEATURE, 2);
     review_asked(&world);
     stop(&world, 1280);
-    assert_eq!(did(&tick(&world, 2270)), ["advance 7 nudged"]);
-    stop(&world, 2370);
-    assert_eq!(did(&tick(&world, 3270)), ["advance 7 done"]);
-    assert!(with_a_human(&world), "{:?}", world.labels(7));
-    assert_eq!(did(&tick(&world, 3360)), [] as [&str; 0]);
+    tick(&world, 2270);
+    tick(&world, 3270);
+    assert!(!with_a_human(&world));
+    assert_eq!(world.claims().len(), 1);
 }
 
 #[test]
@@ -498,22 +496,18 @@ fn a_consult_takes_one_slot_of_concurrency() {
 }
 
 #[test]
-fn a_silent_consult_is_nudged_once_and_then_escalated() {
+fn a_silent_consult_waits_for_diagnosis_without_handing_its_claim_to_a_human() {
     let world = bound(FEATURE, 2);
     asked(&world);
     tick(&world, 1180);
     stop(&world, 1200);
-    assert_eq!(did(&tick(&world, 2000)), ["advance 7 nudged"]);
-    stop(&world, 2100);
-    assert_eq!(did(&tick(&world, 3000)), ["advance 7 done"]);
-    let said = world.comments(7).join("\n");
-    assert!(
-        said.contains("The consult of the stage `build` stopped with no ruling and no `escalate`"),
-        "{said}"
-    );
-    assert!(world.labels(7).contains(&"ready-for-human".to_string()));
-    // The human's: no tick puts it to the consult again.
-    assert_eq!(did(&tick(&world, 3090)), [] as [&str; 0]);
+    tick(&world, 2000);
+    tick(&world, 3000);
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
+    assert!(!world.comments(7).join("\n").contains("stopped with no ruling"));
+    let plan = world.afk(&["plan", "--now", "3100"]).ok();
+    assert_eq!(plan["host_kit"]["worker_health"]["workers"][0]["action"], "waiting");
 }
 
 #[test]
@@ -598,21 +592,17 @@ fn a_ruling_declared_before_its_claim_is_taken_over_is_read() {
 }
 
 #[test]
-fn a_silent_stage_whose_claim_was_taken_over_is_not_called_a_consult() {
+fn a_taken_over_silent_stage_keeps_its_stage_and_claim_while_waiting_for_diagnosis() {
     let world = bound(FEATURE, 2);
     world.issue(7, &["flow:feature"]);
-    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    tick(&world, 1000);
     stop(&world, 1010);
     taken_over(&world, 1060);
-    assert_eq!(did(&tick_as(&world, "beta", 2000)), ["advance 7 nudged"]);
-    stop(&world, 2100);
-    assert_eq!(did(&tick_as(&world, "beta", 3000)), ["advance 7 done"]);
-    let said = world.comments(7).join("\n");
-    assert!(
-        said.contains("The worker of the stage `build` stopped with no valid verdict"),
-        "{said}"
-    );
-    assert!(!said.contains("The consult of the stage"), "{said}");
+    tick_as(&world, "beta", 2000);
+    tick_as(&world, "beta", 3000);
+    assert_eq!(world.claims(), [(7, "beta".to_string())]);
+    assert!(!world.comments(7).join("\n").contains("stopped with no ruling"));
+    assert!(!with_a_human(&world));
 }
 
 /// An escalation is noticed and answered where a human looks (issue #149):
@@ -755,50 +745,20 @@ fn consulted_on(world: &World, now: u64, told: &str) -> String {
 /// past its nudge: the tick at `stopped + 1990` reads it.
 fn silent(world: &World, stopped: u64) {
     stop(world, stopped);
-    assert_eq!(did(&tick(world, stopped + 990)), ["advance 7 nudged"]);
-    stop(world, stopped + 1090);
-    assert_eq!(did(&tick(world, stopped + 1990)), ["advance 7 done"]);
+    tick(world, stopped + 990);
+    tick(world, stopped + 1990);
+    assert!(!with_a_human(world));
 }
 
 #[test]
-fn a_worker_silent_past_its_nudge_goes_to_its_consult_and_the_same_again_to_a_human() {
+fn silent_stage_observations_do_not_consume_the_consult_or_breaker() {
     let world = bound(FEATURE, 2);
     world.issue(7, &["flow:feature"]);
-    assert_eq!(did(&tick(&world, 1000)), ["dispatch 7 done"]);
+    tick(&world, 1000);
     silent(&world, 1010);
-    let record = world.comments(7).into_iter().find(|c| c.contains("verdict=failed-silent"));
-    assert!(
-        record
-            .unwrap()
-            .starts_with("<!--convoy:stage stage=build verdict=failed-silent by=fleet-->")
-    );
-    let brief = consulted_on(
-        &world,
-        3100,
-        "> The worker of the stage `build` stopped with no valid verdict",
-    );
-    // It names no check of its own, and where to look and what it may run.
-    for said in [
-        "## Where to look further",
-        "orca terminal list --worktree path:",
-        " gate`",
-        "    afkconvoy send --issue 7 --stage <stage> --text-file <file>\n",
-    ] {
-        assert!(brief.contains(said), "{said}\n{brief}");
-    }
-    // It is with the consult, not a human: `plan` lists nothing waiting on one.
-    assert_eq!(world.afk(&["plan", "--now", "3150"]).ok()["waiting_on_human"], json!([]));
-
-    // Its ruling runs `build` again, and starts no count over…
-    rule(&world, "The disk was full; it is not now. Run the gate again.");
-    assert_eq!(did(&tick(&world, 3200)), ["advance 7 done", "dispatch 7 done"]);
-    assert_eq!(shown(&world)["rework"]["had"], 0);
-    // …and the same failure again is a human's.
-    silent(&world, 3210);
-    assert!(with_a_human(&world), "{:?}", world.labels(7));
-    let said = world.comments(7).pop().unwrap();
-    assert!(said.contains("stopped with no valid verdict"), "{said}");
-    assert_eq!(did(&tick(&world, 5300)), [] as [&str; 0]);
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.comments(7).join("\n").contains("stopped with no ruling"));
+    assert!(!world.labels(7).contains(&"ready-for-human".to_string()));
 }
 
 #[test]

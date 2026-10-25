@@ -927,7 +927,11 @@ impl Worktree {
         // Check again even after an acknowledged close: Orca may still be
         // ending the previous terminal. Leave the worker's progress markers
         // intact until its replacement can actually be started.
-        self.close_terminals()?;
+        if self.harness()?.is_some() {
+            self.stop_for_continuation()?;
+        } else {
+            self.close_terminals()?;
+        }
         if self.terminal()?.is_some() {
             bail!(
                 "the previous worker in {} still has a terminal after close; \

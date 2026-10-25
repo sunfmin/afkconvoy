@@ -250,6 +250,30 @@ impl Fleet {
         *self.runnable.borrow_mut() = None;
     }
 
+    pub fn role_selection(&self, role: &Role) -> serde_json::Value {
+        let whole = crate::kit::load().map(|k| k.range()).unwrap_or_default();
+        let allowed = casting::range(role, &whole);
+        let eligible = self.runnable().map(|k| k.range()).unwrap_or_default();
+        let chosen = self.cast_in(role, &[]).ok().map(|cast| cast.harness);
+        let skipped: Vec<_> = whole
+            .iter()
+            .take_while(|h| Some(h.harness) != chosen)
+            .map(|h| {
+                let why = if let Some(why) = afkconvoy_core::team::unlimited(role, h.harness) {
+                    why.to_string()
+                } else if !allowed.iter().any(|a| a.harness == h.harness) {
+                    "outside this role's roster range".into()
+                } else if !eligible.iter().any(|a| a.harness == h.harness) {
+                    "unavailable on this host; see skipped candidates and health evidence".into()
+                } else {
+                    "no eligible model within this role's range".into()
+                };
+                serde_json::json!({"harness":h.harness,"why":why})
+            })
+            .collect();
+        serde_json::json!({"role":role.name,"harness":chosen,"skipped":skipped})
+    }
+
     /// Whether issue `number`, labelled `labels`, is to be cast again: a
     /// caster cast it to a harness paused on this host, or to what the host
     /// kit holds nothing by, and no worker has started on it

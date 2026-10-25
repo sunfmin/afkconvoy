@@ -98,6 +98,8 @@ struct Observed {
     failed_candidates: Vec<(String, u64)>,
     #[serde(default)]
     background: Option<u64>,
+    #[serde(default)]
+    window_started: u64,
     diagnosis: Option<Diagnosis>,
     source: String,
     action: String,
@@ -434,6 +436,7 @@ pub fn reconcile(
     agent: &Agent,
     open: &crate::gh::Open,
     flows: &crate::stage::Flows,
+    locks: &[u64],
 ) -> Result<Vec<Value>> {
     let file = file()?;
     std::fs::create_dir_all(file.parent().context("health cache parent")?)?;
@@ -452,6 +455,9 @@ pub fn reconcile(
     let source = Source::of(&fleet.repo)?;
     let mut jobs = vec![];
     for claim in &fleet.scan.claims {
+        if !locks.is_empty() && !locks.contains(&claim.number) {
+            continue;
+        }
         if !claim.is_held_by(&me.instance) {
             continue;
         }
@@ -465,7 +471,16 @@ pub fn reconcile(
             Ok(state) => state,
             Err(_) => continue,
         };
-        if matches!(state, WorkerState::Gone | WorkerState::Busy) {
+        if let afkconvoy_core::stopped::Nudged::At(at) = worktree.nudged()?
+            && crate::lock::explaining_lock(&fleet.gh, &fleet.config, Some(at))?.is_some()
+        {
+            book.workers.retain(|o| o.path != worktree.path);
+            continue;
+        }
+        let busy_without_fault = state == WorkerState::Busy
+            && classified(&worktree.health_report()?).is_none()
+            && error_of(&worktree)?.is_empty();
+        if state == WorkerState::Gone || busy_without_fault {
             book.workers.retain(|o| o.path != worktree.path);
             continue;
         }
@@ -506,6 +521,9 @@ pub fn reconcile(
         jobs.push((Some(claim.number), None, worktree));
     }
     for run in &fleet.scan.runs {
+        if !locks.is_empty() {
+            continue;
+        }
         if run.over {
             continue;
         }
@@ -519,13 +537,16 @@ pub fn reconcile(
             jobs.push((None, Some(name.to_string()), worktree));
         }
     }
-    if let Some(worktree) = Worktree::of_train(&source)? {
+    if locks.is_empty()
+        && let Some(worktree) = Worktree::of_train(&source)?
+    {
         let train = crate::train::Train::read(&fleet.repo, &fleet.config)?;
         if train.tip != train.base {
             jobs.push((None, Some("@train".into()), worktree));
         }
     }
-    if let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
+    if locks.is_empty()
+        && let Some(worktree) = Worktree::named(&source, afkconvoy_core::casting::CASTER_WORKTREE)?
         && crate::caster::last(&fleet.repo, fleet.now).is_some_and(|c| c.live)
     {
         jobs.push((None, Some("@caster".into()), worktree));
@@ -607,6 +628,7 @@ fn observe(
             continuations: 0,
             failed_candidates: vec![],
             background: None,
+            window_started: fleet.now,
             diagnosis: None,
             source: "observation".into(),
             action: "observing".into(),
@@ -618,6 +640,7 @@ fn observe(
         if observed.action == "continued" {
             observed.continuations = 0;
             observed.failed_candidates.clear();
+            observed.window_started = fleet.now;
         }
         observed.terminal = terminal;
         observed.harness = harness;
@@ -636,6 +659,7 @@ fn observe(
         observed.attempts = 0;
         observed.diagnosis = None;
         observed.next_check = fleet.now;
+        observed.window_started = fleet.now;
     }
     observed.snapshots.push(Snapshot {
         at: fleet.now,
@@ -700,17 +724,11 @@ fn decide(
     if fleet.now < observed.next_check {
         return Ok(());
     }
-    if observed
-        .snapshots
-        .first()
-        .is_some_and(|s| fleet.now.saturating_sub(s.at) >= RECOVERY_SECONDS)
-    {
+    if fleet.now.saturating_sub(observed.window_started) >= RECOVERY_SECONDS {
         observed.attempts = 0;
         observed.continuations = 0;
         observed.failed_candidates.clear();
-        if let Some(first) = observed.snapshots.first_mut() {
-            first.at = fleet.now;
-        }
+        observed.window_started = fleet.now;
     }
     let raw_error = structured.get("error").unwrap_or(structured);
     let rule = classified(raw_error);

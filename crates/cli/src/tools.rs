@@ -90,15 +90,23 @@ fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
 /// cannot be read only once no command is missing: a host with no git or no
 /// orca has no host kit yet either, and is told first what to install.
 pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
-    let default = crate::kit::running()
-        .ok()
-        .and_then(|(kit, _)| {
-            kit.harnesses
-                .into_iter()
-                .find(|h| crate::role::startable(launches, h.harness, "startup candidate").is_ok())
-                .map(|h| h.harness)
-        })
-        .unwrap_or_else(|| launches.default());
+    let mut selected = None;
+    let mut failures = vec![];
+    if let Ok((kit, _)) = crate::kit::running() {
+        for held in kit.harnesses {
+            match crate::role::startable(launches, held.harness, "startup candidate") {
+                Ok(()) => {
+                    selected = Some(held.harness);
+                    break;
+                }
+                Err(e) => failures.push(format!("{e:#}")),
+            }
+        }
+        if selected.is_none() && !failures.is_empty() {
+            bail!("{}", failures.join("\n"));
+        }
+    }
+    let default = selected.unwrap_or_else(|| launches.default());
     let read = launches.of(default);
     let launch = read.as_ref().ok().copied().flatten();
     let looked = look(repo, launch);

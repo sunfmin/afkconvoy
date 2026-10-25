@@ -102,7 +102,7 @@ fn running_workers_are_left_alone_and_what_they_declared_is_acted_on_once_the_lo
     // Still locked: only the lock issue's worker is asked after (silent a
     // grace period from its start, it is nudged), and #9 stays where it is.
     assert_eq!(did(&tick(&world, 1480)), ["judge 7 nothing", "heartbeat done"]);
-    assert_eq!(did(&tick(&world, 1690)), ["judge 7 nudged", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 1690)), ["judge 7 nothing", "heartbeat done"]);
 
     // The fix landed: #7 is closed, and the next tick resumes everything.
     world.close_issue(7);
@@ -390,7 +390,7 @@ fn a_stage_that_stayed_silent_past_a_nudge_while_a_lock_stood_runs_again() {
     world.with_gh(|gh| gh["now"] = json!(1000));
     assert_eq!(worked(&tick(&world, 1000)), ["dispatch 7 done"]);
     // Its worker stopped with nothing declared, and was told to carry on.
-    assert_eq!(worked(&tick(&world, 1390)), ["advance 7 nudged"]);
+    world.afk(&["nudge", "7", "--instance", "alpha", "--host", "h1", "--now", "1390"]).ok();
     world.issue(20, &["fleet-lock"]);
     assert_eq!(worked(&tick(&world, 1800)), [] as [&str; 0]);
 
@@ -402,13 +402,11 @@ fn a_stage_that_stayed_silent_past_a_nudge_while_a_lock_stood_runs_again() {
     assert_eq!(worked(&tick(&world, 2010)), ["dispatch 7 done"]);
     assert!(brief(&world, 7).contains("## After a fleet lock"));
 
-    // The worker that ran it again is nudged once, like any, and its silence
-    // after that is a failure no lock explains: `build` names a consult, which
-    // it goes to.
-    assert_eq!(worked(&tick(&world, 2400)), ["advance 7 nudged"]);
-    assert_eq!(worked(&tick(&world, 2800)), ["advance 7 done"]);
-    assert!(world.comments(7).iter().any(|c| c.contains("verdict=failed-silent by=fleet")));
-    assert_eq!(position(&world, 7).0, "consult");
+    // A later unexplained silence needs diagnosis and cannot consume a breaker.
+    tick(&world, 2400);
+    tick(&world, 2800);
+    assert!(!world.comments(7).iter().any(|c| c.contains("verdict=failed-silent by=fleet")));
+    assert_eq!(position(&world, 7).0, "perform");
     let records = world.comments(7).iter().filter(|c| c.contains("verdict=lock-closed")).count();
     assert_eq!(records, 1);
 }

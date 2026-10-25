@@ -188,16 +188,13 @@ fn a_consult_that_lets_the_issue_through_leaves_it_with_a_human() {
 }
 
 #[test]
-fn the_stock_consult_s_own_failure_goes_to_a_human() {
+fn an_unclassified_silent_stock_consult_keeps_its_claim_for_diagnosis() {
     let world = asked();
     report(&world, "done", 1200);
-    assert_eq!(did(&tick(&world, 1500)), ["judge 7 nudged"]);
-    assert_eq!(did(&tick(&world, 1800)), ["judge 7 done"]);
-    assert_eq!(world.claims(), []);
-    assert_eq!(world.labels(7), ["bug", "ready-for-human"]);
-    let last = world.comments(7).last().unwrap().clone();
-    assert!(last.contains("The stock consult was asked of this issue and went silent"), "{last}");
-    assert_eq!(did(&tick(&world, 1890)), [] as [&str; 0]);
+    assert_eq!(did(&tick(&world, 1500)), ["judge 7 nothing"]);
+    assert_eq!(did(&tick(&world, 1800)), ["judge 7 nothing"]);
+    assert_eq!(world.claims().len(), 1);
+    assert!(!world.comments(7).join("\n").contains("went silent"));
 }
 
 #[test]

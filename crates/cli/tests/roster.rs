@@ -110,15 +110,18 @@ fn a_stage_s_worker_runs_its_casting_within_its_role_s_range_and_plan_says_which
     world.issue(9, &["flow:audit", "harness:claude-code"]);
     world.issue(10, &["flow:audit"]);
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(said(&planned, 7), json!({"harness": "pi", "model": "a/fast", "why": "casting"}));
+    assert_eq!(
+        said(&planned, 7),
+        json!({"harness": "claude-code", "model": "opus", "why": "first"})
+    );
     assert_eq!(
         said(&planned, 8),
-        json!({"harness": "claude-code", "model": "opus", "why": "outside"})
+        json!({"harness": "claude-code", "model": "opus", "why": "first"})
     );
     for only in [9, 10] {
         assert_eq!(
             said(&planned, only),
-            json!({"harness": "claude-code", "model": "haiku", "why": "only"})
+            json!({"harness": "claude-code", "model": "haiku", "why": "first"})
         );
     }
     // Nothing has a choice to make but by its casting: no caster.
@@ -132,48 +135,32 @@ fn a_stage_s_worker_runs_its_casting_within_its_role_s_range_and_plan_says_which
         .filter_map(|terminal| terminal["command"].as_str())
         .collect();
     assert_eq!(started.len(), 4, "{started:?}");
-    assert_eq!(started.iter().filter(|line| line.contains(" && pi --approve ")).count(), 1);
-    assert!(started.iter().any(|line| line.ends_with("--model 'a/fast'")), "{started:?}");
+    assert_eq!(started.iter().filter(|line| line.contains(" && pi --approve ")).count(), 0);
+    assert_eq!(started.iter().filter(|line| line.ends_with("--model 'opus'")).count(), 2);
     assert_eq!(started.iter().filter(|line| line.ends_with("--model 'haiku'")).count(), 2);
 }
 
 #[test]
-fn a_casting_no_range_of_its_workflow_holds_runs_each_stage_s_first_and_is_told_once() {
+fn casting_outside_the_selected_harness_is_preserved_without_overriding_kit_priority() {
     let world = bound(TEAM);
     world.issue(7, &["flow:feature", "harness:codex"]);
     world.issue(8, &["flow:audit", "harness:pi", "model:a/fast"]);
     world.issue(9, &["flow:feature", "harness:claude-code", "model:sonnet"]);
     let planned = world.afk(&PLAN).ok();
-    assert_eq!(
-        said(&planned, 7),
-        json!({"harness": "claude-code", "model": "opus", "why": "unmatched", "unmatched": "`harness:codex`"})
-    );
-    // A range of one runs its one, whatever the casting.
-    assert_eq!(said(&planned, 8)["why"], "only");
-    assert_eq!(
-        said(&planned, 9),
-        json!({"harness": "claude-code", "model": "opus", "why": "unmatched", "unmatched": "`model:sonnet`"})
-    );
-    let not = planned.to_string();
-    assert!(!not.contains("not dispatched"), "{planned}");
+    for n in [7, 9] {
+        assert_eq!(
+            said(&planned, n),
+            json!({"harness":"claude-code","model":"opus","why":"first"})
+        );
+    }
+    assert_eq!(said(&planned, 8)["harness"], "claude-code");
     world.afk(&TICK).ok();
-    assert_eq!(world.worktrees().len(), 3, "each is started");
-    let told = |number| -> Vec<String> {
-        let comments = world.comments(number);
-        comments.into_iter().filter(|body| body.starts_with("<!--convoy:unmatched-->")).collect()
-    };
-    assert_eq!(told(7).len(), 1);
-    assert!(
-        told(7)[0].contains("`harness:codex` matches nothing this host holds"),
-        "{:?}",
-        told(7)
-    );
-    assert!(told(7)[0].contains("this worker runs `claude-code` on `opus` instead"));
-    assert_eq!(told(8).len(), 0, "a range of one is no fallback");
-    assert_eq!(told(9).len(), 1);
-    assert!(world.labels(7).contains(&"harness:codex".to_string()), "never taken off");
+    assert_eq!(world.worktrees().len(), 3);
+    assert!(world.labels(7).contains(&"harness:codex".to_string()));
+    assert!(world.labels(8).contains(&"harness:pi".to_string()));
+    assert!(world.labels(9).contains(&"model:sonnet".to_string()));
+    assert!(!world.comments(7).iter().any(|c| c.starts_with("<!--convoy:unmatched-->")));
 }
-
 #[test]
 fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to_make() {
     let world = bound(TEAM);
@@ -183,7 +170,7 @@ fn the_caster_is_given_each_stage_s_range_and_casts_only_issues_with_a_choice_to
     assert_eq!(planned["caster"]["to_cast"], json!([7]), "{planned}");
     let held = said(&planned, 7);
     assert!(held.as_str().unwrap().starts_with("held for the caster: "), "{planned}");
-    assert_eq!(said(&planned, 8)["why"], "only");
+    assert_eq!(said(&planned, 8)["why"], "first");
 
     world.caster_answers(
         "{\"issue\": 7, \"harness\": \"pi\", \"model\": \"a/fast\", \"why\": \"A small fix.\"}\n",
@@ -249,14 +236,7 @@ fn a_role_with_nothing_it_can_run_safely_waits_and_goes_on_once_it_has() {
     let planned = world.afk(&PLAN).ok();
     assert_eq!(said(&planned, 7)["harness"], "pi", "{planned}");
     let waits = said(&planned, 8);
-    assert!(
-        waits.as_str().unwrap().starts_with(
-            "reviewer has no harness on this host it holds limits for: it holds limits for \
-             claude-code, and the host kit holds pi (a/fast, a/slow); codex (no model); dsh (no \
-             model)"
-        ),
-        "{planned}"
-    );
+    assert!(waits.as_str().unwrap().contains("no currently eligible harness"), "{planned}");
     assert_eq!(planned["nothing_safe"][0]["role"], "reviewer", "{planned}");
     let ticked = world.afk(&TICK).ok();
     assert_eq!(ticked["errors"], json!([]), "{ticked}");

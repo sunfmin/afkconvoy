@@ -210,7 +210,7 @@ impl Why {
     pub fn said(self) -> &'static str {
         match self {
             Why::Casting => "its casting labels",
-            Why::First => "no casting: the host kit's first",
+            Why::First => "the host kit's first eligible harness",
             Why::Switch => "this host's switch, over any casting",
             Why::Uncast => "the caster did not cast it in ten minutes: its range's first",
             Why::RangeFirst => "no casting: its role's range's first",
@@ -530,11 +530,11 @@ pub fn preferred(labels: &[String], range: &[Held], kit: &[Held]) -> Result<Cast
         .ok_or("no eligible harness in the host kit")?;
     let only = std::slice::from_ref(held);
     let mut cast = first_of(only, Why::First, None).ok_or("no eligible harness")?;
-    if let Ok(Some((harness, Some(model)))) = held_casting(labels, only) {
-        if harness == held.harness {
-            cast.model = Some(model);
-            cast.why = Why::Casting;
-        }
+    if let Ok(Some((harness, Some(model)))) = held_casting(labels, only)
+        && harness == held.harness
+    {
+        cast.model = Some(model);
+        cast.why = Why::Casting;
     }
     Ok(cast)
 }

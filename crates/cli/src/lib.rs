@@ -4084,6 +4084,11 @@ fn run(
             plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["selection"] = fleet.selection();
+            if let Ok(team) = flows.team() {
+                plan["selection"]["roles"] = json!(
+                    team.roles.iter().map(|role| fleet.role_selection(role)).collect::<Vec<_>>()
+                );
+            }
             plan["worker_no_proxy"] = launches.proxy_json();
             Ok(plan)
         }

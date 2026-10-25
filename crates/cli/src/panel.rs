@@ -1107,6 +1107,30 @@ fn admission(out: &mut String, host: &Host) {
 /// The host kit: every harness in it, in order, with its models in order,
 /// and what the stock consult runs; each harness paused, since when and why.
 fn kit(out: &mut String, host: &Host) {
+    if let Some(faults) = host.worker_health["faults"].as_array().filter(|v| !v.is_empty()) {
+        out.push_str("<section data-health-faults><h2>Unavailable candidates</h2><ul>");
+        for fault in faults {
+            let _ = write!(
+                out,
+                "<li>{}: scope {}; model {}; next probe {}; evidence {}</li>",
+                esc(fault["harness"].as_str().unwrap_or("")),
+                esc(fault["scope"].as_str().unwrap_or("")),
+                esc(fault["model"].as_str().unwrap_or("all")),
+                fault["next_check"],
+                esc(&fault["evidence"].to_string())
+            );
+        }
+        out.push_str("</ul></section>");
+    }
+    if let Some(failed) =
+        host.worker_health["observations_failed"].as_array().filter(|v| !v.is_empty())
+    {
+        let _ = write!(
+            out,
+            "<section data-health-observation-errors><h2>Waiting for observations</h2><pre>{}</pre></section>",
+            esc(&serde_json::to_string_pretty(failed).unwrap_or_default())
+        );
+    }
     if let Some(workers) = host.worker_health["workers"].as_array().filter(|w| !w.is_empty()) {
         out.push_str("<section data-worker-health><h2>Worker recovery</h2><table><tr><th>Worker</th><th>Action / successor</th><th>Evidence source</th><th>Next check</th><th>Evidence / failure</th></tr>");
         for worker in workers {

@@ -156,7 +156,7 @@ fn a_tick_starts_one_caster_and_holds_the_issues_it_casts_back_for_ten_minutes_a
     assert!(panel.contains("the caster did not cast it in ten minutes"), "{panel}");
     tick_at(&world, 1600);
     let opus = started(&world).iter().filter(|c| *c == "agent --model 'opus'").count();
-    assert_eq!((casters(&world), opus), (1, 2));
+    assert_eq!((casters(&world), opus), (1, 3));
 }
 
 #[test]
