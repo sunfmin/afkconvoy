@@ -90,7 +90,7 @@ fn an_unbound_worker_s_gate_names_its_issue_in_the_tick_log_and_the_host_s_queue
         .fixed(" exclusive -- sh -c ")
         .word(
             "touch \"$CACHE/worker-ran\"; \
-             while test ! -f \"$CACHE/worker-release\"; do sleep 0.02; done; \
+             while test -d \"$CACHE\" && test ! -f \"$CACHE/worker-release\"; do sleep 0.02; done; \
              test ! -f \"$CACHE/red\"",
         )
         .own();
@@ -121,7 +121,7 @@ fn an_unbound_worker_s_gate_names_its_issue_in_the_tick_log_and_the_host_s_queue
             "--",
             "sh",
             "-c",
-            "while test ! -f \"$CACHE/holder-release\"; do sleep 0.02; done",
+            "while test -d \"$CACHE\" && test ! -f \"$CACHE/holder-release\"; do sleep 0.02; done",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -141,14 +141,14 @@ fn an_unbound_worker_s_gate_names_its_issue_in_the_tick_log_and_the_host_s_queue
     };
     let worker = run();
     until(|| tickets(&world) == 2);
-    let shown = world.afk(&["doctor", "--host", "h1"]).ok();
+    let shown = world.afk(&["doctor", "--host", "h1"]).json;
     let queue = &shown["host"]["exclusive"];
     assert!(queue["running"]["issue"].is_null(), "{queue}");
     assert_eq!(queue["waiting"][0]["issue"], 12, "{queue}");
     std::fs::write(cache.join("holder-release"), "").unwrap();
     assert!(holder.wait_with_output().unwrap().status.success());
     until(|| cache.join("worker-ran").exists());
-    let shown = world.afk(&["doctor", "--host", "h1"]).ok();
+    let shown = world.afk(&["doctor", "--host", "h1"]).json;
     assert_eq!(shown["host"]["exclusive"]["running"]["issue"], 12, "{shown}");
     std::fs::write(cache.join("worker-release"), "").unwrap();
     let out = worker.wait_with_output().unwrap();
