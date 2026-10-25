@@ -162,7 +162,7 @@ impl Limits {
 
     /// Why the simple command `words` is refused, when it is, `processes`
     /// saying whom each process of the host is.
-    fn refuses(&self, command: &Command, processes: &dyn Fn(u32) -> Process) -> Option<String> {
+    fn refuses(&self, command: &Command, processes: &impl Fn(u32) -> Process) -> Option<String> {
         let mut rest = command.iter().map(String::as_str);
         let mut wrapped = false;
         let program = loop {
@@ -214,7 +214,7 @@ impl Limits {
         &self,
         name: &str,
         args: &[&str],
-        processes: &dyn Fn(u32) -> Process,
+        processes: &impl Fn(u32) -> Process,
     ) -> Option<String> {
         if ENDS_BY_NAME.contains(&name) {
             return Some(format!(
@@ -456,7 +456,7 @@ fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<Stri
             let forced = args.iter().any(|arg| {
                 PUSH_FORCES.iter().any(|force| {
                     arg == force
-                        || arg.strip_prefix(force).is_some_and(|rest| rest.starts_with('='))
+                        || arg.strip_prefix(*force).is_some_and(|rest| rest.starts_with('='))
                 })
             });
             let plus =
@@ -468,15 +468,17 @@ fn git_loses(subcommand: &str, next: Option<&str>, args: &[&str]) -> Option<Stri
             })
         }
         "clean" => {
-            let groups: Vec<&str> = args
-                .iter()
-                .filter(|arg| arg.starts_with('-') && !arg.starts_with("--"))
-                .copied()
-                .collect();
-            let dry =
-                has_any(args, &["--dry-run"]) || groups.iter().any(|group| group.contains('n'));
-            let ignored_only = groups.iter().any(|group| group.contains('X'))
-                && !groups.iter().any(|group| group.contains('x'));
+            // Its short options, each group of them read as one: `-fdX`.
+            let (mut dry, mut ignored, mut untracked) =
+                (has_any(args, &["--dry-run"]), false, false);
+            for arg in args {
+                if arg.starts_with('-') && !arg.starts_with("--") {
+                    dry |= arg.contains('n');
+                    ignored |= arg.contains('X');
+                    untracked |= arg.contains('x');
+                }
+            }
+            let ignored_only = ignored && !untracked;
             (!dry && !ignored_only).then(|| {
                 loses_changes(
                     "`git clean` without `-X` (deleting what git does not track is deleting a \
@@ -527,7 +529,7 @@ fn ended<'a>(args: &[&'a str]) -> Vec<&'a str> {
 /// of a process the fleets of this host did not start, the host runner, or
 /// what names none — a variable, a process group. A job of its own shell
 /// (`%1`) is its own.
-fn ends(target: &str, processes: &dyn Fn(u32) -> Process) -> Option<String> {
+fn ends(target: &str, processes: &impl Fn(u32) -> Process) -> Option<String> {
     if target.starts_with('%') {
         return None;
     }
@@ -828,7 +830,11 @@ enum Within {
 /// did not start, deleting what cannot be rebuilt or a change no commit holds,
 /// a force push, and stopping the host runner. The reason is written for the
 /// worker to read.
-pub fn refused(call: &Call, limits: &Limits, processes: &dyn Fn(u32) -> Process) -> Option<String> {
+pub fn refused(
+    call: &Call,
+    limits: &Limits,
+    processes: &impl Fn(u32) -> Process,
+) -> Option<String> {
     let Call::Shell(line) = call else { return None };
     commands(line).iter().find_map(|words| limits.refuses(words, processes))
 }

@@ -64,7 +64,7 @@ fn decide(
     harness: Harness,
     described: &str,
     var: impl Fn(&str) -> Option<String>,
-    processes: &dyn Fn(u32) -> Process,
+    processes: &impl Fn(u32) -> Process,
 ) -> Result<Option<String>, String> {
     let unread = |error| format!("what it was handed describes no tool call: {error}");
     let mut described = serde_json::Deserializer::from_str(described);
