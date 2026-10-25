@@ -20,7 +20,7 @@ The train takes a worker's PR by the issue it closes (`afkconvoy land --issue`),
 
 Once its PR is on the train the inspection need not wait for the landing: the train lands it as any other — gated with the rest, a red train fixed as any, no issue closed — and while it is on the train every fleet of the repo tends the train as it does for a PR of its own. A fleet that gives the train up joins the PR again itself, onto the next, for nobody else is left to. While a fleet lock stands it joins nothing: an inspection's PR is no lock issue's, and the inspection says so. The PR it joined is kept in its checkout, and its record names it (below).
 
-The gate counts toward its 15 minutes, and waits its turn on the host as every gate does: an inspection starts it as soon as the change is committed. One whose time runs out first leaves its PR open off the train, and the next episode inspects again.
+The gate counts toward its 15 minutes, and waits its turn on the host as every gate does: an inspection starts it as soon as the change is committed. One whose time runs out first is ended with its checkout, its gate with it: its branch and its PR stay open off the train, and nothing lands them — a later inspection is on a branch of its own and is not told of them.
 
 ## Its bounds
 
@@ -52,4 +52,5 @@ What the guard cannot hold — a delete of a path it cannot place, an unbound re
 - A process a fleet did not start, the host runner among them, is refused to an inspection; to tell, the guard reads the host's processes once a `kill` names a pid.
 - The issue tracker sees no issue of an inspection: not of what it found, nor of a change of the repo, which reaches the base branch through the landing train as its PR. A host whose fleet outgrows it is inspected each episode, and each says so in the log.
 - A join commit on the train names the issue its PR closes or the inspection that made it: what reads the train — what is on it, what landed, what closes — reads either.
+- Open: the gate of this repo takes about four and a half minutes, and may wait in the host's queue for about 32 minutes at most (`docs/agents/afkconvoy.md`), within an inspection's 15 minutes. The 15 minutes were set (ADR-0019) for an inspection that ran a model and a `sample` and changed nothing, and are kept here as they were. A change that outlasts them is left open off the train (above).
 - Supersedes, of ADR-0019, that an inspection is held as a consult and finds one of a list of words, each with its one action; that a host inspection opens one issue of the fleet outgrowing its host; and that `afkconvoy inspected` frees the paths a host inspection gives it, checking each. The rest of ADR-0019 — what is watched, when an inspection starts, what is taken down, its bounds of one at a time, a time limit and once per episode, the queue and admission — stands.
