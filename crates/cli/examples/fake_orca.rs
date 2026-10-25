@@ -263,7 +263,8 @@ fn terminal_wait(st: &State) -> ! {
         let answer = json!({"id": "x", "ok": true, "result": {"wait": wait}});
         st.finish(&answer.to_string(), 1, "")
     }
-    let ready = st.doc["never_ready"] != true;
+    // A live PTY that has fallen back to its shell cannot satisfy tui-idle.
+    let ready = st.doc["never_ready"] != true && st.doc["terminals"][at]["bare_shell"] != true;
     let status = if ready { "idle" } else { "timeout" };
     done(st, json!({"wait": {"satisfied": ready, "status": status}}))
 }

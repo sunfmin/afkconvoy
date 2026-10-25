@@ -118,7 +118,7 @@ fn a_start_that_failed_holds_its_claim_and_its_slot() {
 
 #[test]
 fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
-    for knob in ["never_ready", "trust_sticks"] {
+    for knob in ["never_ready", "trust_sticks", "send_refused"] {
         let world = backlog(&[3]);
         world.with_orca(|orca| {
             orca[knob] = json!(true);
@@ -129,6 +129,8 @@ fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
         let before = world.orca();
         let path = before["worktrees"][0]["path"].clone();
         let branch = before["worktrees"][0]["branch"].clone();
+        let path_dir = std::path::Path::new(path.as_str().unwrap());
+        std::fs::write(path_dir.join("scratch.txt"), "keep uncommitted progress").unwrap();
         world.with_orca(|orca| {
             orca[knob] = json!(false);
             orca["trust_prompt"] = json!(false);
@@ -146,6 +148,10 @@ fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
         let after = world.orca();
         assert_eq!(after["worktrees"][0]["path"], path);
         assert_eq!(after["worktrees"][0]["branch"], branch);
+        assert_eq!(
+            std::fs::read_to_string(path_dir.join("scratch.txt")).unwrap(),
+            "keep uncommitted progress"
+        );
         let terminals = after["terminals"].as_array().unwrap();
         let worker = terminals.iter().find(|terminal| terminal["open"] == true).unwrap();
         let sent = worker["sent"].as_array().unwrap();
@@ -153,7 +159,52 @@ fn a_worker_that_never_took_its_brief_is_started_again_in_the_same_worktree() {
         assert!(sent[0]["text"].as_str().unwrap().contains("convoy-worker-prompt.md"));
         assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
         assert_eq!(world.claims(), alpha(&[3]));
+        // A successful delivery ended startup: the next tick leaves this worker alone.
+        world.orca_calls();
+        tick(&world, "1180");
+        assert!(!world.orca_calls().iter().any(|call| common::asked(call) == "terminal create"));
     }
+}
+
+#[test]
+fn a_worker_start_that_fails_again_escalates_with_the_start_errors() {
+    for knob in ["create_fails", "never_ready", "send_refused"] {
+        let world = backlog(&[3]);
+        world.set_gate_config("gate_command: ./gate.sh\nescalate_to: human");
+        world.with_orca(|orca| {
+            orca[knob] = if knob == "create_fails" { json!([3]) } else { json!(true) };
+        });
+        let first = tick(&world, "1000");
+        let error = first["errors"][0]["error"].as_str().unwrap();
+        assert_eq!(world.claims(), alpha(&[3]));
+        let again = tick(&world, "1090");
+        assert_eq!(world.claims(), [], "{knob}: {again}");
+        assert!(world.labels(3).contains(&"ready-for-human".to_string()));
+        let comments = world.comments(3);
+        let escalation = comments.iter().find(|body| body.contains("convoy:escalation")).unwrap();
+        assert!(escalation.contains("worker start failed again"), "{escalation}");
+        assert!(escalation.contains(error), "the exact original error: {escalation}");
+        assert!(escalation.contains("Failed start:"), "{escalation}");
+        assert!(!escalation.contains("went silent"), "{escalation}");
+        assert!(world.open_terminals().is_empty());
+        for terminal in world.orca()["terminals"].as_array().unwrap() {
+            assert_eq!(terminal["sent"], json!([]), "no nudge or brief reached this shell");
+        }
+        tick(&world, "1600");
+        assert_eq!(world.claims(), []);
+    }
+}
+
+#[test]
+fn an_incomplete_dispatch_does_not_belong_to_a_later_claim() {
+    let world = backlog(&[3]);
+    world.with_orca(|orca| orca["never_ready"] = json!(true));
+    tick(&world, "1000");
+    world.afk(&["release", "--issue", "3", "--instance", "alpha"]).ok();
+    let new = tick(&world, "1090");
+    assert_eq!(did(&new), ["dispatch 3 failed", "heartbeat done"]);
+    assert_eq!(world.claims(), alpha(&[3]));
+    assert!(!world.comments(3).iter().any(|body| body.contains("convoy:escalation")));
 }
 
 #[test]

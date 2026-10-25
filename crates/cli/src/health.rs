@@ -476,6 +476,11 @@ pub fn reconcile(
         if !claim.is_held_by(&me.instance) {
             continue;
         }
+        // Startup failures are continued by the next tick, with their own
+        // bounded failure path. There is no worker here to diagnose yet.
+        if crate::dispatch::incomplete(fleet, claim.number)? {
+            continue;
+        }
         if !open.issues.rows.iter().any(|i| i.number == claim.number) {
             continue;
         }
