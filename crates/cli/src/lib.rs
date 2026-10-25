@@ -944,13 +944,13 @@ enum Command {
     ///   - `tracker`: the repo its fleet reads and writes its issues in, as `afkconvoy checkouts` says it: null where the checkout says none, and its own repo is its tracker. {error} where the checkout list cannot be read
     /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
     /// - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
-    /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it. null when the issues could not be read
+    /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, since, answer}: `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
     /// - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
     ///
     ///   - `severity`: how much it matters, one of those below
     ///   - `what`: the fault, in a sentence
     ///   - `evidence`: what was read that says so
-    ///   - `fix`: one command line to run as it is — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit
+    ///   - `fix`: one command line to run as it is but for what stands between < and > — or, for a fault in a team's or a role's file, or a key the repo's config leaves out, `<file>: <key>` to edit. For an escalation with no position and several workflows, `what` lists the flow labels to choose `<flow label>` from
     ///   - `see`: the command that prints the help topic explaining it: `afkconvoy help humans` where what it reports waits for a human, else `afkconvoy help troubleshooting`, which has a row for each finding
     ///
     /// A finding's `severity` is one of, most first:
@@ -1028,7 +1028,7 @@ enum Command {
     /// - `caster`: while a caster runs or one is due:
     ///
     ///   {running_since, due, held, to_cast} — when the one that runs was started (null: none runs), whether a tick starts one now, the frontier's issues held back for it, and every issue a caster started now is given. An uncast issue with a choice to make waits for one, for ten minutes at most from its start: `afkconvoy cast --help`
-    /// - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, since, answer} — why in a few words, since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
+    /// - `waiting_on_human`: every open issue nobody holds that waits for a human, lowest number first: {issue, title, why, since, answer} — why in a few words, since when in epoch seconds where GitHub said, and the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. They are: an escalated issue, one whose records call for a human, one at a stage that is a human's, one whose workflow ended and that is still open, and the report of a patrol's failed run
     /// - `escalating`: in a bound repo, when there are any: the unclaimed issues a tick hands to a human, with why: {number, title, reason}
     /// - `mine`: the claims of `--instance`: {number, title, status, pr, declared} — `declared` is true while a verdict declared under the claim waits to be acted on: the claim takes no slot meanwhile. In a bound repo with `due`, the stage a worker is to be started on once the claim's stage has declared, where a role performs one. status is one of those below
     /// - `peer_live`: other instances' claims within the lease — never touched
@@ -1952,7 +1952,7 @@ enum Command {
     ///
     /// - A ruling runs the same stage again. It does not decide the stage's verdict: the worker started under it does.
     /// - An issue escalated because its worker went silent, or its gate stayed red, is at the stage that worker was performing: a ruling starts that stage anew.
-    /// - An escalation made before its comment named the workflow cannot say which flow label to put back. Put the flow label on by hand, then rule.
+    /// - An escalation with no position cannot be ruled on: no flow label and no escalation comment says which workflow it follows. The error gives the line to put a flow label on it, as `afkconvoy doctor` does. With one workflow the label is filled in; with several, choose from the flow labels listed. This starts it at that workflow's first stage (`afkconvoy help humans`).
     /// - Moving the labels by hand hands the issue back with no ruling on record: an issue its records show as escalating is escalated again at the next tick.
     /// - Run twice, it leaves two rulings. Both count: the stage runs again once. A consult's second changes nothing: one claim declares once.
     /// - A human's ruling starts both rework counts over. A consult's does not. On an `escalate` it is one more of the issue's rework in total, and one that would pass `max_rework` goes to a human instead; on anything else it counts nothing, and the same hand-off again goes to a human.
@@ -2020,6 +2020,7 @@ enum Command {
     /// - It is refused while the issue is claimed: a claim is dispatched to one stage, and its worker would go on performing it. Wait for the stage to declare, or hand the claim to a human with `afkconvoy escalate` first.
     /// - It reopens nothing and closes nothing. An issue sent back from an ended workflow must be open to be worked.
     /// - The stage is named as its workflow's file names it. `afkconvoy show` draws them.
+    /// - An escalation with no position cannot be sent to a stage before it follows a workflow. The error gives the same line as `afkconvoy doctor` to put a flow label on it (`afkconvoy help humans`).
     /// - Run twice, it leaves two records; the issue is at the stage either way.
     #[command(next_help_heading = HUMAN, verbatim_doc_comment)]
     Send {
