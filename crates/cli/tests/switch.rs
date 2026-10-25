@@ -498,7 +498,7 @@ fn successful_recovery_restores_priority_for_new_work_without_moving_the_success
     assert_eq!(plan["selection"]["health"]["faults"], json!([]), "{plan}");
     assert_eq!(plan["selection"]["eligible"][0], "claude-code");
     assert_eq!(open_commands(&world, &dir), successor, "recovery never interrupts the successor");
-    world.issue(8, &["ready-for-agent"]);
+    world.issue(8, &["ready-for-agent", "harness:claude-code"]);
     tick(&world, 4402);
     assert_eq!(open_commands(&world, &worktree(&world, 8)), ["agent"]);
 }
