@@ -87,7 +87,7 @@ fn keep_off(config: &Config, escalate_label: &str) -> Value {
 ///   {"team": null, "ready_label", "line", "keep_off", "created"}
 pub fn flows(repo: &Repo) -> Result<Value> {
     let config = config::load(&repo.dir.join(config::FILE))?;
-    let gh = GitHub { dir: repo.dir.clone() };
+    let gh = GitHub::of(repo)?;
     let Some(bound) = &config.bound else {
         let created =
             create_missing(&gh, std::slice::from_ref(&config.ready_label), READY_LABEL_SAYS)?;

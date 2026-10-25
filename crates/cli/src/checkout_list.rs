@@ -11,11 +11,13 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::checkouts;
+use afkconvoy_core::config::RepoName;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::copies::cache;
+use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
 use crate::host_settings::Settings;
 use crate::instance::Named;
@@ -37,8 +39,9 @@ pub struct Listed {
 }
 
 /// One checkout on the list: its root, what the `run` that started it named
-/// for its fleet instance alone, and the concurrency it says on this host
-/// (`concurrency`), which its fleet instance reads at each tick.
+/// for its fleet instance alone, the concurrency it says on this host
+/// (`concurrency`), which its fleet instance reads at each tick, and its
+/// tracker (`tracker_of`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub checkout: PathBuf,
@@ -47,6 +50,10 @@ pub struct Entry {
     /// `--concurrency`: none, and the default holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<NonZeroUsize>,
+    /// The repo its fleet reads and writes issues in, where that is not the
+    /// checkout's own: none, and it is its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<RepoName>,
 }
 
 /// A host's checkout list: its file, and the lock beside it.
@@ -121,6 +128,25 @@ impl List {
     }
 }
 
+/// The tracker of the checkout `repo` on this host, as its entry on the
+/// list says it (`tracker_on`).
+pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
+    tracker_on(&List::of_host()?, repo)
+}
+
+/// The tracker of the checkout `repo` on the host of `list`, read once for
+/// what is done next: as the entry of `repo` itself says it, or of its main
+/// checkout, which every worktree of it shares — a worker's command acts on
+/// the issues its fleet does. One the list holds no entry of, or whose entry
+/// says none, is its own repo's.
+pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
+    let listed = list.read()?;
+    let main = repo.main_checkout()?;
+    let of = |entry: &Entry| entry.checkout == repo.dir || entry.checkout == main;
+    let entry = listed.checkouts.into_iter().find(of);
+    Ok(entry.and_then(|entry| entry.tracker).map_or(Tracker::Own, Tracker::Other))
+}
+
 /// The repo the checkout `repo` is of, as its remote `origin` names it
 /// (`checkouts::repo_of`); a remote that is a path is that directory, made
 /// canonical against the checkout. A checkout with no `origin` is an error
@@ -152,7 +178,8 @@ mod tests {
     use super::*;
 
     fn entry(checkout: &str) -> Entry {
-        Entry { checkout: PathBuf::from(checkout), named: Named::default(), concurrency: None }
+        let checkout = PathBuf::from(checkout);
+        Entry { checkout, named: Named::default(), concurrency: None, tracker: None }
     }
 
     #[test]
@@ -178,7 +205,8 @@ mod tests {
         let concurrency = NonZeroUsize::new(6);
         let added = list.change(|listed| {
             let checkout = PathBuf::from("/b");
-            listed.checkouts.push(Entry { checkout, named: named.clone(), concurrency });
+            let named = named.clone();
+            listed.checkouts.push(Entry { checkout, named, concurrency, tracker: None });
             listed.checkouts.len()
         });
         assert_eq!(added.unwrap(), 2);
@@ -194,7 +222,7 @@ mod tests {
         );
         assert_eq!(
             list.read().unwrap().checkouts,
-            [entry("/a"), Entry { checkout: "/b".into(), named, concurrency }]
+            [entry("/a"), Entry { checkout: "/b".into(), named, concurrency, tracker: None }]
         );
         // a concurrency of no slot is none: the list cannot be read
         std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "concurrency": 0}]}"#)
@@ -229,6 +257,45 @@ mod tests {
         }
         let listed = List::at(file).read().unwrap();
         assert_eq!(listed.checkouts.len(), 80);
+    }
+
+    #[test]
+    fn a_checkout_and_each_worktree_of_it_go_by_the_tracker_its_entry_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let ran = Command::new("git").args(args).current_dir(&root).output().unwrap();
+            assert!(ran.status.success(), "{ran:?}");
+        };
+        git(&["init", "--quiet", "w"]);
+        git(&["-C", "w", "commit", "--quiet", "--allow-empty", "-m", "initial"]);
+        git(&["-C", "w", "worktree", "add", "--quiet", "../wt"]);
+        let (checkout, worktree) = (Repo::new(root.join("w")), Repo::new(root.join("wt")));
+        let list = List::at(root.join(FILE));
+        let other = Tracker::Other(RepoName::read("acme/tracker").unwrap());
+
+        // none on the list, or none said: its own repo
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own);
+        list.change(|listed| listed.checkouts.push(entry(&checkout.dir.display().to_string())))
+            .unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
+
+        let tracker = RepoName::read("acme/tracker");
+        list.change(|listed| listed.checkouts[0].tracker = tracker).unwrap();
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), other);
+        assert_eq!(
+            tracker_on(&list, &worktree).unwrap(),
+            other,
+            "a worktree goes by its checkout's"
+        );
+        let text = std::fs::read_to_string(list.file()).unwrap();
+        assert!(text.contains("\"tracker\": \"acme/tracker\""), "{text}");
+
+        // a tracker that is no repo's name: the list cannot be read
+        std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "tracker": "acme"}]}"#)
+            .unwrap();
+        let error = format!("{:#}", list.read().unwrap_err());
+        assert!(error.contains("`acme` is no repo's name"), "{error}");
     }
 
     #[test]

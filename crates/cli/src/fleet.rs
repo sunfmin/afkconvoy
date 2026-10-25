@@ -84,6 +84,11 @@ impl std::error::Error for NothingSafe {}
 impl Fleet {
     /// The fleet's view from the checkout `repo`.
     pub fn open(repo: &Repo, now: u64) -> Result<Fleet> {
+        Fleet::open_on(repo, GitHub::of(repo)?, now)
+    }
+
+    /// The fleet's view from the checkout `repo`, reading GitHub through `gh`.
+    fn open_on(repo: &Repo, gh: GitHub, now: u64) -> Result<Fleet> {
         let repo = repo.clone();
         // As this checkout's fleet instance goes by it on this host: read
         // anew at each view, so a concurrency said since holds now.
@@ -91,7 +96,6 @@ impl Fleet {
         let chosen = crate::switch::chosen(&repo)?;
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), listing.records.clone());
-        let gh = GitHub { dir: repo.dir.clone() };
         Ok(Fleet {
             repo,
             config,
@@ -110,12 +114,12 @@ impl Fleet {
 
     /// The fleet's view, opened for a rebuild → it, and what is open on
     /// GitHub. The remote and GitHub do not depend on each other: they are
-    /// asked side by side.
+    /// asked side by side, of the one tracker the view goes by.
     pub fn read(repo: &Repo, now: u64) -> Result<(Fleet, Open)> {
-        let gh = GitHub { dir: repo.dir.clone() };
+        let gh = GitHub::of(repo)?;
         let (fleet, open) = thread::scope(|scope| {
             let open = scope.spawn(|| gh.open());
-            (Fleet::open(repo, now), beside(open))
+            (Fleet::open_on(repo, gh.clone(), now), beside(open))
         });
         Ok((fleet?, open?))
     }

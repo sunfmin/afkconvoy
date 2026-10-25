@@ -340,10 +340,9 @@ pub fn gate(repo: &Repo, config: &Config, train: bool, host: &str, now: u64) -> 
     }
     let head = &run.head;
     // Soft: locks that cannot be read cost the worker only this warning.
-    let gh = GitHub { dir: repo.dir.clone() };
     let locks = match run.ran.green() {
         true => vec![],
-        false => standing_locks(&gh, config).unwrap_or_default(),
+        false => GitHub::of(repo).and_then(|gh| standing_locks(&gh, config)).unwrap_or_default(),
     };
     let detail = if !locks.is_empty() {
         answer["locks"] = json!(locks);

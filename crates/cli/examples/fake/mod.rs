@@ -33,7 +33,8 @@ impl State {
         State::at(routed.map_or_else(|| named_by(var), |file| PathBuf::from(file.trim())))
     }
 
-    fn at(path: PathBuf) -> State {
+    /// Opens the state file at `path`, and logs this call there.
+    pub fn at(path: PathBuf) -> State {
         let lock = File::create(path.with_extension("lock")).expect("lock file");
         lock.lock().expect("lock");
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("state file"))

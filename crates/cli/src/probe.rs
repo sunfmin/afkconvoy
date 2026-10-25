@@ -146,7 +146,7 @@ pub fn startup(repo: &Repo, now: u64, launches: &Launches) -> Result<Vec<String>
     if repo.remote_sha(&format!("refs/heads/{branch}"))?.is_none() {
         return Err(See::Troubleshooting.refusal(no_base_branch(branch)));
     }
-    match base_check(branch, &GitHub { dir: repo.dir.clone() }.protection(branch)) {
+    match base_check(branch, &GitHub::of(repo)?.protection(branch)) {
         BaseCheck::Clear(_) => {}
         BaseCheck::Warn(warning) => warnings.push(warning),
         BaseCheck::Refuse(why) => return Err(See::Troubleshooting.refusal(why)),

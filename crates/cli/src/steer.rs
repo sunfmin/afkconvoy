@@ -38,7 +38,7 @@ impl Unheld {
                  worker's. {instead}; nothing was written"
             );
         }
-        let gh = GitHub { dir: repo.dir.clone() };
+        let gh = GitHub::of(repo)?;
         let labels = gh.issue(number)?.labels;
         let bodies = gh.comments(number)?.into_iter().map(|comment| comment.body).collect();
         Ok(Unheld { gh, number, labels, bodies })

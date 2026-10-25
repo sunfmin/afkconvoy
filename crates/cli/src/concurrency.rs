@@ -143,7 +143,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let list = List::at(dir.path().join("checkouts.json"));
         let (listed, starting) = (dir.path().join("listed"), dir.path().join("starting"));
-        let entry = Entry { checkout: listed.clone(), named: Named::default(), concurrency: None };
+        let entry = Entry {
+            checkout: listed.clone(),
+            named: Named::default(),
+            concurrency: None,
+            tracker: None,
+        };
         list.change(|kept| kept.checkouts.push(entry)).unwrap();
         assert_eq!(own(&list, &listed).unwrap(), None, "none said: the default holds");
 
@@ -169,6 +174,7 @@ mod tests {
                 checkout: starting.clone(),
                 named: Named::default(),
                 concurrency,
+                tracker: None,
             });
         })
         .unwrap();

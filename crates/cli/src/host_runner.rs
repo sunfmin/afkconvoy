@@ -1160,7 +1160,7 @@ impl Heard {
                     // process forgets once the list holds it.
                     let concurrency = concurrency::asked_of(&self.root);
                     let checkout = self.root.clone();
-                    listed.checkouts.push(Entry { checkout, named, concurrency });
+                    listed.checkouts.push(Entry { checkout, named, concurrency, tracker: None });
                     true
                 }
             }

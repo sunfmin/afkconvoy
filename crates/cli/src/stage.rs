@@ -84,7 +84,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
     if config.bound.is_none() && matches!(declared, Declared::Close | Declared::Park) {
         let scan = Scan::read(repo)?;
         let claim = scan.claim_of(issue).ok_or_else(|| anyhow!("issue #{issue} is not claimed"))?;
-        let gh = GitHub { dir: repo.dir.clone() };
+        let gh = GitHub::of(repo)?;
         let comments = gh.comments(issue)?;
         if !consult || !stock::asked_under(comments.iter().map(|c| c.body.as_str()), &claim.id) {
             bail!("only the stock consult holding this issue may close or park it");
@@ -131,7 +131,7 @@ pub fn verdict(repo: &Repo, declaring: Declaring) -> Result<Value> {
         blocked_by,
         text,
     };
-    let gh = GitHub { dir: repo.dir.clone() };
+    let gh = GitHub::of(repo)?;
     let comments = gh.comments(issue)?;
     let standing = stage_records(comments.iter().map(|comment| comment.body.as_str()))
         .into_iter()
@@ -210,7 +210,7 @@ pub fn consult_send(
     if text.trim().is_empty() {
         bail!("a stage record carries why the issue is sent: there is none");
     }
-    let gh = GitHub { dir: repo.dir.clone() };
+    let gh = GitHub::of(repo)?;
     let issue = gh.issue(number)?;
     let comments = gh.comments(number)?;
     let workflow = workflow_of(team, &issue.labels)
