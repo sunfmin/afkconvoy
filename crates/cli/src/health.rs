@@ -450,7 +450,10 @@ pub fn reconcile(
         let Some(worktree) = Worktree::of_issue(&source, claim.number)? else {
             continue;
         };
-        let state = worktree.state(fleet.now)?;
+        let state = match worktree.state(fleet.now) {
+            Ok(state) => state,
+            Err(_) => continue,
+        };
         if matches!(state, WorkerState::Gone | WorkerState::Busy) {
             book.workers.retain(|o| o.path != worktree.path);
             continue;
@@ -492,6 +495,9 @@ pub fn reconcile(
         jobs.push((Some(claim.number), None, worktree));
     }
     for run in &fleet.scan.runs {
+        if run.over {
+            continue;
+        }
         if run.owner.as_ref().is_none_or(|owner| owner.instance != me.instance.as_str()) {
             continue;
         }
@@ -546,7 +552,18 @@ fn observe(
         std::fs::read_to_string(repo.note("convoy-worker-model")?).ok().filter(|m| !m.is_empty());
     let output = worktree.screen(&terminal, 100)?;
     let signal = error_of(worktree)?;
-    let structured = json!({"runtime": worktree.health_report()?,
+    let processes = crate::hot::listed_checked()?;
+    let activity: Vec<_> = crate::hot::tree(&processes, &worktree.path)
+        .into_iter()
+        .map(|p| json!({"pid":p.pid,"parent":p.ppid,"cpu_ms":p.cpu_ms,"resident_bytes":p.resident}))
+        .collect();
+    let scoped: Vec<_> = book
+        .faults
+        .iter()
+        .filter(|f| f.harness == harness && (f.scope == Scope::Account || f.model == model))
+        .collect();
+    let structured = json!({"runtime": worktree.health_report()?, "process_activity":activity,
+        "known_scoped_faults": scoped,
         "send": serde_json::from_str::<Value>(&signal).unwrap_or(Value::Null)});
     let progress =
         format!("{}\n{}", repo.git(&["rev-parse", "HEAD"])?, repo.git(&["status", "--porcelain"])?);

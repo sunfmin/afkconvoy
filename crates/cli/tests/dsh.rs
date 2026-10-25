@@ -10,6 +10,12 @@ fn bound() -> World {
     let world = World::new();
     world.hold_every_harness();
     world.kit_models("dsh", &["deepseek-test"]);
+    world.with_kit(|kit| {
+        let entries = kit["harnesses"].as_array_mut().unwrap();
+        let at = entries.iter().position(|h| h["harness"] == "dsh").unwrap();
+        let held = entries.remove(at);
+        entries.insert(0, held);
+    });
     world.repo(
         "acme/dev",
         &[

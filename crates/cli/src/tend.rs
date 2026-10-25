@@ -32,7 +32,10 @@ pub fn tend_train(fleet: &mut Fleet, me: &Me, agent: &Agent) -> Result<Outcome> 
     }
     let source = Source::of(&fleet.repo)?;
     let found = Worktree::of_train(&source)?;
-    if found.as_ref().is_some_and(crate::health::holding) {
+    if found.as_ref().is_some_and(|w| {
+        crate::health::holding(w)
+            && w.told().ok().flatten().is_some_and(|told| told.tip == train.tip)
+    }) {
         return Ok(Outcome::Nothing);
     }
     let (state, told) = match &found {

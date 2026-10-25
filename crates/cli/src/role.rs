@@ -539,7 +539,11 @@ pub fn check(launches: &Launches, called: &[(Harness, Vec<String>)]) -> Result<V
             command: proposed.as_str().to_string(),
             tool: tools::harness(proposed).filter(|_| *harness != launches.default()),
             fault: proposed.fault().map(said),
-            flags_fault: takes().err().filter(|_| launches.bound()).map(said),
+            flags_fault: if launches.bound() && proposed.resolves() {
+                takes().err().map(said)
+            } else {
+                None
+            },
         });
     }
     Ok(checked)
@@ -559,7 +563,8 @@ impl Checked {
 /// what calls for it and the line that fixes it: none is started in
 /// another's place, so a start that cannot start them all starts no worker.
 pub fn probe(repo: &Repo, launches: &Launches, bound: &Bound, labels: &RepoLabels) -> Result<()> {
-    let _ = (repo, launches, bound, labels);
+    let _team = current(repo, bound, labels);
+    let _ = launches;
     // Eligibility is checked per candidate at selection. One unavailable
     // harness cannot prevent another role or checkout from making progress.
     // A role whose range holds nothing refuses no start: its stages wait

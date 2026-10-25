@@ -144,12 +144,29 @@ impl Fleet {
         let kit = self.runnable()?;
         let paused = crate::paused::read();
         let kit = kit.range();
-        let range = casting::range(role, &kit);
+        // Apply the role to the whole kit before excluding unhealthy
+        // candidates. Temporary unavailability is never an unmatched roster
+        // entry and cannot broaden the role's permissions.
+        let whole = crate::kit::load()?.range();
+        if let Some(why) = casting::nothing_safe(role, &whole) {
+            return Err(NothingSafe(why).into());
+        }
+        let allowed = casting::range(role, &whole);
+        let mut range = vec![];
+        for available in &kit {
+            if let Some(held) = allowed.iter().find(|h| h.harness == available.harness) {
+                let mut held = held.clone();
+                held.models.retain(|model| available.models.iter().any(|m| m.id == model.id));
+                if !held.models.is_empty() || available.models.is_empty() {
+                    range.push(held);
+                }
+            }
+        }
         if range.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
-        if let Some(why) = casting::nothing_safe(role, &kit) {
-            return Err(NothingSafe(why).into());
+        if range.is_empty() {
+            return Err(NothingSafe(format!("the role `{}` has no currently eligible harness in its range; waiting for recovery", role.name)).into());
         }
         casting::preferred(labels, &range, &kit)
             .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
@@ -183,6 +200,17 @@ impl Fleet {
         let labels = if recast { casting::without_casting(labels) } else { labels.to_vec() };
         if range.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
+        }
+        if range.is_empty() {
+            let why = self
+                .runnable
+                .borrow()
+                .as_ref()
+                .map(|r| {
+                    r.skipped.iter().map(|(_, why)| why.as_str()).collect::<Vec<_>>().join("; ")
+                })
+                .unwrap_or_default();
+            return Ok(Err(format!("no eligible harness in the host kit: {why}")));
         }
         Ok(casting::preferred(&labels, &range, &range))
     }
@@ -554,8 +582,7 @@ impl Fleet {
                 });
                 continue;
             }
-            let range = casting::range(role, &kit);
-            match casting::preferred(&labels, &range, &kit) {
+            match self.cast_in(role, &labels).map_err(|e| format!("{e:#}")) {
                 Ok(cast) => {
                     let mut cast = casting::unmatched_in(cast, &labels, &ranges);
                     if held == ForCaster::Late && cast.why == Why::RangeFirst {
