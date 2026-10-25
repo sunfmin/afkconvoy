@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use afkconvoy_core::config::{Bound, Config};
 use afkconvoy_core::harness::Harness;
-use afkconvoy_core::host_inspection::{self, Due, Reason, Trigger, Watching, covered};
+use afkconvoy_core::host_inspection::{self, Due, Holding, Reason, Trigger, covered};
 use afkconvoy_core::inspection::{
     self, CHECKOUT, Fields, Finding, Hot, Inspected, Inspector as Who, Kind, Operator, SAID,
     inspector, over,
@@ -124,6 +124,8 @@ pub struct Turn {
 #[derive(Default)]
 struct Turns {
     running: Option<Running>,
+    /// A fleet added during pressure shares the host's episode and coverage.
+    pressure: Holding,
     /// The places of the inspectors with a hot worker waiting, by key.
     waiting: BTreeSet<u64>,
     /// The key the next place takes.
@@ -138,6 +140,10 @@ impl Turn {
     /// The inspection running on the host now, across its fleets.
     pub fn running(&self) -> Option<Running> {
         self.held().running.clone()
+    }
+
+    fn pressured(&self, now: u64, pressure: bool) {
+        self.held().pressure.ticked(now, if pressure { &[Reason::Memory] } else { &[] });
     }
 
     /// Whether the turn can be taken now for an inspection of the host,
@@ -475,7 +481,7 @@ pub struct Inspector {
     running: Option<Box<Inspection>>,
     /// Admission, tick after tick: the host is inspected once it held back
     /// for one reason past `span`.
-    watching: Watching,
+    holding: Holding,
     span: u64,
     /// The main checkout of the repo, and each of its issues with its stage,
     /// as the last tick saw them: what a host inspection lists its worktrees
@@ -493,7 +499,7 @@ impl Inspector {
             place: turn.place(),
             inspected: Inspected::default(),
             running: None,
-            watching: Watching::default(),
+            holding: Holding::default(),
             span: host_inspection::SPAN,
             repo: PathBuf::new(),
             stages: vec![],
@@ -509,14 +515,34 @@ impl Inspector {
         repo: PathBuf,
         stages: Vec<(u64, String)>,
     ) {
-        self.watching.ticked(now, &admission.reasons(), under_pressure());
+        self.observed(now, admission, under_pressure());
         self.span = admission.span;
         (self.repo, self.stages) = (repo, stages);
     }
 
     /// The host inspection due at `now`, if one is.
     fn host_due(&self, now: u64) -> Option<(Trigger, Due)> {
-        self.watching.due(now, self.span)
+        host_inspection::next(&self.holding, &self.place.turn.held().pressure, now, self.span)
+    }
+
+    fn observed(&mut self, now: u64, admission: &Admission, pressure: bool) {
+        self.holding.ticked(now, &admission.reasons());
+        self.place.turn.pressured(now, pressure);
+    }
+
+    fn record_host(&mut self, trigger: Trigger) {
+        match trigger {
+            Trigger::Admission => self.holding.record(),
+            Trigger::Pressure => self.place.turn.held().pressure.record(),
+        }
+    }
+
+    fn still_due(&self, trigger: Trigger, due: &Due, now: u64) -> bool {
+        let current = match trigger {
+            Trigger::Admission => self.holding.due(now, self.span),
+            Trigger::Pressure => self.place.turn.held().pressure.due(now, self.span),
+        };
+        current == Some(*due)
     }
 
     /// The hot workers `hot`, as the core's rules see them.
@@ -596,18 +622,18 @@ impl Inspector {
         let reason = due.reason.word().to_string();
         let last = last_for(due.reason);
         if covered(last, &due) {
-            self.watching.record(trigger);
+            self.record_host(trigger);
             let said = "another fleet of this host inspected it in this episode".to_string();
             return Some(What::HostInspected { reason, found: "covered".into(), said });
         }
         match self.start_host(agent, trigger, &due, now) {
             Ok(Started::Waits) => None,
             Ok(Started::Nobody(said)) => {
-                self.watching.record(trigger);
+                self.record_host(trigger);
                 Some(What::HostInspected { reason, found: "none".into(), said })
             }
             Ok(Started::Running(inspection)) => {
-                self.watching.record(trigger);
+                self.record_host(trigger);
                 let by = inspection.by.clone();
                 let reading = match &inspection.on {
                     Subject::Host { reading, .. } => reading.clone(),
@@ -617,7 +643,7 @@ impl Inspector {
                 Some(What::HostInspecting { reason, by, reading })
             }
             Err(error) => {
-                self.watching.record(trigger);
+                self.record_host(trigger);
                 let said = format!("it could not be started: {error:#}");
                 Some(What::HostInspected { reason, found: "failed".into(), said })
             }
@@ -663,8 +689,8 @@ impl Inspector {
         // Read again as it starts: what it is given is what holds back now.
         let admission = Admission::read(&fleet.repo.dir)?;
         let pressure = pressure_level();
-        self.watching.ticked(now, &admission.reasons(), pressure.is_some_and(|level| level >= 2));
-        if !self.watching.still_due(trigger, due, now, self.span) {
+        self.observed(now, &admission, pressure.is_some_and(|level| level >= 2));
+        if !self.still_due(trigger, due, now) {
             return Ok(Started::Waits);
         }
         let reading = match trigger {
@@ -712,8 +738,8 @@ impl Inspector {
             let brief = checkout.write_brief(&brief)?;
             let command = command(&who, launch.as_str(), &checkout, &fleet, THE_HOST)?;
             let admission = Admission::read(&fleet.repo.dir)?;
-            self.watching.ticked(now, &admission.reasons(), under_pressure());
-            if !self.watching.still_due(trigger, due, now, self.span) {
+            self.observed(now, &admission, under_pressure());
+            if !self.still_due(trigger, due, now) {
                 return Ok(false);
             }
             let handle = agent.start_worker(
@@ -1096,6 +1122,21 @@ pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fleets_share_pressure_coverage_until_five_minutes_without_pressure() {
+        let alpha = Turn::default();
+        let beta = alpha.clone();
+        alpha.pressured(1000, true);
+        assert!(alpha.held().pressure.due(1600, 600).is_some());
+        alpha.held().pressure.record();
+        beta.pressured(1700, true);
+        assert_eq!(beta.held().pressure.due(2300, 600), None, "same host episode");
+        beta.pressured(2400, false);
+        alpha.pressured(2700, false);
+        beta.pressured(2800, true);
+        assert_eq!(alpha.held().pressure.due(3400, 600).map(|due| due.episode), Some(2800));
+    }
 
     #[test]
     fn a_turn_says_which_kind_of_inspection_holds_it() {

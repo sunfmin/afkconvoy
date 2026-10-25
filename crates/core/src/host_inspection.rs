@@ -188,47 +188,22 @@ impl Trigger {
     }
 }
 
-/// The host's independent admission and memory-pressure episodes. Recovery
-/// of one is not held up by the other; either uses the host inspection span.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Watching {
-    admission: Holding,
-    pressure: Holding,
-}
-
-impl Watching {
-    pub fn ticked(&mut self, now: u64, reasons: &[Reason], pressure: bool) {
-        self.admission.ticked(now, reasons);
-        self.pressure.ticked(now, if pressure { &[Reason::Memory] } else { &[] });
-    }
-
-    /// The oldest uninterrupted condition due, admission first on a tie.
-    pub fn due(&self, now: u64, span: u64) -> Option<(Trigger, Due)> {
-        let admission = self.admission.due(now, span);
-        let pressure = self.pressure.due(now, span);
-        match (admission, pressure) {
-            (Some(a), Some(p)) if p.since < a.since => Some((Trigger::Pressure, p)),
-            (Some(a), _) => Some((Trigger::Admission, a)),
-            (_, Some(p)) => Some((Trigger::Pressure, p)),
-            _ => None,
-        }
-    }
-
-    pub fn record(&mut self, trigger: Trigger) {
-        match trigger {
-            Trigger::Admission => self.admission.record(),
-            Trigger::Pressure => self.pressure.record(),
-        }
-    }
-
-    /// Whether this exact episode still calls for its inspection, after a
-    /// fresh observation. An ended episode or a broken run starts nothing.
-    pub fn still_due(&self, trigger: Trigger, due: &Due, now: u64, span: u64) -> bool {
-        let current = match trigger {
-            Trigger::Admission => self.admission.due(now, span),
-            Trigger::Pressure => self.pressure.due(now, span),
-        };
-        current == Some(*due)
+/// The oldest uninterrupted condition due, admission first on a tie. The
+/// effect layer keeps admission per checkout and pressure once for the host,
+/// so a fleet joining during an episode shares its existing coverage.
+pub fn next(
+    admission: &Holding,
+    pressure: &Holding,
+    now: u64,
+    span: u64,
+) -> Option<(Trigger, Due)> {
+    let admission = admission.due(now, span);
+    let pressure = pressure.due(now, span);
+    match (admission, pressure) {
+        (Some(a), Some(p)) if p.since < a.since => Some((Trigger::Pressure, p)),
+        (Some(a), _) => Some((Trigger::Admission, a)),
+        (_, Some(p)) => Some((Trigger::Pressure, p)),
+        _ => None,
     }
 }
 
@@ -312,43 +287,44 @@ mod tests {
 
     #[test]
     fn pressure_is_inspected_once_and_recovers_independently_of_admission() {
-        let mut watching = Watching::default();
-        watching.ticked(0, &[], true);
-        assert_eq!(watching.due(SPAN - 1, SPAN), None);
-        watching.ticked(SPAN, &[], true);
+        let (mut admission, mut pressure) = (Holding::default(), Holding::default());
+        pressure.ticked(0, &[Reason::Memory]);
+        assert_eq!(next(&admission, &pressure, SPAN - 1, SPAN), None);
+        pressure.ticked(SPAN, &[Reason::Memory]);
         let due = Due { reason: Reason::Memory, since: 0, episode: 0 };
-        assert_eq!(watching.due(SPAN, SPAN), Some((Trigger::Pressure, due)));
+        assert_eq!(next(&admission, &pressure, SPAN, SPAN), Some((Trigger::Pressure, due)));
         assert!(covered(Some((Reason::Memory, 20)), &due));
-        watching.record(Trigger::Pressure);
-        watching.ticked(900, &[], true);
-        assert_eq!(watching.due(900, SPAN), None);
-        // A brief recovery breaks the run, but does not end the episode.
-        watching.ticked(1000, &[], false);
-        watching.ticked(1200, &[], true);
-        watching.ticked(1800, &[], true);
-        assert_eq!(watching.due(1800, SPAN), None);
-        // Pressure recovers for five minutes even though load holds admission.
-        watching.ticked(2000, &[Reason::Load], false);
-        watching.ticked(2300, &[Reason::Load], false);
-        watching.ticked(2400, &[], true);
-        watching.ticked(3000, &[], true);
+        pressure.record();
+        pressure.ticked(900, &[Reason::Memory]);
+        assert_eq!(next(&admission, &pressure, 900, SPAN), None);
+        pressure.ticked(1000, &[]);
+        pressure.ticked(1200, &[Reason::Memory]);
+        pressure.ticked(1800, &[Reason::Memory]);
+        assert_eq!(next(&admission, &pressure, 1800, SPAN), None, "brief recovery, same episode");
+        // Pressure recovers even though load holds admission.
+        admission.ticked(2000, &[Reason::Load]);
+        pressure.ticked(2000, &[]);
+        pressure.ticked(2300, &[]);
+        admission.ticked(2400, &[]);
+        pressure.ticked(2400, &[Reason::Memory]);
+        pressure.ticked(3000, &[Reason::Memory]);
         assert_eq!(
-            watching.due(3000, SPAN),
+            next(&admission, &pressure, 3000, SPAN),
             Some((Trigger::Pressure, Due { reason: Reason::Memory, since: 2400, episode: 2400 }))
         );
     }
 
     #[test]
     fn an_inspection_waiting_on_a_cooled_host_episode_starts_nothing() {
-        let mut watching = Watching::default();
-        watching.ticked(0, &[], true);
-        let (trigger, due) = watching.due(SPAN, SPAN).unwrap();
-        watching.ticked(SPAN, &[], false);
-        assert!(!watching.still_due(trigger, &due, SPAN, SPAN));
-        watching.ticked(SPAN + ADMITTED_FOR, &[], false);
-        assert_eq!(watching.due(SPAN + ADMITTED_FOR, SPAN), None);
-        watching.ticked(1000, &[], true);
-        assert!(!watching.still_due(trigger, &due, 1600, SPAN), "a different episode");
+        let mut pressure = Holding::default();
+        pressure.ticked(0, &[Reason::Memory]);
+        let due = pressure.due(SPAN, SPAN).unwrap();
+        pressure.ticked(SPAN, &[]);
+        assert_ne!(pressure.due(SPAN, SPAN), Some(due));
+        pressure.ticked(SPAN + ADMITTED_FOR, &[]);
+        assert_eq!(pressure.due(SPAN + ADMITTED_FOR, SPAN), None);
+        pressure.ticked(1000, &[Reason::Memory]);
+        assert_ne!(pressure.due(1600, SPAN), Some(due), "a different episode");
     }
 
     #[test]

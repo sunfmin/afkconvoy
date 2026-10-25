@@ -35,6 +35,7 @@ fn entries(world: &World) -> Vec<Entry> {
         .collect()
 }
 
+#[cfg(target_os = "macos")]
 fn started(world: &World) -> usize {
     entries(world).iter().filter(|entry| matches!(entry.what, What::HostInspecting { .. })).count()
 }
@@ -140,20 +141,21 @@ fn pressure_inspects_the_host_once_across_fleets_and_never_heats_the_largest_wor
     );
     assert!(evidence.contains("outside-memory-holder"), "{evidence}");
 
-    // The second fleet observes the same episode while the inspection runs.
+    finish(&world);
+    until(&world, "host inspection ended", || {
+        entries(&world).iter().any(
+            |entry| matches!(&entry.what, What::HostInspected { found, .. } if found == "said"),
+        )
+    });
+    // A fleet added after the inspection shares the host's existing episode,
+    // even though its own first observation is later than that inspection.
     let beta = world.second_repo();
     world
         .afk_in(
             &beta,
-            &["run", "--instance", "beta", "--host", "h1", "--now", "1000", "--second-ms", "10"],
+            &["run", "--instance", "beta", "--host", "h1", "--now", "1001", "--second-ms", "10"],
         )
         .ok();
-    finish(&world);
-    until(&world, "the other fleet covered by this episode", || {
-        entries(&world).iter().any(
-            |entry| matches!(&entry.what, What::HostInspected { found, .. } if found == "covered"),
-        )
-    });
     // Changing the largest worker cannot create another episode.
     processes(&world, &[(&a, 170), (&b, 620)]);
     let before = samples(&world);

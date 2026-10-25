@@ -351,16 +351,16 @@ mod tests {
 
     #[test]
     fn host_pressure_never_makes_a_worker_under_its_memory_limit_hot() {
-        use crate::host_inspection::{SPAN, Trigger, Watching};
+        use crate::host_inspection::{Holding, Reason, SPAN};
 
-        let mut host = Watching::default();
+        let mut host = Holding::default();
         let mut worker = Watch::default();
         for at in (1000..=1600).step_by(SAMPLE_EVERY as usize) {
-            host.ticked(at, &[], true);
+            host.ticked(at, &[Reason::Memory]);
             assert_eq!(worker.sampled(&sample(at, 100, GIB), &LIMITS, SAMPLE_EVERY), None);
             assert_eq!(worker.hot, None);
         }
-        assert_eq!(host.due(1600, SPAN).map(|(trigger, _)| trigger), Some(Trigger::Pressure));
+        assert_eq!(host.due(1600, SPAN).map(|due| due.reason), Some(Reason::Memory));
         // Its own memory limit still applies under host pressure.
         assert!(matches!(
             worker.sampled(&sample(1610, 100, 9 * GIB), &LIMITS, SAMPLE_EVERY),
