@@ -783,7 +783,6 @@ fn command(
 /// the PRs it put on the landing train. What cannot be done of it is said,
 /// and the rest done all the same.
 fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> Vec<What> {
-    let gh = GitHub { dir: repo.dir.clone() };
     // As its checkout says them last: one put on the train after it said.
     let prs = inspection.checkout.inspection_prs().unwrap_or_default();
     let finding = finding.map(|finding| Finding { prs, ..finding });
@@ -796,7 +795,7 @@ fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: 
         .map(|did| What::InspectionDid { worker: worker.clone(), did: inspection::one_line(did) })
         .collect();
     let mut ended = match &inspection.on {
-        Subject::Worker { hot, why } => end_worker(&gh, hot, why, &inspection.by, finding),
+        Subject::Worker { hot, why } => end_worker(repo, hot, why, &inspection.by, finding),
         Subject::Host { reason, reading } => {
             end_host(repo, (*reason, reading.as_str()), &inspection, finding, now)
         }
@@ -859,13 +858,14 @@ fn end_host(
 }
 
 /// Ends the inspection of the hot worker `hot`, `why` it turned hot, by
-/// `by`, which said `finding`: leaves it on the issue, on `gh`.
-fn end_worker(gh: &GitHub, hot: &HotNow, why: &str, by: &str, finding: Option<Finding>) -> What {
+/// `by`, which said `finding`: leaves it on the issue, in the tracker of the
+/// checkout `repo`.
+fn end_worker(repo: &Repo, hot: &HotNow, why: &str, by: &str, finding: Option<Finding>) -> What {
     let worker = hot.worker.clone();
     let mut said = said_of(finding.as_ref());
     if let Some(issue) = hot.issue {
         let body = inspection::comment(&worker, why, by, finding.as_ref());
-        if let Err(error) = gh.comment(issue, &body) {
+        if let Err(error) = GitHub::of(repo).and_then(|gh| gh.comment(issue, &body)) {
             said.push_str(&format!(" · no comment was left on #{issue}: {error:#}"));
         }
     }

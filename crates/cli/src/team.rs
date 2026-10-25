@@ -288,7 +288,10 @@ fn held(loaded: &Loaded) -> Vec<Fault> {
 /// — or, where there is none or its config cannot be read, the labels a repo
 /// that names none has. A team with a fault fails with `Refused`.
 pub fn load(from: From, checkout: Option<&Repo>) -> Result<Loaded> {
-    let gh = checkout.map_or_else(GitHub::in_no_checkout, |repo| GitHub { dir: repo.dir.clone() });
+    let gh = match checkout {
+        Some(repo) => GitHub::of(repo)?,
+        None => GitHub::in_no_checkout(),
+    };
     let copies = Copies::of_host()?;
     let here = match checkout {
         Some(repo) => config::load(&config::file_of(repo)),

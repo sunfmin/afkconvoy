@@ -470,7 +470,7 @@ fn call(called: &mut Vec<(Harness, Vec<String>)>, harness: Harness, by: String) 
 /// read against the repo's `labels`: `None` where it cannot be read or does
 /// not load — no worker is started under it, and each tick says why.
 pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> {
-    let gh = GitHub { dir: repo.dir.clone() };
+    let gh = GitHub::of(repo).ok()?;
     let kept = Copies::of_host().and_then(|copies| keep(&gh, &copies, &bound.team, labels));
     kept.ok().map(|kept| kept.team)
 }

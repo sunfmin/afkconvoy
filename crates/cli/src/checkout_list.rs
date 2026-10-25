@@ -11,11 +11,13 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::checkouts;
+use afkconvoy_core::config::RepoName;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::copies::cache;
+use crate::gh::Tracker;
 use crate::git::{REMOTE, Repo};
 use crate::host_settings::Settings;
 use crate::instance::Named;
@@ -37,8 +39,9 @@ pub struct Listed {
 }
 
 /// One checkout on the list: its root, what the `run` that started it named
-/// for its fleet instance alone, and the concurrency it says on this host
-/// (`concurrency`), which its fleet instance reads at each tick.
+/// for its fleet instance alone, the concurrency it says on this host
+/// (`concurrency`), which its fleet instance reads at each tick, and its
+/// tracker (`tracker_of`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub checkout: PathBuf,
@@ -47,6 +50,10 @@ pub struct Entry {
     /// `--concurrency`: none, and the default holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<NonZeroUsize>,
+    /// The repo its fleet reads and writes issues in, where that is not the
+    /// checkout's own: none, and it is its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<RepoName>,
 }
 
 /// A host's checkout list: its file, and the lock beside it.
@@ -121,6 +128,21 @@ impl List {
     }
 }
 
+/// The tracker of the checkout `repo` on this host, as its entry on the
+/// list says it, read once for what is done next: an entry of `repo` itself,
+/// or of its main checkout, which every worktree of it shares — a worker's
+/// command acts on the issues its fleet does. One the list holds no entry
+/// of, or whose entry says none, is its own repo's.
+pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
+    let listed = List::of_host()?.read()?;
+    let main = repo.main_checkout()?;
+    let entry = listed
+        .checkouts
+        .into_iter()
+        .find(|entry| entry.checkout == repo.dir || entry.checkout == main);
+    Ok(entry.and_then(|entry| entry.tracker).map_or(Tracker::Own, Tracker::Other))
+}
+
 /// The repo the checkout `repo` is of, as its remote `origin` names it
 /// (`checkouts::repo_of`); a remote that is a path is that directory, made
 /// canonical against the checkout. A checkout with no `origin` is an error
@@ -152,7 +174,8 @@ mod tests {
     use super::*;
 
     fn entry(checkout: &str) -> Entry {
-        Entry { checkout: PathBuf::from(checkout), named: Named::default(), concurrency: None }
+        let checkout = PathBuf::from(checkout);
+        Entry { checkout, named: Named::default(), concurrency: None, tracker: None }
     }
 
     #[test]
@@ -178,7 +201,8 @@ mod tests {
         let concurrency = NonZeroUsize::new(6);
         let added = list.change(|listed| {
             let checkout = PathBuf::from("/b");
-            listed.checkouts.push(Entry { checkout, named: named.clone(), concurrency });
+            let named = named.clone();
+            listed.checkouts.push(Entry { checkout, named, concurrency, tracker: None });
             listed.checkouts.len()
         });
         assert_eq!(added.unwrap(), 2);
@@ -194,7 +218,7 @@ mod tests {
         );
         assert_eq!(
             list.read().unwrap().checkouts,
-            [entry("/a"), Entry { checkout: "/b".into(), named, concurrency }]
+            [entry("/a"), Entry { checkout: "/b".into(), named, concurrency, tracker: None }]
         );
         // a concurrency of no slot is none: the list cannot be read
         std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "concurrency": 0}]}"#)

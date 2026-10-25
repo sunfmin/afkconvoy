@@ -181,7 +181,7 @@ pub fn land_train(
             ]);
             let comment = red_comment(&command, ran, limit, &excerpt);
             for pr in gh.open_prs()?.iter().filter(|pr| prs.contains(&pr.number)) {
-                gh.comment(pr.number, &comment)?;
+                gh.comment_on_pr(pr.number, &comment)?;
             }
             let detail = format!(
                 "the gate is red on the train's tip{}. Fix the TRAIN: read the failure, change \

@@ -357,8 +357,8 @@ fn checked(
 /// A repo's name as GitHub names it: `owner/repo`, each part of letters,
 /// digits, `.`, `_` and `-`, and neither `.` nor `..`. The one home of the form: the repo of a team and
 /// of a role is named so, and `read` is the only way to one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
 pub struct RepoName(String);
 
 impl RepoName {
@@ -381,6 +381,20 @@ impl RepoName {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for RepoName {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<RepoName, String> {
+        RepoName::read(&text).ok_or_else(|| format!("`{text}` is no repo's name, owner/repo"))
+    }
+}
+
+impl From<RepoName> for String {
+    fn from(name: RepoName) -> String {
+        name.0
     }
 }
 

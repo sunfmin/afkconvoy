@@ -3908,7 +3908,7 @@ fn run(
                 Some(issue) => {
                     let repo = checkout?;
                     let loaded = team::load(team.from(), Some(&repo))?;
-                    let gh = gh::GitHub { dir: repo.dir.clone() };
+                    let gh = gh::GitHub::of(&repo)?;
                     stage::show_issue(&gh, &loaded.team, issue)
                 }
                 None => {
@@ -4017,7 +4017,7 @@ fn run(
         Command::Land { number, issue, inspection, merged_timeout, host, .. } => {
             let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
-            let gh = gh::GitHub { dir: repo.dir.clone() };
+            let gh = gh::GitHub::of(&repo)?;
             match issue.or(number) {
                 Some(issue) => train::land(&repo, &config, &gh, issue, now),
                 None if inspection => {
@@ -4138,7 +4138,7 @@ fn run(
         Command::Lock { issue, role, .. } => {
             let repo = checkout?;
             let config = config::load(&repo.dir.join(config::FILE))?;
-            let gh = gh::GitHub { dir: repo.dir.clone() };
+            let gh = gh::GitHub::of(&repo)?;
             let role = role.as_deref().map(str::trim).filter(|role| !role.is_empty());
             lock::lock(&config, &gh, issue.number(), role)
         }

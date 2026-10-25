@@ -1,5 +1,8 @@
-//! GitHub, through `gh` as a subprocess run in the checkout: `gh` works out
-//! which repository that is, so nothing here names one.
+//! GitHub, through `gh` as a subprocess run in the checkout. Its PRs and the
+//! protection of its branches are the checkout's repo's, which `gh` works out
+//! from the checkout, so nothing here names it. Every issue — the open ones,
+//! their comments, blockers and labels, one opened or closed — is the
+//! tracker's (`Tracker`), which every issue call names.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,10 +16,13 @@ use afkconvoy_core::plan::{Issue, PullRequest};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::git::Repo;
+
 /// The open issues, a page at a time, each with its labels, blockers and
 /// its first `COMMENTS_WITH` comments: one call a page,
-/// however many of the issues have comments to read. `gh api graphql` fills
-/// `{owner}` and `{repo}` in, and `$endCursor` page after page.
+/// however many of the issues have comments to read. `$owner` and `$repo`
+/// name the tracker (`GitHub::query`), and `gh api graphql` fills
+/// `$endCursor` in page after page.
 pub const OPEN_ISSUES_QUERY: &str = "query($owner: String!, $repo: String!, $endCursor: String) { \
     repository(owner: $owner, name: $repo) { \
     issues(states: OPEN, first: 100, after: $endCursor, \
@@ -68,17 +74,71 @@ pub const BLOCKED_BY_JQ: &str = ".[] | {number, state}";
 pub const LABELS_JQ: &str = ".[].name";
 pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences";
 
+/// The checkout's own repo, as an endpoint names it: `gh` fills it in from
+/// the checkout it runs in.
+const OWN: &str = "{owner}/{repo}";
+
+/// The repo a fleet reads and writes its issues in: its tracker. Its PRs,
+/// branches and refs are the checkout's repo's, whichever the tracker is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tracker {
+    /// The checkout's own repo, which `gh` works out from the checkout.
+    Own,
+    /// Another repo.
+    Other(RepoName),
+}
+
+impl Tracker {
+    /// The repo as an endpoint names it: `{owner}/{repo}`, which `gh` fills
+    /// in from the checkout, or `owner/repo`.
+    fn path(&self) -> &str {
+        match self {
+            Tracker::Own => OWN,
+            Tracker::Other(repo) => repo.as_str(),
+        }
+    }
+
+    /// The variables `owner` and `repo` of a query, as `gh api graphql`
+    /// takes them: `-F` fills `{owner}` and `{repo}` in, and `-f` sends a
+    /// name as it is, never as a number.
+    fn variables(&self) -> [String; 4] {
+        let (flag, owner, repo) = match self {
+            Tracker::Own => ("-F", "{owner}", "{repo}"),
+            Tracker::Other(named) => {
+                let (owner, repo) = named.as_str().split_once('/').expect("owner/repo");
+                ("-f", owner, repo)
+            }
+        };
+        [flag.to_string(), format!("owner={owner}"), flag.to_string(), format!("repo={repo}")]
+    }
+
+    /// The endpoint `rest` of the tracker: `repos/{owner}/{repo}/issues`.
+    fn endpoint(&self, rest: &str) -> String {
+        format!("repos/{}/{rest}", self.path())
+    }
+}
+
 /// `gh`, run in `dir`: the checkout a command is about, or where none is at
-/// hand the host's temporary directory (`in_no_checkout`).
+/// hand the host's temporary directory (`in_no_checkout`). Every issue call
+/// is made of `tracker`.
+#[derive(Clone)]
 pub struct GitHub {
     pub dir: PathBuf,
+    pub tracker: Tracker,
 }
 
 impl GitHub {
+    /// `gh` for the checkout `repo`: its PRs in its own repo, and its issues
+    /// in the tracker it says on this host (`checkout_list::tracker_of`).
+    pub fn of(repo: &Repo) -> Result<GitHub> {
+        let tracker = crate::checkout_list::tracker_of(repo)?;
+        Ok(GitHub { dir: repo.dir.clone(), tracker })
+    }
+
     /// `gh` for the calls that each name their repo, where no checkout is at
     /// hand: they need none, and are made in the host's temporary directory.
     pub fn in_no_checkout() -> GitHub {
-        GitHub { dir: std::env::temp_dir() }
+        GitHub { dir: std::env::temp_dir(), tracker: Tracker::Own }
     }
 }
 
@@ -307,6 +367,26 @@ impl GitHub {
         }
     }
 
+    /// The GraphQL `query` of the tracker, page after page, each answer read
+    /// with `jq`: `query` takes the tracker as `$owner` and `$repo`.
+    fn query(&self, query: &str, jq: &str) -> Result<String> {
+        let query = format!("query={query}");
+        let [owner_flag, owner, repo_flag, repo] = self.tracker.variables();
+        self.read(&[
+            "api",
+            "graphql",
+            "--paginate",
+            &owner_flag,
+            &owner,
+            &repo_flag,
+            &repo,
+            "-f",
+            &query,
+            "--jq",
+            jq,
+        ])
+    }
+
     /// The commit at the head of the default branch of `repo`.
     pub fn head_commit(&self, repo: &RepoName) -> Result<String> {
         let out = self.read(&["api", &format!("repos/{repo}/commits/HEAD"), "--jq", ".sha"])?;
@@ -340,7 +420,7 @@ impl GitHub {
     /// none is a read that succeeded; only a read GitHub refused, or one
     /// nobody can parse, is unreadable.
     pub fn protection(&self, branch: &str) -> Guard {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/branches/{branch}/protection");
+        let endpoint = format!("repos/{OWN}/branches/{branch}/protection");
         let out = match Command::new("gh").current_dir(&self.dir).args(["api", &endpoint]).output()
         {
             Ok(out) => out,
@@ -409,20 +489,7 @@ impl GitHub {
             more: bool,
             comments: Vec<Comment>,
         }
-        let query = format!("query={OPEN_ISSUES_QUERY}");
-        let out = self.read(&[
-            "api",
-            "graphql",
-            "--paginate",
-            "-F",
-            "owner={owner}",
-            "-F",
-            "repo={repo}",
-            "-f",
-            &query,
-            "--jq",
-            OPEN_ISSUES_JQ,
-        ])?;
+        let out = self.query(OPEN_ISSUES_QUERY, OPEN_ISSUES_JQ)?;
         let mut open = OpenIssues::default();
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row =
@@ -459,20 +526,7 @@ impl GitHub {
             more: bool,
             comments: Vec<Comment>,
         }
-        let query = format!("query={LANDED_ISSUES_QUERY}");
-        let out = self.read(&[
-            "api",
-            "graphql",
-            "--paginate",
-            "-F",
-            "owner={owner}",
-            "-F",
-            "repo={repo}",
-            "-f",
-            &query,
-            "--jq",
-            LANDED_ISSUES_JQ,
-        ])?;
+        let out = self.query(LANDED_ISSUES_QUERY, LANDED_ISSUES_JQ)?;
         let mut landed = vec![];
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let row: Row =
@@ -510,7 +564,7 @@ impl GitHub {
         }
         let label = crate::judge::label_segment(label);
         let endpoint =
-            format!("repos/{{owner}}/{{repo}}/issues?state=closed&labels={label}&per_page=100");
+            self.tracker.endpoint(&format!("issues?state=closed&labels={label}&per_page=100"));
         let out = self.read(&["api", "--paginate", &endpoint, "--jq", CLOSED_JQ])?;
         let mut closed = vec![];
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
@@ -533,7 +587,7 @@ impl GitHub {
         }
         let label = crate::judge::label_segment(label);
         let endpoint =
-            format!("repos/{{owner}}/{{repo}}/issues?state=all&labels={label}&per_page=100");
+            self.tracker.endpoint(&format!("issues?state=all&labels={label}&per_page=100"));
         let out = self.read(&["api", "--paginate", &endpoint, "--jq", CARRYING_JQ])?;
         let mut carrying = vec![];
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
@@ -586,16 +640,26 @@ impl GitHub {
     /// One issue, open or closed. An error when it cannot be read: `Gone`
     /// when GitHub says it was deleted or transferred.
     pub fn issue(&self, number: u64) -> Result<IssueRead> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}");
+        let endpoint = self.tracker.endpoint(&format!("issues/{number}"));
         let out = about_issue(number, self.read(&["api", &endpoint, "--jq", ISSUE_JQ]))?;
         serde_json::from_str(&out)
             .with_context(|| format!("gh api issue {number}: unexpected answer"))
     }
 
-    /// Every comment on an issue or a PR, oldest first: `Gone` of one GitHub
-    /// says was deleted or transferred.
+    /// Every comment on an issue, oldest first: `Gone` of one GitHub says was
+    /// deleted or transferred.
     pub fn comments(&self, number: u64) -> Result<Vec<Comment>> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100");
+        self.comments_in(self.tracker.path(), number)
+    }
+
+    /// Every comment on a PR, oldest first.
+    pub fn pr_comments(&self, pr: u64) -> Result<Vec<Comment>> {
+        self.comments_in(OWN, pr)
+    }
+
+    /// Every comment on the issue or the PR `number` of `repo`, oldest first.
+    fn comments_in(&self, repo: &str, number: u64) -> Result<Vec<Comment>> {
+        let endpoint = format!("repos/{repo}/issues/{number}/comments?per_page=100");
         let read = self.read(&["api", "--paginate", &endpoint, "--jq", COMMENTS_JQ]);
         let out = about_issue(number, read)?;
         out.lines()
@@ -604,27 +668,40 @@ impl GitHub {
             .collect()
     }
 
-    /// Posts one comment on an issue or a PR: `Gone` of one GitHub says was
-    /// deleted or transferred.
+    /// Posts one comment on an issue: `Gone` of one GitHub says was deleted
+    /// or transferred.
     pub fn comment(&self, number: u64, body: &str) -> Result<()> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/comments");
+        self.comment_in(self.tracker.path(), number, body)
+    }
+
+    /// Posts one comment on a PR.
+    pub fn comment_on_pr(&self, pr: u64, body: &str) -> Result<()> {
+        self.comment_in(OWN, pr, body)
+    }
+
+    /// Posts one comment on the issue or the PR `number` of `repo`.
+    fn comment_in(&self, repo: &str, number: u64, body: &str) -> Result<()> {
+        let endpoint = format!("repos/{repo}/issues/{number}/comments");
         let body = format!("body={body}");
         about_issue(number, self.gh(&["api", "--method", "POST", &endpoint, "-f", &body]))?;
         Ok(())
     }
 
-    /// Replaces the body of one comment, on an issue or a PR.
+    /// Replaces the body of one comment on an issue.
     pub fn edit_comment(&self, id: u64, body: &str) -> Result<()> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/comments/{id}");
-        self.gh(&[
-            "api",
-            "--method",
-            "PATCH",
-            &endpoint,
-            "-f",
-            &format!("body={body}"),
-            "--silent",
-        ])?;
+        self.edit_comment_in(self.tracker.path(), id, body)
+    }
+
+    /// Replaces the body of one comment on a PR.
+    pub fn edit_pr_comment(&self, id: u64, body: &str) -> Result<()> {
+        self.edit_comment_in(OWN, id, body)
+    }
+
+    /// Replaces the body of one comment of `repo`, on an issue or a PR.
+    fn edit_comment_in(&self, repo: &str, id: u64, body: &str) -> Result<()> {
+        let endpoint = format!("repos/{repo}/issues/comments/{id}");
+        let body = format!("body={body}");
+        self.gh(&["api", "--method", "PATCH", &endpoint, "-f", &body, "--silent"])?;
         Ok(())
     }
 
@@ -632,16 +709,8 @@ impl GitHub {
     pub fn open_issue(&self, title: &str, body: &str, labels: &[&str]) -> Result<u64> {
         let (title, body) = (format!("title={title}"), format!("body={body}"));
         let labels: Vec<String> = labels.iter().map(|label| format!("labels[]={label}")).collect();
-        let mut args = vec![
-            "api",
-            "--method",
-            "POST",
-            "repos/{owner}/{repo}/issues",
-            "-f",
-            &title,
-            "-f",
-            &body,
-        ];
+        let endpoint = self.tracker.endpoint("issues");
+        let mut args = vec!["api", "--method", "POST", &endpoint, "-f", &title, "-f", &body];
         for label in &labels {
             args.extend(["-f", label.as_str()]);
         }
@@ -652,7 +721,7 @@ impl GitHub {
 
     /// Closes one issue as completed.
     pub fn close_issue(&self, number: u64) -> Result<()> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}");
+        let endpoint = self.tracker.endpoint(&format!("issues/{number}"));
         self.gh(&["api", "--method", "PATCH", &endpoint, "-f", "state=closed", "--silent"])?;
         Ok(())
     }
@@ -756,9 +825,8 @@ impl GitHub {
     /// The issues GitHub records `number` as blocked by, open or closed:
     /// `Gone` when `number` was deleted or transferred.
     pub fn blocked_by(&self, number: u64) -> Result<Vec<BlockedBy>> {
-        let endpoint = format!(
-            "repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by?per_page=100"
-        );
+        let endpoint =
+            self.tracker.endpoint(&format!("issues/{number}/dependencies/blocked_by?per_page=100"));
         let read = self.read(&["api", "--paginate", &endpoint, "--jq", BLOCKED_BY_JQ]);
         let out = about_issue(number, read)?;
         out.lines()
@@ -774,7 +842,7 @@ impl GitHub {
 
     /// Records `number` as blocked by the issue whose database id is `blocker_id`.
     pub fn add_blocker(&self, number: u64, blocker_id: u64) -> Result<()> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/dependencies/blocked_by");
+        let endpoint = self.tracker.endpoint(&format!("issues/{number}/dependencies/blocked_by"));
         let field = format!("issue_id={blocker_id}");
         self.gh(&["api", "--method", "POST", &endpoint, "-F", &field, "--silent"])?;
         Ok(())
@@ -782,8 +850,8 @@ impl GitHub {
 
     /// Every label the repo has, by name.
     pub fn labels(&self) -> Result<Vec<String>> {
-        let endpoint = "repos/{owner}/{repo}/labels?per_page=100";
-        let out = self.read(&["api", "--paginate", endpoint, "--jq", LABELS_JQ])?;
+        let endpoint = self.tracker.endpoint("labels?per_page=100");
+        let out = self.read(&["api", "--paginate", &endpoint, "--jq", LABELS_JQ])?;
         Ok(out.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
     }
 
@@ -791,12 +859,12 @@ impl GitHub {
     /// be shown with `description`.
     pub fn create_label(&self, name: &str, description: &str) -> Result<()> {
         let (name, description) = (format!("name={name}"), format!("description={description}"));
-        let endpoint = "repos/{owner}/{repo}/labels";
+        let endpoint = self.tracker.endpoint("labels");
         self.gh(&[
             "api",
             "--method",
             "POST",
-            endpoint,
+            &endpoint,
             "-f",
             &name,
             "-f",
@@ -810,7 +878,7 @@ impl GitHub {
 
     /// Puts one label on an issue; GitHub creates a label the repo lacks.
     pub fn add_label(&self, number: u64, label: &str) -> Result<()> {
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/labels");
+        let endpoint = self.tracker.endpoint(&format!("issues/{number}/labels"));
         let field = format!("labels[]={label}");
         self.gh(&["api", "--method", "POST", &endpoint, "-f", &field, "--silent"])?;
         Ok(())
@@ -819,7 +887,7 @@ impl GitHub {
     /// Takes one label off an issue that carries it.
     pub fn remove_label(&self, number: u64, label: &str) -> Result<()> {
         let label = crate::judge::label_segment(label);
-        let endpoint = format!("repos/{{owner}}/{{repo}}/issues/{number}/labels/{label}");
+        let endpoint = self.tracker.endpoint(&format!("issues/{number}/labels/{label}"));
         self.gh(&["api", "--method", "DELETE", &endpoint, "--silent"])?;
         Ok(())
     }

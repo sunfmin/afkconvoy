@@ -109,7 +109,7 @@ pub fn intake(repo: &Repo, taking: Taking) -> Result<Value> {
     let Some(bound) = config.bound else {
         bail!("this repo is unbound: its config names no team, so it has no workflow to take in to")
     };
-    let gh = GitHub { dir: repo.dir.clone() };
+    let gh = GitHub::of(repo)?;
     let kept = keep(&gh, &Copies::of_host()?, &bound.team, &labels)?;
     let Some(workflow) = kept.team.workflow(&name) else {
         let has: Vec<&str> = kept.team.workflows.iter().map(|w| w.name.as_str()).collect();

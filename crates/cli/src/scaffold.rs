@@ -10,7 +10,7 @@ use afkconvoy_core::team::{HUMAN, RULES, SKILLS, TEAM_FILE, WORKFLOWS};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::gh::GitHub;
+use crate::gh::{GitHub, Tracker};
 use crate::git::Repo;
 
 /// The one skill a role's skeleton holds, and the one a team's example
@@ -321,7 +321,7 @@ fn create(message: &str, dir: &Path, create: &Create) -> Result<()> {
     repo.git(&["add", "--all"])?;
     repo.git(&["commit", "--quiet", "-m", message])?;
     let visibility = if create.public { "--public" } else { "--private" };
-    let gh = GitHub { dir: dir.to_path_buf() };
+    let gh = GitHub { dir: dir.to_path_buf(), tracker: Tracker::Own };
     gh.gh(&["repo", "create", create.repo.as_str(), visibility, "--source", ".", "--push"])?;
     Ok(())
 }

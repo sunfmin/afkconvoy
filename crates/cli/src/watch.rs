@@ -77,7 +77,7 @@ fn ask_after(fleet: &Fleet, me: &Me, issue: u64) -> Result<Option<Asked>> {
 
 /// The join record of `pr`, and the PR's comments it was read from.
 pub(crate) fn join_record(fleet: &Fleet, pr: u64) -> Result<(JoinRecord, Vec<Comment>)> {
-    let comments = fleet.gh.comments(pr)?;
+    let comments = fleet.gh.pr_comments(pr)?;
     Ok((read_join(comments.iter().map(|c| c.body.as_str())), comments))
 }
 
@@ -91,8 +91,8 @@ pub(crate) fn record_join(
 ) -> Result<()> {
     let body = join_comment(record);
     match record.comment.and_then(|at| comments.get(at)) {
-        Some(comment) => fleet.gh.edit_comment(comment.id, &body),
-        None => fleet.gh.comment(pr, &body),
+        Some(comment) => fleet.gh.edit_pr_comment(comment.id, &body),
+        None => fleet.gh.comment_on_pr(pr, &body),
     }
 }
 
