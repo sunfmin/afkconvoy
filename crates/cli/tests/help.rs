@@ -454,6 +454,20 @@ fn troubleshooting_has_a_row_for_every_finding_doctor_can_give() {
     assert!(heads.iter().any(|head| no_branch.starts_with(head)), "{no_branch}");
 }
 
+#[test]
+fn humans_doctor_and_panel_send_open_proposals_to_the_same_read_only_views() {
+    let humans = asked(&["help", "humans"]);
+    let doctor = asked(&["doctor", "--help"]);
+    let panel = asked(&["panel", "--help"]);
+    for text in [&humans, &doctor, &panel] {
+        for words in ["proposals.open", "With a human", "max_open", "merge", "close"] {
+            assert!(text.contains(words), "missing {words}: {text}");
+        }
+    }
+    assert!(humans.contains("doctor --all") && humans.contains("read only"));
+    assert!(!humans.contains("lists the proposals under way and open"));
+}
+
 /// Every flag `text` gives a command of this tool's, with the command: what
 /// stands on a line after `afkconvoy <command>`, up to where the line stops
 /// being the command's.

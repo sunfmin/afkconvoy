@@ -91,7 +91,10 @@ pub const VISIBILITY_JQ: &str = ".visibility";
 pub const PR_FIELDS: &str = "number,title,headRefName,headRefOid,body,closingIssuesReferences,\
     isCrossRepository,headRepository,headRepositoryOwner";
 /// What is read of each open PR of another repo.
-pub const PR_OF_FIELDS: &str = "number,headRefName,isCrossRepository";
+pub const PR_OF_FIELDS: &str = "number,headRefName,isCrossRepository,createdAt";
+/// The creation time of another repo's PR in epoch seconds, where GitHub says it.
+pub const PR_OF_JQ: &str = "map({number, headRefName, isCrossRepository, \
+    since: (.createdAt | fromdateiso8601? // null)})";
 
 /// The checkout's own repo, as an endpoint names it: `gh` fills it in from
 /// the checkout it runs in.
@@ -145,6 +148,15 @@ fn carrying_labels(tracker: &Tracker, label: &str) -> String {
 pub struct GitHub {
     pub dir: PathBuf,
     pub tracker: Tracker,
+}
+
+/// An open PR from another repo's own branch, with when it was opened.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OtherPr {
+    pub number: u64,
+    pub head_ref_name: String,
+    pub since: Option<u64>,
 }
 
 impl GitHub {
@@ -863,13 +875,13 @@ impl GitHub {
     }
 
     /// The open PRs of another repo, `repo`, from a branch of its own — as
-    /// `open_prs` reads this one's: the number and the head branch of each.
-    pub fn open_prs_of(&self, repo: &RepoName) -> Result<Vec<(u64, String)>> {
+    /// `open_prs` reads this one's: its number, head branch and creation time.
+    pub fn open_prs_of(&self, repo: &RepoName) -> Result<Vec<OtherPr>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Row {
-            number: u64,
-            head_ref_name: String,
+            #[serde(flatten)]
+            pr: OtherPr,
             is_cross_repository: bool,
         }
         let out = self.read(&[
@@ -883,10 +895,12 @@ impl GitHub {
             "1000",
             "--json",
             PR_OF_FIELDS,
+            "--jq",
+            PR_OF_JQ,
         ])?;
         let rows: Vec<Row> = serde_json::from_str(&out).context("gh pr list: unexpected answer")?;
         let own = rows.into_iter().filter(|row| !row.is_cross_repository);
-        Ok(own.map(|row| (row.number, row.head_ref_name)).collect())
+        Ok(own.map(|row| row.pr).collect())
     }
 
     /// The open issues of another repo, `repo`: the number and the body of

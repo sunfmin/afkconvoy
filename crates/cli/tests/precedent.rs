@@ -549,6 +549,152 @@ fn a_fork_s_pr_named_as_a_proposal_s_is_neither_taken_for_one_nor_closed() {
 }
 
 #[test]
+fn doctor_and_the_panel_list_open_proposals_with_no_ruling_left_to_propose_and_write_nothing() {
+    let world = proposing(1);
+    // Its issue is no longer open, and its worker and claim are gone. Discovery
+    // must read the team's repo even with nothing left to propose here.
+    world.issue(7, &["flow:feature"]);
+    world.with_gh(|gh| {
+        gh["issues"][0]["state"] = json!("closed");
+        gh["prs_of"]["acme/team"] = json!([
+            {"number": 31, "headRefName": named(7, 123), "state": "open", "since": 1000},
+            {"number": 32, "headRefName": named(8, 124), "state": "open", "fork": true},
+            {"number": 33, "headRefName": "tidy-the-roles", "state": "open"},
+            {"number": 34, "headRefName": named(9, 125), "state": "merged"},
+            {"number": 35, "headRefName": named(10, 126), "state": "closed"}
+        ]);
+    });
+    world.watch_pushes(None);
+    world.gh_calls();
+    let refs = world.remote(&["for-each-ref"]);
+    let doctor = world.afk(&["doctor", "--now", "8200"]).json;
+    let expected = json!({
+        "team": "acme/team", "tracker": null, "max_open": 1,
+        "open": [{"pr": 31, "issue": 7, "comment": 123, "since": 1000, "age": 7200,
+            "merge": "gh pr merge 31 --repo acme/team", "close": "gh pr close 31 --repo acme/team"}]
+    });
+    assert_eq!(doctor["proposals"], expected, "{doctor}");
+    assert_eq!(doctor["waiting_on_human"], json!([]));
+    let found: Vec<_> = doctor["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["what"].as_str().unwrap().contains("the team's `max_open`"))
+        .collect();
+    assert_eq!(found.len(), 1, "{doctor}");
+    assert_eq!(found[0]["severity"], "warning");
+    assert_eq!(found[0]["evidence"], "1 open of 1: #31");
+    assert_eq!(found[0]["fix"], expected["open"][0]["merge"]);
+    assert_eq!(found[0]["see"], "afkconvoy help humans");
+
+    let all = world.afk_in(&world.root, &["doctor", "--all", "--now", "8200"]).json;
+    assert_eq!(all["checkouts"][0]["doctor"]["proposals"], expected, "{all}");
+    assert_eq!(all["checkouts"][0]["doctor"]["findings"], doctor["findings"]);
+
+    let page = world.render_panel("open-proposals", &["--now", "8200"], (1440, 1000));
+    let human = page.part("section", "human");
+    for words in [
+        "acme/team",
+        "proposal PR #31",
+        "ruling on",
+        "#7",
+        "comment 123",
+        "open for 2h",
+        "gh pr merge 31 --repo acme/team",
+        "gh pr close 31 --repo acme/team",
+        "max_open",
+    ] {
+        assert!(human.contains(words), "missing {words}: {human}");
+    }
+    assert!(!human.contains("Nothing waits") && !human.contains("proposal PR #32"), "{human}");
+    assert!(!page.html.contains("proposal PR #33") && !page.html.contains("proposal PR #34"));
+
+    assert_eq!(world.probes(), [] as [String; 0]);
+    assert_eq!(world.pushes(), [] as [String; 0]);
+    assert_eq!(world.remote(&["for-each-ref"]), refs);
+    let calls = world.gh_calls();
+    let lists = calls
+        .iter()
+        .filter(|call| {
+            call.starts_with(&["pr".into(), "list".into()])
+                && call.iter().any(|arg| arg == "acme/team")
+        })
+        .count();
+    assert_eq!(lists, 3, "one read per rebuild: {calls:?}");
+    for call in calls {
+        let writes =
+            ["POST", "PATCH", "PUT", "DELETE", "edit", "create", "close", "merge", "comment"];
+        assert!(!call.iter().any(|arg| writes.contains(&arg.as_str())), "wrote: {call:?}");
+    }
+}
+
+#[test]
+fn proposal_capacity_and_age_follow_the_open_prs_even_when_the_team_stops_proposing() {
+    let world = proposing(2);
+    world.with_gh(|gh| {
+        gh["prs_of"]["acme/team"] = json!([
+            {"number": 32, "headRefName": named(8, 124), "state": "open", "since": 9000},
+            {"number": 31, "headRefName": named(7, 123), "state": "open"}
+        ])
+    });
+    let doctor = || world.afk(&["doctor", "--now", "8200"]).json;
+    let full = |answer: &Value| {
+        answer["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["what"].as_str().unwrap().contains("the team's `max_open`"))
+    };
+    let answer = doctor();
+    assert!(full(&answer), "at max_open: {answer}");
+    assert_eq!(answer["proposals"]["open"][0]["pr"], 31);
+    assert_eq!(answer["proposals"]["open"][0]["since"], Value::Null);
+    assert_eq!(answer["proposals"]["open"][0]["age"], Value::Null);
+    assert_eq!(answer["proposals"]["open"][1]["age"], 0, "clock before PR creation");
+    world.with_gh(|gh| {
+        gh["prs_of"]["acme/team"].as_array_mut().unwrap().push(json!(
+            {"number": 33, "headRefName": named(9, 125), "state": "open", "since": 1000}
+        ))
+    });
+    assert!(full(&doctor()), "above max_open");
+    world.with_gh(|gh| {
+        gh["prs_of"]["acme/team"][0]["state"] = json!("merged");
+        gh["prs_of"]["acme/team"][1]["state"] = json!("closed");
+    });
+    let answer = doctor();
+    assert!(!full(&answer), "below max_open: {answer}");
+    assert_eq!(answer["proposals"]["open"].as_array().unwrap().len(), 1);
+
+    // A team that names no proposer can still have proposals waiting for a human.
+    commit(&team(&world), "team.md", &format!("```yaml\n{ROLES}```\n"));
+    let answer = doctor();
+    assert_eq!(answer["proposals"]["max_open"], Value::Null);
+    assert_eq!(answer["proposals"]["open"][0]["pr"], 33);
+    assert!(!full(&answer));
+    world.with_gh(|gh| gh["prs_of"]["acme/team"][2]["state"] = json!("closed"));
+    assert_eq!(doctor()["proposals"]["open"], json!([]));
+}
+
+#[test]
+fn open_proposals_name_the_tracker_of_their_rulings_separately_from_the_team() {
+    let world = proposing(1);
+    world.name_origin(&world.clone, "acme/code");
+    world.say_tracker(&world.clone, "acme/control");
+    world.with_gh(|gh| {
+        gh["prs_of"]["acme/team"] = json!([
+            {"number": 31, "headRefName": named(7, 123), "state": "open", "since": 1000}
+        ])
+    });
+    let doctor = world.afk(&["doctor", "--now", "8200"]).json;
+    assert_eq!(doctor["proposals"]["tracker"], "acme/control", "{doctor}");
+    assert_eq!(doctor["proposals"]["team"], "acme/team");
+    let page = world.render_panel("proposal-tracker", &["--now", "8200"], (1440, 1000));
+    let human = page.part("section", "human");
+    assert!(human.contains("ruling on acme/control#7"), "{human}");
+    assert!(human.contains("gh pr merge 31 --repo acme/team"), "{human}");
+}
+
+#[test]
 fn a_stage_s_brief_says_where_the_precedents_are_and_to_read_them_before_an_escalate() {
     let world = proposing(3);
     world.issue(7, &["flow:feature"]);

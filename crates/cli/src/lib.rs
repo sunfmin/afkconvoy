@@ -162,7 +162,7 @@ const SKILL: &str = include_str!("../../../skills/afkconvoy/SKILL.md");
 /// ## What to run first, in a checkout of the repo
 ///
 /// 1. `afkconvoy config`: read the config, what the fleet goes by. Its `--help` shows one whole. Then `afkconvoy check`, only in a bound repo: does the team load? A team is designed first: see designing a team, below.
-/// 2. `afkconvoy plan`: what a tick would act on. It changes nothing.
+/// 2. `afkconvoy plan`: what a tick would act on. It changes no fleet state, but may push and delete a startup probe on the remote. To read without writing anything, run `afkconvoy doctor`.
 /// 3. `afkconvoy run`: the checkout's fleet instance, held by the host runner until it is stopped. It answers once the first tick ended.
 ///
 /// And whenever something looks wrong: `afkconvoy doctor` — it changes nothing, and names each fix.
@@ -915,7 +915,7 @@ enum Command {
     ///
     /// ## What it answers
     ///
-    /// {"host", "fleet", "claims", "issues", "waiting_on_human", "findings"}
+    /// {"host", "fleet", "claims", "issues", "waiting_on_human", "proposals", "findings"}
     ///
     /// - `host`: what this host has of what the fleet needs:
     ///
@@ -946,6 +946,7 @@ enum Command {
     /// - `claims`: each claim of that instance: {issue, title, status, pr, stage, role, held_for, worker, worktree, gate} — status as `plan` gives it; stage and role in a bound repo; held_for in seconds; worker is {state, quiet}, state being busy, stopped or gone, and null when orca could not say; gate is {green_at} when a green gate run is on record for the tree the worktree is at, else null
     /// - `issues`: as `plan` answers them: {frontier, excluded, escalating, locks, free_slots, patrols} — what a worker can be started on, what waits and why, and what is being handed to a human and why. null when they could not be read
     /// - `waiting_on_human`: as `plan` answers it, and as the panel lists it under "With a human": every open issue nobody holds that waits for a human — escalated, at a stage that is a human's, past the end of its workflow and still open, or reporting a patrol's failed run — each as {issue, title, why, url, since, answer}: `why` is what kind of wait, then the reason the issue’s comment gives, in its first sentence; `url` is that comment (the report itself for an older failed patrol or cut with no reason comment), or null where no comment explains the wait; `answer` is the line that answers it, to run as it is but for what stands between < and >. An escalation with no position gets the team's only flow label filled in; with several workflows, `why` lists the flow labels to choose `<flow label>` from. null when the issues could not be read
+    /// - `proposals`: a bound repo's team's open proposals, including those whose source issue is closed: {team, tracker, max_open, open}. team is the team's repo; tracker names another tracker, null where the checkout's own repo holds the rulings; max_open is the team's limit, null where it names nobody who proposes. `proposals.open` lists each PR from the team's own branches, lowest PR first: {pr, issue, comment, since, age, merge, close} — the PR number, the source issue and the id of its ruling's comment, when the PR opened in epoch seconds and its age in seconds (both null where GitHub said no time), and the exact `gh pr merge <pr> --repo <team>` and `gh pr close <pr> --repo <team>` commands. [] with none; proposals is null in an unbound repo or when the team or fleet state cannot be read. The panel shows these under "With a human" too. Once open proposals reach max_open, a warning finding names the PRs and a merge command: further proposals wait at `full` (`afkconvoy help humans`)
     /// - `findings`: what is wrong, most severe first — none: []. Each is {severity, what, evidence, fix, see}:
     ///
     ///   - `severity`: how much it matters, one of those below
@@ -966,7 +967,7 @@ enum Command {
     ///
     /// - `host`: what of `host` is the host's alone, as above, said once
     /// - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy
-    /// - `checkouts`: each checkout on the list, in its order — [] with none — with the repo its remote `origin` names, null where it is no git checkout any more, and its `doctor`: what `doctor` answers in it — `waiting_on_human` among it — but for the host's, which are above. Each is asked as the fleet of the host its `run` named, unless `--host` names one. {"error", "see"} where it could not be asked
+    /// - `checkouts`: each checkout on the list, in its order — [] with none — with the repo its remote `origin` names, null where it is no git checkout any more, and its `doctor`: what `doctor` answers in it — `waiting_on_human` and `proposals` among it — but for the host's, which are above. Each is asked as the fleet of the host its `run` named, unless `--host` names one. {"error", "see"} where it could not be asked
     ///
     /// It exits non-zero where any finding is critical, the host's or a checkout's, or a checkout could not be asked — printing the same object. Errors: the checkout list cannot be read.
     ///
@@ -997,7 +998,7 @@ enum Command {
         #[command(flatten)]
         at: At,
     },
-    /// Show what a tick would act on, and change nothing
+    /// Show what a tick would act on, changing no fleet state (may push and delete a startup probe; read-only: `afkconvoy doctor`)
     ///
     /// ## When to run it
     ///
@@ -1091,7 +1092,7 @@ enum Command {
     /// - A patrol is due or it is not: one that missed ten intervals runs once. And a run still going takes one slot of the concurrency, like a claim on an issue.
     /// - With a lock standing, `free_slots` counts as free the slot of every claim of `--instance` the lock leaves alone: a lock issue does not wait for them.
     /// - `free_slots` counts as free the slot of every claim of `--instance` that is `declared`: `mine` may hold more claims than the concurrency, and the frontier does not wait out the grace period of a worker that already declared.
-    /// - "Changes nothing" is about fleet state. When it probes it still pushes to the remote, and deletes there: it needs push access, and it is not a read-only command.
+    /// - Fleet state is unchanged. When it probes it still pushes to the remote, and deletes there: it needs push access, and it is not a read-only command. To read without writing anything, run `afkconvoy doctor`.
     /// - A slow gate is read off the recorded gate runs the remote still has: a record is swept a day after its run, a landing with no record or with a record that states no time is passed over, and {const:SLOW_GATE_LANDINGS} landings spread over hosts none of which has {const:SLOW_GATE_LANDINGS} say nothing. After an issue for a slow gate closed, only the landings made since count.
     /// - A probe that stands is trusted, not checked: a command uninstalled or logged out since, or a rule the remote gained, shows as the error of whatever runs into it — or, for the ref layout, not until the next probe. `run` probes at every start.
     ///
@@ -1537,7 +1538,7 @@ enum Command {
     /// Not a JSON object: one HTML document on stdout, complete in itself, with no address in it that a browser would fetch. The same fleet state gives the same document. It has three parts, each made by one rendering, whether the host runner serves the page or this prints it:
     ///
     /// - The host, once: admission — whether it holds back new workers, why, and what it read of the host; the workers that are hot, in every repo, with why and what each held at the most; the inspection running, and what the last host inspection found; the commands run alone on the host and those waiting their turn (`exclusive`); host sleep — the sleep hours it may be put to sleep in, or that the host settings keep it awake, and which fleet instances are not idle; the host kit — each harness in order with its models, each one paused, and what the stock consult runs
-    /// - With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`
+    /// - With a human, across every repo: each fleet instance that is broken, with why, since when and when the host runner starts it again; then every open issue that waits for a human, labelled with its repo, with what kind of wait and the first sentence of the reason its comment gives, a Reason link to that comment (the report itself for an older failed patrol or cut), and the line that answers it: what `doctor` answers as `waiting_on_human`. Also every open proposal on each bound repo's team's repo: its PR, source issue and ruling's comment, how long it has been open, and the exact merge and close commands — what `doctor` and `doctor --all` answer as `proposals.open`, including proposals whose source issue is closed. Once these reach the team's `max_open`, the page says so: further proposals wait at `full` (`afkconvoy help humans`)
     /// - Each repo: a row at the top names every checkout, each with whether its fleet instance is idle, its claims held of its bound and its frontier, and links to its part. Each part then shows:
     ///   - Claims held: the claims of its fleet instance that take a slot, of the concurrency
     ///   - `Declared`: shown while there are any: the claims whose worker declared a verdict not acted on yet, which take no slot

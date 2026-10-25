@@ -154,6 +154,8 @@ pub struct Panel {
     /// answers it: the working set's `waiting_on_human`, as `doctor` gives it.
     /// The page lists them across every repo.
     pub to_human: Vec<Card>,
+    /// The team's open proposals, shared with doctor's read-only view.
+    pub proposals: Option<crate::precedent::Open>,
     /// Every other open issue, with why the fleet leaves it.
     pub off: Vec<Card>,
     /// The patrols the repo names, each as it stands.
@@ -415,6 +417,7 @@ impl Panel {
             lanes: vec![],
             train: vec![],
             to_human: vec![],
+            proposals: fleet.proposals.clone(),
             off: vec![],
             patrols: vec![],
             cut: None,
@@ -524,9 +527,9 @@ impl Panel {
         }
     }
 
-    /// How many issues wait for a human.
+    /// How many issues and proposals wait for a human.
     pub fn with_a_human(&self) -> usize {
-        self.to_human.len()
+        self.to_human.len() + self.proposals.as_ref().map_or(0, |read| read.open.len())
     }
 
     /// How many issues wait for a free slot.
@@ -1266,7 +1269,49 @@ fn human_part(out: &mut String, page: &Page) {
         }
         out.push_str("</ul>");
     }
-    if broken.is_empty() && asked.is_empty() {
+    let mut proposals = 0;
+    for checkout in &page.checkouts {
+        let Some(panel) = checkout.shown() else { continue };
+        let Some(read) = &panel.proposals else { continue };
+        if read.open.is_empty() {
+            continue;
+        }
+        proposals += read.open.len();
+        if let Some(finding) = read.finding() {
+            let _ = write!(
+                out,
+                "<p class=\"note\">{} · {}</p>",
+                esc(&finding.what),
+                esc(&finding.evidence)
+            );
+        }
+        out.push_str("<ul class=\"cards proposals\">");
+        for pr in &read.open {
+            let age = pr.since.map_or_else(
+                || "age unknown".to_string(),
+                |since| format!("open for {}", lasted(now.saturating_sub(since))),
+            );
+            let source = read.tracker.as_deref().unwrap_or(&panel.repo);
+            let _ = write!(
+                out,
+                "<li class=\"card\" data-proposal=\"{}\"><span class=\"repo\">{}</span> \
+                 <span class=\"title\">proposal PR #{}</span><span class=\"meta\">\
+                 <span class=\"note\">ruling on {}#{} · comment {} · {} · \
+                 <code>{}</code> · <code>{}</code></span></span></li>",
+                pr.pr,
+                esc(&read.team),
+                pr.pr,
+                esc(source),
+                pr.ruling.issue,
+                pr.ruling.comment,
+                age,
+                esc(&pr.merge),
+                esc(&pr.close)
+            );
+        }
+        out.push_str("</ul>");
+    }
+    if broken.is_empty() && asked.is_empty() && proposals == 0 {
         out.push_str("<p class=\"none\">Nothing waits for a human.</p>");
     }
     out.push_str("</section>\n");
@@ -1515,6 +1560,7 @@ mod tests {
             lanes: vec![],
             train: vec![],
             to_human: vec![],
+            proposals: None,
             off: vec![],
             patrols: vec![],
             cut: None,

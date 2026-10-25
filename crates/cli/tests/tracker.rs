@@ -1,6 +1,6 @@
 //! A fleet whose tracker is another repo than its checkout's: every issue it
 //! reads and writes is the tracker's, and every PR, branch and ref the
-//! checkout's repo's.
+//! checkout's repo's, apart from the proposals read on the team's repo.
 
 use crate::common;
 
@@ -82,13 +82,17 @@ fn train(world: &World) -> PathBuf {
 /// The repo a call names, and what of it: an endpoint's path after the repo,
 /// empty of the repo itself. The tracker is named by name, and the checkout's repo by `{owner}/{repo}`,
 /// which `gh` fills in from the checkout: a query names its repo by its
-/// `owner` and `repo`, and `gh pr` the checkout's by naming none.
+/// `owner` and `repo`, and `gh pr` the checkout's by naming none, or the
+/// team's explicitly when it lists open proposals.
 fn named(call: &[String]) -> (String, String) {
     let words: Vec<&str> = call.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["pr", verb, ..] => {
-            assert!(!call.contains(&"--repo".to_string()), "{call:?}");
-            return ("{owner}/{repo}".to_string(), format!("pr {verb}"));
+            let repo = call
+                .windows(2)
+                .find(|pair| pair[0] == "--repo")
+                .map_or("{owner}/{repo}", |pair| pair[1].as_str());
+            return (repo.to_string(), format!("pr {verb}"));
         }
         ["repo", "clone", repo, ..] => return (repo.to_string(), "clone".to_string()),
         ["api", "graphql", ..] => {
@@ -110,7 +114,8 @@ fn named(call: &[String]) -> (String, String) {
 /// label — or of who may see the tracker, which a start asks — and was
 /// answered from the tracker's state; that each made of the
 /// checkout's repo is of a PR — its comments among them — or a branch; and
-/// that each made of another repo reads a team's or a role's head.
+/// that each made of another repo reads a team's or a role's head, or the
+/// team's open proposals.
 fn routed(world: &World) -> Vec<Vec<String>> {
     let gh = world.gh();
     let prs: Vec<String> =
@@ -142,7 +147,11 @@ fn routed(world: &World) -> Vec<Vec<String>> {
             }
             other => {
                 assert!(!gh["repos"][other].is_null(), "a call of an unknown repo: {call:?}");
-                assert!(["clone", "commits/HEAD"].contains(&what.as_str()), "{call:?}");
+                let proposals = other == "acme/team" && what == "pr list";
+                assert!(
+                    ["clone", "commits/HEAD"].contains(&what.as_str()) || proposals,
+                    "{call:?}"
+                );
             }
         }
     }
