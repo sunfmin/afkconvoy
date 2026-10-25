@@ -476,6 +476,11 @@ pub fn reconcile(
         if !claim.is_held_by(&me.instance) {
             continue;
         }
+        // Startup failures are continued by the next tick, with their own
+        // bounded failure path. There is no worker here to diagnose yet.
+        if crate::dispatch::incomplete(fleet, claim.number)? {
+            continue;
+        }
         if !open.issues.rows.iter().any(|i| i.number == claim.number) {
             continue;
         }
@@ -830,6 +835,7 @@ fn decide(
             observed.rate_retries += 1;
             observed.action = "retrying".into();
             if diagnosis.class != "rate_limit" {
+                worktree.ready_for_nudge(&observed.terminal)?;
                 worktree.tell(
                     &observed.terminal,
                     "Continue the existing task if ready. Do not restart or discard work.",

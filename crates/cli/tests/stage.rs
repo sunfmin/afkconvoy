@@ -48,6 +48,27 @@ fn bound() -> World {
     world
 }
 
+#[test]
+fn an_incomplete_dispatch_starts_its_stage_again_without_a_silence_verdict() {
+    let world = bound();
+    world.issue(7, &["flow:feature"]);
+    world.with_orca(|orca| orca["never_ready"] = json!(true));
+    let failed = tick(&world, 1000);
+    assert_eq!(failed["errors"][0]["do"], "dispatch");
+    let before = world.orca()["worktrees"][0].clone();
+    world.with_orca(|orca| orca["never_ready"] = json!(false));
+    let continued = tick(&world, 1090);
+    assert_eq!(continued["errors"], json!([]));
+    assert!(
+        continued["did"].as_array().unwrap().iter().any(|step| {
+            step["do"] == "advance" && step["issue"] == 7 && step["outcome"] == "continued"
+        }),
+        "{continued}"
+    );
+    assert_eq!(world.orca()["worktrees"][0], before);
+    assert!(!world.comments(7).iter().any(|body| body.contains("verdict=failed")));
+}
+
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
     world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", &now]).ok()

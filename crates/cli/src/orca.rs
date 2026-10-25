@@ -1018,6 +1018,19 @@ impl Worktree {
         Ok(())
     }
 
+    /// A terminal may have fallen back to its shell since the worker was
+    /// read. Require the harness's prompt immediately before a nudge; never
+    /// answer a trust question or type a nudge into a shell.
+    pub(crate) fn ready_for_nudge(&self, terminal: &str) -> Result<()> {
+        let ready = self.wait(terminal, 1).with_context(|| {
+            format!("no running worker harness confirmed in terminal {terminal}; no nudge was sent")
+        })?;
+        if ready != Waited::Ready {
+            bail!("no running worker harness ready in terminal {terminal}; no nudge was sent");
+        }
+        Ok(())
+    }
+
     /// Types one line at the worker and submits it. Typed but unsubmitted, a
     /// worker sits idle forever, indistinguishable from one that finished.
     pub fn tell(&self, terminal: &str, line: &str) -> Result<()> {
