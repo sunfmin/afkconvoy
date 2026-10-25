@@ -578,6 +578,15 @@ impl World {
         self.every_comment(number).into_iter().filter(|body| !is_board(body)).collect()
     }
 
+    /// The URL GitHub assigned to this comment, to assert a wait links to
+    /// the explanation rather than to its issue or a later status comment.
+    pub fn comment_url(&self, number: u64, body: &str) -> String {
+        let gh = self.gh();
+        let rows = gh["comments"][number.to_string()].as_array().unwrap();
+        let comment = rows.iter().rev().find(|row| row["body"] == body).unwrap();
+        comment["html_url"].as_str().unwrap().to_string()
+    }
+
     /// The status boards an issue carries: one, once it was ever claimed.
     pub fn boards(&self, number: u64) -> Vec<String> {
         self.every_comment(number).into_iter().filter(|body| is_board(body)).collect()

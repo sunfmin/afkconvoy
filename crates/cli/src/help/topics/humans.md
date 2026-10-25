@@ -2,7 +2,7 @@ Every way the fleet stops for a human, and the command that answers each.
 
 ## Where to look
 
-`afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with why, since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
+`afkconvoy doctor` lists every open issue that waits for a human under `waiting_on_human`, with `why` (what kind of wait, then the first sentence of the reason its comment gives), `url` (that comment, or an older failure report itself), since when and `answer`: the line to run for that issue. `afkconvoy plan` gives the same list; the panel shows it as "With a human". Waiting more than an hour is a finding.
 
 An escalated issue carries the escalate label (`{const:ESCALATE_LABEL}` unless renamed) in place of its flow label. Its comment says why and ends with the line to answer. Run every command below in a checkout of the repo.
 
