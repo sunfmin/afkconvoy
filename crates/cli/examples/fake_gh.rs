@@ -236,6 +236,18 @@ fn notice_merges(st: &mut State) {
 }
 
 fn pr_list(st: &mut State) -> ! {
+    if st.opt("--state") == Some("merged") {
+        // The merged PRs carrying a label, as a cut asks for them: their numbers.
+        assert_eq!(st.opt("--jq"), Some(".[].number"), "fake gh: unsupported jq");
+        let label = json!(st.opt("--label").expect("a label"));
+        notice_merges(st);
+        let rows = st.doc["prs"].as_array().unwrap().iter();
+        let merged = rows.filter(|pr| pr["state"] == "merged");
+        let labelled =
+            merged.filter(|pr| pr["labels"].as_array().is_some_and(|l| l.contains(&label)));
+        let numbers: Vec<String> = labelled.map(|pr| pr["number"].to_string()).collect();
+        st.finish(&numbers.join("\n"), 0, "")
+    }
     assert_eq!(st.opt("--state"), Some("open"), "{:?}", st.argv);
     assert_eq!(st.opt("--json"), Some(PR_FIELDS), "{:?}", st.argv);
     notice_merges(st);

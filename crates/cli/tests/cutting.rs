@@ -1,0 +1,253 @@
+use crate::common;
+
+use afkconvoy::log::Entry;
+use common::{BASE, CONFIG, World, git};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+
+/// The cut steps of a repo that turns cutting on: `set` writes the version to
+/// a file, and `publish` says, in the world, what it published with which tag
+/// checked out.
+fn cut_block(world: &World) -> String {
+    let published = world.root.join("published");
+    format!(
+        "```yaml cut\nset: |\n  printf '%s\\n' \"$VERSION\" > VERSION\npublish: |\n  printf \
+         '%s %s\\n' \"$VERSION\" \"$(git describe --tags --exact-match)\" >> '{}'\n```\n",
+        published.display()
+    )
+}
+
+/// Commits `config` as the repo's config file, and pushes it to the base branch.
+fn commit_config(world: &World, config: &str, subject: &str) {
+    std::fs::write(world.clone.join("docs/agents/afkconvoy.md"), config).unwrap();
+    git(&world.clone, &["commit", "-q", "-am", subject]);
+    git(&world.clone, &["push", "-q", "origin", BASE]);
+}
+
+/// Lands a commit `subject` on the base branch, as the landing train would.
+fn land(world: &World, subject: &str) {
+    std::fs::write(world.clone.join("widget.txt"), subject).unwrap();
+    git(&world.clone, &["add", "widget.txt"]);
+    git(&world.clone, &["commit", "-q", "-m", subject]);
+    git(&world.clone, &["push", "-q", "origin", BASE]);
+}
+
+/// Tags the base branch's tip `name`, and pushes the tag.
+fn tag(world: &World, name: &str) {
+    git(&world.clone, &["tag", "-a", name, "-m", name]);
+    git(&world.clone, &["push", "-q", "origin", name]);
+}
+
+fn turn_cutting_on(world: &World, subject: &str) {
+    commit_config(world, &format!("{CONFIG}\n{}", cut_block(world)), subject);
+}
+
+/// A repo that turns cutting on, tagged `v0.1.0` a commit before its base
+/// branch's tip: a PR, #7, landed since.
+fn cutting() -> World {
+    let world = World::new();
+    tag(&world, "v0.1.0");
+    turn_cutting_on(&world, "Turn cutting on (#7)");
+    world
+}
+
+fn planned(world: &World, instance: &str, now: u64) -> Value {
+    world.afk(&["plan", "--instance", instance, "--now", &now.to_string()]).ok()
+}
+
+fn standing(world: &World, instance: &str, now: u64) -> String {
+    let plan = planned(world, instance, now);
+    plan["cut"]["standing"].as_str().unwrap_or_else(|| panic!("no cut: {plan}")).to_string()
+}
+
+fn tick_as(world: &World, instance: &str, now: u64) -> Value {
+    let now = now.to_string();
+    world.afk(&["tick", "--instance", instance, "--host", "h1", "--now", &now]).ok()
+}
+
+/// What a tick did about the cut, and the error of a step that failed.
+fn cut(ticked: &Value) -> Vec<String> {
+    let steps = ticked["did"].as_array().unwrap().iter();
+    let steps = steps.filter(|step| ["cut", "end_cut"].contains(&step["do"].as_str().unwrap()));
+    let errors = ticked["errors"].as_array().unwrap();
+    let error = |step: &Value| errors.iter().find(|error| error["do"] == step["do"]).cloned();
+    let said = |step: &Value| match error(step) {
+        Some(error) => format!("{} failed: {}", step["do"], error["error"]),
+        None => format!("{} {}", step["do"], step["outcome"]),
+    };
+    steps.map(|step| said(step).replace('"', "")).collect()
+}
+
+/// Every line of this world's tick log, as `run` would print it.
+fn logged(world: &World) -> Vec<String> {
+    let runs = world.cache().join("afkconvoy/runs");
+    let files = std::fs::read_dir(&runs).unwrap().map(|entry| entry.unwrap().path());
+    let files = files.filter(|file| file.extension().unwrap() == "jsonl");
+    let text: String = files.map(|file| std::fs::read_to_string(file).unwrap()).collect();
+    let entry = |line: &str| serde_json::from_str::<Entry>(line).unwrap().said();
+    text.lines().map(entry).collect()
+}
+
+/// The checkout the cut was started in.
+fn checkout(world: &World) -> PathBuf {
+    let listed = world.worktrees().into_iter();
+    let mut cuts: Vec<_> = listed.filter(|path| path.ends_with("afkconvoy-cut")).collect();
+    cuts.pop().expect("the cut has a checkout")
+}
+
+/// Where the cut keeps its record: in its checkout's own git dir.
+fn record_file(checkout: &Path) -> PathBuf {
+    let dir = git(checkout, &["rev-parse", "--absolute-git-dir"]);
+    Path::new(dir.trim()).join("convoy-cut.json")
+}
+
+fn record(checkout: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(record_file(checkout)).unwrap()).unwrap()
+}
+
+/// The fleet's claim on a cut, on the remote.
+fn claimed(world: &World) -> bool {
+    let listed = git(&world.bare, &["for-each-ref", "--format=%(refname)"]);
+    listed.lines().any(|name| name.ends_with("/cut"))
+}
+
+/// Every open issue that says a cut failed: its number and labels.
+fn failures(world: &World) -> Vec<(u64, Vec<String>)> {
+    let issues = world.gh()["issues"].as_array().unwrap().clone();
+    let failed = issues.iter().filter(|issue| {
+        issue["state"].as_str().unwrap_or("open") == "open"
+            && issue["title"].as_str().unwrap().starts_with("afkconvoy: the cut of ")
+    });
+    let labels = |issue: &Value| serde_json::from_value(issue["labels"].clone()).unwrap();
+    failed.map(|issue| (issue["number"].as_u64().unwrap(), labels(issue))).collect()
+}
+
+fn workers_leave(world: &World) {
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["open"] = json!(false);
+        }
+    });
+}
+
+#[test]
+fn plan_says_where_a_cut_stands_and_nothing_of_one_where_cutting_is_off() {
+    let world = World::new();
+    tag(&world, "v0.1.0");
+    land(&world, "Add a widget (#5)");
+    let plan = planned(&world, "alpha", 10_000);
+    assert!(plan.get("cut").is_none(), "{plan}");
+
+    turn_cutting_on(&world, "Turn cutting on (#7)");
+    let plan = planned(&world, "alpha", 10_000);
+    assert_eq!(plan["cut"]["standing"], "due", "{plan}");
+    assert_eq!(plan["cut"]["past"], 2, "{plan}");
+
+    tag(&world, "v0.1.1");
+    assert_eq!(standing(&world, "alpha", 10_000), "tagged");
+}
+
+#[test]
+fn with_no_version_tag_there_is_nothing_to_cut_from() {
+    let world = World::new();
+    turn_cutting_on(&world, "Turn cutting on");
+    assert_eq!(standing(&world, "alpha", 10_000), "untagged");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), Vec::<String>::new());
+}
+
+#[test]
+fn an_idle_tick_starts_one_cut_of_the_next_patch_and_a_peer_starts_none() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    let record = record(&checkout);
+    assert_eq!(record["version"], "0.1.1", "{record}");
+    assert_eq!(record["prs"], json!([7]), "{record}");
+    assert!(claimed(&world));
+    // The cut is this command, in a terminal of its checkout.
+    let created =
+        world.orca_calls().into_iter().filter(|call| common::asked(call) == "terminal create");
+    let created: Vec<String> = created.map(|call| call.join(" ")).collect();
+    assert_eq!(created.len(), 1, "{created:?}");
+    assert!(created[0].contains(" cut; exit"), "{created:?}");
+
+    // Mine is running; a peer finds it claimed and starts none.
+    assert_eq!(standing(&world, "alpha", 10_010), "running");
+    assert_eq!(standing(&world, "beta", 10_010), "peer_running");
+    assert_eq!(cut(&tick_as(&world, "beta", 10_010)), Vec::<String>::new());
+    assert_eq!(world.worktrees().iter().filter(|p| p.ends_with("afkconvoy-cut")).count(), 1);
+}
+
+#[test]
+fn a_pr_labelled_for_a_minor_version_raises_the_minor_one() {
+    let world = cutting();
+    world.with_gh(|gh| {
+        let pr = json!({"number": 7, "title": "Turn cutting on", "headRefName": "seven",
+            "headRefOid": "", "body": "", "state": "merged", "labels": ["release:minor"]});
+        gh["prs"].as_array_mut().unwrap().push(pr);
+    });
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let record = record(&checkout(&world));
+    assert_eq!((&record["version"], &record["minor"]), (&json!("0.2.0"), &json!(true)));
+}
+
+#[test]
+fn a_cut_whose_terminal_is_gone_opens_one_issue_and_no_cut_starts_while_it_is_open() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    workers_leave(&world);
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_100)), ["end_cut done"]);
+    let escalate = world.afk(&["config"]).ok()["escalate_label"].as_str().unwrap().to_string();
+    let failed = failures(&world);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(failed[0].1.contains(&escalate), "{failed:?}");
+    assert!(!claimed(&world));
+
+    assert_eq!(standing(&world, "alpha", 10_200), "failed");
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_200)), Vec::<String>::new());
+    assert_eq!(failures(&world).len(), 1);
+
+    world.close_issue(failed[0].0);
+    assert_eq!(standing(&world, "alpha", 10_300), "due");
+}
+
+#[test]
+fn a_cut_tags_the_commit_that_landed_it_and_publishes_with_the_tag_checked_out() {
+    let world = cutting();
+    assert_eq!(cut(&tick_as(&world, "alpha", 10_000)), ["cut done"]);
+    let checkout = checkout(&world);
+    // Its PR landed: the train put it on the base branch.
+    land(&world, "widgets 0.1.1");
+    let landed = git(&world.clone, &["rev-parse", "HEAD"]).trim().to_string();
+    let mut record = record(&checkout);
+    record["pr"] = json!(8);
+    record["landed"] = json!(landed);
+    std::fs::write(record_file(&checkout), record.to_string()).unwrap();
+
+    let cut_answer = world.afk_in(&checkout, &["cut", "--from", "tag", "--host", "h1"]).ok();
+    assert_eq!(cut_answer["tag"], "v0.1.1", "{cut_answer}");
+    let tagged = world.remote(&["rev-parse", "v0.1.1^{commit}"]);
+    assert_eq!(tagged.trim(), landed);
+    let published = std::fs::read_to_string(world.root.join("published")).unwrap();
+    assert_eq!(published, "0.1.1 v0.1.1\n");
+    assert_eq!(git(&world.bare, &["rev-parse", BASE]).trim(), landed, "pushed nothing to the base");
+
+    // The next tick finds it over: says so, and takes its checkout down.
+    let ticked = tick_as(&world, "alpha", 10_100);
+    assert_eq!(cut(&ticked), ["end_cut done"]);
+    let logged = logged(&world);
+    let said: Vec<_> = logged.iter().filter(|line| line.starts_with("cut: ")).collect();
+    assert_eq!(said.len(), 2, "{logged:#?}");
+    assert!(said[0].starts_with("cut: started the cut of v0.1.1"), "{said:#?}");
+    assert!(said[1].ends_with("tagged, published and installed"), "{said:#?}");
+    assert!(!claimed(&world));
+    assert!(!checkout.exists());
+    assert_eq!(standing(&world, "alpha", 10_200), "tagged");
+}
+
+#[test]
+fn cut_is_refused_outside_a_cut_s_checkout() {
+    let world = cutting();
+    let refused = world.afk(&["cut"]).error();
+    assert!(refused.contains("no cut's checkout"), "{refused}");
+}

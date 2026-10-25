@@ -34,6 +34,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `has no harness on this host it holds limits for`: A role holds limits for no harness the host kit holds, so no worker of it starts and its stages wait; the rest go on. They go on by themselves once the host kit holds one: `afkconvoy kit`, or write the role's limits for one it holds.
 - `matches nothing in the host kit`: A role's roster entry names only harnesses or models this host lacks, so the role runs the host kit whole, less what it holds no limits for. Add one with `afkconvoy kit`, or change the roster.
 - `does not run: its last run failed`: The issue that reports a patrol's failed run is open. Look, then close it: `fix`.
+- `cuts no version: its last cut failed`: The issue that reports the fleet's failed cut is open: it names the step that failed, why, and the line that goes on from there. Read it (`fix`), then run that line in the cut's checkout, which closes it once the cut is over; or close it, and the next idle tick cuts again from the start (`afkconvoy help humans`).
 - `` have reached its `max_open` ``: A patrol is not run while that many of its issues are open. Close some, or raise it.
 - `has waited for a human for`: Nothing in the fleet moves that issue. `fix` answers it: [`afkconvoy help humans`](help:humans).
 - `is held off by a PR not the fleet's`: No worker starts: it would open a second PR. `fix` closes it, or merge it yourself.

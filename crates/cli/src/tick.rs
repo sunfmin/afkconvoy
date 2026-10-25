@@ -571,6 +571,21 @@ impl Ticked {
         &self.cut_said
     }
 
+    /// Appends what the pass's start and end of a cut said to the log of
+    /// `repo`, as a `run` keeps it: what a tick run once does. Soft, as any
+    /// command's line is.
+    pub fn log_cut_said(&self, repo: &Repo, me: &Me) {
+        let log = Log::of(repo);
+        for what in &self.cut_said {
+            let (instance, host) = (me.instance.as_str().to_string(), me.host.clone());
+            let entry = log::Entry { at: me.now, instance, host, what: what.clone() };
+            let appended = log.as_ref().map_err(|error| anyhow!("{error:#}"));
+            if let Err(error) = appended.and_then(|log| log.append(&entry)) {
+                eprintln!("warning: the cut left no line in the tick log: {error:#}");
+            }
+        }
+    }
+
     /// Whether a step of the tick failed on a read GitHub could not be
     /// reached for: nothing says the next tick's read fails too.
     pub fn unreached(&self) -> bool {

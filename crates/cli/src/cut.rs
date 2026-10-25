@@ -36,18 +36,20 @@ const LAND_POLL: Duration = Duration::from_secs(30);
 /// What the remote and GitHub say of the repo's cut, as a rebuild reads it:
 /// the version tags it listed (`Fleet::version_tags`) and the base branch at
 /// `base`, the open `issues`, and the PRs `riding` the landing train. A repo
-/// that names no cut steps reads nothing past the claim on a cut still going.
+/// that names no cut steps reads nothing past a cut still going — its claim,
+/// its PR on the train — and has none where nothing is.
 pub fn seen(
     fleet: &Fleet,
     read: &Flows,
     issues: &[Issue],
     riding: &[&Joined],
     base: &str,
-) -> Result<Seen> {
+) -> Result<Option<Seen>> {
     let claim = fleet.scan.runs.iter().find(|run| run.key == CLAIM_KEY).cloned();
     let on_train = riding.iter().find(|join| matches!(join.of, Of::Cut(_))).map(|join| join.pr);
     if fleet.config.cut.is_none() {
-        return Ok(Seen { claim, on_train, ..Seen::default() });
+        let going = claim.is_some() || on_train.is_some();
+        return Ok(going.then(|| Seen { claim, on_train, ..Seen::default() }));
     }
     let newest = cut::newest(fleet.version_tags());
     let past = match &newest {
@@ -55,7 +57,7 @@ pub fn seen(
         None => 0,
     };
     let failure = cut::failure_of(issues, &escalate_label(fleet, read));
-    Ok(Seen { on: true, newest, past, claim, failure, on_train })
+    Ok(Some(Seen { on: true, newest, past, claim, failure, on_train }))
 }
 
 /// How many commits the base branch at `base` holds past the tag `tag`, its
