@@ -616,6 +616,18 @@ fn api(st: &mut State) -> ! {
         }
         ["issues", number, "comments"] if method == "POST" => {
             let body = body.expect("a comment has a body");
+            // Hold an inspection's final comment while its waiting worker
+            // cools, without blocking the sampler's orca observations.
+            if body.starts_with("<!--convoy:inspection ")
+                && let Some(release) = st.doc["comment_wait"].as_str()
+            {
+                std::fs::write(format!("{release}.waiting"), "").unwrap();
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while !std::path::Path::new(release).exists() {
+                    assert!(std::time::Instant::now() < until, "comment never released");
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
             let id = next_comment_id(st);
             let url = format!("https://gh/c/{id}");
             let rows = &mut st.doc["comments"][*number];

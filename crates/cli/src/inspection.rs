@@ -255,8 +255,35 @@ impl Last {
 
 /// What the last host inspection on this host did; none where none ended.
 pub fn last_on_host() -> Option<Last> {
-    let said = std::fs::read_to_string(cache().ok()?.join(LAST)).ok()?;
-    serde_json::from_str(&said).ok()
+    last_inspections().pop()
+}
+
+/// One completed inspection per reason, newest last. Read the former single
+/// record too, so an upgrade keeps its coverage of a current episode.
+fn last_inspections() -> Vec<Last> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Kept {
+        One(Last),
+        Each(Vec<Last>),
+    }
+    let read = || -> Option<Kept> {
+        let said = std::fs::read_to_string(cache().ok()?.join(LAST)).ok()?;
+        serde_json::from_str(&said).ok()
+    };
+    match read() {
+        Some(Kept::One(last)) => vec![last],
+        Some(Kept::Each(last)) => last,
+        None => vec![],
+    }
+}
+
+fn last_for(reason: Reason) -> Option<(Reason, u64)> {
+    last_inspections()
+        .iter()
+        .rev()
+        .find(|last| last.reason == reason)
+        .map(|last| (last.reason, last.started))
 }
 
 /// Keeps `last` as what the last host inspection on this host found.
@@ -265,7 +292,12 @@ fn keep_last(last: &Last) -> Result<()> {
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot make {}", dir.display()))?;
     }
-    std::fs::write(&file, serde_json::to_vec_pretty(last)?)
+    // A load or disk inspection must not erase a memory inspection's
+    // coverage while a different fleet still observes that pressure episode.
+    let mut kept = last_inspections();
+    kept.retain(|old| old.reason != last.reason);
+    kept.push(last.clone());
+    std::fs::write(&file, serde_json::to_vec_pretty(&kept)?)
         .with_context(|| format!("cannot write {}", file.display()))
 }
 
@@ -556,7 +588,7 @@ impl Inspector {
     fn step_host(&mut self, agent: &Agent, now: u64) -> Option<What> {
         let (trigger, due) = self.host_due(now)?;
         let reason = due.reason.word().to_string();
-        let last = last_on_host().map(|last| (last.reason, last.started));
+        let last = last_for(due.reason);
         if covered(last, &due) {
             self.watching.record(trigger);
             let said = "another fleet of this host inspected it in this episode".to_string();
@@ -617,7 +649,7 @@ impl Inspector {
         let Some(turn) = self.place.turn.take(running) else { return Ok(Started::Waits) };
         // Another fleet may have ended its inspection while this one read
         // GitHub. Check again while holding the turn, before taking evidence.
-        if covered(last_on_host().map(|last| (last.reason, last.started)), due) {
+        if covered(last_for(due.reason), due) {
             return Ok(Started::Nobody(
                 "another fleet of this host inspected it in this episode".into(),
             ));

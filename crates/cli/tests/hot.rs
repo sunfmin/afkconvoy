@@ -122,7 +122,9 @@ fn pressure_inspects_the_host_once_across_fleets_and_never_heats_the_largest_wor
     let b = worker(&world, 8);
     processes(&world, &[(&a, 620), (&b, 170)]);
     pressure(&world, 2);
-    let _run = run(&world);
+    world
+        .afk(&["run", "--instance", "alpha", "--host", "h1", "--now", "1000", "--second-ms", "10"])
+        .ok();
     until(&world, "host inspection", || started(&world) == 1);
     let brief = common::git(&inspection(&world), &["rev-parse", "--absolute-git-dir"]);
     let brief = std::fs::read_to_string(Path::new(&brief).join("convoy-worker-prompt.md")).unwrap();
@@ -183,6 +185,44 @@ fn a_worker_past_its_own_memory_limit_is_hot_under_pressure_or_without_it() {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn pressure_coverage_survives_an_inspection_for_another_reason_and_a_cache_upgrade() {
+    let memory = json!({"repo": "/another-fleet", "reason": "memory", "reading": "pressure level 2",
+        "by": "stock-consult", "started": 1000, "ended": 1001, "found": "said", "said": "outside process"});
+    let mut load = memory.clone();
+    load["reason"] = json!("load");
+    load["started"] = json!(1200);
+    load["ended"] = json!(1300);
+    for prior in [memory.clone(), json!([memory, load])] {
+        let world = World::new();
+        host(&world);
+        pressure(&world, 2);
+        let last = world.cache().join("afkconvoy/host-inspection/last.json");
+        std::fs::create_dir_all(last.parent().unwrap()).unwrap();
+        std::fs::write(&last, prior.to_string()).unwrap();
+        world
+            .afk(&[
+                "run",
+                "--foreground",
+                "--instance",
+                "alpha",
+                "--host",
+                "h1",
+                "--now",
+                "1000",
+                "--second-ms",
+                "0",
+                "--ticks",
+                "2",
+            ])
+            .ok();
+        assert_eq!(started(&world), 0);
+        assert!(entries(&world).iter().any(|entry|
+            matches!(&entry.what, What::HostInspected { found, .. } if found == "covered")), "{:#?}", entries(&world));
+    }
+}
+
 #[test]
 fn a_hot_worker_cooling_behind_a_running_inspection_is_never_inspected() {
     let world = World::new();
@@ -202,13 +242,17 @@ fn a_hot_worker_cooling_behind_a_running_inspection_is_never_inspected() {
             .iter()
             .any(|entry| matches!(&entry.what, What::Hot { worker, .. } if worker == "#8"))
     });
+    let release = world.root.join("release-inspection-comment");
+    world.with_gh(|gh| gh["comment_wait"] = json!(release));
+    finish(&world);
+    until(&world, "ending the first inspection", || release.with_extension("waiting").exists());
     processes(&world, &[(&a, 1200), (&b, 100)]);
-    until(&world, "waiting worker cooled", || {
+    until(&world, "waiting worker cooled while the first inspection ends", || {
         entries(&world)
             .iter()
             .any(|entry| matches!(&entry.what, What::Cooled { worker, .. } if worker == "#8"))
     });
-    finish(&world);
+    std::fs::write(&release, "").unwrap();
     until(&world, "first inspection ended", || {
         entries(&world).iter().any(|entry|
         matches!(&entry.what, What::Inspected { worker, found, .. } if worker == "#7" && found == "said"))
