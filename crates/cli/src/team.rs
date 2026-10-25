@@ -534,18 +534,22 @@ fn limits(root: &Path) -> Result<Vec<Harness>> {
     let mut limited = vec![];
     for harness in Harness::ALL {
         let at = root.join(harness.limits());
-        let text = if at.is_file() { std::fs::read_to_string(&at)? } else { String::new() };
-        let mut json = serde_json::Deserializer::from_str(&text);
         let held = if at.is_file() {
-            Held::File(&mut json)
-        } else if at.is_dir() {
-            // A file kept only to have git keep the directory is no limit.
-            let entries = Tree { dir: at.clone() }.list("")?;
-            Held::Entries(entries.iter().filter(|name| !name.starts_with('.')).count())
+            let text = std::fs::read_to_string(&at)?;
+            harness.limited_file(&text).map_err(anyhow::Error::msg)
         } else {
-            Held::Nothing
-        };
-        let held = harness.limited(held).with_context(|| {
+            let held: Held<&mut serde_json::Deserializer<serde_json::de::StrRead<'_>>> =
+                if at.is_dir() {
+                    // A file kept only to have git keep the directory is no limit.
+                    let entries = Tree { dir: at.clone() }.list("")?;
+                    Held::Entries(entries.iter().filter(|name| !name.starts_with('.')).count())
+                } else {
+                    Held::Nothing
+                };
+            let result: Result<bool, serde_json::Error> = harness.limited(held);
+            result.map_err(anyhow::Error::msg)
+        }
+        .with_context(|| {
             format!("its limits for {}, in {}, cannot be read", harness.name(), harness.limits())
         })?;
         if held {

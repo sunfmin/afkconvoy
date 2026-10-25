@@ -125,6 +125,7 @@ impl World {
         self.kit_command("pi", afkconvoy_core::harness::Harness::Pi.stock());
         self.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
         self.kit_command("dsh", afkconvoy_core::harness::Harness::Dsh.stock());
+        self.kit_command("kimi", afkconvoy_core::harness::Harness::Kimi.stock());
     }
 
     /// Has the host kit hold `models` for `harness`, in that order, as seen
@@ -1111,6 +1112,12 @@ case "$2" in
   'test -f "$HOME/.codex/auth.json" && codex login status')
     if [ -e "$root/logged-out-codex" ]; then exit 1; fi
     echo "Logged in using ChatGPT"; exit 0 ;;
+  "kimi provider list --json")
+    if [ -e "$root/logged-out-kimi" ]; then echo '{"models":{}}'; exit 0; fi
+    echo '{"models":{"kimi-code/k3":{}}}'; exit 0 ;;
+  *" && kimi provider list --json")
+    if [ -f "$root/shell-kimi-models" ]; then cat "$root/shell-kimi-models"; exit 0; fi
+    echo "command not found" >&2; exit 127 ;;
   "printf 'AFKCONVOY_PROXY"*)
     if [ -f "$root/shell-proxy" ]; then cat "$root/shell-proxy"; else printf 'AFKCONVOY_PROXY\000\000'; fi
     exit 0 ;;
@@ -1133,6 +1140,10 @@ case "$2" in
     echo "  --skill <path>                 Load a skill file or directory"
     echo "  --no-skills, -ns               Disable skills discovery and loading"
     echo "  --approve, -a                  Trust project-local files for this run"; exit 0 ;;
+  "kimi "*" --help")
+    if [ -f "$root/shell-help" ]; then cat "$root/shell-help"; exit 0; fi
+    echo "Usage: kimi [options]"
+    echo "  --add-dir <dir>"; echo "  --skills-dir <dir>"; echo "  --model <model>"; exit 0 ;;
   *" --list-models")
     if [ -f "$root/shell-models" ]; then cat "$root/shell-models"; exit 0; fi
     echo "command not found" >&2; exit 127 ;;

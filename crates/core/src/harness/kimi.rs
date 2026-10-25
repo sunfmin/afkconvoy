@@ -1,0 +1,500 @@
+//! Kimi Code, as a harness: its isolated data home carries only the host's
+//! providers and models, plus this role's limits and the fleet's hooks. Kimi
+//! has no project-level hook configuration, so each role gets a generated home
+//! of its own rather than sharing one worker's configuration with another's.
+
+use flux_rs::attrs::*;
+use serde::de::{Error, IgnoredAny};
+use serde::{Deserialize, Deserializer};
+use serde_json::Value as Json;
+use toml::Value as Toml;
+
+use super::{Held, Kept, Link};
+use crate::guard::Call;
+use crate::line::Line;
+use crate::role::{Rules, Start, Told};
+use crate::team::RULES;
+
+pub(super) const NAME: &str = "Kimi Code";
+pub(super) const KEY: &str = "kimi";
+pub(super) const PROGRAM: &str = "kimi";
+/// Never Ask mode lets an unattended interactive worker run. Headless calls
+/// use `headless`, since Kimi rejects `--auto` together with `--prompt`.
+pub(super) const STOCK: &str = "kimi --auto";
+
+const ADD_DIR: &str = "--add-dir";
+const SKILLS_DIR: &str = "--skills-dir";
+pub(super) const MODEL: &str = "--model";
+pub(super) const FLAGS: [&str; 3] = [ADD_DIR, SKILLS_DIR, MODEL];
+const HELP: &str = " --help";
+const LIST_MODELS: &str = " provider list --json";
+const PROMPT: &str = " --prompt";
+const AS_JSON: &str = " --output-format stream-json";
+
+const USER_DIR: &str = "KIMI_CODE_HOME";
+pub(super) const ENVIRONMENT: [&str; 3] =
+    ["KIMI_CODE_TRUST_WORKSPACE", "KIMI_CODE_NO_AUTO_UPDATE", "KIMI_DISABLE_TELEMETRY"];
+const HOST_SKILLS: [&str; 2] = ["kimi-skills", "agent-skills"];
+
+pub(super) const KEPT: Kept = Kept {
+    links: &[Link { home: ".kimi-code/credentials", kept: "credentials" }],
+    host_user: &[
+        Link { home: ".kimi-code/skills", kept: HOST_SKILLS[0] },
+        Link { home: ".agents/skills", kept: HOST_SKILLS[1] },
+        Link { home: ".kimi-code/AGENTS.md", kept: "AGENTS.md" },
+    ],
+    files: &[],
+};
+
+pub(super) const LIMITS: &str = ".kimi-code/limits.toml";
+pub(super) const BEFORE_THE_RULES: [&str; 1] = ["AGENTS.md"];
+pub(super) const RULES_LINK: &str = "AGENTS.md";
+pub(super) const REPO_RULES: [&str; 2] = ["AGENTS.md", RULES];
+pub(super) const REFUSED: u8 = 2;
+
+/// A role's limits, in Kimi's native configuration form. Nothing else belongs
+/// in this file: the fleet writes the effective user configuration itself.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Limits {
+    #[serde(default)]
+    hooks: Vec<IgnoredAny>,
+    #[serde(default)]
+    permission: Permissions,
+}
+
+#[derive(Default, Deserialize)]
+struct Permissions {
+    #[serde(default)]
+    rules: Vec<Rule>,
+}
+
+#[derive(Deserialize)]
+struct Rule {
+    decision: String,
+}
+
+pub(super) fn limited<'de, D: Deserializer<'de>>(held: Held<D>) -> Result<bool, D::Error> {
+    match held {
+        Held::Nothing => Ok(false),
+        Held::Entries(_) => Err(D::Error::custom("it is a directory, not a TOML file")),
+        Held::File(limits) => {
+            let limits = Limits::deserialize(limits)?;
+            Ok(!limits.hooks.is_empty()
+                || limits.permission.rules.iter().any(|rule| rule.decision == "deny"))
+        }
+    }
+}
+
+/// Reads a role's TOML limits through the same decision as the other harnesses.
+pub(super) fn limited_file(text: &str) -> Result<bool, String> {
+    let deserializer = toml::de::Deserializer::new(text);
+    limited(Held::File(deserializer)).map_err(|error| error.to_string())
+}
+
+/// The configuration a worker or probe gets. Only the user's model routing is
+/// inherited. A worker also gets its role's limits and the fleet's hooks; a
+/// probe gets neither and so cannot execute a role hook outside its role.
+pub(super) fn configuration(
+    user: Option<&str>,
+    role: Option<&str>,
+    guard: Option<&str>,
+) -> Result<String, String> {
+    let mut config = match user {
+        Some(text) if !text.trim().is_empty() => {
+            text.parse::<Toml>().map_err(|error| format!("the host user's Kimi config: {error}"))?
+        }
+        _ => Toml::Table(Default::default()),
+    };
+    let table = config.as_table_mut().ok_or("the host user's Kimi config is not a table")?;
+    table.retain(|key, _| {
+        matches!(key, "default_model" | "providers" | "models" | "secondary_model")
+    });
+    if let Some(role) = role.filter(|text| !text.trim().is_empty()) {
+        let role =
+            role.parse::<Toml>().map_err(|error| format!("the role's Kimi limits: {error}"))?;
+        let role = role.as_table().ok_or("the role's Kimi limits are not a table")?;
+        for (key, value) in role {
+            if !matches!(key.as_str(), "hooks" | "permission") {
+                return Err(format!("the role's Kimi limits hold unsupported key `{key}`"));
+            }
+            table.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(guard) = guard {
+        table.insert("default_permission_mode".into(), Toml::from("auto"));
+        table.insert("default_plan_mode".into(), Toml::from(false));
+        table.insert("auto_session_title".into(), Toml::from(false));
+        table.insert("builtin_product_skills".into(), Toml::from(false));
+        let hooks = table.entry("hooks").or_insert_with(|| Toml::Array(vec![]));
+        let hooks = hooks.as_array_mut().ok_or("the role's Kimi hooks are not an array")?;
+        let mut fleet = vec![hook("PreToolUse", None, &guard_asked(guard), None)];
+        for event in STATE_EVENTS {
+            fleet.push(hook(event, None, REPORT, Some(10)));
+        }
+        hooks.splice(0..0, fleet);
+    }
+    toml::to_string_pretty(&config).map_err(|error| error.to_string())
+}
+
+fn hook(event: &str, matcher: Option<&str>, command: &str, timeout: Option<i64>) -> Toml {
+    let mut hook = toml::map::Map::new();
+    hook.insert("event".into(), Toml::from(event));
+    if let Some(matcher) = matcher {
+        hook.insert("matcher".into(), Toml::from(matcher));
+    }
+    hook.insert("command".into(), Toml::from(command));
+    if let Some(timeout) = timeout {
+        hook.insert("timeout".into(), Toml::from(timeout));
+    }
+    Toml::Table(hook)
+}
+
+const STATE_EVENTS: [&str; 17] = [
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "TurnStarted",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+    "PermissionResult",
+    "SubagentStart",
+    "SubagentStop",
+    "TaskStarted",
+    "Stop",
+    "StopFailure",
+    "Interrupt",
+    "PreCompact",
+    "PostCompact",
+    "Notification",
+];
+
+/// Kimi hooks fail open on an unreadable or failed guard. Turn every such
+/// outcome into the explicit refusal code, with the guard's reason on stderr.
+fn guard_asked(guard: &str) -> String {
+    format!(
+        "said=$({guard} 2>&1 >/dev/null) && exit 0; \
+         printf '%s\\n' \"${{said:-afkconvoy guard: it could not be asked}}\" >&2; exit 2"
+    )
+}
+
+const REPORT: &str = "hook=\"${HOME-}/.orca/agent-hooks/kimi-hook.sh\"; if [ -x \"$hook\" ]; \
+     then /bin/sh \"$hook\"; else cat; fi >/dev/null 2>&1; exit 0";
+
+/// The fleet supplements the role's own rules with the repo's and team's.
+/// `${base_prompt}` keeps Kimi's normal prompt, including the role AGENTS.md.
+pub(super) fn system(told: &Told) -> Option<String> {
+    if told.repo.is_none() && told.team.is_none() {
+        return None;
+    }
+    let mut text = String::from("${base_prompt}");
+    if let Some(rules) = told.repo {
+        told_rules(&mut text, "The repo's own rules", rules);
+    }
+    if let Some(rules) = told.team {
+        told_rules(&mut text, "The team rules", rules);
+    }
+    Some(text)
+}
+
+fn told_rules(text: &mut String, whose: &str, rules: Rules) {
+    text.push_str(&format!(
+        "\n\n# {whose}: {}\n\n<rules>\n{}\n</rules>\n",
+        rules.file,
+        rules.text.trim_end()
+    ));
+}
+
+fn headless(command: &str) -> &str {
+    if command == STOCK { PROGRAM } else { command }
+}
+
+#[spec(fn(Line[@l], &Start) -> Line[l])]
+pub(super) fn environment(line: Line, start: &Start) -> Line {
+    line.fixed(" ").fixed(USER_DIR).fixed("=").word(start.kept)
+}
+
+#[spec(fn(Line[@l], &Start) -> Line[l])]
+pub(super) fn added(line: Line, start: &Start) -> Line {
+    let mut line = line
+        .fixed(" ")
+        .fixed(ADD_DIR)
+        .fixed(" ")
+        .word(start.worktree)
+        .fixed(" ")
+        .fixed(ADD_DIR)
+        .fixed(" ")
+        .word(start.team_dir)
+        .fixed(" ")
+        .fixed(SKILLS_DIR)
+        .fixed(" ")
+        .word(&format!("{}/{}", start.role_dir, crate::team::SKILLS));
+    if start.host_user {
+        for skills in HOST_SKILLS {
+            line = line
+                .fixed(" ")
+                .fixed(SKILLS_DIR)
+                .fixed(" ")
+                .word(&format!("{}/{skills}", start.kept));
+        }
+    }
+    match start.model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    }
+}
+
+#[spec(fn(Line[@l]) -> Line[l])]
+pub(super) fn asked_its_flags(line: Line) -> Line {
+    line.fixed(HELP)
+}
+
+pub(super) fn models_question(command: &str, kept: &str) -> String {
+    Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(headless(command))
+        .fixed(LIST_MODELS)
+        .done()
+}
+
+pub(super) fn prompt_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    probe(command, kept, model, prompt, false)
+}
+
+pub(super) fn probe_question(
+    command: &str,
+    kept: &str,
+    model: Option<&str>,
+    prompt: &str,
+) -> String {
+    probe(command, kept, model, prompt, true)
+}
+
+fn probe(command: &str, kept: &str, model: Option<&str>, prompt: &str, json: bool) -> String {
+    let line = Line::new()
+        .fixed("export ")
+        .fixed(USER_DIR)
+        .fixed("=")
+        .word(kept)
+        .fixed(" && ")
+        .launch(headless(command));
+    let line = match model {
+        Some(model) => line.fixed(" ").fixed(MODEL).fixed(" ").word(model),
+        None => line,
+    };
+    line.fixed(PROMPT).fixed(" ").word(prompt).fixed(if json { AS_JSON } else { "" }).done()
+}
+
+fn json_answer(answer: &str) -> Option<Json> {
+    if let Ok(value) = serde_json::from_str(answer.trim()) {
+        return Some(value);
+    }
+    let start = answer.find('{')?;
+    let end = answer.rfind('}')?;
+    serde_json::from_str(answer.get(start..=end)?).ok()
+}
+
+pub(super) fn models(answer: &str) -> Option<Vec<String>> {
+    let answer = json_answer(answer)?;
+    let listed = answer.get("models")?.as_object()?;
+    let mut models = vec![];
+    for name in listed.keys() {
+        if !name.is_empty() {
+            models.push(name.clone());
+        }
+    }
+    if models.is_empty() { None } else { Some(models) }
+}
+
+pub(super) fn shown(answer: &str) -> Vec<(String, String)> {
+    let Some(models) = json_answer(answer)
+        .and_then(|answer| answer.get("models").and_then(Json::as_object).cloned())
+    else {
+        return vec![];
+    };
+    models
+        .into_iter()
+        .filter_map(|(name, model)| {
+            let shown = model.get("display_name")?.as_str()?.to_string();
+            (!name.is_empty() && !shown.is_empty()).then_some((name, shown))
+        })
+        .collect()
+}
+
+pub(super) fn answered_as(answer: &str) -> Option<String> {
+    answer.lines().filter_map(|line| serde_json::from_str::<Json>(line).ok()).find_map(|value| {
+        ["model", "message.model", "payload.model", "data.model"].into_iter().find_map(|path| {
+            let mut value = &value;
+            for part in path.split('.') {
+                value = value.get(part)?;
+            }
+            value.as_str().filter(|model| !model.is_empty()).map(str::to_string)
+        })
+    })
+}
+
+#[derive(Deserialize)]
+struct Described {
+    tool_name: String,
+    #[serde(default)]
+    tool_input: Input,
+}
+
+#[derive(Default, Deserialize)]
+struct Input {
+    #[serde(default)]
+    command: Option<String>,
+}
+
+pub(super) fn call<'de, D: Deserializer<'de>>(described: D) -> Result<Call, D::Error> {
+    let described = Described::deserialize(described)?;
+    Ok(match described.tool_input.command {
+        Some(line) if described.tool_name == "Bash" => Call::Shell(line),
+        _ => Call::Other,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::Harness;
+    use crate::role::{Facts, On};
+
+    fn start<'a>(model: Option<&'a str>) -> Start<'a> {
+        Start {
+            role_dir: "/copies/acme/dev/abc",
+            worktree: "/wt/issue 7",
+            team_dir: "/copies/acme/team/def",
+            model,
+            guard: "/bin/afkconvoy guard",
+            kept: "/cache/harness/kimi-role",
+            host_user: false,
+            dsh_profile: crate::team::DshProfile::Fleet,
+            shadowed: &[],
+            told: Told::default(),
+            facts: Facts {
+                on: On::Stage { issue: 7, flow: "feature", stage: "build" },
+                role: "dev",
+                skill: "implement",
+                writes: false,
+                consult: false,
+                base_branch: "main",
+                escalate_label: "ready-for-human",
+                lock_label: "fleet-lock",
+                role_commit: "abc",
+                team_commit: "def",
+            },
+        }
+    }
+
+    #[test]
+    fn a_worker_starts_in_its_role_with_explicit_skills_and_no_shell_expansion() {
+        let line = Harness::Kimi.in_role(STOCK, &start(Some("kimi-code/k3")));
+        assert!(line.starts_with("cd '/copies/acme/dev/abc' && export KIMI_CODE_TRUST_WORKSPACE=1 KIMI_CODE_NO_AUTO_UPDATE=1 KIMI_DISABLE_TELEMETRY=1 KIMI_CODE_HOME='/cache/harness/kimi-role'"), "{line}");
+        assert!(line.contains(" AFKCONVOY_HARNESS='kimi' AFKCONVOY_MODEL='kimi-code/k3' && kimi --auto --add-dir '/wt/issue 7' --add-dir '/copies/acme/team/def' --skills-dir '/copies/acme/dev/abc/.claude/skills' --model 'kimi-code/k3'"), "{line}");
+        let odd = Start { kept: "/it's kept/$HOME", host_user: true, ..start(None) };
+        let line = Harness::Kimi.in_role("kimi", &odd);
+        assert!(line.contains("KIMI_CODE_HOME='/it'\\''s kept/$HOME'"), "{line}");
+        assert!(line.contains("--skills-dir '/it'\\''s kept/$HOME/kimi-skills' --skills-dir '/it'\\''s kept/$HOME/agent-skills'"), "{line}");
+        assert!(!line.contains("--model"), "{line}");
+    }
+
+    #[test]
+    fn configuration_keeps_model_routing_but_not_user_hooks_or_settings() {
+        let user = r#"
+default_model = "kimi-code/k3"
+default_permission_mode = "manual"
+telemetry = true
+[providers.managed]
+type = "kimi"
+api_key = "secret"
+[models."kimi-code/k3"]
+provider = "managed"
+model = "k3"
+max_context_size = 100
+[hooks]
+event = "PreToolUse"
+command = "user hook"
+[mcp]
+startup_timeout_ms = 1
+"#;
+        let role = r#"
+[[hooks]]
+event = "PreToolUse"
+command = "role hook"
+[[permission.rules]]
+decision = "deny"
+pattern = "Bash(rm -rf*)"
+"#;
+        let config = configuration(Some(user), Some(role), Some("/bin/afkconvoy guard")).unwrap();
+        let parsed: Toml = config.parse().unwrap();
+        assert_eq!(parsed["default_model"].as_str(), Some("kimi-code/k3"));
+        assert_eq!(parsed["providers"]["managed"]["api_key"].as_str(), Some("secret"));
+        assert_eq!(parsed["default_permission_mode"].as_str(), Some("auto"));
+        assert!(parsed.get("telemetry").is_none() && parsed.get("mcp").is_none());
+        let hooks = parsed["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1 + STATE_EVENTS.len() + 1);
+        assert!(hooks[0]["command"].as_str().unwrap().contains("/bin/afkconvoy guard"));
+        assert!(hooks.iter().any(|hook| hook["command"].as_str() == Some("role hook")));
+        assert!(!hooks.iter().any(|hook| hook["command"].as_str() == Some("user hook")));
+        assert_eq!(parsed["permission"]["rules"][0]["decision"].as_str(), Some("deny"));
+        assert!(hooks[0]["command"].as_str().unwrap().ends_with("exit 2"));
+        assert!(REPORT.contains("kimi-hook.sh"));
+    }
+
+    #[test]
+    fn probes_use_the_isolated_home_and_no_interactive_auto_flag() {
+        assert_eq!(
+            Harness::Kimi.models_question(STOCK, "/it's kept"),
+            "export KIMI_CODE_HOME='/it'\\''s kept' && kimi provider list --json"
+        );
+        assert_eq!(
+            Harness::Kimi.probe_question(STOCK, "/k", Some("a b"), "Say OK."),
+            "export KIMI_CODE_HOME='/k' && kimi --model 'a b' --prompt 'Say OK.' --output-format stream-json"
+        );
+        assert_eq!(
+            Harness::Kimi.prompt_question("mykimi --verbose", "/k", None, "Say OK."),
+            "export KIMI_CODE_HOME='/k' && mykimi --verbose --prompt 'Say OK.'"
+        );
+    }
+
+    #[test]
+    fn models_and_the_answered_model_are_read_from_kimi_json() {
+        let listed = r#"banner
+{"providers":{},"models":{"kimi-code/k3":{"display_name":"K3"},"other/x":{"model":"x"}}}"#;
+        assert_eq!(Harness::Kimi.models(listed).unwrap(), ["kimi-code/k3", "other/x"]);
+        assert_eq!(Harness::Kimi.shown(listed), [("kimi-code/k3".into(), "K3".into())]);
+        assert_eq!(Harness::Kimi.models("{}"), None);
+        let answered =
+            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"k3\"}}\n";
+        assert_eq!(
+            Harness::Kimi.answered_as(answered),
+            super::super::AnsweredAs::Said("k3".into())
+        );
+        assert_eq!(Harness::Kimi.answered_as("OK\n"), super::super::AnsweredAs::Unsaid);
+    }
+
+    #[test]
+    fn role_limits_and_calls_are_read_in_kimi_s_own_form() {
+        let some = "[[hooks]]\nevent='PreToolUse'\ncommand='x'\n";
+        assert!(limited_file(some).unwrap());
+        assert!(limited_file("[[permission.rules]]\ndecision='deny'\npattern='Bash'\n").unwrap());
+        assert!(!limited_file("[[permission.rules]]\ndecision='ask'\npattern='Bash'\n").unwrap());
+        assert!(limited_file("[hooks]\nevent='PreToolUse'\n").is_err());
+        let bash = r#"{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}"#;
+        let judged = call(serde_yaml::Deserializer::from_str(bash)).unwrap();
+        assert_eq!(judged, Call::Shell("git commit -m x".into()));
+        let other = r#"{"tool_name":"Edit","tool_input":{"command":"git commit"}}"#;
+        assert_eq!(call(serde_yaml::Deserializer::from_str(other)).unwrap(), Call::Other);
+    }
+}
