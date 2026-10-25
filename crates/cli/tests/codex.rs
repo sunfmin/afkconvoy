@@ -1483,6 +1483,7 @@ fn a_codex_caster_takes_fresh_user_effort_and_reports_its_actual_call() {
     world.hold_every_harness();
     world.kit_models("codex", &["fleet-first", "fleet-second"]);
     world.afk(&["switch", "--harness", "codex"]).ok();
+    world.afk(&["kit", "--cast", "on"]).ok();
     write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'xhigh'\n");
     write(&kept(&world), "config.toml", "model = 'stale'\nmodel_reasoning_effort = 'medium'\n");
     world.issue(7, &["ready-for-agent"]);

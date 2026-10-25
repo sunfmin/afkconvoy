@@ -172,6 +172,7 @@ pub struct Panel {
     /// An unbound repo's caster, while one runs or is due, and the issues
     /// held back for it.
     pub caster: Option<afkconvoy_core::casting::Standing>,
+    pub casting: Vec<afkconvoy_core::casting::ModelStatus>,
     /// Each role no worker of which can be started on this host, with why
     /// (`casting::nothing_safe`): its stages wait while it lasts.
     pub nothing_safe: Vec<(String, String)>,
@@ -426,6 +427,7 @@ impl Panel {
             now: fleet.now,
             hot: vec![],
             caster: None,
+            casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],
         }
@@ -439,6 +441,7 @@ impl Panel {
         self.lanes = lanes(seen);
         self.locks = set.locks.clone();
         self.caster = set.caster.clone();
+        self.casting = set.casting.clone();
         self.patrols = set.patrols.clone();
         let mut put = Put { panel: &mut self, seen };
 
@@ -1217,8 +1220,9 @@ fn kit(out: &mut String, host: &Host) {
     let _ = writeln!(
         out,
         "<section class=\"kit\"><h2>Host kit</h2><p class=\"by\">The harnesses and models this \
-         host can start, in order of preference; the stock consult runs {consult}</p>\
+         host can start, in order of preference; the stock consult runs {consult}. Automatic model casting is {}</p>\
          <ul class=\"harnesses\">{}</ul></section>",
+        if kit.cast { "on" } else { "off" },
         harnesses.concat(),
     );
 }
@@ -1461,6 +1465,38 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         let _ = writeln!(out, "<p class=\"tick\" data-caster>{running}{held}.</p>");
     }
 
+    if !panel.casting.is_empty() {
+        out.push_str("<details data-model-casting><summary>Model selection</summary><ul>");
+        for issue in &panel.casting {
+            let _ = write!(out, "<li><b>#{}</b>: {}", issue.number, esc(&issue.why));
+            if let Some(ran) = &issue.running {
+                let _ = write!(
+                    out,
+                    "; running {} on {}",
+                    esc(ran.harness.key()),
+                    esc(ran.model.as_deref().unwrap_or("its login default"))
+                );
+            }
+            out.push_str("<ul>");
+            for stage in &issue.stages {
+                let _ = write!(
+                    out,
+                    "<li>{}: {} on {} — {}",
+                    esc(&stage.stage),
+                    esc(stage.harness.map(|h| h.key()).unwrap_or("no eligible harness")),
+                    esc(stage.model.as_deref().unwrap_or("its login default")),
+                    esc(&stage.why)
+                );
+                for skipped in &stage.skipped {
+                    let _ = write!(out, "; skipped {}", esc(skipped));
+                }
+                out.push_str("</li>");
+            }
+            out.push_str("</ul></li>");
+        }
+        out.push_str("</ul></details>");
+    }
+
     for (role, why) in &panel.nothing_safe {
         let _ = writeln!(
             out,
@@ -1594,6 +1630,7 @@ mod tests {
             now,
             hot: vec![],
             caster: None,
+            casting: vec![],
             nothing_safe: vec![],
             codex_workers: vec![],
         }

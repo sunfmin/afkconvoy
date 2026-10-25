@@ -1,4 +1,4 @@
-A team's roster says what each of its roles' workers may run: which harnesses, on which models, in what order. Read this to write one, to see why a worker started on the harness it did, or to see why a role's stages wait.
+A team's roster says what each of its roles' workers may run: which harnesses and models are eligible; the host kit supplies their order. Read this to write one, to see why a worker started on the harness it did, or to see why a role's stages wait.
 
 ## The roster
 
@@ -8,7 +8,7 @@ The `roster` of the team file ([`afkconvoy help team`](help:team)) holds an entr
 roster:
   dev:
     cast: Hard or wide work on fable; the rest on opus.   # optional
-    run:                           # one at least, in order of preference
+    run:                           # one at least; eligibility, not priority
       - { harness: claude-code, model: opus, good_at: most work }
       - { harness: claude-code, model: fable, good_at: hard or wide work }
       - { harness: pi }            # any model the host kit holds for pi
@@ -22,12 +22,16 @@ A roster is drafted rather than written from nothing: `afkconvoy draft`, in a ch
 
 ## A role's range
 
-On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`), in the host kit's order: a harness, or a model, the host kit does not hold is left out. An entry the host kit holds nothing of is not followed: the role ranges over the host kit whole, as if the roster named none for it, and `check`, `plan` and `doctor` name the entry. So is a harness the role holds no limits for while it holds limits for another: no worker of the role runs a harness it holds no limits for, and a host kit may hold every harness its host can start. `afkconvoy check` and `afkconvoy plan` name each harness a range leaves out, and why (`no limits for pi`). `afkconvoy check` answers each role's entry and its range on the host it runs on; `afkconvoy show` draws the roster under the workflows.
+On a host, a role's range is its entry cut to the host kit (`afkconvoy kit --help`), in the host kit's harness and model order: a harness, or a model, the host kit does not hold is left out. An entry the host kit holds nothing of is not followed: the role ranges over the host kit whole, as if the roster named none for it, and `check`, `plan` and `doctor` name the entry. So is a harness the role holds no limits for while it holds limits for another: no worker of the role runs a harness it holds no limits for, and a host kit may hold every harness its host can start. `afkconvoy check` and `afkconvoy plan` name each harness a range leaves out, and why (`no limits for pi`). `afkconvoy check` answers each role's entry and its range on the host it runs on; `afkconvoy show` draws the roster under the workflows.
 
 ## An issue's casting
 
-An issue's casting is its `harness:` and `model:` labels, put on by a caster or a human. Every worker chooses the first eligible harness in this machine's host kit order; its role's range and limits remain eligibility constraints. Roster order and ticket labels cannot outrank that order. A matching casting may choose a model within the selected harness, and never carries a model across harnesses. Stock consults, patrols, landing workers, casters and inspections follow the same kit priority.
+An issue's casting is its `model:` labels, put on by a caster or a human. Every worker chooses the first eligible harness and model in this machine's host kit order; its role's range and limits remain constraints. A matching model label takes priority over model order only within the selected harness. Legacy `harness:` labels are retained but never select a harness. Labels for other harnesses are kept and apply again when their harness is selected.
 
-`afkconvoy switch --harness codex` moves the existing Codex entry first in this host's kit. Every checkout follows it; no instance or checkout is required. With no target it leaves existing workers alone. `--all` continues workers across the host's checkout list, preserving their scene and reporting failures separately. Change priority by switching again; `--clear` is removed. Old repository choice files are ignored.
+Automatic casting defaults off, including for an older kit. `afkconvoy kit --cast on` enables it on this host for every checkout; `afkconvoy kit --cast off` disables it. The setting lives only in the kit and survives rebuilding, daily refresh and runner restarts. With it off, no issue waits for a caster, and `afkconvoy cast` sends no prompt. Human model labels are still followed.
 
-An unavailable or paused candidate is skipped without reordering the kit. A successful recovery probe makes it eligible again for future starts. Fault recovery keeps claims and work, reads real output and uses another available harness for bounded diagnosis when structured signals do not decide the action. `plan` and `doctor` show kit order, eligible candidates and health evidence; the panel shows recovery actions and actual successors.
+With it on, only a stage's selected harness offering multiple eligible models leaves a choice. A harness with zero or one model needs no caster. The caster receives only the models of selected harnesses still needing a model, in kit order, with `good_at` and the roster's `cast`. It adds only model labels, preserving earlier labels; human casting labels are never recast. A switch or fallback can add a different harness's model beside earlier caster labels. Switching back reuses those labels. An issue waits at most ten minutes, then runs its range's first eligible model.
+
+`afkconvoy switch --harness codex` moves the existing Codex entry first. `afkconvoy switch --model sonnet` moves that model first within its harness, and its harness first in the kit; any of its names matches. Ambiguous names and names the kit holds no model for are refused with candidates or nearest names. Other entries and contents stay intact. Every checkout follows these orders; no instance or checkout is required. With no target it leaves existing workers alone. `--all` continues workers across the host's checkout list, preserving their scene and reporting failures separately. Change priority by switching again; `--clear` is removed. Old repository choice files are ignored.
+
+Rebuild, daily refresh and new-model research preserve established harness and model order. An unavailable or paused candidate is skipped without reordering; a successful recovery probe makes it eligible again. Fault recovery keeps claims and work, reads real output and uses another available harness for bounded diagnosis when structured signals do not decide the action. Plan, doctor and panel show the host's cast setting, each issue's casting reason, whether model labels were followed, actual running models and why earlier candidates were skipped.

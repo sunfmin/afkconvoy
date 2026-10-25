@@ -279,7 +279,7 @@ pub(crate) fn continuation_harness(fleet: &Fleet, agent: &Agent, number: u64) ->
             (cast.harness, cast.model)
         }
         None => {
-            let cast = fleet.cast(&issue.labels, false)?.map_err(|e| anyhow!(e))?;
+            let cast = fleet.cast(&issue.labels)?.map_err(|e| anyhow!(e))?;
             (cast.harness, cast.model)
         }
     };
@@ -333,10 +333,7 @@ fn start(
             (stock.harness, stock.model.clone(), stock.unmatched.clone().map(|name| (name, stock)))
         }
         (None, None) => {
-            // A caster's casting to a paused harness is cast again: until it
-            // is, the issue runs as one with no casting.
-            let recast = !held && fleet.recast(number, &issue.labels)?;
-            let cast = match fleet.cast(&issue.labels, recast) {
+            let cast = match fleet.cast(&issue.labels) {
                 Ok(Ok(cast)) => cast,
                 Err(error) if held && error.is::<crate::paused::Held>() => fleet.first()?,
                 Ok(Err(why)) => bail!("{why}: run `afkconvoy kit`"),

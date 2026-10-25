@@ -616,18 +616,20 @@ impl Worktree {
     }
 
     /// When the caster here was started, and the issues it was given.
-    pub fn caster(&self) -> Result<Option<(u64, Vec<u64>)>> {
+    pub fn caster(&self) -> Result<Option<(u64, Vec<u64>, String)>> {
         let kept = std::fs::read_to_string(self.note(CASTER_FILE)?).unwrap_or_default();
+        if let Ok((since, given, context)) = serde_json::from_str(&kept) {
+            return Ok(Some((since, given, context)));
+        }
         let mut words = kept.split_whitespace().map(str::parse::<u64>);
         let Some(Ok(since)) = words.next() else { return Ok(None) };
-        Ok(Some((since, words.filter_map(Result::ok).collect())))
+        Ok(Some((since, words.filter_map(Result::ok).collect(), String::new())))
     }
 
     /// Records that the caster here was started at `since`, given `given`.
-    pub fn record_caster(&self, since: u64, given: &[u64]) -> Result<()> {
+    pub fn record_caster(&self, since: u64, given: &[u64], context: &str) -> Result<()> {
         let file = self.note(CASTER_FILE)?;
-        let numbers: Vec<String> = given.iter().map(u64::to_string).collect();
-        std::fs::write(&file, format!("{since} {}", numbers.join(" ")))
+        std::fs::write(&file, serde_json::to_vec(&(since, given, context))?)
             .with_context(|| format!("cannot write {}", file.display()))
     }
 

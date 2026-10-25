@@ -647,10 +647,12 @@ fn the_index_says_what_a_bound_repo_is_before_it_names_one() {
 fn casts_one_line_says_what_it_does_in_plain_words() {
     let short = asked(&["cast", "-h"]);
     let line = short.lines().next().unwrap();
-    for plain in ["harness and model", "`harness:`", "`model:`", "label", "session"] {
+    for plain in ["model", "harness", "`model:`", "label", "session", "enabled"] {
         assert!(line.contains(plain), "{line}");
     }
-    for term in ["uncast", "a choice to make", "the host kit's first"] {
+    for term in
+        ["harness and model", "`harness:`", "uncast", "a choice to make", "the host kit's first"]
+    {
         assert!(!line.contains(term), "{line}");
     }
 }

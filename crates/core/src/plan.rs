@@ -280,6 +280,9 @@ pub struct WorkingSet {
     /// assembles the set leaves it out, and the effect layer puts it in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caster: Option<crate::casting::Standing>,
+    /// Why each open issue needs model casting or is dispatched without it,
+    /// and the recorded model of its running worker where one is known.
+    pub casting: Vec<crate::casting::ModelStatus>,
     /// The repo's cut (docs/adr/0028), as it stands now: whether a pass that
     /// ends idle starts one, or asks after one of mine. Left out of a set
     /// assembled with nothing read of it.
@@ -573,6 +576,7 @@ pub fn assemble(seen: &Observed, me: Option<&InstanceId>, now: u64, config: &Con
         inspections_on_train: seen.inspections.to_vec(),
         held_back: vec![],
         caster: None,
+        casting: vec![],
         cut: None,
     };
     let locked = !set.locks.is_empty();

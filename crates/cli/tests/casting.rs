@@ -40,6 +40,113 @@ fn cast(labels: &[&str]) -> World {
 }
 
 #[test]
+fn casting_defaults_off_and_manual_model_labels_still_select_within_the_harness() {
+    let world = cast(&["model:haiku"]);
+    world.issue(8, &["ready-for-agent"]);
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["host_kit"]["cast"], false);
+    assert_eq!(planned["frontier"][0]["cast"]["model"], "haiku");
+    assert_eq!(planned["casting"][0]["stages"][0]["followed"], true);
+    assert!(planned["casting"][1]["why"].as_str().unwrap().contains("off on this host"));
+    let answer = world.afk(&["cast"]).ok();
+    assert!(answer["said"].as_str().unwrap().contains("off on this host"));
+    assert!(world.caster_asked().is_empty());
+    world.afk(&TICK).ok();
+    assert_eq!(casters(&world), 0);
+    assert_eq!(started(&world), ["agent --model 'haiku'", "agent --model 'opus'"]);
+    let doctor = world.afk(&["doctor", "--now", "1000"]).json;
+    assert_eq!(doctor["host"]["host_kit"]["cast"], false);
+    assert_eq!(doctor["issues"]["casting"][0]["running"]["model"], "haiku");
+    let panel = world.render_panel("cast-off", &["--now", "1000"], (1440, 1000)).html;
+    assert!(
+        panel.contains("Automatic model casting is off")
+            && panel.contains("running claude-code on haiku"),
+        "{panel}"
+    );
+}
+
+#[test]
+fn enabled_casting_has_no_choice_on_a_model_less_harness_and_reuses_labels_after_switching_back() {
+    let world = cast(&["model:haiku"]);
+    world.comment(7, "Cast `model:haiku`: Small.");
+    world.afk(&["kit", "--cast", "on"]).ok();
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["caster"], Value::Null);
+    assert_eq!(
+        planned["frontier"][0]["cast"],
+        json!({"harness":"codex","model":null,"why":"first"})
+    );
+    assert!(planned["casting"][0]["why"].as_str().unwrap().contains("no model choice"));
+    world.afk(&TICK).ok();
+    let commands = started(&world);
+    assert_eq!(commands, [common::codex_line(&world, &world.worktrees()[0])]);
+    assert!(!commands[0].contains("--model"), "Codex must not inherit Claude Code's model");
+    world.afk(&["switch", "--harness", "claude-code"]).ok();
+    world.issue(8, &["ready-for-agent", "model:haiku"]);
+    world.comment(8, "Cast `model:haiku`: Small.");
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["caster"], Value::Null);
+    assert!(planned["casting"].as_array().unwrap().iter().all(|s| s["needed"] == false));
+    assert_eq!(world.labels(7), ["ready-for-agent", "model:haiku"]);
+}
+
+#[test]
+fn fallback_adds_a_model_for_the_new_harness_without_removing_the_previous_casting() {
+    let world = cast(&["model:haiku"]);
+    world.comment(7, "Cast `model:haiku`: Small.");
+    world.afk(&["kit", "--cast", "on"]).ok();
+    world.pause("claude-code", 900, "refused");
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["caster"]["to_cast"], json!([7]));
+    world.caster_answers(
+        "{\"issue\":7,\"harness\":\"pi\",\"model\":\"a/slow\",\"why\":\"Wide.\"}\n",
+    );
+    world.afk(&["cast", "--now", "1000"]).ok();
+    assert_eq!(world.labels(7), ["ready-for-agent", "model:haiku", "model:a/slow"]);
+    let asked = world.caster_asked();
+    assert!(!asked.contains("- claude-code ") && asked.contains("- pi a/fast\n"), "{asked}");
+    world.afk(&TICK).ok();
+    assert_eq!(started(&world), [Harness::Pi.with_model(Harness::Pi.stock(), "a/slow")]);
+    std::fs::remove_file(world.paused_path()).unwrap();
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["caster"], Value::Null);
+    assert_eq!(planned["casting"][0]["stages"][0]["model"], "haiku");
+    assert_eq!(planned["casting"][0]["running"]["model"], "a/slow");
+}
+
+#[test]
+fn disabling_cast_releases_waiting_issues_and_a_changed_candidate_set_gets_a_new_chance() {
+    let world = cast(&[]);
+    world.afk(&["kit", "--cast", "on"]).ok();
+    tick_at(&world, 1000);
+    assert_eq!(casters(&world), 1);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["open"] = json!(false);
+        }
+    });
+    world.afk(&["switch", "--harness", "pi"]).ok();
+    let planned = world.afk(&["plan", "--now", "1100"]).ok();
+    assert_eq!(
+        planned["caster"]["due"], true,
+        "a previous wait was for different candidates: {planned}"
+    );
+    tick_at(&world, 1100);
+    assert_eq!(casters(&world), 2);
+    world.afk(&["kit", "--cast", "off"]).ok();
+    let planned = world.afk(&["plan", "--now", "1200"]).ok();
+    assert_eq!(planned["caster"], Value::Null);
+    assert_eq!(planned["frontier"][0]["cast"]["model"], "a/fast");
+    tick_at(&world, 1200);
+    assert_eq!(casters(&world), 2);
+    assert_eq!(
+        started(&world).last(),
+        Some(&Harness::Pi.with_model(Harness::Pi.stock(), "a/fast"))
+    );
+}
+
+#[test]
 fn casting_selects_a_model_only_within_the_first_eligible_kit_harness() {
     let world = cast(&["harness:pi", "model:a/slow"]);
     let planned = world.afk(&PLAN).ok();
@@ -76,7 +183,7 @@ fn unheld_casting_preserves_labels_and_runs_the_kit_first_without_carrying_model
         &["harness:pi", "model:a/none"][..],
         &["harness:codex", "model:gpt-x"],
         &["harness:nope"],
-        &["model:opus"],
+        &["model:not-held"],
     ] {
         let world = cast(labels);
         let planned = world.afk(&PLAN).ok();
@@ -122,9 +229,12 @@ fn casters(world: &World) -> usize {
 #[test]
 fn a_tick_starts_one_caster_and_holds_the_issues_it_casts_back_for_ten_minutes_at_most() {
     let world = cast(&[]);
+    world.afk(&["kit", "--cast", "on"]).ok();
     world.issue(8, &["ready-for-agent"]);
     // A human's casting is never the caster's: 9 is dispatched as it says.
     world.issue(9, &["ready-for-agent", "harness:codex"]);
+    // GitHub lists newest first; the caster's public lists remain numbered.
+    world.with_gh(|gh| gh["issues"].as_array_mut().unwrap().reverse());
     let ticked = tick_at(&world, 1000);
     assert_eq!(casters(&world), 1, "{ticked}");
     assert_eq!(started(&world).len(), 2, "the caster and the worker on 9: {ticked}");
@@ -175,57 +285,44 @@ fn an_issue_with_no_choice_to_make_or_a_casting_starts_no_caster() {
 }
 
 #[test]
-fn cast_labels_each_issue_within_the_host_kit_and_comments_why() {
+fn cast_labels_each_issue_only_with_a_model_of_its_selected_harness() {
     let world = cast(&[]);
+    world.afk(&["kit", "--cast", "on"]).ok();
     world.issue(8, &["ready-for-agent"]);
     world.issue(9, &["ready-for-agent", "harness:pi"]);
     world.issue(10, &["ready-for-agent", "epic"]);
     world.issue(11, &["ready-for-agent"]);
-    world.with_kit(|kit| kit["harnesses"][1]["models"][0]["good_at"] = json!("quick, small fixes"));
+    world.with_kit(|kit| kit["harnesses"][0]["models"][1]["good_at"] = json!("quick, small fixes"));
     world.caster_answers(concat!(
         "Here you are:\n",
-        "{\"issue\": 7, \"harness\": \"pi\", \"model\": \"a/fast\", \"why\": \"A one-line fix.\"}\n",
-        "{\"issue\": 8, \"harness\": \"codex\", \"model\": null, \"why\": \"A wide refactor.\"}\n",
-        "{\"issue\": 9, \"harness\": \"claude-code\", \"model\": \"opus\", \"why\": \"Not asked.\"}\n",
-        "{\"issue\": 11, \"harness\": \"pi\", \"model\": \"a/none\", \"why\": \"Out of range.\"}\n",
+        "{\"issue\":7,\"harness\":\"claude-code\",\"model\":\"haiku\",\"why\":\"A one-line fix.\"}\n",
+        "{\"issue\":8,\"harness\":\"pi\",\"model\":\"a/fast\",\"why\":\"Wrong harness.\"}\n",
+        "{\"issue\":9,\"harness\":\"claude-code\",\"model\":\"opus\",\"why\":\"Not asked.\"}\n",
+        "{\"issue\":11,\"harness\":\"claude-code\",\"model\":\"none\",\"why\":\"Out of range.\"}\n",
     ));
     let answered = world.afk(&["cast", "--now", "1000"]).ok();
     assert_eq!(
         answered["cast"],
-        json!([
-            {"issue": 7, "harness": "pi", "model": "a/fast", "why": "A one-line fix."},
-            {"issue": 8, "harness": "codex", "model": null, "why": "A wide refactor."},
-        ])
+        json!([{"issue":7,"harness":"claude-code","model":"haiku","why":"A one-line fix."}])
     );
-    assert_eq!(answered["uncast"][0]["issue"], 11, "{answered}");
-    assert!(answered["uncast"][0]["why"].as_str().unwrap().contains("`model:a/none`"));
-
-    // The host kit's first was asked, once, of every issue that is to be cast.
+    assert_eq!(answered["uncast"].as_array().unwrap().len(), 2, "{answered}");
     let asked = world.caster_asked();
-    for given in ["## #7 issue 7", "## #8 issue 8", "## #11 issue 11"] {
+    for given in [
+        "## #7 issue 7",
+        "## #8 issue 8",
+        "## #11 issue 11",
+        "- claude-code haiku: quick, small fixes\n",
+    ] {
         assert!(asked.contains(given), "{given}\n{asked}");
     }
-    assert!(!asked.contains("## #9") && !asked.contains("## #10"), "{asked}");
-    assert!(asked.contains("- pi a/fast: quick, small fixes\n"), "{asked}");
-    assert!(asked.contains("- codex\n") && asked.contains("- claude-code opus\n"), "{asked}");
-    assert!(
-        world.shell_asked().iter().any(|line| line.starts_with("agent --model 'opus' --print"))
-    );
-
-    let gh = world.gh();
-    let labels = |number: u64| {
-        let issue = gh["issues"].as_array().unwrap().iter().find(|i| i["number"] == number);
-        issue.unwrap()["labels"].clone()
-    };
-    assert_eq!(labels(7), json!(["ready-for-agent", "harness:pi", "model:a/fast"]));
-    assert_eq!(labels(8), json!(["ready-for-agent", "harness:codex"]));
-    assert_eq!(labels(9), json!(["ready-for-agent", "harness:pi"]), "a human's is left as it is");
-    assert_eq!(labels(11), json!(["ready-for-agent"]));
-    assert_eq!(
-        gh["comments"]["7"][0]["body"],
-        "Cast `harness:pi` and `model:a/fast`: A one-line fix."
-    );
-    assert_eq!(gh["comments"]["9"], Value::Null);
+    assert!(!asked.contains("## #9") && !asked.contains("## #10"));
+    assert!(!asked.contains("- pi ") && !asked.contains("- codex"), "{asked}");
+    assert_eq!(world.labels(7), ["ready-for-agent", "model:haiku"]);
+    assert_eq!(world.labels(8), ["ready-for-agent"]);
+    assert_eq!(world.labels(9), ["ready-for-agent", "harness:pi"]);
+    assert_eq!(world.comments(7)[0], "Cast `model:haiku`: A one-line fix.");
+    world.afk(&TICK).ok();
+    assert!(started(&world).contains(&"agent --model 'haiku'".to_string()));
 }
 
 #[test]
@@ -321,6 +418,7 @@ fn each_paused_harness_is_probed_every_hour_and_one_that_answers_is_back() {
 fn a_caster_s_casting_naming_no_held_model_is_cast_again_with_ids_and_a_human_s_stays() {
     let world = cast(&["harness:claude-code", "model:sonnet"]);
     world.comment(7, "Cast `harness:claude-code` and `model:sonnet`: A small fix.");
+    world.afk(&["kit", "--cast", "on"]).ok();
     // A human's label naming nothing stays and runs the default.
     world.issue(8, &["ready-for-agent", "harness:claude-code", "model:opuss"]);
     let planned = world.afk(&PLAN).ok();
@@ -340,10 +438,9 @@ fn a_caster_s_casting_naming_no_held_model_is_cast_again_with_ids_and_a_human_s_
     assert_eq!(answered["cast"][0]["model"], "claude-opus-5-5", "{answered}");
     assert_eq!(
         world.labels(7),
-        ["ready-for-agent", "harness:claude-code", "model:claude-opus-5-5"]
+        ["ready-for-agent", "harness:claude-code", "model:sonnet", "model:claude-opus-5-5"]
     );
     let said = world.comments(7).last().unwrap().clone();
-    assert!(said.starts_with("Cast `harness:claude-code` and `model:claude-opus-5-5`: Hard."));
-    assert!(said.contains("Cast again, in place of `harness:claude-code` and `model:sonnet`: its label `model:sonnet`"), "{said}");
+    assert!(said.starts_with("Cast `model:claude-opus-5-5`: Hard."));
     assert_eq!(world.labels(8), ["ready-for-agent", "harness:claude-code", "model:opuss"]);
 }
