@@ -15,6 +15,7 @@ flux-alloc = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727
 flux-core = { git = "https://github.com/flux-rs/flux.git", rev = "b2f3e31e17727ffe08c2efee1e7aa0bc4f0a66f9" }
 serde.workspace = true
 serde_json.workspace = true
+toml = "0.8"
 
 [dev-dependencies]
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }

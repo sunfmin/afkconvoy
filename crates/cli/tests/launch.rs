@@ -380,12 +380,13 @@ fn kit_with_no_terminal_writes_what_this_host_can_start_and_says_what_it_left_ou
         .iter()
         .map(|out| (out["harness"].as_str().unwrap(), out["why"].as_str().unwrap()))
         .collect();
-    assert_eq!(left_out.len(), 2, "{left_out:?}");
+    assert_eq!(left_out.len(), 3, "{left_out:?}");
     assert!(left_out[0].0 == "dsh" && left_out[0].1.starts_with("not installed"), "{left_out:?}");
     assert!(
         left_out[1].0 == "codex" && left_out[1].1.starts_with("listing failed"),
         "{left_out:?}"
     );
+    assert!(left_out[2].0 == "kimi" && left_out[2].1.starts_with("listing failed"), "{left_out:?}");
     assert!(written.stderr.contains("left out: codex: listing failed"), "{}", written.stderr);
     // Written again with nothing changed, it is the same but for when.
     assert_eq!(world.afk(&["kit"]).json["written"], true);

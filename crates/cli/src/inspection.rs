@@ -749,7 +749,13 @@ fn command(
         return Ok(launch.to_string());
     };
     let told = ToldRules::read(*harness, &checkout.path, team_rules.as_deref())?;
-    let (kept, shadowed) = crate::kept::for_worker(*harness, *host_user, &role_copy.dir)?;
+    let (kept, shadowed) = crate::kept::for_worker(
+        *harness,
+        *host_user,
+        &role_copy.dir,
+        &told.told(),
+        &crate::own_command().fixed(" guard").own(),
+    )?;
     let start = Start {
         role_dir: &role_copy.dir.display().to_string(),
         worktree: &checkout.path.display().to_string(),

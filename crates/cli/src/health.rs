@@ -370,7 +370,10 @@ pub fn diagnose(kit: &Kit, evidence: &Value) -> Result<(Harness, String)> {
             Harness::ClaudeCode => command.push_str(" --tools '' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}'"),
             Harness::Pi => command.push_str(" --no-tools --no-extensions --no-mcp --no-skills"),
             Harness::Codex => command.push_str(" --sandbox read-only --config features.shell_tool=false --config features.apply_patch_freeform=false --config web_search=disabled"),
-            Harness::Dsh => { failed.push("dsh: no tool-free diagnosis launch is available".into()); continue; }
+            Harness::Dsh | Harness::Kimi => {
+                failed.push(format!("{}: no tool-free diagnosis launch is available", held.harness.key()));
+                continue;
+            }
         }
         // PTYs combine stderr with stdout. Keep CLI banners, echoed prompts
         // and token counters out of the JSON protocol instead of guessing

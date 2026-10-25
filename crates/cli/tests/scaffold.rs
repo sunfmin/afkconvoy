@@ -7,11 +7,12 @@ use crate::common;
 use common::{World, git};
 use serde_json::{Value, json};
 
-const ROLE_FILES: [&str; 4] = [
+const ROLE_FILES: [&str; 5] = [
     "CLAUDE.md",
     ".claude/skills/implement/SKILL.md",
     ".claude/settings.json",
     ".codex/hooks.json",
+    ".kimi-code/limits.toml",
 ];
 
 #[test]

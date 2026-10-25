@@ -802,11 +802,11 @@ fn dev(world: &World) -> std::path::PathBuf {
 }
 
 #[test]
-fn a_role_whose_files_would_have_pi_or_codex_load_other_rules_is_a_fault_naming_the_file() {
+fn a_role_whose_files_would_have_pi_codex_or_kimi_load_other_rules_is_a_fault_naming_the_file() {
     let world = bound(&[("team.md", TEAM), ("workflows/feature.md", FEATURE)]);
     commit(&dev(&world), "CLAUDE.md", "the rules\n");
     world.afk(&["check"]).ok();
-    // pi and Codex load `AGENTS.md` first, and then no `CLAUDE.md`: whatever
+    // pi, Codex and Kimi load `AGENTS.md` first, and then no `CLAUDE.md`: whatever
     // harness the role's stages run on today. The file is one fault.
     commit(&dev(&world), "AGENTS.md", "other rules\n");
     let answer = world.afk(&["check"]);
@@ -814,8 +814,8 @@ fn a_role_whose_files_would_have_pi_or_codex_load_other_rules_is_a_fault_naming_
     let error = answer.error();
     assert!(
         error.contains(
-            "team.md: roles.dev: acme/dev holds `AGENTS.md`: pi and Codex load that in place of \
-             `CLAUDE.md`, the rules every harness works under."
+            "team.md: roles.dev: acme/dev holds `AGENTS.md`: pi and Codex and Kimi Code load that \
+             in place of `CLAUDE.md`, the rules every harness works under."
         ),
         "{error}"
     );
