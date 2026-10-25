@@ -17,6 +17,21 @@ pub const BASE: &str = "main";
 pub const CONFIG: &str =
     "```yaml\nbase_branch: main\ngate_command: ./gate.sh\ngate_seconds: 600\n```\n";
 
+/// The expected Codex command in a worktree for selection and continuation
+/// tests. `codex.rs` separately checks its decoded arguments and isolation.
+pub fn codex_line(_world: &World, dir: &Path) -> String {
+    use afkconvoy_core::harness::Harness;
+    let notes = PathBuf::from(git(dir, &["rev-parse", "--absolute-git-dir"]));
+    let home = std::fs::read_to_string(notes.join("convoy-codex-home")).unwrap();
+    let model = std::fs::read_to_string(notes.join("convoy-worker-model")).unwrap();
+    assert!(!model.is_empty(), "Codex starts with an explicit fleet model");
+    Harness::Codex.in_worktree(
+        &Harness::Codex.with_model(Harness::Codex.stock(), &model),
+        &dir.display().to_string(),
+        &home,
+    )
+}
+
 /// The code blocks of `language` the manual shows at `at` — a command as
 /// `` `afkconvoy config` ``, a topic as `` topic `example` `` — each as its
 /// reader sees it: a test runs what the help shows, so the two cannot drift.

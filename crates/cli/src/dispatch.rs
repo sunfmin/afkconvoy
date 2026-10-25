@@ -31,7 +31,7 @@ use crate::role::Staged;
 /// How a worker is started on this machine.
 pub struct Agent {
     /// The worker launch command of each harness. In an unbound repo the
-    /// default's is the one opaque command, handed to orca as it was given;
+    /// default's is the command, with harness setup for a worktree added;
     /// in a bound repo what starts the worker in its role is added to its
     /// harness's (`role::Staged::command`).
     pub launches: Launches,

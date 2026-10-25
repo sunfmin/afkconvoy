@@ -397,7 +397,7 @@ fn a_start_refuses_a_launch_command_that_does_not_take_the_flags() {
     world.shell_help(Some("Usage: agent [options]\n  --model <model>\n  --add-dir <dir>\n"));
     for start in [&["tick", "--instance", "alpha", "--host", "h1"][..], &["plan"]] {
         let refused = world.afk(start).error();
-        assert!(refused.contains("bound to a team"), "{refused}");
+        assert!(refused.contains("cannot take the fleet's launch flags"), "{refused}");
         assert!(
             refused
                 .contains(&format!("`{STOCK} --help` names no --setting-sources, no --settings.")),

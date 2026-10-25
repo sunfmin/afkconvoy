@@ -369,6 +369,54 @@ fn a_step_that_fails_tick_after_tick_is_critical() {
 }
 
 #[test]
+fn a_worker_that_fails_to_start_is_a_finding_after_one_tick() {
+    for knob in ["create_fails", "never_ready", "trust_sticks"] {
+        let world = World::new();
+        world.issue(3, &["ready-for-agent"]);
+        world.with_orca(|orca| {
+            orca[knob] = if knob == "create_fails" { json!([3]) } else { json!(true) };
+            if knob == "trust_sticks" {
+                orca["trust_prompt"] = json!(true);
+            }
+        });
+        run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+        let answer = doctor(&world, "1000").json;
+        let failures = found(&answer, "`dispatch #3` failed");
+        assert_eq!(failures.len(), 1, "{knob}: {answer}");
+        assert_eq!(failures[0]["fix"], "afkconvoy dispatch --issue 3 --instance alpha");
+        assert_eq!(failures[0]["evidence"], answer["fleet"]["failed_steps"][0]["error"]);
+    }
+}
+
+#[test]
+fn a_train_worker_s_failed_start_is_a_finding_until_it_starts() {
+    let world = World::new();
+    world.set_gate("true");
+    world.issue(3, &["ready-for-agent"]);
+    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1000"]);
+    let dir = world.worktrees()[0].clone();
+    commit(&dir, "built.txt", "built\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(30, 3, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
+    assert_eq!(
+        world.afk_in(&dir, &["land", "--issue", "3", "--now", "1050"]).ok()["outcome"],
+        "joined"
+    );
+    world.with_orca(|orca| orca["never_ready"] = json!(true));
+    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1090"]);
+    let answer = doctor(&world, "1090").json;
+    let failures = found(&answer, "`tend_train` failed");
+    assert_eq!(failures.len(), 1, "{answer}");
+    assert_eq!(failures[0]["fix"], "afkconvoy tick --instance alpha");
+    assert!(failures[0]["evidence"].as_str().unwrap().contains("not ready"), "{answer}");
+
+    world.with_orca(|orca| orca["never_ready"] = json!(false));
+    run(&world, &["--instance", "alpha", "--ticks", "1", "--now", "1180"]);
+    let answer = doctor(&world, "1180").json;
+    assert!(found(&answer, "`tend_train` failed").is_empty(), "{answer}");
+}
+
+#[test]
 fn an_orca_that_does_not_know_the_checkout_or_is_not_running_is_critical() {
     let world = World::new();
     world.with_orca(|orca| orca["repos"] = json!([]));

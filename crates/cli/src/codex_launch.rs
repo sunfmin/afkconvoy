@@ -68,46 +68,6 @@ pub(crate) fn directory(worktree: &Path) -> PathBuf {
     worktree.join(crate::worker_tmp::TMP_DIR).join(format!("codex-{}", crate::unique()))
 }
 
-/// An unbound session keeps the user's other settings and files, as before,
-/// but never writes preferences back to that user's configuration. The
-/// model and effort have one source each and are supplied on the command.
-fn user_directory(worktree: &Path, mut config: toml::Table, file: &Path) -> Result<PathBuf> {
-    let dir = directory(worktree);
-    std::fs::create_dir_all(&dir)?;
-    if let Some(source) = file.parent()
-        && source.is_dir()
-    {
-        for entry in std::fs::read_dir(source)? {
-            let entry = entry?;
-            if entry.file_name() != "config.toml" {
-                std::os::unix::fs::symlink(entry.path(), dir.join(entry.file_name()))?;
-            }
-        }
-    }
-    remove_preferences(&mut config);
-    if let Some(profiles) = config.get_mut("profiles").and_then(toml::Value::as_table_mut) {
-        for profile in profiles.iter_mut().filter_map(|(_, value)| value.as_table_mut()) {
-            remove_preferences(profile);
-        }
-    }
-    // A config can contain credentials of a custom provider. Give the
-    // snapshot the same private permissions as a login, regardless of umask.
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut out = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(dir.join("config.toml"))?;
-    out.write_all(toml::to_string(&config)?.as_bytes())?;
-    Ok(dir)
-}
-
-fn remove_preferences(config: &mut toml::Table) {
-    config.remove("model");
-    config.remove(EFFORT);
-}
-
 /// Validate before ending a worker that a continuation would replace.
 pub(crate) fn selected(harness: Harness, model: Option<&str>) -> Result<()> {
     if harness == Harness::Codex && model.is_none_or(str::is_empty) {
@@ -120,7 +80,8 @@ pub(crate) fn selected(harness: Harness, model: Option<&str>) -> Result<()> {
 
 /// Adds authoritative effort at the last point before a Codex session
 /// starts. A bound command already names its isolated role directory; an
-/// unbound command uses a fresh snapshot of the user's other settings.
+/// unbound command gets the same trust setup and allowed user links, in a
+/// fresh directory, as the fleet's worktree launch contract requires.
 pub(crate) fn prepare(
     worktree: &Worktree,
     model: Option<&str>,
@@ -136,13 +97,11 @@ pub(crate) fn prepare(
         let home = std::fs::read_to_string(worktree.note(HOME_NOTE)?)?;
         (Line::new().launch(command), PathBuf::from(home))
     } else {
-        let dir = user_directory(&worktree.path, config, &file)?;
-        let line = Line::new()
-            .fixed("export CODEX_HOME=")
-            .word(&dir.display().to_string())
-            .fixed(" && ")
-            .launch(command);
-        (line, dir)
+        let (home, _) =
+            crate::kept::for_worker(Harness::Codex, true, &worktree.path, &worktree.path)?;
+        let command =
+            Harness::Codex.in_worktree(command, &worktree.path.display().to_string(), &home);
+        (Line::new().launch(&command), PathBuf::from(home))
     };
     settings.codex_home = Some(home);
     let line = match &settings.effort {

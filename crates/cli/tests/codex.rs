@@ -12,7 +12,7 @@ use crate::common;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use common::{World, git, write};
+use common::{World, commit, git, write};
 use serde_json::{Value, json};
 
 /// A team whose `dev` runs Codex on one model, whose `auditor` runs Codex as
@@ -564,6 +564,83 @@ fn a_codex_worker_is_shown_its_role_s_rules_the_repo_s_own_and_the_team_rules() 
 /// A stand-in Codex: it prints the directory it was started in, the user
 /// directory it was given and each of its arguments, a NUL after each.
 const STAND_IN_CODEX: &str = "#!/bin/sh\nprintf '%s\\0' \"$PWD\" \"$CODEX_HOME\" \"$@\"\n";
+
+/// An unbound repo whose host kit holds Codex alone, on one model.
+fn unbound_codex() -> World {
+    let world = World::new();
+    world.kit_command("codex", afkconvoy_core::harness::Harness::Codex.stock());
+    world.with_kit(|kit| {
+        kit["harnesses"].as_array_mut().unwrap().retain(|held| held["harness"] == "codex");
+    });
+    world.kit_models("codex", &["gpt-5.5"]);
+    world
+}
+
+/// Runs the actual start line and checks the trust and isolation Codex gets
+/// before it reads a worktree it has never seen.
+fn assert_worktree_trusted(world: &World, dir: &Path) {
+    let ran = under_codex(world, &format!("cd '{}' && {}", dir.display(), started(world, dir)));
+    assert_eq!(ran[0], dir.to_str().unwrap());
+    assert!(Path::new(&ran[1]).starts_with(dir.join(".afkconvoy-tmp")), "{ran:?}");
+    for config in [
+        format!("projects={{\"{}\"={{trust_level=\"trusted\"}}}}", dir.display()),
+        "features.memories=false".to_string(),
+        "skills.bundled.enabled=false".to_string(),
+    ] {
+        assert!(ran.windows(2).any(|pair| pair == ["--config", &config]), "{ran:?}");
+    }
+    assert!(ran.iter().any(|word| word == "--dangerously-bypass-hook-trust"), "{ran:?}");
+    assert!(ran.windows(2).any(|pair| pair == ["--model", "gpt-5.5"]), "{ran:?}");
+    assert_eq!(
+        std::fs::read_link(Path::new(&ran[1]).join("auth.json")).unwrap(),
+        world.home().join(".codex/auth.json")
+    );
+}
+
+#[test]
+fn a_codex_worker_outside_a_role_trusts_its_worktree_without_editing_the_user_s_config() {
+    let world = unbound_codex();
+    let config = "model = \"theirs\"\n";
+    write(&world.home(), ".codex/config.toml", config);
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    assert_worktree_trusted(&world, &worktree(&world, 7));
+    assert_eq!(std::fs::read_to_string(world.home().join(".codex/config.toml")).unwrap(), config);
+}
+
+#[test]
+fn a_codex_command_outside_a_role_must_take_the_trust_flags_before_any_start() {
+    let world = unbound_codex();
+    world.shell_help(Some("--add-dir --model --dangerously-bypass-hook-trust"));
+    world.issue(7, &["ready-for-agent"]);
+    let error = tick(&world, 1000).error();
+    assert!(error.contains("names no --config"), "{error}");
+    assert!(!error.contains("bound to a team"), "{error}");
+    assert!(world.worktrees().is_empty());
+    let findings = doctor_finds(&world);
+    assert!(findings.iter().any(|(_, fix)| fix == "afkconvoy kit"), "{findings:?}");
+}
+
+#[test]
+fn a_codex_train_worker_trusts_its_worktree_without_editing_the_user_s_config() {
+    let world = unbound_codex();
+    write(&world.home(), ".codex/auth.json", "{}\n");
+    world.set_gate("true");
+    world.issue(7, &["ready-for-agent"]);
+    assert_eq!(tick(&world, 1000).ok()["errors"], json!([]));
+    let dir = worktree(&world, 7);
+    commit(&dir, "built.txt", "built\n");
+    git(&dir, &["push", "-q", "origin", "HEAD"]);
+    world.pr(70, 7, &git(&dir, &["symbolic-ref", "--short", "HEAD"]));
+    assert_eq!(
+        world.afk_in(&dir, &["land", "--issue", "7", "--now", "1050"]).ok()["outcome"],
+        "joined"
+    );
+    assert_eq!(tick(&world, 1090).ok()["errors"], json!([]));
+    assert_worktree_trusted(&world, &world.root.join("wt/convoy-train"));
+    assert!(!world.home().join(".codex/config.toml").exists());
+}
 
 /// Runs `line`, the line a Codex worker was started with, with the stand-in
 /// Codex for `codex` → what the stand-in printed. Nothing of this process's
@@ -1276,7 +1353,7 @@ fn codex_uses_fleet_models_and_fresh_user_effort_despite_saved_worker_preference
 }
 
 #[test]
-fn unbound_codex_workers_keep_other_user_settings_and_never_inherit_session_choices() {
+fn unbound_codex_workers_load_only_user_effort_and_never_inherit_session_choices() {
     let world = World::new();
     world.hold_every_harness();
     world.kit_models("codex", &["fleet-first", "fleet-cast"]);
@@ -1287,8 +1364,10 @@ fn unbound_codex_workers_keep_other_user_settings_and_never_inherit_session_choi
     world.issue(7, &["ready-for-agent", "harness:codex", "model:fleet-cast"]);
     let first = launch(&world, 7, 1000);
     assert_selection(&first, "fleet-cast", Some("xhigh"));
-    let snapshot = std::fs::read_to_string(Path::new(&first[1]).join("config.toml")).unwrap();
-    assert_eq!(snapshot.parse::<toml::Table>().unwrap()["model_verbosity"].as_str(), Some("low"));
+    assert!(
+        !Path::new(&first[1]).join("config.toml").exists(),
+        "other user settings are excluded from fleet sessions"
+    );
     write(
         Path::new(&first[1]),
         "config.toml",
@@ -1306,11 +1385,7 @@ fn unbound_codex_workers_keep_other_user_settings_and_never_inherit_session_choi
     world.issue(9, &["ready-for-agent"]);
     let last = launch(&world, 9, 1200);
     assert_selection(&last, "fleet-first", None);
-    let snapshot: toml::Table =
-        std::fs::read_to_string(Path::new(&last[1]).join("config.toml")).unwrap().parse().unwrap();
-    assert!(
-        !snapshot["profiles"]["saved"].as_table().unwrap().contains_key("model_reasoning_effort")
-    );
+    assert!(!Path::new(&last[1]).join("config.toml").exists());
 }
 
 #[test]

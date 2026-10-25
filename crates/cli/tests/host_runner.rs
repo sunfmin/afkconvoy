@@ -1398,6 +1398,7 @@ fn default_sets_a_checkouts_concurrency_back_and_a_host_runner_started_again_kee
 #[test]
 fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
     let world = World::new();
+    world.shell_help(Some("--add-dir --config --model --dangerously-bypass-hook-trust"));
     let ran = world.afk(&RUN).ok();
     let pid = ran["host_runner"]["pid"].clone();
     for (number, command) in [(7, "agent --added-codex"), (8, "agent --changed-codex")] {
@@ -1407,12 +1408,11 @@ fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
         world.afk(&["wake"]).ok();
         let until = Instant::now() + Duration::from_secs(30);
         loop {
-            if world.orca()["terminals"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|terminal| terminal["command"] == command)
-            {
+            if world.orca()["terminals"].as_array().unwrap().iter().any(|terminal| {
+                terminal["command"]
+                    .as_str()
+                    .is_some_and(|line| line.contains(&format!(" && {command} ")))
+            }) {
                 break;
             }
             assert!(Instant::now() < until, "{command} never started: {:#?}", tick_log(&ran));

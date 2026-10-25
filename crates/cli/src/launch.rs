@@ -233,7 +233,7 @@ impl Launches {
                 proposed.harness.program()
             )
         })?;
-        if self.bound {
+        if self.adds_flags(proposed.harness) {
             proposed
                 .harness
                 .takes(proposed.as_str(), proposed.flags().as_deref())
@@ -258,6 +258,12 @@ impl Launches {
         self.validate(&proposed)?;
         let checked = proposed.checked();
         checked.map_err(|why| See::Troubleshooting.refusal(self.said(&why, harness, &[])))
+    }
+
+    /// Whether this launch adds harness flags: every worker in a role, and
+    /// Codex outside a role too, for its worktree's trust and user directory.
+    pub fn adds_flags(&self, harness: Harness) -> bool {
+        self.bound || harness == Harness::Codex
     }
 
     /// `fault`, of the command of `harness`, as a human is told it: in a
