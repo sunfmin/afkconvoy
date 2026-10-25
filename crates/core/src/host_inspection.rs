@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::admission::Hold;
-use crate::inspection::{Kind, operator_fields, with_operator};
+use crate::inspection::{Kind, Operator, operator_fields, with_operator};
 use crate::prompt::fill;
 
 /// How long, in seconds, admission holds back for one reason before the host
@@ -160,14 +160,12 @@ pub struct Fields<'a> {
     pub minutes: u64,
     /// Where what was taken down is.
     pub evidence: &'a str,
-    /// The inspection's own checkout of the base branch.
-    pub checkout: &'a str,
     pub role: &'a str,
     pub skill: &'a str,
     /// The stock consult's instruction, where nothing else gives it.
     pub instruction: Option<&'a str>,
-    /// The line it says what it did with.
-    pub inspected_command: &'a str,
+    /// Where it works, and how it runs afkconvoy there.
+    pub operator: Operator<'a>,
 }
 
 const BRIEF: &str = "\
@@ -186,7 +184,7 @@ fleet's worktrees — fix it, check that admission would admit now (`afkconvoy p
 
 - **What admission read:** {reading}
 - **What was taken down as it started:** `{evidence}` — admission's reading and shares, {taken}
-- **Your checkout:** `{checkout}`, the base branch as it stood
+- **Your checkout:** `{checkout}`, the base branch as it stood, on a branch of its own: `{branch}`
 {operator}";
 
 /// What the evidence of a host inspection for `reason` holds, beside
@@ -209,7 +207,7 @@ fn taken(reason: Reason) -> &'static str {
 pub fn brief(fields: &Fields) -> Result<String, String> {
     let template = with_operator(BRIEF, fields.instruction);
     let minutes = fields.minutes.to_string();
-    let operator = operator_fields(Kind::Host);
+    let operator = operator_fields(Kind::Host, &fields.operator);
     let mut filled: Vec<(&str, &str)> = vec![
         ("role", fields.role),
         ("skill", fields.skill),
@@ -218,8 +216,6 @@ pub fn brief(fields: &Fields) -> Result<String, String> {
         ("reading", fields.reading),
         ("evidence", fields.evidence),
         ("taken", taken(fields.reason)),
-        ("checkout", fields.checkout),
-        ("inspected_command", fields.inspected_command),
     ];
     filled.extend(operator.iter().map(|(name, value)| (*name, value.as_str())));
     fill(&template, &filled)
@@ -317,11 +313,15 @@ mod tests {
             reading: "22.9 GiB of the checkout's disk is free, under 46.3 GiB, 5% of it",
             minutes: 10,
             evidence: "/c/host-inspection/evidence.md",
-            checkout: "/w/inspection",
             role: "stock-consult",
             skill: "consult",
             instruction: None,
-            inspected_command: "cd '/w/inspection' && afkconvoy inspected",
+            operator: Operator {
+                checkout: "/w/inspection",
+                branch: "tester/afkconvoy-inspection",
+                base_branch: "main",
+                afkconvoy: "cd '/w/inspection' && afkconvoy",
+            },
         };
         let said = brief(&fields).unwrap();
         assert!(said.contains("every new worker for disk for 10 minutes in a row"), "{said}");
@@ -331,7 +331,8 @@ mod tests {
         assert!(said.contains("afkconvoy inspected --text-file <file> [--did"), "{said}");
         assert!(said.contains("`~/.cache/huggingface`"), "{said}");
         assert!(said.contains("beside admission's reading"), "{said}");
-        for word in ["`reclaimable`", "`fleet`", "`not-its`", "--reclaim", "--name"] {
+        assert!(said.contains("`cd '/w/inspection' && afkconvoy land --inspection`"), "{said}");
+        for word in ["`reclaimable`", "`fleet`", "`not-its`", "--reclaim", "--name", "--left"] {
             assert!(!said.contains(word), "{word}: {said}");
         }
         let load = brief(&Fields { reason: Reason::Load, ..fields }).unwrap();

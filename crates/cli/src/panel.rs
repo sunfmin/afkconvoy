@@ -1681,7 +1681,7 @@ mod tests {
         });
         let running = render(&page_of(host.clone(), vec![]));
         assert!(running.contains("held back new workers for disk past its span; <b>the host</b> is inspected by <code>stock-consult</code>, for 5m so far"), "{running}");
-        for (found, left) in [("goes-on", vec![]), ("held", vec!["a download of 9 GiB".into()])] {
+        for (found, prs) in [("said", vec![]), ("said", vec![451])] {
             host.inspection = None;
             host.host_inspected = Some(Last {
                 repo: "/src/widgets".into(),
@@ -1693,7 +1693,7 @@ mod tests {
                 found: found.into(),
                 said: "five worktrees of 14 GiB".into(),
                 did: vec!["removed /w/a/target".into()],
-                left,
+                prs,
             });
             let page = render(&page_of(host.clone(), vec![]));
             assert!(page.contains(&format!("data-host-inspected=\"{found}\"")), "{page}");
@@ -1706,7 +1706,7 @@ mod tests {
             assert!(page.contains(&format!("as the operator on this host: <b>{found}</b> · five worktrees of 14 GiB · did: removed /w/a/target")), "{page}");
         }
         let page = render(&page_of(host, vec![]));
-        assert!(page.contains("did: removed /w/a/target · left: a download of 9 GiB"), "{page}");
+        assert!(page.contains("did: removed /w/a/target · on the landing train: #451"), "{page}");
     }
 
     #[test]

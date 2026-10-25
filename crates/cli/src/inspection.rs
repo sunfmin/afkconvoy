@@ -13,7 +13,9 @@
 //! episode: the stock consult, given what holds the disk, the load or the
 //! memory (`host_evidence`). What it did is kept in the cache every fleet of
 //! the host shares, for `doctor` and the panel to show beside admission's
-//! reading. No inspection opens an issue, nor hands anything to a human.
+//! reading. No inspection opens an issue, nor hands anything to a human: a
+//! change of the repo it makes itself, and puts on the landing train with
+//! `afkconvoy land --inspection` (`land`), on no issue.
 //!
 //! One inspection runs on the host at a time, of either kind, across its
 //! fleets: the host's turn to inspect is held by its host runner (`Turn`),
@@ -27,15 +29,17 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use afkconvoy_core::config::Bound;
+use afkconvoy_core::config::{Bound, Config};
 use afkconvoy_core::harness::Harness;
 use afkconvoy_core::host_inspection::{self, Due, Holding, Reason, covered};
 use afkconvoy_core::inspection::{
-    self, CHECKOUT, Fields, Finding, Hot, Inspected, Inspector as Who, Kind, inspector, over,
+    self, CHECKOUT, Fields, Finding, Hot, Inspected, Inspector as Who, Kind, Operator, SAID,
+    inspector, over,
 };
 use afkconvoy_core::role::{Facts, On, Start, workflow_of};
 use afkconvoy_core::stage_record::history;
 use afkconvoy_core::stock;
+use afkconvoy_core::train::Of;
 use afkconvoy_core::worker::WorkerState;
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -201,22 +205,23 @@ pub struct Last {
     pub by: String,
     pub started: u64,
     pub ended: u64,
-    /// How it ended: `goes-on` where it left nothing unfixed, `held` where
-    /// it did, `nothing` where it said nothing in time.
+    /// How it ended: `said` where it said what it did, `nothing` where it
+    /// said nothing in time.
     pub found: String,
     /// What held the work back, in its words.
     pub said: String,
-    /// Each thing it did, and each thing it could not fix.
+    /// Each thing it did, and the PRs it put on the landing train.
     #[serde(default)]
     pub did: Vec<String>,
     #[serde(default)]
-    pub left: Vec<String>,
+    pub prs: Vec<u64>,
 }
 
 impl Last {
-    /// What it said, did and left, in one line, as the log keeps it.
+    /// What it said and did, and its PRs on the landing train, in one line,
+    /// as the log keeps it.
     pub fn line(&self) -> String {
-        Finding { said: self.said.clone(), did: self.did.clone(), left: self.left.clone() }.line()
+        Finding { said: self.said.clone(), did: self.did.clone(), prs: self.prs.clone() }.line()
     }
 }
 
@@ -597,14 +602,18 @@ impl Inspector {
                 reading: if reading.is_empty() { "it admits again" } else { &reading },
                 minutes: now.saturating_sub(due.since) / 60,
                 evidence: &evidence.display().to_string(),
-                checkout: &path,
                 role: who.role(),
                 skill: match &who {
                     As::Unbound { .. } => stock::SKILL,
                     As::Bound { skill, .. } => skill,
                 },
                 instruction: matches!(who, As::Unbound { .. }).then_some(stock::INSTRUCTION),
-                inspected_command: &crate::own_command_in(&path).fixed(" inspected").own(),
+                operator: Operator {
+                    checkout: &path,
+                    branch: &checkout.branch,
+                    base_branch: &fleet.config.base_branch,
+                    afkconvoy: &crate::own_command_in(&path).own(),
+                },
             };
             let brief = host_inspection::brief(&fields).map_err(|e| anyhow!(e))?;
             let brief = checkout.write_brief(&brief)?;
@@ -676,14 +685,18 @@ impl Inspector {
                 worktree: &hot.path.display().to_string(),
                 terminal: terminal.as_deref().unwrap_or("(it has none)"),
                 evidence: &evidence.display().to_string(),
-                checkout: &path,
                 role: who.role(),
                 skill: match &who {
                     As::Unbound { .. } => stock::SKILL,
                     As::Bound { skill, .. } => skill,
                 },
                 instruction: matches!(who, As::Unbound { .. }).then_some(stock::INSTRUCTION),
-                inspected_command: &crate::own_command_in(&path).fixed(" inspected").own(),
+                operator: Operator {
+                    checkout: &path,
+                    branch: &checkout.branch,
+                    base_branch: &fleet.config.base_branch,
+                    afkconvoy: &crate::own_command_in(&path).own(),
+                },
             };
             let brief =
                 checkout.write_brief(&inspection::brief(&fields).map_err(|e| anyhow!(e))?)?;
@@ -766,10 +779,14 @@ fn command(
 
 /// Ends `inspection` of the fleet of the checkout `repo`, which said
 /// `finding` — at `now` — and removes its checkout, its terminal with it →
-/// what to log of it: a line for each thing it did, then how it ended. What
-/// cannot be done of it is said, and the rest done all the same.
+/// what to log of it: a line for each thing it did, then how it ended, with
+/// the PRs it put on the landing train. What cannot be done of it is said,
+/// and the rest done all the same.
 fn end(repo: &Repo, inspection: Box<Inspection>, finding: Option<Finding>, now: u64) -> Vec<What> {
     let gh = GitHub { dir: repo.dir.clone() };
+    // As its checkout says them last: one put on the train after it said.
+    let prs = inspection.checkout.inspection_prs().unwrap_or_default();
+    let finding = finding.map(|finding| Finding { prs, ..finding });
     let worker = match &inspection.on {
         Subject::Worker { hot, .. } => hot.worker.clone(),
         Subject::Host { .. } => THE_HOST.to_string(),
@@ -818,10 +835,10 @@ fn end_host(
     now: u64,
 ) -> What {
     let mut said = said_of(finding.as_ref());
-    let found = finding.as_ref().map_or("nothing", Finding::word);
-    let (did, left) = finding
+    let found = finding.as_ref().map_or("nothing", |_| SAID);
+    let (did, prs) = finding
         .as_ref()
-        .map(|finding| (finding.did.clone(), finding.left.clone()))
+        .map(|finding| (finding.did.clone(), finding.prs.clone()))
         .unwrap_or_default();
     let last = Last {
         repo: repo.main_checkout().map(|main| main.display().to_string()).unwrap_or_default(),
@@ -833,7 +850,7 @@ fn end_host(
         found: found.to_string(),
         said: finding.as_ref().map_or_else(|| said.clone(), |finding| finding.said.clone()),
         did,
-        left,
+        prs,
     };
     if let Err(error) = keep_last(&last) {
         said.push_str(&format!(" · what it did was not kept: {error:#}"));
@@ -852,40 +869,82 @@ fn end_worker(gh: &GitHub, hot: &HotNow, why: &str, by: &str, finding: Option<Fi
             said.push_str(&format!(" · no comment was left on #{issue}: {error:#}"));
         }
     }
-    let found = finding.as_ref().map_or("nothing", Finding::word);
+    let found = finding.as_ref().map_or("nothing", |_| SAID);
     What::Inspected { worker, found: found.to_string(), said }
 }
 
-/// `afkconvoy inspected`: keeps what the inspection in the checkout
-/// `checkout` said — what held the work back, each thing it `did` and each
-/// thing it could not fix (`left`) — for its `run` to log, leave on the
-/// issue or keep beside admission's reading, and to end it.
-pub fn inspected(checkout: &Repo, said: &str, did: &[String], left: &[String]) -> Result<Value> {
-    if said.trim().is_empty() {
-        anyhow::bail!("say what held the work back, where and why: the text is empty");
-    }
-    let each = |items: &[String]| -> Result<Vec<String>> {
-        let items: Vec<String> = items.iter().map(|item| item.trim().to_string()).collect();
-        if items.iter().any(String::is_empty) {
-            anyhow::bail!("a --did or a --left is empty: say what was done, or what holds");
-        }
-        Ok(items)
-    };
-    let (did, left) = (each(did)?, each(left)?);
-    let checkout = Worktree::of(checkout)?;
+/// The checkout `repo` is in, which must be an inspection's: only an
+/// inspection says what it did, or lands a change, from the checkout it was
+/// started in.
+fn inspection_checkout(repo: &Repo) -> Result<Worktree> {
+    let checkout = Worktree::of(repo)?;
     let named = checkout.path.file_name().and_then(|name| name.to_str()).unwrap_or("");
     if !afkconvoy_core::worker::is_worktree_named(named, CHECKOUT) {
         anyhow::bail!(
-            "{} is no inspection's checkout: only an inspection says what it did, from the \
-             checkout it was started in",
+            "{} is no inspection's checkout: only an inspection says what it did, or lands a \
+             change of its own, from the checkout it was started in",
             checkout.path.display()
         );
     }
+    Ok(checkout)
+}
+
+/// `afkconvoy inspected`: keeps what the inspection in the checkout
+/// `checkout` said — what held the work back, and each thing it `did` — with
+/// the PRs it put on the landing train, for its `run` to log, leave on the
+/// issue or keep beside admission's reading, and to end it.
+pub fn inspected(checkout: &Repo, said: &str, did: &[String]) -> Result<Value> {
+    if said.trim().is_empty() {
+        anyhow::bail!("say what held the work back, where and why: the text is empty");
+    }
+    let did: Vec<String> = did.iter().map(|item| item.trim().to_string()).collect();
+    if did.iter().any(String::is_empty) {
+        anyhow::bail!("a --did is empty: say what was done");
+    }
+    let checkout = inspection_checkout(checkout)?;
     let kind = checkout.inspection_kind()?;
-    let finding = Finding { said: said.trim().to_string(), did, left };
+    let finding = Finding { said: said.trim().to_string(), did, prs: checkout.inspection_prs()? };
     checkout.record_inspected(&finding)?;
-    Ok(json!({"inspected": true, "kind": kind.word(), "found": finding.word(),
-        "did": finding.did, "left": finding.left}))
+    Ok(json!({"inspected": true, "kind": kind.word(), "found": SAID, "did": finding.did,
+        "prs": finding.prs}))
+}
+
+/// `afkconvoy land --inspection`: the inspection in the checkout `repo` puts
+/// the PR of its branch there on the landing train — a change of the repo it
+/// made itself, on no issue — as a worker's joins it (`train::join`), its
+/// join commit naming the inspection on `host` where a worker's names its
+/// issue. A PR that joined, or that the base branch already holds, is kept
+/// in the checkout's notes for the inspection's record. With a fleet lock
+/// standing it joins nothing → `locked`: an inspection's is no lock issue's.
+pub fn land(repo: &Repo, config: &Config, gh: &GitHub, host: &str, now: u64) -> Result<Value> {
+    let checkout = inspection_checkout(repo)?;
+    let Some(branch) = checkout.branch_now()? else {
+        anyhow::bail!(
+            "{} is on no branch: commit the change on the branch of this checkout, push it and \
+             open its PR, then run this again",
+            checkout.path.display()
+        );
+    };
+    let prs = gh.open_prs()?;
+    let Some(pr) = prs.iter().find(|pr| pr.head_branch == branch) else {
+        anyhow::bail!(
+            "no open PR has this checkout's branch {branch:?} for its head — push it \
+             (`git push origin HEAD`) and open one (`gh pr create --base {} --head {branch}`), \
+             then run this again",
+            config.base_branch
+        );
+    };
+    let answer = json!({"inspection": host, "pr": pr.number});
+    let locks = crate::lock::standing_locks(gh, config)?;
+    if !locks.is_empty() {
+        return Ok(crate::train::locked(answer, &locks));
+    }
+    let answer =
+        crate::train::join(repo, config, pr, &Of::Inspection(host.to_string()), answer, now)?;
+    if matches!(answer["outcome"].as_str(), Some("joined" | "merged")) {
+        checkout.record_inspection_pr(pr.number)?;
+    }
+    Ok(answer)
 }
 
 #[cfg(test)]

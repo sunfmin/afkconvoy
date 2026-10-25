@@ -129,19 +129,19 @@ pub enum What {
     /// did, in its words. One line each, as the inspection ends.
     InspectionDid { worker: String, did: String },
     /// The inspection of a hot worker ended, or none was started: `found` is
-    /// how it ended — `goes-on`, or `held` by what it could not fix —
-    /// `nothing` in time, or `none` where nobody inspects it; `said` is what
-    /// held the work back, what it did and what it left, or why.
+    /// how it ended — `said`, `nothing` in time, or `none` where nobody
+    /// inspects it; `said` is what held the work back, what it did and the
+    /// PRs it put on the landing train, or why.
     Inspected { worker: String, found: String, said: String },
     /// Admission held back for `reason` past its span, and the host's
     /// inspection started (`crate::inspection`), `by` the role it was
     /// started in; `reading` is what admission read.
     HostInspecting { reason: String, by: String, reading: String },
     /// The host's inspection ended, or none was started: `found` is how it
-    /// ended — `goes-on`, or `held` by what it could not fix — `nothing` in
-    /// time, `failed` where it could not be started, or `covered` where
-    /// another fleet of the host inspected it in the episode; `said` is what
-    /// held the work back, what it did and what it left, or why.
+    /// ended — `said`, `nothing` in time, `failed` where it could not be
+    /// started, or `covered` where another fleet of the host inspected it in
+    /// the episode; `said` is what held the work back, what it did and the
+    /// PRs it put on the landing train, or why.
     HostInspected { reason: String, found: String, said: String },
 }
 
@@ -838,11 +838,14 @@ mod tests {
         assert_eq!(did.event(), Some(("inspection", "#7: did ended pid 4242".to_string())));
         let host = What::HostInspected {
             reason: "disk".into(),
-            found: "held".into(),
-            said: "a download · left: 9 GiB of it".into(),
+            found: "said".into(),
+            said: "the gate built in /tmp · on the landing train: #451".into(),
         };
         let host = Entry { what: host, ..tick(1) }.event().unwrap();
-        assert_eq!(host.1, "the host, held back for disk: held · a download · left: 9 GiB of it");
+        assert_eq!(
+            host.1,
+            "the host, held back for disk: said · the gate built in /tmp · on the landing train: #451"
+        );
         let starts = What::Inspecting { worker: "#7".into(), by: "stock-consult".into() };
         let starts = Entry { what: starts, ..tick(1) };
         assert!(starts.event().is_none(), "an inspection starting is a line, not an event");
