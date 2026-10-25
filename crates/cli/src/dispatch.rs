@@ -201,7 +201,9 @@ fn start(
     // (`casting::unmatched_comment`); a claim already held on a paused
     // harness — its landing — runs the host kit's first.
     let (harness, model, unmatched) = match (&staged, &consult) {
-        (Some(staged), _) => (staged.harness(), None, staged.unmatched().cloned()),
+        (Some(staged), _) => {
+            (staged.harness(), staged.model().map(str::to_string), staged.unmatched().cloned())
+        }
         (None, Some(_)) => {
             let stock = fleet.stock_consult()?;
             (stock.harness, stock.model.clone(), stock.unmatched.clone().map(|name| (name, stock)))

@@ -102,6 +102,10 @@ fn default_off_and_model_switch_follow_kit_order_in_bound_and_unbound_checkouts(
     let terminals = world.orca()["terminals"].as_array().unwrap().clone();
     assert_eq!(terminals.len(), 2);
     assert!(terminals.iter().all(|t| t["command"].as_str().unwrap().ends_with("--model 'haiku'")));
+    let planned = world.afk(&PLAN).ok();
+    assert_eq!(planned["casting"][0]["running"]["model"], "haiku");
+    let doctor = world.afk(&["doctor", "--now", "1000"]).json;
+    assert_eq!(doctor["issues"]["casting"][0]["running"]["model"], "haiku");
     // A manual label still wins within that range, even with no harness label.
     world.issue(9, &["flow:feature", "model:opus"]);
     assert_eq!(said(&world.afk(&PLAN).ok(), 9)["model"], "opus");

@@ -220,6 +220,11 @@ impl Staged {
         self.harness
     }
 
+    /// The model passed to the role's harness at launch, where it holds one.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
     /// The name the issue was given that matches nothing held, with what
     /// the worker runs instead: what the issue is told once.
     pub fn unmatched(&self) -> Option<&(String, casting::Cast)> {
