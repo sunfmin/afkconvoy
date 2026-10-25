@@ -1,9 +1,11 @@
 #!/bin/sh
-# What a release is made of, one step per subcommand. A release is cut on a
-# Mac, by hand: `check`, `build`, `package`, `publish`, at the tag's commit
-# (README, "Cutting a release").
+# What a release is made of, one step per subcommand. The fleet cuts each
+# version on a Mac by the cut steps of docs/agents/afkconvoy.md: `set` on the
+# base branch, then `check`, `build`, `package`, `publish` at the tag's commit.
 #
 #   release.sh version                   the version Cargo builds
+#   release.sh set <version>             <version> in Cargo.toml, and in Cargo.lock
+#                                        for the workspace's own crates
 #   release.sh check <tag>               fail unless <tag> is v<version>
 #   release.sh build                     both macOS binaries, Apple Silicon and
 #                                        Intel, on rustup's stable toolchain
@@ -55,6 +57,16 @@ sha() {
 case "${1:-}" in
 version)
     version
+    ;;
+set)
+    to=${2:?usage: release.sh set <version>}
+    sed -i.bak "s/^version = \".*\"\$/version = \"$to\"/" Cargo.toml
+    rm Cargo.toml.bak
+    cargo update --quiet --workspace
+    if [ "$(version)" != "$to" ]; then
+        echo "release: Cargo.toml says the version $(version), not $to" >&2
+        exit 1
+    fi
     ;;
 check)
     tag=${2:?usage: release.sh check <tag>}
@@ -190,7 +202,7 @@ publish)
     rm -rf "$tap"
     ;;
 *)
-    sed -n '2,21p' "$0" >&2
+    sed -n '2,23p' "$0" >&2
     exit 2
     ;;
 esac

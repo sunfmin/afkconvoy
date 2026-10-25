@@ -60,23 +60,16 @@ The decisions live in `crates/core` as pure functions checked by [Flux](https://
 
 **The manual** is generated, and never edited: after changing the help — the guide, a command's, a topic, or `GLOSSARY.md` — run `cargo run -p afkconvoy --example manual` and commit what it wrote to [`docs/manual.md`](docs/manual.md). The gate fails while the page is not what that command writes.
 
-**Cutting a release** is done by hand, on a Mac: this repository is private and its GitHub Actions has no budget. Set `version` in `Cargo.toml`, merge, then tag the merged commit `v<version>` and push the tag. With the tag's commit checked out, from a shell where `gh` and `git` may write to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap):
-
-```sh
-packaging/release.sh check "$(git describe --tags --exact-match)"   # the commit checked out is v<version>
-packaging/release.sh build      # both macOS binaries, Apple Silicon and Intel, on rustup's stable toolchain
-packaging/release.sh package    # dist/afkconvoy-<version>-macos-<arch>.tar.gz, each checked
-packaging/release.sh publish    # the archives to the tap's release afkconvoy-v<version>, the formula to its Formula/afkconvoy.rb
-```
-
-Homebrew downloads from the tap because this repository is private.
+**Cutting a release** is the fleet's: once it goes idle with landed work past the newest `v*` tag, it cuts the next version itself — sets it, lands it through the landing train, tags it, and publishes and installs it on its host (`afkconvoy cut --help`). `afkconvoy plan` says when the next cut starts. Its steps are the ```` ```yaml cut ```` block of [`docs/agents/afkconvoy.md`](docs/agents/afkconvoy.md), the one place they are written: steps of [`packaging/release.sh`](packaging/release.sh), then Homebrew's. They run on a Mac, and on nothing of GitHub Actions: this repository is private and its Actions has no budget. The archives and the formula go to [`sunfmin/homebrew-tap`](https://github.com/sunfmin/homebrew-tap), which Homebrew downloads from because this repository is private.
 
 `build` uses rustup's stable toolchain whatever `cargo` is first on `PATH`, and names the line that installs it when it, or the Intel target, is missing.
 
-Then, on each host that runs a fleet, the upgrade is all there is to it:
+A cut that fails opens an issue under the escalate label, with the line that goes on from the step that failed. An afkconvoy released before cutting was (#466) does not cut: where the host runs one, a version is cut by hand by the same block — its `set` lines run with `VERSION` set to the version, that commit landed, the landed commit tagged `v<version>` and the tag pushed, then its `publish` lines run with the tag checked out.
+
+On each other host that runs a fleet, the upgrade is all there is to it:
 
 ```sh
-brew upgrade sunfmin/tap/afkconvoy
+brew update && brew upgrade sunfmin/tap/afkconvoy
 ```
 
 The host runner finds the newer afkconvoy installed where it was started from, and moves onto it once its fleets are idle — nothing claimed, nothing on a landing train, nothing in the exclusive queue, no inspection running — on the same checkout list: every repo the host worked is worked again, and `afkconvoy checkouts` answers the new version under `host_runner`. Until then `afkconvoy doctor` says what holds the move back, as `host.installed`, and gives a finding where the new one did not start.
