@@ -856,6 +856,43 @@ impl World {
         std::fs::write(file, list.to_string()).unwrap();
     }
 
+    /// Puts the repo `tracker` (`owner/repo`) on the stand-in GitHub, its
+    /// issues kept apart from this repo's in a state of their own
+    /// (`tracker.json`), which every call naming it reads and writes; and
+    /// has `checkout` say it is its tracker, with its entry on this world's
+    /// checkout list.
+    pub fn say_tracker(&self, checkout: &Path, tracker: &str) {
+        let state = json!({"issues": [], "comments": {}, "labels": ["ready-for-agent"],
+            "calls": [], "envs": []});
+        std::fs::write(self.tracker_file(), state.to_string()).unwrap();
+        self.with_gh(|gh| gh["trackers"][tracker] = json!(self.tracker_file()));
+        let file = self.cache().join("afkconvoy/checkouts.json");
+        let mut list = self.checkout_list();
+        let entries = list["checkouts"].as_array_mut().unwrap();
+        match entries.iter_mut().find(|entry| entry["checkout"] == json!(checkout)) {
+            Some(entry) => entry["tracker"] = json!(tracker),
+            None => entries.push(json!({"checkout": checkout, "tracker": tracker})),
+        }
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, list.to_string()).unwrap();
+    }
+
+    fn tracker_file(&self) -> PathBuf {
+        self.root.join("tracker.json")
+    }
+
+    /// The stand-in GitHub's state of the tracker (`say_tracker`).
+    pub fn tracker(&self) -> Value {
+        read(&self.tracker_file())
+    }
+
+    /// Changes the state of the tracker (`say_tracker`) in place.
+    pub fn with_tracker(&self, change: impl FnOnce(&mut Value)) {
+        let mut state = self.tracker();
+        change(&mut state);
+        std::fs::write(self.tracker_file(), state.to_string()).unwrap();
+    }
+
     /// Every line of the host runner's log, the stamp of each taken off.
     pub fn runner_log(&self) -> Vec<String> {
         let file = self.cache().join("afkconvoy/host-runner.log");

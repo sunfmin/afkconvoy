@@ -129,17 +129,21 @@ impl List {
 }
 
 /// The tracker of the checkout `repo` on this host, as its entry on the
-/// list says it, read once for what is done next: an entry of `repo` itself,
-/// or of its main checkout, which every worktree of it shares — a worker's
-/// command acts on the issues its fleet does. One the list holds no entry
-/// of, or whose entry says none, is its own repo's.
+/// list says it (`tracker_on`).
 pub fn tracker_of(repo: &Repo) -> Result<Tracker> {
-    let listed = List::of_host()?.read()?;
+    tracker_on(&List::of_host()?, repo)
+}
+
+/// The tracker of the checkout `repo` on the host of `list`, read once for
+/// what is done next: as the entry of `repo` itself says it, or of its main
+/// checkout, which every worktree of it shares — a worker's command acts on
+/// the issues its fleet does. One the list holds no entry of, or whose entry
+/// says none, is its own repo's.
+pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
+    let listed = list.read()?;
     let main = repo.main_checkout()?;
-    let entry = listed
-        .checkouts
-        .into_iter()
-        .find(|entry| entry.checkout == repo.dir || entry.checkout == main);
+    let of = |entry: &Entry| entry.checkout == repo.dir || entry.checkout == main;
+    let entry = listed.checkouts.into_iter().find(of);
     Ok(entry.and_then(|entry| entry.tracker).map_or(Tracker::Own, Tracker::Other))
 }
 
@@ -253,6 +257,45 @@ mod tests {
         }
         let listed = List::at(file).read().unwrap();
         assert_eq!(listed.checkouts.len(), 80);
+    }
+
+    #[test]
+    fn a_checkout_and_each_worktree_of_it_go_by_the_tracker_its_entry_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let ran = Command::new("git").args(args).current_dir(&root).output().unwrap();
+            assert!(ran.status.success(), "{ran:?}");
+        };
+        git(&["init", "--quiet", "w"]);
+        git(&["-C", "w", "commit", "--quiet", "--allow-empty", "-m", "initial"]);
+        git(&["-C", "w", "worktree", "add", "--quiet", "../wt"]);
+        let (checkout, worktree) = (Repo::new(root.join("w")), Repo::new(root.join("wt")));
+        let list = List::at(root.join(FILE));
+        let other = Tracker::Other(RepoName::read("acme/tracker").unwrap());
+
+        // none on the list, or none said: its own repo
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), Tracker::Own);
+        list.change(|listed| listed.checkouts.push(entry(&checkout.dir.display().to_string())))
+            .unwrap();
+        assert_eq!(tracker_on(&list, &worktree).unwrap(), Tracker::Own);
+
+        let tracker = RepoName::read("acme/tracker");
+        list.change(|listed| listed.checkouts[0].tracker = tracker).unwrap();
+        assert_eq!(tracker_on(&list, &checkout).unwrap(), other);
+        assert_eq!(
+            tracker_on(&list, &worktree).unwrap(),
+            other,
+            "a worktree goes by its checkout's"
+        );
+        let text = std::fs::read_to_string(list.file()).unwrap();
+        assert!(text.contains("\"tracker\": \"acme/tracker\""), "{text}");
+
+        // a tracker that is no repo's name: the list cannot be read
+        std::fs::write(list.file(), r#"{"checkouts": [{"checkout": "/a", "tracker": "acme"}]}"#)
+            .unwrap();
+        let error = format!("{:#}", list.read().unwrap_err());
+        assert!(error.contains("`acme` is no repo's name"), "{error}");
     }
 
     #[test]

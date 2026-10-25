@@ -20,6 +20,12 @@
 //!
 //! A checkout whose `.git/convoy-fake-gh` names another file is of a repo of
 //! its own: every call run in it reads and writes that file instead.
+//!
+//! `trackers` {owner/repo: the file of its state}: the repos whose issues a
+//! call names by name — an endpoint under `repos/owner/repo/`, or a query's
+//! `owner` and `repo` — each with a state of its own, as this one's issues,
+//! comments, labels and edges. Such a call is logged here and there, and
+//! answered from there.
 
 mod fake;
 
@@ -27,6 +33,8 @@ use afkconvoy::gh::{
     BLOCKED_BY_JQ, CARRYING_JQ, CLOSED_JQ, COMMENTS_JQ, COMMENTS_WITH, ISSUE_JQ, LABELS_JQ,
     LANDED_ISSUES_JQ, LANDED_ISSUES_QUERY, OPEN_ISSUES_JQ, OPEN_ISSUES_QUERY, PR_FIELDS,
 };
+use std::path::PathBuf;
+
 use fake::State;
 use serde_json::{Value, json};
 
@@ -48,6 +56,7 @@ fn main() {
         *left = json!(left.as_u64().unwrap() - 1);
         st.finish("", 1, "unexpected end of JSON input\n");
     }
+    let mut st = tracked(st);
     let argv: Vec<&str> = st.argv.iter().map(String::as_str).collect();
     let other = st.opt("--repo").map(str::to_string);
     match argv.as_slice() {
@@ -142,6 +151,43 @@ fn main() {
         }
         _ => unsupported(&st),
     }
+}
+
+/// The state of the tracker the call names (`trackers`), with the call as
+/// though it named this repo; this one's where it names none.
+fn tracked(st: State) -> State {
+    let named = st.doc["trackers"].as_object().into_iter().flatten().find(|(repo, _)| {
+        let (owner, name) = repo.split_once('/').unwrap();
+        let endpoint = format!("repos/{repo}/");
+        st.argv.iter().any(|arg| arg.starts_with(&endpoint))
+            || st.argv.contains(&format!("owner={owner}"))
+                && st.argv.contains(&format!("repo={name}"))
+    });
+    let Some((repo, file)) = named.map(|(repo, file)| (repo.clone(), file.clone())) else {
+        return st;
+    };
+    st.save();
+    drop(st);
+    let mut there = State::at(PathBuf::from(file.as_str().unwrap()));
+    let (owner, name) = repo.split_once('/').unwrap();
+    let (endpoint, owner, name) =
+        (format!("repos/{repo}/"), format!("owner={owner}"), format!("repo={name}"));
+    let mut argv = vec![];
+    for arg in &there.argv {
+        argv.push(match arg {
+            arg if *arg == owner => "owner={owner}".to_string(),
+            arg if *arg == name => "repo={repo}".to_string(),
+            arg => arg.replacen(&endpoint, REPO, 1),
+        });
+    }
+    // a query names a repo by `-f`; this repo it names by `-F`
+    for at in 1..argv.len() {
+        if argv[at - 1] == "-f" && ["owner={owner}", "repo={repo}"].contains(&argv[at].as_str()) {
+            argv[at - 1] = "-F".to_string();
+        }
+    }
+    there.argv = argv;
+    there
 }
 
 fn unsupported(st: &State) -> ! {

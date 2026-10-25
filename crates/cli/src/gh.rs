@@ -898,6 +898,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_tracker_is_named_by_gh_filling_the_checkouts_repo_in_or_by_its_name() {
+        let own = Tracker::Own;
+        assert_eq!(own.endpoint("issues/7"), "repos/{owner}/{repo}/issues/7");
+        assert_eq!(own.variables(), ["-F", "owner={owner}", "-F", "repo={repo}"]);
+        // a name is sent as it is: `-F` would send `owner=123` as a number
+        let other = Tracker::Other(RepoName::read("123/tracker").unwrap());
+        assert_eq!(other.endpoint("issues/7"), "repos/123/tracker/issues/7");
+        assert_eq!(other.variables(), ["-f", "owner=123", "-f", "repo=tracker"]);
+    }
+
+    #[test]
     fn a_read_failed_in_transit_when_it_got_no_answer() {
         for said in [
             "unexpected end of JSON input",
