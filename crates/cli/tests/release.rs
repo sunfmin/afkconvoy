@@ -178,7 +178,7 @@ fn a_version_is_cut_by_the_steps_the_config_gives_and_the_readme_points_to_them(
     let section = &section[..section.find("\n## ").unwrap_or(section.len())];
     assert!(section.contains("(docs/agents/afkconvoy.md)"), "the README points to the steps");
     for step in ["set", "check", "build", "package", "publish"] {
-        let line = format!("packaging/release.sh {step} ");
+        let line = format!("release.sh {step}");
         assert!(!section.contains(&line), "the README repeats the cut step {step}");
     }
     let script = std::fs::read_to_string(SCRIPT).unwrap();
