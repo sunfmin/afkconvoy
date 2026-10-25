@@ -87,6 +87,27 @@ Codex finds skills in `.agents/skills/` and `.codex/skills/` of the directory it
 
 The stock command runs Codex in no sandbox: a worker is limited by the guard, and a host that wants a sandbox says a command of its own. A command you give for Codex must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
 
+## Kimi Code
+
+A Kimi Code worker (`harness: kimi`) is an interactive `kimi --auto` session, not `kimi --prompt`: the fleet sends its brief and later messages to that session. It starts in its role's copy, whose `AGENTS.md` links to the role's `CLAUDE.md`:
+
+```
+cd <the role's copy> && export KIMI_CODE_TRUST_WORKSPACE=1
+  KIMI_CODE_NO_AUTO_UPDATE=1 KIMI_DISABLE_TELEMETRY=1
+  KIMI_CODE_HOME=<the fleet's own, for this role> <the stage's facts>
+  && <worker launch command> --add-dir <the issue's worktree>
+  --add-dir <the team's copy> --skills-dir <the role's copy>/.claude/skills
+  [--skills-dir <the fleet's own>/kimi-skills
+   --skills-dir <the fleet's own>/agent-skills]
+  [--model <its model>]
+```
+
+Kimi reads hooks only from its user configuration, so the fleet gives each role its own generated home under harness/kimi or harness/kimi-host-user in the cache. Its `config.toml` keeps only your providers, models and default model, then adds the role's `.kimi-code/limits.toml`, the guard and orca's report. Your credentials directory is linked; your hooks, permissions, MCP servers, plugins and other settings are not inherited. Separate role homes keep concurrent workers from sharing limits. The guard hook turns a missing or failed guard into a refusal too: Kimi's ordinary hook failure would otherwise allow the call. The report uses ~/.orca/agent-hooks/kimi-hook.sh and never refuses a call.
+
+The generated `SYSTEM.md` preserves Kimi's base prompt and adds the repo's own rules and the team rules, each named with its file. The role's rules come from its `AGENTS.md` link. Explicit `--skills-dir` arguments replace automatic skill discovery: the role's are named first, then your ~/.kimi-code/skills and ~/.agents/skills when `host_user` allows them. Your Kimi `AGENTS.md` is linked into that home. Generic ~/.agents resources can also be discovered by Kimi wherever its data home is; keep none there on a host whose workers must have no host-specific instructions.
+
+A command you give for Kimi must take `--add-dir`, `--skills-dir` and `--model`. Its model aliases come from `kimi provider list --json`; probes use `kimi --prompt ... --output-format stream-json` without the stock command's `--auto`, which Kimi rejects in prompt mode.
+
 ## DeepSeek Harness
 
 A DeepSeek Harness worker (`harness: dsh`) runs interactive `dsh-tui`, with `dsh` on PATH too, on the DSH profile its team or role names: `dsh_profile: fleet` (default) or `host-user` ([`afkconvoy help team`](help:team)). The stock command is `dsh-tui`; a host may name the `dsh` command in its host kit's file, which `afkconvoy kit` keeps and which must accept leading `--patch`. It starts in its role's copy, with the stage facts and AFKCONVOY_HARNESS=dsh, DSH_HOME set to harness/dsh-host-user under the fleet's cache (harness/dsh with host_user: false), and the issue's worktree as the TUI's path argument:

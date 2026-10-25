@@ -1170,6 +1170,7 @@ mod tests {
                 .into_iter()
                 .map(|name| listed(name, None))
                 .collect()),
+            Harness::Kimi => Err(format!("it listed none: {command} provider list --json")),
             _ => Err(format!("it listed none: {command} --list-models")),
         };
         let probe = |asked: &[Asked]| {
@@ -1250,6 +1251,11 @@ mod tests {
             [
                 (Harness::Pi, None, "listing failed: it listed none: pi --list-models"),
                 (Harness::Dsh, None, "not installed: `type -- 'dsh-tui'` found nothing"),
+                (
+                    Harness::Kimi,
+                    None,
+                    "listing failed: it listed none: kimi --auto provider list --json"
+                ),
                 (Harness::Codex, Some("bad"), "silent to its probe"),
                 (
                     Harness::Codex,

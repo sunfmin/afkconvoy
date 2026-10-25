@@ -246,6 +246,8 @@ impl Staged {
             self.host_user,
             &self.role_copy.dir,
             &worktree.path,
+            &told.told(),
+            &crate::own_command().fixed(" guard").own(),
         )?;
         let start = Start {
             role_dir: &self.role_copy.dir.display().to_string(),

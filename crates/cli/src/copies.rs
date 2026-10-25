@@ -100,15 +100,16 @@ impl Copies {
     /// The copy of the role's directory `dir` alone, taken out of `fetched`,
     /// the copy of its repo: what a worker of `harness` in the role starts
     /// in. Nothing above the directory in its repo is in it or above it, and
-    /// no neighbour's. Where `harness` finds skills in directories of its
-    /// own and the role holds none of them, the copy is that harness's, and
-    /// holds a link from the first of them to the role's skills
-    /// (`skills_link`): made once, with the copy. Otherwise it is every
-    /// harness's, and a role that is a whole repo is `fetched` itself.
+    /// no neighbour's. Where `harness` needs a link to the role's skills or
+    /// shared rules, the copy is that harness's and holds it (`role_links`),
+    /// made once with the copy. Otherwise it is every harness's, and a role
+    /// that is a whole repo is `fetched` itself.
     pub fn role(&self, fetched: &Copy, dir: &RepoDir, harness: Harness) -> Result<Copy> {
-        match skills_link(&fetched.dir.join(dir.path()), harness) {
-            Some(link) => self.take(fetched, dir, &format!("role+{}", harness.key()), &[], &[link]),
-            None => self.take(fetched, dir, "role", &[], &[]),
+        let links = role_links(&fetched.dir.join(dir.path()), harness);
+        if links.is_empty() {
+            self.take(fetched, dir, "role", &[], &[])
+        } else {
+            self.take(fetched, dir, &format!("role+{}", harness.key()), &[], &links)
         }
     }
 
@@ -252,6 +253,18 @@ fn skills_link(root: &Path, harness: Harness) -> Option<Link> {
     }
     let up = at.components().skip(1).map(|_| "..");
     Some(Link { at: at.to_path_buf(), to: up.collect::<PathBuf>().join(SKILLS) })
+}
+
+/// Every link a harness needs in its copy of the role.
+fn role_links(root: &Path, harness: Harness) -> Vec<Link> {
+    let mut links = skills_link(root, harness).into_iter().collect::<Vec<_>>();
+    if let Some(rules) = harness.rules_link()
+        && root.join(RULES).is_file()
+        && root.join(rules).symlink_metadata().is_err()
+    {
+        links.push(Link { at: PathBuf::from(rules), to: PathBuf::from(RULES) });
+    }
+    links
 }
 
 /// Whether `dir` holds the same in `this` copy of its repo as in `that` one,

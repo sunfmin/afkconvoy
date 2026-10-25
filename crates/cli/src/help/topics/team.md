@@ -44,6 +44,7 @@ A `./path` is read from the root of the team's repo, not from the team's directo
 - `.pi/extensions/`: its limits for pi: extensions
 - `.codex/hooks.json`: its limits for codex: hooks
 - `.dsh/cordis.patch.yml`: its limits for dsh: a DSH overlay
+- `.kimi-code/limits.toml`: its limits for kimi: Kimi hooks, and the permissions it denies
 
 Only a skill's file has keys `check` reads: [`afkconvoy help skill-file`](help:skill-file). A `do` names an entry of `.claude/skills/` in the role. Rules and skills are written once; limits per harness, in its own form ([`afkconvoy help worker-launch`](help:worker-launch) says how each loads a role).
 
@@ -57,9 +58,9 @@ They are one of four kinds of text a worker reads, beside the repo's own rules, 
 
 - **its role's**: the CLAUDE.md of the role's directory, under every harness
 - **the team rules**: the CLAUDE.md of the team's directory, under every harness
-- **the repo's own**: of the repo an issue is of: under claude-code its CLAUDE.md; under pi and codex its AGENTS.md, or CLAUDE.md where it has none
+- **the repo's own**: of the repo an issue is of: under claude-code its CLAUDE.md; under pi, codex and kimi its AGENTS.md, or CLAUDE.md where it has none
 
-Claude Code and pi load the three; the fleet names the other two to Codex. What each is for, and where a sentence belongs: [`afkconvoy help roles`](help:roles).
+Claude Code and pi load the three; the fleet names the other two to Codex and Kimi Code. What each is for, and where a sentence belongs: [`afkconvoy help roles`](help:roles).
 
 ## How a repo is bound to it
 
@@ -75,7 +76,7 @@ The team is read at the head of its repo's default branch: pushing is the only w
 
 `afkconvoy check` loads a team and answers every fault at once, each with its file and key; `afkconvoy check --help` lists them all. Those a role's directory can hold:
 
-- A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an `AGENTS.override.md` is a fault: pi and Codex load one in place of `CLAUDE.md`.
+- A role's directory that holds an `AGENTS.md`, an `AGENTS.MD` or an `AGENTS.override.md` is a fault: pi, Codex and Kimi Code load one in place of `CLAUDE.md`; the fleet adds the link Kimi needs to its own role copy.
 - A role that holds limits for one harness and none for another is right for the first alone: a roster entry that lets it run the other is a fault. One with no limits is right for every harness; two that refuse alike are the role's to see to.
 - A `.claude/` in the team's directory is no fault and is loaded by no worker: a note.
 

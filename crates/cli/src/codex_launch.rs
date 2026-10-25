@@ -97,8 +97,14 @@ pub(crate) fn prepare(
         let home = std::fs::read_to_string(worktree.note(HOME_NOTE)?)?;
         (Line::new().launch(command), PathBuf::from(home))
     } else {
-        let (home, _) =
-            crate::kept::for_worker(Harness::Codex, true, &worktree.path, &worktree.path)?;
+        let (home, _) = crate::kept::for_worker(
+            Harness::Codex,
+            true,
+            &worktree.path,
+            &worktree.path,
+            &Default::default(),
+            "",
+        )?;
         let command =
             Harness::Codex.in_worktree(command, &worktree.path.display().to_string(), &home);
         (Line::new().launch(&command), PathBuf::from(home))
@@ -127,7 +133,14 @@ pub(crate) fn caster_question(
     model: Option<&str>,
     prompt: &str,
 ) -> Result<String> {
-    let (kept, _) = crate::kept::for_worker(Harness::Codex, false, &worktree.path, &worktree.path)?;
+    let (kept, _) = crate::kept::for_worker(
+        Harness::Codex,
+        false,
+        &worktree.path,
+        &worktree.path,
+        &Default::default(),
+        "",
+    )?;
     let question = Harness::Codex.prompt_question(command, &kept, model, prompt);
     let (question, settings) = prepare(worktree, model, &question, true)?;
     // A human may also run `cast` in an existing worker's worktree. That

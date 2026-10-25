@@ -21,6 +21,8 @@ pub enum Tool {
     Codex,
     DshTui,
     Dsh,
+    /// Kimi Code: needed only when it is what starts a worker.
+    Kimi,
 }
 
 /// What pi lists in place of its models when it holds credentials for no
@@ -66,6 +68,7 @@ impl Tool {
             Tool::Codex => Harness::Codex.program(),
             Tool::DshTui => Harness::Dsh.program(),
             Tool::Dsh => "dsh",
+            Tool::Kimi => Harness::Kimi.program(),
         }
     }
 
@@ -79,13 +82,17 @@ impl Tool {
             Harness::Pi => Tool::Pi,
             Harness::Codex => Tool::Codex,
             Harness::Dsh => Tool::DshTui,
+            Harness::Kimi => Tool::Kimi,
         };
         (first_word(launch) == Some(tool.name())).then_some(tool)
     }
 
     /// Whether it is a harness: what a worker launch command starts.
     fn starts_workers(self) -> bool {
-        matches!(self, Tool::Claude | Tool::Pi | Tool::Codex | Tool::DshTui | Tool::Dsh)
+        matches!(
+            self,
+            Tool::Claude | Tool::Pi | Tool::Codex | Tool::DshTui | Tool::Dsh | Tool::Kimi
+        )
     }
 
     /// The line that installs it. Homebrew's own `orca` cask is another
@@ -101,6 +108,7 @@ impl Tool {
             Tool::Codex => "brew install --cask codex",
             Tool::DshTui => "npm install -g @deepseek-harness-tui/dsh-tui",
             Tool::Dsh => "install DeepSeek Harness (dsh) and add it to PATH",
+            Tool::Kimi => "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
         }
     }
 
@@ -117,13 +125,15 @@ impl Tool {
             // to say.
             Tool::Pi => Some("pi --list-models".to_string()),
             Tool::Codex => Some(CODEX_LOGIN.to_string()),
+            Tool::Kimi => Some("kimi provider list --json".to_string()),
         }
     }
 
     /// Whether the answer to `login_question` says it is logged in: `gh` by
     /// its exit status, Claude Code by the `loggedIn` field of the JSON it
     /// prints — whatever else the shell printed around it — pi by listing a
-    /// model at all, and Codex, as `gh`, by its exit status.
+    /// model at all, Kimi by having a configured model, and Codex, as `gh`,
+    /// by its exit status.
     pub fn logged_in(self, succeeded: bool, printed: &str) -> bool {
         match self {
             Tool::Claude => {
@@ -131,6 +141,7 @@ impl Tool {
                 dense.contains("\"loggedIn\":true")
             }
             Tool::Pi => succeeded && !printed.trim().is_empty() && !printed.contains(PI_NO_MODELS),
+            Tool::Kimi => succeeded && Harness::Kimi.models(printed).is_some(),
             Tool::Git | Tool::Gh | Tool::Orca | Tool::Codex | Tool::DshTui | Tool::Dsh => succeeded,
         }
     }
@@ -146,6 +157,7 @@ impl Tool {
                 "is not logged in where a worker reads its login, `~/.codex/auth.json` (a login \
                  kept in a keyring is in no file)"
             }
+            Tool::Kimi => "is not logged in or has no models configured",
             Tool::Git | Tool::Gh | Tool::Orca | Tool::Claude | Tool::DshTui | Tool::Dsh => {
                 "is not logged in"
             }
@@ -159,6 +171,7 @@ impl Tool {
             Tool::Claude => "claude auth login".to_string(),
             Tool::Pi => "pi".to_string(),
             Tool::Codex => "codex login".to_string(),
+            Tool::Kimi => "kimi login".to_string(),
             // github.com is where `gh auth login` logs in unasked.
             _ => format!("gh auth login{}", hostname(host.filter(|host| *host != "github.com"))),
         }

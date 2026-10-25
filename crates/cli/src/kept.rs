@@ -54,20 +54,25 @@ pub fn keep_under(
     harness: Harness,
     host_user: bool,
 ) -> Result<PathBuf> {
-    let kept = harness.kept();
-    let (name, theirs) = match host_user {
-        true => (format!("{}-host-user", harness.key()), kept.host_user),
-        false => (harness.key().to_string(), &[][..]),
+    let name = match host_user {
+        true => format!("{}-host-user", harness.key()),
+        false => harness.key().to_string(),
     };
     let dir = cache.join("harness").join(name);
+    keep_at(&dir, home, harness, host_user)?;
+    configure(&dir, home, harness, None, None, None)?;
+    Ok(dir)
+}
+
+/// Materializes one kept directory and its current links.
+fn keep_at(dir: &Path, home: Option<&Path>, harness: Harness, host_user: bool) -> Result<()> {
+    let kept = harness.kept();
+    let theirs = if host_user { kept.host_user } else { &[][..] };
     let put =
         |what: &str| format!("cannot keep {what} for {} in {}", harness.name(), dir.display());
-    // The directory is there for a harness started under it, whatever of the
-    // host user's is missing today.
     if !(kept.files.is_empty() && kept.links.is_empty() && theirs.is_empty()) {
-        std::fs::create_dir_all(&dir).with_context(|| put("anything"))?;
+        std::fs::create_dir_all(dir).with_context(|| put("anything"))?;
     }
-    // An overlay names the plugin it loads by its whole path, as YAML quotes it.
     let plugin = |file: &str| dir.join(file).display().to_string().replace('\'', "''");
     for (name, text) in kept.files {
         let text = text
@@ -95,36 +100,125 @@ pub fn keep_under(
         .filter(|file| file.exists());
         point(&dir.join(link.kept), theirs.as_deref()).with_context(|| put(link.kept))?;
     }
-    Ok(dir)
+    Ok(())
+}
+
+/// Writes the harness's generated files from the host's current model routing
+/// and, for a worker, its role's limits and the fleet's guard.
+fn configure(
+    dir: &Path,
+    home: Option<&Path>,
+    harness: Harness,
+    role_dir: Option<&Path>,
+    told: Option<&afkconvoy_core::role::Told>,
+    guard: Option<&str>,
+) -> Result<()> {
+    if harness.kept_configuration(None, None, None).map_err(anyhow::Error::msg)?.is_none() {
+        return Ok(());
+    }
+    let user = home
+        .map(|home| home.join(".kimi-code/config.toml"))
+        .filter(|file| file.is_file())
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let role = role_dir
+        .map(|role| role.join(harness.limits()))
+        .filter(|file| file.is_file())
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let Some(config) = harness
+        .kept_configuration(user.as_deref(), role.as_deref(), guard)
+        .map_err(anyhow::Error::msg)?
+    else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let file = dir.join("config.toml");
+    carry(&file, &config)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
+    if let Some(system) = told.and_then(|told| harness.kept_system(told)) {
+        carry(&dir.join("SYSTEM.md"), &system)?;
+    } else {
+        match std::fs::remove_file(dir.join("SYSTEM.md")) {
+            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// What a worker of `harness` in the role whose copy is `role_dir` is
-/// started with of what this host keeps: the directory, put in place
-/// (`keep`), and the skills of the host user's its role's stand for
-/// (`shadowed`).
+/// started with of what this host keeps: the directory, put in place, and the
+/// skills of the host user's its role's stand for. A harness with generated
+/// role configuration gets a role-specific home so concurrent roles share none.
 pub fn for_worker(
     harness: Harness,
     host_user: bool,
     role_dir: &Path,
     worktree: &Path,
+    told: &afkconvoy_core::role::Told,
+    guard: &str,
 ) -> Result<(String, Vec<String>)> {
     let shared = keep(harness, host_user)?;
-    let dir = if harness == Harness::Codex {
-        // Codex writes /model preferences to CODEX_HOME. A fresh home has
-        // only the allowed links, never a previous worker's config.toml.
-        let dir = keep_under(
+    let base = if harness == Harness::Codex {
+        // /model preferences belong to this session, never another worker.
+        keep_under(
             &crate::codex_launch::directory(worktree),
             home().as_deref(),
             harness,
             host_user,
-        )?;
-        let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
-        std::fs::write(worker.note(crate::codex_launch::HOME_NOTE)?, dir.display().to_string())?;
-        dir
+        )?
     } else {
         shared
     };
-    let shadowed = shadowed(harness, role_dir, &dir);
+    let (dir, shadowed) = worker_at(base, home(), harness, host_user, role_dir, told, guard)?;
+    if harness == Harness::Codex {
+        let worker = crate::orca::Worktree::at(worktree.to_path_buf(), String::new());
+        std::fs::write(worker.note(crate::codex_launch::HOME_NOTE)?, &dir)?;
+    }
+    Ok((dir, shadowed))
+}
+
+/// `for_worker` on a host whose cache and home are named explicitly.
+pub fn for_worker_under(
+    cache: &Path,
+    home: Option<&Path>,
+    harness: Harness,
+    host_user: bool,
+    role_dir: &Path,
+    told: &afkconvoy_core::role::Told,
+    guard: &str,
+) -> Result<(String, Vec<String>)> {
+    let base = keep_under(cache, home, harness, host_user)?;
+    worker_at(base, home.map(Path::to_path_buf), harness, host_user, role_dir, told, guard)
+}
+
+fn worker_at(
+    base: PathBuf,
+    home: Option<PathBuf>,
+    harness: Harness,
+    host_user: bool,
+    role_dir: &Path,
+    told: &afkconvoy_core::role::Told,
+    guard: &str,
+) -> Result<(String, Vec<String>)> {
+    let dir = if harness.kept_configuration(None, None, None).map_err(anyhow::Error::msg)?.is_some()
+    {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        role_dir.hash(&mut hasher);
+        let dir = base.join(format!("role-{:016x}", hasher.finish()));
+        keep_at(&dir, home.as_deref(), harness, host_user)?;
+        configure(&dir, home.as_deref(), harness, Some(role_dir), Some(told), Some(guard))?;
+        dir
+    } else {
+        base
+    };
+    let shadowed = match home {
+        Some(home) => shadowed_under(&home, harness, role_dir, &dir),
+        None => vec![],
+    };
     Ok((dir.display().to_string(), shadowed))
 }
 
