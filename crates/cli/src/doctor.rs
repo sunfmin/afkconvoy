@@ -32,6 +32,7 @@ use serde_json::{Map, Value, json};
 
 use crate::admission::Admission;
 use crate::checkout_list::{List, repo_of};
+use crate::claims::Me;
 use crate::config;
 use crate::fleet::Fleet;
 use crate::gate::{head_tree, recorded};
@@ -364,6 +365,9 @@ pub struct Held {
     pub held_for: Option<u64>,
     /// `None`: orca could not say.
     pub worker: Option<WorkerState>,
+    /// The command checked against the stopped worker's route. `None` when
+    /// unread or not checked: only a tick is safe to name then.
+    pub stopped_command: Option<&'static str>,
     pub worktree: Option<PathBuf>,
     /// What its worker was started under, in a bound repo.
     pub under: Option<Under>,
@@ -652,15 +656,19 @@ fn claim_findings(run: &Run, held: &[Held]) -> Vec<Finding> {
                 ));
             }
             Some(WorkerState::Idle { quiet: Some(quiet) }) if quiet >= STOPPED_LONG => {
+                let fix = match claim.stopped_command {
+                    Some(command) if command != "tick" => on(command, issue, instance),
+                    _ => format!("afkconvoy tick --instance {instance}"),
+                };
                 found.push(finding(
                     Kind::WorkerStopped,
                     format!(
                         "the worker of #{issue} has been stopped for {}, and its claim is still \
-                         at work: it declared nothing that ends it",
+                         at work",
                         lasted(quiet)
                     ),
                     format!("orca reports it stopped, in {place}: look at its terminal there"),
-                    on("nudge", issue, instance),
+                    fix,
                 ));
             }
             _ => {}
@@ -1415,6 +1423,17 @@ fn read_held(
         });
         let at = stood.iter().find(|issue| issue.number == mine.number);
         let stamped = fleet.scan.claim_of(mine.number).and_then(|claim| claim.owner.as_ref());
+        let stopped_command = match (mine.status, worker, stamped) {
+            (Status::NoPr, Some(WorkerState::Idle { quiet: Some(quiet) }), Some(owner))
+                if quiet >= STOPPED_LONG && !set.locked_out(mine.number) =>
+            {
+                InstanceId::parse(&owner.instance).ok().and_then(|instance| {
+                    let me = Me { instance, host: owner.host.clone(), now: fleet.now };
+                    crate::judge::stopped_command(fleet, &me, mine.number).ok()
+                })
+            }
+            _ => None,
+        };
         Held {
             issue: mine.number,
             title: mine.title.clone(),
@@ -1430,6 +1449,7 @@ fn read_held(
                 .or(at.and_then(|at| at.role.clone())),
             held_for: stamped.and_then(|owner| stamp_age(owner.ts, fleet.now)),
             worker,
+            stopped_command,
             worktree: worktree.map(|worktree| worktree.path),
             moved: match (&under, team) {
                 (Some(under), Some(team)) => read_moved(team, under),
@@ -2032,6 +2052,7 @@ mod tests {
             role: None,
             held_for: Some(600),
             worker: Some(WorkerState::Busy),
+            stopped_command: None,
             worktree: Some(PathBuf::from(format!("/wt/issue-{issue}"))),
             under: None,
             moved: vec![],
@@ -2232,7 +2253,11 @@ mod tests {
     #[test]
     fn a_worker_stopped_for_long_with_its_claim_at_work_names_the_nudge() {
         let mut state = state();
-        let stopped = |quiet| Held { worker: Some(WorkerState::Idle { quiet }), ..held(3) };
+        let stopped = |quiet| Held {
+            worker: Some(WorkerState::Idle { quiet }),
+            stopped_command: Some("nudge"),
+            ..held(3)
+        };
         state.held = vec![stopped(Some(STOPPED_LONG))];
         let found = found(&host(), &run(vec![]), &state);
         assert_eq!(

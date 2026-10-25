@@ -237,6 +237,66 @@ fn every_blocker_closed_starts_a_worker_on_the_issue_again() {
 }
 
 #[test]
+fn blockers_closed_before_parking_continue_the_same_worktree_after_a_fleet_lock() {
+    for locked in [false, true] {
+        let world = fleet();
+        world.say_concurrency(&world.clone, 1);
+        let dir = worktree(&world);
+        let tip = commit(&dir, "work.txt", "kept work\n");
+        std::fs::write(dir.join("scratch.txt"), "uncommitted work\n").unwrap();
+        in_flight(&world, 41);
+        blocked_by(&world, "41");
+        world.with_orca(|orca| {
+            let terminal = &mut orca["terminals"][0];
+            terminal["agent"] = json!({"state": "idle", "stateStartedAt": 1000000});
+            terminal["lastOutputAt"] = json!(1000000);
+        });
+
+        if locked {
+            world.afk(&["lock", "--issue", "41"]).ok();
+            assert_eq!(did(&tick(&world, 1390)), ["heartbeat done"]);
+            assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+            assert_eq!(world.edges(7), [] as [u64; 0]);
+        }
+        world.close(41, "completed");
+        let ticked = tick(&world, 1480);
+        assert_eq!(did(&ticked), ["judge 7 continued", "heartbeat done"], "{ticked}");
+        assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+        assert_eq!(worktree(&world), dir);
+        assert_eq!(common::git(&dir, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(std::fs::read_to_string(dir.join("scratch.txt")).unwrap(), "uncommitted work\n");
+        assert_eq!(world.open_terminals().len(), 1);
+        assert_eq!(world.orca()["terminals"].as_array().unwrap().len(), 2);
+        assert_eq!(did(&tick(&world, 1570))[0], "judge 7 nothing");
+
+        // Only the answered comment is retired. The successor's own verdict
+        // still stands, even when it names the same already-closed blocker.
+        blocked_by(&world, "41");
+        assert_eq!(did(&tick(&world, 1660))[0], "judge 7 continued");
+        assert_eq!(did(&tick(&world, 1750))[0], "judge 7 nothing");
+    }
+}
+
+#[test]
+fn a_failed_continuation_of_a_cleared_blocked_verdict_is_completed_at_the_next_tick() {
+    let world = fleet();
+    let dir = worktree(&world);
+    commit(&dir, "work.txt", "kept work\n");
+    world.issue(41, &[]);
+    world.close_issue(41);
+    blocked_by(&world, "41");
+    world.with_orca(|orca| orca["send_refused"] = json!(true));
+    let refused = world.afk(&["dispatch", "--issue", "7", "--instance", "alpha", "--now", "1090"]);
+    assert!(refused.error().contains("did not accept"));
+    assert_eq!(world.claims(), [(7, "alpha".to_string())]);
+    world.with_orca(|orca| orca["send_refused"] = json!(false));
+    assert_eq!(did(&tick(&world, 1180)), ["judge 7 continued", "heartbeat done"]);
+    assert_eq!(did(&tick(&world, 1270))[0], "judge 7 nothing");
+    assert_eq!(worktree(&world), dir);
+    assert_eq!(world.open_terminals().len(), 1);
+}
+
+#[test]
 fn park_reads_the_verdict_again_and_refuses_what_is_not_parkable_now() {
     let world = fleet();
     in_flight(&world, 41);

@@ -61,6 +61,21 @@ pub fn standings(fleet: &Fleet, issue: u64, named: &[u64]) -> Result<Vec<(u64, S
     Ok(standings.collect())
 }
 
+/// The `blocked` verdict a successful continuation will answer, read before
+/// starting its successor. Keeping its comment, rather than reading again
+/// after startup, never answers something the new worker just declared.
+pub(crate) fn cleared_verdict(fleet: &Fleet, issue: u64) -> Result<Option<String>> {
+    let comments = fleet.gh.comments(issue)?;
+    let verdict = latest_verdict(comments.iter().map(|comment| comment.body.as_str()));
+    let Some(verdict) = verdict.filter(|verdict| verdict.phase == Some(Phase::Blocked)) else {
+        return Ok(None);
+    };
+    match blocked_route(&standings(fleet, issue, &verdict.blocked_by)?) {
+        Blocked::Redispatch => Ok(comments.get(verdict.comment).map(|comment| comment.url.clone())),
+        _ => Ok(None),
+    }
+}
+
 /// Parks `claim`: a native blocked-by edge to every blocker in `parkable`
 /// GitHub does not record yet → release → remove the worktree, `worktree`
 /// here, when it holds nothing the remote does not, or close the terminal of
