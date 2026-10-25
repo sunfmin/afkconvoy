@@ -35,7 +35,7 @@ pub const MINOR_LABEL: &str = "release:minor";
 pub const VERSION_ENV: &str = "VERSION";
 
 /// The word of the marker of the issue a failed cut opens.
-const FAILED: &str = "convoy:cut-failed";
+pub const FAILED: &str = "convoy:cut-failed";
 
 /// What a cut is given beside two gate limits — its own gate and the
 /// landing train's — for the rest of its steps, publishing and installing

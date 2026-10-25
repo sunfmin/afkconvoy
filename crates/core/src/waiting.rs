@@ -10,7 +10,7 @@ use crate::line::Line;
 use crate::position::{Declared, Position};
 use crate::prompt::in_tracker;
 use crate::role::{Due, due};
-use crate::stage_record::{StageRecord, history};
+use crate::stage_record::{StageRecord, Stated, history};
 use crate::team::{Team, Workflow};
 use crate::tracker::Tracker;
 
@@ -289,8 +289,11 @@ pub fn waits(
 pub struct Waiting {
     pub issue: u64,
     pub title: String,
-    /// Why it waits, in a few words.
+    /// What kind of wait, then the first sentence of its source's reason.
     pub why: String,
+    /// The comment that gives the reason, or the report itself for an older
+    /// failed patrol or cut that left no comment. None without a source.
+    pub url: Option<String>,
     /// Since when, in epoch seconds, where GitHub said.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub since: Option<u64>,
@@ -313,9 +316,28 @@ impl Waiting {
             issue,
             title: title.to_string(),
             why: waits.why(),
+            url: None,
             since,
             answer: waits.answer(issue, tracker),
             waits,
+        }
+    }
+
+    /// Adds the reason from the comment that explains this wait, ignoring
+    /// later status chatter. `sources` are oldest first; an older failure
+    /// report's body may stand first, before its comments.
+    pub fn explain(&mut self, sources: &[Said<'_>]) {
+        let source = sources
+            .iter()
+            .rev()
+            .find_map(|source| self.waits.reason(source.body).map(|reason| (source, reason)));
+        if let Some((source, reason)) = source {
+            let reason = first_sentence(&reason);
+            if !reason.is_empty() {
+                self.why = format!("{}: {reason}", self.waits.why());
+            }
+            self.url = Some(source.url.to_string());
+            self.since = source.at;
         }
     }
 
@@ -327,12 +349,97 @@ impl Waiting {
     }
 }
 
+/// A source already read from GitHub; no extra request is needed to explain
+/// a wait. The URL and time belong to the same text that gives its reason.
+pub struct Said<'a> {
+    pub body: &'a str,
+    pub url: &'a str,
+    pub at: Option<u64>,
+}
+
+impl Waits {
+    /// The reason this source gives for this kind of wait, without the
+    /// fleet's marker or heading. Unrelated comments give none.
+    fn reason(&self, body: &str) -> Option<String> {
+        let after_marker = || body.split_once('\n').map(|(_, text)| text.trim());
+        match self {
+            Waits::Escalated(_) => {
+                // A position may call for a human before the tick writes
+                // its escalation. A newer stage record then supersedes an
+                // old escalation from before the issue was handed back.
+                if crate::transition::escalated_at([body]).is_none() {
+                    return StageRecord::read(body).map(|record| record.text);
+                }
+                let text = after_marker()?;
+                Some(
+                    text.strip_prefix("**afkconvoy: escalated to a human.**")
+                        .unwrap_or(text)
+                        .trim()
+                        .into(),
+                )
+            }
+            Waits::ParkedUnbound { .. } => {
+                Some(body.strip_prefix("**Stock consult — park**")?.trim().into())
+            }
+            Waits::Parked { stage } => {
+                let record = StageRecord::read(body)?;
+                (record.stage == *stage && record.stated == Stated::Declared(Declared::Park))
+                    .then_some(record.text)
+            }
+            Waits::PatrolFailed { patrol } => {
+                let (_, fields) = crate::record::latest_marker(crate::patrol::FAILED, [body])?;
+                (fields.get("patrol") == Some(patrol))
+                    .then(|| report_reason(after_marker().unwrap_or("")))
+            }
+            Waits::CutFailed => {
+                crate::record::latest_marker(crate::cut::FAILED, [body])?;
+                Some(report_reason(after_marker()?))
+            }
+            Waits::Verdict { .. } | Waits::Ended => {
+                StageRecord::read(body).map(|record| record.text)
+            }
+        }
+    }
+}
+
+/// The reason's first sentence on one line. A dot inside a version or URL
+/// is no sentence boundary; Chinese sentence endings need no following space.
+fn first_sentence(text: &str) -> String {
+    let paragraph = text.trim().split("\n\n").next().unwrap_or("");
+    let text = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (at, ch) in text.char_indices() {
+        let end = at.saturating_add(ch.len_utf8());
+        let rest = text.get(end..).unwrap_or("");
+        let ended = matches!(ch, '。' | '！' | '？')
+            || (matches!(ch, '.' | '!' | '?')
+                && (rest.is_empty() || rest.starts_with(char::is_whitespace)));
+        if ended {
+            return text.get(..end).unwrap_or(&text).to_string();
+        }
+    }
+    text
+}
+
+fn report_reason(text: &str) -> String {
+    text.strip_prefix("**afkconvoy** — ").unwrap_or(text).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn rule() -> Waits {
         Waits::Escalated(Back::Rule { stage: "workup".into() })
+    }
+
+    #[test]
+    fn reasons_use_the_first_sentence_without_cutting_versions_or_urls() {
+        assert_eq!(
+            first_sentence("Needs v0.5.18\nfrom https://example.com/a. Then retry."),
+            "Needs v0.5.18 from https://example.com/a."
+        );
+        assert_eq!(first_sentence("还缺原始日志。收到后重试。"), "还缺原始日志。");
+        assert_eq!(first_sentence("Need raw logs\n\n**To answer it**"), "Need raw logs");
     }
 
     #[test]

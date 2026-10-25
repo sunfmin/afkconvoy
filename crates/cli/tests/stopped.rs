@@ -388,7 +388,12 @@ fn a_silent_worker_is_nudged_once_then_escalated_with_where_it_stopped() {
     let plan = world.afk(&["plan", "--now", "1700"]).ok();
     assert_eq!(plan["excluded"][0]["reason"], "escalated: waits for the ready label", "{plan}");
     let waiting = &plan["waiting_on_human"];
-    assert_eq!((&waiting[0]["issue"], &waiting[0]["why"]), (&json!(7), &json!("escalated")));
+    assert_eq!(waiting[0]["issue"], 7);
+    assert_eq!(
+        waiting[0]["why"],
+        "escalated: The worker stopped with no PR and no verdict, and stayed silent after one nudge."
+    );
+    assert_eq!(waiting[0]["url"], world.comment_url(7, said));
     assert_eq!(
         waiting[0]["answer"],
         "gh issue edit 7 --add-label ready-for-agent --remove-label ready-for-human"

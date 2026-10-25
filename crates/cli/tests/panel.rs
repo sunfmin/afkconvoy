@@ -248,6 +248,8 @@ fn a_bound_repo_shows_each_workflow_as_its_stages_with_the_issues_at_each() {
     through(&world, 7, "plan", "pass", NOW - 900);
     through(&world, 7, "build", "pass", NOW - 800);
     through(&world, 7, "review", "pass", NOW - 700);
+    let reason = world.comments(7).pop().unwrap();
+    let reason_url = world.comment_url(7, &reason);
     through(&world, 8, "plan", "pass", NOW - 600);
     through(&world, 8, "build", "pass", NOW - 500);
     through(&world, 9, "plan", "pass", NOW - 400);
@@ -285,9 +287,13 @@ fn a_bound_repo_shows_each_workflow_as_its_stages_with_the_issues_at_each() {
     assert_eq!(carded(with_a_human, "asked"), [7], "{with_a_human}");
     assert!(
         with_a_human.contains(
-            "stage sign-off is by a human — afkconvoy verdict pass|reject --issue 7 --stage \
+            "stage sign-off is by a human: done — afkconvoy verdict pass|reject --issue 7 --stage \
              sign-off --text-file &lt;file&gt;"
         ),
+        "{with_a_human}"
+    );
+    assert!(
+        with_a_human.contains(&format!("<a href=\"{reason_url}\">Reason</a>")),
         "{with_a_human}"
     );
 }

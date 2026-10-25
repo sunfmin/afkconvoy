@@ -341,6 +341,7 @@ impl Fleet {
             cut: cut.as_ref(),
         };
         let mut set = assemble(&seen, me, self.now, &self.config);
+        open.issues.explain(&mut set.waiting_on_human);
         match self.config.bound {
             None => self.cast_frontier(&mut set, &open.issues, &consults),
             Some(_) => self.cast_bound_frontier(&mut set, &open.issues, &stages),
