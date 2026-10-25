@@ -57,11 +57,21 @@ pub struct Card {
     pub worker: Option<WorkerState>,
     /// Why it is where it is, or what the tick just did with it.
     pub note: Option<String>,
+    /// The source that explains why this issue waits for a human.
+    pub url: Option<String>,
 }
 
 impl Card {
     fn new(number: u64, title: &str) -> Card {
-        Card { number, title: title.to_string(), pr: None, peer: None, worker: None, note: None }
+        Card {
+            number,
+            title: title.to_string(),
+            pr: None,
+            peer: None,
+            worker: None,
+            note: None,
+            url: None,
+        }
     }
 
     fn noted(mut self, note: &str) -> Card {
@@ -463,7 +473,9 @@ impl Panel {
         }
         for waiting in &set.waiting_on_human {
             let note = format!("{} — {}", waiting.why, waiting.answer);
-            put.panel.to_human.push(Card::new(waiting.issue, &waiting.title).noted(&note));
+            let mut card = Card::new(waiting.issue, &waiting.title).noted(&note);
+            card.url = waiting.url.clone();
+            put.panel.to_human.push(card);
         }
         for Excluded { number, title, reason } in &set.excluded {
             if set.mine.iter().any(|mine| mine.number == *number)
@@ -772,6 +784,9 @@ fn card(out: &mut String, card: &Card, repo: Option<&str>) {
     }
     if let Some(note) = &card.note {
         meta.push(format!("<span class=\"note\">{}</span>", esc(note)));
+    }
+    if let Some(url) = &card.url {
+        meta.push(format!("<a href=\"{}\">Reason</a>", esc(url)));
     }
     if !meta.is_empty() {
         let _ = write!(out, "<span class=\"meta\">{}</span>", meta.join(""));

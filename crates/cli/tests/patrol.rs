@@ -658,15 +658,29 @@ fn a_patrol_that_leaves_a_commit_has_failed_and_is_reported_to_a_human() {
         (&waiting[0]["issue"], &waiting[0]["why"], &waiting[0]["answer"]),
         (
             &json!(number),
-            &json!("reports a failed run of the patrol `sweep`"),
+            &json!(format!(
+                "reports a failed run of the patrol `sweep`: it left a commit in its checkout ({started} → {left})"
+            )),
             &json!(format!("gh issue close {number}"))
         )
     );
+    let comment = world.comments(number).pop().unwrap();
+    assert_eq!(waiting[0]["url"], world.comment_url(number, &comment));
+    world.comment(number, "The investigation continues.");
+    let doctor = world.afk(&["doctor", "--now", "90000"]).json;
+    assert_eq!(doctor["waiting_on_human"], *waiting);
     let excluded = plan["excluded"].as_array().unwrap();
     let reason = excluded.iter().find(|issue| issue["number"] == number).unwrap();
     assert_eq!(reason["reason"], "reports a failed run of the patrol `sweep`: waits to be closed");
     assert_eq!(patrolled(&tick(&world, 90_000)), Vec::<String>::new());
     assert_eq!(world.gh()["issues"].as_array().unwrap().len(), 2, "one report, not one a tick");
+    // Reports from older versions have no reason comment: their body is
+    // still evidence, read with every issue rather than one request each.
+    world.with_gh(|gh| gh["comments"][number.to_string()] = json!([]));
+    let old = planned(&world, "alpha", 90_000);
+    let old = &old["waiting_on_human"][0];
+    assert!(old["why"].as_str().unwrap().contains("it left a commit in its checkout"), "{old}");
+    assert_eq!(old["url"], format!("https://gh/i/{number}"));
     // …and is once a human closed it, in a new checkout: the one that was
     // kept for them goes then.
     world.close_issue(number);

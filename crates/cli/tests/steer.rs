@@ -186,6 +186,8 @@ fn recovery_with_no_position(world: &World, answer: &str, choices: &[&str]) {
     let waiting = &plan["waiting_on_human"][0];
     assert_eq!(waiting["answer"], answer, "{plan}");
     let why = waiting["why"].as_str().unwrap();
+    assert!(why.ends_with(": Fix the failure."), "{waiting}");
+    assert_eq!(waiting["url"], "https://gh/c/1");
     for label in choices {
         assert!(why.contains(label), "the choice {label} is beside the answer: {waiting}");
     }
