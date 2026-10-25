@@ -221,7 +221,6 @@ pub fn run(fleet: &mut Fleet, me: &Me, agent: &Agent, read: &Flows, row: &Row) -
     };
     let brief = checkout.write_brief(&patrol_prompt(&fields).map_err(|e| anyhow!(e))?)?;
     let line = in_role(fleet, kept, name, &cast, launch.as_str(), &checkout)?;
-    checkout.keep_harness(harness)?;
     let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
@@ -319,7 +318,6 @@ pub(crate) fn switch(
     let line = in_role(fleet, &kept, name, &cast, launch.as_str(), &checkout)?;
     let continuing = said(&checkout);
     crate::dispatch::continue_brief(fleet, &checkout, None, &continuing)?;
-    checkout.keep_harness(harness)?;
     let terminal = agent.start(&checkout, harness, &line, me.now)?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &checkout.brief()?)?;

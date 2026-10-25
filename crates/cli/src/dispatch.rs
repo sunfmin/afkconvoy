@@ -48,7 +48,11 @@ impl Agent {
         command: &str,
         now: u64,
     ) -> Result<String> {
-        worktree.start(&self.launches.worker_line(harness, command), now)
+        let terminal = worktree.start(&self.launches.worker_line(harness, command), now)?;
+        // Record what actually started, never a replacement whose old
+        // terminal could not be ended.
+        worktree.keep_harness(harness)?;
+        Ok(terminal)
     }
 
     /// The worker launch command a worker of `harness` is started with. An
@@ -287,7 +291,6 @@ fn start(
                         consult: true,
                     })?;
                 }
-                cut.keep_harness(harness)?;
                 terminal = Some(match &staged {
                     Some(staged) => {
                         agent.start(cut, harness, &staged.command(launch, cut)?, fleet.now)?

@@ -191,6 +191,8 @@ fn a_failed_close_preserves_work_and_all_continues_with_the_other_workers() {
     assert_eq!(std::fs::read_to_string(uncommitted).unwrap(), "work in progress\n");
     assert_eq!(git(&seven, &["rev-parse", "HEAD"]), head);
     assert_eq!(world.claims().len(), 2);
+    let git_dir = PathBuf::from(git(&seven, &["rev-parse", "--absolute-git-dir"]));
+    assert_eq!(std::fs::read_to_string(git_dir.join("convoy-harness")).unwrap(), "claude-code");
     let calls = world.orca_calls();
     assert!(!calls.iter().any(|call| {
         common::asked(call) == "terminal create"
