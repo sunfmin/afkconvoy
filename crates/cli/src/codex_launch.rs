@@ -82,7 +82,7 @@ fn user_directory(worktree: &Path, mut config: toml::Table, file: &Path) -> Resu
     }
     remove_preferences(&mut config);
     if let Some(profiles) = config.get_mut("profiles").and_then(toml::Value::as_table_mut) {
-        for profile in profiles.values_mut().filter_map(toml::Value::as_table_mut) {
+        for profile in profiles.iter_mut().filter_map(|(_, value)| value.as_table_mut()) {
             remove_preferences(profile);
         }
     }

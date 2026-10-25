@@ -194,6 +194,10 @@ _Avoid_: harness config, model table, routing rules
 The harnesses this host can start, in order of preference, each with its worker launch command and the models it was seen to answer with. Its order is the machine's sole harness priority for every checkout and every worker kind. A switch moves one existing entry first, retaining the other entries' relative order and contents. Casting and roster order cannot outrank it. Capability refresh and model research retain established harness order. A paused or unavailable candidate is skipped without changing that order, and becomes eligible after a successful recovery probe. It belongs to the host, is never pushed, and names no preference of another host.
 _Avoid_: roster (the team's), host config, inventory
 
+**Codex effort**:
+The reasoning effort a Codex worker takes from the host user's own Codex settings at its start, or Codex's model default where the user says none. It is independent of the fleet's model selection and is no setting of the fleet.
+_Avoid_: fleet effort, role effort
+
 **Casting**:
 An issue's harness and model labels, put on by its caster or a human. They may select a matching model within the harness chosen by kit order and role eligibility. They never choose a later harness ahead of an eligible earlier one, nor carry a model across harnesses. The fleet leaves these labels intact when priority changes or a fault requires continuation.
 _Avoid_: assignment (a GitHub assignee), routing, dispatch (starting a worker)
@@ -213,6 +217,8 @@ _Avoid_: harness change (what a new casting makes)
 **Worker launch command**:
 The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and written by `afkconvoy kit`; each launch reads its latest command, or discovers and records a known harness's stock command when none is held; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it, appends to it nothing but its harness's model flag where the worker runs a model — its issue's casting, the host kit's first, or the stock consult's — and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own: a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in the worktree, short enough for a socket's path however long the worktree's is, and gone with the worktree once nothing started with it runs. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
+
+A Codex worker's model is always the fleet's selection; its effort is the host user's Codex effort. A session's saved choice belongs to that session alone and chooses nothing for a later worker.
 
 **Worker state**:
 Whether a worker is busy or has stopped, as its harness reports it to the worker backend — or, where the backend has no report of it, as its terminal's last output shows. Stopped never means finished.

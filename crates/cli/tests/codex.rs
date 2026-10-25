@@ -388,7 +388,9 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     let ticked = tick(&world, 1000).ok();
     assert_eq!(did(&ticked)[0], "dispatch 7 done", "{ticked}");
 
-    let (role, dir, kept) = (role_copy(&world, "acme/dev"), worktree(&world, 7), kept(&world));
+    let (role, dir) = (role_copy(&world, "acme/dev"), worktree(&world, 7));
+    let kept = PathBuf::from(&under_codex(&world, &started(&world, &dir))[1]);
+    assert!(kept.starts_with(dir.join(".afkconvoy-tmp")), "{}", kept.display());
     let guard = format!("{} guard", env!("CARGO_BIN_EXE_afkconvoy"));
     let line = started(&world, &dir);
     assert_eq!(
@@ -471,8 +473,10 @@ fn a_codex_worker_starts_in_its_role_under_a_user_directory_of_the_fleet_s_own()
     world.issue(8, &["flow:audit"]);
     let ticked = did(&tick(&world, 1100).ok());
     assert!(ticked.contains(&"dispatch 8 done".to_string()), "{ticked:?}");
-    assert_eq!(held(&kept), [] as [&str; 0], "a link to no login is left");
     let line = started(&world, &worktree(&world, 8));
+    let next = PathBuf::from(&under_codex(&world, &line)[1]);
+    assert_ne!(next, kept);
+    assert_eq!(held(&next), [] as [&str; 0], "a link to no login is left");
     assert!(line.ends_with(" --config skills.bundled.enabled=false --model 'gpt-5.5'"), "{line}");
 }
 
@@ -1118,7 +1122,8 @@ fn a_codex_worker_is_given_the_host_user_s_skills_and_rules_and_its_role_s_skill
     // Its user directory is the one kept with the host user's skills and
     // rules: linked to, where Codex finds a user's, beside the login — and
     // still no configuration and no hook of theirs.
-    let (alone, kept) = (kept(&world), kept_host_user(&world));
+    let alone = kept(&world);
+    let kept = PathBuf::from(&under_codex(&world, &started(&world, &worktree(&world, 7)))[1]);
     let mut held: Vec<String> = std::fs::read_dir(&kept)
         .unwrap()
         .flatten()
@@ -1161,12 +1166,9 @@ fn a_codex_worker_of_a_role_that_keeps_from_the_host_user_s_skills_and_rules_is_
     // `dev` takes the team's, and is given them; `auditor` says otherwise.
     let given = |issue: u64| {
         let line = started(&world, &worktree(&world, issue));
-        let (with, alone) = (
-            format!("'{}'", kept_host_user(&world).display()),
-            format!("'{}'", kept(&world).display()),
-        );
-        assert_ne!(line.contains(&with), line.contains(&alone), "{line}");
-        line.contains(&with)
+        let home = PathBuf::from(&under_codex(&world, &line)[1]);
+        assert!(home.starts_with(worktree(&world, issue).join(".afkconvoy-tmp")));
+        home.file_name().unwrap() == "codex-host-user"
     };
     assert!(given(7), "dev is started on Codex with the host user's");
     assert!(!given(8), "auditor is started on Codex with none of the host user's");
@@ -1197,4 +1199,190 @@ fn a_discovered_codex_command_must_take_the_role_flags_before_it_is_saved() {
         .find(|held| held["harness"] == "codex")
         .unwrap();
     assert!(codex.get("command").is_none(), "failed discovery was saved: {codex}");
+}
+
+fn launch(world: &World, issue: u64, now: u64) -> Vec<String> {
+    world
+        .afk(&[
+            "dispatch",
+            &issue.to_string(),
+            "--instance",
+            "alpha",
+            "--host",
+            "h1",
+            "--now",
+            &now.to_string(),
+        ])
+        .ok();
+    under_codex(world, &started(world, &worktree(world, issue)))
+}
+
+fn assert_selection(ran: &[String], model: &str, effort: Option<&str>) {
+    let models: Vec<_> =
+        ran.windows(2).filter(|args| args[0] == "--model").map(|args| args[1].as_str()).collect();
+    assert_eq!(models, [model], "{ran:?}");
+    let efforts: Vec<_> = ran
+        .windows(2)
+        .filter(|args| args[0] == "--config" && args[1].starts_with("model_reasoning_effort="))
+        .map(|args| {
+            args[1].parse::<toml::Table>().unwrap()["model_reasoning_effort"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(efforts, effort.into_iter().map(str::to_string).collect::<Vec<_>>(), "{ran:?}");
+    if let Ok(config) = std::fs::read_to_string(Path::new(&ran[1]).join("config.toml")) {
+        let config: toml::Table = config.parse().unwrap();
+        assert!(!config.contains_key("model"));
+        assert!(!config.contains_key("model_reasoning_effort"));
+    }
+}
+
+#[test]
+fn codex_uses_fleet_models_and_fresh_user_effort_despite_saved_worker_preferences() {
+    let world = bound();
+    let stale = "model = 'stale-model'\nmodel_reasoning_effort = 'medium'\n";
+    write(&kept_host_user(&world), "config.toml", stale);
+    write(&kept(&world), "config.toml", stale);
+    write(
+        &world.home(),
+        ".codex/config.toml",
+        "model = 'user-model'\nmodel_reasoning_effort = 'xhigh' # current\n",
+    );
+    world.issue(7, &["flow:feature"]);
+    let first = launch(&world, 7, 1000);
+    assert_selection(&first, "gpt-5.5", Some("xhigh"));
+    // The file Codex writes for /model belongs to this session alone.
+    write(Path::new(&first[1]), "config.toml", stale);
+    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
+    world.issue(8, &["flow:feature"]);
+    let second = launch(&world, 8, 1100);
+    assert_selection(&second, "gpt-5.5", Some("high"));
+    assert_ne!(first[1], second[1]);
+    // A role that opts out of user skills still takes the user's effort.
+    std::fs::remove_file(world.home().join(".codex/config.toml")).unwrap();
+    world.issue(9, &["flow:audit"]);
+    assert_selection(&launch(&world, 9, 1200), "gpt-5.5", None);
+    assert_eq!(
+        std::fs::read_to_string(kept_host_user(&world).join("config.toml")).unwrap(),
+        stale,
+        "a stale shared config is never read or rewritten"
+    );
+}
+
+#[test]
+fn unbound_codex_workers_keep_other_user_settings_and_never_inherit_session_choices() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_models("codex", &["fleet-first", "fleet-cast"]);
+    world.afk(&["switch", "--harness", "codex"]).ok();
+    let config =
+        "model = 'user-model'\nmodel_reasoning_effort = 'xhigh'\nmodel_verbosity = 'low'\n";
+    write(&world.home(), ".codex/config.toml", config);
+    world.issue(7, &["ready-for-agent", "harness:codex", "model:fleet-cast"]);
+    let first = launch(&world, 7, 1000);
+    assert_selection(&first, "fleet-cast", Some("xhigh"));
+    let snapshot = std::fs::read_to_string(Path::new(&first[1]).join("config.toml")).unwrap();
+    assert_eq!(snapshot.parse::<toml::Table>().unwrap()["model_verbosity"].as_str(), Some("low"));
+    write(
+        Path::new(&first[1]),
+        "config.toml",
+        "model = 'session-only'\nmodel_reasoning_effort = 'medium'\n",
+    );
+    assert_eq!(std::fs::read_to_string(world.home().join(".codex/config.toml")).unwrap(), config);
+    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
+    world.issue(8, &["ready-for-agent"]);
+    assert_selection(&launch(&world, 8, 1100), "fleet-first", Some("high"));
+    write(
+        &world.home(),
+        ".codex/config.toml",
+        "[profiles.saved]\nmodel_reasoning_effort = 'medium'\n",
+    );
+    world.issue(9, &["ready-for-agent"]);
+    let last = launch(&world, 9, 1200);
+    assert_selection(&last, "fleet-first", None);
+    let snapshot: toml::Table =
+        std::fs::read_to_string(Path::new(&last[1]).join("config.toml")).unwrap().parse().unwrap();
+    assert!(
+        !snapshot["profiles"]["saved"].as_table().unwrap().contains_key("model_reasoning_effort")
+    );
+}
+
+#[test]
+fn plan_doctor_and_panel_show_each_codex_launch_and_its_sources() {
+    let world = bound();
+    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'xhigh'\n");
+    world.issue(7, &["flow:feature"]);
+    let plan = world.afk(&["plan", "--now", "1000"]).ok();
+    assert_eq!(plan["frontier"][0]["codex"]["effort"], "xhigh");
+    launch(&world, 7, 1000);
+    write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 'high'\n");
+    for command in ["plan", "doctor"] {
+        let args = if command == "plan" {
+            vec![command, "--instance", "alpha", "--now", "1100"]
+        } else {
+            vec![command, "--host", "h1", "--now", "1100"]
+        };
+        let result = world.afk(&args);
+        // Doctor may report unrelated operational findings; its evidence is
+        // still the actual session, not the user's next-launch preference.
+        let rows =
+            result.json["codex_workers"].as_array().unwrap_or_else(|| panic!("{}", result.json));
+        assert_eq!(rows[0]["model"], "gpt-5.5");
+        assert_eq!(rows[0]["model_source"], "fleet_selection");
+        assert_eq!(rows[0]["effort"], "xhigh");
+        assert!(
+            rows[0]["effort_source"]
+                .as_str()
+                .unwrap()
+                .ends_with(".codex/config.toml:model_reasoning_effort")
+        );
+    }
+    let output = world
+        .command(env!("CARGO_BIN_EXE_afkconvoy"), &world.clone)
+        .args(["panel", "--instance", "alpha", "--host", "h1", "--now", "1100"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let page = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "data-codex-worker=\"#7\"",
+        "gpt-5.5",
+        "fleet_selection",
+        "effort xhigh",
+        ".codex/config.toml:model_reasoning_effort",
+    ] {
+        assert!(page.contains(expected), "missing {expected}: {page}");
+    }
+}
+
+#[test]
+fn codex_starts_no_session_without_a_fleet_model_or_with_invalid_user_effort() {
+    for invalid in [false, true] {
+        let world = bound();
+        if invalid {
+            write(&world.home(), ".codex/config.toml", "model_reasoning_effort = 4\n");
+        } else {
+            world.kit_models("codex", &[]);
+        }
+        world.issue(7, &["flow:feature"]);
+        let why = world
+            .afk(&["dispatch", "7", "--instance", "alpha", "--host", "h1", "--now", "1000"])
+            .error();
+        assert!(
+            why.contains(if invalid {
+                "must be a nonempty string"
+            } else {
+                "no selected Codex model"
+            }),
+            "{why}"
+        );
+        assert!(world.orca()["terminals"].as_array().unwrap().iter().all(|terminal| {
+            !terminal["command"]
+                .as_str()
+                .unwrap_or("")
+                .contains("--dangerously-bypass-approvals-and-sandbox")
+        }));
+    }
 }
