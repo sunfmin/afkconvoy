@@ -62,7 +62,7 @@ use crate::runner_socket::{self, Reached, Reply, Request};
 use crate::stop::Stop;
 use crate::tick::{Echo, Holder, Line, Show};
 use crate::wake::{self, Wakes};
-use crate::{VERSION, concurrency, host_settings, kit, launch, probe};
+use crate::{VERSION, concurrency, host_settings, kit, launch, probe, tracker};
 
 /// The lock whose holder is the host runner, in the cache directory. It
 /// holds the holder's {pid, version, started}.
@@ -585,18 +585,28 @@ impl Runner {
         let repo = Repo::at(checkout)?;
         let (root, key) = (repo.dir.clone(), checkout_list::repo_of(&repo)?);
         let tick_log = log::Log::of(&repo)?.file;
-        let (seen, added, concurrency) = {
+        let (seen, added, concurrency, tracked) = {
             let mut held = self.holding();
             let listed = self.list.read()?.checkouts;
             let known = known(&listed, &held);
             let on_list = on_list(&known, &root.display().to_string(), &key);
             // A new start asks nothing that a start of it before asked.
             if matches!(on_list, OnList::No) {
-                concurrency::ask(&root, To::Default);
+                checkout_list::forget(&root);
             }
-            let said = match on_list {
-                OnList::Other(_) => Value::Null,
-                OnList::Itself | OnList::No => self.said(&repo, start.concurrency)?,
+            let (said, tracked) = match on_list {
+                OnList::Other(_) => (Value::Null, Value::Null),
+                OnList::Itself | OnList::No => {
+                    let kept = listed.iter().find(|entry| entry.checkout == root);
+                    let named = kept.map(|entry| entry.named.clone()).unwrap_or_default();
+                    let host = start.named.host.clone().or(named.host);
+                    let host = host.unwrap_or_else(crate::this_host);
+                    let tracked = match start.tracker.clone() {
+                        Some(to) => tracker::say(&self.list, &repo, to, &host)?,
+                        None => Value::Null,
+                    };
+                    (self.said(&repo, start.concurrency)?, tracked)
+                }
             };
             let (seen, added) = match on_list {
                 OnList::Other(first) => {
@@ -641,7 +651,7 @@ impl Runner {
                 }
                 OnList::No => (self.start(&mut held, root.clone(), key.clone(), start, true), true),
             };
-            (seen, added, said)
+            (seen, added, said, tracked)
         };
         let mut stage = seen.stage();
         // Its probe's warnings are this `run`'s where it waited for its start.
@@ -658,6 +668,7 @@ impl Runner {
                 "tick_log": tick_log,
                 "first_tick": first_tick,
                 "concurrency": concurrency,
+                "tracker": tracked,
                 "warnings": if waited { stage.warnings.clone() } else { vec![] },
             })),
             Came::Refused(refused) => Ok(refused.clone()),
@@ -1156,18 +1167,19 @@ impl Heard {
                     false
                 }
                 None => {
-                    // With the concurrency its `run` asked, which this
-                    // process forgets once the list holds it.
-                    let concurrency = concurrency::asked_of(&self.root);
+                    // With the concurrency and the tracker its `run` asked,
+                    // which this process forgets once the list holds them.
+                    let checkout_list::Asked { concurrency, tracker } =
+                        checkout_list::asked_of(&self.root);
                     let checkout = self.root.clone();
-                    listed.checkouts.push(Entry { checkout, named, concurrency, tracker: None });
+                    listed.checkouts.push(Entry { checkout, named, concurrency, tracker });
                     true
                 }
             }
         });
         stage.came = match listed {
             Ok(added) => {
-                concurrency::forget(&self.root);
+                checkout_list::forget(&self.root);
                 if added {
                     self.runner.log.say(&format!("checkout added: {at} ({})", self.key));
                 }
@@ -1523,12 +1535,16 @@ pub fn holds(repo: &Repo) -> bool {
 /// a `run` or a `stop` while it holds the host is refused, and so is it,
 /// where another host runner holds the host. What it names of the host
 /// settings, `settings`, holds in this process alone, laid over the host's;
-/// and what it says of its checkout's concurrency, where the list holds no
-/// entry of it.
+/// and what it says of its checkout's concurrency and its tracker, where the
+/// list holds no entry of it.
 pub fn foreground(checkout: &Repo, start: &Start, settings: host_settings::Named) -> Result<Value> {
     host_settings::lay_for_this_process(settings);
     if let Some(to) = start.concurrency {
         concurrency::ask(&checkout.dir, to);
+    }
+    if let Some(to) = start.tracker.clone() {
+        let host = start.named.host.clone().unwrap_or_else(crate::this_host);
+        tracker::ask(&List::of_host()?, checkout, to, &host)?;
     }
     let dir = cache()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;

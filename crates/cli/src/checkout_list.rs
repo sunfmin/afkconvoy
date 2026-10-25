@@ -7,8 +7,10 @@
 //! next. Changes take the lock beside it, which keeps out a change made by
 //! another thread of the same process as well as by another process.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use afkconvoy_core::checkouts;
 use afkconvoy_core::config::RepoName;
@@ -54,6 +56,40 @@ pub struct Entry {
     /// checkout's own: none, and it is its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<RepoName>,
+}
+
+/// What the `run` of a checkout the list holds no entry of yet asked of it,
+/// in this process: what its first tick puts on the list with it — a
+/// checkout whose first tick has not ended, or that a `run --foreground`
+/// holds, goes by it until then.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Asked {
+    /// `--concurrency` (`concurrency`).
+    pub concurrency: Option<NonZeroUsize>,
+    /// `--tracker` (`crate::tracker`).
+    pub tracker: Option<RepoName>,
+}
+
+/// What each `run` asked in this process, by its checkout's root.
+static ASKED: Mutex<BTreeMap<PathBuf, Asked>> = Mutex::new(BTreeMap::new());
+
+/// What each `run` asked in this process. Whoever reads it beside the list
+/// holds it while they read the list, and a first tick forgets what was
+/// asked (`forget`) only once the list holds it: a reader finds it in one or
+/// the other.
+pub fn asked() -> MutexGuard<'static, BTreeMap<PathBuf, Asked>> {
+    ASKED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// What the `run` of the checkout at `root` asked in this process.
+pub fn asked_of(root: &Path) -> Asked {
+    asked().get(root).cloned().unwrap_or_default()
+}
+
+/// Forgets what the `run` of the checkout at `root` asked in this process:
+/// once its entry on the list holds it, or as a new start asks anew.
+pub fn forget(root: &Path) {
+    asked().remove(root);
 }
 
 /// A host's checkout list: its file, and the lock beside it.
@@ -148,12 +184,19 @@ pub fn tracker_on(list: &List, repo: &Repo) -> Result<Tracker> {
 }
 
 /// The tracker the checkout `repo` says on the host of `list`, with its
-/// entry or its main checkout's: none, and it is its own repo.
+/// entry or its main checkout's — where the list holds neither, what its
+/// `run` asked in this process: none, and it is its own repo.
 pub fn said_tracker(list: &List, repo: &Repo) -> Result<Option<RepoName>> {
-    let listed = list.read()?;
     let main = repo.main_checkout()?;
-    let of = |entry: &Entry| entry.checkout == repo.dir || entry.checkout == main;
-    Ok(listed.checkouts.into_iter().find(of).and_then(|entry| entry.tracker))
+    let of = |root: &Path| root == repo.dir || root == main;
+    let asked = asked();
+    let listed = list.read()?;
+    Ok(match listed.checkouts.into_iter().find(|entry| of(&entry.checkout)) {
+        Some(entry) => entry.tracker,
+        None => {
+            asked.iter().find(|(root, _)| of(root)).and_then(|(_, asked)| asked.tracker.clone())
+        }
+    })
 }
 
 /// The repo the checkout `repo` is of, as GitHub names it, `owner/name`:

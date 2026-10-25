@@ -19,7 +19,7 @@ use crate::team;
 /// What GitHub shows beside a flow label this command created, and beside a
 /// ready label.
 const FLOW_LABEL_SAYS: &str = "afkconvoy: the workflow an issue that carries this follows";
-const READY_LABEL_SAYS: &str = "afkconvoy: the fleet works an issue that carries this";
+pub(crate) const READY_LABEL_SAYS: &str = "afkconvoy: the fleet works an issue that carries this";
 
 /// The line that opens an issue carrying `label`, its title and body left to
 /// whoever runs it.
@@ -30,7 +30,7 @@ fn line(label: &str) -> String {
 
 /// Creates each of `labels` the repo lacks, as one that says `says` → the
 /// ones created. GitHub tells labels apart by their letters, not their case.
-fn create_missing(gh: &GitHub, labels: &[String], says: &str) -> Result<Vec<String>> {
+pub(crate) fn create_missing(gh: &GitHub, labels: &[String], says: &str) -> Result<Vec<String>> {
     let has = gh.labels()?;
     let mut created = vec![];
     for label in labels {

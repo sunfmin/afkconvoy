@@ -95,6 +95,7 @@ pub mod tend;
 pub mod tick;
 pub mod tools;
 pub mod topic;
+pub mod tracker;
 pub mod train;
 pub mod wake;
 pub mod watch;
@@ -1269,6 +1270,11 @@ enum Command {
         /// and never pushed; `default` changes it back [default: {const:CONCURRENCY}]
         #[arg(long, value_name = "CLAIMS", value_parser = concurrency::claims_or_default)]
         concurrency: Option<To<NonZeroUsize>>,
+        /// The repo this checkout's fleet reads and writes its issues in, from its next tick:
+        /// the checkout's own, kept with it on the checkout list and never pushed; `default`
+        /// changes it back [default: the checkout's own repo]
+        #[arg(long, value_name = "OWNER/REPO", value_parser = tracker::repo_or_default)]
+        tracker: Option<To<RepoName>>,
         #[command(flatten)]
         agent: AgentArgs,
         /// The port the host runner serves the panel on, from its next start: a host setting;
@@ -3555,6 +3561,7 @@ fn start_of(
         instance,
         host,
         concurrency,
+        tracker,
         agent,
         panel,
         no_host_sleep,
@@ -3604,7 +3611,7 @@ fn start_of(
     let panic_at = panic_at_tick;
     let knobs =
         instance::Knobs { ticks, second_ms, host_sleep_after, ready_timeout, now, panic_at };
-    Some((foreground, instance::Start { named, concurrency, knobs }, settings))
+    Some((foreground, instance::Start { named, concurrency, tracker, knobs }, settings))
 }
 
 /// The start of a `run` that named nothing, in this process's environment:
@@ -3976,6 +3983,7 @@ fn run(
                 }
             }
             plan["concurrency"] = concurrency::json(&fleet.config);
+            plan["tracker"] = json!(fleet.gh.tracker.named());
             plan["admission"] = admission.json();
             plan["host_kit"] = kit::show(now);
             plan["worker_no_proxy"] = launches.proxy_json();

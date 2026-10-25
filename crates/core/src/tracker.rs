@@ -58,6 +58,16 @@ pub fn repo_labels(labels: &[String]) -> Vec<&str> {
     labels.iter().filter(is_one).map(String::as_str).collect()
 }
 
+/// Whether `tracker` can be a part of a ref's name, as a claim on one of its
+/// issues names it (`Tracker::claim_key`): git lets no part of a ref's name
+/// begin with `.`, nor end with `.` or `.lock`.
+pub fn names_a_ref(tracker: &RepoName) -> bool {
+    let lowered = lowered(tracker);
+    lowered
+        .split('/')
+        .all(|part| !part.starts_with('.') && !part.ends_with('.') && !part.ends_with(".lock"))
+}
+
 /// `name` as a part of a ref's name or of a worktree's: in lower case, so
 /// that two hosts that spell the tracker in two cases meet on one name.
 fn lowered(name: &RepoName) -> String {
@@ -218,6 +228,16 @@ mod tests {
                 (Tracker::Own.claimed(run), other().claimed(run)),
                 (Claimed::Run, Claimed::Run)
             );
+        }
+    }
+
+    #[test]
+    fn a_tracker_names_a_ref_unless_a_part_of_it_begins_with_a_dot_or_ends_as_git_forbids() {
+        for named in ["acme/tracker", "acme/the.tracker", "a-b/c_d"] {
+            assert!(names_a_ref(&RepoName::read(named).unwrap()), "{named}");
+        }
+        for refused in ["acme/.github", "acme/tracker.", "acme/tracker.LOCK"] {
+            assert!(!names_a_ref(&RepoName::read(refused).unwrap()), "{refused}");
         }
     }
 
