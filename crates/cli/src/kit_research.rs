@@ -196,10 +196,7 @@ pub fn research(
             }
         }
     }
-    if !sourced.is_empty() {
-        kit.harnesses
-            .sort_by_key(|h| answer.harness_order.iter().position(|key| key == h.harness.key()));
-    }
+    // Harness priority belongs to the host user. Research ranks models only.
 }
 
 fn valid(finding: &Finding) -> bool {

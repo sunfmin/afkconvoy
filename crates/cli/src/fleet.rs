@@ -9,7 +9,6 @@
 use afkconvoy_core::casting::{self, Cast, ForCaster, HELD_FOR_CASTER, Standing, Why, choice};
 use afkconvoy_core::claims::{Claim, InstanceId};
 use afkconvoy_core::config::Config;
-use afkconvoy_core::harness::Harness;
 use afkconvoy_core::plan::{Excluded, Issue, Observed, WorkingSet, assemble, closing_pr};
 use afkconvoy_core::position::Position;
 use afkconvoy_core::stock;
@@ -18,7 +17,7 @@ use afkconvoy_core::team::{Consult, Role, Team, Workflow};
 use afkconvoy_core::train::{Built, on_train};
 use afkconvoy_core::verdict::latest_verdict;
 use afkconvoy_core::worker::recorded_branches;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use std::thread;
 
 use crate::claims::Scan;
@@ -38,10 +37,6 @@ pub struct Fleet {
     /// The repo's config, with the concurrency its checkout says on this
     /// host laid over it (`concurrency::config_of`).
     pub config: Config,
-    /// The harness a switch on this host chose for the repo: every worker
-    /// this host starts for it is of this one, whatever a role's range or an
-    /// issue's casting says (`switch::chosen`).
-    pub chosen: Option<Harness>,
     pub gh: GitHub,
     pub scan: Scan,
     /// The base branch and the fleet's refs as the remote had them when this
@@ -96,13 +91,12 @@ impl Fleet {
         // As this checkout's fleet instance goes by it on this host: read
         // anew at each view, so a concurrency said since holds now.
         let config = crate::concurrency::config_of(&repo)?;
-        let chosen = crate::switch::chosen(&repo)?;
+
         let listing = repo.listing(&config.base_branch)?;
         let scan = Scan::among(repo.layout(), gh.tracker.clone(), listing.records.clone());
         Ok(Fleet {
             repo,
             config,
-            chosen,
             gh,
             scan,
             listing,
@@ -139,74 +133,44 @@ impl Fleet {
         let (kit, paused) = crate::kit::running()?;
         let kit = kit.range();
         let range = casting::range(role, &kit);
+        if range.is_empty() && !paused.is_empty() {
+            return Err(crate::paused::Held::every(&paused, self.now).into());
+        }
         if let Some(why) = casting::nothing_safe(role, &kit) {
             return Err(NothingSafe(why).into());
         }
-        if self.chosen.is_none() {
-            let allowed = |pause: &&casting::Paused| {
-                let whole = crate::kit::load().map(|kit| kit.range()).unwrap_or_default();
-                casting::range(role, &whole).iter().any(|held| held.harness == pause.harness)
-            };
-            if let Some(pause) = casting::paused_of(labels, &paused).filter(allowed) {
-                return Err(crate::paused::Held::of(pause, self.now).into());
-            }
-        }
-        casting::cast_within(labels, &range, &kit, self.chosen)
+        casting::preferred(labels, &range, &kit)
             .map_err(|why| anyhow!("the role `{}`: {why}", role.name))
     }
 
-    /// The harness and model the stock consult runs: the host kit's
-    /// (`Kit::stock_consult`), without the harnesses paused on this host —
-    /// its first where what it names matches nothing held, `unmatched` — but
-    /// this host's chosen harness, where a switch chose one the host kit
-    /// holds, without the model of another; its first, `unmatched`, where the
-    /// switch matches nothing held. Every harness paused holds it back
-    /// (`paused::Held`).
+    /// The stock consult follows the same kit order as every other worker.
     pub fn stock_consult(&self) -> Result<Cast> {
         let (kit, paused) = crate::kit::running()?;
         if kit.harnesses.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
-        let named =
-            kit.stock_consult().context("the host kit holds no harness: run `afkconvoy kit`")?;
-        let (why, unmatched) = match (&kit.stock_consult, kit.stock_unmatched()) {
-            (Some(said), Some(_)) => (Why::Unmatched, Some(format!("`{}`", said.harness.key()))),
-            (Some(_), None) => (Why::Casting, None),
-            (None, _) => (Why::First, None),
-        };
-        let cast = Cast { harness: named.harness, model: named.model, why, unmatched };
-        Ok(match self.chosen {
-            Some(chosen) if kit.command(chosen).is_none() => {
-                let first = kit.first().context("the host kit holds no harness")?;
-                let unmatched = Some(format!("this host's switch to `{}`", chosen.key()));
-                Cast { harness: first.harness, model: first.model, why: Why::Unmatched, unmatched }
-            }
-            Some(chosen) if chosen != cast.harness => {
-                Cast { harness: chosen, model: None, why: Why::Switch, unmatched: None }
-            }
-            _ => cast,
-        })
+        let named = kit.stock_consult();
+        let labels: Vec<String> = named
+            .into_iter()
+            .flat_map(|named| {
+                let mut labels = vec![format!("harness:{}", named.harness.key())];
+                labels.extend(named.model.map(|model| format!("model:{model}")));
+                labels
+            })
+            .collect();
+        let range = kit.range();
+        casting::preferred(&labels, &range, &range).map_err(|why| anyhow!("{why}"))
     }
 
-    /// What the worker of an unbound repo's issue labelled `labels` runs
-    /// (`casting::cast`) within the host kit without the harnesses paused on
-    /// this host, and this host's switch → it: a casting or a switch that
-    /// matches nothing held runs the host kit's first. A casting to be cast
-    /// again (`recast`) is taken for none. A casting to a paused harness, or
-    /// a host kit every harness of which is paused, holds the issue back
-    /// (`paused::Held`); any other error is the host kit's.
+    /// Kit order chooses the harness. Labels can only choose a model within it.
     pub fn cast(&self, labels: &[String], recast: bool) -> Result<Result<Cast, String>> {
         let (kit, paused) = crate::kit::running()?;
         let range = kit.range();
         let labels = if recast { casting::without_casting(labels) } else { labels.to_vec() };
-        if let Some(pause) = casting::paused_of(&labels, &paused).filter(|_| self.chosen.is_none())
-        {
-            return Err(crate::paused::Held::of(pause, self.now).into());
-        }
         if range.is_empty() && !paused.is_empty() {
             return Err(crate::paused::Held::every(&paused, self.now).into());
         }
-        Ok(casting::cast(&labels, &range, self.chosen))
+        Ok(casting::preferred(&labels, &range, &range))
     }
 
     /// Whether issue `number`, labelled `labels`, is to be cast again: a
@@ -380,7 +344,7 @@ impl Fleet {
         // This host's caster is asked after only where an issue waits for one.
         let waits = set.frontier.iter().any(|issue| {
             let labels = labels_of(issue.number);
-            casting::for_caster(issue.number, &labels, choice(&range), self.chosen, None, 0)
+            casting::for_caster(issue.number, &labels, choice(&range), None, None, 0)
                 != ForCaster::Dispatch
         });
         let caster = if waits { crate::caster::last(&self.repo, self.now) } else { None };
@@ -397,14 +361,8 @@ impl Fleet {
                 set.frontier.push(issue);
                 continue;
             }
-            let paused_held = match casting::paused_of(&labels, &paused) {
-                _ if self.chosen.is_some() => None,
-                Some(pause) => Some(crate::paused::Held::of(pause, self.now)),
-                None if range.is_empty() && !paused.is_empty() => {
-                    Some(crate::paused::Held::every(&paused, self.now))
-                }
-                None => None,
-            };
+            let paused_held = (range.is_empty() && !paused.is_empty())
+                .then(|| crate::paused::Held::every(&paused, self.now));
             if let Some(held) = paused_held {
                 set.excluded.push(Excluded {
                     number: issue.number,
@@ -417,7 +375,7 @@ impl Fleet {
                 issue.number,
                 &labels,
                 choice(&range),
-                self.chosen,
+                None,
                 caster.as_ref(),
                 self.now,
             );
@@ -431,7 +389,7 @@ impl Fleet {
                 });
                 continue;
             }
-            match casting::cast(&labels, &range, self.chosen) {
+            match casting::preferred(&labels, &range, &range) {
                 Ok(mut cast) => {
                     if held == ForCaster::Late {
                         cast.why = Why::Uncast;
@@ -490,14 +448,8 @@ impl Fleet {
         };
         let waits = set.frontier.iter().any(|issue| {
             let choice = choice_of(issue.number);
-            casting::for_caster(
-                issue.number,
-                &labels_of(issue.number),
-                choice,
-                self.chosen,
-                None,
-                0,
-            ) != ForCaster::Dispatch
+            casting::for_caster(issue.number, &labels_of(issue.number), choice, None, None, 0)
+                != ForCaster::Dispatch
         });
         let caster = if waits { crate::caster::last(&self.repo, self.now) } else { None };
         let mut standing = Standing {
@@ -540,7 +492,7 @@ impl Fleet {
                 issue.number,
                 &labels,
                 casting::any_choice(&ranges),
-                self.chosen,
+                None,
                 caster.as_ref(),
                 self.now,
             );
@@ -555,7 +507,7 @@ impl Fleet {
                 continue;
             }
             let range = casting::range(role, &kit);
-            match casting::cast_within(&labels, &range, &kit, self.chosen) {
+            match casting::preferred(&labels, &range, &kit) {
                 Ok(cast) => {
                     let mut cast = casting::unmatched_in(cast, &labels, &ranges);
                     if held == ForCaster::Late && cast.why == Why::RangeFirst {

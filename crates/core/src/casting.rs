@@ -520,6 +520,25 @@ fn first_of(range: &[Held], why: Why, unmatched: Option<String>) -> Option<Cast>
     Some(Cast { harness: first.harness, model, why, unmatched })
 }
 
+/// Selects the first eligible harness in kit order. A casting can select a
+/// model only within that harness; roster order never changes host priority.
+/// The caller removes paused or unstartable candidates before asking.
+pub fn preferred(labels: &[String], range: &[Held], kit: &[Held]) -> Result<Cast, String> {
+    let held = kit
+        .iter()
+        .find_map(|candidate| range.iter().find(|held| held.harness == candidate.harness))
+        .ok_or("no eligible harness in the host kit")?;
+    let only = std::slice::from_ref(held);
+    let mut cast = first_of(only, Why::First, None).ok_or("no eligible harness")?;
+    if let Ok(Some((harness, Some(model)))) = held_casting(labels, only) {
+        if harness == held.harness {
+            cast.model = Some(model);
+            cast.why = Why::Casting;
+        }
+    }
+    Ok(cast)
+}
+
 /// What a worker runs under a switch to `chosen`, the casting being `named`:
 /// the casting's model where it is of that harness, else `range`'s first
 /// model of it where `range` starts with it, else its command as written.

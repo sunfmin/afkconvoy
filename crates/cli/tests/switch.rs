@@ -7,6 +7,40 @@ use serde_json::{Value, json};
 
 const CODEX: &str = "codex --dangerously-bypass-approvals-and-sandbox";
 
+#[test]
+fn kit_priority_is_host_wide_idempotent_and_ignores_legacy_repository_choices() {
+    let world = World::new();
+    world.hold_every_harness();
+    world.kit_models("codex", &["gpt-x"]);
+    let before: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    let other = world.second_repo();
+    for (dir, old) in [(&world.clone, "pi"), (&other, "claude-code")] {
+        let git_dir = PathBuf::from(git(dir, &["rev-parse", "--git-common-dir"]));
+        let git_dir = if git_dir.is_absolute() { git_dir } else { dir.join(git_dir) };
+        std::fs::write(git_dir.join("convoy-chosen-harness"), old).unwrap();
+    }
+    let moved = world.afk_in(&world.root, &["switch", "--harness", "codex"]).ok();
+    assert_eq!(moved["order"], json!(["codex", "claude-code", "pi", "dsh"]));
+    assert_eq!(moved["switched"], json!([]));
+    let after: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+    for held in after["harnesses"].as_array().unwrap() {
+        assert!(before["harnesses"].as_array().unwrap().contains(held));
+    }
+    let again = world.afk_in(&other, &["switch", "--harness", "codex"]).ok();
+    assert_eq!(again["changed"], false);
+    assert_eq!(
+        after,
+        serde_json::from_slice::<Value>(&std::fs::read(world.kit_path()).unwrap()).unwrap()
+    );
+    world.issue(7, &["ready-for-agent", "harness:pi", "model:another-harness-model"]);
+    let plan = world.afk(&["plan", "--now", "1000"]).ok();
+    assert_eq!(plan["frontier"][0]["cast"]["harness"], "codex");
+    assert_eq!(plan["frontier"][0]["cast"]["model"], "gpt-x");
+    assert!(world.afk(&["switch", "--clear"]).error().contains("--clear"));
+    let back = world.afk_in(&other, &["switch", "--harness", "claude-code"]).ok();
+    assert_eq!(back["order"], json!(["claude-code", "codex", "pi", "dsh"]));
+}
+
 fn tick(world: &World, now: u64) -> Value {
     let now = now.to_string();
     let args = ["tick", "--instance", "alpha", "--host", "h1", "--now", &now];

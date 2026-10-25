@@ -1,17 +1,4 @@
-//! Moving running work onto another harness (`afkconvoy switch`): this
-//! host's choice of harness for the repo, kept where no other host reads it,
-//! and each worker named ended and one of that harness started in its place —
-//! in the same worktree, on the same branch, at the same stage — briefed to
-//! continue what is there. A claim, its branch, its worktree and its PR are
-//! untouched, and nothing the tick counts moves: no restart, no rework, no
-//! nudge.
-//!
-//! The choice is this host's, never the repo's: whoever else works the repo
-//! runs the harness they have, under their own accounts. Every worker this
-//! host starts for the repo afterwards is of the chosen harness, whatever the
-//! config, a stage, a patrol or an issue's casting names, until a switch
-//! chooses again or `switch --clear` forgets the choice, and each worker runs
-//! what its range and casting say again (docs/adr/0020).
+//! Host kit priority and continuation of existing workers. No repository-local choice is read.
 
 use afkconvoy_core::claims::Claim;
 use afkconvoy_core::harness::Harness;
@@ -24,48 +11,114 @@ use serde_json::{Value, json};
 use crate::claims::Me;
 use crate::dispatch::{Agent, Continuing, StartFrom, dispatch_continuing};
 use crate::fleet::Fleet;
-use crate::git::Repo;
 use crate::judge::mine;
 use crate::orca::{Source, Worktree};
-use crate::role::startable;
+
 use crate::watch::{join_record, record_join};
 
-/// Where this host keeps the harness a switch chose for the repo: in the
-/// repo's git dir, which every worktree of it on this host shares and no
-/// push carries.
-const CHOSEN_FILE: &str = "convoy-chosen-harness";
-
-/// What calls for the chosen harness, as a fault of it is said.
-pub const CHOSEN_BY: &str = "this host's `afkconvoy switch`";
-
-/// How many of the last lines of a worker's terminal its successor is given.
-const SAID_LINES: usize = 40;
-
-/// The harness a switch on this host chose for the repo of `repo`, when one did.
-pub fn chosen(repo: &Repo) -> Result<Option<Harness>> {
-    let file = repo.note(CHOSEN_FILE)?;
-    let kept = std::fs::read_to_string(&file).unwrap_or_default();
-    match kept.trim() {
-        "" => Ok(None),
-        key => Harness::read(key).map(Some).ok_or_else(|| {
-            anyhow!("{} names no harness: {}", file.display(), Harness::unknown(key))
-        }),
-    }
-}
-
-/// Keeps `harness` as this host's choice for the repo of `repo`; `None`
-/// forgets it, and the range's answer to the casting stands again.
-fn choose(repo: &Repo, harness: Option<Harness>) -> Result<()> {
-    let file = repo.note(CHOSEN_FILE)?;
-    match harness {
-        Some(harness) => std::fs::write(&file, harness.key())
-            .with_context(|| format!("cannot write {}", file.display())),
-        None if file.exists() => {
-            std::fs::remove_file(&file).with_context(|| format!("cannot remove {}", file.display()))
+/// Promotes a kit entry, then continues named workers, independently of the
+/// directory the command was run in. Failures never stop the remaining checkouts.
+pub fn on_host(
+    repo: Option<crate::git::Repo>,
+    harness: Harness,
+    which: Which,
+    instance: Option<afkconvoy_core::claims::InstanceId>,
+    host: &str,
+    now: u64,
+    agent: impl Fn(&crate::git::Repo) -> Result<Agent>,
+) -> Result<Value> {
+    let here = repo
+        .clone()
+        .unwrap_or_else(|| crate::git::Repo::new(std::env::current_dir().unwrap_or_default()));
+    let launches = crate::launch::Launches::new(&here, true)?;
+    crate::role::startable(&launches, harness, CHOSEN_BY)?;
+    let mut result = crate::kit::prefer(harness)?;
+    let mut switched = vec![];
+    let mut failed = vec![];
+    let mut paths: Vec<_> = match &which {
+        Which::Nothing => vec![],
+        Which::All => crate::checkout_list::List::of_host()?
+            .read()?
+            .checkouts
+            .into_iter()
+            .map(|e| e.checkout)
+            .collect(),
+        _ => vec![repo.as_ref().context("a targeted worker requires a checkout")?.dir.clone()],
+    };
+    if matches!(which, Which::All)
+        && let Some(repo) = &repo
+    {
+        if !paths.contains(&repo.dir) {
+            paths.push(repo.dir.clone());
         }
-        None => Ok(()),
     }
+    for path in paths {
+        let continued = (|| -> Result<Value> {
+            let repo = crate::git::Repo::new(path.clone());
+            let mut fleet = Fleet::open(&repo, now)?;
+            let agent = agent(&repo)?;
+            let mut owners: Vec<_> =
+                fleet.scan.claims.iter().filter_map(|c| c.owner.clone()).collect();
+            owners.extend(fleet.scan.runs.iter().filter_map(|r| r.owner.clone()));
+            owners.retain(|owner| {
+                owner.host == host
+                    && (matches!(which, Which::All)
+                        || instance.as_ref().is_none_or(|id| id.as_str() == owner.instance))
+            });
+            owners.sort_by(|a, b| a.instance.cmp(&b.instance));
+            owners.dedup_by(|a, b| a.instance == b.instance);
+            let mut moved = vec![];
+            let mut errors = vec![];
+            for owner in owners {
+                let me = Me {
+                    instance: afkconvoy_core::claims::InstanceId::parse(&owner.instance)
+                        .map_err(|e| anyhow!(e))?,
+                    host: host.into(),
+                    now,
+                };
+                let target = match &which {
+                    Which::Issue(n) => Which::Issue(*n),
+                    Which::Patrol(name) => Which::Patrol(name.clone()),
+                    _ => Which::All,
+                };
+                match switch(&mut fleet, &me, &agent, target) {
+                    Ok(value) if value["switched"].is_array() => {
+                        moved.extend(value["switched"].as_array().cloned().unwrap_or_default());
+                        errors.extend(value["failed"].as_array().cloned().unwrap_or_default());
+                    }
+                    Ok(value) => moved.push(value),
+                    Err(e) => {
+                        errors.push(json!({"instance": owner.instance, "error": format!("{e:#}")}))
+                    }
+                }
+            }
+            if moved.is_empty() && errors.is_empty() && !matches!(which, Which::All) {
+                bail!("no claim on the targeted worker is held on this host");
+            }
+            Ok(json!({"switched": moved, "failed": errors}))
+        })();
+        match continued {
+            Ok(value) => {
+                for mut one in value["switched"].as_array().cloned().unwrap_or_default() {
+                    one["checkout"] = json!(path);
+                    switched.push(one);
+                }
+                for mut one in value["failed"].as_array().cloned().unwrap_or_default() {
+                    one["checkout"] = json!(path);
+                    failed.push(one);
+                }
+            }
+            Err(e) => failed.push(json!({"checkout": path, "error": format!("{e:#}")})),
+        }
+    }
+    result["switched"] = json!(switched);
+    result["failed"] = json!(failed);
+    Ok(result)
 }
+
+/// What calls for the kit promotion.
+pub const CHOSEN_BY: &str = "this host's kit priority";
+const SAID_LINES: usize = 80;
 
 /// The workers a switch moves.
 pub enum Which {
@@ -85,19 +138,9 @@ pub enum Which {
 /// casting say. A harness chosen that cannot be started here is refused
 /// before anything is chosen or any worker ended; so is a claim or a run I do
 /// not hold.
-pub fn switch(
-    fleet: &mut Fleet,
-    me: &Me,
-    agent: &Agent,
-    to: Option<Harness>,
-    which: Which,
-) -> Result<Value> {
-    let was = fleet.chosen;
+pub fn switch(fleet: &mut Fleet, me: &Me, agent: &Agent, which: Which) -> Result<Value> {
     // What a worker started before any switch kept its harness ran on.
     let before = fleet.first().map_or(Harness::DEFAULT, |first| first.harness);
-    if let Some(to) = to {
-        startable(&agent.launches, to, CHOSEN_BY)?;
-    }
     match &which {
         Which::Issue(issue) => {
             if mine(fleet, me, *issue)?.is_none() {
@@ -111,16 +154,10 @@ pub fn switch(
         }
         Which::Nothing | Which::All => {}
     }
-    choose(&fleet.repo, to)?;
     *fleet = Fleet::open(&fleet.repo, fleet.now)?;
-    let chosen = json!({"was": was, "now": to});
-    let one = |moved: Value| {
-        let mut moved = moved;
-        moved["chosen"] = chosen.clone();
-        moved
-    };
+    let one = |moved: Value| moved;
     Ok(match which {
-        Which::Nothing => json!({"harness": to, "chosen": chosen, "switched": []}),
+        Which::Nothing => json!({"switched": []}),
         Which::Issue(issue) => one(switch_issue(fleet, me, agent, issue, before)?),
         Which::Patrol(name) => {
             let said = |checkout: &Worktree| continuing(Some(checkout), before);
@@ -142,7 +179,7 @@ pub fn switch(
                     Err(e) => failed.push(json!({"patrol": name, "error": format!("{e:#}")})),
                 }
             }
-            json!({"harness": to, "chosen": chosen, "switched": switched, "failed": failed})
+            json!({"switched": switched, "failed": failed})
         }
     })
 }
@@ -170,7 +207,7 @@ fn holds_run(fleet: &Fleet, me: &Me, name: &str) -> bool {
 /// it ran on — `before` where its start kept none — and the last lines its
 /// terminal shows, read before that terminal is closed. A terminal that
 /// cannot be read said nothing.
-fn continuing(worktree: Option<&Worktree>, before: Harness) -> Continuing {
+pub(crate) fn continuing(worktree: Option<&Worktree>, before: Harness) -> Continuing {
     let Some(worktree) = worktree else { return Continuing { from: before, said: vec![] } };
     let from = worktree.harness().ok().flatten().unwrap_or(before);
     let terminal = worktree.terminal().ok().flatten();
@@ -188,7 +225,7 @@ fn continuing(worktree: Option<&Worktree>, before: Harness) -> Continuing {
 /// started on it as a continuation of what survives (`dispatch`), which closes
 /// whatever terminal the worktree had, whatever its worker was doing. The
 /// switch is recorded on the issue's open PR, beside its join's record.
-fn switch_issue(
+pub(crate) fn switch_issue(
     fleet: &mut Fleet,
     me: &Me,
     agent: &Agent,

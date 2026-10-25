@@ -2799,76 +2799,58 @@ enum Command {
         #[command(flatten)]
         at: AtFlag,
     },
-    /// Move this host's workers of the repo onto another harness: from now on, and those of my claims now
+    /// Put a harness first in this machine's kit; optionally continue existing workers
     ///
     /// ## When to run it
     ///
-    /// To move work onto another harness: a harness's login expired, its provider turned access off, or another agent should take the work over. One line does it all:
-    ///
-    /// ```
-    /// afkconvoy switch --instance <id> --harness codex --all
-    /// ```
-    ///
-    /// It works on a worker that is busy, idle at its prompt, blocked from receiving input, or already gone. It needs no nudge first, no grace period and no PR.
-    ///
-    /// ## Who runs it
-    ///
-    /// The operator, in a checkout of the repo, on the host the workers run on.
+    /// `afkconvoy switch --harness codex` moves Codex to the front of the host kit.
+    /// Run it anywhere, with no repo or instance required. Every checkout uses this order.
+    /// To change priority again, switch again. There is no separate override or --clear.
     ///
     /// ## What it reads and writes
     ///
-    /// The harness is this host's choice for the repo, kept in the repo's git dir on this host and never pushed: whoever else works the repo runs the harness they have, under their own accounts. From then on every worker this host starts for the repo — new issues, later stages, consults, patrols, the train worker, inspections — is of that harness, whatever the config's `harness` key, a stage, a patrol or an issue's casting names.
+    /// Only this machine's kit order changes. Commands, models, probe evidence and the
+    /// relative order of the other harnesses stay intact. Unknown, logged-out or
+    /// unstartable harnesses are refused. Ticket labels and team rosters are untouched.
+    /// Role limits still constrain candidates. Paused candidates are skipped without
+    /// reordering the kit, and become eligible again after a successful recovery probe.
+    /// A switch with no target leaves running workers alone.
     ///
-    /// A choice the host kit stops holding — the harness taken out with `afkconvoy kit`, or paused — is not followed while it does: each worker runs its range's first, the host kit's first in an unbound repo, and `plan` says `unmatched`, naming the switch. It is followed again once the host kit holds it.
-    ///
-    /// `--clear`, in place of `--harness`, forgets the choice: every worker started afterwards runs what its range and casting say again — in an unbound repo, the issue's `harness:` and `model:` labels within the host kit. The ISSUE, `--patrol` and `--all` it names are moved onto that, each worker onto its own, as a switch moves one. `--harness config` is gone: it is refused, naming `--clear`.
-    ///
-    /// With no ISSUE, `--patrol` or `--all`, only the choice is made or cleared: running workers are left on the harness they run.
-    ///
-    /// Then it moves the workers named:
-    ///
-    /// - `ISSUE`: the worker of the instance's claim on that issue
-    /// - `--patrol`: the worker of the instance's run of that patrol, in the run's checkout
-    /// - `--all`: every claim of the instance on this host — on an issue, on a patrol's run — one after another; a failure on one is reported and the rest go on
-    ///
-    /// For each, it ends the worker — its agent and its terminal — and starts one of the harness (cleared: the one its range and casting say) in the same worktree, on the same branch, at the same stage: a consult as a consult, a landing worker as a landing worker. The claim, the branch, the worktree and the PR are untouched. The new worker's brief says it continues earlier work, and names what is there: the commits on the branch ahead of the base branch, the open PR, and the last lines the old worker's terminal showed.
-    ///
-    /// The switch is recorded on the PR, in the fleet's comment that records its join: from which harness to which, by which instance, and when. It is no restart, no rework and no nudge: no breaker count moves, and a joining worker keeps its one restart.
+    /// --all continues workers across every checkout on this host's checkout list.
+    /// ISSUE or --patrol addresses a claim in the current checkout; --instance may
+    /// identify its owner. Each continuation keeps its claim, stage, worktree, branch,
+    /// uncommitted work, PR and breaker counts. Its brief includes the previous output.
+    /// A failure is reported and other workers continue. An old worker that cannot be
+    /// confirmed stopped is never given a second writer.
     ///
     /// ## What it answers
     ///
-    /// For ISSUE: {"issue", "from", "to", "worktree", "branch", "terminal", "pr", "stage", "chosen"} — from and to are the old and new harness; chosen is {"was", "now"}, this host's choice before and after (null: none, cleared).
-    ///
-    /// For --patrol: {"patrol", "from", "to", "worktree", "terminal", "chosen"}.
-    ///
-    /// For --all, and with nothing named: {"harness" (null when cleared), "chosen", "switched": [each as above], "failed": [{"issue" or "patrol", "error"}]}.
-    ///
-    /// Errors, each with nothing chosen and no worker ended: the harness chosen cannot be started here — missing, logged out, or its command not taking the flags its role needs ([`afkconvoy help worker-launch`](help:worker-launch) names them) — named with what is wrong; the instance holds no claim on the issue, or no run of the patrol; the claim is another instance's.
+    /// {harness, path, order_before, order, changed, switched, failed}. Each failure
+    /// names its checkout and worker. A successful fallback reports the actual harness.
     ///
     /// ## What trips you up
     ///
-    /// - `--instance` is required, and must be the instance that holds the claims.
-    /// - The choice holds on this host until a switch chooses again or `--clear` forgets it: a change of the config's `harness` key or of an issue's casting labels moves nothing here while it stands.
-    /// - A claim whose stage has a verdict declared and not yet acted on is refused: the next tick acts on that verdict, and the worker it starts is of the chosen harness.
+    /// --all is machine-wide, even when --instance is supplied. --clear is removed:
+    /// switch to the harness you want first instead. Legacy repository overrides are ignored.
     #[command(next_help_heading = OPERATOR, verbatim_doc_comment)]
     Switch {
-        /// The harness to move onto: claude-code, pi, codex or dsh
-        #[arg(long, value_parser = chosen_harness, required_unless_present = "clear")]
-        harness: Option<Harness>,
-        /// Forget this host's choice: each worker runs what its range and casting say again
-        #[arg(long, conflicts_with = "harness")]
-        clear: bool,
-        /// The issue whose worker to move
+        /// The existing kit harness to put first
+        #[arg(long, value_parser = chosen_harness)]
+        harness: Harness,
+        /// The issue whose worker to continue in this checkout
         #[arg(value_name = "ISSUE", conflicts_with_all = ["all", "patrol"])]
         issue: Option<u64>,
-        /// The patrol whose running worker to move
+        /// The patrol whose worker to continue in this checkout
         #[arg(long, conflicts_with = "all")]
         patrol: Option<String>,
-        /// Move the worker of every claim of the instance on this host, one after another
+        /// Continue workers in every checkout on this machine
         #[arg(long)]
         all: bool,
-        #[command(flatten)]
-        who: Who,
+        /// Optional owner of a targeted claim; not a machine preference
+        #[arg(long, value_parser = InstanceId::parse)]
+        instance: Option<InstanceId>,
+        #[arg(long)]
+        host: Option<String>,
         #[command(flatten)]
         agent: AgentArgs,
         #[command(flatten)]
@@ -3219,7 +3201,7 @@ impl TextArgs {
 }
 
 /// The host's network settings, never the repo's config.
-#[derive(clap::Args, Default)]
+#[derive(clap::Args, Default, Clone)]
 struct ProxyArgs {
     /// Hosts reached directly, comma-separated, for the default harness or
     /// HARNESS; repeat for each harness. DSH defaults to api.deepseek.com.
@@ -3229,7 +3211,7 @@ struct ProxyArgs {
 }
 
 /// How a command that starts a worker starts it.
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 struct AgentArgs {
     // Keep only a diagnostic for callers migrating from the removed flag.
     #[arg(long = "worker-command", hide = true, value_parser = removed_worker_command)]
@@ -3589,7 +3571,9 @@ fn verdict(text: &str) -> Result<Declared, String> {
 /// this host's choice, is refused for `--clear`, which does that now.
 fn chosen_harness(text: &str) -> Result<Harness, String> {
     match text {
-        "config" => Err("`--harness config` is gone: `--clear` forgets this host's choice".into()),
+        "config" => {
+            Err("`--harness config` is gone: switch to a harness already in the kit".into())
+        }
         _ => harness(text),
     }
 }
@@ -3924,8 +3908,8 @@ impl Command {
             Command::Park { issue, who, .. } => of("park", issue, Some(who)),
             Command::Nudge { issue, who, .. } => of("nudge", issue, Some(who)),
             Command::Restart { issue, who, .. } => of("restart", issue, Some(who)),
-            Command::Switch { issue, patrol, all, who, .. } => {
-                let acting = Acting::new("switch").as_instance(who.instance.as_str());
+            Command::Switch { issue, patrol, all, .. } => {
+                let acting = Acting::new("switch");
                 match (issue, patrol, all) {
                     (Some(issue), _, _) => acting.on_issue(Some(*issue)),
                     (None, Some(patrol), _) => acting.on(format!("patrol {}", patrol.trim())),
@@ -4333,19 +4317,22 @@ fn run(
             probe::announce(&agent.launches.warned());
             restarted
         }
-        Command::Switch { harness, clear: _, issue, patrol, all, who, agent, .. } => {
+        Command::Switch { harness, issue, patrol, all, instance, host, agent, .. } => {
             let which = match (issue, patrol, all) {
                 (Some(issue), _, _) => switch::Which::Issue(issue),
                 (None, Some(patrol), _) => switch::Which::Patrol(patrol.trim().to_string()),
                 (None, None, true) => switch::Which::All,
-                (None, None, false) => switch::Which::Nothing,
+                _ => switch::Which::Nothing,
             };
-            let repo = checkout?;
-            let agent = agent.agent(&repo)?;
-            let mut fleet = Fleet::open(&repo, now)?;
-            let switched = switch::switch(&mut fleet, &who.me(now), &agent, harness, which);
-            probe::announce(&agent.launches.warned());
-            switched
+            switch::on_host(
+                checkout.ok(),
+                harness,
+                which,
+                instance,
+                &host.unwrap_or_else(this_host),
+                now,
+                |repo| agent.clone().agent(repo),
+            )
         }
         Command::Abandon { who, .. } => {
             abandon::abandon_by_hand(&mut Fleet::open(&checkout?, now)?, &who.me(now))

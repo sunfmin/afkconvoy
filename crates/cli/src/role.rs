@@ -482,11 +482,7 @@ pub fn current(repo: &Repo, bound: &Bound, labels: &RepoLabels) -> Option<Team> 
 /// harness of each role's range (`casting::range`), and the stock consult's,
 /// as the host kit names it. No team (`current`) calls for the first alone.
 pub fn called_for(repo: &Repo, team: Option<&Team>) -> Vec<(Harness, Vec<String>)> {
-    // A harness this host's switch chose is the one every worker starts on.
-    let chosen = crate::switch::chosen(repo).ok();
-    if let Some(chosen) = chosen.flatten() {
-        return vec![(chosen, vec![crate::switch::CHOSEN_BY.to_string()])];
-    }
+    let _ = repo;
     let Ok(kit) = crate::kit::load() else { return vec![] };
     let mut called = vec![];
     if let Some(first) = kit.first() {
