@@ -21,14 +21,26 @@ So a fleet reads and writes its issues in its **tracker**: the checkout's own re
 - `run --tracker` makes the repo label, and the ready, escalate and lock labels of the repo's config, in the tracker where it lacks them. It refuses to change the tracker of a checkout whose fleet holds a claim on an issue of the tracker it had, or whose landing train carries a PR of one, naming them: their issues would be read in a tracker that does not hold them. `--tracker default`, or the checkout's own repo, says none. The old tracker's issues stay where they are: nothing is moved.
 - `checkouts`, `doctor`, `plan` and the panel show the tracker.
 
+## A public tracker is refused
+
+A tracker anyone can comment on lets anyone write what the fleet reads as its state and what its workers read as their task, so the fleet refuses one: the tracker the checkout says, or its own repo where it says none. GitHub's answer for the repo's visibility decides it — `public` is refused; `private`, and an enterprise's `internal`, are not.
+
+- The startup probe asks it at every start, after the base branch's protection and before anything is pushed, and refuses a public tracker naming it, saying it is public, and giving the line that fixes it: `afkconvoy run <checkout> --tracker <owner>/<private repo>`. So `run`, `tick` and `plan` refuse it.
+- `run --tracker` asks it of the tracker it would say — the checkout's own repo, of `default` — before it makes a label there or changes the checkout list, and refuses a public one the same way.
+- A check that found the tracker private is noted on the host (`convoy-tracker`) and stands for an hour, of that tracker alone, as a passed probe does; a probe stands only while it does. A running fleet instance looks at the note before each tick, and asks GitHub again once it no longer stands, or of a tracker said anew. So a repo made public, or a host upgraded with a checkout of a public repo that says no tracker, is caught within the hour.
+- A running fleet instance that finds its tracker public ends before the tick, as its startup probe would refuse it: it is broken. The host runner starts it again after its backoff, and each start's probe refuses it until the tracker is private again or another is said — `run --tracker` starts it at once. It works nothing meanwhile, and `doctor` finds it broken with the probe's refusal, and finds the tracker public — asked of GitHub — with the same fix line.
+
 ## Considered options
 
 - **Keep the issues in the repo, and read only what trusted logins wrote.** Refused: it puts the boundary in a filter at every place the fleet reads — every comment, label, blocker and record — and any place missed is a hole. And no filter keeps a stranger's comment from a worker that runs `gh issue view`. A private tracker puts the boundary in GitHub's access control, which holds whatever reads it.
 - **Name the tracker in the repo config.** Refused: it is pushed, so every host would work one tracker, and two people could not keep their issues apart. Whose issues a fleet works is a fact of its host, as its concurrency is.
+- **Fail every tick of a fleet instance whose tracker is public, and keep it running.** Refused: a tick that fails whole leaves its instance at work, so its host is never put to sleep and its host runner never moves onto a newer release, for as long as the tracker stays public, with a failed tick every minute and a half. An instance that ends is broken, which holds neither back, and is the state a start the probe refuses is in already: one way, whichever caught it.
+- **Ask GitHub at every tick.** Refused: one more question each tick, every minute and a half, for what changes by a human's hand. The hour is the one a passed probe stands for.
 
 ## Consequences
 
-- Amends ADR-0012's last consequence: the repo may be public, but the tracker may not. A ticket filed beside this one (#463) has the fleet refuse a public tracker.
+- Amends ADR-0012's last consequence: the repo may be public, but the tracker may not, and the fleet refuses a public one (above).
+- A fleet may work a tracker made public for up to an hour before it is caught. While it is broken it beats no heartbeat, as any broken instance: its claims go stale past the lease, and its next start takes back those stamped with its host.
 - What stays exposed in a public repo: the comments on the fleet's PRs there, which no brief sends a worker to read; and the tracker's name and its issue numbers, in the repo's commits and PRs.
 - A tracker's issue closes when the landing train that carries its PR lands — by the train of a fleet of that tracker — or when that fleet settles it from the base branch. Two fleets of one repo that work two trackers share the repo's one landing train, and each closes only its own tracker's issues.
 - orca links a worker's worktree to its issue by number alone, on its host. A tracker changes only while its fleet holds no claim and its train carries none of its issues, so no worktree of a live claim is taken for another tracker's issue of the same number.

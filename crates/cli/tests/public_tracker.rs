@@ -113,7 +113,8 @@ fn run_tracker_naming_a_private_repo_of_a_checkout_of_a_public_one_is_taken_and_
 fn a_probe_that_found_the_tracker_private_stands_for_the_hour_and_no_longer() {
     let world = world("private");
     world.issue(7, &["ready-for-agent"]);
-    let tick = |now: &str| world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", now]);
+    let tick =
+        |now: &str| world.afk(&["tick", "--instance", "alpha", "--host", "h1", "--now", now]);
     tick("1000").ok();
     world.with_gh(|gh| gh["visibility"] = json!("public"));
 
@@ -135,7 +136,7 @@ fn a_probe_that_found_the_tracker_private_stands_for_the_hour_and_no_longer() {
 
 #[test]
 fn a_fleet_instance_whose_tracker_is_made_public_works_nothing_from_its_next_check_until_it_is_private()
-{
+ {
     let world = world("private");
     let first = world.afk(&RUN).ok();
     assert!(first["first_tick"].as_str().unwrap().contains("frontier 0"), "{first}");
@@ -162,7 +163,10 @@ fn a_fleet_instance_whose_tracker_is_made_public_works_nothing_from_its_next_che
     let doctor = world.afk(&["doctor", "--host", "h1"]).json;
     let public = found(&doctor, "is public: its fleet instance works nothing");
     assert_eq!(public.len(), 1, "{doctor}");
-    assert_eq!((&public[0]["severity"], &public[0]["fix"]), (&json!("critical"), &json!(fix(&world))));
+    assert_eq!(
+        (&public[0]["severity"], &public[0]["fix"]),
+        (&json!("critical"), &json!(fix(&world)))
+    );
     assert!(refuses(&world, public[0]["evidence"].as_str().unwrap(), "acme/dev"), "{doctor}");
     let broken = found(&doctor, "is broken");
     assert_eq!(broken.len(), 1, "{doctor}");

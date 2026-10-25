@@ -21,7 +21,7 @@ How many claims a fleet instance holds at work at once on its host. It is its ch
 _Avoid_: parallelism, workers (the processes it bounds), the repo's concurrency
 
 **Tracker**:
-The repo a fleet reads and writes its issues in: its checkout's own, until the checkout says another on the checkout list of its host (`run --tracker`), never pushed. Everything about an issue is the tracker's — its labels, its comments, its blockers, its escalation, its closing, and every issue the fleet opens — and every PR, branch, worktree, gate run and the landing train are the repo's. `#<n>` alone is the repo's own issue: the repo names a tracker's `<owner>/<tracker>#<n>` (`docs/adr/0027`).
+The repo a fleet reads and writes its issues in: its checkout's own, until the checkout says another on the checkout list of its host (`run --tracker`), never pushed. Everything about an issue is the tracker's — its labels, its comments, its blockers, its escalation, its closing, and every issue the fleet opens — and every PR, branch, worktree, gate run and the landing train are the repo's. `#<n>` alone is the repo's own issue: the repo names a tracker's `<owner>/<tracker>#<n>` (`docs/adr/0027`). A public one is refused — the checkout's own repo too, where it says none — by every start's startup probe and by `run --tracker`, and a fleet instance whose tracker is made public is broken at its next check, within the hour one that found it private stands: anyone can comment on a public repo's issues, and so write what the fleet reads as its state and what its workers read as their task.
 _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub Project)
 
 **Repo label**:
@@ -29,7 +29,7 @@ _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub
 _Avoid_: component label, project label
 
 **Broken**:
-A fleet instance whose loop panicked or ended in an error, or that the host runner started again, with nobody asking, and that ended before its first tick — its startup probe no longer passing, say. It harms no other and stays on the checkout list: the host runner starts it again after a backoff — a minute, twice as long at each break in a row, half an hour at the most — or at once when a `run` of its checkout asks. It is **back** once such a start ended its first tick. A tick that fails is no break: the loop goes on.
+A fleet instance whose loop panicked or ended in an error — its tracker found public, say — or that the host runner started again, with nobody asking, and that ended before its first tick — its startup probe no longer passing, say. It harms no other and stays on the checkout list: the host runner starts it again after a backoff — a minute, twice as long at each break in a row, half an hour at the most — or at once when a `run` of its checkout asks. It is **back** once such a start ended its first tick. A tick that fails is no break: the loop goes on.
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
@@ -45,7 +45,7 @@ A tick stopped after its rebuild, which reports what an acting tick would do and
 _Avoid_: dry run, preview
 
 **Startup probe**:
-What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, and `tick` and `plan` make none while it does.
+What `run`, `tick` and `plan` ask of a host and a repo before anything else: that every command the fleet needs is installed and logged in, that orca is running and knows the checkout, that the base branch exists and no rule of its protection refuses a push, that its tracker is not public, where the remote takes the fleet's refs, and whether it takes recorded gate runs. A host or a repo the fleet cannot work is refused here, not at its first tick or landing. `run` makes one at every start; one that passed stands for an hour on the host that made it, while the tracker the checkout says is the one it found private, and `tick` and `plan` make none while it does. A running fleet instance asks again whether its tracker is public as that hour ends, or as it says another.
 _Avoid_: bootstrap, preflight, health check
 
 **Ref layout**:

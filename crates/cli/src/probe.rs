@@ -172,9 +172,7 @@ pub fn standing(repo: &Repo, now: u64, launches: &Launches) -> Option<Vec<String
         Ok((passed, Asked::now(repo, &config, launch)?, tracker_of(repo)?))
     };
     let (passed, asked, tracker) = read().ok()?;
-    if !probe_stands(passed.at, now)
-        || passed.asked != asked
-        || !found_private(repo, &tracker, now)
+    if !probe_stands(passed.at, now) || passed.asked != asked || !found_private(repo, &tracker, now)
     {
         return None;
     }

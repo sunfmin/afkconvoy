@@ -124,7 +124,8 @@ fn routed(world: &World) -> Vec<Vec<String>> {
         match repo.as_str() {
             TRACKER => {
                 let issues = what.starts_with("issues") || what.starts_with("labels");
-                let seen = what.is_empty() && call.contains(&afkconvoy::gh::VISIBILITY_JQ.to_string());
+                let seen =
+                    what.is_empty() && call.contains(&afkconvoy::gh::VISIBILITY_JQ.to_string());
                 assert!(issues || seen || what == "graphql", "{call:?}");
                 of_tracker.push(call.clone());
             }
