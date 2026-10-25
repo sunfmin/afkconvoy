@@ -92,6 +92,14 @@ fn step(at: u64, name: &str, detail: Value) -> Step {
     Step { at, source: "tick_log", step: name.to_string(), detail }
 }
 
+/// Maintenance and waiting are observations, not progress on an issue. In
+/// particular, updating a status board must never replace a queued gate as
+/// the issue's last step. Failures are represented by their errors instead.
+fn moved(row: &Value) -> bool {
+    !matches!(row["do"].as_str(), Some("heartbeat" | "board"))
+        && !matches!(row["outcome"].as_str(), Some("nothing" | "waiting" | "failed"))
+}
+
 fn record(comment: &Comment) -> Option<Step> {
     use afkconvoy_core::record::read_marker;
     let at = comment.at?;
@@ -197,7 +205,15 @@ fn interval(
     for entry in entries.iter().filter(|e| e.host == host && e.at < until) {
         match &entry.what {
             What::Tick(tick) => {
-                let did = tick.answer.as_ref().map(|a| a["did"].clone()).unwrap_or(json!([]));
+                let did = json!(
+                    tick.answer
+                        .as_ref()
+                        .and_then(|a| a["did"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter(|row| moved(row))
+                        .collect::<Vec<_>>()
+                );
                 let mut errors =
                     tick.answer.as_ref().map(|a| a["errors"].clone()).unwrap_or(json!([]));
                 let failed = tick.error.is_some()
@@ -428,5 +444,26 @@ mod tests {
         ] {
             assert!(since(raw).is_err(), "{raw}");
         }
+    }
+
+    #[test]
+    fn maintenance_and_waiting_do_not_hide_a_quiet_prs_queued_gate() {
+        let entries = [
+            command(10, Some("#7"), "queued behind 4"),
+            tick(
+                20,
+                "holding #7",
+                json!({"did": [
+                {"do": "watch", "issue": 7, "outcome": "waiting"},
+                {"do": "board", "issue": 7, "outcome": "done"},
+                {"do": "heartbeat", "outcome": "done"},
+                {"do": "tend_train", "outcome": "nothing"}], "errors": []}),
+            ),
+        ];
+        let active = BTreeMap::from([(7, Issue { pr: Some(70), ..Issue::default() })]);
+        let report = interval(&entries, "h1", 15, 30, active, vec![]);
+        assert_eq!(report["ticks"], json!([]));
+        assert_eq!(report["issues"][0]["steps"], json!([]));
+        assert_eq!(report["issues"][0]["last_step"]["at"], 10);
     }
 }

@@ -639,7 +639,9 @@ impl GitHub {
         for line in out.lines().filter(|line| !line.trim().is_empty()) {
             let mut issue: WatchIssue = serde_json::from_str(line)
                 .context("gh api graphql: unexpected watching issues answer")?;
-            if !self.tracker.holds(&issue.labels) {
+            if !self.tracker.holds(&issue.labels)
+                || afkconvoy_core::tracker::repo_labels(&issue.labels).len() > 1
+            {
                 continue;
             }
             if issue.more {

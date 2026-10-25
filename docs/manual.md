@@ -430,7 +430,7 @@ It exits 0 with no critical finding, and non-zero with one — printing the same
 
 With `--all`:
 
-{"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}]}
+{"host": {"host_kit", "exclusive", "inspection", "installed"}, "findings", "checkouts": [{"checkout", "repo", "doctor"}], "until"}
 
 - `host`: what of `host` is the host's alone, as above, said once
 - `findings`: the host's findings, said once however many checkouts found them, most severe first: a command missing or logged out, orca not running, a harness paused, the host runner not moved onto a newer afkconvoy
