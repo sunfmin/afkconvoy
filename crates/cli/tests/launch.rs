@@ -644,6 +644,10 @@ fn every_known_harness_discovers_its_existing_stock_command() {
         world.issue(7, &["ready-for-agent"]);
         let ran = world.afk(&TICK);
         assert_eq!(ran.json["errors"], json!([]), "{}: {} {}", harness.key(), ran.json, ran.stderr);
-        assert_eq!(started(&world), [harness.stock()], "{}", harness.key());
+        let commands = started(&world);
+        assert_eq!(commands.len(), 1, "{}", harness.key());
+        assert!(commands[0].ends_with(harness.stock()), "{}: {commands:?}", harness.key());
+        let kit: Value = serde_json::from_slice(&std::fs::read(world.kit_path()).unwrap()).unwrap();
+        assert_eq!(kit["harnesses"][0]["command"], harness.stock());
     }
 }
