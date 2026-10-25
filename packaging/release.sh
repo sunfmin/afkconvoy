@@ -1,6 +1,7 @@
 #!/bin/sh
-# What a release is made of, one step per subcommand, so the workflow
-# (.github/workflows/release.yml) and a human at a terminal run the same thing.
+# What a release is made of, one step per subcommand. A release is cut on a
+# Mac, by hand: `check`, `build`, `package`, `publish`, at the tag's commit
+# (README, "Cutting a release").
 #
 #   release.sh version                   the version Cargo builds
 #   release.sh check <tag>               fail unless <tag> is v<version>
@@ -13,8 +14,6 @@
 #                                        to its release afkconvoy-v<version>, the formula
 #                                        to Formula/afkconvoy.rb. `gh` and `git`
 #                                        must be allowed to write to the tap.
-#
-# A release by hand is `build`, `package`, `publish`, at the tag's commit.
 #
 # The archives are downloaded from the tap (sunfmin/homebrew-tap), not from
 # this repository: this one is private, and Homebrew downloads with no login.
@@ -191,7 +190,7 @@ publish)
     rm -rf "$tap"
     ;;
 *)
-    sed -n '2,22p' "$0" >&2
+    sed -n '2,21p' "$0" >&2
     exit 2
     ;;
 esac
