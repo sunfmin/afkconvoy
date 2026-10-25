@@ -460,7 +460,7 @@ impl Harness {
         .done()
     }
 
-    /// Whether the worker launch command `command` takes what a bound repo
+    /// Whether the worker launch command `command` takes what the fleet
     /// adds to it for this harness, given what the worker's shell printed for
     /// `flags_question` (`None`: it failed, or printed nothing). An error
     /// names the reason: used anyway, every worker would start outside its
@@ -468,9 +468,8 @@ impl Harness {
     pub fn takes(self, command: &str, answer: Option<&str>) -> Result<(), String> {
         let refused = |why: String| {
             Err(format!(
-                "this repo is bound to a team, whose workers are started in their roles, and the \
-                 worker launch command {command:?} cannot do that: {why}. A bound repo's worker \
-                 launch command must end in {} taking flags",
+                "the worker launch command {command:?} cannot take the fleet's launch flags: \
+                 {why}. A worker launch command must end in {} taking flags",
                 self.name()
             ))
         };
