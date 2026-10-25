@@ -443,7 +443,6 @@ fn troubleshooting_has_a_row_for_every_finding_doctor_can_give() {
         "cannot read the config file",
         "that push would be refused",
         "the remote rejects the fleet's refs under both",
-        "the host kit has no worker launch command",
         "is no harness",
         "cannot read the host kit",
         "is public: anyone can comment on its issues",

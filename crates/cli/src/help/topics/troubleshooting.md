@@ -58,7 +58,7 @@ A warning may be the fleet mid-step: run `doctor` again after a tick before you 
 - `is public: anyone can comment on its issues`: The checkout's tracker — its own repo, where it says none — is public. Say a private one with the line the refusal ends in, or make it private.
 - `that push would be refused`: The base branch's protection requires a PR, checks or a named pusher, and the landing train lands by pushing. Lift the rule, or pick another base branch.
 - `the remote rejects the fleet's refs under both`: The remote takes neither hidden refs nor `convoy-*` branches, so no claim can be kept. A push rule of the remote's is what refuses: lift it for one of the two.
-- `the host kit has no worker launch command`: Run `afkconvoy kit` on this host: it holds every harness found and answering there. One it leaves out is in its `left_out`, with why.
+- A missing worker launch command is discovered automatically for a known harness in the worker's login shell and merged into the latest host kit. If resolution fails, install the named program or fix that shell's PATH. If login or required flags fail, follow the named harness's login command or update its explicit command in the host kit. An explicit command is never replaced by a default; running fleets read kit edits at their next worker launch.
 - `cannot read the host kit`: Run `afkconvoy kit` on this host, or `run`, which writes it where there is none.
 - `--worker-command is gone`: Run `afkconvoy kit` to edit this host's worker launch commands.
 - `is no harness`: Use claude-code, pi, codex or dsh.

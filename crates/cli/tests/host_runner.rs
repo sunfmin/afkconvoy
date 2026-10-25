@@ -1394,3 +1394,29 @@ fn default_sets_a_checkouts_concurrency_back_and_a_host_runner_started_again_kee
     }
     assert_eq!(world.checkout_list()["checkouts"][0].get("concurrency"), None);
 }
+
+#[test]
+fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
+    let world = World::new();
+    let ran = world.afk(&RUN).ok();
+    let pid = ran["host_runner"]["pid"].clone();
+    for (number, command) in [(7, "agent --added-codex"), (8, "agent --changed-codex")] {
+        world.kit_command("codex", command);
+        world.issue(number, &["ready-for-agent", "harness:codex"]);
+        world.afk(&["wake"]).ok();
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            if world.orca()["terminals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|terminal| terminal["command"] == command)
+            {
+                break;
+            }
+            assert!(Instant::now() < until, "{command} never started: {:#?}", tick_log(&ran));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(world.host_runner(), pid.as_u64().map(|pid| pid as u32));
+    }
+}

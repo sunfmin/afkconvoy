@@ -92,7 +92,7 @@ fn asked(dir: &Path, tool: Tool, question: &str) -> Found {
 pub fn check(repo: &Repo, launches: &Launches) -> Result<()> {
     let default = launches.default();
     let read = launches.of(default);
-    let launch = read.as_ref().ok().copied().flatten();
+    let launch = read.as_ref().ok().and_then(|launch| launch.as_ref());
     let looked = look(repo, launch);
     if let Some(why) = looked.orca_unasked {
         bail!(why);
