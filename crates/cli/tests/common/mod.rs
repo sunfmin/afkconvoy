@@ -1203,6 +1203,8 @@ const SYSCTL: &str = r#"#!/bin/sh
 case "$*" in
 *vm.loadavg*) echo "{ $(cat "${0%/*}/../host-load" 2>/dev/null || echo 0.00) 0.00 0.00 }" ;;
 *kern.memorystatus_level*) cat "${0%/*}/../host-memory" 2>/dev/null || echo 80 ;;
+*kern.memorystatus_vm_pressure_level*) cat "${0%/*}/../host-pressure" 2>/dev/null || echo 1 ;;
+*hw.memsize*) echo 34359738368 ;;
 *)
     woke=$(cat "${0%/*}/../host-woke" 2>/dev/null || echo 0)
     echo "{ sec = $woke, usec = 0 } Sat Oct 18 10:00:00 2026"

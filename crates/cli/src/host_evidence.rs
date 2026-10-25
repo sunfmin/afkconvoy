@@ -67,13 +67,12 @@ pub struct Listed {
 
 /// Takes down what a host inspection for `reason` is given, `admission`
 /// being what held back → the file it is in.
-pub fn take(admission: &Admission, reason: Reason, own: &Own) -> Result<PathBuf> {
+pub fn take(admission: &Admission, reason: Reason, reading: &str, own: &Own) -> Result<PathBuf> {
     let dir = cache()?.join(DIR);
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot make {}", dir.display()))?;
     let on_host = Worktree::on_host()?;
     let mut out = format!("# What a host inspection for {} was given\n\n", reason.word());
-    let holds: Vec<String> = admission.holds().iter().map(|hold| admission.said(hold)).collect();
-    let _ = writeln!(out, "Admission holds back new workers: {}.\n", holds.join("; "));
+    let _ = writeln!(out, "What calls for this inspection: {reading}.\n");
     out.push_str("## Admission's reading and shares\n\n```json\n");
     out.push_str(&serde_json::to_string_pretty(&admission.json()).unwrap_or_default());
     out.push_str("\n```\n");

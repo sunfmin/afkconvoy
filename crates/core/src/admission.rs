@@ -1,5 +1,5 @@
 //! Admission: a tick starts no new worker while its host is busy — past a
-//! share of its load, under memory pressure, or low on free disk
+//! share of its load, below its share of available memory, or low on free disk
 //! (docs/adr/0019). Whether admission holds is decided here, from what the
 //! effect layer read of the host and the shares it is held to; reading the
 //! host is the effect layer's.

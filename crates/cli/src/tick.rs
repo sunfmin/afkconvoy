@@ -1287,10 +1287,10 @@ pub fn run(
                 (format!("FAILED: {error}"), sleep, (None, None, Some(error)))
             }
         };
-        let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        for what in inspector.step(agent, &hot_now, clock()) {
+        for what in inspector.step(agent, &hot, clock()) {
             said.keep(clock(), what);
         }
+        let hot_now = hot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         for what in cut_said {
             said.keep(clock(), what);
         }

@@ -31,6 +31,7 @@ mod guard;
 mod help;
 mod host_runner;
 mod host_sleep;
+mod hot;
 mod inspected;
 mod intake;
 mod joining;
