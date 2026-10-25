@@ -103,7 +103,8 @@ fn a_rebuild_lists_the_remote_once() {
     for (issue, instance) in [("7", "alpha"), ("8", "beta")] {
         world.afk(&["claim", "--issue", issue, "--instance", instance, "--now", "1000"]).ok();
     }
-    // a train one PR has joined: the line is read off the same listing
+    // a train one PR has joined: the line is read off the same listing, and
+    // so are the version tags a cut counts from
     let head = git(&world.clone, &["rev-parse", "HEAD"]);
     git(&world.clone, &["push", "-q", "origin", &format!("{head}:refs/convoy/train/line/main")]);
 
@@ -113,7 +114,8 @@ fn a_rebuild_lists_the_remote_once() {
     assert_eq!(planned["peer_live"][0]["number"], 8, "{planned}");
     let calls = world.git_calls();
     let listed: Vec<&String> = calls.iter().filter(|call| call.starts_with("ls-remote")).collect();
-    assert_eq!(listed, ["ls-remote origin refs/convoy/* refs/heads/main"], "{calls:#?}");
+    let once = "ls-remote origin refs/convoy/* refs/heads/main refs/tags/v*";
+    assert_eq!(listed, [once], "{calls:#?}");
 }
 
 #[test]

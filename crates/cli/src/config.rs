@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use afkconvoy_core::config::{Config, Settings};
+use afkconvoy_core::cut;
 use anyhow::{Context, Result, anyhow};
 
 use crate::git::Repo;
@@ -21,17 +22,37 @@ pub fn load(file: &Path) -> Result<Config> {
     parse(&text).with_context(|| format!("config file {}", file.display()))
 }
 
-/// The config in a markdown text: its first ```` ```yaml ```` block.
+/// The config in a markdown text: its first ```` ```yaml ```` block, and the
+/// cut steps of its first ```` ```yaml cut ```` block (`cut::BLOCK`), which
+/// turn cutting on. An afkconvoy that reads only the first block reads past
+/// the second, and refuses nothing for it.
 pub fn parse(markdown: &str) -> Result<Config> {
     let yaml = yaml_block(markdown).ok_or_else(|| anyhow!("has no ```yaml block"))?;
     let settings: Settings = serde_yaml::from_str(&yaml)?;
-    Ok(Config::new(settings)?)
+    let steps = match fenced(markdown, cut::BLOCK) {
+        Some(yaml) => Some(cut_steps(&yaml).context("its ```yaml cut block")?),
+        None => None,
+    };
+    Ok(Config::new(settings)?.cutting(steps))
+}
+
+/// The cut steps a ```` ```yaml cut ```` block says: `set` and `publish`,
+/// each something to run, and nothing else.
+fn cut_steps(yaml: &str) -> Result<cut::Steps> {
+    let steps: cut::Steps = serde_yaml::from_str(yaml)?;
+    steps.checked().map_err(|key| anyhow!("`{key}` names nothing to run"))
 }
 
 /// The text of the first ```` ```yaml ```` block of a markdown text: the one
 /// carrier of every definition afkconvoy reads.
 pub fn yaml_block(markdown: &str) -> Option<String> {
-    let mut lines = markdown.lines().skip_while(|line| line.trim_end() != "```yaml");
+    fenced(markdown, "```yaml")
+}
+
+/// The text of the first fenced block of a markdown text whose opening line
+/// is `opening`, and nothing else but trailing space.
+fn fenced(markdown: &str, opening: &str) -> Option<String> {
+    let mut lines = markdown.lines().skip_while(|line| line.trim_end() != opening);
     lines.next()?;
     let mut block = String::new();
     for line in lines {
@@ -110,6 +131,30 @@ mod tests {
         }
         let config = parse(&format!("```yaml\n{}\n```\n", limit("1"))).unwrap();
         assert_eq!(config.gate_seconds(), 1);
+    }
+
+    #[test]
+    fn the_cut_steps_are_a_block_of_their_own_which_turns_cutting_on() {
+        let config = "```yaml\nbase_branch: main\ngate_command: make\n```\n";
+        assert_eq!(parse(config).unwrap().cut, None, "no block: cutting is off");
+        let steps =
+            "```yaml cut\nset: ./bump \"$VERSION\"\npublish: |\n  ./ship\n  brew upgrade x\n```\n";
+        let cut = parse(&format!("{config}\nTo cut:\n\n{steps}")).unwrap().cut.unwrap();
+        assert_eq!(cut.set, "./bump \"$VERSION\"");
+        assert_eq!(cut.publish, "./ship\nbrew upgrade x\n");
+        // An afkconvoy that reads the first block alone reads none of it.
+        let both = format!("{config}{steps}");
+        assert_eq!(yaml_block(&both).unwrap(), "base_branch: main\ngate_command: make\n");
+        assert!(prose(&format!("{steps}{config}")).starts_with("```yaml cut"));
+        let wrong = |steps: &str| {
+            format!("{:#}", parse(&format!("{config}```yaml cut\n{steps}\n```\n")).unwrap_err())
+        };
+        let e = wrong("set: ./bump\npublish: ./ship\ndeploy: now");
+        assert!(e.contains("```yaml cut") && e.contains("unknown field `deploy`"), "{e}");
+        let e = wrong("set: ./bump");
+        assert!(e.contains("publish"), "{e}");
+        let e = wrong("set: ' '\npublish: ./ship");
+        assert!(e.contains("`set` names nothing to run"), "{e}");
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub mod checkouts;
 pub mod claims;
 pub mod closing;
 pub mod config;
+pub mod cut;
 pub mod exclusive;
 pub mod gate;
 pub mod graph;

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use afkconvoy_core::casting;
 use afkconvoy_core::claims::{InstanceId, claim_ref};
 use afkconvoy_core::config::{Config, SaidBy};
+use afkconvoy_core::cut;
 use afkconvoy_core::exclusive::Ticket;
 use afkconvoy_core::gate::GateCommand;
 use afkconvoy_core::lease::{LEASE, stamp_age, stamp_stale};
@@ -124,7 +125,9 @@ macro_rules! kinds {
             /// has a row for each.
             fn see(self) -> See {
                 match self {
-                    Kind::LockUnworked | Kind::PatrolFailed | Kind::WaitedLong => See::Humans,
+                    Kind::LockUnworked | Kind::PatrolFailed | Kind::CutFailed | Kind::WaitedLong => {
+                        See::Humans
+                    }
                     _ => See::Troubleshooting,
                 }
             }
@@ -162,6 +165,7 @@ kinds! {
     NearBreaker: Warning, "is one rework from a breaker";
     PatrolFailed: Warning, "does not run: its last run failed";
     PatrolFull: Warning, "have reached its `max_open`";
+    CutFailed: Warning, "cuts no version: its last cut failed";
     WaitedLong: Warning, "has waited for a human for";
     NotOurs: Warning, "is held off by a PR not the fleet's";
     ClaimOnGone: Warning, "is claimed but GitHub has it no more";
@@ -895,6 +899,19 @@ fn plan_findings(run: &Run, state: &State) -> Vec<Finding> {
             format!("the patrol `{name}` does not run: {why}"),
             evidence,
             fix,
+        ));
+    }
+    if let Some(cut) = set.cut.as_ref().filter(|cut| cut.standing == cut::Standing::Failed)
+        && let Some(failure) = cut.failure
+    {
+        found.push(finding(
+            Kind::CutFailed,
+            "the fleet cuts no version: its last cut failed".to_string(),
+            format!(
+                "#{failure} says which step failed, why, and the line that goes on from there, \
+                 and is still open"
+            ),
+            format!("gh issue view {failure}"),
         ));
     }
     found
@@ -1844,6 +1861,7 @@ mod tests {
             inspections_on_train: vec![],
             held_back: vec![],
             caster: None,
+            cut: None,
         }
     }
 

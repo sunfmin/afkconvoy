@@ -154,6 +154,34 @@ pub enum What {
     /// the episode; `said` is what held the work back, what it did and the
     /// PRs it put on the landing train, or why.
     HostInspected { reason: String, found: String, said: String },
+    /// A tick started a cut of `version` (docs/adr/0028): `said` is the
+    /// version, the tag it is cut past and the PRs it holds.
+    CutStarted { version: String, said: String },
+    /// A tick ended the cut of `version`: `said` is what it did — its PR,
+    /// where it landed, and each step it took with its seconds. `failed`, of
+    /// one that ended short, says at which step, why, the issue that says so
+    /// and the line that goes on from there.
+    CutEnded {
+        version: String,
+        said: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failed: Option<String>,
+    },
+}
+
+/// What a tick's line says of a cut it started or ended, `what`; `None` of
+/// any other line.
+pub fn cut_said(what: &What) -> Option<String> {
+    match what {
+        What::CutStarted { said, .. } => Some(format!("started the cut of {said}")),
+        What::CutEnded { said, failed: None, .. } => {
+            Some(format!("cut {said}: tagged, published and installed"))
+        }
+        What::CutEnded { version, failed: Some(failed), .. } => {
+            Some(format!("the cut of v{version} FAILED {failed}"))
+        }
+        _ => None,
+    }
 }
 
 /// Why a tick started.
@@ -254,6 +282,9 @@ impl Entry {
             What::HostInspected { reason, found, said } => {
                 format!("host inspection: held back for {reason}: {found} · {said}")
             }
+            What::CutStarted { .. } | What::CutEnded { .. } => {
+                format!("cut: {}", cut_said(&self.what).unwrap_or_default())
+            }
         }
     }
 
@@ -300,6 +331,7 @@ impl Entry {
                 "inspection",
                 format!("{THE_HOST}, held back for {reason}: {found} · {said}"),
             )),
+            What::CutStarted { .. } | What::CutEnded { .. } => Some(("cut", cut_said(&self.what)?)),
             What::TickStarted { .. }
             | What::Tick(_)
             | What::HostSleep { slept: false, .. }

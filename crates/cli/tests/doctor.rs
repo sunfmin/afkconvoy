@@ -379,10 +379,15 @@ fn start(world: &World) -> Running {
         .spawn()
         .unwrap();
     let running = Running(child);
-    // its first tick is over once its log says so
+    // its first tick is over once its log says so — the log, not the lock
+    // its writers take beside it, which may be there first
     let started = Instant::now();
     let runs = world.cache().join("afkconvoy/runs");
-    while !runs.is_dir() || ticks(&log(world)).is_empty() {
+    let kept = || {
+        let files = std::fs::read_dir(&runs).into_iter().flatten().flatten();
+        files.into_iter().any(|file| file.path().extension().is_some_and(|ext| ext == "jsonl"))
+    };
+    while !kept() || ticks(&log(world)).is_empty() {
         assert!(started.elapsed() < Duration::from_secs(60), "the run never logged a tick");
         std::thread::sleep(Duration::from_millis(50));
     }

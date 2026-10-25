@@ -73,6 +73,8 @@ pub enum Waits {
     /// It reports a failed run of this patrol, which is not run again while
     /// it is open.
     PatrolFailed { patrol: String },
+    /// It says a cut failed (docs/adr/0028): no cut starts while it is open.
+    CutFailed,
 }
 
 /// One way out of what an issue waits for: what it does, and the line to run.
@@ -111,6 +113,7 @@ impl Waits {
             Waits::PatrolFailed { patrol } => {
                 format!("reports a failed run of the patrol `{patrol}`")
             }
+            Waits::CutFailed => "says a cut failed".to_string(),
         }
     }
 
@@ -128,6 +131,7 @@ impl Waits {
                     "reports a failed run of the patrol `{patrol}`: waits to be closed"
                 ));
             }
+            Waits::CutFailed => return Some("says a cut failed: waits to be closed".to_string()),
             Waits::Parked { .. } | Waits::ParkedUnbound { .. } => return Some(self.why()),
             Waits::Verdict { .. } | Waits::Ended => return None,
         };
@@ -183,6 +187,14 @@ impl Waits {
             Waits::PatrolFailed { .. } => {
                 let what = "close it once you have looked: the patrol runs again";
                 return vec![close(issue, tracker, what)];
+            }
+            Waits::CutFailed => {
+                return vec![close(
+                    issue,
+                    tracker,
+                    "go on from the step that failed with the line its body gives, which closes \
+                     it — or close it once you have looked: the fleet cuts again from the start",
+                )];
             }
         };
         vec![answered, close(issue, tracker, "close it: the fleet leaves a closed issue alone")]

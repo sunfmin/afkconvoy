@@ -1,0 +1,827 @@
+//! A cut (docs/adr/0028): the run that makes a new version of a repo from
+//! its base branch — it sets the version, lands it, tags it, and publishes
+//! and installs it. A tick that ends idle starts one in a repo that names its
+//! cut steps, once the base branch holds landed commits past the newest
+//! version tag; it is claimed on the remote as a run is, so one host cuts each
+//! version. Where a cut stands, which version it cuts, what it is given and
+//! what is left of it are decided here; running its steps, and starting and
+//! ending it, are the effect layer's.
+
+use serde::{Deserialize, Serialize};
+
+use crate::claims::{Holder, InstanceId, RunClaim};
+use crate::plan::Issue;
+use crate::record::{self, fleet_number};
+
+/// What the claim on a cut is keyed by: one cut of a repo runs at a time,
+/// across its hosts.
+pub const CLAIM_KEY: &str = "cut";
+
+/// The name a cut's checkout is created under: one a repo, for one cut of it
+/// runs at a time.
+pub const CHECKOUT: &str = "afkconvoy-cut";
+
+/// The line that opens the fenced block of a repo's config file its cut
+/// steps are written in. It is not the config's own block, whose opening line
+/// is ```` ```yaml ```` alone: an afkconvoy that reads only that block reads
+/// past this one, and refuses nothing for it.
+pub const BLOCK: &str = "```yaml cut";
+
+/// The label a PR that landed since the newest version tag carries for the
+/// cut to raise the minor version, not the patch.
+pub const MINOR_LABEL: &str = "release:minor";
+
+/// The variable a repo's cut steps are given the version in, `0.5.17`.
+pub const VERSION_ENV: &str = "VERSION";
+
+/// The word of the marker of the issue a failed cut opens.
+const FAILED: &str = "convoy:cut-failed";
+
+/// What a cut is given beside two gate limits — its own gate and the
+/// landing train's — for the rest of its steps, publishing and installing
+/// among them, in seconds: an hour.
+pub const BESIDE_THE_GATES: u64 = 3600;
+
+/// How long, in seconds, a cut is given in a repo whose gate limit is
+/// `gate_seconds`: the gate of its own change and the train's, each to the
+/// limit, and `BESIDE_THE_GATES` for the rest. One still going then is ended,
+/// and has failed.
+pub fn time_limit(gate_seconds: u64) -> u64 {
+    gate_seconds.saturating_mul(2).saturating_add(BESIDE_THE_GATES)
+}
+
+/// A repo's cut steps: the lines that set the version, and the lines that
+/// publish and install it, each run by `sh` in the cut's checkout with the
+/// version in `VERSION_ENV`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Steps {
+    /// Run on the base branch as it stood: what it changes is the version's
+    /// commit, which lands through the landing train.
+    pub set: String,
+    /// Run with the version's tag checked out, once it is pushed.
+    pub publish: String,
+}
+
+impl Steps {
+    /// The steps, each with something to run → them, or the key that has
+    /// nothing.
+    pub fn checked(self) -> Result<Steps, &'static str> {
+        if self.set.trim().is_empty() {
+            return Err("set");
+        }
+        if self.publish.trim().is_empty() {
+            return Err("publish");
+        }
+        Ok(self)
+    }
+}
+
+/// A version, as a version tag names it: `v<major>.<minor>.<patch>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Version {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+impl Version {
+    /// The version the tag `name` names: `v`, then three numbers as the fleet
+    /// writes them (`record::fleet_number`), parted by `.`. Any other tag
+    /// names none — `v1.2`, `v1.2.3-rc1`, `release-1`.
+    pub fn tagged(name: &str) -> Option<Version> {
+        let mut parts = name.strip_prefix('v')?.split('.');
+        let major = fleet_number(parts.next()?)?;
+        let minor = fleet_number(parts.next()?)?;
+        let patch = fleet_number(parts.next()?)?;
+        match parts.next() {
+            Some(_) => None,
+            None => Some(Version { major, minor, patch }),
+        }
+    }
+
+    /// The version a cut makes after this one: the next minor where `minor`,
+    /// its patch 0, else the next patch. `None` past the largest number.
+    pub fn next(self, minor: bool) -> Option<Version> {
+        match minor {
+            true => Some(Version { minor: self.minor.checked_add(1)?, patch: 0, ..self }),
+            false => Some(Version { patch: self.patch.checked_add(1)?, ..self }),
+        }
+    }
+
+    /// Its tag: `v0.5.17`.
+    pub fn tag(self) -> String {
+        format!("v{self}")
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// A version tag on the remote: the version it names, and the commit it is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tag {
+    pub version: Version,
+    pub commit: String,
+}
+
+/// The newest of `tags` — each a tag's name and its commit — by the version
+/// it names; a tag that names none is not one.
+pub fn newest(tags: &[(String, String)]) -> Option<Tag> {
+    let mut newest: Option<Tag> = None;
+    for (name, commit) in tags {
+        let Some(version) = Version::tagged(name) else { continue };
+        if newest.as_ref().is_none_or(|newest| version > newest.version) {
+            newest = Some(Tag { version, commit: commit.clone() });
+        }
+    }
+    newest
+}
+
+/// The PRs the subjects of the base branch's commits past a tag name, as a
+/// landing names one — `<title> (#<pr>)` — lowest first, each once: the PRs a
+/// cut past that tag holds.
+pub fn prs_of<'a>(subjects: impl IntoIterator<Item = &'a str>) -> Vec<u64> {
+    let mut prs: Vec<u64> = subjects
+        .into_iter()
+        .filter_map(|subject| {
+            let (_, number) = subject.trim_end().strip_suffix(')')?.rsplit_once(" (#")?;
+            fleet_number(number)
+        })
+        .collect();
+    prs.sort_unstable();
+    prs.dedup();
+    prs
+}
+
+/// What a cut past `newest`, holding `prs`, makes: the next minor where one
+/// of them is among `minor` — those carrying `MINOR_LABEL` — else the next
+/// patch.
+pub fn pick(newest: Version, prs: &[u64], minor: &[u64]) -> Option<Version> {
+    newest.next(prs.iter().any(|pr| minor.contains(pr)))
+}
+
+/// What the effect layer read of a repo's cut.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Seen {
+    /// The repo names its cut steps: it turns cutting on.
+    pub on: bool,
+    /// The newest version tag on the remote, while it has one.
+    pub newest: Option<Tag>,
+    /// How many commits the base branch holds past it.
+    pub past: u64,
+    /// The claim on a cut, while one stands.
+    pub claim: Option<RunClaim>,
+    /// The open issue that says a cut failed, while one is open.
+    pub failure: Option<u64>,
+    /// The PR of a cut on the landing train, at its head, while one is.
+    pub on_train: Option<u64>,
+}
+
+/// How a repo's cut stands: what a tick does about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Standing {
+    /// The repo names no cut steps: it turns cutting off, and nothing is cut.
+    Off,
+    /// A cut failed, and the issue that says so is still open.
+    Failed,
+    /// The remote has no version tag: nothing to count a version from.
+    Untagged,
+    /// The base branch holds no commit past the newest version tag.
+    Tagged,
+    /// A fleet lock stands: no cut starts, for its PR could not join.
+    Locked,
+    /// A tick that ends idle starts one.
+    Due,
+    /// A cut of mine is still going: a tick asks after it.
+    Running,
+    /// A live peer's cut is still going.
+    PeerRunning,
+    /// The claim on a cut is a peer's presumed dead: a tick deletes it.
+    StaleRun,
+}
+
+impl Standing {
+    pub fn word(self) -> &'static str {
+        match self {
+            Standing::Off => "off",
+            Standing::Failed => "failed",
+            Standing::Untagged => "untagged",
+            Standing::Tagged => "tagged",
+            Standing::Locked => "locked",
+            Standing::Due => "due",
+            Standing::Running => "running",
+            Standing::PeerRunning => "peer_running",
+            Standing::StaleRun => "stale_run",
+        }
+    }
+}
+
+/// A repo's cut, as a working set holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Row {
+    pub standing: Standing,
+    /// The newest version tag, and how many commits the base branch holds
+    /// past it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_tag: Option<String>,
+    pub past: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<u64>,
+    /// The PR of a cut on the landing train: the train is tended while it
+    /// is, as while a PR of mine is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_train: Option<u64>,
+    /// The claim on a cut, while one stands.
+    #[serde(skip)]
+    pub claim: Option<RunClaim>,
+}
+
+/// How the cut `seen` stands for the fleet instance `me` at `now`, with
+/// each instance's heartbeat in `heartbeats`, and `locked` while a fleet lock
+/// stands. A cut still going comes first, whoever holds it and whatever the
+/// rest says; then a repo that turns cutting off, the failure nobody
+/// answered, the tags, and the lock.
+pub fn row(
+    seen: &Seen,
+    me: Option<&InstanceId>,
+    heartbeats: &[(String, u64)],
+    now: u64,
+    locked: bool,
+) -> Row {
+    let standing = match &seen.claim {
+        Some(claim) => match claim.holder(me, heartbeats, now) {
+            Holder::Mine => Standing::Running,
+            Holder::Dead => Standing::StaleRun,
+            Holder::Peer => Standing::PeerRunning,
+        },
+        None if !seen.on => Standing::Off,
+        None if seen.failure.is_some() => Standing::Failed,
+        None if seen.newest.is_none() => Standing::Untagged,
+        None if seen.past == 0 => Standing::Tagged,
+        None if locked => Standing::Locked,
+        None => Standing::Due,
+    };
+    Row {
+        standing,
+        newest_tag: seen.newest.as_ref().map(|tag| tag.version.tag()),
+        past: seen.past,
+        failure: seen.failure,
+        on_train: seen.on_train,
+        claim: seen.claim.clone(),
+    }
+}
+
+/// Whether a tick that ends with `held` claims held, `frontier` issues left
+/// on its frontier and something on the landing train or not (`on_train`)
+/// starts the cut `row`: it is due, the tick ends idle, and admission holds
+/// nothing back (`held_back`): a cut gates and builds, as heavy as any worker.
+pub fn starts(row: &Row, held: usize, frontier: usize, on_train: bool, held_back: bool) -> bool {
+    row.standing == Standing::Due && held == 0 && frontier == 0 && !on_train && !held_back
+}
+
+/// One step of a cut, in the order it takes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Step {
+    /// Run the repo's `set` lines, and commit what they changed.
+    Set,
+    /// Push the commit on the checkout's branch, and open its PR.
+    Pr,
+    /// Gate it, the landing train merged in (`afkconvoy gate --train`).
+    Gate,
+    /// Join it to the landing train, on no issue, and wait for it to land.
+    Land,
+    /// Tag the landed commit `v<version>`, and push the tag.
+    Tag,
+    /// With the tag checked out, run the repo's `publish` lines.
+    Publish,
+}
+
+impl Step {
+    pub const ALL: [Step; 6] =
+        [Step::Set, Step::Pr, Step::Gate, Step::Land, Step::Tag, Step::Publish];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Step::Set => "set",
+            Step::Pr => "pr",
+            Step::Gate => "gate",
+            Step::Land => "land",
+            Step::Tag => "tag",
+            Step::Publish => "publish",
+        }
+    }
+
+    /// The step `word` names.
+    pub fn named(word: &str) -> Option<Step> {
+        Step::ALL.into_iter().find(|step| step.word() == word)
+    }
+
+    /// The steps from this one on, in order.
+    pub fn from(self) -> Vec<Step> {
+        Step::ALL.into_iter().skip_while(|step| *step != self).collect()
+    }
+}
+
+/// One step a cut took, and how many seconds it took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Took {
+    pub step: Step,
+    pub seconds: u64,
+}
+
+/// A step a cut failed at, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Failure {
+    pub step: Step,
+    pub why: String,
+}
+
+/// What a cut is, and what it did so far: kept in its checkout as it goes,
+/// the fleet's start writing it and each step adding to it. What is left of
+/// a cut once it ends is read off it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    /// The version it makes, `0.5.17`, and the tag it was cut past, `v0.5.16`.
+    pub version: String,
+    pub from: String,
+    /// The PRs it holds: those that landed since that tag, lowest first.
+    #[serde(default)]
+    pub prs: Vec<u64>,
+    /// Whether it raises the minor version, for a PR carrying `MINOR_LABEL`.
+    #[serde(default)]
+    pub minor: bool,
+    /// When the fleet started it, in epoch seconds.
+    pub started: u64,
+    /// Its own PR, once it opened it, and the commit that landed it, once it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed: Option<String>,
+    /// The step it is taking now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Step>,
+    /// Each step it took, in order.
+    #[serde(default)]
+    pub took: Vec<Took>,
+    /// The step it failed at, and why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<Failure>,
+}
+
+impl Record {
+    /// Whether it took every step: the version is published and installed.
+    pub fn done(&self) -> bool {
+        self.failed.is_none() && self.took.last().is_some_and(|took| took.step == Step::Publish)
+    }
+
+    /// The step it is at, or was last: where a cut that ended short of its
+    /// last step goes on from.
+    pub fn step(&self) -> Step {
+        if let Some(failed) = &self.failed {
+            return failed.step;
+        }
+        if let Some(at) = self.at {
+            return at;
+        }
+        let last = self.took.last().map(|took| took.step);
+        let next = last.and_then(|last| last.from().into_iter().nth(1));
+        next.unwrap_or(Step::Set)
+    }
+
+    /// What it is and did, in one line: what the log keeps.
+    pub fn line(&self) -> String {
+        let mut said = format!("v{} (past {}", self.version, self.from);
+        if self.minor {
+            said.push_str(&format!(", the next minor for a PR labelled {MINOR_LABEL}"));
+        }
+        if !self.prs.is_empty() {
+            said.push_str(&format!(", holding {}", numbered(&self.prs)));
+        }
+        said.push(')');
+        if let Some(pr) = self.pr {
+            said.push_str(&format!(" · its PR #{pr}"));
+        }
+        if let Some(landed) = &self.landed {
+            said.push_str(&format!(" · landed as {}", short(landed)));
+        }
+        if !self.took.is_empty() {
+            let took: Vec<String> = self
+                .took
+                .iter()
+                .map(|took| format!("{} {}s", took.step.word(), took.seconds))
+                .collect();
+            said.push_str(&format!(" · {}", took.join(", ")));
+        }
+        said
+    }
+}
+
+/// `numbers` as a sentence names them: `#451`, or `#451, #452`.
+fn numbered(numbers: &[u64]) -> String {
+    numbers.iter().map(|number| format!("#{number}")).collect::<Vec<_>>().join(", ")
+}
+
+/// A commit's first ten digits.
+fn short(commit: &str) -> &str {
+    commit.get(..10).unwrap_or(commit)
+}
+
+/// How a cut ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ending {
+    /// It took every step.
+    Cut,
+    /// It failed at a step, as it said.
+    Failed(Failure),
+    /// Its time ran out at a step: it was ended there.
+    OutOfTime(Step),
+    /// Its terminal is gone, and it said neither that it took every step nor
+    /// where it failed: it was ended at a step from outside.
+    Gone(Step),
+}
+
+impl Ending {
+    /// The step a cut that ended short failed at, and why, in words; `None`
+    /// of one that took every step.
+    pub fn failure(&self, limit: u64) -> Option<Failure> {
+        match self {
+            Ending::Cut => None,
+            Ending::Failed(failure) => Some(failure.clone()),
+            Ending::OutOfTime(step) => Some(Failure {
+                step: *step,
+                why: format!("its time ran out: a cut is given {} minutes", limit / 60),
+            }),
+            Ending::Gone(step) => Some(Failure {
+                step: *step,
+                why: "it was ended from outside: its terminal is gone, and it said nothing"
+                    .to_string(),
+            }),
+        }
+    }
+}
+
+/// How the cut that `record` keeps ended at `now`, in a repo that gives a
+/// cut `limit` seconds — its terminal `gone` or not; `None` while it still
+/// runs. A record that cannot be read is a cut that said nothing, started
+/// when its claim was (`started`).
+pub fn ending(
+    record: Option<&Record>,
+    started: u64,
+    gone: bool,
+    now: u64,
+    limit: u64,
+) -> Option<Ending> {
+    let step = record.map_or(Step::Set, Record::step);
+    if let Some(record) = record {
+        if record.done() {
+            return Some(Ending::Cut);
+        }
+        if let Some(failed) = &record.failed {
+            return Some(Ending::Failed(failed.clone()));
+        }
+    }
+    let started = record.map_or(started, |record| record.started);
+    if now.saturating_sub(started) >= limit {
+        return Some(Ending::OutOfTime(step));
+    }
+    gone.then_some(Ending::Gone(step))
+}
+
+/// The title of the issue a failed cut of `version` opens.
+pub fn failure_title(version: &str) -> String {
+    format!("afkconvoy: the cut of v{version} failed")
+}
+
+/// Whether `title` is the title of the issue a failed cut opens, of any
+/// version: how the report is found again.
+fn is_failure_title(title: &str) -> bool {
+    title.strip_prefix("afkconvoy: the cut of v").is_some_and(|rest| rest.ends_with(" failed"))
+}
+
+/// The open issue among `issues` that says a cut failed: one titled as a
+/// failed cut's (`failure_title`) that carries `escalate_label`, the lowest
+/// numbered of them.
+pub fn failure_of(issues: &[Issue], escalate_label: &str) -> Option<u64> {
+    let mut found: Option<u64> = None;
+    for issue in issues {
+        let reports =
+            is_failure_title(&issue.title) && issue.labels.iter().any(|l| l == escalate_label);
+        if reports && found.is_none_or(|first| issue.number < first) {
+            found = Some(issue.number);
+        }
+    }
+    found
+}
+
+/// The body of the issue a cut that failed opens: which step failed, why,
+/// what it did before, and the line that goes on from there, which `goes_on`
+/// is — run in its checkout `checkout` on the host `host`, which is kept.
+pub fn failure_report(
+    record: &Record,
+    failure: &Failure,
+    host: &str,
+    checkout: &str,
+    goes_on: &str,
+) -> String {
+    let step = failure.step.word();
+    let marker = record::marker(FAILED, &[("version", &record.version), ("step", step)]);
+    let mut said = format!(
+        "{marker}\n**afkconvoy** — the cut of v{} failed at its step `{step}`: {}\n\n",
+        record.version,
+        failure.why.trim()
+    );
+    said.push_str(&format!("What it was: {}.\n\n", record.line()));
+    said.push_str(&format!(
+        "Its checkout is kept, `{checkout}` on the host `{host}`, with what each step printed \
+         in its git dir. The line that goes on from the step that failed, once what failed it \
+         is fixed:\n\n```sh\n{goes_on}\n```\n\nIt takes that step and the ones after it, and \
+         closes this issue once it took the last. No cut starts while this issue is open: close \
+         it once the version is cut, or once you have looked and want the fleet to cut again \
+         from the start.\n"
+    ));
+    if failure.step == Step::Publish {
+        said.push_str(&format!(
+            "\nIts tag is pushed: closed with no line run, v{} stays tagged and is never \
+             published, and the next cut is of the version after it, once more lands.\n",
+            record.version
+        ));
+    }
+    said
+}
+
+/// The title of a cut's commit and of its PR: the repo's name and the
+/// version, `afkconvoy 0.5.17`.
+pub fn title(repo: &str, version: &str) -> String {
+    format!("{repo} {version}")
+}
+
+/// The body of a cut's PR.
+pub fn pr_body(record: &Record, host: &str) -> String {
+    let why = match record.minor {
+        true => format!(
+            "the next minor past {}: a PR it holds is labelled `{MINOR_LABEL}`",
+            record.from
+        ),
+        false => format!("the next patch past {}", record.from),
+    };
+    let holds = match record.prs.is_empty() {
+        true => "It holds no PR: the commits past the tag name none.".to_string(),
+        false => format!("It holds the PRs that landed since: {}.", numbered(&record.prs)),
+    };
+    format!(
+        "A cut by the fleet on `{host}` (`afkconvoy cut --help`): v{}, {why}. {holds}\n\nIt \
+         lands through the landing train on no issue; the cut then tags the commit that landed \
+         it `v{}` and publishes and installs it as the repo's cut steps say.\n",
+        record.version, record.version
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claims::Owner;
+    use crate::lease::LEASE;
+
+    fn tags(names: &[(&str, &str)]) -> Vec<(String, String)> {
+        names.iter().map(|(name, commit)| (name.to_string(), commit.to_string())).collect()
+    }
+
+    fn version(major: u64, minor: u64, patch: u64) -> Version {
+        Version { major, minor, patch }
+    }
+
+    #[test]
+    fn a_version_tag_is_v_and_three_numbers() {
+        assert_eq!(Version::tagged("v0.5.16"), Some(version(0, 5, 16)));
+        assert_eq!(Version::tagged("v10.0.0"), Some(version(10, 0, 0)));
+        for not in ["0.5.16", "v0.5", "v0.5.16.1", "v0.5.16-rc1", "v0.05.1", "v", "release-1"] {
+            assert_eq!(Version::tagged(not), None, "{not}");
+        }
+        assert_eq!(version(0, 5, 16).tag(), "v0.5.16");
+        assert_eq!(version(0, 5, 16).to_string(), "0.5.16");
+    }
+
+    #[test]
+    fn the_newest_tag_is_the_highest_version_not_the_last_listed() {
+        let listed = tags(&[("v0.5.9", "a"), ("v0.5.16", "b"), ("v0.5.10", "c"), ("nightly", "d")]);
+        assert_eq!(newest(&listed), Some(Tag { version: version(0, 5, 16), commit: "b".into() }));
+        assert_eq!(newest(&tags(&[("nightly", "d")])), None);
+        assert_eq!(newest(&[]), None);
+    }
+
+    #[test]
+    fn a_cut_makes_the_next_patch_or_the_next_minor_for_a_pr_labelled_so() {
+        let from = version(0, 5, 16);
+        assert_eq!(pick(from, &[451, 452], &[]), Some(version(0, 5, 17)));
+        assert_eq!(pick(from, &[451, 452], &[300, 452]), Some(version(0, 6, 0)));
+        assert_eq!(pick(from, &[451], &[300]), Some(version(0, 5, 17)), "a PR it does not hold");
+        assert_eq!(version(0, 5, u64::MAX).next(false), None);
+    }
+
+    #[test]
+    fn the_prs_past_a_tag_are_read_off_the_subjects_of_its_landings() {
+        let subjects = [
+            "Merge commit 'abc' into a branch",
+            "The fleet reads no PR opened from a fork (#464)",
+            "afkconvoy 0.5.16 (#450)",
+            "a fix (#0012)",
+            "The fleet reads no PR opened from a fork (#464)",
+            "Issues are read in the tracker (#465)  ",
+        ];
+        assert_eq!(prs_of(subjects), [450, 464, 465]);
+    }
+
+    fn seen() -> Seen {
+        Seen {
+            on: true,
+            newest: Some(Tag { version: version(0, 5, 16), commit: "t".into() }),
+            past: 4,
+            claim: None,
+            failure: None,
+            on_train: None,
+        }
+    }
+
+    fn claim(instance: &str) -> RunClaim {
+        let owner = Owner { instance: instance.into(), host: "h".into(), ts: 0 };
+        RunClaim { key: CLAIM_KEY.into(), owner: Some(owner), sha: "c".into(), over: false }
+    }
+
+    fn standing(seen: &Seen, locked: bool) -> Standing {
+        let me = InstanceId::parse("me").unwrap();
+        row(seen, Some(&me), &[("peer".into(), 1000)], 1000, locked).standing
+    }
+
+    #[test]
+    fn a_cut_is_due_with_commits_past_the_newest_tag_in_a_repo_that_turns_it_on() {
+        assert_eq!(standing(&seen(), false), Standing::Due);
+        assert_eq!(standing(&Seen { on: false, ..seen() }, false), Standing::Off);
+        assert_eq!(standing(&Seen { past: 0, ..seen() }, false), Standing::Tagged);
+        assert_eq!(standing(&Seen { newest: None, ..seen() }, false), Standing::Untagged);
+        assert_eq!(standing(&Seen { failure: Some(9), ..seen() }, false), Standing::Failed);
+        assert_eq!(standing(&seen(), true), Standing::Locked);
+        let said = row(&seen(), None, &[], 1000, false);
+        assert_eq!((said.newest_tag.as_deref(), said.past), (Some("v0.5.16"), 4));
+    }
+
+    #[test]
+    fn a_cut_still_going_is_whose_its_claim_says_whatever_else_holds() {
+        let off = Seen { on: false, failure: Some(9), ..seen() };
+        assert_eq!(
+            standing(&Seen { claim: Some(claim("me")), ..off.clone() }, true),
+            Standing::Running
+        );
+        assert_eq!(
+            standing(&Seen { claim: Some(claim("peer")), ..off.clone() }, false),
+            Standing::PeerRunning
+        );
+        let me = InstanceId::parse("me").unwrap();
+        let dead = Seen { claim: Some(claim("peer")), ..seen() };
+        let stale = row(&dead, Some(&me), &[("peer".into(), 1000)], 1001 + LEASE, false);
+        assert_eq!(stale.standing, Standing::StaleRun);
+    }
+
+    #[test]
+    fn only_a_tick_that_ends_idle_with_admission_open_starts_a_due_cut() {
+        let due = row(&seen(), None, &[], 1000, false);
+        assert!(starts(&due, 0, 0, false, false));
+        assert!(!starts(&due, 1, 0, false, false), "a claim held");
+        assert!(!starts(&due, 0, 1, false, false), "the frontier left");
+        assert!(!starts(&due, 0, 0, true, false), "something on the landing train");
+        assert!(!starts(&due, 0, 0, false, true), "admission holds back");
+        let tagged = row(&Seen { past: 0, ..seen() }, None, &[], 1000, false);
+        assert!(!starts(&tagged, 0, 0, false, false));
+    }
+
+    #[test]
+    fn a_cut_is_given_two_gate_limits_and_an_hour() {
+        assert_eq!(time_limit(3600), 3 * 3600);
+        assert_eq!(time_limit(600), 1200 + 3600);
+        assert_eq!(time_limit(u64::MAX), u64::MAX);
+    }
+
+    fn record() -> Record {
+        Record {
+            version: "0.5.17".into(),
+            from: "v0.5.16".into(),
+            prs: vec![451, 452],
+            minor: false,
+            started: 1000,
+            pr: None,
+            landed: None,
+            at: None,
+            took: vec![],
+            failed: None,
+        }
+    }
+
+    #[test]
+    fn a_cut_ends_once_it_took_every_step_failed_ran_out_of_time_or_is_gone() {
+        let limit = time_limit(600);
+        assert_eq!(ending(Some(&record()), 1000, false, 1001, limit), None);
+        let all = Step::ALL.map(|step| Took { step, seconds: 1 }).to_vec();
+        let done = Record { took: all, ..record() };
+        assert!(done.done());
+        assert_eq!(ending(Some(&done), 1000, true, 1001, limit), Some(Ending::Cut));
+        let failure = Failure { step: Step::Gate, why: "red".into() };
+        let failed = Record { failed: Some(failure.clone()), at: Some(Step::Gate), ..record() };
+        assert_eq!(ending(Some(&failed), 1000, false, 1001, limit), Some(Ending::Failed(failure)));
+        let landing = Record { at: Some(Step::Land), ..record() };
+        assert_eq!(
+            ending(Some(&landing), 1000, false, 1000 + limit, limit),
+            Some(Ending::OutOfTime(Step::Land))
+        );
+        assert_eq!(ending(Some(&landing), 1000, true, 1001, limit), Some(Ending::Gone(Step::Land)));
+        // A record that cannot be read is a cut that said nothing.
+        assert_eq!(ending(None, 1000, true, 1001, limit), Some(Ending::Gone(Step::Set)));
+        assert_eq!(ending(None, 1000, false, 1001, limit), None);
+        let out = Ending::OutOfTime(Step::Land).failure(limit).unwrap();
+        assert_eq!(out.step, Step::Land);
+        assert!(out.why.contains("80 minutes"), "{}", out.why);
+    }
+
+    #[test]
+    fn a_cut_goes_on_from_the_step_after_the_last_it_took() {
+        assert_eq!(record().step(), Step::Set);
+        let set = Record { took: vec![Took { step: Step::Set, seconds: 3 }], ..record() };
+        assert_eq!(set.step(), Step::Pr);
+        assert_eq!(Step::Tag.from(), [Step::Tag, Step::Publish]);
+        assert_eq!(Step::named("publish"), Some(Step::Publish));
+        assert_eq!(Step::named("deploy"), None);
+    }
+
+    #[test]
+    fn what_a_cut_did_is_said_in_one_line_with_each_step_and_its_seconds() {
+        let did = Record {
+            pr: Some(470),
+            landed: Some("0123456789abcdef".into()),
+            took: vec![
+                Took { step: Step::Set, seconds: 3 },
+                Took { step: Step::Gate, seconds: 270 },
+            ],
+            ..record()
+        };
+        assert_eq!(
+            did.line(),
+            "v0.5.17 (past v0.5.16, holding #451, #452) · its PR #470 · landed as 0123456789 \
+             · set 3s, gate 270s"
+        );
+        let minor = Record { minor: true, prs: vec![], ..record() };
+        assert_eq!(
+            minor.line(),
+            "v0.5.17 (past v0.5.16, the next minor for a PR labelled release:minor)"
+        );
+    }
+
+    #[test]
+    fn a_failed_cut_is_found_again_by_its_title_and_the_escalate_label() {
+        let issue = |number: u64, title: &str, labels: &[&str]| Issue {
+            number,
+            title: title.to_string(),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            open_blockers: vec![],
+        };
+        let issues = [
+            issue(9, &failure_title("0.5.17"), &["ready-for-human"]),
+            issue(4, &failure_title("0.5.17"), &["bug"]),
+            issue(7, &failure_title("0.5.16"), &["ready-for-human"]),
+            issue(3, "afkconvoy: the patrol `x` failed", &["ready-for-human"]),
+        ];
+        assert_eq!(failure_of(&issues, "ready-for-human"), Some(7));
+        assert_eq!(failure_of(&issues, "fleet-lock"), None);
+        let failure = Failure { step: Step::Publish, why: "exited 1".into() };
+        let said = failure_report(
+            &record(),
+            &failure,
+            "h1",
+            "/w/cut",
+            "cd '/w/cut' && afkconvoy cut --from publish",
+        );
+        assert!(
+            said.starts_with("<!--convoy:cut-failed version=0.5.17 step=publish-->\n"),
+            "{said}"
+        );
+        assert!(said.contains("failed at its step `publish`: exited 1"), "{said}");
+        assert!(said.contains("cd '/w/cut' && afkconvoy cut --from publish"), "{said}");
+        assert!(said.contains("No cut starts while this issue is open"), "{said}");
+        // Its tag is pushed: closed, the version stays unpublished.
+        assert!(said.contains("v0.5.17 stays tagged and is never published"), "{said}");
+        let failure = Failure { step: Step::Gate, why: "red".into() };
+        let said = failure_report(&record(), &failure, "h1", "/w/cut", "x");
+        assert!(!said.contains("Its tag is pushed"), "{said}");
+    }
+
+    #[test]
+    fn the_cut_steps_need_both_lines() {
+        let steps = |set: &str, publish: &str| Steps { set: set.into(), publish: publish.into() };
+        assert!(steps("bump", "ship").checked().is_ok());
+        assert_eq!(steps(" ", "ship").checked(), Err("set"));
+        assert_eq!(steps("bump", "").checked(), Err("publish"));
+    }
+}

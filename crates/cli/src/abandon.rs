@@ -83,8 +83,9 @@ fn abandon_train(fleet: &mut Fleet, me: &Me, stopped: &StoppedOn, silent: Silent
     let mut riding = vec![];
     let mut inspections = vec![];
     for join in on_train(&joins, &prs) {
-        // An inspection's PR has nobody to join it again: the fleet does, below.
-        if join.is_inspection() {
+        // An inspection's PR, or a cut's, has nobody to join it again: the
+        // fleet does, below.
+        if join.rejoined_by_the_fleet() {
             inspections.push(join);
             continue;
         }
