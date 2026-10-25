@@ -666,8 +666,7 @@ fn proposal_capacity_and_age_follow_the_open_prs_even_when_the_team_stops_propos
     assert_eq!(answer["proposals"]["open"].as_array().unwrap().len(), 1);
 
     // A team that names no proposer can still have proposals waiting for a human.
-    write(&team(&world), "team.md", &format!("```yaml\n{ROLES}```\n"));
-    commit(&team(&world), "stop proposing");
+    commit(&team(&world), "team.md", &format!("```yaml\n{ROLES}```\n"));
     let answer = doctor();
     assert_eq!(answer["proposals"]["max_open"], Value::Null);
     assert_eq!(answer["proposals"]["open"][0]["pr"], 33);
