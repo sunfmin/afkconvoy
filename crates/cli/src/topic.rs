@@ -70,6 +70,11 @@ pub struct TickLog;
 pub struct WorkerLaunch;
 
 #[derive(Topic)]
+#[topic(name = "codex-workers")]
+#[doc = include_str!("help/topics/codex-workers.md")]
+pub struct CodexWorkers;
+
+#[derive(Topic)]
 #[topic(name = "worker-proxy")]
 #[doc = include_str!("help/topics/worker-proxy.md")]
 pub struct WorkerProxy;
