@@ -245,8 +245,12 @@ process; tell a worker what is wrong at its terminal (`orca terminal send --term
 --text '<line>' --enter`), or restart, nudge or switch it (`afkconvoy restart`, `nudge`,
 `switch`); have a gate you stopped run again; change a host setting (`afkconvoy run --concurrency`,
 admission's shares: `afkconvoy run --help`); free disk; send heavy work through
-`afkconvoy exclusive`; change the repo — its `gate_command`, say — on a branch of your own, through
-the gate and the landing train, as any worker's change goes. Each command's `--help` says how.
+`afkconvoy exclusive`; change the repo — its `gate_command`, say — as any worker's change goes: on
+a branch, through the gate and the landing train. The train takes a PR by the issue it closes, so
+the fleet's workers make it: open an issue of the change itself, saying what to change and why, as
+`afkconvoy flows` says one the fleet works is opened — once you have looked for an open one an
+earlier inspection opened. Where the guard refuses its label, leave it open without one, and say
+so with a `--left`. Each command's `--help` says how.
 
 ## Your bounds
 
@@ -258,7 +262,8 @@ They are those of any unattended worker, and the guard holds you to them where i
 - Never delete what cannot be rebuilt: model weights, downloads, media ({kept}), a user's files, a
   change no commit holds.
 - No force push, no push to the base branch, no merge outside the landing train.
-- Hand nothing on: open no issue for what you find, and ask no human.
+- Hand nothing to a human: ask none, and open no issue of what you found — only one of a change of
+  the repo, for the fleet's workers.
 
 ## Say what you did
 

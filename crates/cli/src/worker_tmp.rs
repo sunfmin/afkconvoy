@@ -118,6 +118,14 @@ pub fn reclaim() -> Result<()> {
     Ok(())
 }
 
+/// Whether `dir`, a process's `TMPDIR`, is a worker's link (`of`) or under
+/// one: a fleet of this host started that process, or one that did, whether
+/// the worktree is still there or not.
+pub fn is_workers(dir: &str) -> bool {
+    let Ok(rest) = Path::new(dir).strip_prefix(links()) else { return false };
+    rest.components().next().is_some_and(|key| is_key(&key.as_os_str().to_string_lossy()))
+}
+
 /// The directory of this user's links, `/tmp/afkconvoy-<uid>`: as short as a
 /// path that is the user's alone can be, whoever is logged in.
 fn links() -> PathBuf {
