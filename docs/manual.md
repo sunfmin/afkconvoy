@@ -111,7 +111,7 @@ It says on stderr where the file is, what it holds and what was left out.
 
 {path, written, kit, left_out}: the file; true; the kit written; and each harness or model not kept, as {harness, model, why} — model absent for a whole harness — why `not installed`, `listing failed`, `no longer listed` (a model the host kit held that its harness lists no more), `silent to its probe`, or `no model answered its probe`, with what was asked. Run twice with nothing changed, it writes the same kit but for the probe times. Errors: orca not running, with the line that starts it; a kit that cannot be read or written.
 
-Every harness of `kit` holds a model: one none of whose models answered is left out, never held with `models` []. Automatic command discovery can append a harness with no models; one written by hand or by an older afkconvoy is also read as it is: a worker of that harness is started on its command as written, with no model flag — on whatever model its own login defaults to, which the fleet cannot name — and so is the stock consult, its model then null, where it runs that harness. It is no fault, and `doctor` finds nothing of it: this command writes the harness again with each model it lists that answers, or leaves it out, and the tick's daily refresh does the same (below).
+Every harness of `kit` holds a model: one none of whose models answered is left out, never held with `models` []. Automatic command discovery can append a harness with no models; one written by hand or by an older release is also read as it is: a worker of that harness is started on its command as written, with no model flag — on whatever model its own login defaults to, which the fleet cannot name — and so is the stock consult, its model then null, where it runs that harness. It is no fault, and `doctor` finds nothing of it: this command writes the harness again with each model it lists that answers, or leaves it out, and the tick's daily refresh does the same (below).
 
 ##### What trips you up
 
@@ -4051,14 +4051,7 @@ How the fleet starts each harness's worker: the line a worker is started with, w
 
 #### Every worker
 
-Each launch reads the latest host kit, including edits made while the fleet
-instance runs. An explicit command wins. Where a known harness has no entry
-or its command is empty, the fleet resolves that harness's stock command in
-the worker's login shell, checks its login and the flags its role needs, and
-merges the command into the host kit. It reports the discovery as a warning.
-No model is inferred or probed; a new harness is appended after those held.
-Discovery installs nothing and logs nobody in. A failing explicit command is
-reported as given, so fixing it means editing its entry in the host kit.
+Each launch reads the latest host kit, including edits made while the fleet instance runs. An explicit command wins. Where a known harness has no entry or its command is empty, the fleet resolves that harness's stock command in the worker's login shell, checks its login and the flags its role needs, and merges the command into the host kit. It reports the discovery as a warning. No model is inferred or probed; a new harness is appended after those held. Discovery installs nothing and logs nobody in. A failing explicit command is reported as given, so fixing it means editing its entry in the host kit.
 
 Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `/tmp/afkconvoy-<uid>/<16 hex digits>`, a link to `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. The link is short enough for a socket's path however long the worktree's is — a tool such as sccache binds one under its `TMPDIR` — and is named for the worktree's whole path. It goes with the worktree, but for a server the worker started, which keeps it until it ends: the fleet turns it to its own temporary directory first. Nothing else of an unbound repo's worker launch command is touched.
 
@@ -4554,7 +4547,7 @@ Moving running work onto another harness in one command: the host's choice of ha
 _Avoid_: harness change (what a new casting makes)
 
 **Worker launch command**:
-The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and written by `afkconvoy kit`; a harness absent from it is refused; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it, appends to it nothing but its harness's model flag where the worker runs a model — its issue's casting, the host kit's first, or the stock consult's — and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own: a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in the worktree, short enough for a socket's path however long the worktree's is, and gone with the worktree once nothing started with it runs. In a bound repo the fleet adds to it what puts the worker in its role.
+The shell string every worker of one harness is started with, in a fleet instance: one for each harness its workers run. The host kit says it, per harness, kept on the host at `$XDG_CONFIG_HOME/afkconvoy/kit.json` or `$HOME/.config/afkconvoy/kit.json` and written by `afkconvoy kit`; each launch reads its latest command, or discovers and records a known harness's stock command when none is held; a start checks that of every harness it could be asked for, and starts no worker when one cannot be started. In an unbound repo it is opaque: the fleet never parses it, appends to it nothing but its harness's model flag where the worker runs a model — its issue's casting, the host kit's first, or the stock consult's — and only starts it — as every worker — under `nice`, with a `TMPDIR` of its worktree's own: a link, `/tmp/afkconvoy-<uid>/<16 hex digits>`, to `.afkconvoy-tmp` in the worktree, short enough for a socket's path however long the worktree's is, and gone with the worktree once nothing started with it runs. In a bound repo the fleet adds to it what puts the worker in its role.
 _Avoid_: agent command, provider profile
 
 **Worker state**:
