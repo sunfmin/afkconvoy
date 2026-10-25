@@ -161,6 +161,23 @@ fn has(world: &World, issue: u64, label: &str) -> bool {
 }
 
 #[test]
+fn an_escalation_with_no_position_names_the_only_flow_label_in_its_answer() {
+    let feature = FEATURE.replace("max_rework: 1", "label: ready-for-agent\nmax_rework: 1");
+    let world = bound_to(&feature, 2);
+    world.name_origin(&world.clone, "acme/dev");
+    world.say_tracker(&world.clone, "acme/tracker");
+    world.with_tracker(|gh| {
+        gh["issues"] = json!([{"number": 11, "title": "moved issue", "state": "open",
+            "labels": ["repo:acme/dev", "stuck"]}]);
+        gh["comments"]["11"] = json!([{"id": 1, "created_at": 1000,
+            "body": "<!--convoy:escalation claim=old-->\nFix the failure."}]);
+    });
+    let answer = "gh issue edit 11 --repo acme/tracker --add-label ready-for-agent --remove-label stuck";
+    let plan = world.afk(&["plan", "--now", "5000"]).ok();
+    assert_eq!(plan["waiting_on_human"][0]["answer"], answer, "{plan}");
+}
+
+#[test]
 fn a_ruling_runs_the_stage_that_asked_again_with_the_ruling_in_its_history() {
     let world = bound(2);
     world.issue(7, &["flow:feature", "bug"]);
