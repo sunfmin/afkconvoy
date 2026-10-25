@@ -13,7 +13,7 @@ A host's one long-running process of the fleet, holding a fleet instance for eac
 _Avoid_: daemon (a process outside the fleet), server (an MCP server, a model provider's), supervisor
 
 **Checkout list**:
-The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** and its **tracker** there, which a `run` that names them changes, and its fleet instance reads at each tick.
+The checkouts a host's runner works, kept on that host and never pushed. The host runner converges on it: a checkout added is started, and a host runner started again starts every checkout on it. Each checkout on it may say its own **concurrency** and its **tracker** there, which a `run` that names them changes, and its fleet instance reads at each tick — a `run` that starts the host runner says the tracker there before it starts it, so that the host runner's start of the checkout from the list goes by it.
 _Avoid_: registry, workspace list, projects (Codex's config key)
 
 **Concurrency**:
@@ -29,7 +29,7 @@ _Avoid_: issue repo, backlog (all the issues a repo has open), project (a GitHub
 _Avoid_: component label, project label
 
 **Broken**:
-A fleet instance whose loop panicked or ended in an error — its tracker found public, say — or that the host runner started again, with nobody asking, and that ended before its first tick — its startup probe no longer passing, say. It harms no other and stays on the checkout list: the host runner starts it again after a backoff — a minute, twice as long at each break in a row, half an hour at the most — or at once when a `run` of its checkout asks. It is **back** once such a start ended its first tick. A tick that fails is no break: the loop goes on.
+A fleet instance whose loop panicked or ended in an error — its tracker found public, say — or a start of which ended before its first tick while its checkout is on the checkout list, whoever started it: the host runner, from the list or again, or a `run`, which is told why — its startup probe no longer passing, say. It harms no other and stays on the checkout list, which only `stop` takes a checkout off: the host runner starts it again after a backoff — a minute, twice as long at each break in a row, half an hour at the most — or at once when a `run` of its checkout asks. It is **back** once such a start ended its first tick. A tick that fails is no break: the loop goes on.
 _Avoid_: crashed, dead (a heartbeat past the lease), down (a harness that refuses every prompt)
 
 **Host settings**:
