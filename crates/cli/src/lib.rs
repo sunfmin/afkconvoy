@@ -98,6 +98,7 @@ pub mod topic;
 pub mod train;
 pub mod wake;
 pub mod watch;
+pub mod worker_tmp;
 pub mod workflow;
 
 use acting::Acting;

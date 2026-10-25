@@ -38,11 +38,12 @@ fn a_worker_is_started_under_nice_with_a_tmpdir_its_worktree_ignores_and_takes_w
     let created = calls.iter().find(|call| common::asked(call) == "terminal create").unwrap();
     assert_eq!(created[4..6], ["--command".to_string(), common::niced(&worktree, COMMAND)]);
 
-    // what the worker writes there is not git's to show…
-    let tmp = worktree.join(".afkconvoy-tmp");
+    // what the worker writes there is in its worktree, and not git's to show…
+    let tmp = afkconvoy::worker_tmp::of(&worktree);
     std::fs::write(tmp.join("scratch"), "the worker's own").unwrap();
     std::fs::create_dir_all(tmp.join("a/b")).unwrap();
     std::fs::write(tmp.join("a/b/deep"), "and deeper").unwrap();
+    assert!(worktree.join(".afkconvoy-tmp/a/b/deep").exists());
     assert_eq!(git(&worktree, &["status", "--porcelain", "--untracked-files=all"]), "");
 
     // …and goes when the worktree does

@@ -25,10 +25,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::git::Repo;
+use crate::worker_tmp;
 
-/// A worker's `TMPDIR`, in its worktree: what it writes there is its own, and
-/// goes when the worktree does.
-pub const TMP_DIR: &str = ".afkconvoy-tmp";
 /// The worker's instructions, kept in the worktree's own git dir: never staged
 /// by the worker's `git add -A`, gone when the worktree is.
 const BRIEF_FILE: &str = "convoy-worker-prompt.md";
@@ -471,11 +469,6 @@ impl Worktree {
         noted(BRIEF_FILE) || noted(START_FILE)
     }
 
-    /// The `TMPDIR` a worker here is started with.
-    pub fn tmp_dir(&self) -> PathBuf {
-        self.path.join(TMP_DIR)
-    }
-
     /// The worktree orca links to issue `number`, and what the worker in it
     /// is doing: gone, where there is no worktree.
     pub fn worker_of(
@@ -795,9 +788,15 @@ impl Worktree {
     }
 
     /// Has orca remove the worktree, its terminals with it — and its branch,
-    /// which orca deletes unless it holds changes nothing has merged.
+    /// which orca deletes unless it holds changes nothing has merged — and
+    /// its worker's `TMPDIR` with it (`worker_tmp`): turned away first, for a
+    /// server the worker started, and reclaimed once nothing runs with it.
     pub fn remove(&self) -> Result<()> {
+        // One that cannot be turned costs a server the worker started its
+        // directory, and no worktree is kept for that.
+        let _ = worker_tmp::retire(&self.path);
         orca(&["worktree", "rm", "--worktree", &self.selector(), "--force"])?;
+        let _ = worker_tmp::reclaim();
         Ok(())
     }
 
@@ -830,7 +829,7 @@ impl Worktree {
         self.forget(BACKGROUND_FILE)?;
         // One with no terminal is as wanted.
         let _ = orca(&["terminal", "close", "--worktree", &self.selector(), "--all"]);
-        let command = niced(&self.tmp()?.display().to_string(), command);
+        let command = niced(&worker_tmp::make(&self.path)?.display().to_string(), command);
         let made =
             orca(&["terminal", "create", "--worktree", &self.selector(), "--command", &command])?;
         let handle = made["terminal"]["handle"].as_str();
@@ -840,17 +839,6 @@ impl Worktree {
         std::fs::write(&file, now.to_string())
             .with_context(|| format!("cannot write {}", file.display()))?;
         Ok(handle.to_string())
-    }
-
-    /// The worker's `TMPDIR` here, made if it was not: a directory git
-    /// ignores, by a `.gitignore` of its own that ignores all of it.
-    fn tmp(&self) -> Result<PathBuf> {
-        let dir = self.tmp_dir();
-        let ignore = dir.join(".gitignore");
-        std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&ignore, "*\n"))
-            .with_context(|| format!("cannot make the worker's TMPDIR {}", dir.display()))?;
-        Ok(dir)
     }
 
     /// When the worker here was last handed its work by the fleet

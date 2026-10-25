@@ -1413,7 +1413,7 @@ pub fn asked(call: &[String]) -> String {
 /// What the fleet hands orca to start a worker in the worktree `dir` whose
 /// own line is `line`: that line under `nice`, with the worktree's `TMPDIR`.
 pub fn niced(dir: &Path, line: &str) -> String {
-    afkconvoy_core::line::niced(&dir.join(".afkconvoy-tmp").display().to_string(), line)
+    afkconvoy_core::line::niced(&afkconvoy::worker_tmp::of(dir).display().to_string(), line)
 }
 
 /// The worker's own line in `command`, what orca was handed to start it:

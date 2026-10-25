@@ -76,16 +76,26 @@ cargo run --quiet -p afkconvoy --example manual -- --check
 # test to the limit .config/nextest.toml gives: a test past it is ended, and
 # fails by name as TIMEOUT. `cargo test` has no such limit.
 #
-# The tests run with a TMPDIR like a worker's, whoever runs the gate: inside
-# this checkout, in the directory that ignores itself, and deeper than a
-# socket's path may be long. A test that binds a socket by its whole path
-# there, finds this checkout above its own directories, or says a path whole
-# fails in every gate, and not only in a worker's.
+cargo nextest --version >/dev/null 2>&1 && nextest=yes || nextest=
+# The tests are built first, under the TMPDIR the gate was given: a build
+# that is the first to reach sccache after its server went idle starts one,
+# which binds its socket under its TMPDIR, and under the one below no socket
+# fits (#439). The run below builds nothing more.
+if [ -n "$nextest" ]; then
+    cargo nextest run --workspace --cargo-quiet --no-run
+else
+    cargo test --workspace --quiet --no-run
+fi
+# The tests run with a TMPDIR deeper than a worker's ever was, whoever runs
+# the gate: inside this checkout, in the directory that ignores itself, and
+# deeper than a socket's path may be long. A test that binds a socket by its
+# whole path there, finds this checkout above its own directories, or says a
+# path whole fails in every gate, and not only in a worker's.
 TMPDIR="$PWD/.afkconvoy-tmp/the-tests-of-the-gate-run-in-a-directory-as-deep-as-a-worker-s"
 mkdir -p "$TMPDIR"
 printf '*\n' >"$PWD/.afkconvoy-tmp/.gitignore"
 export TMPDIR
-if cargo nextest --version >/dev/null 2>&1; then
+if [ -n "$nextest" ]; then
     cargo nextest run --workspace --cargo-quiet --status-level fail --final-status-level fail --show-progress none || {
         tests_status=$?
         echo "gate: a test listed above as TIMEOUT ran too long: it was ended at the limit for one test, which .config/nextest.toml gives" >&2
