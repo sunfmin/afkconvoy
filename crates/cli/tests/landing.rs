@@ -84,6 +84,24 @@ fn a_train_of_one_pr_lands_on_its_workers_recorded_run() {
     assert_eq!(base(&world), commit);
 }
 
+#[test]
+fn a_worker_joins_its_own_pr_though_a_fork_s_that_closes_its_issue_is_numbered_higher() {
+    let world = world();
+    let seven = world.worker(7, "seven.txt", "7\n");
+    // Anyone's PR from a fork, from a branch named as the worker's own.
+    world.fork_pr(99, 7, "issue-7");
+    assert_eq!(world.afk_in(&seven, &["gate", "--train"]).ok()["recorded"], true);
+    let joined = world.afk_in(&seven, &["land", "--issue", "7"]).ok();
+    assert_eq!((&joined["outcome"], &joined["pr"]), (&json!("joined"), &json!(70)), "{joined}");
+
+    let (answer, _) = land_train(&world, &train(&world));
+    assert_eq!(answer["landed"][0]["pr"], 70, "{answer}");
+    // The fork's is left as it was: open, with nothing said on it.
+    let fork = world.gh()["prs"].as_array().unwrap().iter().find(|pr| pr["number"] == 99).cloned();
+    assert_eq!(fork.unwrap()["state"], "open");
+    assert_eq!(world.comments(99), [] as [String; 0]);
+}
+
 /// The gate's records on the remote → (ref, commit, subject), one a line.
 fn gate_records(world: &World) -> String {
     world.remote(&[

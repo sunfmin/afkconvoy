@@ -213,6 +213,23 @@ fn a_worker_whose_terminal_is_gone_is_continued_onto_the_join_and_keeps_its_rest
 }
 
 #[test]
+fn a_worker_is_continued_onto_its_own_pr_not_a_fork_s_numbered_higher() {
+    let world = joining();
+    world.fork_pr(99, 7, "patch-1");
+    let dir = worktree(&world);
+    world.with_orca(|orca| {
+        for terminal in orca["terminals"].as_array_mut().unwrap() {
+            terminal["open"] = json!(false);
+        }
+    });
+
+    assert_eq!(did(&tick(&world, 1090)), ["watch 7 continued", "heartbeat done"]);
+    let brief = brief(&dir);
+    assert!(joins_only(&brief) && !brief.contains("#99"), "{brief}");
+    assert_eq!(world.comments(99), [] as [String; 0]);
+}
+
+#[test]
 fn with_no_worktree_on_this_host_the_join_is_continued_from_the_pushed_branch() {
     let world = joining();
     let head = world.remote(&["rev-parse", "refs/heads/tester/issue-7-issue-7"]);
