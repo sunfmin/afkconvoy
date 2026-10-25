@@ -210,6 +210,7 @@ pub fn propose(
         harness,
         host_user,
         &role_copy.dir,
+        &checkout.path,
         &told.told(),
         &crate::own_command().fixed(" guard").own(),
     )?;
@@ -238,8 +239,14 @@ pub fn propose(
             team_commit: &kept.copy.commit,
         },
     };
-    let terminal =
-        agent.start(&checkout, harness, &harness.in_role(launch.as_str(), &start), me.now)?;
+    let terminal = agent.start_worker(
+        &checkout,
+        (harness, first.model.as_deref()),
+        &harness.in_role(launch.as_str(), &start),
+        true,
+        None,
+        me.now,
+    )?;
     checkout.await_ready(&terminal, agent.ready_timeout)?;
     checkout.deliver(&terminal, &brief)?;
     Ok(Outcome::Done)

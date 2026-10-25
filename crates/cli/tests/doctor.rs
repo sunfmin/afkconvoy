@@ -109,7 +109,16 @@ fn a_fleet_with_no_fault_answers_its_keys_and_no_finding_and_writes_nothing() {
     let keys: Vec<&str> = answer.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(
         keys,
-        ["claims", "findings", "fleet", "host", "issues", "proposals", "waiting_on_human"]
+        [
+            "claims",
+            "codex_workers",
+            "findings",
+            "fleet",
+            "host",
+            "issues",
+            "proposals",
+            "waiting_on_human"
+        ]
     );
     assert_eq!(answer["proposals"], Value::Null);
     assert_eq!(answer["waiting_on_human"], json!([]));

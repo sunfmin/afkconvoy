@@ -176,6 +176,8 @@ pub struct Panel {
     /// Each role no worker of which can be started on this host, with why
     /// (`casting::nothing_safe`): its stages wait while it lasts.
     pub nothing_safe: Vec<(String, String)>,
+    /// What each Codex session was actually started with, including sources.
+    pub codex_workers: Vec<serde_json::Value>,
 }
 
 /// A worker that is hot, as the page shows it.
@@ -427,6 +429,7 @@ impl Panel {
             caster: None,
             casting: vec![],
             nothing_safe: vec![],
+            codex_workers: vec![],
         }
     }
 
@@ -624,6 +627,7 @@ pub fn read(
         did,
     };
     let mut panel = Panel::empty(fleet, me).show(&seen);
+    panel.codex_workers = crate::codex_launch::workers(&fleet.repo);
     panel.declared = set.declared();
     panel.held = set.mine.len() - panel.declared;
     panel.bound = set.bound(fleet.config.concurrency()) - panel.declared;
@@ -1502,6 +1506,29 @@ fn repo(out: &mut String, at: usize, panel: &Panel) {
         );
     }
 
+    if !panel.codex_workers.is_empty() {
+        out.push_str("<section class=\"codex-workers\"><h2>Codex workers</h2><ul>");
+        for worker in &panel.codex_workers {
+            let label = worker["issue"]
+                .as_u64()
+                .map(|n| format!("#{n}"))
+                .unwrap_or_else(|| worker["worktree"].as_str().unwrap_or("worker").to_string());
+            let text = |key: &str| esc(worker[key].as_str().unwrap_or(""));
+            let effort = worker["effort"].as_str().unwrap_or("Codex default");
+            let _ = write!(
+                out,
+                "<li data-codex-worker=\"{}\"><b>{}</b>: model {} ({}); effort {} ({})</li>",
+                esc(&label),
+                esc(&label),
+                text("model"),
+                text("model_source"),
+                esc(effort),
+                text("effort_source")
+            );
+        }
+        out.push_str("</ul></section>");
+    }
+
     for lane in &panel.lanes {
         let _ = write!(
             out,
@@ -1605,6 +1632,7 @@ mod tests {
             caster: None,
             casting: vec![],
             nothing_safe: vec![],
+            codex_workers: vec![],
         }
     }
 

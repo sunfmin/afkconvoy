@@ -4,7 +4,7 @@ How the fleet starts each harness's worker: the line a worker is started with, w
 
 Each launch reads the latest host kit, including edits made while the fleet instance runs. An explicit command wins. Where a known harness has no entry or its command is empty, the fleet resolves that harness's stock command in the worker's login shell, checks its login and the flags its role needs, and merges the command into the host kit. It reports the discovery as a warning. No model is inferred or probed; a new harness is appended after those held. Discovery installs nothing and logs nobody in. A failing explicit command is reported as given, so fixing it means editing its entry in the host kit.
 
-Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `/tmp/afkconvoy-<uid>/<16 hex digits>`, a link to `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. The link is short enough for a socket's path however long the worktree's is — a tool such as sccache binds one under its `TMPDIR` — and is named for the worktree's whole path. It goes with the worktree, but for a server the worker started, which keeps it until it ends: the fleet turns it to its own temporary directory first. An unbound repo's worker launch command otherwise stays as written, except for Codex's trust and session setup ([`afkconvoy help worker-codex`](help:worker-codex)).
+Every worker is started under `nice` — as fast as before on a host with nothing else to do, and giving way to you and to the gate when it is busy — with its own `TMPDIR`: `/tmp/afkconvoy-<uid>/<16 hex digits>`, a link to `.afkconvoy-tmp` in its worktree, which git ignores and which goes with it. The link is short enough for a socket's path however long the worktree's is — a tool such as sccache binds one under its `TMPDIR` — and is named for the worktree's whole path. It goes with the worktree, but for a server the worker started, which keeps it until it ends: the fleet turns it to its own temporary directory first. An unbound repo's worker launch command also receives its selected model; Codex additionally receives the user directory and effort described below.
 
 The stage's facts are in the environment of every worker of a bound repo, and a role's limits may read them: AFKCONVOY_ISSUE, AFKCONVOY_FLOW, AFKCONVOY_STAGE, AFKCONVOY_ROLE, AFKCONVOY_SKILL, AFKCONVOY_WRITES, AFKCONVOY_CONSULT, AFKCONVOY_BASE_BRANCH, AFKCONVOY_ESCALATE_LABEL, AFKCONVOY_LOCK_LABEL, AFKCONVOY_ROLE_COMMIT, AFKCONVOY_TEAM_COMMIT and AFKCONVOY_HARNESS. A patrol's worker has AFKCONVOY_PATROL in place of the first three. An unbound repo's issue worker has AFKCONVOY_ISSUE too, exported before its worker launch command runs, so its commands name that issue in the tick log and the host's exclusive queue. The train and an inspection are on no issue and carry none.
 
@@ -38,9 +38,9 @@ A worker's model is its harness's own name for it: pi's is `<provider>/<id>`. A 
 
 ## Codex
 
-A Codex worker runs an interactive session. Its launch lines for a bound repo, an unbound repo and the train worker, its rule and skill discovery, trust and hook setup, and the fleet's user directory are in [`afkconvoy help worker-codex`](help:worker-codex).
+Codex uses a fresh `CODEX_HOME` for each session. The fleet selects and explicitly passes the model; each launch reads reasoning effort from your own ~/.codex/config.toml, or uses Codex's model default. Saved `/model` choices stay in that session. A train worker or an unbound worker trusts its worktree on the launch line; a role's worker keeps its guard. Launch commands, rules, skills and settings evidence: [`afkconvoy help worker-codex`](help:worker-codex).
 
-A command you give for Codex must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
+A Codex command must take `--add-dir`, `--dangerously-bypass-hook-trust`, `--config` and `--model`.
 
 ## Kimi Code
 

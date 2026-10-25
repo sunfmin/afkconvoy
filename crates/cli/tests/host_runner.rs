@@ -1401,17 +1401,33 @@ fn a_running_fleet_uses_commands_added_and_changed_after_it_started() {
     world.shell_help(Some("--add-dir --config --model --dangerously-bypass-hook-trust"));
     let ran = world.afk(&RUN).ok();
     let pid = ran["host_runner"]["pid"].clone();
-    for (number, command) in [(7, "agent --added-codex"), (8, "agent --changed-codex")] {
+    for (number, command, effort) in
+        [(7, "agent --added-codex", "xhigh"), (8, "agent --changed-codex", "high")]
+    {
         world.kit_command("codex", command);
+        world.kit_models("codex", &["fleet-model"]);
+        common::write(
+            &world.home(),
+            ".codex/config.toml",
+            &format!("model_reasoning_effort = '{effort}'\n"),
+        );
         world.afk(&["switch", "--harness", "codex"]).ok();
         world.issue(number, &["ready-for-agent", "harness:codex"]);
         world.afk(&["wake"]).ok();
         let until = Instant::now() + Duration::from_secs(30);
         loop {
             if world.orca()["terminals"].as_array().unwrap().iter().any(|terminal| {
-                terminal["command"]
-                    .as_str()
-                    .is_some_and(|line| line.contains(&format!(" && {command} ")))
+                terminal["command"].as_str().is_some_and(|line| {
+                    if !line.contains(&format!(" && {command} ")) {
+                        return false;
+                    }
+                    assert!(line.contains("--model 'fleet-model'"), "{line}");
+                    assert!(
+                        line.contains(&format!("model_reasoning_effort=\"{effort}\"")),
+                        "{line}"
+                    );
+                    true
+                })
             }) {
                 break;
             }

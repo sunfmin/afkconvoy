@@ -220,7 +220,7 @@ impl Staged {
         self.harness
     }
 
-    /// The model passed to the role's harness at launch, where it holds one.
+    /// The fleet's selected model for this stage or consult.
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
     }
@@ -240,6 +240,7 @@ impl Staged {
             self.harness,
             self.host_user,
             &self.role_copy.dir,
+            &worktree.path,
             &told.told(),
             &crate::own_command().fixed(" guard").own(),
         )?;

@@ -421,6 +421,15 @@ impl Worktree {
     /// with the issue orca links it to where it links one: the landing
     /// train's left out, whose gate runs are the fleet's own and no worker's.
     pub fn of_workers(source: &Source) -> Result<Vec<(Option<u64>, Worktree)>> {
+        Ok(Self::of_sessions(source)?
+            .into_iter()
+            .filter(|(_, worktree)| !worktree.is_fleets())
+            .collect())
+    }
+
+    /// Every session worktree, including the fleet's train, caster and
+    /// inspection: launch evidence applies to those sessions too.
+    pub fn of_sessions(source: &Source) -> Result<Vec<(Option<u64>, Worktree)>> {
         let listed = orca(&["worktree", "list"])?;
         let rows = listed["worktrees"].as_array().cloned().unwrap_or_default();
         Ok(rows
@@ -435,7 +444,7 @@ impl Worktree {
                 let branch = short_branch(row["branch"].as_str().unwrap_or("")).to_string();
                 Some((row["linkedIssue"].as_u64(), Worktree::at(path, branch)))
             })
-            .filter(|(_, worktree)| worktree.path.is_dir() && !worktree.is_fleets())
+            .filter(|(_, worktree)| worktree.path.is_dir())
             .collect())
     }
 
